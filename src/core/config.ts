@@ -18,7 +18,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.18.3";
+export const VERSION = "2.18.4";
 export const RELEASE_DATE = "2026-05-07";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -300,11 +300,21 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
   // We don't use `intEnv` here because that helper has a `parsed > 0`
   // filter, which would change the consumer's clamp result for negatives.
   // codex R1 ship-review of v2.12.0 caught the divergence.
+  // v2.18.4 / Codex audit 2026-05-07 P1.4: defensive cap reduction
+  // 8 → 4. Math: with default consensus_peers=4 (codex+gemini+
+  // deepseek+grok), worst-case round fires `consensus_peers ×
+  // max_items_per_pass = 4 × 8 = 32` paid judge calls per round.
+  // Lowering the default to 4 puts the worst case at `4 × 4 = 16`
+  // paid calls, halving the budget exposure without a code change.
+  // Operators wanting the prior 8 (or higher) set the env-var
+  // explicitly. Single-peer mode goes from 1×8=8 to 1×4=4 — a coverage
+  // reduction, but the operator can always raise via env-var. This
+  // is a *default* change, not a hard cap.
   const rawCap = Number.parseInt(
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS ?? "8",
+    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS ?? "4",
     10,
   );
-  const maxItemsPerPass = Number.isFinite(rawCap) && rawCap !== 0 ? rawCap : 8;
+  const maxItemsPerPass = Number.isFinite(rawCap) && rawCap !== 0 ? rawCap : 4;
   return {
     mode,
     peer,

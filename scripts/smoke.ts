@@ -321,6 +321,27 @@ assert.equal(Date.now() - repeatedSameLabelStarted < 1_000, true);
 const constructedToken = ["sk", "test", "A".repeat(24)].join("-");
 assert.equal(redact(`token ${constructedToken}`), "token [REDACTED]");
 
+// v2.18.4 / Codex audit 2026-05-07 P1.2: xAI API key prefix `xai-`
+// added to redaction patterns. Verify the new pattern fires on a
+// realistic shape (xai- + 30+ chars of [A-Za-z0-9_-]) and integrates
+// with the existing dispatch.
+const xaiKey = ["xai", "A".repeat(30)].join("-");
+assert.equal(redact(`Bearer leak: ${xaiKey} more text`), "Bearer leak: [REDACTED] more text");
+assert.equal(redact(xaiKey), "[REDACTED]");
+// Anti-drift: short xai- strings (less than 20 chars after prefix) do
+// NOT match — protects against false-positives on user prose.
+const shortXai = "xai-short";
+assert.equal(redact(`prefix ${shortXai} suffix`), `prefix ${shortXai} suffix`);
+
+// v2.18.4 / Codex audit 2026-05-07 P2.1: grok-4.3 added to the
+// reasoning-effort allowlist; verify both call sites gate correctly.
+const grokAllowlist = await import("../src/peers/grok.js");
+assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
+assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.3"), true);
+assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4-latest"), false);
+assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.20"), false);
+assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.20-reasoning"), false);
+
 const dashboardSource = fs.readFileSync(
   path.join(process.cwd(), "src", "dashboard", "server.ts"),
   "utf8",
@@ -3787,27 +3808,31 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] grok_integration_test: PASS");
 }
 
-// v2.15.0 (item 6) — per-model reasoning capability detection. Allowlist
-// `GROK_REASONING_EFFORT_MODELS = {"grok-4.20-multi-agent"}` controls
-// whether the GrokAdapter includes `reasoning.effort` in the request
-// body. Other Grok models (per xAI docs) reject the param OR auto-apply
-// reasoning internally, so we omit it.
+// v2.15.0 (item 6) / v2.18.4 (Codex audit P2.1) — per-model reasoning
+// capability detection. Allowlist `GROK_REASONING_EFFORT_MODELS`
+// controls whether the GrokAdapter includes `reasoning.effort` in the
+// request body. As of v2.18.4 the allowlist holds BOTH
+// `grok-4.20-multi-agent` AND `grok-4.3` (xAI docs verified 2026-05-07
+// via WebFetch — grok-4.3 supports reasoning_effort with values
+// none/low/medium/high). Other Grok models (per xAI docs) reject the
+// param OR auto-apply reasoning internally, so we omit it.
 {
   const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } =
     await import("../src/peers/grok.js");
-  // Allowlist contract: only grok-4.20-multi-agent.
+  // Allowlist contract: grok-4.20-multi-agent + grok-4.3.
   assert.equal(modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
+  assert.equal(modelAcceptsReasoningEffort("grok-4.3"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4-latest"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-4.20-reasoning"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-4.20"), false);
-  assert.equal(modelAcceptsReasoningEffort("grok-4.3"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-4-1-fast"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-3"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-3-fast"), false);
   // Set is exposed as ReadonlySet so future xAI additions are a 1-line
   // change in peers/grok.ts. Test asserts the expected size + content.
-  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 1);
+  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 2);
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.20-multi-agent"));
+  assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.3"));
   console.log("[smoke] grok_reasoning_capability_allowlist_test: PASS");
 }
 

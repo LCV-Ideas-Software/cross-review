@@ -11,6 +11,33 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 - site/index.html deixou de carregar o widget/SDK SumUp e passou a encaminhar apoios para https://www.lcv.dev/sponsor?project=cross-review-v2, com backend dedicado sponsor-motor via Mercado Pago Checkout Pro.
 
+## [v02.18.04] - 2026-05-07
+
+**Patch — Codex external audit 2026-05-07 outcome: 6 surgical fixes (P1.1, P1.2, P1.3, P1.4, P2.1, P2.4).** Codex submitted a read-only audit of cross-review-v2 v2.18.3 with 4 P1 + 7 P2 findings; this ship lands the 6 verified-actionable items. Findings deferred or non-issue: P2.2 (sessions histórico — operational housekeeping, session_sweep exists), P2.3 (token noise — config option not bug), P2.5 (grok historical errors — passive log), P2.6 (deepseek cache pricing — forward optimization), P2.7 (publish.yml tag padding — Codex misread; regex accepts both formats, P3 polish).
+
+### Corrigido (P1)
+
+- **P1.1 hono advisory** — `package.json` `overrides` now pins `hono: ">=4.12.16"` to clear `npm audit --audit-level=moderate` failures from `@modelcontextprotocol/sdk@1.29.0` transitive (advisories `GHSA-9vqf-7f2p-gf9v` bodyLimit bypass + `GHSA-69xw-7hcm-h432` JSX HTML injection, both range `<4.12.16`). Practical exposure essentially zero in stdio runtime (StdioServerTransport doesn't load HTTP/JSX paths) but the audit-gate matters for publish workflow + defense-in-depth. Same precedent as the `ip-address` override since v2.18.1.
+
+- **P1.2 xai- API key redaction** — `src/security/redact.ts` `SECRET_PATTERNS` now includes `/xai-[A-Za-z0-9_-]{20,}/g` at parity with `sk-`/`sk-ant-`/`AIza`/`xox[baprs]-`/etc. Previously xAI keys could leak into logs/sessions via persisted provider error messages or environment dumps. Smoke test extended to verify the pattern fires on realistic shapes + does NOT match short prefixes (false-positive guard).
+
+- **P1.3 AbortSignal threading on judge passes** — Pre-v2.18.4 `runEvidenceChecklistJudgeConsensusPass` (orchestrator.ts:929) hard-coded `signal: undefined` in the `judgeEvidenceAsk()` context and `runEvidenceChecklistJudgePass` built the context without a signal field at all, so `session_cancel_job` could not abort judge calls mid-flight — operators paid for full provider responses even after cancellation. v2.18.4 adds optional `signal?: AbortSignal` to both function `params`, threads it into the `PeerCallContext`, and at the autowire call sites (orchestrator.ts:2341 + 2381) passes `input.signal` from the round scope. Cancellation now propagates correctly to in-flight judge requests.
+
+- **P1.4 consensus shadow cost defensive default** — `src/core/config.ts` lowered the default `CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS` from `8` to `4`. Math: with `consensus_peers=4` (codex+gemini+deepseek+grok) and old default `max_items_per_pass=8`, worst-case round fired up to `4 × 8 = 32` paid judge calls. Lowering the default to `4` halves the worst-case to `4 × 4 = 16`. Operators wanting prior behavior set `CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS=8` (or higher) explicitly. Single-peer mode also reduces (1×8 → 1×4) — coverage tradeoff acknowledged; raise via env-var if needed.
+
+### Alterado (P2)
+
+- **P2.1 Grok grok-4.3 reasoning_effort support** — `src/peers/grok.ts` `GROK_REASONING_EFFORT_MODELS` Set expanded from `{"grok-4.20-multi-agent"}` to `{"grok-4.20-multi-agent", "grok-4.3"}`. xAI documentation (verified via WebFetch 2026-05-07 at `https://docs.x.ai/developers/model-capabilities/text/reasoning`) explicitly states `grok-4.3 supports reasoning_effort` with values `none|low (default)|medium|high`. New helper `clampEffortForModel(effort, model)` clamps the internal `xhigh`/`minimal` scale to `high` when targeting `grok-4.3` (which doesn't accept `xhigh`); `grok-4.20-multi-agent` keeps the full `xhigh`-inclusive range. Wired at both `responses.create` call sites (lines 244 + 332). v2.16.0 verification (2026-05-05 operator directive) is now stale by the xAI docs update; v2.18.4 closes the drift.
+
+- **P2.4 consensus metrics per-peer attribution** — `orchestrator.ts:1008` (active-mode `evidence_checklist_addressed` event) and `:1030` (shadow-mode `shadow_decision` event) previously emitted only `judge_peer: params.judge_peers[0]`, so the rollup at `session-store.ts:911` (`groupBy judge_peer`) attributed every consensus decision to whichever peer was first in the configured list (codex by default), making per-peer accuracy analysis impossible. v2.18.4 keeps `judge_peer` for backward-compat readers but ALSO emits the full `judge_peers: PeerId[]` list and `per_peer_verdict: Record<PeerId, "verified_satisfied" | "disagree" | "failed">` map so operators can compute accurate per-peer accuracy from the raw event stream.
+
+### Notas técnicas
+
+- Smoke harness completes with exit 0 + final `{ ok: true, events: 96 }` payload (each named PASS marker prints during the run; the harness's terminal `ok` is the binary success signal). Updated to assert new `GROK_REASONING_EFFORT_MODELS.size === 2` + `has("grok-4.3") === true` + xAI key redaction pattern fires on realistic xAI key shapes (and does NOT fire on short prefixes — false-positive guard). `grok_reasoning_capability_allowlist_test` updated from prior `size === 1` / `has("grok-4.3") === false` assertions.
+- Lint/typecheck/format clean.
+- Public surface impact: additive only. New optional `signal` param on judge passes is backward-compatible (existing callers pass nothing → behaves like pre-v2.18.4). Event payload gains new fields (`judge_peers`, `per_peer_verdict`) — additive. `judge_peer` field unchanged for legacy readers.
+- Default behavior change: `max_items_per_pass` default 8 → 4 affects operators relying on the implicit default; explicit env-var unchanged. CHANGELOG calls this out so operators can audit their consensus pass throughput.
+
 ## [v02.18.03] - 2026-05-07
 
 **Patch — Gemini default pin bump `gemini-3.1-pro-preview` → `gemini-2.5-pro` (operator preference 2026-05-07; coordinated with cross-review-v1 v1.12.4).** Earlier today the 7 LCV-workspace MCP host configs flipped `CROSS_REVIEW_GEMINI_MODEL` env-override to `gemini-2.5-pro` (operator directive: `gemini-2.5-pro` carries 1k requests/day quota under Google One AI Ultra vs `gemini-3.1-pro-preview`'s 250 requests/day). v2.18.3 aligns the source-of-truth defaults so a fresh install without env-override picks the same model. Workspace policy 2026-05-07: only `gemini-*-pro` variants ≥ 2.5 are permitted — no `*-flash` and no models below 2.5.

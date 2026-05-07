@@ -8,6 +8,12 @@ const SECRET_PATTERNS = [
   /npm_[A-Za-z0-9]{30,}/g,
   /re_[A-Za-z0-9_]{30,}/g,
   /xox[baprs]-[A-Za-z0-9-]{20,}/g,
+  // v2.18.4 / Codex audit 2026-05-07 P1.2: xAI API keys have prefix
+  // `xai-` and were not previously covered. Logs and session payloads
+  // can persist provider error messages or environment dumps that
+  // include the key, so adding this pattern closes a credential leak
+  // surface at parity with sk-/sk-ant-/AIza/etc.
+  /xai-[A-Za-z0-9_-]{20,}/g,
   /AKIA[A-Z0-9]{16}/g,
   /Bearer\s+[A-Za-z0-9._-]{20,}/gi,
   /[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,

@@ -829,6 +829,12 @@ export class CrossReviewOrchestrator {
     round?: number;
     review_focus?: string;
     mode?: "active" | "shadow";
+    // v2.18.4 / Codex audit 2026-05-07 P1.3: AbortSignal threading.
+    // Pre-v2.18.4 the consensus judge call passed `signal: undefined`
+    // hard-coded, so session_cancel_job could not interrupt mid-flight
+    // judge calls and operators paid for full provider responses even
+    // after cancel. Now the caller threads the round's signal here.
+    signal?: AbortSignal;
   }): Promise<{
     promoted: Array<{ item_id: string; rationales: Record<string, string> }>;
     skipped: Array<{
@@ -926,7 +932,10 @@ export class CrossReviewOrchestrator {
               session_id: params.session_id,
               round: judgmentRound,
               task: meta.task,
-              signal: undefined,
+              // v2.18.4 / Codex audit 2026-05-07 P1.3: thread the
+              // round-scoped AbortSignal so session_cancel_job aborts
+              // judge calls mid-flight (was hard-coded `undefined`).
+              signal: params.signal,
               stream: this.config.streaming.events,
               stream_tokens: this.config.streaming.tokens,
               emit: this.emit,
@@ -1005,7 +1014,20 @@ export class CrossReviewOrchestrator {
               ids: [item.id],
               count: 1,
               method: "judge",
+              // v2.18.4 / Codex audit 2026-05-07 P2.4: per-peer
+              // attribution. Pre-v2.18.4 only `judge_peer:
+              // params.judge_peers[0]` was emitted, so the rollup at
+              // session-store.ts groupBy(judge_peer) attributed every
+              // consensus decision to whichever peer was first in the
+              // configured list (codex by default), making per-peer
+              // accuracy analysis impossible. Now emit BOTH the
+              // backward-compatible `judge_peer` (first peer, kept for
+              // legacy rollup readers) AND the full `judge_peers` list
+              // + `per_peer_verdict` map so operators can compute
+              // accurate per-peer accuracy from the raw event stream.
               judge_peer: params.judge_peers[0],
+              judge_peers: params.judge_peers,
+              per_peer_verdict: perPeerVerdict,
               consensus_peers: params.judge_peers,
             },
           });
@@ -1027,7 +1049,13 @@ export class CrossReviewOrchestrator {
             would_promote: true,
             satisfied: true,
             confidence: "verified",
+            // v2.18.4 / Codex audit 2026-05-07 P2.4: same shape as the
+            // active-mode addressed event above. judge_peer kept for
+            // backward compat; judge_peers + per_peer_verdict provide
+            // accurate per-peer attribution.
             judge_peer: params.judge_peers[0],
+            judge_peers: params.judge_peers,
+            per_peer_verdict: perPeerVerdict,
             consensus_peers: params.judge_peers,
           },
         });
@@ -1076,6 +1104,11 @@ export class CrossReviewOrchestrator {
     // judgment-quality data BEFORE flipping to active. Defaults to
     // "active" so existing v2.9.0 callers behave identically.
     mode?: "active" | "shadow";
+    // v2.18.4 / Codex audit 2026-05-07 P1.3: AbortSignal threading
+    // (parity with consensus pass). Pre-v2.18.4 single-peer judge
+    // built the context without a signal; session_cancel_job could not
+    // interrupt judge mid-flight.
+    signal?: AbortSignal;
   }): Promise<{
     promoted: Array<{
       item_id: string;
@@ -1166,6 +1199,9 @@ export class CrossReviewOrchestrator {
         session_id: params.session_id,
         round: judgmentRound,
         task: meta.task,
+        // v2.18.4 / Codex audit 2026-05-07 P1.3: thread session-scoped
+        // AbortSignal so session_cancel_job aborts judge mid-flight.
+        signal: params.signal,
         emit: this.emit,
       };
       try {
@@ -2327,6 +2363,11 @@ export class CrossReviewOrchestrator {
             draft: input.draft,
             round: round.round,
             mode: autowire.mode,
+            // v2.18.4 / Codex audit 2026-05-07 P1.3: thread the round
+            // input AbortSignal so session_cancel_job aborts the
+            // consensus judge mid-flight instead of letting the round
+            // burn budget on judges after cancellation.
+            signal: input.signal,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -2367,6 +2408,9 @@ export class CrossReviewOrchestrator {
             draft: input.draft,
             round: round.round,
             mode: autowire.mode,
+            // v2.18.4 / Codex audit 2026-05-07 P1.3: same threading as
+            // consensus path above for parity.
+            signal: input.signal,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

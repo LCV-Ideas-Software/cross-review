@@ -68,14 +68,22 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
   };
 }
 
-// v2.16.0 clarification (operator directive 2026-05-05): per official
-// xAI docs at https://docs.x.ai/developers/model-capabilities/text/reasoning, only
-// `grok-4.20-multi-agent` accepts the `reasoning.effort` parameter.
-// Other Grok-4 models such as `grok-4-latest`, `grok-4.20`, and
-// `grok-4.20-reasoning` rely on xAI automatic reasoning and must not
-// receive the explicit field. The operator is free to choose either
-// model family; this adapter detects the configured model and shapes the
-// request body accordingly.
+// v2.16.0 clarification (operator directive 2026-05-05) / v2.18.4 update
+// (Codex audit 2026-05-07 P2.1): per CURRENT xAI docs at
+// https://docs.x.ai/developers/model-capabilities/text/reasoning,
+// BOTH `grok-4.20-multi-agent` AND `grok-4.3` accept the
+// `reasoning.effort` parameter (xAI added grok-4.3 reasoning_effort
+// support after v2.16.0 froze; verified via WebFetch 2026-05-07).
+// Their accepted value sets DIFFER:
+//   - grok-4.3: { "none", "low" (default), "medium", "high" }
+//   - grok-4.20-multi-agent: { "low", "medium", "high", "xhigh" }
+// The internal config scale uses
+// { "none", "minimal", "low", "medium", "high", "xhigh", "max" } so this
+// adapter clamps to each model's accepted set: for grok-4.3,
+// "xhigh"/"max" downgrade to "high"; for multi-agent, "max" maps to
+// "xhigh" (existing behavior). Other Grok-4 models such as
+// `grok-4-latest`, `grok-4.20`, and `grok-4.20-reasoning` rely on xAI
+// automatic reasoning and must not receive the explicit field.
 //
 // Important semantic difference: on `grok-4.20-multi-agent`, the
 // `reasoning.effort` parameter controls **how many agents collaborate**
@@ -87,6 +95,25 @@ type GrokReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhi
 
 function grokEffort(value: AppConfig["reasoning_effort"][PeerId]): GrokReasoningEffort {
   return value === "max" ? "xhigh" : (value ?? "xhigh");
+}
+
+// v2.18.4 / Codex audit 2026-05-07 P2.1: per-model effort clamp.
+// grok-4.3 accepts only { none, low, medium, high } per xAI docs; the
+// internal config scale can reach "xhigh"/"max" which the multi-agent
+// model accepts but grok-4.3 would 400 on. Clamp before send.
+function clampEffortForModel(effort: GrokReasoningEffort, model: string): GrokReasoningEffort {
+  if (model === "grok-4.3") {
+    // grok-4.3 accepts only { none, low, medium, high }. Our internal
+    // post-grokEffort scale is { none, minimal, low, medium, high,
+    // xhigh } — `max` already collapsed to `xhigh` upstream. Clamp
+    // `xhigh` and `minimal` to `high` (xhigh has no equivalent on
+    // 4.3; `minimal` is a non-standard value xAI does not accept).
+    if (effort === "xhigh" || effort === "minimal") return "high";
+    // none/low/medium/high pass through unchanged.
+    return effort;
+  }
+  // grok-4.20-multi-agent and others: existing scale unchanged.
+  return effort;
 }
 
 // v2.15.0/v2.16.0: per-model reasoning capability detection. Per
@@ -108,7 +135,15 @@ function grokEffort(value: AppConfig["reasoning_effort"][PeerId]): GrokReasoning
 // model is a one-line change here. Future: if xAI exposes a model
 // capability discovery endpoint, replace the static set with a
 // runtime probe + cache.
-export const GROK_REASONING_EFFORT_MODELS: ReadonlySet<string> = new Set(["grok-4.20-multi-agent"]);
+export const GROK_REASONING_EFFORT_MODELS: ReadonlySet<string> = new Set([
+  "grok-4.20-multi-agent",
+  // v2.18.4 / Codex audit 2026-05-07 P2.1: xAI docs (WebFetch verified
+  // 2026-05-07) document grok-4.3 as supporting reasoning_effort with
+  // { none, low (default), medium, high }. Added to allowlist so the
+  // adapter sends the field; clampEffortForModel narrows xhigh/max to
+  // "high" for this model.
+  "grok-4.3",
+]);
 
 export function modelAcceptsReasoningEffort(model: string): boolean {
   return GROK_REASONING_EFFORT_MODELS.has(model);
@@ -206,8 +241,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           ...(modelAcceptsReasoningEffort(this.model)
             ? {
                 reasoning: {
-                  effort: grokEffort(
-                    context.reasoning_effort_override ?? this.config.reasoning_effort.grok,
+                  effort: clampEffortForModel(
+                    grokEffort(
+                      context.reasoning_effort_override ?? this.config.reasoning_effort.grok,
+                    ),
+                    this.model,
                   ),
                 },
               }
@@ -294,8 +332,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           ...(modelAcceptsReasoningEffort(this.model)
             ? {
                 reasoning: {
-                  effort: grokEffort(
-                    context.reasoning_effort_override ?? this.config.reasoning_effort.grok,
+                  effort: clampEffortForModel(
+                    grokEffort(
+                      context.reasoning_effort_override ?? this.config.reasoning_effort.grok,
+                    ),
+                    this.model,
                   ),
                 },
               }
