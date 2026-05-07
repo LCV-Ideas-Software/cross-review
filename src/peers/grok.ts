@@ -101,7 +101,14 @@ function grokEffort(value: AppConfig["reasoning_effort"][PeerId]): GrokReasoning
 // grok-4.3 accepts only { none, low, medium, high } per xAI docs; the
 // internal config scale can reach "xhigh"/"max" which the multi-agent
 // model accepts but grok-4.3 would 400 on. Clamp before send.
-function clampEffortForModel(effort: GrokReasoningEffort, model: string): GrokReasoningEffort {
+//
+// v2.18.5 / anti-drift driver (operator directive 2026-05-07): exported
+// so the smoke harness can verify the clamp shape directly. Behavior
+// unchanged for in-file callers.
+export function clampEffortForModel(
+  effort: GrokReasoningEffort,
+  model: string,
+): GrokReasoningEffort {
   if (model === "grok-4.3") {
     // grok-4.3 accepts only { none, low, medium, high }. Our internal
     // post-grokEffort scale is { none, minimal, low, medium, high,

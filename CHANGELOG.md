@@ -11,6 +11,29 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 - site/index.html deixou de carregar o widget/SDK SumUp e passou a encaminhar apoios para https://www.lcv.dev/sponsor?project=cross-review-v2, com backend dedicado sponsor-motor via Mercado Pago Checkout Pro.
 
+## [v02.18.05] - 2026-05-07
+
+**Patch — anti-drift smoke drivers for v2.18.4 audit closure (operator directive 2026-05-07).** v2.18.4 shipped 6 surgical fixes from the Codex external audit; v2.18.5 hardens those fixes against silent regression with 5 anti-drift smoke checks. Companion to `cross-review-v1` v1.12.7 (parallel ship; same operator directive).
+
+### Adicionado
+
+- **`hono_override_anti_drift_test`** (P1.1). Reads `package.json`, asserts `overrides.hono === ">=4.12.16"` and that `overrides["ip-address"]` (the v2.18.1 precedent) remains intact. Anti-drift guard against accidental removal of either override by future Dependabot PRs or refactors. Same shape as the v2.18.4 P1.1 fix.
+- **`abort_signal_threading_anti_drift_test`** (P1.3). Source-level grep on `src/core/orchestrator.ts`: ≥2 `signal?: AbortSignal` param declarations (consensus + single-peer judge passes); ≥2 `signal: params.signal` receiver wirings; ≥2 `signal: input.signal` autowire emitter wirings; consensus pass body has NO leftover `signal: undefined` literal (was hardcoded pre-v2.18.4).
+- **`max_items_per_pass_default_anti_drift_test`** (P1.4). Source-level: env-var fallback in `config.ts` is `?? "4"` (string for parseInt); numeric fallback is `: 4`; legacy `?? "8"` literal is gone for the env-var key. Behavioral: `loadConfig()` with env unset returns `evidence_judge_autowire.max_items_per_pass === 4`. Guards against silent restoration of the doubled budget exposure (with default `consensus_peers=4`, the cap reduction halves worst-case round paid judge calls from 32 to 16).
+- **`clamp_effort_for_model_anti_drift_test`** (P2.1). Behavioral: `clampEffortForModel("xhigh", "grok-4.3") === "high"`; `clampEffortForModel("minimal", "grok-4.3") === "high"`; passthrough for `none|low|medium|high` on grok-4.3; full-scale passthrough for `grok-4.20-multi-agent` (xhigh stays xhigh); unknown models pass through unchanged. Source-level: `clampEffortForModel` wired at exactly 2 `responses.create` call sites (non-streaming + streaming). The function is now exported from `src/peers/grok.ts` so the smoke harness can verify the clamp shape directly.
+- **`consensus_event_per_peer_attribution_anti_drift_test`** (P2.4). Source-level: legacy `judge_peer: params.judge_peers[0]` co-emitted at ≥2 sites for backward compat; new `judge_peers: params.judge_peers` array emitted at ≥2 sites; `per_peer_verdict: perPeerVerdict` map at ≥2 sites. Co-emission contract: every `this.emit({ ... judge_peer: params.judge_peers[0] ... })` payload also includes the `judge_peers` array AND `per_peer_verdict` map (scoped scan splits source by `this.emit({` boundaries to avoid false-positives on the function-call site at `markEvidenceItemAddressedByJudge`).
+
+### Alterado
+
+- `clampEffortForModel` is now exported from `src/peers/grok.ts` (`export function clampEffortForModel(...)`). Behavior unchanged for in-file callers; the export enables direct verification by the smoke harness without spinning a request-shape stub.
+
+### Notas técnicas
+
+- Smoke harness gains 5 new test markers (hono_override / abort_signal_threading / max_items_per_pass_default / clamp_effort_for_model / consensus_event_per_peer_attribution). All five PASS in stub mode; harness completes with `ok: true` / exit 0.
+- Lint / typecheck / format clean. `npm audit --audit-level=moderate` returns 0 vulnerabilities.
+- Public surface impact: additive only — `clampEffortForModel` becomes a named export of `src/peers/grok.ts`. No runtime behavior change for existing callers; no breaking changes.
+- Operator directive 2026-05-07: shipping the anti-drift drivers I had flagged as "possible future work" after v2.18.4. Each driver targets a fix where silent regression would be hardest to notice in production telemetry: P1.1 (npm audit re-introduces moderate advisories), P1.3 (cancellation stops propagating to in-flight judges), P1.4 (judge call budget silently doubles), P2.1 (grok-4.3 starts 400ing on `xhigh`), P2.4 (per-peer accuracy resumes being uncomputable from raw event stream).
+
 ## [v02.18.04] - 2026-05-07
 
 **Patch — Codex external audit 2026-05-07 outcome: 6 surgical fixes (P1.1, P1.2, P1.3, P1.4, P2.1, P2.4).** Codex submitted a read-only audit of cross-review-v2 v2.18.3 with 4 P1 + 7 P2 findings; this ship lands the 6 verified-actionable items. Findings deferred or non-issue: P2.2 (sessions histórico — operational housekeeping, session_sweep exists), P2.3 (token noise — config option not bug), P2.5 (grok historical errors — passive log), P2.6 (deepseek cache pricing — forward optimization), P2.7 (publish.yml tag padding — Codex misread; regex accepts both formats, P3 polish).

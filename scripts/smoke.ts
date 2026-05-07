@@ -4250,6 +4250,279 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] caller_capability_tokens_test: PASS");
 }
 
+// v2.18.5 — anti-drift smoke drivers for v2.18.4 Codex audit close-out
+// fixes (operator directive 2026-05-07). v2.18.4 shipped the 6 fixes
+// without dedicated drivers for some of them; v2.18.5 closes the gap
+// with 5 anti-drift checks: P1.1 hono override grep, P1.3 AbortSignal
+// threading, P1.4 max_items_per_pass default 4, P2.1 clampEffortForModel
+// direct test, P2.4 consensus event shape (judge_peers + per_peer_verdict).
+
+// P1.1 anti-drift: package.json `overrides` includes `hono >=4.12.16`
+// to clear npm audit moderate advisories (GHSA-9vqf-7f2p-gf9v +
+// GHSA-69xw-7hcm-h432) via @modelcontextprotocol/sdk transitive. A
+// future Dependabot PR or refactor could strip the override; this
+// guard catches that. Same precedent as ip-address override since v2.18.1.
+{
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+  const pkgRaw = fsModule.readFileSync(pathModule.resolve(process.cwd(), "package.json"), "utf8");
+  const pkg = JSON.parse(pkgRaw) as {
+    overrides?: Record<string, string>;
+  };
+  const overrides = pkg.overrides;
+  assert.ok(
+    overrides && typeof overrides === "object",
+    "v2.18.5 / P1.1: package.json contains `overrides` block",
+  );
+  if (!overrides) {
+    throw new Error("unreachable: assert.ok above ensures overrides is set");
+  }
+  assert.ok(
+    overrides.hono,
+    "v2.18.5 / P1.1: package.json overrides includes `hono` key (anti-drift guard against accidental removal)",
+  );
+  assert.equal(
+    overrides.hono,
+    ">=4.12.16",
+    `v2.18.5 / P1.1: hono override pinned to ">=4.12.16" (got ${overrides.hono})`,
+  );
+  assert.ok(
+    overrides["ip-address"],
+    "v2.18.5 / P1.1: package.json overrides retains `ip-address` (the v2.18.1 precedent)",
+  );
+  console.log("[smoke] hono_override_anti_drift_test: PASS");
+}
+
+// P1.3 anti-drift: AbortSignal threading in orchestrator.ts. Pre-v2.18.4
+// `runEvidenceChecklistJudgeConsensusPass` hard-coded `signal: undefined`
+// and `runEvidenceChecklistJudgePass` omitted the field entirely, so
+// `session_cancel_job` could not abort judge calls mid-flight.
+// Source-level grep ensures the threading remains wired at the 4 sites
+// (2 judge-pass receivers + 2 autowire call-site emitters).
+{
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+  const orchSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+  // (1) `signal?: AbortSignal` declared in BOTH judge-pass param shapes.
+  const signalParamCount = (orchSrc.match(/signal\?:\s*AbortSignal/g) || []).length;
+  assert.ok(
+    signalParamCount >= 2,
+    `v2.18.5 / P1.3: signal?: AbortSignal declared on ≥2 judge-pass param shapes (consensus + single-peer); found ${signalParamCount}`,
+  );
+  // (2) Receivers thread `signal: params.signal` (consensus + single-peer).
+  const paramsSignalCount = (orchSrc.match(/signal:\s*params\.signal/g) || []).length;
+  assert.ok(
+    paramsSignalCount >= 2,
+    `v2.18.5 / P1.3: 'signal: params.signal' wired in ≥2 places (consensus + single-peer judge contexts); found ${paramsSignalCount}`,
+  );
+  // (3) Anti-drift negative: hard-coded `signal: undefined` is GONE
+  // from the judge-pass paths. We allow the literal in test fixtures
+  // elsewhere, but the consensus pass specifically must not have it.
+  const consensusBlockMatch = orchSrc.match(
+    /runEvidenceChecklistJudgeConsensusPass[\s\S]{0,8000}?\n\s\sasync runEvidenceChecklist/m,
+  );
+  if (consensusBlockMatch) {
+    assert.ok(
+      !/signal:\s*undefined/.test(consensusBlockMatch[0]),
+      "v2.18.5 / P1.3: consensus pass body has NO `signal: undefined` literal (was hardcoded pre-v2.18.4)",
+    );
+  }
+  // (4) Autowire call sites pass `signal: input.signal`. Expect ≥2
+  // (one for consensus, one for single-peer).
+  const inputSignalCount = (orchSrc.match(/signal:\s*input\.signal/g) || []).length;
+  assert.ok(
+    inputSignalCount >= 2,
+    `v2.18.5 / P1.3: 'signal: input.signal' wired at ≥2 autowire call sites (consensus + single-peer dispatch); found ${inputSignalCount}`,
+  );
+  console.log("[smoke] abort_signal_threading_anti_drift_test: PASS");
+}
+
+// P1.4 anti-drift: CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS
+// default lowered from 8 to 4 (halves worst-case round paid judge
+// calls with 4-peer consensus). A future "fix" reverting `?? "8"` or
+// `: 8` would silently restore the doubled budget exposure.
+{
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+  const configSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "config.ts"),
+    "utf8",
+  );
+  // (1) Source-level: env-var default fallback is "4" (string for parseInt).
+  assert.ok(
+    /process\.env\.CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS\s*\?\?\s*"4"/.test(configSrc),
+    'v2.18.5 / P1.4: env-var default fallback in config.ts is `?? "4"` (post-v2.18.4 cap reduction)',
+  );
+  // (2) Source-level: numeric fallback after Number.parseInt is also 4.
+  assert.ok(
+    /Number\.isFinite\(rawCap\)\s*&&\s*rawCap\s*!==\s*0\s*\?\s*rawCap\s*:\s*4/.test(configSrc),
+    "v2.18.5 / P1.4: numeric fallback `: 4` preserves the new default when parseInt returns 0/NaN",
+  );
+  // (3) Anti-drift negative: the legacy `?? "8"` literal must NOT
+  // appear on the same env-var line. We scope the check to the
+  // CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS reference.
+  assert.ok(
+    !/CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS\s*\?\?\s*"8"/.test(configSrc),
+    'v2.18.5 / P1.4: legacy `?? "8"` default is gone (would silently double the worst-case judge call budget)',
+  );
+  // (4) Behavioral: loadConfig() with env unset returns max_items_per_pass = 4.
+  delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS;
+  const { loadConfig: loadConfigFresh } = await import(
+    `../src/core/config.js?max_items_4=${Date.now()}`
+  );
+  const cfg4 = loadConfigFresh();
+  assert.equal(
+    cfg4.evidence_judge_autowire.max_items_per_pass,
+    4,
+    `v2.18.5 / P1.4: loadConfig() with env unset returns max_items_per_pass=4 (got ${cfg4.evidence_judge_autowire.max_items_per_pass})`,
+  );
+  console.log("[smoke] max_items_per_pass_default_anti_drift_test: PASS");
+}
+
+// P2.1 anti-drift: clampEffortForModel narrows xhigh/minimal → high
+// for grok-4.3 (which only accepts none|low|medium|high per xAI docs)
+// and passes through unchanged for grok-4.20-multi-agent (which keeps
+// the full xhigh-inclusive scale). The function is exported in v2.18.5
+// so the smoke can verify it directly without a request-shape stub.
+{
+  const { clampEffortForModel } = await import("../src/peers/grok.js");
+  // grok-4.3 — clamp xhigh/minimal to high; passthrough for accepted values.
+  assert.equal(
+    clampEffortForModel("xhigh", "grok-4.3"),
+    "high",
+    "v2.18.5 / P2.1: clampEffortForModel('xhigh', 'grok-4.3') → 'high' (xhigh not accepted on grok-4.3 per xAI docs)",
+  );
+  assert.equal(
+    clampEffortForModel("minimal", "grok-4.3"),
+    "high",
+    "v2.18.5 / P2.1: clampEffortForModel('minimal', 'grok-4.3') → 'high' (xAI does not accept 'minimal')",
+  );
+  assert.equal(
+    clampEffortForModel("high", "grok-4.3"),
+    "high",
+    "v2.18.5 / P2.1: clampEffortForModel('high', 'grok-4.3') → 'high' (passthrough)",
+  );
+  assert.equal(
+    clampEffortForModel("medium", "grok-4.3"),
+    "medium",
+    "v2.18.5 / P2.1: clampEffortForModel('medium', 'grok-4.3') → 'medium' (passthrough)",
+  );
+  assert.equal(
+    clampEffortForModel("low", "grok-4.3"),
+    "low",
+    "v2.18.5 / P2.1: clampEffortForModel('low', 'grok-4.3') → 'low' (passthrough)",
+  );
+  assert.equal(
+    clampEffortForModel("none", "grok-4.3"),
+    "none",
+    "v2.18.5 / P2.1: clampEffortForModel('none', 'grok-4.3') → 'none' (passthrough)",
+  );
+  // grok-4.20-multi-agent — full scale passthrough (no clamp).
+  assert.equal(
+    clampEffortForModel("xhigh", "grok-4.20-multi-agent"),
+    "xhigh",
+    "v2.18.5 / P2.1: clampEffortForModel('xhigh', 'grok-4.20-multi-agent') → 'xhigh' (multi-agent keeps full xhigh-inclusive range)",
+  );
+  assert.equal(
+    clampEffortForModel("high", "grok-4.20-multi-agent"),
+    "high",
+    "v2.18.5 / P2.1: clampEffortForModel('high', 'grok-4.20-multi-agent') → 'high' (passthrough)",
+  );
+  // Unknown models — pass through unchanged (no false clamping).
+  assert.equal(
+    clampEffortForModel("xhigh", "grok-future-model"),
+    "xhigh",
+    "v2.18.5 / P2.1: clampEffortForModel only clamps for grok-4.3; unknown models passthrough",
+  );
+  // Source-level: wired at exactly 2 responses.create call sites.
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+  const grokSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "peers", "grok.ts"),
+    "utf8",
+  );
+  const wireCount = (grokSrc.match(/effort:\s*clampEffortForModel\(/g) || []).length;
+  assert.equal(
+    wireCount,
+    2,
+    `v2.18.5 / P2.1: clampEffortForModel wired at exactly 2 responses.create call sites (non-streaming + streaming); found ${wireCount}`,
+  );
+  console.log("[smoke] clamp_effort_for_model_anti_drift_test: PASS");
+}
+
+// P2.4 anti-drift: consensus event payloads (active-mode
+// `evidence_checklist_addressed` + shadow-mode `shadow_decision`) emit
+// BOTH the legacy `judge_peer` (first peer, backward-compat) AND the
+// new `judge_peers` array + `per_peer_verdict` map. Pre-v2.18.4 only
+// `judge_peer: judge_peers[0]` was emitted, making per-peer accuracy
+// impossible to compute from the raw event stream. The 3 fields must
+// remain co-emitted at both event sites.
+{
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+  const orchSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+  // (1) Source-level: legacy `judge_peer: params.judge_peers[0]`
+  // appears at ≥2 sites (active addressed + shadow decision payloads).
+  const legacyCount = (orchSrc.match(/judge_peer:\s*params\.judge_peers\[0\]/g) || []).length;
+  assert.ok(
+    legacyCount >= 2,
+    `v2.18.5 / P2.4: legacy 'judge_peer: params.judge_peers[0]' co-emitted at ≥2 event sites for backward compat; found ${legacyCount}`,
+  );
+  // (2) Source-level: new `judge_peers: params.judge_peers` array
+  // emitted at ≥2 sites (the active addressed + shadow decision events).
+  const newArrayCount = (orchSrc.match(/judge_peers:\s*params\.judge_peers,/g) || []).length;
+  assert.ok(
+    newArrayCount >= 2,
+    `v2.18.5 / P2.4: new 'judge_peers: params.judge_peers' array emitted at ≥2 event sites; found ${newArrayCount}`,
+  );
+  // (3) Source-level: `per_peer_verdict: perPeerVerdict` map at ≥2 sites.
+  const perPeerCount = (orchSrc.match(/per_peer_verdict:\s*perPeerVerdict/g) || []).length;
+  assert.ok(
+    perPeerCount >= 2,
+    `v2.18.5 / P2.4: 'per_peer_verdict: perPeerVerdict' map emitted at ≥2 event sites; found ${perPeerCount}`,
+  );
+  // (4) Co-emission inside event payloads. The legacy site
+  // `judge_peer: params.judge_peers[0]` appears in 3 places: 2 are
+  // inside `this.emit({ ... data: { ... judge_peer: ... } })` event
+  // payloads (active-mode evidence_checklist_addressed + shadow-mode
+  // shadow_decision); 1 is a function-call argument to
+  // `markEvidenceItemAddressedByJudge` which only accepts the legacy
+  // field for persistence — NOT an event, so the co-emission contract
+  // doesn't apply there. We split the source by `this.emit(` boundaries
+  // and check only the emit blocks containing the legacy site.
+  const emitBlocks = orchSrc.split(/this\.emit\(\{/);
+  // Drop the head (text before the first emit). For each remaining
+  // segment, the block content runs until the matching `\}\)\s*;` which
+  // closes the emit call. We pick a generous window and only inspect
+  // the head portion likely containing the payload.
+  let coEmitChecked = 0;
+  for (const seg of emitBlocks.slice(1)) {
+    const headWindow = seg.slice(0, 2000);
+    if (/judge_peer:\s*params\.judge_peers\[0\]/.test(headWindow)) {
+      coEmitChecked += 1;
+      assert.ok(
+        /judge_peers:\s*params\.judge_peers/.test(headWindow),
+        "v2.18.5 / P2.4: every `this.emit({...judge_peer: params.judge_peers[0]...})` payload also emits `judge_peers: params.judge_peers` (co-emission contract)",
+      );
+      assert.ok(
+        /per_peer_verdict:\s*perPeerVerdict/.test(headWindow),
+        "v2.18.5 / P2.4: every `this.emit({...judge_peer: params.judge_peers[0]...})` payload also emits `per_peer_verdict: perPeerVerdict` (co-emission contract)",
+      );
+    }
+  }
+  assert.ok(
+    coEmitChecked >= 2,
+    `v2.18.5 / P2.4: at least 2 emit blocks contain the legacy judge_peer site (active addressed + shadow decision); checked ${coEmitChecked}`,
+  );
+  console.log("[smoke] consensus_event_per_peer_attribution_anti_drift_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight
