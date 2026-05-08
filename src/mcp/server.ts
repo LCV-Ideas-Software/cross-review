@@ -14,6 +14,13 @@ import { EventLog } from "../observability/logger.js";
 import { safeErrorMessage } from "../security/redact.js";
 
 const PeerSchema = z.enum(PEERS);
+// v2.18.6 / Gemini-API compat: `caller` accepts any peer + "operator".
+// Pre-v2.18.6 we used `CallerSchema`
+// which the MCP SDK serialized as `anyOf: [enum, const]` — Gemini API's
+// function-declaration validator rejects that shape. A flat enum is
+// runtime-equivalent (same accepted values, same TS inferred type) and
+// produces a clean single `enum` in the wire JSON Schema.
+const CallerSchema = z.enum([...PEERS, "operator"] as const);
 const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
 // v2.15.0 (item 2): per-call reasoning_effort overrides. Optional partial
 // record keyed by peer id; missing keys fall back to the global config
@@ -22,9 +29,25 @@ const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
 // in core/types.ts. Each adapter that consumes effort reads the override
 // from `PeerCallContext.reasoning_effort_override`. Adapters without an
 // effort knob (gemini today) silently ignore it.
+//
+// v2.18.6 / Gemini-API compat: pre-v2.18.6 this was `z.record(PeerSchema,
+// ReasoningEffortSchema).optional()`. The MCP SDK serialized that as
+// `{type:"object", propertyNames:{enum:[...]}, additionalProperties:{enum:[...]},
+// required:[<all 5 peers>]}` — non-standard OpenAPI 3.0 (Gemini API
+// rejects `propertyNames`) plus a phantom `required` listing all peers
+// despite the field being `.optional()`. Flattening to an explicit
+// `z.object({codex?, claude?, gemini?, deepseek?, grok?})` produces a
+// clean `{type:"object", properties:{...}}` accepted by every host;
+// runtime accepts the same `{codex:"high", claude:"low"}` shape.
 const ReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const ReasoningEffortOverridesSchema = z
-  .record(PeerSchema, ReasoningEffortSchema)
+  .object({
+    codex: ReasoningEffortSchema.optional(),
+    claude: ReasoningEffortSchema.optional(),
+    gemini: ReasoningEffortSchema.optional(),
+    deepseek: ReasoningEffortSchema.optional(),
+    grok: ReasoningEffortSchema.optional(),
+  })
   .optional()
   .describe(
     "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok); missing keys fall back to global config. Useful to dial down expensive peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents) for routine reviews without editing the 6 MCP configs.",
@@ -425,7 +448,7 @@ export async function main(): Promise<void> {
       title: "Server Info",
       description:
         "Return runtime information for the API-only Cross Review MCP server, including version, data directory and active security mode.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }).strict(),
+      inputSchema: z.object({ response_format: ResponseFormatSchema }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -514,7 +537,7 @@ export async function main(): Promise<void> {
       title: "Runtime Capabilities",
       description:
         "Return the stable cross-review-v2 runtime capability contract and active tool list.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }).strict(),
+      inputSchema: z.object({ response_format: ResponseFormatSchema }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -541,7 +564,7 @@ export async function main(): Promise<void> {
       title: "Probe Peers",
       description:
         "Query official provider APIs to discover available models for the current API keys, select the highest-capability documented model, and verify provider reachability.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }).strict(),
+      inputSchema: z.object({ response_format: ResponseFormatSchema }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -559,14 +582,12 @@ export async function main(): Promise<void> {
       title: "Initialize Session",
       description:
         "Create a durable cross-review session after probing provider availability and model selection. This does not call reviewer models yet.",
-      inputSchema: z
-        .object({
-          task: z.string().min(1).describe("Original task or artifact being reviewed."),
-          review_focus: ReviewFocusSchema,
-          caller: z.union([PeerSchema, z.literal("operator")]).default("operator"),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        task: z.string().min(1).describe("Original task or artifact being reviewed."),
+        review_focus: ReviewFocusSchema,
+        caller: CallerSchema.default("operator"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -589,7 +610,7 @@ export async function main(): Promise<void> {
     {
       title: "List Sessions",
       description: "List durable sessions saved under the local data directory.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }).strict(),
+      inputSchema: z.object({ response_format: ResponseFormatSchema }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -605,12 +626,10 @@ export async function main(): Promise<void> {
     {
       title: "Read Session",
       description: "Read a durable session meta.json by session_id.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -628,23 +647,21 @@ export async function main(): Promise<void> {
       title: "Ask Peers",
       description:
         "Run a real API review round against selected peers. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_V2_STUB=1.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema.optional(),
-          task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
-          review_focus: ReviewFocusSchema,
-          draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
-          caller: z.union([PeerSchema, z.literal("operator")]).default("operator"),
-          caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
-          peers: z
-            .array(PeerSchema)
-            .min(1)
-            .max(5)
-            .default([...PEERS] as PeerId[]),
-          reasoning_effort_overrides: ReasoningEffortOverridesSchema,
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema.optional(),
+        task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
+        review_focus: ReviewFocusSchema,
+        draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
+        caller: CallerSchema.default("operator"),
+        caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
+        peers: z
+          .array(PeerSchema)
+          .min(1)
+          .max(5)
+          .default([...PEERS] as PeerId[]),
+        reasoning_effort_overrides: ReasoningEffortOverridesSchema,
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -665,23 +682,21 @@ export async function main(): Promise<void> {
       title: "Start Review Round",
       description:
         "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema.optional(),
-          task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
-          review_focus: ReviewFocusSchema,
-          draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
-          caller: z.union([PeerSchema, z.literal("operator")]).default("operator"),
-          caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
-          peers: z
-            .array(PeerSchema)
-            .min(1)
-            .max(5)
-            .default([...PEERS] as PeerId[]),
-          reasoning_effort_overrides: ReasoningEffortOverridesSchema,
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema.optional(),
+        task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
+        review_focus: ReviewFocusSchema,
+        draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
+        caller: CallerSchema.default("operator"),
+        caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
+        peers: z
+          .array(PeerSchema)
+          .min(1)
+          .max(5)
+          .default([...PEERS] as PeerId[]),
+        reasoning_effort_overrides: ReasoningEffortOverridesSchema,
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -716,39 +731,37 @@ export async function main(): Promise<void> {
       title: "Run Until Unanimous",
       description:
         "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
-      inputSchema: z
-        .object({
-          task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
-          review_focus: ReviewFocusSchema,
-          initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-          // v2.11.0: lead_peer is now optional. When omitted with a peer
-          // caller, the relator lottery picks one. When omitted with
-          // operator caller, the orchestrator uses "codex" (v2.10 default
-          // preserved).
-          lead_peer: PeerSchema.optional(),
-          // v2.11.0: caller identifies the petitioner for the lottery.
-          // Default "operator" preserves v2.10.0 behavior (no exclusion).
-          caller: z.union([PeerSchema, z.literal("operator")]).default("operator"),
-          peers: z
-            .array(PeerSchema)
-            .min(1)
-            .max(5)
-            .default([...PEERS] as PeerId[]),
-          max_rounds: z.number().int().min(1).max(1000).default(8),
-          until_stopped: z.boolean().default(false),
-          max_cost_usd: z.number().positive().optional(),
-          reasoning_effort_overrides: ReasoningEffortOverridesSchema,
-          // v2.13.0: ship vs review intent. `ship` (default) — initial_draft
-          // is the artifact under refinement; lead_peer produces a NEW
-          // REVISED VERSION as prose. `review` — initial_draft is the
-          // review subject; lead may emit structured responses.
-          // Disambiguates the v2.12 lead_peer meta-review drift bug
-          // when the `task` field is phrased as a review act
-          // ("Review v..."). See session.lead_drift_detected event.
-          mode: z.enum(["ship", "review"]).default("ship"),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
+        review_focus: ReviewFocusSchema,
+        initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        // v2.11.0: lead_peer is now optional. When omitted with a peer
+        // caller, the relator lottery picks one. When omitted with
+        // operator caller, the orchestrator uses "codex" (v2.10 default
+        // preserved).
+        lead_peer: PeerSchema.optional(),
+        // v2.11.0: caller identifies the petitioner for the lottery.
+        // Default "operator" preserves v2.10.0 behavior (no exclusion).
+        caller: CallerSchema.default("operator"),
+        peers: z
+          .array(PeerSchema)
+          .min(1)
+          .max(5)
+          .default([...PEERS] as PeerId[]),
+        max_rounds: z.number().int().min(1).max(1000).default(8),
+        until_stopped: z.boolean().default(false),
+        max_cost_usd: z.number().positive().optional(),
+        reasoning_effort_overrides: ReasoningEffortOverridesSchema,
+        // v2.13.0: ship vs review intent. `ship` (default) — initial_draft
+        // is the artifact under refinement; lead_peer produces a NEW
+        // REVISED VERSION as prose. `review` — initial_draft is the
+        // review subject; lead may emit structured responses.
+        // Disambiguates the v2.12 lead_peer meta-review drift bug
+        // when the `task` field is phrased as a review act
+        // ("Review v..."). See session.lead_drift_detected event.
+        mode: z.enum(["ship", "review"]).default("ship"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -769,28 +782,26 @@ export async function main(): Promise<void> {
       title: "Start Until Unanimous",
       description:
         "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema.optional(),
-          task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
-          review_focus: ReviewFocusSchema,
-          initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-          lead_peer: PeerSchema.optional(),
-          caller: z.union([PeerSchema, z.literal("operator")]).default("operator"),
-          peers: z
-            .array(PeerSchema)
-            .min(1)
-            .max(5)
-            .default([...PEERS] as PeerId[]),
-          max_rounds: z.number().int().min(1).max(1000).default(8),
-          until_stopped: z.boolean().default(false),
-          max_cost_usd: z.number().positive().optional(),
-          reasoning_effort_overrides: ReasoningEffortOverridesSchema,
-          // v2.13.0: see run_until_unanimous for `mode` semantics.
-          mode: z.enum(["ship", "review"]).default("ship"),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema.optional(),
+        task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
+        review_focus: ReviewFocusSchema,
+        initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        lead_peer: PeerSchema.optional(),
+        caller: CallerSchema.default("operator"),
+        peers: z
+          .array(PeerSchema)
+          .min(1)
+          .max(5)
+          .default([...PEERS] as PeerId[]),
+        max_rounds: z.number().int().min(1).max(1000).default(8),
+        until_stopped: z.boolean().default(false),
+        max_cost_usd: z.number().positive().optional(),
+        reasoning_effort_overrides: ReasoningEffortOverridesSchema,
+        // v2.13.0: see run_until_unanimous for `mode` semantics.
+        mode: z.enum(["ship", "review"]).default("ship"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -835,14 +846,12 @@ export async function main(): Promise<void> {
       title: "Cancel Session Job",
       description:
         "Request cancellation for running background jobs in a durable session. Provider calls receive AbortSignal where the provider client supports it.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          job_id: SessionIdSchema.optional(),
-          reason: z.string().min(1).max(300).default("operator_requested"),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        job_id: SessionIdSchema.optional(),
+        reason: z.string().min(1).max(300).default("operator_requested"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -882,7 +891,7 @@ export async function main(): Promise<void> {
       title: "Recover Interrupted Sessions",
       description:
         "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }).strict(),
+      inputSchema: z.object({ response_format: ResponseFormatSchema }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -911,12 +920,10 @@ export async function main(): Promise<void> {
       title: "Poll Session",
       description:
         "Return durable session state and background job status without waiting for provider calls to finish.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -949,12 +956,10 @@ export async function main(): Promise<void> {
       title: "Session Metrics",
       description:
         "Return aggregate observability metrics across all sessions, or only one session when session_id is provided.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema.optional(),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema.optional(),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -972,12 +977,10 @@ export async function main(): Promise<void> {
       title: "Session Doctor",
       description:
         "Read-only operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks, Grok provider errors, and token-event noise. Does not modify sessions.",
-      inputSchema: z
-        .object({
-          limit: z.number().int().min(1).max(100).default(20),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        limit: z.number().int().min(1).max(100).default(20),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -995,13 +998,11 @@ export async function main(): Promise<void> {
       title: "Read Session Events",
       description:
         "Read durable session events from events.ndjson. Use since_seq to incrementally poll long-running sessions.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          since_seq: z.number().int().min(0).default(0),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        since_seq: z.number().int().min(0).default(0),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -1025,12 +1026,10 @@ export async function main(): Promise<void> {
       title: "Session Report",
       description:
         "Generate and save a Markdown report with convergence, peer decisions, failures, costs and latest events.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -1057,12 +1056,10 @@ export async function main(): Promise<void> {
       title: "Check Convergence",
       description:
         "Return the latest durable convergence state, health and scope for a saved session without calling providers.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -1095,16 +1092,14 @@ export async function main(): Promise<void> {
       title: "Attach Evidence",
       description:
         "Persist a text evidence artifact under a durable session evidence directory and register it in session metadata.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          label: z.string().min(1).max(120),
-          content: z.string().min(1).max(2_000_000),
-          content_type: z.string().min(1).max(120).default("text/plain"),
-          extension: z.string().min(1).max(16).default("txt"),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        label: z.string().min(1).max(120),
+        content: z.string().min(1).max(2_000_000),
+        content_type: z.string().min(1).max(120).default("text/plain"),
+        extension: z.string().min(1).max(16).default("txt"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1130,19 +1125,17 @@ export async function main(): Promise<void> {
       title: "Update Evidence Checklist Item Status",
       description:
         "Operator workflow for the v2.7.0 Evidence Broker. Mark a checklist item as 'satisfied' (operator confirms the ask was answered), 'deferred' (out of scope for this session), 'rejected' (ask itself is unfounded), or 'open' (retract a prior terminal status). The 'addressed' status is reserved for runtime auto-promotion (resurfacing inference) and cannot be set via this tool. Every transition is appended to evidence_status_history with the operator's optional note.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          item_id: z
-            .string()
-            .min(1)
-            .max(64)
-            .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
-          status: z.enum(["open", "satisfied", "deferred", "rejected"]),
-          note: z.string().min(1).max(2000).optional(),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        item_id: z
+          .string()
+          .min(1)
+          .max(64)
+          .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
+        status: z.enum(["open", "satisfied", "deferred", "rejected"]),
+        note: z.string().min(1).max(2000).optional(),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1166,27 +1159,25 @@ export async function main(): Promise<void> {
       title: "Run Evidence Judge Pass",
       description:
         "v2.9.0 LLM-based satisfied detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment (satisfied + confidence + rationale). The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal operator statuses (satisfied/deferred/rejected) and items already addressed by resurfacing-inference are NEVER touched. Items per pass are capped via CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS (default 8). Optional item_ids filter narrows the pass to specific items; omit for all-open. The judge_peer is the LLM that performs the judgment — choose any peer with a configured API key. v2.10.0: optional shadow_mode (default false) routes the pass through a non-mutating path that emits session.evidence_judge_pass.shadow_decision events without touching checklist state — operators use it to collect empirical judgment-quality data before relying on active mutation.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          judge_peer: PeerSchema,
-          draft: z.string().min(1).max(200_000),
-          item_ids: z
-            .array(
-              z
-                .string()
-                .min(1)
-                .max(64)
-                .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
-            )
-            .max(64)
-            .optional(),
-          round: z.number().int().min(1).max(10_000).optional(),
-          review_focus: z.string().min(1).max(4000).optional(),
-          shadow_mode: z.boolean().optional(),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        judge_peer: PeerSchema,
+        draft: z.string().min(1).max(200_000),
+        item_ids: z
+          .array(
+            z
+              .string()
+              .min(1)
+              .max(64)
+              .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
+          )
+          .max(64)
+          .optional(),
+        round: z.number().int().min(1).max(10_000).optional(),
+        review_focus: z.string().min(1).max(4000).optional(),
+        shadow_mode: z.boolean().optional(),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1231,27 +1222,25 @@ export async function main(): Promise<void> {
       title: "Run Evidence Judge Consensus Pass",
       description:
         "v2.14.0 — multi-peer consensus judge pass. Fires `judgeEvidenceAsk` against ALL `judge_peers` in parallel for each open checklist item; promotes (active mode) ONLY when all peers return verified-satisfied with non-empty rationale and zero parser_warnings. Disagreement leaves the item open with `reason=consensus_disagreement` and `per_peer` details. Shadow mode emits `session.evidence_judge_pass.shadow_decision` events with `consensus_peers` so the precision report tool sees consensus runs in its corpus. Requires at least 2 judge_peers; single-peer callers should use `session_evidence_judge_pass`. All judge_peers must be enabled (CROSS_REVIEW_V2_PEER_<NAME>=on).",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          judge_peers: z.array(PeerSchema).min(2).max(5),
-          draft: z.string().min(1).max(200_000),
-          item_ids: z
-            .array(
-              z
-                .string()
-                .min(1)
-                .max(64)
-                .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
-            )
-            .max(64)
-            .optional(),
-          round: z.number().int().min(1).max(10_000).optional(),
-          review_focus: z.string().min(1).max(4_000).optional(),
-          shadow_mode: z.boolean().optional(),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        judge_peers: z.array(PeerSchema).min(2).max(5),
+        draft: z.string().min(1).max(200_000),
+        item_ids: z
+          .array(
+            z
+              .string()
+              .min(1)
+              .max(64)
+              .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
+          )
+          .max(64)
+          .optional(),
+        round: z.number().int().min(1).max(10_000).optional(),
+        review_focus: z.string().min(1).max(4_000).optional(),
+        shadow_mode: z.boolean().optional(),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1296,14 +1285,12 @@ export async function main(): Promise<void> {
       title: "Judgment Precision Report",
       description:
         "v2.14.0 — compute precision/recall/F1 of the shadow judge against the empirical ground truth (whether peers raised the same ask in a subsequent round). Walks `session.evidence_judge_pass.shadow_decision` events across all sessions (or a single session via session_id, or filtered by judge peer / since timestamp), correlates each decision with the subsequent evidence_checklist resurfacing behavior, and returns per-peer TP/FP/TN/FN counts plus precision/recall/F1. Decisions whose item.last_round equals the judge round AND no later round exists are excluded as 'no ground truth' (we cannot tell if the ask would have come back). Operator uses this to decide whether to flip a peer from shadow to active mode (item 2 / v2.13).",
-      inputSchema: z
-        .object({
-          peer: PeerSchema.optional(),
-          since: z.string().min(1).max(64).optional(),
-          session_id: SessionIdSchema.optional(),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        peer: PeerSchema.optional(),
+        since: z.string().min(1).max(64).optional(),
+        session_id: SessionIdSchema.optional(),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -1335,16 +1322,14 @@ export async function main(): Promise<void> {
       title: "Contest Verdict",
       description:
         "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. Per the cross-review-v2 tribunal-colegiado model: caller READY (acata) → session_finalize as usual; caller NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          reason: z.string().min(1).max(4_000),
-          new_task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
-          new_initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-          new_caller: z.union([PeerSchema, z.literal("operator")]).optional(),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        reason: z.string().min(1).max(4_000),
+        new_task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
+        new_initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        new_caller: CallerSchema.optional(),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1378,7 +1363,7 @@ export async function main(): Promise<void> {
       title: "Regenerate Caller Tokens (F1)",
       description:
         "v2.18.0 / F1 (caller capability tokens). Rotate the per-host secret tokens used by the F1 identity gate. OVERWRITES the existing host-tokens.json file (default location: <data_dir>/host-tokens.json; override via CROSS_REVIEW_TOKENS_FILE env var) with freshly generated 256-bit hex secrets — one per agent (codex, claude, gemini, deepseek, grok). Returns the new map so the operator can copy each per-agent secret into the corresponding MCP host config as CROSS_REVIEW_CALLER_TOKEN. AFTER calling this tool, every MCP host carrying a stale token will start being rejected with identity_forgery_blocked: token does not match any known agent. The operator MUST redistribute the secrets and reload the affected hosts. Use cases: (a) initial deployment after first-boot generation; (b) suspected token leak; (c) periodic rotation. The tool has no input parameters and no auth gate — local filesystem access already implies the ability to read or rewrite host-tokens.json directly, so the MCP surface adds no new exposure.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }).strict(),
+      inputSchema: z.object({ response_format: ResponseFormatSchema }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1423,14 +1408,12 @@ export async function main(): Promise<void> {
       title: "Escalate To Operator",
       description:
         "Record a durable operator escalation for sessions that require human judgment or external intervention.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          reason: z.string().min(1).max(1000),
-          severity: z.enum(["info", "warning", "critical"]).default("warning"),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        reason: z.string().min(1).max(1000),
+        severity: z.enum(["info", "warning", "critical"]).default("warning"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1451,14 +1434,12 @@ export async function main(): Promise<void> {
       title: "Sweep Idle Sessions",
       description:
         "Finalize unfinished sessions whose metadata has been idle for at least 24 hours.",
-      inputSchema: z
-        .object({
-          idle_minutes: z.number().min(1440).max(100_000).default(1440),
-          outcome: z.enum(["aborted", "max-rounds"]).default("aborted"),
-          reason: z.string().min(1).max(200).default("stale"),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        idle_minutes: z.number().min(1440).max(100_000).default(1440),
+        outcome: z.enum(["aborted", "max-rounds"]).default("aborted"),
+        reason: z.string().min(1).max(200).default("stale"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1479,14 +1460,12 @@ export async function main(): Promise<void> {
       title: "Finalize Session",
       description:
         "Mark a durable session as converged, aborted or max-rounds with an optional reason.",
-      inputSchema: z
-        .object({
-          session_id: SessionIdSchema,
-          outcome: z.enum(["converged", "aborted", "max-rounds"]),
-          reason: z.string().max(200).optional(),
-          response_format: ResponseFormatSchema,
-        })
-        .strict(),
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        outcome: z.enum(["converged", "aborted", "max-rounds"]),
+        reason: z.string().max(200).optional(),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
