@@ -7,6 +7,14 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.18.08] - 2026-05-09
+
+**Patch — `site/index.html` GitHub Sponsors iframe replaced with styled dark link card.** Companion ship coordenado Phase 3 (12 repos no batch). Substitui `<iframe>` cross-origin com fundo branco (que destoava do dark theme) por `<a class="github-sponsor-card">` link card dark navy com ❤ pink + título + meta cyan + seta animada. Card movido para DEPOIS dos botões (lcv.dev/sponsor primário, GitHub Sponsors alternativa secundária). Sem mudança no tarball npm publicado.
+
+### Alterado
+
+- **`site/index.html`** — iframe → link card dark + reordenação (card abaixo dos botões).
+
 ## [v02.18.07] - 2026-05-09
 
 **Patch — `site/index.html` visual identity refresh.** Página GitHub Pages reskin pra nova identidade dark-first navy/cyan da org LCV (paleta `#050b18`/`#38bdf8`/`#34d399`, gradientes radiais, glow shadows, gradient text no h1). Companion ship coordenado com cross-review-v1 1.12.9, deepseek-cli 0.3.1, grok-cli 1.6.2, sponsor-motor APP v01.02.02 e `.github-org/site` (root + /sponsor). Sem mudança no tarball npm (`site/` não está em `files[]`); apenas a página servida via GitHub Pages muda.
