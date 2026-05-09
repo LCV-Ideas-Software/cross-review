@@ -7,9 +7,14 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.18.07] - 2026-05-09
+
+**Patch — `site/index.html` visual identity refresh.** Página GitHub Pages reskin pra nova identidade dark-first navy/cyan da org LCV (paleta `#050b18`/`#38bdf8`/`#34d399`, gradientes radiais, glow shadows, gradient text no h1). Companion ship coordenado com cross-review-v1 1.12.9, deepseek-cli 0.3.1, grok-cli 1.6.2, sponsor-motor APP v01.02.02 e `.github-org/site` (root + /sponsor). Sem mudança no tarball npm (`site/` não está em `files[]`); apenas a página servida via GitHub Pages muda.
+
 ### Alterado
 
-- site/index.html deixou de carregar o widget/SDK SumUp e passou a encaminhar apoios para https://www.lcv.dev/sponsor?project=cross-review-v2, com backend dedicado sponsor-motor via Mercado Pago Checkout Pro.
+- **`site/index.html`** — substituído `<style>` block por sistema de tokens dark-first navy/cyan; HTML/copy não alterados.
+- Entrada [Unreleased] anterior (remoção do widget SumUp em `site/index.html`) consolidada aqui — o widget já havia sido removido em ships anteriores; entrada órfã de [Unreleased] cleanup.
 
 ## [v02.18.06] - 2026-05-07
 
