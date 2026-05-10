@@ -2892,28 +2892,52 @@ export class CrossReviewOrchestrator {
           },
         );
         this.store.saveGeneration(session.session_id, round, generation, "revision");
-        // v2.13.0: drift detection on revision path. Unlike the initial
-        // draft path (no prior draft), here we preserve `draft` as the
-        // fallback for the next round when drift is detected. Two
-        // consecutive drifts abort the session; otherwise the count
-        // resets so a single drift does not poison subsequent rounds.
-        if (sessionMode === "ship" && detectLeadDrift(generation.text)) {
+        // v2.23.0: empty-text degeneracy detection. Provider-side parser
+        // diagnostics (e.g. Anthropic extended-thinking returning only
+        // `thinking`/`redacted_thinking` blocks with no final `text` block,
+        // see src/peers/text.ts `parseAnthropicContent`) can surface as
+        // `generation.text === ""` despite output_tokens > 0 and a non-zero
+        // bill. Sessão 8187f5a8 (2026-05-10, maestro-app v0.5.20 review)
+        // hit exactly this on R2: round-2-claude-revision.json has
+        // text="" but output_tokens=1598 and cost=$0.082, which the
+        // orchestrator pre-v2.23.0 silently promoted to draft → round-3
+        // peer dispatch ran against an empty `Draft Or Solution Under
+        // Review:` block, burning a third round of provider calls before
+        // max_rounds. Treat empty text the same as drift: preserve prior
+        // draft, increment consecutive-drift count, emit dedicated event.
+        const emptyText = generation.text.trim() === "";
+        const driftDetected = sessionMode === "ship" && detectLeadDrift(generation.text);
+        if (emptyText || driftDetected) {
           consecutiveLeadDrifts += 1;
+          const driftReason = emptyText ? "empty_revision" : "structured_review";
+          const parserWarnings = generation.parser_warnings ?? [];
           this.emit({
-            type: "session.lead_drift_detected",
+            type: emptyText ? "session.lead_empty_revision" : "session.lead_drift_detected",
             session_id: session.session_id,
             round: round + 1,
             peer: leadPeer,
-            message: `Lead ${leadPeer} emitted a structured peer-review response instead of a revised draft (consecutive drift count: ${consecutiveLeadDrifts}). Preserving prior draft for next round.`,
+            message: emptyText
+              ? `Lead ${leadPeer} returned empty revision text despite ${
+                  generation.usage?.output_tokens ?? "unknown"
+                } output tokens billed (consecutive drift count: ${consecutiveLeadDrifts}; parser_warnings: ${
+                  parserWarnings.length > 0 ? parserWarnings.join(",") : "none"
+                }). Preserving prior draft for next round; do NOT dispatch peer calls against an empty draft.`
+              : `Lead ${leadPeer} emitted a structured peer-review response instead of a revised draft (consecutive drift count: ${consecutiveLeadDrifts}). Preserving prior draft for next round.`,
             data: {
               lead_peer: leadPeer,
               round_kind: "revision",
               consecutive_drifts: consecutiveLeadDrifts,
               first_chars: generation.text.slice(0, 100),
+              drift_reason: driftReason,
+              parser_warnings: parserWarnings,
             },
           });
           if (consecutiveLeadDrifts >= 2) {
-            this.store.finalize(session.session_id, "aborted", "lead_meta_review_drift");
+            this.store.finalize(
+              session.session_id,
+              "aborted",
+              emptyText ? "lead_empty_revision_repeated" : "lead_meta_review_drift",
+            );
             return {
               session: this.store.read(session.session_id),
               final_text: draft,

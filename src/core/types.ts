@@ -160,6 +160,15 @@ export interface GenerationResult {
   latency_ms: number;
   attempts: number;
   fallback?: FallbackEvent;
+  // v2.23.0: parser-side diagnostics produced by provider adapters when the
+  // response payload was technically valid (tokens billed) but yielded a
+  // text field that the orchestrator cannot use as next-round draft. The
+  // canonical case is Claude Opus with extended thinking returning a
+  // content array composed only of thinking/redacted_thinking blocks
+  // and no final text block — see "anthropic_thinking_only_no_text_block".
+  // The relator-revision path in CrossReviewOrchestrator inspects this
+  // field before promoting `generation.text` to the next-round draft.
+  parser_warnings?: string[];
 }
 
 export interface FallbackEvent {

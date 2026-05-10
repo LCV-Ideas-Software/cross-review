@@ -282,16 +282,23 @@ export abstract class BasePeerAdapter {
     started: number;
     attempts: number;
     modelReported?: string;
+    // v2.23.0: provider-side parser diagnostics (e.g. Anthropic
+    // thinking-only response with no final text block). Merged AFTER
+    // status-parser warnings so the model-mismatch warning still
+    // appears last.
+    extraParserWarnings?: string[];
   }): PeerResult {
     const parsed = parsePeerStatus(params.text);
     const modelMatch = this.modelMatches(params.modelReported);
+    const extra = params.extraParserWarnings ?? [];
+    const baseWarnings = [...parsed.parser_warnings, ...extra];
     const parserWarnings =
       modelMatch === false
         ? [
-            ...parsed.parser_warnings,
+            ...baseWarnings,
             `reported model ${params.modelReported} did not match requested model ${this.model}`,
           ]
-        : parsed.parser_warnings;
+        : baseWarnings;
     return {
       peer: this.id,
       provider: this.provider,
@@ -319,8 +326,15 @@ export abstract class BasePeerAdapter {
     started: number;
     attempts: number;
     modelReported?: string;
+    // v2.23.0: provider-side parser diagnostics propagated to the
+    // GenerationResult so the relator-revision path in the orchestrator
+    // can detect provider degenerate outputs (e.g. Anthropic extended
+    // thinking returning only thinking blocks with no text block) and
+    // refuse to promote an empty `text` to next-round draft.
+    extraParserWarnings?: string[];
   }): GenerationResult {
     const modelMatch = this.modelMatches(params.modelReported);
+    const extra = params.extraParserWarnings ?? [];
     return {
       peer: this.id,
       provider: this.provider,
@@ -333,6 +347,7 @@ export abstract class BasePeerAdapter {
       cost: estimateCost(this.config, this.id, params.usage),
       latency_ms: Date.now() - params.started,
       attempts: params.attempts,
+      parser_warnings: extra.length > 0 ? extra : undefined,
     };
   }
 

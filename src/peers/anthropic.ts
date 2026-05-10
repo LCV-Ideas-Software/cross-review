@@ -30,7 +30,7 @@ import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, STREAM_TEXT_MAX_BYTES, StreamBufferOverflowError } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";
-import { textFromAnthropicContent, userPrompt } from "./text.js";
+import { parseAnthropicContent, userPrompt } from "./text.js";
 
 type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -230,25 +230,28 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             tokenStream.append(delta);
           });
           const message = await stream.finalMessage();
-          const text = textFromAnthropicContent(message.content);
-          tokenStream.complete(text.length);
+          const parsed = parseAnthropicContent(message.content);
+          tokenStream.complete(parsed.text.length);
           return this.resultFromText({
-            text,
+            text: parsed.text,
             raw: { streamed: true, provider: this.provider, model: message.model },
             usage: usageFromAnthropic(message.usage),
             started,
             attempts: attempt,
             modelReported: message.model,
+            extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
           });
         }
         const message = await this.client().messages.create(body, { signal: context.signal });
+        const parsed = parseAnthropicContent(message.content);
         return this.resultFromText({
-          text: textFromAnthropicContent(message.content),
+          text: parsed.text,
           raw: message,
           usage: usageFromAnthropic(message.usage),
           started,
           attempts: attempt,
           modelReported: message.model,
+          extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
         });
       },
       (error, attempt) =>
@@ -297,25 +300,28 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             tokenStream.append(delta);
           });
           const message = await stream.finalMessage();
-          const text = textFromAnthropicContent(message.content);
-          tokenStream.complete(text.length);
+          const parsed = parseAnthropicContent(message.content);
+          tokenStream.complete(parsed.text.length);
           return this.generationFromText({
-            text,
+            text: parsed.text,
             raw: { streamed: true, provider: this.provider, model: message.model },
             usage: usageFromAnthropic(message.usage),
             started,
             attempts: attempt,
             modelReported: message.model,
+            extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
           });
         }
         const message = await this.client().messages.create(body, { signal: context.signal });
+        const parsed = parseAnthropicContent(message.content);
         return this.generationFromText({
-          text: textFromAnthropicContent(message.content),
+          text: parsed.text,
           raw: message,
           usage: usageFromAnthropic(message.usage),
           started,
           attempts: attempt,
           modelReported: message.model,
+          extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
         });
       },
       (error, attempt) =>

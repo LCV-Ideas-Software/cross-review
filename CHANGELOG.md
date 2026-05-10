@@ -7,6 +7,27 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.23.00] - 2026-05-10
+
+**Patch — Anthropic empty-revision degenerate path detection.** Empirical bug discovered while triaging maestro-app v0.5.20 review session `8187f5a8-6e9b-4e05-a93d-acbaed2f46f8` (2026-05-10): the Anthropic adapter silently produced `text: ""` when Claude Opus extended thinking returned a content array composed only of `thinking`/`redacted_thinking` blocks with no final `text` block. The orchestrator then promoted that empty string to the next-round draft, dispatching 3 peer calls against a `Draft Or Solution Under Review:` block that contained nothing. Wasted ~$0.21 USD on R3 before max_rounds aborted. v2.23.0 adds three defensive layers; no public surface change for any caller passing valid arguments.
+
+### Corrigido
+
+- **`src/peers/text.ts`** — new `parseAnthropicContent(content)` returns `{ text, parser_warning? }` instead of the lossy `string` shape used by the legacy `textFromAnthropicContent`. Detects two degenerate cases: thinking-only content (`anthropic_thinking_only_no_text_block`) and empty/missing text blocks (`anthropic_empty_text_blocks`). The legacy helper is retained as a thin compatibility shim — new code MUST call `parseAnthropicContent` so the warning can flow downstream.
+- **`src/peers/anthropic.ts`** — all 4 call sites (streamed/non-streamed × call/generate) migrated from `textFromAnthropicContent` to `parseAnthropicContent`. The optional `parser_warning` is forwarded via the new `extraParserWarnings` parameter on `BasePeerAdapter.resultFromText` / `generationFromText`, surfacing in `PeerResult.parser_warnings` and `GenerationResult.parser_warnings`.
+- **`src/core/orchestrator.ts`** — relator-revision branch now treats `generation.text.trim() === ""` the same as `detectLeadDrift`: preserve prior draft, increment `consecutiveLeadDrifts`, emit dedicated `session.lead_empty_revision` event (data includes `parser_warnings`, `consecutive_drifts`, billed `output_tokens`), and finalize with `lead_empty_revision_repeated` when the cap is hit. Pre-v2.23.0 the empty string was promoted unconditionally to next-round draft.
+- **`src/core/types.ts`** — `GenerationResult` interface gains optional `parser_warnings?: string[]` so adapter-side parser diagnostics can flow to the orchestrator.
+
+### Adicionado
+
+- **`anthropic_empty_text_detection_test`** smoke driver (`scripts/smoke.ts`). 4 invariants: (1) `parseAnthropicContent` returns the right `{text, parser_warning}` pair for normal text / thinking-only / empty-text-blocks / empty-array shapes; (2) `src/peers/anthropic.ts` calls `parseAnthropicContent` at all 4 sites and references `textFromAnthropicContent` 0 times (no regression to lossy helper); (3) `orchestrator.ts` contains the `generation.text.trim() === ""` check, emits `session.lead_empty_revision`, and uses `lead_empty_revision_repeated` as finalize reason; (4) `GenerationResult` interface declares `parser_warnings?: string[]`.
+
+### Notas técnicas
+
+- **Compatibilidade pública 100%** para callers passando argumentos válidos. The legacy `textFromAnthropicContent` export is preserved as a backward-compat shim returning only the `text` field; any external consumer that imported it continues to work, but new internal code uses `parseAnthropicContent` to capture the warning.
+- **Behavior change is failure-mode only**: when Claude (or future Anthropic-compatible providers) returns a thinking-only response in the relator-revision path, v2.23.0 preserves the prior draft instead of dispatching peer calls against an empty draft. Pre-v2.23.0 would burn one full round of provider cost before the next iteration even had a chance to catch it via meta-review drift detection (which only fires on `detectLeadDrift`, not on empty text).
+- **No event-stream contract break**: `session.lead_drift_detected` continues to fire for the structured-review drift case. The new `session.lead_empty_revision` is additive — observers that don't subscribe to it are unaffected.
+
 ## [v02.22.00] - 2026-05-10
 
 ### Adicionado

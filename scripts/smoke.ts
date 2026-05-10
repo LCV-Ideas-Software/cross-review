@@ -4898,6 +4898,124 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] cache_disable_kill_switch_test: PASS");
 }
 
+// v2.23.0 — anthropic_empty_text_detection_test. Pins three invariants of
+// the empty-revision degenerate path:
+//
+// (1) `parseAnthropicContent` returns the correct {text, parser_warning}
+//     pair for three input shapes:
+//     - normal text block(s) → { text: "...", parser_warning: undefined }
+//     - thinking-only content (no text block) → { text: "",
+//       parser_warning: "anthropic_thinking_only_no_text_block" }
+//     - non-empty content array with empty/missing text blocks (no
+//       thinking blocks either) → { text: "",
+//       parser_warning: "anthropic_empty_text_blocks" }
+//     - empty content array → { text: "", parser_warning: undefined }
+//       (no warning when content was simply absent — distinguishes from
+//       a degenerate response that actually billed tokens)
+// (2) Source-level: `src/peers/anthropic.ts` uses `parseAnthropicContent`
+//     (NOT the legacy `textFromAnthropicContent`) at all 4 call sites
+//     (streamed/non-streamed × call/generate). Anti-drift guard against a
+//     refactor that silently reverts to the lossy helper.
+// (3) Source-level: `src/core/orchestrator.ts` relator-revision branch
+//     treats `generation.text.trim() === ""` as drift — preserves prior
+//     draft via the `else { draft = generation.text }` skip, increments
+//     `consecutiveLeadDrifts`, and emits `session.lead_empty_revision`.
+// (4) Source-level: `GenerationResult` interface in `src/core/types.ts`
+//     exposes `parser_warnings?: string[]` so the orchestrator can read
+//     provider-side warnings.
+//
+// Root cause being defended against: sessão 8187f5a8 (2026-05-10,
+// maestro-app v0.5.20 review) burned ~$0.21 USD because the Anthropic
+// adapter silently coerced Claude Opus extended-thinking-only responses
+// to text="" and the orchestrator promoted that empty string to the
+// next-round draft. See round-2-claude-revision.json (text="" with
+// output_tokens=1598) and the 0-byte round-3-draft.md in that session
+// for the empirical trace.
+{
+  const { parseAnthropicContent } = await import("../src/peers/text.js");
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+
+  // (1) Pure-function invariants on parseAnthropicContent.
+  const happy = parseAnthropicContent([
+    { type: "text", text: "Hello world" },
+    { type: "text", text: "Continuation" },
+  ]);
+  assert.strictEqual(happy.text, "Hello world\nContinuation");
+  assert.strictEqual(happy.parser_warning, undefined);
+
+  const thinkingOnly = parseAnthropicContent([
+    { type: "thinking", text: "internal reasoning would live here" },
+  ] as Array<{ type: string; text?: string }>);
+  assert.strictEqual(thinkingOnly.text, "");
+  assert.strictEqual(thinkingOnly.parser_warning, "anthropic_thinking_only_no_text_block");
+
+  const emptyTextBlocks = parseAnthropicContent([
+    { type: "text", text: "" },
+    { type: "tool_use" },
+  ] as Array<{ type: string; text?: string }>);
+  assert.strictEqual(emptyTextBlocks.text, "");
+  assert.strictEqual(emptyTextBlocks.parser_warning, "anthropic_empty_text_blocks");
+
+  const empty = parseAnthropicContent([]);
+  assert.strictEqual(empty.text, "");
+  assert.strictEqual(empty.parser_warning, undefined);
+
+  // (2) Source-level: anthropic.ts uses parseAnthropicContent at all 4
+  // sites (streamed/non-streamed × call/generate). Allow zero references
+  // to the legacy textFromAnthropicContent (the shim still exists for
+  // hypothetical external consumers but the adapter itself MUST use
+  // the new helper to surface warnings).
+  const anthropicSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "peers", "anthropic.ts"),
+    "utf8",
+  );
+  const parseCount = (anthropicSrc.match(/parseAnthropicContent\(/g) || []).length;
+  assert.ok(
+    parseCount >= 4,
+    `v2.23.0 / anthropic_empty_text_detection: parseAnthropicContent must be called at all 4 adapter sites (streamed+non-streamed × call+generate); found ${parseCount}`,
+  );
+  const legacyCount = (anthropicSrc.match(/textFromAnthropicContent\(/g) || []).length;
+  assert.strictEqual(
+    legacyCount,
+    0,
+    "v2.23.0 / anthropic_empty_text_detection: legacy textFromAnthropicContent must NOT be called from anthropic.ts (use parseAnthropicContent so parser warnings flow through)",
+  );
+
+  // (3) Source-level: orchestrator's relator-revision branch treats
+  // empty text as drift. We check for the canonical sentinel strings.
+  const orchSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+  assert.ok(
+    /generation\.text\.trim\(\)\s*===\s*""/.test(orchSrc),
+    'v2.23.0 / anthropic_empty_text_detection: orchestrator must check `generation.text.trim() === ""` in the relator-revision path',
+  );
+  assert.ok(
+    /session\.lead_empty_revision/.test(orchSrc),
+    "v2.23.0 / anthropic_empty_text_detection: orchestrator must emit `session.lead_empty_revision` for the empty-text drift case",
+  );
+  assert.ok(
+    /lead_empty_revision_repeated/.test(orchSrc),
+    "v2.23.0 / anthropic_empty_text_detection: orchestrator must use `lead_empty_revision_repeated` as the finalize reason when empty revision repeats past the cap",
+  );
+
+  // (4) Source-level: GenerationResult.parser_warnings declared in types.ts.
+  const typesSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "types.ts"),
+    "utf8",
+  );
+  assert.ok(
+    /interface GenerationResult\s*\{[\s\S]*?parser_warnings\?:\s*string\[\];?[\s\S]*?\}/.test(
+      typesSrc,
+    ),
+    "v2.23.0 / anthropic_empty_text_detection: GenerationResult must declare `parser_warnings?: string[]`",
+  );
+
+  console.log("[smoke] anthropic_empty_text_detection_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight
