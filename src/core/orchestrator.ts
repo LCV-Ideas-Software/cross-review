@@ -1546,6 +1546,41 @@ export class CrossReviewOrchestrator {
     }
   }
 
+  // v2.22.0 (B.P3): emit a one-shot `session.budget_warning` event when
+  // cumulative session cost crosses 75% of `cost_ceiling_usd`. Idempotent
+  // per session via `meta.budget_warning_emitted`. No-op when the
+  // session has no ceiling, when cumulative cost is below threshold, or
+  // when the warning has already fired. Best-effort writeback — manifest
+  // failures should not break the review loop.
+  private checkBudgetWarning(sessionId: string, round: number): void {
+    try {
+      const meta = this.store.read(sessionId);
+      const ceiling = meta.cost_ceiling_usd;
+      if (typeof ceiling !== "number" || ceiling <= 0) return;
+      if (meta.budget_warning_emitted === true) return;
+      const cumulative = meta.totals.cost.total_cost ?? 0;
+      const threshold = ceiling * 0.75;
+      if (cumulative < threshold) return;
+      // Persist the one-shot guard FIRST so an emit-throw cannot cause
+      // re-emission on a retry; we accept "warning persisted but emit
+      // observably failed" as the safer drift mode.
+      this.store.markBudgetWarningEmitted(sessionId);
+      this.emit({
+        type: "session.budget_warning",
+        session_id: sessionId,
+        round,
+        message: `Cumulative session cost crossed 75% of ceiling.`,
+        data: {
+          cumulative_cost_usd: cumulative,
+          ceiling_usd: ceiling,
+          percent_used: cumulative / ceiling,
+        },
+      });
+    } catch {
+      // best-effort
+    }
+  }
+
   private async callPeerForReview(
     adapter: PeerAdapter,
     prompt: string,
@@ -2316,6 +2351,10 @@ export class CrossReviewOrchestrator {
       convergence_scope: convergenceScope,
       started_at: startedAt,
     });
+    // v2.22.0 (B.P3): emit `session.budget_warning` if cumulative cost
+    // crossed 75% of the session ceiling on this round. One-shot;
+    // subsequent rounds in the same session won't re-emit.
+    this.checkBudgetWarning(session.session_id, round.round);
     // v2.7.0 Evidence Broker: aggregate NEEDS_EVIDENCE asks from this
     // round into the session-level checklist. Each peer that returned
     // NEEDS_EVIDENCE with `caller_requests` contributes its asks; the

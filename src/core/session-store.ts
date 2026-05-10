@@ -243,6 +243,10 @@ export class SessionStore {
     reviewFocus?: string,
   ): SessionMeta {
     const session_id = crypto.randomUUID();
+    // v2.22.0 (B.P3): snapshot the cost ceiling at session_init time so
+    // budget pressure analysis is decoupled from later env-var mutation.
+    // null when the operator runs without a session-level cost cap.
+    const ceiling = this.config.budget.max_session_cost_usd;
     const meta: SessionMeta = {
       session_id,
       version: this.config.version,
@@ -262,6 +266,9 @@ export class SessionStore {
         usage: {},
         cost: { currency: "USD", estimated: false, source: "unknown-rate" },
       },
+      cost_ceiling_usd: typeof ceiling === "number" && ceiling > 0 ? ceiling : null,
+      costs_per_round: [],
+      budget_warning_emitted: false,
     };
     fs.mkdirSync(path.join(this.sessionDir(session_id), "agent-runs"), { recursive: true });
     writeJson(this.metaPath(session_id), meta);
@@ -519,8 +526,29 @@ export class SessionStore {
       };
       meta.updated_at = now();
       meta.totals = this.totalsFor(meta);
+      // v2.22.0 (B.P3): append per-round cost. Sum of peer.cost.total_cost
+      // across this round's peers. Coerced to 0 when adapters didn't
+      // surface a cost (stub paths, error rounds). Read AFTER totalsFor
+      // so the new round's peer costs are already counted by the merger,
+      // but we recompute the round-local sum independently to avoid
+      // diff-based drift if a peer's cost changed in a retry loop.
+      const roundCost = params.peers.reduce((sum, peer) => sum + (peer.cost?.total_cost ?? 0), 0);
+      meta.costs_per_round = [...(meta.costs_per_round ?? []), roundCost];
       writeJson(this.metaPath(sessionId), meta);
       return round;
+    });
+  }
+
+  // v2.22.0 (B.P3): one-shot guard for `session.budget_warning` emit
+  // idempotency. Persisted in meta.json so the warning fires at most
+  // once per session even across host restarts.
+  markBudgetWarningEmitted(sessionId: string): SessionMeta {
+    return this.withSessionLock(sessionId, () => {
+      const meta = this.read(sessionId);
+      meta.budget_warning_emitted = true;
+      meta.updated_at = now();
+      writeJson(this.metaPath(sessionId), meta);
+      return meta;
     });
   }
 
@@ -1115,7 +1143,19 @@ export class SessionStore {
   // sessions need human action and which records are legacy metadata
   // artifacts (for example caller==lead_peer before the petitioner/
   // relator split).
-  sessionDoctor(limit = 20): SessionDoctorReport {
+  //
+  // v2.22.0 (A.P2): `includeLegacy` toggles per-session enumeration of
+  // `findings.self_lead_metadata`. Default false because pre-v2.16.0
+  // sessions carry the legacy self-lead artifact at a 38% hit rate
+  // (178/467 in the May 2026 audit corpus); enumerating them every call
+  // floods the response. `totals.self_lead_metadata` count remains
+  // visible regardless. Pass `includeLegacy=true` to enumerate.
+  //
+  // v2.22.0 (B.P2): `findings.open_evidence_sessions[i]` entries gain
+  // `item_types` (open items grouped by surfacing peer) and
+  // `chronic_blockers` (item ids with `round_count >= 3`) so operators
+  // can see which evidence asks are systemic vs cauda ruidosa.
+  sessionDoctor(limit = 20, includeLegacy = false): SessionDoctorReport {
     const cappedLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 20));
     const sessions = this.list();
     const openSessions: SessionDoctorEntry[] = [];
@@ -1138,9 +1178,11 @@ export class SessionStore {
       const scope = session.convergence_scope;
       const petitioner = scope?.petitioner ?? scope?.caller ?? session.caller;
       const leadPeer = scope?.lead_peer;
-      const openEvidenceItems = (session.evidence_checklist ?? []).filter(
+      const evidenceList = session.evidence_checklist ?? [];
+      const openEvidenceItemsList = evidenceList.filter(
         (item) => (item.status ?? "open") === "open",
-      ).length;
+      );
+      const openEvidenceItems = openEvidenceItemsList.length;
       const grokProviderErrors = (session.failed_attempts ?? []).filter(
         (failure) => failure.peer === "grok" && failure.failure_class === "provider_error",
       ).length;
@@ -1159,6 +1201,21 @@ export class SessionStore {
         ...(openEvidenceItems > 0 ? { open_evidence_items: openEvidenceItems } : {}),
         ...(grokProviderErrors > 0 ? { grok_provider_errors: grokProviderErrors } : {}),
       };
+
+      // v2.22.0 (B.P2): drill-down for open-evidence entries. Aggregate
+      // open items by peer + flag chronic blockers (round_count >= 3).
+      if (openEvidenceItems > 0) {
+        const itemTypes: Partial<Record<PeerId, number>> = {};
+        const chronicBlockers: string[] = [];
+        for (const item of openEvidenceItemsList) {
+          itemTypes[item.peer] = (itemTypes[item.peer] ?? 0) + 1;
+          if (item.round_count >= 3) {
+            chronicBlockers.push(item.id);
+          }
+        }
+        entry.item_types = itemTypes;
+        entry.chronic_blockers = chronicBlockers;
+      }
 
       if (!session.outcome) pushLimited(openSessions, entry);
       if (session.convergence_health?.state === "stale") pushLimited(staleSessions, entry);
@@ -1183,16 +1240,34 @@ export class SessionStore {
       }
     }
 
+    // v2.22.0 (A.P2): compute the headline self_lead_metadata count
+    // BEFORE deciding whether to suppress the per-session array, so
+    // `totals.self_lead_metadata` always reflects reality even when the
+    // findings array is empty.
+    const selfLeadCount = sessions.filter((session) => {
+      const scope = session.convergence_scope;
+      const petitioner = scope?.petitioner ?? scope?.caller ?? session.caller;
+      return Boolean(petitioner && scope?.lead_peer && petitioner === scope.lead_peer);
+    }).length;
+
     const recommendations: string[] = [];
     if (openSessions.length > 0) {
       recommendations.push(
         "Review open_sessions first; finalize, contest, cancel or explicitly continue each live case.",
       );
     }
-    if (selfLeadMetadata.length > 0) {
-      recommendations.push(
-        "Treat self_lead_metadata as legacy/protocol-drift evidence; do not rewrite historical records automatically.",
-      );
+    if (selfLeadCount > 0) {
+      // Recommendation fires off the headline count, not the in-array
+      // count, so operators are still nudged when the array is hidden.
+      const baseAdvice =
+        "Treat self_lead_metadata as legacy/protocol-drift evidence; do not rewrite historical records automatically.";
+      if (!includeLegacy) {
+        recommendations.push(
+          `${baseAdvice} ${selfLeadCount} legacy sessions hidden by default — pass include_legacy=true to enumerate.`,
+        );
+      } else {
+        recommendations.push(baseAdvice);
+      }
     }
     if (openEvidenceSessions.length > 0) {
       recommendations.push(
@@ -1226,11 +1301,7 @@ export class SessionStore {
         blocked: sessions.filter((session) => session.convergence_health?.state === "blocked")
           .length,
         max_rounds: sessions.filter((session) => session.outcome === "max-rounds").length,
-        self_lead_metadata: sessions.filter((session) => {
-          const scope = session.convergence_scope;
-          const petitioner = scope?.petitioner ?? scope?.caller ?? session.caller;
-          return Boolean(petitioner && scope?.lead_peer && petitioner === scope.lead_peer);
-        }).length,
+        self_lead_metadata: selfLeadCount,
         open_evidence_sessions: sessions.filter((session) =>
           (session.evidence_checklist ?? []).some((item) => (item.status ?? "open") === "open"),
         ).length,
@@ -1246,7 +1317,10 @@ export class SessionStore {
         stale_sessions: staleSessions,
         blocked_sessions: blockedSessions,
         max_rounds_sessions: maxRoundsSessions,
-        self_lead_metadata: selfLeadMetadata,
+        // v2.22.0 (A.P2): suppress per-session enumeration unless
+        // operator passes include_legacy=true. Headline count remains
+        // in `totals.self_lead_metadata`.
+        self_lead_metadata: includeLegacy ? selfLeadMetadata : [],
         open_evidence_sessions: openEvidenceSessions,
         grok_provider_error_sessions: grokProviderErrorSessions,
         event_read_error_sessions: eventReadErrorSessions,

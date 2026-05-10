@@ -976,9 +976,13 @@ export async function main(): Promise<void> {
     {
       title: "Session Doctor",
       description:
-        "Read-only operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks, Grok provider errors, and token-event noise. Does not modify sessions.",
+        "Read-only operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Does not modify sessions. Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible).",
       inputSchema: z.object({
         limit: z.number().int().min(1).max(100).default(20),
+        // v2.22.0 (A.P2): opt-in enumeration of legacy self_lead_metadata
+        // entries. Defaults to false; the headline count in totals stays
+        // visible even when the array is suppressed.
+        include_legacy: z.boolean().optional(),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -988,8 +992,11 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ limit, response_format }) =>
-      textResult(runtime.orchestrator.store.sessionDoctor(limit), response_format),
+    async ({ limit, include_legacy, response_format }) =>
+      textResult(
+        runtime.orchestrator.store.sessionDoctor(limit, include_legacy ?? false),
+        response_format,
+      ),
   );
 
   server.registerTool(

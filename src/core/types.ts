@@ -508,6 +508,19 @@ export interface SessionMeta {
     new_session_id: string;
   };
   contests_session_id?: string;
+  // v2.22.0 (B.P3): per-round cost telemetry + budget ceiling snapshot.
+  // `cost_ceiling_usd` captures `config.budget.max_session_cost_usd` at
+  // session_init time so subsequent retroactive analysis can compute
+  // budget pressure even if the operator changed the env-var midway.
+  // `costs_per_round[i]` is the incremental USD cost of round i+1 (i.e.
+  // `costs_per_round` length tracks `rounds.length`). `budget_warning_emitted`
+  // is the one-shot guard for `session.budget_warning` event idempotency
+  // — the event fires once when cumulative cost crosses 75% of the
+  // ceiling, never again. All three fields are optional for legacy
+  // back-compat with sessions saved by v2.21.x and earlier.
+  cost_ceiling_usd?: number | null;
+  costs_per_round?: number[];
+  budget_warning_emitted?: boolean;
 }
 
 export interface ReviewRound {
@@ -779,6 +792,14 @@ export interface SessionDoctorEntry {
   open_evidence_items?: number;
   grok_provider_errors?: number;
   event_read_error?: string;
+  // v2.22.0 (B.P2): evidence checklist drill-down. Populated only on
+  // entries where `open_evidence_items > 0` (i.e. those routed into
+  // `findings.open_evidence_sessions`). `item_types` aggregates open
+  // items by surfacing peer; `chronic_blockers` lists item ids with
+  // `round_count >= 3`. Both are optional for back-compat with consumers
+  // reading older snapshots.
+  item_types?: Partial<Record<PeerId, number>>;
+  chronic_blockers?: string[];
 }
 
 export interface SessionDoctorReport {

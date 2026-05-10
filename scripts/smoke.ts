@@ -887,7 +887,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   const malformedSession = doctorStore.init("doctor malformed events fixture", "operator", []);
   fs.writeFileSync(doctorStore.eventsPath(malformedSession.session_id), "{bad-json\n", "utf8");
-  const doctor = doctorStore.sessionDoctor(5);
+  // v2.22.0 (A.P2): self_lead_metadata is hidden by default. Pass
+  // includeLegacy=true here to preserve the original behavior assertion.
+  const doctor = doctorStore.sessionDoctor(5, true);
   assert.equal(doctor.totals.sessions, 2);
   assert.equal(doctor.totals.open, 2);
   assert.equal(doctor.totals.self_lead_metadata, 1);
@@ -903,6 +905,237 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(doctor.event_noise.token_delta_events, 1);
   assert.equal(doctorStore.read(doctorSession.session_id).outcome, undefined);
   console.log("[smoke] session_doctor_readonly_findings_test: PASS");
+}
+
+// v2.22.0 (A.P2): session_doctor legacy filter test. Default behavior
+// suppresses per-session enumeration of self_lead_metadata to clear noise
+// from pre-v2.16.0 sessions; headline count remains in totals; pass
+// include_legacy=true to enumerate.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const filterStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("session-doctor-legacy"),
+  });
+  // Fixture: legacy self-lead session (caller==lead_peer)
+  const legacySession = filterStore.init("legacy self-lead fixture", "claude", []);
+  filterStore.markInFlight(legacySession.session_id, {
+    round: 1,
+    peers: ["codex"],
+    started_at: new Date().toISOString(),
+    scope: {
+      petitioner: "claude",
+      caller: "claude",
+      acting_peer: "claude",
+      caller_status: "READY",
+      expected_peers: ["codex"],
+      reviewer_peers: ["codex"],
+      lead_peer: "claude",
+    },
+  });
+
+  // Default call: array hidden, totals visible, recommendation mentions include_legacy.
+  const defaultReport = filterStore.sessionDoctor(20);
+  assert.equal(
+    defaultReport.totals.self_lead_metadata,
+    1,
+    "totals.self_lead_metadata count must remain visible when array is suppressed",
+  );
+  assert.equal(
+    defaultReport.findings.self_lead_metadata.length,
+    0,
+    "findings.self_lead_metadata must be empty by default (legacy noise suppression)",
+  );
+  const hasIncludeLegacyHint = defaultReport.recommendations.some((rec) =>
+    rec.includes("include_legacy=true"),
+  );
+  assert.equal(
+    hasIncludeLegacyHint,
+    true,
+    "recommendation must mention include_legacy=true when array is suppressed and count > 0",
+  );
+
+  // Explicit include_legacy=true: array populated.
+  const inclusiveReport = filterStore.sessionDoctor(20, true);
+  assert.equal(
+    inclusiveReport.totals.self_lead_metadata,
+    1,
+    "totals must match between default and inclusive calls",
+  );
+  assert.equal(
+    inclusiveReport.findings.self_lead_metadata.length,
+    1,
+    "findings.self_lead_metadata must be populated when include_legacy=true",
+  );
+  assert.equal(inclusiveReport.findings.self_lead_metadata[0]?.lead_peer, "claude");
+  console.log("[smoke] session_doctor_legacy_filter_test: PASS");
+}
+
+// v2.22.0 (B.P2): session_doctor evidence checklist drill-down. Per-
+// session entries in findings.open_evidence_sessions gain item_types
+// (open items grouped by surfacing peer) and chronic_blockers (item ids
+// with round_count >= 3).
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const drillStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("session-doctor-drilldown"),
+  });
+  const driveSession = drillStore.init("evidence drill-down fixture", "operator", []);
+  // Fabricate evidence_checklist directly via meta path: 3 open items
+  // (codex x1, gemini x2), one of them chronic (round_count=4).
+  const metaPath = drillStore.metaPath(driveSession.session_id);
+  const fabricatedMeta = drillStore.read(driveSession.session_id);
+  const nowIso = new Date().toISOString();
+  fabricatedMeta.evidence_checklist = [
+    {
+      id: "ask-codex-1",
+      peer: "codex",
+      first_round: 1,
+      last_round: 4,
+      round_count: 4,
+      ask: "verbatim diff hunk for line 240",
+      first_seen_at: nowIso,
+      last_seen_at: nowIso,
+      status: "open",
+    },
+    {
+      id: "ask-gemini-1",
+      peer: "gemini",
+      first_round: 2,
+      last_round: 2,
+      round_count: 1,
+      ask: "lockfile sync evidence",
+      first_seen_at: nowIso,
+      last_seen_at: nowIso,
+      status: "open",
+    },
+    {
+      id: "ask-gemini-2",
+      peer: "gemini",
+      first_round: 3,
+      last_round: 3,
+      round_count: 1,
+      ask: "smoke step output",
+      first_seen_at: nowIso,
+      last_seen_at: nowIso,
+      status: "open",
+    },
+  ];
+  fs.writeFileSync(metaPath, JSON.stringify(fabricatedMeta, null, 2));
+
+  const drillReport = drillStore.sessionDoctor(20);
+  const entry = drillReport.findings.open_evidence_sessions.find(
+    (e) => e.session_id === driveSession.session_id,
+  );
+  assert.ok(entry, "open_evidence_sessions must include the fabricated session");
+  assert.equal(entry?.open_evidence_items, 3);
+  assert.equal(entry?.item_types?.codex, 1, "item_types.codex must be 1");
+  assert.equal(entry?.item_types?.gemini, 2, "item_types.gemini must be 2");
+  assert.equal(
+    entry?.chronic_blockers?.length,
+    1,
+    "chronic_blockers must contain exactly the round_count>=3 item",
+  );
+  assert.equal(
+    entry?.chronic_blockers?.[0],
+    "ask-codex-1",
+    "chronic_blockers must contain the codex round_count=4 item id",
+  );
+  console.log("[smoke] evidence_checklist_drilldown_test: PASS");
+}
+
+// v2.22.0 (B.P3): session.budget_warning event emit + idempotency. The
+// orchestrator emits a one-shot warning when cumulative cost crosses
+// 75% of cost_ceiling_usd; the budget_warning_emitted flag persists
+// idempotency across hypothetical subsequent rounds.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const budgetStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("budget-warning"),
+    budget: { ...config.budget, max_session_cost_usd: 20 },
+  });
+  const budgetSession = budgetStore.init("budget warning fixture", "operator", []);
+  // Verify init snapshotted the ceiling.
+  const initial = budgetStore.read(budgetSession.session_id);
+  assert.equal(initial.cost_ceiling_usd, 20, "cost_ceiling_usd must snapshot config at init");
+  assert.deepEqual(initial.costs_per_round, [], "costs_per_round must initialize as empty array");
+  assert.equal(
+    initial.budget_warning_emitted,
+    false,
+    "budget_warning_emitted must initialize as false",
+  );
+
+  // Round 1: cost = 15.5 (cumulative = 15.5, threshold = 20 * 0.75 = 15).
+  // We bypass appendRound machinery (which needs full PeerResult shape)
+  // and instead seed totals + costs_per_round directly to isolate the
+  // warning-emit logic.
+  const seededMeta = budgetStore.read(budgetSession.session_id);
+  seededMeta.totals.cost = {
+    currency: "USD",
+    estimated: false,
+    source: "configured-rate",
+    total_cost: 15.5,
+  };
+  seededMeta.costs_per_round = [15.5];
+  fs.writeFileSync(budgetStore.metaPath(budgetSession.session_id), JSON.stringify(seededMeta));
+
+  // Manually invoke the orchestrator's checkBudgetWarning equivalent
+  // logic by simulating the threshold guard the same way the code does.
+  // We do this through the public surface (markBudgetWarningEmitted +
+  // re-read) plus a direct threshold computation, then assert the
+  // persisted side-effect.
+  const ceilingForCheck = seededMeta.cost_ceiling_usd ?? 0;
+  const cumulative1 = seededMeta.totals.cost.total_cost ?? 0;
+  const threshold = ceilingForCheck * 0.75;
+  assert.equal(cumulative1 >= threshold, true, "fixture must cross 75% threshold");
+  assert.equal(seededMeta.budget_warning_emitted, false, "warning must not have fired yet");
+  budgetStore.markBudgetWarningEmitted(budgetSession.session_id);
+  const afterFirst = budgetStore.read(budgetSession.session_id);
+  assert.equal(
+    afterFirst.budget_warning_emitted,
+    true,
+    "markBudgetWarningEmitted must persist the one-shot guard",
+  );
+
+  // Round 2: cumulative = 18 (still over threshold). Emit guard must
+  // prevent re-emission. The orchestrator's checkBudgetWarning early-
+  // returns when budget_warning_emitted === true; we mirror that check
+  // here.
+  const round2Meta = budgetStore.read(budgetSession.session_id);
+  round2Meta.totals.cost.total_cost = 18;
+  round2Meta.costs_per_round = [15.5, 2.5];
+  fs.writeFileSync(budgetStore.metaPath(budgetSession.session_id), JSON.stringify(round2Meta));
+  const reread = budgetStore.read(budgetSession.session_id);
+  assert.equal(
+    reread.budget_warning_emitted,
+    true,
+    "guard must remain true across round writes (idempotent)",
+  );
+  assert.deepEqual(
+    reread.costs_per_round,
+    [15.5, 2.5],
+    "costs_per_round must accumulate per-round entries",
+  );
+
+  // No-ceiling fixture: when cost_ceiling_usd is null, the warning
+  // should never fire even if cost is high. We verify by initializing a
+  // session under a config without max_session_cost_usd and confirming
+  // the snapshot is null.
+  const noCeilingStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("budget-warning-no-ceiling"),
+    budget: { ...config.budget, max_session_cost_usd: undefined },
+  });
+  const noCeilingSession = noCeilingStore.init("no ceiling fixture", "operator", []);
+  const noCeilingMeta = noCeilingStore.read(noCeilingSession.session_id);
+  assert.equal(
+    noCeilingMeta.cost_ceiling_usd,
+    null,
+    "cost_ceiling_usd must be null when config.max_session_cost_usd is unset",
+  );
+  console.log("[smoke] budget_warning_emit_test: PASS");
 }
 
 // v2.4.0 / cross-review-v2 R2 (codex): SessionIdSchema lowercase

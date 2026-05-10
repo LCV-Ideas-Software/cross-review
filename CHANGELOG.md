@@ -7,6 +7,18 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.22.00] - 2026-05-10
+
+### Adicionado
+
+- `session_doctor` evidence checklist drill-down: per-session `item_types` (open items grouped by surfacing peer) + `chronic_blockers` (item ids with round_count >= 3) under `findings.open_evidence_sessions[]`. Surfaces which evidence asks are systemic vs. cauda ruidosa.
+- Per-round cost telemetry: `costs_per_round[]` + `cost_ceiling_usd` em `meta.json`. Operator agora vê em qual round o budget queimou em sessões `max-rounds`.
+- Novo evento `session.budget_warning` (one-shot per session) quando cumulative cost cruza 75% do `cost_ceiling_usd`. Visibility precoce antes de `max_rounds_budget_exceeded`.
+
+### Alterado
+
+- `session_doctor` agora oculta a per-session enumeration de `findings.self_lead_metadata` por default (178/467 sessões pre-v2.16.0 = 38% noise). `totals.self_lead_metadata` count permanece visível; passar `include_legacy: true` na invocação para enumerar.
+
 ## [v02.21.00] - 2026-05-10
 
 **Minor — cross-provider prompt caching across all 5 peers (OpenAI, Anthropic, Gemini, DeepSeek, Grok).** Single coordinated ship that wires uniform prompt-caching telemetry through the runtime: each adapter parses the provider-native cache fields, the orchestrator emits a canonical `provider.cache.usage` event, and a per-session `cache_manifest.json` is appended for every cached call. Operator can disable globally with `CROSS_REVIEW_V2_DISABLE_CACHE=true`.
