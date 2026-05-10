@@ -8,7 +8,6 @@ assignees: []
 
 ## Objective
 
-
 ## Scope
 
 -
