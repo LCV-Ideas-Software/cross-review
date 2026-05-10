@@ -20,6 +20,13 @@ type GeminiUsage = {
   candidatesTokenCount?: number;
   totalTokenCount?: number;
   thoughtsTokenCount?: number;
+  // v2.21.0 (caching): Gemini supports an IMPLICIT cache that is auto-
+  // applied. We only consume telemetry — no payload changes. When the
+  // service caches a prefix it reports `cachedContentTokenCount`; we
+  // surface this as cache_read_tokens with mode="implicit". Explicit
+  // `caches.create` is intentionally NOT enabled here (deferred to a
+  // future ship) to avoid contention with `thinking` configurations.
+  cachedContentTokenCount?: number;
 };
 
 type GeminiResponse = {
@@ -30,12 +37,20 @@ type GeminiResponse = {
 
 function usageFromGemini(usage: GeminiUsage | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
-  return {
+  const cached = usage.cachedContentTokenCount ?? 0;
+  const result: TokenUsage = {
     input_tokens: usage.promptTokenCount,
     output_tokens: usage.candidatesTokenCount,
     total_tokens: usage.totalTokenCount,
     reasoning_tokens: usage.thoughtsTokenCount,
   };
+  if (cached > 0) {
+    result.cache_read_tokens = cached;
+    result.cache_provider_mode = "implicit";
+  } else {
+    result.cache_provider_mode = "not_supported";
+  }
+  return result;
 }
 
 function geminiThinkingConfig(model: string): {

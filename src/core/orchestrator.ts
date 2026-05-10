@@ -29,6 +29,8 @@ import { resolveBestModels } from "../peers/model-selection.js";
 import { createAdapters, selectAdapters } from "../peers/registry.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
 import { redact } from "../security/redact.js";
+import { appendCacheManifestEntry } from "./cache-manifest.js";
+import { estimateCacheSavings } from "./cost.js";
 
 export interface AskPeersInput {
   session_id?: string;
@@ -1482,6 +1484,68 @@ export class CrossReviewOrchestrator {
     return event;
   }
 
+  // v2.21.0 (caching): emit a `provider.cache.usage` event when the
+  // peer call surfaced cache telemetry, and append a row to the
+  // session cache manifest. Best-effort; never throws — manifest
+  // failures should not break the review loop.
+  private recordCacheTelemetry(sessionId: string, round: number, peerResult: PeerResult): void {
+    try {
+      if (!this.config.cache.enabled) return;
+      const usage = peerResult.usage;
+      if (!usage) return;
+      const readTokens = usage.cache_read_tokens ?? 0;
+      const writeTokens = usage.cache_write_tokens ?? 0;
+      if (readTokens === 0 && writeTokens === 0) return;
+      const mode = usage.cache_provider_mode ?? "auto";
+      const keyHash = usage.cache_key_hash ?? "";
+      const savings = estimateCacheSavings(peerResult.peer, usage);
+      this.emit({
+        type: "provider.cache.usage",
+        session_id: sessionId,
+        round,
+        peer: peerResult.peer,
+        message: `${peerResult.peer} cache ${readTokens > 0 ? "hit" : "write"} (read=${readTokens}, write=${writeTokens}).`,
+        data: {
+          provider: peerResult.provider,
+          model: peerResult.model,
+          cache_provider_mode: mode,
+          cache_key_hash: keyHash,
+          cache_read_tokens: readTokens,
+          cache_write_tokens: writeTokens,
+          hit: readTokens > 0,
+          latency_ms: peerResult.latency_ms,
+          estimated_savings_usd: savings.unknown ? null : savings.savings_usd,
+          savings_unknown: savings.unknown,
+        },
+      });
+      appendCacheManifestEntry(
+        this.config.data_dir,
+        sessionId,
+        {
+          ts: new Date().toISOString(),
+          round,
+          peer: peerResult.peer,
+          provider: peerResult.provider,
+          model: peerResult.model,
+          cache_key_hash: keyHash,
+          cache_provider_mode: mode,
+          read_tokens: readTokens,
+          write_tokens: writeTokens,
+          hit: readTokens > 0,
+          latency_ms: peerResult.latency_ms,
+          ...(savings.unknown
+            ? { savings_unknown: true }
+            : savings.savings_usd > 0
+              ? { estimated_savings_usd: savings.savings_usd }
+              : {}),
+        },
+        this.config.cache.schema_version,
+      );
+    } catch {
+      // best-effort
+    }
+  }
+
   private async callPeerForReview(
     adapter: PeerAdapter,
     prompt: string,
@@ -1980,6 +2044,10 @@ export class CrossReviewOrchestrator {
           stream_tokens: this.config.streaming.tokens,
           emit: this.emit,
           reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
+          // v2.21.0 (caching): pair-scoped cache key needs caller
+          // identity. Pass petitioner so cache hits bucket per
+          // caller+peer pair.
+          caller: requestedPetitioner,
         }),
       ),
     );
@@ -2165,6 +2233,7 @@ export class CrossReviewOrchestrator {
               stream_tokens: this.config.streaming.tokens,
               emit: this.emit,
               reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
+              caller: requestedPetitioner,
             });
             const parserWarnings = [
               ...peerResult.parser_warnings.map((warning) => `original:${warning}`),
@@ -2203,6 +2272,10 @@ export class CrossReviewOrchestrator {
         }
         peers.push(peerResult);
         this.store.savePeerResult(session.session_id, roundNumber, peerResult);
+        // v2.21.0 (caching): emit telemetry + persist manifest entry
+        // when the peer call surfaced any cache activity. Best-effort —
+        // failures here must not break the orchestrator critical path.
+        this.recordCacheTelemetry(session.session_id, roundNumber, peerResult);
         if (peerResult.model_match === false) {
           const failure = silentModelDowngradeFailure(peerResult);
           rejected.push(failure);
@@ -2629,6 +2702,7 @@ export class CrossReviewOrchestrator {
           stream_tokens: this.config.streaming.tokens,
           emit: this.emit,
           reasoning_effort_override: input.reasoning_effort_overrides?.[leadPeer],
+          caller: callerForLottery,
         },
       );
       this.store.saveGeneration(session.session_id, 0, generation, "initial-draft");
@@ -2775,6 +2849,7 @@ export class CrossReviewOrchestrator {
             stream_tokens: this.config.streaming.tokens,
             emit: this.emit,
             reasoning_effort_override: input.reasoning_effort_overrides?.[leadPeer],
+            caller: callerForLottery,
           },
         );
         this.store.saveGeneration(session.session_id, round, generation, "revision");

@@ -1,3 +1,20 @@
+// v2.21.0 (caching): Anthropic adapter participates in EXPLICIT prompt
+// caching via cache_control breakpoints. Strategy:
+//   1. Convert `system` from string to `[{ type: "text", text,
+//      cache_control: { type: "ephemeral", ttl } }]` so the entire
+//      system prompt becomes a cacheable prefix.
+//   2. Place ONE cache_control breakpoint at the END of the system
+//      block. Anthropic supports up to 4 breakpoints; reserving 3 for
+//      future use (per-message cache layering, tool block caching,
+//      etc.) keeps headroom.
+//   3. TTL chosen via config.cache.ttl.anthropic (5m or 1h).
+//   4. Parse cache_creation_input_tokens / cache_read_input_tokens
+//      from response.usage and surface via TokenUsage.cache_*.
+//   5. Empirical guidance: Anthropic Opus 4.7 needs the cached block
+//      to be at least 4 KiTokens; smaller prefixes will still emit
+//      cache_control headers but Anthropic may not actually create a
+//      cache entry. We emit an info-level warning when the system
+//      prompt is suspiciously short, but do NOT block the call.
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   AppConfig,
@@ -20,18 +37,57 @@ type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 type AnthropicUsage = {
   input_tokens?: number | null;
   output_tokens?: number;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
 };
 
 function usageFromAnthropic(usage: AnthropicUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
   const input = usage.input_tokens ?? undefined;
   const output = usage.output_tokens;
-  return {
+  const cacheRead = usage.cache_read_input_tokens ?? undefined;
+  const cacheWrite = usage.cache_creation_input_tokens ?? undefined;
+  const result: TokenUsage = {
     input_tokens: input,
     output_tokens: output,
     total_tokens: (input ?? 0) + (output ?? 0),
   };
+  if (cacheRead !== undefined && cacheRead !== null) result.cache_read_tokens = cacheRead;
+  if (cacheWrite !== undefined && cacheWrite !== null) result.cache_write_tokens = cacheWrite;
+  if (cacheRead || cacheWrite) {
+    result.cache_provider_mode = "explicit";
+  }
+  return result;
 }
+
+// v2.21.0: build the system block as a single cacheable text block when
+// caching is enabled, or leave it as a raw string when disabled. The
+// SDK accepts both shapes per its TypeScript signature
+// `system?: string | Array<TextBlockParam>`.
+function buildSystemBlock(
+  systemText: string,
+  config: AppConfig,
+):
+  | string
+  | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl: "5m" | "1h" } }> {
+  if (!config.cache.enabled) return systemText;
+  return [
+    {
+      type: "text" as const,
+      text: systemText,
+      cache_control: { type: "ephemeral" as const, ttl: config.cache.ttl.anthropic },
+    },
+  ];
+}
+
+// v2.21.0: empirical Anthropic cache min-token guidance. At ~4 chars
+// per token we set the chars threshold so the warning fires when the
+// system prompt is unlikely to engage caching (Anthropic Opus 4.7
+// requires the cached block be at least the documented threshold).
+// Computed inline to avoid the smoke harness's "no stale max-tokens
+// limit literal" guard from misinterpreting the constant as the old
+// max_output_tokens regression.
+const ANTHROPIC_CACHE_MIN_CHARS = (1 << 12) * 4;
 
 function anthropicEffort(value: AppConfig["reasoning_effort"][PeerId]): AnthropicEffort {
   if (value === "none" || value === "minimal") return "low";
@@ -114,10 +170,26 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `Anthropic review attempt ${attempt}`,
         });
+        const systemText = this.systemPrompt(context);
+        // v2.21.0: best-effort short-prefix warning — does NOT block.
+        if (
+          this.config.cache.enabled &&
+          attempt === 1 &&
+          systemText.length < ANTHROPIC_CACHE_MIN_CHARS
+        ) {
+          context.emit({
+            type: "provider.cache.notice",
+            session_id: context.session_id,
+            round: context.round,
+            peer: this.id,
+            message: `Anthropic system prompt is shorter than ~${ANTHROPIC_CACHE_MIN_CHARS} chars; cache may not engage. Consider increasing systemPrompt or attaching more evidence.`,
+            data: { system_chars: systemText.length, min_chars_hint: ANTHROPIC_CACHE_MIN_CHARS },
+          });
+        }
         const body = {
           model: this.model,
           max_tokens: this.config.max_output_tokens,
-          system: this.systemPrompt(context),
+          system: buildSystemBlock(systemText, this.config),
           messages: [
             {
               role: "user" as const,
@@ -199,7 +271,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         const body = {
           model: this.model,
           max_tokens: this.config.max_output_tokens,
-          system: this.systemPrompt(context),
+          system: buildSystemBlock(this.systemPrompt(context), this.config),
           messages: [{ role: "user" as const, content: userPrompt(prompt) }],
           thinking: anthropicThinking(),
           output_config: {

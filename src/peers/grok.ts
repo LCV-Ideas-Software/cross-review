@@ -33,6 +33,7 @@ import type {
 import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
+import { pairScopedCacheKey } from "../core/prompt-parts.js";
 import { withRetry } from "./retry.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 
@@ -42,6 +43,12 @@ type GrokUsage = {
   total_tokens?: number;
   output_tokens_details?: {
     reasoning_tokens?: number;
+  };
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+  input_tokens_details?: {
+    cached_tokens?: number;
   };
 };
 
@@ -60,12 +67,26 @@ const GROK_BASE_URL = "https://api.x.ai/v1";
 
 function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
-  return {
+  // v2.21.0 (caching): xAI's grok-4.3 mirrors the OpenAI Responses API
+  // shape and surfaces cached tokens under prompt_tokens_details. The
+  // adapter is OpenAI-compatible so the same parsing path applies.
+  const cached =
+    usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
+  const inputTokens = usage.input_tokens ?? 0;
+  const result: TokenUsage = {
     input_tokens: usage.input_tokens,
     output_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
     reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
   };
+  if (cached > 0) {
+    result.cache_read_tokens = cached;
+    if (inputTokens > cached) result.cache_write_tokens = inputTokens - cached;
+    result.cache_provider_mode = "auto";
+  } else {
+    result.cache_provider_mode = "auto";
+  }
+  return result;
 }
 
 // v2.16.0 clarification (operator directive 2026-05-05) / v2.18.4 update
@@ -166,10 +187,27 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
     this.model = modelOverride ?? config.models.grok;
   }
 
-  private client(): OpenAI {
+  // v2.21.0 (caching): construct a per-call client so we can attach a
+  // dynamic x-grok-conv-id header derived from the pair-scoped cache
+  // key. xAI uses the header to bucket cache entries the same way
+  // OpenAI uses prompt_cache_key — it ties a sequence of calls to the
+  // same conversation/cache scope.
+  private client(callerForCache?: PeerId | "operator"): OpenAI {
     const apiKey = this.config.api_keys.grok;
     if (!apiKey) {
       throw new Error("GROK_API_KEY was not found in environment variables.");
+    }
+    if (this.config.cache.enabled) {
+      const convId = pairScopedCacheKey(
+        this.id,
+        callerForCache ?? "operator",
+        this.config.cache.schema_version,
+      );
+      return new OpenAI({
+        apiKey,
+        baseURL: GROK_BASE_URL,
+        defaultHeaders: { "x-grok-conv-id": convId },
+      });
     }
     return new OpenAI({ apiKey, baseURL: GROK_BASE_URL });
   }
@@ -190,6 +228,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
       };
     }
     try {
+      // probe does not need cache scope — it lists models, not posts.
       await this.client().models.list();
       return {
         peer: this.id,
@@ -227,6 +266,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `Grok review attempt ${attempt}`,
         });
+        const cacheKey = pairScopedCacheKey(
+          this.id,
+          context.caller ?? "operator",
+          this.config.cache.schema_version,
+        );
         const body = {
           model: this.model,
           input: [
@@ -259,6 +303,14 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             : {}),
           store: false,
           max_output_tokens: this.config.max_output_tokens,
+          ...(this.config.cache.enabled
+            ? {
+                prompt_cache_key: cacheKey,
+                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
+                  ? "24h"
+                  : "in_memory") as "in_memory" | "24h",
+              }
+            : {}),
         };
         if (this.shouldStreamTokens(context)) {
           const stream_buffer = new StreamBuffer(this.id);
@@ -269,7 +321,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
-          const stream = await this.client().responses.create(
+          const stream = await this.client(context.caller).responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
@@ -300,7 +352,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client().responses.create(body, {
+        const response = await this.client(context.caller).responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
@@ -330,6 +382,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `Grok generation attempt ${attempt}`,
         });
+        const cacheKey = pairScopedCacheKey(
+          this.id,
+          context.caller ?? "operator",
+          this.config.cache.schema_version,
+        );
         const body = {
           model: this.model,
           input: [
@@ -350,6 +407,14 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             : {}),
           store: false,
           max_output_tokens: this.config.max_output_tokens,
+          ...(this.config.cache.enabled
+            ? {
+                prompt_cache_key: cacheKey,
+                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
+                  ? "24h"
+                  : "in_memory") as "in_memory" | "24h",
+              }
+            : {}),
         };
         if (this.shouldStreamTokens(context)) {
           const stream_buffer = new StreamBuffer(this.id);
@@ -360,7 +425,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
-          const stream = await this.client().responses.create(
+          const stream = await this.client(context.caller).responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
@@ -391,7 +456,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client().responses.create(body, {
+        const response = await this.client(context.caller).responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });

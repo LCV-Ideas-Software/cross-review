@@ -18,8 +18,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.18.8";
-export const RELEASE_DATE = "2026-05-09";
+export const VERSION = "2.21.0";
+export const RELEASE_DATE = "2026-05-10";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -226,7 +226,42 @@ export function loadConfig(): AppConfig {
     },
     evidence_judge_autowire: loadEvidenceJudgeAutowireConfig(),
     peer_enabled: loadPeerEnabledConfig(),
+    cache: loadCacheConfig(),
   };
+}
+
+// v2.21.0 (caching): config loader. Default ON; switch off via
+// CROSS_REVIEW_V2_DISABLE_CACHE=true (operator panic button when a
+// provider misbehaves or the operator wants strictly-fresh runs for
+// audit reproducibility). TTL options gated to the documented values
+// to prevent typos silently sending nonsense to providers — Anthropic
+// API rejects unknown ttl values with 400. OpenAI does NOT publish
+// per-call retention values; we still parse the env so future
+// migrations can flip the default without touching adapter code.
+function loadCacheConfig(): AppConfig["cache"] {
+  const enabled = !boolEnv("CROSS_REVIEW_V2_DISABLE_CACHE", false);
+  const schemaVersion = (envValue("CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION") ?? "v1").trim() || "v1";
+  const anthropicTtl = parseTtlEnv("CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC", "1h");
+  const openaiTtl = parseTtlEnv("CROSS_REVIEW_V2_CACHE_TTL_OPENAI", "1h");
+  return {
+    schema_version: schemaVersion,
+    enabled,
+    ttl: {
+      anthropic: anthropicTtl,
+      openai: openaiTtl,
+    },
+  };
+}
+
+function parseTtlEnv(name: string, fallback: "5m" | "1h"): "5m" | "1h" {
+  const raw = (envValue(name) ?? "").trim().toLowerCase();
+  if (raw === "5m" || raw === "1h") return raw;
+  if (raw !== "") {
+    console.error(
+      `[cross-review-v2] notice: ${name}="${raw}" not recognized; defaulting to "${fallback}". Recognized values: 5m, 1h.`,
+    );
+  }
+  return fallback;
 }
 
 // v2.14.0 (operator directive 2026-05-04): per-peer enable/disable

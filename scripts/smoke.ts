@@ -4523,6 +4523,148 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] consensus_event_per_peer_attribution_anti_drift_test: PASS");
 }
 
+// v2.21.0 (caching) — 5 anti-drift / invariance smoke markers covering
+// the new prompt caching surface. Pure-function tests (no API keys
+// required); they pin the structural invariants the runtime depends on.
+{
+  const { buildPromptParts, hashStablePrefix, assertHashInvariant, pairScopedCacheKey } =
+    await import("../src/core/prompt-parts.js");
+  const baseInput = {
+    cacheSchemaVersion: "v1",
+    systemRole: "You are a peer reviewer.",
+    task: "Ship a small bug fix.",
+    reviewFocus: "Correctness over style.",
+    convergenceRules: "READY only when no blocking issue remains.",
+    evidenceIndex: ["b.txt", "a.txt", "c.txt"],
+    evidenceContent: "evidence-body",
+    round: 1,
+    draft: "draft-r1",
+    priorRounds: undefined,
+  };
+  // (1) cache_hash_invariance_test — round/draft/priorRounds changes
+  //     do NOT mutate stablePrefixHash.
+  assertHashInvariant(baseInput, { ...baseInput, round: 7, draft: "draft-r7" });
+  assertHashInvariant(baseInput, { ...baseInput, priorRounds: "round-1 done\nround-2 done" });
+  console.log("[smoke] cache_hash_invariance_test: PASS");
+
+  // (2) cache_schema_version_in_prefix_test — first line of stablePrefix
+  //     matches the documented format.
+  const parts = buildPromptParts(baseInput);
+  const firstLine = parts.stablePrefix.split("\n", 1)[0] ?? "";
+  assert.ok(
+    /^cache_schema_version: v\d+$/.test(firstLine),
+    `v2.21.0: stablePrefix first line must be 'cache_schema_version: v<N>'; got '${firstLine}'`,
+  );
+  // pairScopedCacheKey shape is locked. Default config schema version is
+  // "v1" (already v-prefixed); the function MUST NOT prepend another v.
+  // Cross-review-v2 R1 catch (codex+gemini 2026-05-10) — pre-fix shape
+  // was the wrong `:vv1`. Post-fix is `:v1`.
+  const key = pairScopedCacheKey("codex", "claude", "v1");
+  assert.equal(
+    key,
+    "cross-review-v2:codex:claude:v1",
+    `v2.21.0: pairScopedCacheKey shape stable; got ${key}`,
+  );
+  // Defensive normalization: if a caller forgets the v prefix and passes
+  // bare "1", the function re-adds it so on-wire key shape stays stable.
+  const keyBare = pairScopedCacheKey("codex", "claude", "1");
+  assert.equal(
+    keyBare,
+    "cross-review-v2:codex:claude:v1",
+    `v2.21.0: pairScopedCacheKey normalizes bare schema version; got ${keyBare}`,
+  );
+  // hash is sha256 hex (64 chars)
+  assert.ok(
+    /^[0-9a-f]{64}$/.test(parts.stablePrefixHash),
+    "v2.21.0: stablePrefixHash is sha256 hex",
+  );
+  // hash function is deterministic for same input
+  assert.equal(
+    hashStablePrefix(parts.stablePrefix),
+    parts.stablePrefixHash,
+    "v2.21.0: hashStablePrefix is deterministic",
+  );
+  console.log("[smoke] cache_schema_version_in_prefix_test: PASS");
+
+  // (3) cache_rates_json_loaded_test — rate cards present + shape OK.
+  const cacheRates = (await import("../src/core/cache-rates.json", { with: { type: "json" } }))
+    .default;
+  for (const provider of ["openai", "anthropic", "gemini", "deepseek", "grok"]) {
+    const card = (cacheRates as Record<string, unknown>)[provider];
+    assert.ok(card, `v2.21.0: cache-rates.json must contain '${provider}' entry`);
+    assert.equal(
+      typeof (card as { fresh_input_per_million_usd?: unknown }).fresh_input_per_million_usd,
+      "number",
+      `v2.21.0: cache-rates.json '${provider}'.fresh_input_per_million_usd is number`,
+    );
+  }
+  console.log("[smoke] cache_rates_json_loaded_test: PASS");
+
+  // (4) cache_manifest_atomic_write_test — write + multiple appends
+  //     preserve every entry.
+  const { writeCacheManifest, appendCacheManifestEntry, readCacheManifest } =
+    await import("../src/core/cache-manifest.js");
+  const manifestSession = "550e8400-e29b-41d4-a716-446655440099";
+  const manifestData = {
+    session_id: manifestSession,
+    cache_schema_version: "v1",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    entries: [] as Array<unknown>,
+  } as unknown as Parameters<typeof writeCacheManifest>[2];
+  fs.mkdirSync(path.join(config.data_dir, "sessions", manifestSession), { recursive: true });
+  writeCacheManifest(config.data_dir, manifestSession, manifestData);
+  for (let i = 0; i < 5; i += 1) {
+    appendCacheManifestEntry(
+      config.data_dir,
+      manifestSession,
+      {
+        ts: new Date().toISOString(),
+        round: i + 1,
+        peer: "codex",
+        provider: "openai",
+        model: "gpt-5.5",
+        cache_key_hash: `hash-${i}`,
+        cache_provider_mode: "auto",
+        read_tokens: 100 + i,
+        write_tokens: 0,
+        hit: true,
+        latency_ms: 200,
+      },
+      "v1",
+    );
+  }
+  const finalManifest = readCacheManifest(config.data_dir, manifestSession);
+  assert.ok(finalManifest, "v2.21.0: manifest readable after appends");
+  assert.equal(
+    finalManifest.entries.length,
+    5,
+    "v2.21.0: 5 sequential appends preserve all entries",
+  );
+  console.log("[smoke] cache_manifest_atomic_write_test: PASS");
+
+  // (5) cache_disable_kill_switch_test — env var flips config.cache.enabled.
+  const previousDisable = process.env.CROSS_REVIEW_V2_DISABLE_CACHE;
+  process.env.CROSS_REVIEW_V2_DISABLE_CACHE = "true";
+  assert.equal(
+    loadConfig().cache.enabled,
+    false,
+    "v2.21.0: CROSS_REVIEW_V2_DISABLE_CACHE=true → config.cache.enabled=false",
+  );
+  process.env.CROSS_REVIEW_V2_DISABLE_CACHE = "false";
+  assert.equal(
+    loadConfig().cache.enabled,
+    true,
+    "v2.21.0: CROSS_REVIEW_V2_DISABLE_CACHE=false → config.cache.enabled=true",
+  );
+  if (previousDisable == null) {
+    delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE;
+  } else {
+    process.env.CROSS_REVIEW_V2_DISABLE_CACHE = previousDisable;
+  }
+  console.log("[smoke] cache_disable_kill_switch_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight

@@ -22,6 +22,14 @@ type ChatUsage = {
   completion_tokens_details?: {
     reasoning_tokens?: number;
   };
+  // v2.21.0 (caching): DeepSeek surfaces cache telemetry on the
+  // OpenAI-compatible Chat Completions response with two non-OpenAI
+  // fields. Read both, treat miss as fresh tokens (cache_write_tokens)
+  // even though DeepSeek auto-caches without explicit write semantics —
+  // this lets operators observe what fraction of input was eligible
+  // for future cache hits.
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
 };
 
 type DeepSeekReasoningEffort = "high" | "max";
@@ -38,12 +46,20 @@ type DeepSeekChatStreamPayload = OpenAI.ChatCompletionCreateParamsStreaming &
 
 function usageFromChat(usage: ChatUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
-  return {
+  const cacheHit = usage.prompt_cache_hit_tokens ?? 0;
+  const cacheMiss = usage.prompt_cache_miss_tokens ?? 0;
+  const result: TokenUsage = {
     input_tokens: usage.prompt_tokens,
     output_tokens: usage.completion_tokens,
     total_tokens: usage.total_tokens,
     reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens,
   };
+  if (cacheHit > 0 || cacheMiss > 0) {
+    if (cacheHit > 0) result.cache_read_tokens = cacheHit;
+    if (cacheMiss > 0) result.cache_write_tokens = cacheMiss;
+    result.cache_provider_mode = "auto";
+  }
+  return result;
 }
 
 function chatText(response: {

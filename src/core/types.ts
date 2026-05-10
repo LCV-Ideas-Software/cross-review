@@ -55,6 +55,18 @@ export interface TokenUsage {
   output_tokens?: number;
   total_tokens?: number;
   reasoning_tokens?: number;
+  // v2.21.0 (caching): canonical cross-provider cache telemetry. Adapters
+  // populate these from provider-native fields (Anthropic
+  // cache_creation_input_tokens / cache_read_input_tokens; OpenAI
+  // prompt_tokens_details.cached_tokens; DeepSeek
+  // prompt_cache_hit_tokens / prompt_cache_miss_tokens; Gemini
+  // usageMetadata.cachedContentTokenCount; Grok mirrors OpenAI). The
+  // shape is uniform so the cost layer + dashboard + manifest never
+  // branch on provider.
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported";
+  cache_key_hash?: string;
 }
 
 export interface CostEstimate {
@@ -66,6 +78,45 @@ export interface CostEstimate {
   // v2.5.0: "stub" tags zero-cost results emitted by the StubAdapter so
   // FinOps consumers can distinguish synthetic test runs from real spend.
   source: "configured-rate" | "unknown-rate" | "stub";
+  // v2.21.0 (caching): when cache_read_tokens > 0 and a cache rate card
+  // entry exists for the peer's provider, the cost layer computes the
+  // delta savings vs the un-cached fresh-input rate and surfaces it
+  // here. `cache_savings_unknown=true` when cache telemetry is present
+  // but the rate card has no entry for the provider — operators see "we
+  // got a cache hit but cannot price it" instead of a silent zero.
+  cache_savings_usd?: number;
+  cache_savings_unknown?: boolean;
+}
+
+// v2.21.0 (caching): per-session manifest of every cached call. Persisted
+// to <data_dir>/sessions/<session_id>/cache_manifest.json with the same
+// atomic-write pattern as meta.json. Each entry corresponds to one peer
+// call. The dashboard + reports tooling read this to show cache-hit
+// rate per peer, per round, per provider mode without re-walking
+// events.ndjson. Schema versioned via cache_schema_version so future
+// breaking changes can be detected by manifest readers.
+export interface CacheManifestEntry {
+  ts: string;
+  round: number;
+  peer: PeerId;
+  provider: string;
+  model: string;
+  cache_key_hash: string;
+  cache_provider_mode: "auto" | "explicit" | "implicit" | "not_supported";
+  read_tokens?: number;
+  write_tokens?: number;
+  hit: boolean;
+  latency_ms: number;
+  estimated_savings_usd?: number;
+  savings_unknown?: boolean;
+}
+
+export interface CacheManifest {
+  session_id: string;
+  cache_schema_version: string;
+  created_at: string;
+  updated_at: string;
+  entries: CacheManifestEntry[];
 }
 
 export interface PeerStructuredStatus {
@@ -380,6 +431,11 @@ export interface PeerCallContext {
   // chain-of-thought depth, Grok treats it as agent count (semantic
   // divergence per peers/grok.ts header).
   reasoning_effort_override?: ReasoningEffort;
+  // v2.21.0 (caching): caller identity plumbed to the adapter so
+  // OpenAI/Grok adapters can build a pair-scoped prompt_cache_key
+  // (peer:caller:vN). Defaults to "operator" when omitted by the
+  // orchestrator (preserves pre-v2.21.0 caller-less calls).
+  caller?: PeerId | "operator";
 }
 
 export interface PeerProbeResult {
@@ -542,6 +598,23 @@ export interface AppConfig {
   // `lead_peer` or `peers` referencing a disabled peer is hard-rejected
   // at the orchestrator boundary.
   peer_enabled: Record<PeerId, boolean>;
+  // v2.21.0 (caching): cross-provider prompt caching. Default-on; the
+  // operator can switch off globally via
+  // CROSS_REVIEW_V2_DISABLE_CACHE=true, override per-provider TTL via
+  // CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC=5m|1h /
+  // CROSS_REVIEW_V2_CACHE_TTL_OPENAI=5m|1h, and bump the schema version
+  // when materially changing prompt structure to invalidate stale
+  // caches via CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION. The schema_version
+  // ALSO appears on the first line of `stablePrefix` so any structural
+  // shift produces a different cache_key_hash by design.
+  cache: {
+    schema_version: string;
+    enabled: boolean;
+    ttl: {
+      anthropic: "5m" | "1h";
+      openai: "5m" | "1h";
+    };
+  };
 }
 
 // v2.12.0: see AppConfig.evidence_judge_autowire. `mode` is widened to

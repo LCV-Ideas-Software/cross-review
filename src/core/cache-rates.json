@@ -1,0 +1,27 @@
+{
+  "_comment": "v2.21.0 cache rate cards. FALLBACK rates used by estimateCacheSavings to compute the delta between cached and fresh input tokens. Primary cost rates still come from config.cost_rates (env vars CROSS_REVIEW_<PROVIDER>_INPUT_USD_PER_MILLION). Update these when providers change pricing — keep the file under source control so CHANGELOG bumps document the drift.",
+  "openai": {
+    "fresh_input_per_million_usd": 5.0,
+    "cached_input_per_million_usd": 1.25
+  },
+  "anthropic": {
+    "fresh_input_per_million_usd": 15.0,
+    "cache_read_per_million_usd": 1.5,
+    "cache_write_5min_per_million_usd": 18.75,
+    "cache_write_1h_per_million_usd": 30.0
+  },
+  "gemini": {
+    "fresh_input_per_million_usd": 0.0,
+    "cached_input_per_million_usd": 0.0,
+    "note": "Gemini implicit cache is currently free; explicit cache has storage cost not modeled here"
+  },
+  "deepseek": {
+    "fresh_input_per_million_usd": 0.27,
+    "cached_input_per_million_usd": 0.027
+  },
+  "grok": {
+    "fresh_input_per_million_usd": 5.0,
+    "cached_input_per_million_usd": 1.25,
+    "note": "xAI grok-4.3 caching rates approximate"
+  }
+}

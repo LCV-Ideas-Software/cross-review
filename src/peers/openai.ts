@@ -1,3 +1,9 @@
+// v2.21.0 (caching): OpenAI participates in AUTOMATIC prompt caching
+// through the Responses API. We add `prompt_cache_key` (pair-scoped:
+// peer:caller:vN) so different review pairs do not interfere with each
+// other's cache buckets, and parse `prompt_tokens_details.cached_tokens`
+// from the response usage. No structural payload change beyond the new
+// header — OpenAI auto-detects cacheable prefix tokens.
 import OpenAI from "openai";
 import type {
   AppConfig,
@@ -12,6 +18,7 @@ import type {
 import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
+import { pairScopedCacheKey } from "../core/prompt-parts.js";
 import { withRetry } from "./retry.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 
@@ -23,6 +30,14 @@ type OpenAIUsage = {
   total_tokens?: number;
   output_tokens_details?: {
     reasoning_tokens?: number;
+  };
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+  // OpenAI may return additional cache fields under input_tokens_details
+  // depending on the API surface; tolerate both.
+  input_tokens_details?: {
+    cached_tokens?: number;
   };
 };
 
@@ -39,12 +54,37 @@ type OpenAIStreamEvent = {
 
 function usageFromOpenAI(usage: OpenAIUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
-  return {
+  const cached =
+    usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
+  const inputTokens = usage.input_tokens ?? 0;
+  const result: TokenUsage = {
     input_tokens: usage.input_tokens,
     output_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
     reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
   };
+  if (cached > 0) {
+    result.cache_read_tokens = cached;
+    // OpenAI does not separately report write tokens; the diff between
+    // total input and cached tokens is the "fresh" input tokens that
+    // were potentially cacheable for the next call.
+    if (inputTokens > cached) result.cache_write_tokens = inputTokens - cached;
+    result.cache_provider_mode = "auto";
+  } else {
+    result.cache_provider_mode = "auto";
+  }
+  return result;
+}
+
+// v2.21.0: caller identity is plumbed through PeerCallContext via
+// `caller`. Default to "operator" when unset so legacy callers (no
+// caller set) still get a stable cache key bucket.
+function cacheKeyFor(adapter: { id: PeerId }, config: AppConfig, caller?: string): string {
+  return pairScopedCacheKey(
+    adapter.id,
+    (caller as PeerId | "operator") ?? "operator",
+    config.cache.schema_version,
+  );
 }
 
 function openAIEffort(value: AppConfig["reasoning_effort"][PeerId]): OpenAIReasoningEffort {
@@ -120,6 +160,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `OpenAI review attempt ${attempt}`,
         });
+        const cacheKey = cacheKeyFor({ id: this.id }, this.config, context.caller);
         const body = {
           model: this.model,
           input: [
@@ -146,6 +187,23 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           store: false,
           // OpenAI Responses API uses max_output_tokens, not Chat Completions max_tokens.
           max_output_tokens: this.config.max_output_tokens,
+          // v2.21.0 (caching): pair-scoped prompt_cache_key. OpenAI uses
+          // this to bucket cache entries; same caller+peer pair shares
+          // hits across rounds within the configured retention window.
+          // v2.21.0 (caching): prompt_cache_retention accepts only
+          // "in_memory" | "24h" per OpenAI Responses API SDK types.
+          // We translate the operator-facing config flag (5m or 1h) to
+          // the closest accepted value: anything other than 1h →
+          // "in_memory" (the API default of ~5min); 1h → "24h"
+          // (extended retention, the only longer option).
+          ...(this.config.cache.enabled
+            ? {
+                prompt_cache_key: cacheKey,
+                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
+                  ? "24h"
+                  : "in_memory") as "in_memory" | "24h",
+              }
+            : {}),
         };
         if (this.shouldStreamTokens(context)) {
           const stream_buffer = new StreamBuffer(this.id);
@@ -217,6 +275,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `OpenAI generation attempt ${attempt}`,
         });
+        const cacheKey = cacheKeyFor({ id: this.id }, this.config, context.caller);
         const body = {
           model: this.model,
           input: [
@@ -230,6 +289,20 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           },
           store: false,
           max_output_tokens: this.config.max_output_tokens,
+          // v2.21.0 (caching): prompt_cache_retention accepts only
+          // "in_memory" | "24h" per OpenAI Responses API SDK types.
+          // We translate the operator-facing config flag (5m or 1h) to
+          // the closest accepted value: anything other than 1h →
+          // "in_memory" (the API default of ~5min); 1h → "24h"
+          // (extended retention, the only longer option).
+          ...(this.config.cache.enabled
+            ? {
+                prompt_cache_key: cacheKey,
+                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
+                  ? "24h"
+                  : "in_memory") as "in_memory" | "24h",
+              }
+            : {}),
         };
         if (this.shouldStreamTokens(context)) {
           const stream_buffer = new StreamBuffer(this.id);

@@ -7,6 +7,46 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.21.00] - 2026-05-10
+
+**Minor — cross-provider prompt caching across all 5 peers (OpenAI, Anthropic, Gemini, DeepSeek, Grok).** Single coordinated ship that wires uniform prompt-caching telemetry through the runtime: each adapter parses the provider-native cache fields, the orchestrator emits a canonical `provider.cache.usage` event, and a per-session `cache_manifest.json` is appended for every cached call. Operator can disable globally with `CROSS_REVIEW_V2_DISABLE_CACHE=true`.
+
+### Adicionado
+
+- **`src/core/prompt-parts.ts`** — canonical PromptParts builder with three layers (`stablePrefix` + `semiStableContext` + `dynamicRound`). `stablePrefix` always begins with `cache_schema_version: vN`; sha256 hex hash is invariant across rounds for the same case. New helper `pairScopedCacheKey(peer, caller, schemaVersion)` returns `cross-review-v2:<peer>:<caller>:v<N>` for OpenAI `prompt_cache_key` and Grok `x-grok-conv-id` header.
+- **`src/core/cache-manifest.ts`** — per-session `cache_manifest.json` persistence with the same atomic-write retry pattern as `meta.json`. Append-only at the entry level. Lazy creation on first append; corrupted manifest is renamed to `.corrupt-<ts>` and rebuilt.
+- **`src/core/cache-rates.json`** — fallback rate cards for the 5 providers with fresh-vs-cached input deltas. Used only by `estimateCacheSavings` to surface `cache_savings_usd` on `CostEstimate`. Primary cost rates still flow through `config.cost_rates` env vars.
+- **`AppConfig.cache`** — new struct with `schema_version`, `enabled`, `ttl.anthropic`, `ttl.openai`. Defaults: enabled=true, schema_version="v1", anthropic ttl="1h", openai ttl="1h".
+- **`TokenUsage.cache_*`** — `cache_read_tokens`, `cache_write_tokens`, `cache_provider_mode` (`"auto"|"explicit"|"implicit"|"not_supported"`), `cache_key_hash`. Adapters populate from provider-native fields; the cost layer merges across calls.
+- **`CostEstimate.cache_*`** — `cache_savings_usd` (when rate card matches) or `cache_savings_unknown` (when telemetry present but rate card has no entry).
+- **`CacheManifest` + `CacheManifestEntry`** types and 3 helper functions (`readCacheManifest`, `writeCacheManifest`, `appendCacheManifestEntry`).
+- **`PeerCallContext.caller`** — caller identity plumbed to adapters so `prompt_cache_key`/`x-grok-conv-id` can be pair-scoped per caller. Default "operator" when omitted.
+- **`provider.cache.usage` event** — emitted by orchestrator when a peer call surfaces cache telemetry, with `cache_read_tokens`, `cache_write_tokens`, `cache_provider_mode`, `hit`, `latency_ms`, `estimated_savings_usd`, `savings_unknown`.
+- **`provider.cache.notice` event** — Anthropic adapter warns (info-level, non-blocking) when `system` prompt is shorter than the empirical Opus 4.7 cache threshold.
+- **`docs/caching.md`** — per-provider behavior matrix + cache key scope strategy + rate card semantics + operator controls + smoke marker reference.
+
+### Alterado
+
+- **`src/peers/anthropic.ts`** — `system` is now an array containing one `TextBlockParam` with `cache_control: { type: "ephemeral", ttl: <config.cache.ttl.anthropic> }` when caching is enabled. `usageFromAnthropic` reads `cache_creation_input_tokens` → `cache_write_tokens` and `cache_read_input_tokens` → `cache_read_tokens` and surfaces `cache_provider_mode: "explicit"`.
+- **`src/peers/openai.ts`** — `responses.create` body now carries `prompt_cache_key` (pair-scoped) and `prompt_cache_retention` (`"in_memory"` or `"24h"`, mapped from operator-facing `5m`/`1h`). `usageFromOpenAI` reads `prompt_tokens_details.cached_tokens` → `cache_read_tokens` and surfaces `cache_provider_mode: "auto"`.
+- **`src/peers/grok.ts`** — same changes as OpenAI adapter, plus the OpenAI client is now constructed with `defaultHeaders: { "x-grok-conv-id": <pair-scoped-key> }` when caching is enabled. xAI uses the header for cache-bucket scoping.
+- **`src/peers/deepseek.ts`** — `usageFromChat` reads `prompt_cache_hit_tokens` → `cache_read_tokens` and `prompt_cache_miss_tokens` → `cache_write_tokens`. No payload changes (DeepSeek auto-caches).
+- **`src/peers/gemini.ts`** — `usageFromGemini` reads `cachedContentTokenCount` → `cache_read_tokens` and surfaces `cache_provider_mode: "implicit"` (or `"not_supported"` when zero). No payload changes; explicit `caches.create` deferred to a future ship.
+- **`src/core/cost.ts`** — `mergeUsage` adds cache token totals; `estimateCost` populates `cache_savings_usd` / `cache_savings_unknown` when telemetry is present; new `estimateCacheSavings(peer, usage)` helper consults `cache-rates.json`.
+- **`src/core/orchestrator.ts`** — new private `recordCacheTelemetry` method emits `provider.cache.usage` and appends a manifest entry on every successful peer call that returned cache telemetry. Caller is plumbed through 4 adapter call sites (askPeers, recovery retry, runUntilUnanimous initial draft, runUntilUnanimous revision).
+- **`src/core/config.ts`** — VERSION 2.18.8 → 2.21.0; RELEASE_DATE 2026-05-09 → 2026-05-10. New `loadCacheConfig()` loader with env vars `CROSS_REVIEW_V2_DISABLE_CACHE`, `CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC`, `CROSS_REVIEW_V2_CACHE_TTL_OPENAI`, `CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION`.
+
+### Smoke
+
+- 5 new markers covering the new caching surface: `cache_hash_invariance_test`, `cache_schema_version_in_prefix_test`, `cache_rates_json_loaded_test`, `cache_manifest_atomic_write_test`, `cache_disable_kill_switch_test`.
+
+### Notas técnicas
+
+- **Public surface is additive.** Pre-v2.21 callers see no behavior change. New `caller` on `PeerCallContext` is optional. New cache fields on `TokenUsage`/`CostEstimate` are optional and default to undefined when adapters don't surface them.
+- **OpenAI Responses API retention values are locked to `"in_memory" | "24h"` per the SDK type.** The operator-facing `1h` flag maps to `24h` (extended retention); anything else maps to `in_memory` (~5 min).
+- **Gemini cache surface is telemetry-only.** Implicit cache is service-managed; explicit `caches.create` is deferred to avoid contention with `thinking` configurations and 1k requests/day quota tradeoffs.
+- **Cache manifest is best-effort.** Manifest write failures never break the orchestrator critical path; the recordCacheTelemetry method swallows errors.
+
 ## [v02.18.08] - 2026-05-09
 
 **Patch — `site/index.html` GitHub Sponsors iframe replaced with styled dark link card.** Companion ship coordenado Phase 3 (12 repos no batch). Substitui `<iframe>` cross-origin com fundo branco (que destoava do dark theme) por `<a class="github-sponsor-card">` link card dark navy com ❤ pink + título + meta cyan + seta animada. Card movido para DEPOIS dos botões (lcv.dev/sponsor primário, GitHub Sponsors alternativa secundária). Sem mudança no tarball npm publicado.
