@@ -402,6 +402,126 @@ function detectLeadDrift(generationText: string): boolean {
   return LEAD_DRIFT_PATTERN_KEYWORD_PREFIX.test(head) || LEAD_DRIFT_PATTERN_STATUS_FIELD.test(head);
 }
 
+// v2.24.0 — evidence-provenance lock (Codex bug report 2026-05-10, session
+// 09c21d7a-008f-48b1-bd48-93d93985cd43; second forensic ref eee886d3-9e6c-42e2-9b25-58a5d4144eac).
+// The relator in ship mode was observed fabricating operational
+// evidence (git SHAs, content hashes, build outputs, test-run counts)
+// that did not appear in attached evidence. Two distinct failure modes
+// were observed:
+//   (a) outright fabrication: relator invents SHAs/hashes/test counts
+//       with no source in task, draft, or attachments (09c21d7a — Grok
+//       emitted 39-char SHAs where git emits 40, symmetric patterns
+//       like e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0).
+//   (b) narrative propagation: caller's task narrates an operational
+//       claim ("cargo test 147 passed", "npm run typecheck passed")
+//       without attaching the raw command output; relator quotes the
+//       narrated claim as if verified (eee886d3 — DeepSeek copied
+//       `147 passed` from task.md:19-20 into a revision that called
+//       the result "validated").
+//
+// Two-tier corpus addresses both:
+//   - PROVENANCE-GRADE corpus = attached evidence content only
+//     (persisted via session_attach_evidence). The ONLY corpus an
+//     operational assertion may legitimately cite. NARRATIVE is not
+//     evidence — operator directive 2026-05-10: "Evidência operacional
+//     só pode vir de caller/tool output persistido."
+//   - NARRATIVE corpus = caller's task + prior round's draft. Used
+//     only to soften the hex-token check: IDs, file paths, and content
+//     hashes legitimately appear in narrative discussion and should
+//     not flip the detector when the relator re-uses them.
+//
+// Operational assertions (test counts, `cargo test`, `npm run *`,
+// `git diff --check passed`, `git rev-parse HEAD`, git index hashes)
+// are validated against PROVENANCE-GRADE only. Hex tokens (8+ chars)
+// are validated against the union of PROVENANCE-GRADE + NARRATIVE,
+// since SHAs/file paths/IDs can be referenced as identifiers without
+// being claimed as command-output evidence.
+//
+// Threshold: 3+ net-new hex tokens (high bar — partial IDs and color
+// codes are ≤7 chars and below the FABRICATED_HEX_MIN_LEN cut) OR
+// 2+ unique suspicious assertions trips the detector. Two consecutive
+// trips abort the session via the unified `consecutiveLeadDrifts`
+// counter shared with v2.23.0 empty-revision detection.
+const FABRICATED_HEX_MIN_LEN = 8;
+const FABRICATED_HEX_TOKEN_PATTERN = /\b[a-f0-9]{8,}\b/g;
+const FABRICATED_ASSERTION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\b\d+\s+passed(?:,?\s*\d+\s+failed)?/g, label: "test_run_count" },
+  { pattern: /git\s+diff\s+--check\s+passed/g, label: "git_diff_check_passed" },
+  { pattern: /git\s+rev-parse\s+HEAD/g, label: "git_rev_parse_head" },
+  { pattern: /cargo\s+test\b/g, label: "cargo_test_assertion" },
+  { pattern: /npm\s+run\s+(?:build|test|typecheck)\b/g, label: "npm_run_assertion" },
+  { pattern: /index\s+[a-f0-9]{6,}\.{2}[a-f0-9]{6,}/g, label: "git_diff_index_hash" },
+];
+const FABRICATED_NET_NEW_HEX_THRESHOLD = 3;
+const FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD = 2;
+
+export interface FabricationDetectionResult {
+  fabricated: boolean;
+  net_new_hex_count: number;
+  net_new_hex_sample: string[];
+  suspicious_assertion_count: number;
+  suspicious_assertion_sample: Array<{ label: string; match: string }>;
+}
+
+export interface FabricationDetectionCorpus {
+  /**
+   * PROVENANCE-GRADE corpus. Raw command/tool output persisted via
+   * `session_attach_evidence`. The only corpus an operational
+   * assertion may legitimately cite.
+   */
+  provenanceCorpus: string;
+  /**
+   * NARRATIVE corpus. Caller's task body + prior round's draft.
+   * Combined with provenanceCorpus when validating hex tokens
+   * (SHAs/IDs/file paths can be referenced in narrative without
+   * claiming command-output provenance). Never used for assertion
+   * validation — narrative is not evidence.
+   */
+  narrativeCorpus: string;
+}
+
+export function detectFabricatedEvidence(
+  revisionText: string,
+  corpus: FabricationDetectionCorpus,
+): FabricationDetectionResult {
+  const hexCorpus = `${corpus.provenanceCorpus}\n${corpus.narrativeCorpus}`;
+  const revisionHex = new Set(revisionText.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []);
+  const corpusHex = new Set(hexCorpus.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []);
+  const netNewHex: string[] = [];
+  for (const tok of revisionHex) {
+    if (tok.length < FABRICATED_HEX_MIN_LEN) continue;
+    if (!corpusHex.has(tok)) netNewHex.push(tok);
+  }
+  const suspicious: Array<{ label: string; match: string }> = [];
+  const seenAssertions = new Set<string>();
+  for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
+    const matches = revisionText.match(pattern) ?? [];
+    for (const m of matches) {
+      const key = `${label}:${m.toLowerCase()}`;
+      if (seenAssertions.has(key)) continue;
+      seenAssertions.add(key);
+      // Operational assertions are validated against PROVENANCE-GRADE
+      // corpus ONLY. The caller's narrative claim that a command
+      // produced specific output is NOT evidence until the raw output
+      // is attached via session_attach_evidence (operator directive
+      // 2026-05-10). This is the eee886d3 blocker fix from Codex R1.
+      if (!corpus.provenanceCorpus.includes(m)) {
+        suspicious.push({ label, match: m });
+      }
+    }
+  }
+  const fabricated =
+    netNewHex.length >= FABRICATED_NET_NEW_HEX_THRESHOLD ||
+    suspicious.length >= FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD;
+  return {
+    fabricated,
+    net_new_hex_count: netNewHex.length,
+    net_new_hex_sample: netNewHex.slice(0, 5),
+    suspicious_assertion_count: suspicious.length,
+    suspicious_assertion_sample: suspicious.slice(0, 5),
+  };
+}
+
 // v2.13.0: ship-mode lead directive. Codifies for the lead_peer that
 // it is the relator producing a refined artifact (prose), NOT a peer
 // reviewer voting on the artifact. Inserted into both buildRevisionPrompt
@@ -416,6 +536,24 @@ function leadShipModeDirective(): string[] {
     "DO NOT start your output with the keywords `READY`, `NOT_READY`, or `NEEDS_EVIDENCE`. Those are peer-review status words; you are not voting in this turn — you are refining the artifact for the next peer-review round.",
     "",
     "DO NOT emit a JSON object with a `status` field. The peer reviewers will emit those after seeing your revised draft.",
+    "",
+    // v2.24.0 — evidence-provenance lock (Codex bug report 2026-05-10,
+    // session 09c21d7a-008f-48b1-bd48-93d93985cd43). The relator MUST
+    // NOT fabricate operational evidence. Operational evidence = git
+    // SHAs, file hashes, build outputs, test-run counts, diff hunks,
+    // log lines, command-output assertions. Such evidence can only be
+    // cited verbatim from the caller's draft or attached evidence. The
+    // relator is free to synthesize ANALYSIS (interpretation, design
+    // rationale, prose) but MUST refuse to invent operational facts.
+    "## Evidence Provenance Lock (HARD)",
+    "Operational evidence — git SHAs, content hashes, build outputs, test counts (e.g. `147 passed`), diff hunks, `git diff --check passed` style assertions, vite asset filenames with hex suffixes, `cargo test`/`npm run build`/`npm run typecheck` result lines, `git rev-parse HEAD` output, timestamps, file paths — has a PROVENANCE level. Two levels exist:",
+    "  - PROVENANCE-GRADE: raw command/tool output persisted via `session_attach_evidence` (visible to you below as `## Attached Evidence`), or a verbatim file slice with explicit path:line refs.",
+    "  - NARRATIVE: the caller's natural-language summary in the task or in a prior draft (e.g. `I ran cargo test, 147 passed`).",
+    "NARRATIVE is NOT evidence. The caller's claim that a command produced a specific result is unverified until the raw output is attached. You MUST NOT quote NARRATIVE operational claims as if they were verified evidence. You MAY summarize that the caller claims X; you MUST NOT assert that X happened.",
+    "If the relevant evidence is not in PROVENANCE-GRADE form, describe the gap as a concrete blocker — e.g. `caller narrated cargo test 147 passed but raw output was not attached; reviewer must request session_attach_evidence with the persisted log before declaring READY.`",
+    "Do NOT generate plausible-looking SHAs, hashes, or build output to make the revision feel complete. Do NOT paraphrase tool output with ellipses, pseudocode, or summary counts when the raw output is missing. The relator may not fabricate AND may not propagate caller narrative as if it were fact.",
+    "A post-revision heuristic detector flags net-new operational tokens (hex strings, test counts, command-output assertions) and causes the revision to be discarded if the threshold trips. Two consecutive discards abort the session.",
+    "Distinguish `peer_analysis` (your interpretation, free-form) from `cited_evidence` (verbatim from `## Attached Evidence`, marked with source path/line). When in doubt about the provenance level of a claim, prefer marking it as a blocker over quoting it as evidence.",
     "",
     "If the artifact already addresses every outstanding ask and you cannot improve it, output it verbatim with no edits.",
     "",
@@ -2907,37 +3045,110 @@ export class CrossReviewOrchestrator {
         // draft, increment consecutive-drift count, emit dedicated event.
         const emptyText = generation.text.trim() === "";
         const driftDetected = sessionMode === "ship" && detectLeadDrift(generation.text);
-        if (emptyText || driftDetected) {
+        // v2.24.0: evidence-provenance lock detection. Codex bug report
+        // 2026-05-10 (session 09c21d7a) showed the ship-mode relator
+        // (Grok in that case) fabricating operational evidence — git
+        // SHAs with symmetric bit-patterns (e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0),
+        // 39-char SHAs where git emits 40, "147 passed, 0 failed" test
+        // counts not present in any attached evidence, "git diff --check
+        // passed" assertions, etc. Pre-v2.24.0 the orchestrator silently
+        // promoted the fabricated revision to draft and only the
+        // downstream peers (claude+deepseek in that session) blocked
+        // convergence in NEEDS_EVIDENCE — but that cost a full round of
+        // paid peer calls per fabricated revision. v2.24.0 computes a
+        // provenance corpus (task + prior draft + attached evidence) and
+        // refuses to promote the revision when it carries net-new
+        // operational evidence above threshold. Heuristic, not perfect:
+        // false negatives (fabricated prose without hex/test-output
+        // tokens) still slip through but are caught by the prompt-level
+        // anti-fabrication clause in leadShipModeDirective.
+        let fabricationResult: FabricationDetectionResult | null = null;
+        if (sessionMode === "ship" && !emptyText && !driftDetected) {
+          const attachmentsForCheck = this.store.readEvidenceAttachments(
+            session.session_id,
+            this.config.prompt.max_attached_evidence_chars,
+          );
+          // Two-tier corpus per Codex R1 blocker (HARD GATE session
+          // 91935993, v2.24.0). NARRATIVE (task + prior draft) is not
+          // evidence: an operational claim narrated in the task body
+          // must not satisfy provenance for a relator citing it as
+          // verified fact. Only attached evidence content is
+          // PROVENANCE-GRADE. Hex tokens still use the broader corpus
+          // since IDs/paths/SHAs are commonly referenced in narrative
+          // without being claimed as command-output evidence.
+          fabricationResult = detectFabricatedEvidence(generation.text, {
+            provenanceCorpus: attachmentsForCheck.map((a) => a.content).join("\n"),
+            narrativeCorpus: `${input.task}\n${draft}`,
+          });
+        }
+        const fabricationDetected = fabricationResult?.fabricated === true;
+        if (emptyText || driftDetected || fabricationDetected) {
           consecutiveLeadDrifts += 1;
-          const driftReason = emptyText ? "empty_revision" : "structured_review";
+          const driftReason = emptyText
+            ? "empty_revision"
+            : fabricationDetected
+              ? "fabricated_evidence"
+              : "structured_review";
           const parserWarnings = generation.parser_warnings ?? [];
+          let eventType: string;
+          if (emptyText) eventType = "session.lead_empty_revision";
+          else if (fabricationDetected) eventType = "session.lead_fabrication_detected";
+          else eventType = "session.lead_drift_detected";
+          let messageText: string;
+          if (emptyText) {
+            messageText = `Lead ${leadPeer} returned empty revision text despite ${
+              generation.usage?.output_tokens ?? "unknown"
+            } output tokens billed (consecutive drift count: ${consecutiveLeadDrifts}; parser_warnings: ${
+              parserWarnings.length > 0 ? parserWarnings.join(",") : "none"
+            }). Preserving prior draft for next round; do NOT dispatch peer calls against an empty draft.`;
+          } else if (fabricationDetected) {
+            const sample = fabricationResult ?? {
+              net_new_hex_count: 0,
+              net_new_hex_sample: [],
+              suspicious_assertion_count: 0,
+              suspicious_assertion_sample: [],
+            };
+            const assertionLabels = sample.suspicious_assertion_sample
+              .map((s) => `${s.label}=${JSON.stringify(s.match)}`)
+              .join("; ");
+            messageText =
+              `Lead ${leadPeer} produced revision text with operational evidence that does not appear in the caller's task, prior draft, or attached evidence (consecutive drift count: ${consecutiveLeadDrifts}). ` +
+              `Signals: net_new_hex_tokens=${sample.net_new_hex_count} [${sample.net_new_hex_sample.join(",")}]; suspicious_assertions=${sample.suspicious_assertion_count} [${assertionLabels}]. ` +
+              `Preserving prior draft for next round per evidence-provenance lock (v2.24.0); the relator may not fabricate SHAs, hashes, test counts, or build outputs. ` +
+              `If the citation is real, the caller must attach the proof via session_attach_evidence before the next round.`;
+          } else {
+            messageText = `Lead ${leadPeer} emitted a structured peer-review response instead of a revised draft (consecutive drift count: ${consecutiveLeadDrifts}). Preserving prior draft for next round.`;
+          }
+          const eventData: Record<string, unknown> = {
+            lead_peer: leadPeer,
+            round_kind: "revision",
+            consecutive_drifts: consecutiveLeadDrifts,
+            first_chars: generation.text.slice(0, 100),
+            drift_reason: driftReason,
+            parser_warnings: parserWarnings,
+          };
+          if (fabricationDetected && fabricationResult) {
+            eventData.fabrication_signals = {
+              net_new_hex_count: fabricationResult.net_new_hex_count,
+              net_new_hex_sample: fabricationResult.net_new_hex_sample,
+              suspicious_assertion_count: fabricationResult.suspicious_assertion_count,
+              suspicious_assertion_sample: fabricationResult.suspicious_assertion_sample,
+            };
+          }
           this.emit({
-            type: emptyText ? "session.lead_empty_revision" : "session.lead_drift_detected",
+            type: eventType,
             session_id: session.session_id,
             round: round + 1,
             peer: leadPeer,
-            message: emptyText
-              ? `Lead ${leadPeer} returned empty revision text despite ${
-                  generation.usage?.output_tokens ?? "unknown"
-                } output tokens billed (consecutive drift count: ${consecutiveLeadDrifts}; parser_warnings: ${
-                  parserWarnings.length > 0 ? parserWarnings.join(",") : "none"
-                }). Preserving prior draft for next round; do NOT dispatch peer calls against an empty draft.`
-              : `Lead ${leadPeer} emitted a structured peer-review response instead of a revised draft (consecutive drift count: ${consecutiveLeadDrifts}). Preserving prior draft for next round.`,
-            data: {
-              lead_peer: leadPeer,
-              round_kind: "revision",
-              consecutive_drifts: consecutiveLeadDrifts,
-              first_chars: generation.text.slice(0, 100),
-              drift_reason: driftReason,
-              parser_warnings: parserWarnings,
-            },
+            message: messageText,
+            data: eventData,
           });
           if (consecutiveLeadDrifts >= 2) {
-            this.store.finalize(
-              session.session_id,
-              "aborted",
-              emptyText ? "lead_empty_revision_repeated" : "lead_meta_review_drift",
-            );
+            let finalizeReason: string;
+            if (emptyText) finalizeReason = "lead_empty_revision_repeated";
+            else if (fabricationDetected) finalizeReason = "lead_fabrication_repeated";
+            else finalizeReason = "lead_meta_review_drift";
+            this.store.finalize(session.session_id, "aborted", finalizeReason);
             return {
               session: this.store.read(session.session_id),
               final_text: draft,

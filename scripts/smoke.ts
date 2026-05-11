@@ -5016,6 +5016,196 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] anthropic_empty_text_detection_test: PASS");
 }
 
+// v2.24.0 — relator_evidence_provenance_lock_test. Pins the contract
+// that the relator (ship-mode lead_peer) cannot fabricate operational
+// evidence. Codex bug report 2026-05-10, session 09c21d7a, observed
+// the relator generating SHAs, content hashes, build outputs, and
+// test-run counts that did not appear in the caller's task, prior
+// draft, or attached evidence. Pre-v2.24.0 the orchestrator promoted
+// such revisions to the next-round draft, costing a full round of
+// peer calls before convergence was blocked by downstream peers.
+//
+// Invariants pinned here:
+// (1) Prompt-level: leadShipModeDirective() includes the canonical
+//     "Evidence Provenance Lock (HARD)" sentinel in the system prompt
+//     emitted by buildRevisionPrompt(meta, draft, config, ..., "ship", ...).
+// (2) Helper detectFabricatedEvidence is exported with the expected
+//     return shape (fabricated/net_new_hex_*/suspicious_assertion_*).
+// (3) Behavioral matrix:
+//     - clean revision (text purely synthesized from corpus tokens) →
+//       fabricated=false.
+//     - revision with ≥3 net-new hex tokens → fabricated=true.
+//     - revision with ≥2 suspicious assertion patterns absent from
+//       attached evidence → fabricated=true.
+//     - revision quoting hex tokens verbatim from PROVENANCE-GRADE
+//       corpus → fabricated=false (provenance-correct).
+//     - eee886d3 pattern: caller's task narrates "cargo test 147 passed"
+//       and "npm run typecheck passed", attached evidence is empty,
+//       relator quotes those assertions as fact → fabricated=true.
+//       NARRATIVE corpus may NOT satisfy provenance for operational
+//       assertions (Codex R1 HARD GATE blocker fix).
+//     - Hex token narrated in task (but no attached evidence) →
+//       fabricated=false. Hex tokens fall back to broader corpus
+//       since SHAs/IDs/paths legitimately appear in narrative.
+// (4) Source-level: orchestrator.ts emits `session.lead_fabrication_detected`
+//     event with `data.fabrication_signals.net_new_hex_count` +
+//     `data.fabrication_signals.suspicious_assertion_count`, and uses
+//     `lead_fabrication_repeated` as the finalize reason when the
+//     consecutive-cap is hit.
+{
+  const { detectFabricatedEvidence } = await import("../src/core/orchestrator.js");
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+  const orchSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+
+  // (1) Prompt-level sentinel — "Evidence Provenance Lock (HARD)" must
+  // be present in leadShipModeDirective() so the ship-mode relator
+  // sees the anti-fabrication clause every revision round.
+  assert.ok(
+    /Evidence Provenance Lock \(HARD\)/.test(orchSrc),
+    "v2.24.0 / fabrication_lock: leadShipModeDirective must contain the 'Evidence Provenance Lock (HARD)' sentinel string",
+  );
+  assert.ok(
+    /Operational evidence — git SHAs, content hashes, build outputs, test counts/.test(orchSrc),
+    "v2.24.0 / fabrication_lock: leadShipModeDirective must explicitly enumerate operational evidence kinds (git SHAs, hashes, build outputs, test counts)",
+  );
+
+  // (2) Behavioral matrix on the exported detectFabricatedEvidence helper.
+  const clean = detectFabricatedEvidence("Some analysis. The caller refactored module X.", {
+    provenanceCorpus: "",
+    narrativeCorpus: "Some analysis. The caller refactored module X.",
+  });
+  assert.strictEqual(
+    clean.fabricated,
+    false,
+    "v2.24.0 / fabrication_lock: clean revision returns fabricated=false",
+  );
+
+  const hexFab = detectFabricatedEvidence(
+    "Verified at SHA e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0 with index a1b2c3d4e5f6 and vite hash 8f4a2b3c9e1d2f4a5b6c7d8e9f0a1b2c",
+    {
+      provenanceCorpus: "",
+      narrativeCorpus: "Original task with no hex tokens",
+    },
+  );
+  assert.ok(
+    hexFab.fabricated === true && hexFab.net_new_hex_count >= 3,
+    `v2.24.0 / fabrication_lock: revision with ≥3 net-new hex tokens trips fabricated=true (got count=${hexFab.net_new_hex_count})`,
+  );
+
+  const assertFab = detectFabricatedEvidence(
+    "Local validation: cargo test passed (147 passed, 0 failed). git diff --check passed.",
+    {
+      provenanceCorpus: "",
+      narrativeCorpus: "Original task with no operational assertions.",
+    },
+  );
+  assert.ok(
+    assertFab.fabricated === true && assertFab.suspicious_assertion_count >= 2,
+    `v2.24.0 / fabrication_lock: revision with ≥2 suspicious assertions trips fabricated=true (got count=${assertFab.suspicious_assertion_count})`,
+  );
+
+  const provenanceCorrect = detectFabricatedEvidence(
+    "Caller cited SHA e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0 — I am quoting it from attached evidence.",
+    {
+      provenanceCorpus:
+        "Attached evidence: build artifact SHA e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0 from CI run.",
+      narrativeCorpus: "",
+    },
+  );
+  assert.ok(
+    provenanceCorrect.fabricated === false,
+    "v2.24.0 / fabrication_lock: hex tokens quoted verbatim from PROVENANCE-GRADE corpus do NOT trip fabricated=true",
+  );
+
+  // (2.5) eee886d3 pattern — Codex R1 HARD GATE blocker fix. The
+  // caller's task narrates operational claims ("cargo test 147
+  // passed", "npm run typecheck passed") with no attached evidence.
+  // The relator then asserts those claims as verified fact in the
+  // revision. Pre-R2 the detector accepted this because the corpus
+  // was [task + draft + attachments] joined as a single string, so
+  // `corpus.includes("147 passed")` returned true. Two-tier corpus
+  // (provenance vs narrative) closes this: assertions check
+  // provenance-only, so narrative-only assertions trip the detector.
+  const narrativePropagation = detectFabricatedEvidence(
+    "Local validation summary: cargo test on the workspace shows 147 passed, 0 failed. npm run typecheck completes cleanly.",
+    {
+      provenanceCorpus: "",
+      narrativeCorpus:
+        "## Task\nPlease review the v0.5.20 ship. Local checks done by caller:\n- npm run typecheck: passed.\n- cargo test --manifest-path src-tauri\\Cargo.toml: 147 passed, 0 failed.",
+    },
+  );
+  assert.ok(
+    narrativePropagation.fabricated === true &&
+      narrativePropagation.suspicious_assertion_count >= 2,
+    `v2.24.0 / fabrication_lock: eee886d3 pattern — operational assertions narrated in task (no attached evidence) MUST trip fabricated=true when relator quotes them as fact (got count=${narrativePropagation.suspicious_assertion_count}, fabricated=${narrativePropagation.fabricated})`,
+  );
+
+  // (2.6) Hex token narrated-but-unattached → fabricated=false.
+  // Mirrors the operator's distinction: SHAs/IDs/file paths may
+  // legitimately appear in narrative as identifiers without being
+  // command-output evidence. Only canonical operational assertions
+  // (test counts, build/test commands, git ops) trip on narrative-
+  // only provenance.
+  const hexNarrativeOnly = detectFabricatedEvidence(
+    "The branch HEAD is e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0 per the task description, and we built against index 8f4a2b3c9e1d2f4a5b6c7d8e and vite asset bundle hash a1b2c3d4e5f6c7b8.",
+    {
+      provenanceCorpus: "",
+      narrativeCorpus:
+        "Caller note: HEAD = e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0. Vite index hash 8f4a2b3c9e1d2f4a5b6c7d8e and bundle a1b2c3d4e5f6c7b8 were observed.",
+    },
+  );
+  assert.strictEqual(
+    hexNarrativeOnly.fabricated,
+    false,
+    "v2.24.0 / fabrication_lock: hex tokens quoted from NARRATIVE corpus do NOT trip fabricated=true (IDs/paths fall back to broader corpus)",
+  );
+
+  // Source-level: threshold constants pinned at the documented values.
+  assert.ok(
+    /FABRICATED_NET_NEW_HEX_THRESHOLD\s*=\s*3/.test(orchSrc),
+    "v2.24.0 / fabrication_lock: net-new hex threshold pinned at 3",
+  );
+  assert.ok(
+    /FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD\s*=\s*2/.test(orchSrc),
+    "v2.24.0 / fabrication_lock: suspicious assertion threshold pinned at 2",
+  );
+
+  // (3) Orchestrator branch emits `session.lead_fabrication_detected`
+  // and uses `lead_fabrication_repeated` as the finalize reason.
+  assert.ok(
+    /session\.lead_fabrication_detected/.test(orchSrc),
+    "v2.24.0 / fabrication_lock: orchestrator emits `session.lead_fabrication_detected` event",
+  );
+  assert.ok(
+    /lead_fabrication_repeated/.test(orchSrc),
+    "v2.24.0 / fabrication_lock: orchestrator uses `lead_fabrication_repeated` finalize reason at the consecutive-drift cap",
+  );
+
+  // (4) Event data carries the structured fabrication signals.
+  assert.ok(
+    /fabrication_signals\s*[:=]\s*\{[\s\S]{0,400}net_new_hex_count[\s\S]{0,400}suspicious_assertion_count/.test(
+      orchSrc,
+    ),
+    "v2.24.0 / fabrication_lock: event data.fabrication_signals includes net_new_hex_count + suspicious_assertion_count (assignment or literal form)",
+  );
+
+  // (5) Consecutive drift counter is reused (single counter increments
+  // for empty + structured-drift + fabrication, so the cap fires
+  // uniformly across all three failure modes).
+  assert.ok(
+    /if \(emptyText \|\| driftDetected \|\| fabricationDetected\) \{[\s\S]{0,400}consecutiveLeadDrifts\s*\+=\s*1/.test(
+      orchSrc,
+    ),
+    "v2.24.0 / fabrication_lock: the unified drift branch increments consecutiveLeadDrifts when any of the three failure modes fires",
+  );
+
+  console.log("[smoke] relator_evidence_provenance_lock_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight
