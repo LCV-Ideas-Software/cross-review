@@ -5206,6 +5206,186 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] relator_evidence_provenance_lock_test: PASS");
 }
 
+// v2.25.0 — circular_mode_test. Pins the third SessionMode `"circular"`
+// imported from maestro-app's serial deliberative protocol. Distinct
+// from ship/review modes in three ways: (1) no parallel peer-voting
+// per round (rotator-only sequential flow); (2) convergence = full
+// rotation completes with consecutive_no_change_count >=
+// rotation_order.length; (3) approved-content lock + quality-
+// preservation rules in the rotator prompt directive.
+//
+// Invariants pinned here:
+// (1) `SessionMode` type union includes `"circular"`.
+// (2) `leadCircularModeDirective` exists with canonical sentinels:
+//     "Rotator Directive (circular mode)", "Approved-content lock",
+//     "Quality preservation", "No self-review", "Evidence Provenance
+//     Lock (HARD, shared with ship mode)".
+// (3) `buildRevisionPrompt` and `buildInitialDraftPrompt` route to
+//     `leadCircularModeDirective()` when mode === "circular" (source-
+//     level check via ternary in directive selection).
+// (4) AppConfig.budget includes `circular_max_rotations` numeric field;
+//     loaded with default 3 and env override `CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS`.
+// (5) Orchestrator runUntilUnanimous branches to `runCircularLoop` when
+//     `sessionMode === "circular"` BEFORE entering the ship/review loop.
+// (6) `runCircularLoop` enforces rotation_order.length >= 2 (else
+//     finalizes with reason `circular_rotation_too_small`).
+// (7) Convergence event type `session.circular_full_rotation_no_change`
+//     fires when consecutive_no_change_count >= rotation_order.length.
+// (8) Max-rotations abort event `session.circular_max_rotations_exceeded`
+//     fires at the rotation cap.
+// (9) Session meta carries `circular_state: { rotation_order, consecutive_no_change_count, last_revision_round }`.
+// (10) MCP tool schemas (`run_until_unanimous`, `session_start_unanimous`) accept `mode: "circular"`.
+{
+  const fsModule = await import("node:fs");
+  const pathModule = await import("node:path");
+  const orchSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+  const typesSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "types.ts"),
+    "utf8",
+  );
+  const configSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "config.ts"),
+    "utf8",
+  );
+  const storeSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "core", "session-store.ts"),
+    "utf8",
+  );
+  const mcpSrc = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+
+  // (1) SessionMode union includes "circular".
+  assert.ok(
+    /export type SessionMode\s*=\s*"ship"\s*\|\s*"review"\s*\|\s*"circular"/.test(typesSrc),
+    "v2.25.0 / circular_mode: SessionMode union must include 'circular' alongside 'ship' and 'review'",
+  );
+
+  // (2) leadCircularModeDirective with key sentinels.
+  assert.ok(
+    /function leadCircularModeDirective\(\)/.test(orchSrc),
+    "v2.25.0 / circular_mode: leadCircularModeDirective() function exists",
+  );
+  for (const sentinel of [
+    "Rotator Directive (circular mode)",
+    "Approve unchanged",
+    "Approved-content lock",
+    "Quality preservation",
+    "No self-review",
+    "Evidence Provenance Lock (HARD, shared with ship mode)",
+  ]) {
+    assert.ok(
+      orchSrc.includes(sentinel),
+      `v2.25.0 / circular_mode: leadCircularModeDirective must contain sentinel "${sentinel}"`,
+    );
+  }
+
+  // (3) Prompt builders route to leadCircularModeDirective on circular mode.
+  assert.ok(
+    /mode === "circular"\s*\?\s*leadCircularModeDirective\(\)/.test(orchSrc),
+    "v2.25.0 / circular_mode: buildRevisionPrompt / buildInitialDraftPrompt must route to leadCircularModeDirective() when mode === 'circular'",
+  );
+
+  // (4) AppConfig.budget.circular_max_rotations + env var.
+  assert.ok(
+    /circular_max_rotations:\s*intEnv\("CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS",\s*3\)/.test(
+      configSrc,
+    ),
+    "v2.25.0 / circular_mode: config loads circular_max_rotations from CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS env (default 3)",
+  );
+  assert.ok(
+    /circular_max_rotations:\s*number/.test(typesSrc),
+    "v2.25.0 / circular_mode: AppConfig.budget.circular_max_rotations: number field declared",
+  );
+
+  // (5) Orchestrator branches to runCircularLoop on circular mode.
+  assert.ok(
+    /if \(sessionMode === "circular"\)\s*\{[\s\S]{0,200}return await this\.runCircularLoop/.test(
+      orchSrc,
+    ),
+    "v2.25.0 / circular_mode: runUntilUnanimous branches to runCircularLoop when sessionMode === 'circular'",
+  );
+  assert.ok(
+    /private async runCircularLoop\(/.test(orchSrc),
+    "v2.25.0 / circular_mode: orchestrator declares private async runCircularLoop method",
+  );
+
+  // (6) Rotation-too-small guard.
+  assert.ok(
+    /circular_rotation_too_small/.test(orchSrc) && /sessionPeers\.length\s*<\s*2/.test(orchSrc),
+    "v2.25.0 / circular_mode: runCircularLoop aborts with circular_rotation_too_small when sessionPeers.length < 2",
+  );
+
+  // (7) Convergence event + finalize reason.
+  assert.ok(
+    /session\.circular_full_rotation_no_change/.test(orchSrc),
+    "v2.25.0 / circular_mode: convergence event session.circular_full_rotation_no_change emitted",
+  );
+  assert.ok(
+    /circular_full_rotation_no_change/.test(orchSrc) &&
+      /this\.store\.finalize\([\s\S]{0,100}"converged"[\s\S]{0,100}"circular_full_rotation_no_change"/.test(
+        orchSrc,
+      ),
+    "v2.25.0 / circular_mode: orchestrator finalizes with outcome=converged + reason=circular_full_rotation_no_change",
+  );
+  assert.ok(
+    /consecutiveNoChangeCount\s*>=\s*rotationOrder\.length/.test(orchSrc),
+    "v2.25.0 / circular_mode: convergence condition is consecutiveNoChangeCount >= rotationOrder.length",
+  );
+
+  // (8) Max-rotations abort.
+  assert.ok(
+    /session\.circular_max_rotations_exceeded/.test(orchSrc),
+    "v2.25.0 / circular_mode: max-rotations event session.circular_max_rotations_exceeded emitted",
+  );
+  assert.ok(
+    /circular_max_rotations_exceeded/.test(orchSrc) &&
+      /this\.store\.finalize\([\s\S]{0,100}"max-rounds"[\s\S]{0,100}"circular_max_rotations_exceeded"/.test(
+        orchSrc,
+      ),
+    "v2.25.0 / circular_mode: orchestrator finalizes with outcome=max-rounds + reason=circular_max_rotations_exceeded",
+  );
+
+  // (9) Meta carries circular_state with the expected shape.
+  assert.ok(
+    /circular_state\?:\s*\{[\s\S]{0,300}rotation_order:\s*PeerId\[\][\s\S]{0,300}consecutive_no_change_count:\s*number[\s\S]{0,300}last_revision_round:\s*number\s*\|\s*null/.test(
+      typesSrc,
+    ),
+    "v2.25.0 / circular_mode: SessionMeta.circular_state declares {rotation_order, consecutive_no_change_count, last_revision_round}",
+  );
+  assert.ok(
+    /setCircularState\(/.test(storeSrc) && /meta\.circular_state\s*=\s*state/.test(storeSrc),
+    "v2.25.0 / circular_mode: SessionStore.setCircularState() persists circular_state under session lock",
+  );
+
+  // (10) MCP tool schemas accept "circular".
+  const circularEnumOccurrences = (
+    mcpSrc.match(/z\.enum\(\["ship",\s*"review",\s*"circular"\]\)/g) ?? []
+  ).length;
+  assert.ok(
+    circularEnumOccurrences >= 2,
+    `v2.25.0 / circular_mode: MCP schemas in mcp/server.ts must include z.enum(["ship","review","circular"]) for both run_until_unanimous + session_start_unanimous (found ${circularEnumOccurrences} occurrences)`,
+  );
+
+  // (11) Rotation step events documented.
+  for (const eventType of [
+    "session.circular_rotation_assigned",
+    "session.circular_step_unchanged",
+    "session.circular_step_revised",
+  ]) {
+    assert.ok(
+      orchSrc.includes(eventType),
+      `v2.25.0 / circular_mode: orchestrator emits ${eventType} event`,
+    );
+  }
+
+  console.log("[smoke] circular_mode_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight

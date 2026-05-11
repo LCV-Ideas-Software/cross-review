@@ -20,7 +20,17 @@ export type SessionOutcome = "converged" | "aborted" | "max-rounds";
 // a NEW REVISED VERSION as prose. `review` means `initial_draft` is the
 // review subject — lead may emit a structured response. Disambiguates
 // the v2.12 lead_peer meta-review drift on "Review v..." task wording.
-export type SessionMode = "ship" | "review";
+// v2.25.0: `circular` adds a third mode — serial deliberative custody
+// imported from maestro-app. Caller submits an artifact; the rotator
+// for the round revises or returns unchanged; the artifact rotates to
+// the next non-caller peer. Convergence = full rotation completes
+// without any rotator producing a substantive change. There is no
+// parallel peer-voting step in this mode — the rotator IS the actor
+// each round. Best applied to producing/refining shared prose
+// artifacts (specs, design docs, CHANGELOGs, README copy). For
+// approve/reject judgments over external code/artifacts, prefer ship
+// or review modes.
+export type SessionMode = "ship" | "review" | "circular";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SessionControlStatus =
   | "running"
@@ -517,6 +527,23 @@ export interface SessionMeta {
     new_session_id: string;
   };
   contests_session_id?: string;
+  // v2.25.0 (circular mode): durable bookkeeping for the serial
+  // deliberative loop. Populated only when the session was started
+  // with `mode: "circular"`. `rotation_order` is the deterministic
+  // rotation derived from the session's caller-excluded peer list at
+  // session_init (length >= 2 enforced). `consecutive_no_change_count`
+  // tracks how many consecutive rounds the rotator returned the
+  // artifact unchanged — convergence fires when it reaches
+  // `rotation_order.length` (i.e. one full rotation with every peer
+  // approving the current artifact without modification).
+  // `last_revision_round` is the round number of the most recent
+  // substantive revision (used by the dashboard / metrics to show
+  // "ratchet progress"). Absent on ship/review sessions for back-compat.
+  circular_state?: {
+    rotation_order: PeerId[];
+    consecutive_no_change_count: number;
+    last_revision_round: number | null;
+  };
   // v2.22.0 (B.P3): per-round cost telemetry + budget ceiling snapshot.
   // `cost_ceiling_usd` captures `config.budget.max_session_cost_usd` at
   // session_init time so subsequent retroactive analysis can compute
@@ -577,6 +604,10 @@ export interface AppConfig {
     preflight_max_round_cost_usd?: number;
     require_rates_for_budget: boolean;
     default_max_rounds: number;
+    // v2.25.0 (circular mode): see AppConfig docs in config.ts. Used by
+    // runUntilUnanimous when sessionMode === "circular" to derive
+    // `effectiveMaxRounds = circular_max_rotations × rotation_order.length`.
+    circular_max_rotations: number;
   };
   prompt: {
     max_task_chars: number;

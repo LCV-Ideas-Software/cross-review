@@ -562,6 +562,47 @@ function leadShipModeDirective(): string[] {
   ];
 }
 
+// v2.25.0 — circular-mode rotator directive. Codifies for the rotating
+// peer that it is the temporary CURATOR of the artifact in a serial
+// deliberative loop (imported from maestro-app's editorial protocol).
+// Inserted into buildRevisionPrompt and buildInitialDraftPrompt when
+// mode === "circular". Distinct from leadShipModeDirective in three
+// ways: (1) explicit approve-unchanged option (return artifact byte-
+// identical when no concrete blocker requires change), (2) approved-
+// content lock (treat passages from prior rotators as implicit
+// approval; don't touch them without a concrete blocker), (3) quality-
+// preservation rule (weaker rotators must not flatten stronger prose).
+function leadCircularModeDirective(): string[] {
+  return [
+    "## Rotator Directive (circular mode)",
+    "You are the current ROTATOR in a serial deliberative review. The artifact below has been circulating through a fixed rotation of peers; you are the next custodian. Your output IS the next version of the artifact, which then rotates to the next peer.",
+    "",
+    "Your task is binary at the top level: either approve the artifact UNCHANGED, or produce a narrowly justified revision.",
+    "",
+    "### Approve unchanged",
+    "If you read the artifact carefully and find no concrete defect, protocol violation, or unresolved blocker that justifies change, output the artifact VERBATIM with no edits whatsoever. Byte-identical. Convergence in circular mode is the artifact surviving a full rotation without modification — your `approve unchanged` is the canonical convergence signal.",
+    "",
+    "### Approved-content lock",
+    "Content that prior rotators chose NOT to change is presumed approved. You MAY touch only what (a) you can articulate as a concrete defect linked to a protocol rule or named blocker, (b) was modified by the immediately previous rotator and you disagree with that modification, or (c) requires a narrow continuity fix because of (a) or (b). If a concern is vague, stylistic, optional, or outside the agreed scope, mark it as out-of-scope and leave the passage untouched. Treat the artifact like the latest decision of a panel that already debated it.",
+    "",
+    "### Quality preservation",
+    "Stronger prose written by prior rotators (depth, nuance, articulation, argumentative structure) must NOT be flattened, compressed, or simplified just because you would have phrased it differently. Reduce, compress, or simplify ONLY when the reduction directly addresses a concrete defect. Otherwise: preserve the existing form.",
+    "",
+    "### No self-review",
+    "You may have produced an earlier version in a prior round of this rotation. You are NOT reviewing your own immediate output — between your previous turn and now, other peers had custody and may have transformed the artifact. Engage with the current text as the panel's product, not as your own draft.",
+    "",
+    "### Evidence Provenance Lock (HARD, shared with ship mode)",
+    "Operational evidence — git SHAs, content hashes, build outputs, test counts (`147 passed`), diff hunks, `git diff --check passed`, vite asset filenames, `cargo test`/`npm run *` result lines, `git rev-parse HEAD` output, timestamps, file paths — may only be cited from PROVENANCE-GRADE sources: raw command/tool output persisted via `session_attach_evidence` (visible as `## Attached Evidence`), or a verbatim file slice with path:line refs.",
+    "NARRATIVE operational claims (the caller's task body or a prior draft saying `I ran X, result was Y`) are NOT evidence. You must NOT fabricate SHAs/hashes/test counts to make the artifact feel complete, and you must NOT propagate narrative claims as if verified. A post-revision detector enforces this — two consecutive trips abort the session.",
+    "",
+    "### Output format",
+    "Output ONLY the artifact text (revised or verbatim). No meeting notes, no review summary, no commentary, no JSON wrapper, no status field. The runtime infers your decision from a byte comparison: if your output equals the prior artifact, you approved unchanged; otherwise you revised.",
+    "",
+    "DO NOT start your output with the keywords `READY`, `NOT_READY`, or `NEEDS_EVIDENCE`. There is no parallel peer-voting step in circular mode — you are the actor this round.",
+    "",
+  ];
+}
+
 function buildRevisionPrompt(
   meta: SessionMeta,
   draft: string,
@@ -577,13 +618,22 @@ function buildRevisionPrompt(
     content_type?: string;
   }>,
 ): string {
+  const modeDirective: string[] =
+    mode === "ship"
+      ? leadShipModeDirective()
+      : mode === "circular"
+        ? leadCircularModeDirective()
+        : [];
+  const callToAction =
+    mode === "circular"
+      ? "Either approve the artifact unchanged (output it verbatim) OR produce a narrowly justified revision. Only touch passages that have a concrete defect, protocol violation, or unresolved blocker."
+      : "Rewrite the solution considering every blocking issue and peer request.\nDo not ignore disagreements. Preserve what peers already accepted and fix what prevented unanimity.";
   return [
     "# Cross Review - Revision For Convergence",
     "",
     ...sessionContractDirectives(),
-    ...(mode === "ship" ? leadShipModeDirective() : []),
-    "Rewrite the solution considering every blocking issue and peer request.",
-    "Do not ignore disagreements. Preserve what peers already accepted and fix what prevented unanimity.",
+    ...modeDirective,
+    callToAction,
     "",
     ...reviewFocusBlock(meta, config, reviewFocus),
     ...evidenceChecklistBlock(meta),
@@ -597,7 +647,9 @@ function buildRevisionPrompt(
     "## Previous Version",
     safePromptText(draft, config.prompt.max_draft_chars),
     "",
-    "Return only the complete revised version, without meeting notes or external commentary.",
+    mode === "circular"
+      ? "Return only the complete artifact text (revised or verbatim). No commentary."
+      : "Return only the complete revised version, without meeting notes or external commentary.",
   ].join("\n");
 }
 
@@ -607,13 +659,21 @@ function buildInitialDraftPrompt(
   reviewFocus?: string,
   mode: import("./types.js").SessionMode = "ship",
 ): string {
+  const modeDirective: string[] =
+    mode === "ship"
+      ? leadShipModeDirective()
+      : mode === "circular"
+        ? leadCircularModeDirective()
+        : [];
   return [
     "# Cross Review - First Draft",
     "",
     ...sessionContractDirectives(),
-    ...(mode === "ship" ? leadShipModeDirective() : []),
+    ...modeDirective,
     "Create a complete first version for the task below.",
-    "The version will be submitted to unanimous peer review.",
+    mode === "circular"
+      ? "This version will enter a serial rotation of peer custodians; each will either approve unchanged or produce a narrowly justified revision. Convergence happens when the artifact survives a full rotation untouched."
+      : "The version will be submitted to unanimous peer review.",
     "",
     ...reviewFocusBlock(undefined, config, reviewFocus),
     "## Task",
@@ -2708,6 +2768,441 @@ export class CrossReviewOrchestrator {
     return { session: updated, round, converged: convergence.converged };
   }
 
+  // v2.25.0 (circular mode): serial deliberative custody loop. Imported
+  // from maestro-app's editorial protocol. Each round has one actor —
+  // the current rotator — who either approves the artifact unchanged
+  // or produces a narrowly justified revision. There is no parallel
+  // peer-voting step; convergence is the artifact surviving one full
+  // rotation (every non-caller peer takes a turn without producing a
+  // substantive change). Best for prose/spec/protocol artifacts where
+  // the goal is producing a shared canonical version, not deciding
+  // whether to accept an external artifact. For approve/reject of
+  // external artifacts use ship or review modes.
+  //
+  // Invariants:
+  //   - rotation length must be >= 2 (no self-immediate-review); enforce at entry
+  //   - caller (when peer) is auto-excluded by upstream `sessionPeers` derivation
+  //   - first rotator = `firstRotator` (lottery-selected or operator-default leadPeer)
+  //   - convergence = `consecutive_no_change_count >= rotation_order.length`
+  //   - drift / empty / fabrication detection identical to ship-mode relator;
+  //     consecutive-cap=2 aborts the session (shared `consecutiveLeadDrifts`)
+  //   - per-round cost telemetry + budget ceiling honored same as ship mode
+  private async runCircularLoop(params: {
+    session: SessionMeta;
+    adapters: Record<PeerId, PeerAdapter>;
+    sessionPeers: PeerId[];
+    callerForLottery: PeerId | "operator";
+    firstRotator: PeerId;
+    input: RunUntilUnanimousInput;
+    costLimit?: number;
+    initialDraft?: string;
+  }): Promise<RunUntilUnanimousOutput> {
+    const { adapters, sessionPeers, callerForLottery, firstRotator, input, costLimit } = params;
+    let session = params.session;
+    let draft = params.initialDraft;
+
+    // Rotation length guard. With sessionPeers already caller-excluded
+    // by the upstream lottery setup, we just need len >= 2 to keep the
+    // no-self-immediate-output invariant: between any peer's turn and
+    // their next turn, at least one different peer must hold custody.
+    if (sessionPeers.length < 2) {
+      this.store.finalize(session.session_id, "aborted", "circular_rotation_too_small");
+      this.emit({
+        type: "session.circular_rotation_too_small",
+        session_id: session.session_id,
+        message: `Circular mode requires at least 2 non-caller peers in the rotation; found ${sessionPeers.length}. Configure additional peers or use mode: "ship".`,
+        data: {
+          rotation_size: sessionPeers.length,
+          caller: callerForLottery,
+          available_peers: sessionPeers,
+        },
+      });
+      return {
+        session: this.store.read(session.session_id),
+        final_text: draft,
+        converged: false,
+        rounds: 0,
+      };
+    }
+
+    // Build rotation_order. firstRotator (lottery-selected) holds slot 0;
+    // remaining session peers fill subsequent slots in canonical PEERS order.
+    // Lottery for slot 0 preserves anti-bias; subsequent slots are
+    // deterministic for audit/replay.
+    const rotationOrder: PeerId[] = [
+      firstRotator,
+      ...sessionPeers.filter((peer) => peer !== firstRotator),
+    ];
+
+    let consecutiveLeadDrifts = 0;
+    let consecutiveNoChangeCount = 0;
+    let lastRevisionRound: number | null = null;
+    let cursor = 0;
+
+    this.store.setCircularState(session.session_id, {
+      rotation_order: rotationOrder,
+      consecutive_no_change_count: 0,
+      last_revision_round: null,
+    });
+    this.emit({
+      type: "session.circular_rotation_assigned",
+      session_id: session.session_id,
+      message: `Circular rotation: ${rotationOrder.join(" -> ")} (caller=${callerForLottery} excluded; length=${rotationOrder.length}).`,
+      data: {
+        rotation_order: rotationOrder,
+        caller: callerForLottery,
+        rotation_size: rotationOrder.length,
+      },
+    });
+
+    const sessionMode: import("./types.js").SessionMode = "circular";
+
+    // Initial-draft generation if caller did not supply one. Use the
+    // first rotator (rotationOrder[0]) as generator, then advance the
+    // cursor so round 1 hands custody to a different peer — preserving
+    // no-self-immediate-output across the initial-draft → round 1 hop.
+    if (!draft) {
+      if (this.isCancelled(session.session_id, input.signal)) {
+        this.store.markCancelled(session.session_id, "session_cancelled");
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: false,
+          rounds: 0,
+        };
+      }
+      const initRotator = rotationOrder[cursor];
+      const initGeneration = await adapters[initRotator].generate(
+        buildInitialDraftPrompt(input.task, this.config, input.review_focus, sessionMode),
+        {
+          session_id: session.session_id,
+          round: 0,
+          task: input.task,
+          signal: input.signal,
+          stream: this.config.streaming.events,
+          stream_tokens: this.config.streaming.tokens,
+          emit: this.emit,
+          reasoning_effort_override: input.reasoning_effort_overrides?.[initRotator],
+          caller: callerForLottery,
+        },
+      );
+      this.store.saveGeneration(session.session_id, 0, initGeneration, "initial-draft");
+      if (detectLeadDrift(initGeneration.text) || initGeneration.text.trim() === "") {
+        this.emit({
+          type: "session.lead_drift_detected",
+          session_id: session.session_id,
+          round: 0,
+          peer: initRotator,
+          message: `Circular initial-draft rotator ${initRotator} emitted unusable output (drift or empty). No prior draft to fall back to; aborting.`,
+          data: {
+            lead_peer: initRotator,
+            round_kind: "initial-draft",
+            mode: "circular",
+            first_chars: initGeneration.text.slice(0, 100),
+          },
+        });
+        this.store.finalize(session.session_id, "aborted", "lead_meta_review_drift");
+        return {
+          session: this.store.read(session.session_id),
+          final_text: undefined,
+          converged: false,
+          rounds: 0,
+        };
+      }
+      draft = initGeneration.text;
+      cursor = (cursor + 1) % rotationOrder.length;
+    }
+
+    // Derive max round ceiling from circular_max_rotations × rotation_size.
+    // When caller passes max_rounds explicitly, honor it; otherwise use
+    // config.budget.circular_max_rotations × rotationOrder.length.
+    const circularMaxRotations =
+      input.max_rounds && input.max_rounds > 0
+        ? Math.max(1, Math.ceil(input.max_rounds / rotationOrder.length))
+        : this.config.budget.circular_max_rotations;
+    const maxCircularRounds = input.until_stopped
+      ? Number.MAX_SAFE_INTEGER
+      : circularMaxRotations * rotationOrder.length;
+
+    for (let round = 1; round <= maxCircularRounds; round++) {
+      if (this.isCancelled(session.session_id, input.signal)) {
+        this.store.markCancelled(session.session_id, "session_cancelled");
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: false,
+          rounds: round - 1,
+        };
+      }
+      if (budgetExceeded(session, costLimit)) {
+        this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
+        this.emit({
+          type: "session.budget_exceeded",
+          session_id: session.session_id,
+          round,
+          message: `Circular session aborted: budget exceeded at round ${round}.`,
+        });
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: false,
+          rounds: round - 1,
+        };
+      }
+
+      const rotator = rotationOrder[cursor];
+      const startedAt = new Date().toISOString();
+
+      const attachedEvidence = this.store.readEvidenceAttachments(
+        session.session_id,
+        this.config.prompt.max_attached_evidence_chars,
+      );
+      const prompt = buildRevisionPrompt(
+        session,
+        draft as string,
+        this.config,
+        input.review_focus,
+        sessionMode,
+        attachedEvidence,
+      );
+      const promptFile = this.store.savePrompt(session.session_id, round, prompt);
+
+      const generation = await adapters[rotator].generate(prompt, {
+        session_id: session.session_id,
+        round,
+        task: input.task,
+        signal: input.signal,
+        stream: this.config.streaming.events,
+        stream_tokens: this.config.streaming.tokens,
+        emit: this.emit,
+        reasoning_effort_override: input.reasoning_effort_overrides?.[rotator],
+        caller: callerForLottery,
+      });
+      this.store.saveGeneration(session.session_id, round, generation, "rotation");
+
+      // Drift / empty / fabrication detection — identical contract to
+      // ship mode's relator-revision branch. Two consecutive trips abort.
+      const emptyText = generation.text.trim() === "";
+      const driftDetected = detectLeadDrift(generation.text);
+      let fabricationResult: FabricationDetectionResult | null = null;
+      if (!emptyText && !driftDetected) {
+        fabricationResult = detectFabricatedEvidence(generation.text, {
+          provenanceCorpus: attachedEvidence.map((a) => a.content).join("\n"),
+          narrativeCorpus: `${input.task}\n${draft as string}`,
+        });
+      }
+      const fabricationDetected = fabricationResult?.fabricated === true;
+
+      if (emptyText || driftDetected || fabricationDetected) {
+        consecutiveLeadDrifts += 1;
+        const driftReason = emptyText
+          ? "empty_revision"
+          : fabricationDetected
+            ? "fabricated_evidence"
+            : "structured_review";
+        const parserWarnings = generation.parser_warnings ?? [];
+        const eventType = emptyText
+          ? "session.lead_empty_revision"
+          : fabricationDetected
+            ? "session.lead_fabrication_detected"
+            : "session.lead_drift_detected";
+        const eventData: Record<string, unknown> = {
+          lead_peer: rotator,
+          mode: "circular",
+          round_kind: "rotation",
+          consecutive_drifts: consecutiveLeadDrifts,
+          first_chars: generation.text.slice(0, 100),
+          drift_reason: driftReason,
+          parser_warnings: parserWarnings,
+        };
+        if (fabricationDetected && fabricationResult) {
+          eventData.fabrication_signals = {
+            net_new_hex_count: fabricationResult.net_new_hex_count,
+            net_new_hex_sample: fabricationResult.net_new_hex_sample,
+            suspicious_assertion_count: fabricationResult.suspicious_assertion_count,
+            suspicious_assertion_sample: fabricationResult.suspicious_assertion_sample,
+          };
+        }
+        this.emit({
+          type: eventType,
+          session_id: session.session_id,
+          round,
+          peer: rotator,
+          message: `Circular rotator ${rotator} returned unusable output (${driftReason}); preserving prior draft. Consecutive drifts: ${consecutiveLeadDrifts}.`,
+          data: eventData,
+        });
+        if (consecutiveLeadDrifts >= 2) {
+          const finalizeReason = emptyText
+            ? "lead_empty_revision_repeated"
+            : fabricationDetected
+              ? "lead_fabrication_repeated"
+              : "lead_meta_review_drift";
+          this.store.finalize(session.session_id, "aborted", finalizeReason);
+          return {
+            session: this.store.read(session.session_id),
+            final_text: draft,
+            converged: false,
+            rounds: round,
+          };
+        }
+        // preserve prior draft; advance cursor so next peer gets a turn
+        cursor = (cursor + 1) % rotationOrder.length;
+        continue;
+      }
+      consecutiveLeadDrifts = 0;
+
+      // Compare new artifact to current. Trim guards against trailing-
+      // whitespace noise that some adapters add; meaningful content
+      // changes always change non-whitespace characters too.
+      const newDraft = generation.text;
+      const unchanged = newDraft.trim() === (draft as string).trim();
+      if (unchanged) {
+        consecutiveNoChangeCount += 1;
+      } else {
+        consecutiveNoChangeCount = 0;
+        draft = newDraft;
+        lastRevisionRound = round;
+      }
+      const converged = consecutiveNoChangeCount >= rotationOrder.length;
+
+      // Synthetic single-peer round so meta.rounds[] remains walkable
+      // by existing readers (dashboard, session_check_convergence).
+      // status: READY when unchanged (rotator approved as-is); NOT_READY
+      // when revised (rotator's revision must propagate). The text
+      // carries the rotator's full output verbatim.
+      const adapter = adapters[rotator];
+      const peerStatus: ReviewStatus = unchanged ? "READY" : "NOT_READY";
+      const peerResult: PeerResult = {
+        peer: rotator,
+        provider: adapter.provider,
+        model: adapter.model,
+        status: peerStatus,
+        structured: {
+          status: peerStatus,
+          summary: unchanged
+            ? `Circular rotator ${rotator} approved the artifact unchanged.`
+            : `Circular rotator ${rotator} produced a revision (round ${round}).`,
+          confidence: "inferred" as Confidence,
+        },
+        text: generation.text,
+        raw: generation.raw,
+        usage: generation.usage,
+        cost: generation.cost,
+        latency_ms: generation.latency_ms,
+        attempts: generation.attempts,
+        parser_warnings: generation.parser_warnings ?? [],
+        decision_quality: "clean",
+        fallback: generation.fallback,
+      };
+      const convergenceResult: ConvergenceResult = {
+        converged,
+        reason: converged
+          ? "circular_full_rotation_no_change"
+          : unchanged
+            ? `circular_step_unchanged (consecutive_no_change=${consecutiveNoChangeCount}/${rotationOrder.length})`
+            : `circular_step_revised (rotator=${rotator}, round=${round})`,
+        latest_round_converged: converged,
+        session_quorum_converged: converged,
+        ready_peers: unchanged ? [rotator] : [],
+        not_ready_peers: unchanged ? [] : [rotator],
+        needs_evidence_peers: [],
+        rejected_peers: [],
+        decision_quality: { [rotator]: "clean" } as Record<
+          PeerId,
+          import("./types.js").DecisionQuality
+        >,
+        blocking_details: converged ? [] : [],
+        quorum_peers: [rotator],
+      };
+      const convergenceScope: ConvergenceScope = {
+        petitioner: callerForLottery,
+        caller: callerForLottery,
+        acting_peer: rotator,
+        caller_status: "READY",
+        expected_peers: rotationOrder,
+        reviewer_peers: rotationOrder,
+        lead_peer: rotator,
+      };
+
+      this.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: promptFile,
+        peers: [peerResult],
+        rejected: [],
+        convergence: convergenceResult,
+        convergence_scope: convergenceScope,
+        started_at: startedAt,
+      });
+      this.store.setCircularState(session.session_id, {
+        rotation_order: rotationOrder,
+        consecutive_no_change_count: consecutiveNoChangeCount,
+        last_revision_round: lastRevisionRound,
+      });
+      this.emit({
+        type: unchanged ? "session.circular_step_unchanged" : "session.circular_step_revised",
+        session_id: session.session_id,
+        round,
+        peer: rotator,
+        message: unchanged
+          ? `Circular round ${round}: rotator ${rotator} approved unchanged (${consecutiveNoChangeCount}/${rotationOrder.length} consecutive).`
+          : `Circular round ${round}: rotator ${rotator} revised the artifact.`,
+        data: {
+          rotator,
+          cursor,
+          rotation_order: rotationOrder,
+          consecutive_no_change_count: consecutiveNoChangeCount,
+          last_revision_round: lastRevisionRound,
+        },
+      });
+
+      session = this.store.read(session.session_id);
+
+      if (converged) {
+        this.emit({
+          type: "session.circular_full_rotation_no_change",
+          session_id: session.session_id,
+          round,
+          message: `Circular convergence: full rotation of ${rotationOrder.length} peers without substantive change at round ${round}.`,
+          data: {
+            rotation_order: rotationOrder,
+            rounds_completed: round,
+            last_revision_round: lastRevisionRound,
+          },
+        });
+        this.store.finalize(session.session_id, "converged", "circular_full_rotation_no_change");
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: true,
+          rounds: round,
+        };
+      }
+
+      cursor = (cursor + 1) % rotationOrder.length;
+    }
+
+    // Exhausted max rotations without convergence.
+    this.store.finalize(session.session_id, "max-rounds", "circular_max_rotations_exceeded");
+    this.emit({
+      type: "session.circular_max_rotations_exceeded",
+      session_id: session.session_id,
+      message: `Circular session reached max rotations (${circularMaxRotations}) without convergence; total rounds=${maxCircularRounds}.`,
+      data: {
+        rotation_order: rotationOrder,
+        circular_max_rotations: circularMaxRotations,
+        max_circular_rounds: maxCircularRounds,
+        consecutive_no_change_count: consecutiveNoChangeCount,
+        last_revision_round: lastRevisionRound,
+      },
+    });
+    return {
+      session: this.store.read(session.session_id),
+      final_text: draft,
+      converged: false,
+      rounds: maxCircularRounds,
+    };
+  }
+
   async runUntilUnanimous(input: RunUntilUnanimousInput): Promise<RunUntilUnanimousOutput> {
     // v2.11.0: relator lottery + auto-recusal from reviewer pool.
     //
@@ -2858,6 +3353,23 @@ export class CrossReviewOrchestrator {
     // session is aborted with `lead_meta_review_drift` to avoid burning
     // budget on a stuck lead.
     const sessionMode: import("./types.js").SessionMode = input.mode ?? "ship";
+
+    // v2.25.0 (circular mode): serial deliberative custody. Branch out
+    // of the ship/review flow entirely — no parallel peer-voting,
+    // rotator-only turns, convergence on full-rotation-no-change.
+    if (sessionMode === "circular") {
+      return await this.runCircularLoop({
+        session,
+        adapters,
+        sessionPeers,
+        callerForLottery,
+        firstRotator: leadPeer,
+        input,
+        costLimit,
+        initialDraft: draft,
+      });
+    }
+
     let consecutiveLeadDrifts = 0;
     if (!draft) {
       if (this.isCancelled(session.session_id, input.signal)) {

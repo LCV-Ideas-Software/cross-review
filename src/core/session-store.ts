@@ -552,6 +552,23 @@ export class SessionStore {
     });
   }
 
+  // v2.25.0 (circular mode): atomically replace meta.circular_state. The
+  // orchestrator's circular loop calls this every round so resumed
+  // sessions can pick up the rotation cursor and consecutive-no-change
+  // count from disk without re-deriving them by walking events.
+  setCircularState(
+    sessionId: string,
+    state: NonNullable<SessionMeta["circular_state"]>,
+  ): SessionMeta {
+    return this.withSessionLock(sessionId, () => {
+      const meta = this.read(sessionId);
+      meta.circular_state = state;
+      meta.updated_at = now();
+      writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
   finalize(
     sessionId: string,
     outcome: NonNullable<SessionMeta["outcome"]>,

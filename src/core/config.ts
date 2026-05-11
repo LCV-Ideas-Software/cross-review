@@ -18,7 +18,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.24.0";
+export const VERSION = "2.25.0";
 export const RELEASE_DATE = "2026-05-10";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -166,6 +166,17 @@ export function loadConfig(): AppConfig {
       // controls the SERVER-side default (previously hardcoded to 8 in
       // orchestrator.ts). Values <=0 fall back to 8.
       default_max_rounds: intEnv("CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS", 8),
+      // v2.25.0 (circular mode): maximum number of full rotations
+      // permitted in a `mode: "circular"` session before the runtime
+      // aborts with `circular_max_rotations_exceeded`. A "rotation" is
+      // `rotation_order.length` rounds (one turn per non-caller peer).
+      // Default 3 maps to 12 rounds for a 4-peer panel (caller=peer)
+      // or 15 rounds for a 5-peer panel (caller=operator) — large
+      // enough that a well-behaved artifact converges, small enough
+      // that runaway revisions abort within reasonable budget.
+      // Empirical anchor: maestro-app circular sessions historically
+      // converged within 2 rotations; 3 gives one safety margin.
+      circular_max_rotations: intEnv("CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS", 3),
     },
     prompt: {
       max_task_chars: intEnv("CROSS_REVIEW_V2_MAX_TASK_CHARS", 8_000),

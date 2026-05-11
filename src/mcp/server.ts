@@ -759,7 +759,14 @@ export async function main(): Promise<void> {
         // Disambiguates the v2.12 lead_peer meta-review drift bug
         // when the `task` field is phrased as a review act
         // ("Review v..."). See session.lead_drift_detected event.
-        mode: z.enum(["ship", "review"]).default("ship"),
+        // v2.25.0: `circular` joins as a third mode — serial deliberative
+        // custody (imported from maestro-app). Caller submits the artifact;
+        // rotator-of-the-round either approves unchanged or revises;
+        // convergence = full rotation completes without substantive change.
+        // No parallel peer-voting in circular mode. Best for producing
+        // shared prose/spec artifacts. For approve/reject judgments over
+        // external code, prefer ship (default) or review.
+        mode: z.enum(["ship", "review", "circular"]).default("ship"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -799,7 +806,14 @@ export async function main(): Promise<void> {
         max_cost_usd: z.number().positive().optional(),
         reasoning_effort_overrides: ReasoningEffortOverridesSchema,
         // v2.13.0: see run_until_unanimous for `mode` semantics.
-        mode: z.enum(["ship", "review"]).default("ship"),
+        // v2.25.0: `circular` joins as a third mode — serial deliberative
+        // custody (imported from maestro-app). Caller submits the artifact;
+        // rotator-of-the-round either approves unchanged or revises;
+        // convergence = full rotation completes without substantive change.
+        // No parallel peer-voting in circular mode. Best for producing
+        // shared prose/spec artifacts. For approve/reject judgments over
+        // external code, prefer ship (default) or review.
+        mode: z.enum(["ship", "review", "circular"]).default("ship"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {

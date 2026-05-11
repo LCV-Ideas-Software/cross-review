@@ -7,6 +7,77 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.25.00] - 2026-05-11
+
+**Minor — `mode: "circular"` joins `"ship"` and `"review"` as a third deliberation mode.** Imported from `maestro-app`'s editorial protocol after operator review of the maestro design 2026-05-11. The third mode is serial deliberative custody: the artifact rotates from one non-caller peer to the next, each peer either approves the current version unchanged or produces a narrowly justified revision, and convergence happens when a full rotation completes without any rotator making a substantive change. No parallel peer-voting per round — the rotator IS the actor each round. Complements (does NOT replace) ship/review modes; the three coexist and the caller picks the right primitive for the task.
+
+### When to use each mode
+
+- **`ship` (default)** — Best for approving/rejecting an external artifact (code change, PR, design doc submitted for vote). Caller submits, peers vote `READY/NOT_READY/NEEDS_EVIDENCE` in parallel each round, a lead_peer (lottery-selected) revises between rounds, convergence = all peers `READY`. This is the canonical tribunal/colegiado primitive: the artifact is external and the cross-review produces a _judgment_ about it.
+- **`review`** — Same dispatch shape as `ship` but the lead_peer is free to emit a structured review response rather than a refined draft. Use when the task is phrased as a review act ("Review v…") and the lead's job is meta-review, not artifact refinement. Disambiguates the v2.12 meta-review drift bug.
+- **`circular` (NEW v2.25.0)** — Best for producing/refining a shared artifact (spec doc, protocol draft, CHANGELOG entry, README copy, RFC, design proposal). The artifact itself IS the deliberated object; the cross-review _produces_ the artifact rather than judging it. Convergence = full rotation no-change. Approved content is locked between rotators; weaker rotators must not flatten stronger prose. Latency higher than ship (serial, not parallel) but cost lower per round (~1 peer call vs ~N).
+
+### Mode combinations and progression
+
+Modes are per-session. A session is in exactly one mode for its lifetime. Useful combinations across separate sessions:
+
+1. **`circular` → `ship`**: draft a spec in `circular` mode (rotation produces canonical text), then submit the final spec to a `ship` session for tribunal approval.
+2. **`ship` → `circular` → `ship`**: if a `ship` review surfaces that a referenced doc needs evolution, spawn a `circular` session to refine the doc, then return to `ship` for re-approval.
+3. **`circular`** standalone for protocol/spec evolution where the goal is a converged shared text, not an external judgment.
+
+Within a single session, mixing modes is not supported. If a task starts as ship and the operator realizes circular fits better mid-way, the cleaner path is to cancel the ship session, take its current draft as the initial_draft of a new circular session, and continue.
+
+### Adicionado
+
+- **`SessionMode = "ship" | "review" | "circular"`** (`src/core/types.ts`) — third mode added. `ship` and `review` semantics unchanged; backward-compatible default.
+- **`leadCircularModeDirective()`** (`src/core/orchestrator.ts`) — Layer 1 prompt clause injected into `buildRevisionPrompt` and `buildInitialDraftPrompt` when `mode === "circular"`. Five subsections: (i) approve unchanged (output artifact verbatim if no concrete defect justifies change); (ii) approved-content lock (passages not touched by prior rotators are presumed approved and must remain unchanged unless a concrete blocker reopens them); (iii) quality preservation (weaker rotators must not flatten/compress stronger prose); (iv) no-self-review (the rotator was not the immediate prior actor; engage the text as the panel's product); (v) Evidence Provenance Lock (HARD, shared with ship mode — NARRATIVE ≠ PROVENANCE-GRADE, see v2.24.0).
+- **`runCircularLoop(...)`** (`src/core/orchestrator.ts`) — private orchestrator method called from `runUntilUnanimous` when `sessionMode === "circular"`. Branches out of the ship/review loop entirely. Builds `rotation_order = [firstRotator, ...sessionPeers.filter(p ≠ firstRotator)]` with `firstRotator` from the lottery (anti-bias at slot 0; deterministic subsequent slots for audit/replay). Initial-draft generation uses `rotation_order[0]`; round 1 cursor advances to a different peer so no peer reviews their own immediate output. Per round: generate revision via the cursor peer; detect drift/empty/fabrication identically to ship-mode (consecutive-cap=2 aborts via shared `consecutiveLeadDrifts`); if clean, compare new draft byte-trimmed to current — track `consecutive_no_change_count`; converge when it reaches `rotation_order.length`. Synthetic single-peer round appended to `meta.rounds[]` so dashboard / `session_check_convergence` / metrics walk the session uniformly.
+- **`SessionMeta.circular_state`** — `{ rotation_order: PeerId[]; consecutive_no_change_count: number; last_revision_round: number | null }`. Persisted under session lock via new `SessionStore.setCircularState(sessionId, state)`. Absent on ship/review sessions for back-compat.
+- **`AppConfig.budget.circular_max_rotations`** + env override `CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS` (default 3). Maximum full rotations before the runtime aborts a non-converging circular session with reason `circular_max_rotations_exceeded`. Default 3 maps to 12 rounds for a 4-peer panel; empirical anchor from maestro-app where converging sessions historically settled within 2 rotations.
+- **New event types** (orchestrator):
+  - `session.circular_rotation_assigned` — emitted at session start with the full `rotation_order` and excluded `caller`.
+  - `session.circular_step_unchanged` — emitted when the rotator's output is byte-trimmed-equal to the current artifact.
+  - `session.circular_step_revised` — emitted when the rotator produced a different artifact.
+  - `session.circular_full_rotation_no_change` — emitted at convergence.
+  - `session.circular_max_rotations_exceeded` — emitted at the rotation cap.
+  - `session.circular_rotation_too_small` — emitted (and session aborted with reason `circular_rotation_too_small`) when `sessionPeers.length < 2` (insufficient peers for no-self-immediate-review).
+- **New finalize reasons** — `circular_full_rotation_no_change` (success), `circular_max_rotations_exceeded` (max), `circular_rotation_too_small` (abort). Drift/empty/fabrication reasons (`lead_empty_revision_repeated` / `lead_fabrication_repeated` / `lead_meta_review_drift`) are shared with ship mode and the v2.23.0/v2.24.0 detectors fire identically.
+- **MCP tool schemas updated** — `run_until_unanimous` and `session_start_unanimous` now accept `mode: "circular"` alongside `ship`/`review` (`src/mcp/server.ts`). No new tool surface; default mode unchanged (`ship`).
+- **Smoke driver `circular_mode_test`** (`scripts/smoke.ts`) pinning 11 invariants: SessionMode union, prompt directive sentinels, prompt-builder routing, config + env var defaults, orchestrator branch + method declaration, rotation-too-small guard, convergence event + finalize reason + condition, max-rotations abort, meta state shape + setter wiring, MCP schema enum, rotation step events.
+
+### Compatibilidade pública
+
+- **100% backward-compatible default**. Callers that omit `mode` get `ship` (unchanged). Callers that pass `mode: "ship"` or `mode: "review"` see no behavior change. The new `circular` value is opt-in.
+- **Tool surface unchanged** — no new MCP tool; the `mode` enum gained one value.
+- **Event stream additive** — six new event types under `session.circular_*` namespace; existing event consumers ignore unknown types.
+- **`SessionMeta.circular_state`** is optional and absent on legacy sessions; readers handle it as `meta.circular_state ?? undefined`.
+
+### Architectural notes
+
+The two-mode model (`ship` vs `review`) treats peers as a _jury_ voting on an artifact submitted by a petitioner. The `circular` mode treats peers as a _rotating editorial panel_ with shared custody of the artifact. Both primitives have distinct strengths:
+
+| Concern                | `ship` / `review`                        | `circular`                                     |
+| ---------------------- | ---------------------------------------- | ---------------------------------------------- |
+| Artifact origin        | External (caller submits, panel judges)  | Internal (panel produces)                      |
+| Per-round actors       | All N peers in parallel                  | One rotator (sequential)                       |
+| Round latency          | max(peer latencies)                      | rotator latency                                |
+| Round cost             | N peer calls                             | 1 peer call                                    |
+| Convergence signal     | All peers READY (vote)                   | Full rotation no-change (custody)              |
+| Reopen behavior        | Each round resets the vote tally         | Approved content is locked across rotators     |
+| Best for               | PR review, spec approval, security gates | Spec drafting, prose evolution, RFC refinement |
+| Failure mode mitigated | Caller bias                              | Reviewer churn, weak-peer flattening           |
+
+For an architectural deep-dive on the maestro-app origin and the editorial primitives it imported, see the session memory `project_cross_review_v2_v2250_circular_mode.md`.
+
+### Notas técnicas
+
+- **Convergence semantics**: `consecutive_no_change_count` resets to 0 on any substantive revision. The counter increments each time a rotator returns the artifact byte-trimmed-equal to the current state. Convergence requires `count >= rotation_order.length`, which means every non-caller peer took a turn AND chose not to revise. Whitespace-only differences (trailing newlines, indentation noise some adapters add) do not count as substantive.
+- **Rotation length minimum is 2**. A rotation of 1 (caller + single peer) would force the peer to review the artifact they produced last round, violating the no-self-immediate-output rule. Sessions with `sessionPeers.length < 2` abort with reason `circular_rotation_too_small`.
+- **No-self-review preserved across rotation**: between any peer's turn and their next turn, at least one different peer holds custody. The HARD GATE (`caller ≠ rotator`) is enforced by the upstream `sessionPeers` derivation (caller-filtered). The no-self-immediate-output rule is enforced by `rotation_order.length >= 2`.
+- **Drift / fabrication detection unchanged**: v2.23.0 empty-revision detection + v2.24.0 evidence-provenance lock fire identically in circular mode. Consecutive-cap=2 aborts the session regardless of mode. Shared `consecutiveLeadDrifts` counter.
+- **Budget honored**: per-round cost telemetry + ceiling checks apply each round of a circular session same as ship/review. `costs_per_round` + `cost_ceiling_usd` populated; `session.budget_warning` fires at 75% of ceiling.
+- **Resumability**: `circular_state` persisted under session lock means a circular session can be resumed after a host restart with the rotation cursor + no-change count intact. `session_recover_interrupted` infers the cursor from `meta.rounds.length`.
+
 ## [v02.24.00] - 2026-05-10
 
 **Patch — evidence-provenance lock for the ship-mode relator (Codex bug report 2026-05-10, sessões `09c21d7a` + `eee886d3`).** Codex's working session `019dc794-0833-7de2-9ecf-3f36fe176f03` exercised cross-review-v2 in two adjacent failure modes that the operator framed as the same underlying violation: "cross-review-v2 está violando provenance de evidência. Ele não pode permitir que relator/peer ou camada gerativa invente paths, SHAs, logs, diffs, outputs de teste, timestamps ou arquivos. Evidência operacional só pode vir de caller/tool output persistido. Se faltar evidência, deve permanecer NEEDS_EVIDENCE, não 'completar' o caso com narrativa fabricada." Two empirical instances on disk:
