@@ -13,7 +13,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### When to use each mode
 
-- **`ship` (default)** — Best for approving/rejecting an external artifact (code change, PR, design doc submitted for vote). Caller submits, peers vote `READY/NOT_READY/NEEDS_EVIDENCE` in parallel each round, a lead_peer (lottery-selected) revises between rounds, convergence = all peers `READY`. This is the canonical tribunal/colegiado primitive: the artifact is external and the cross-review produces a _judgment_ about it.
+- **`ship` (default)** — Best for approving/rejecting an external artifact (code change, PR, design doc submitted for vote). Caller submits, peers vote `READY/NOT_READY/NEEDS_EVIDENCE` in parallel each round, a lead*peer (lottery-selected) revises between rounds, convergence = all peers `READY`. This is the canonical tribunal/colegiado primitive: the artifact is external and the cross-review produces a \_judgment* about it.
 - **`review`** — Same dispatch shape as `ship` but the lead_peer is free to emit a structured review response rather than a refined draft. Use when the task is phrased as a review act ("Review v…") and the lead's job is meta-review, not artifact refinement. Disambiguates the v2.12 meta-review drift bug.
 - **`circular` (NEW v2.25.0)** — Best for producing/refining a shared artifact (spec doc, protocol draft, CHANGELOG entry, README copy, RFC, design proposal). The artifact itself IS the deliberated object; the cross-review _produces_ the artifact rather than judging it. Convergence = full rotation no-change. Approved content is locked between rotators; weaker rotators must not flatten stronger prose. Latency higher than ship (serial, not parallel) but cost lower per round (~1 peer call vs ~N).
 
