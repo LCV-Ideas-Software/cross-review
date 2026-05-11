@@ -333,6 +333,37 @@ assert.equal(redact(xaiKey), "[REDACTED]");
 const shortXai = "xai-short";
 assert.equal(redact(`prefix ${shortXai} suffix`), `prefix ${shortXai} suffix`);
 
+// v2.25.1 (2026-05-11): regression — env-style pattern must NOT consume
+// the JSON-escape backslash in `token: write\"` (peer-response YAML
+// excerpts that survived round-1 serialization quoted `id-token: write`
+// inside backtick-fenced markdown). Without the `\\` exclusion in the
+// value char class, the {6,} quantifier matched `write\` (6 chars
+// including the escape backslash) and produced `[REDACTED]"` which
+// closed the outer JSON string prematurely → 3 corrupt meta.json
+// sessions today (be47a5b0, 77c47284, 7edf63e3). Verify the fix:
+const escapeBoundary = 'left-edge `id-token: write\\" right-edge';
+assert.equal(
+  redact(escapeBoundary),
+  escapeBoundary,
+  'redact must not cross JSON-escape boundary on `token: write\\"`',
+);
+// Also verify a real assignment still gets redacted (positive control):
+const realAssignment = "token=ABCD1234EFGH5678 next";
+assert.equal(
+  redact(realAssignment),
+  "token=[REDACTED] next",
+  "real env-style assignments still redacted",
+);
+// And verify backtick-fenced YAML excerpts that don't contain real
+// secrets are preserved verbatim (the common case for peer responses):
+const yamlExcerpt =
+  "permissions:\\n  contents: read\\n  security-events: write\\n  id-token: write";
+assert.equal(
+  redact(yamlExcerpt),
+  yamlExcerpt,
+  "YAML excerpts with `token: write` value (5 chars) stay below {6,} threshold",
+);
+
 // v2.18.4 / Codex audit 2026-05-07 P2.1: grok-4.3 added to the
 // reasoning-effort allowlist; verify both call sites gate correctly.
 const grokAllowlist = await import("../src/peers/grok.js");

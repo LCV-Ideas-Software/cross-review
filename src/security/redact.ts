@@ -23,7 +23,16 @@ const SECRET_PATTERNS = [
   // The replacement preserves the key name so audit consumers see WHICH
   // var was redacted, only the value is replaced. Mirrors the pattern in
   // v1's `REDACTION_PATTERNS`.
-  /\b((?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*[:=]\s*["']?)([^\s"',}]{6,})/gi,
+  // v2.25.1 (2026-05-11): exclude `\` from value char class. Without the
+  // exclusion the {6,} quantifier would consume the JSON-escape backslash
+  // in `token: write\"` (a peer-response string that survived round-1
+  // serialization), replace `write\` → `[REDACTED]`, and leave a bare `"`
+  // that closes the outer JSON string prematurely → corrupt meta.json.
+  // Empirically observed in 3 sessions today (be47a5b0, 77c47284, 7edf63e3)
+  // when the scorecard hotfix peer responses quoted `id-token: write` in
+  // backtick-fenced YAML excerpts. Excluding `\` keeps the regex from
+  // crossing JSON-escape boundaries.
+  /\b((?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*[:=]\s*["']?)([^\s"',}\\]{6,})/gi,
 ];
 
 const PRIVATE_KEY_LABELS = [
