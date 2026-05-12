@@ -25,10 +25,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 Cold-start MCP `initialize` handshake response measured locally via PowerShell + real JSON-RPC across 3 trials each:
 
-| Build | Trial 1 | Trial 2 | Trial 3 |
-| --- | --- | --- | --- |
-| v2.27.0 (npm-installed) | 3.72 s | 4.06 s | 4.16 s |
-| v2.27.1 (this ship) | 3.91 s | 3.64 s | 3.88 s |
+| Build                   | Trial 1 | Trial 2 | Trial 3 |
+| ----------------------- | ------- | ------- | ------- |
+| v2.27.0 (npm-installed) | 3.72 s  | 4.06 s  | 4.16 s  |
+| v2.27.1 (this ship)     | 3.91 s  | 3.64 s  | 3.88 s  |
 
 Margin is modest because the dominant cost is Node.js ESM module resolution + MCP SDK + orchestrator + dependent modules, not the provider SDKs alone. The architectural correctness of the change is the principal value: provider SDKs no longer compete for boot time with the initialize handshake, and the FS sweeps no longer block the initialize event-loop tick. Reload of Claude Code window (cache-warm FS) consistently brings handshake under the timeout regardless.
 
@@ -46,7 +46,7 @@ Plus 2 existing smoke assertions updated: `gemini.ts thinkingConfig:` literal no
 **Lessons learned**:
 
 1. **Host MCP timeouts vary; Claude Code is the strictest.** A change that other hosts tolerate (4.2 s spawn-to-initialize) can fail silently in Claude Code without surfacing in logs. Verify cold-start time empirically when shipping work that adds module imports or boot-time work.
-2. **`import type` correctly erases at compile time** — verified by grep on dist/*.js. The lazy-load pattern is safe for use in production TypeScript code without runtime cost.
+2. **`import type` correctly erases at compile time** — verified by grep on dist/\*.js. The lazy-load pattern is safe for use in production TypeScript code without runtime cost.
 3. **`setImmediate` vs `setTimeout(0)` are NOT equivalent for boot-time work**: `setImmediate` runs in the same event loop tick as I/O callbacks (including the initialize message arriving on stdin), competing for CPU. `setTimeout(N)` waits N ms, releasing the initialize tick entirely. For deferred-housekeeping intent, `setTimeout` is the safer primitive.
 
 ## [v02.27.00] - 2026-05-12
