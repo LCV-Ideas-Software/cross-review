@@ -18,8 +18,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.26.0";
-export const RELEASE_DATE = "2026-05-11";
+export const VERSION = "2.26.1";
+export const RELEASE_DATE = "2026-05-12";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -186,7 +186,18 @@ export function loadConfig(): AppConfig {
       max_prior_rounds: intEnv("CROSS_REVIEW_V2_MAX_PRIOR_ROUNDS", 5),
       max_peer_requests: intEnv("CROSS_REVIEW_V2_MAX_PEER_REQUESTS", 8),
       // v2.14.0 (path-A structural fix): see AppConfig type docs.
-      max_attached_evidence_chars: intEnv("CROSS_REVIEW_V2_MAX_ATTACHED_EVIDENCE_CHARS", 80_000),
+      // v2.26.1 (2026-05-12): default raised 80_000 → 200_000 after the
+      // stepsecurity v0.2.0 ship empirically demonstrated that 80K is
+      // too low for multi-file evidence sets. session-store.ts:1507
+      // computes `perFileCap = max(2_000, floor(totalCap * 0.6))`, then
+      // each attachment consumes `min(perFileCap, totalCap - used)`. With
+      // 5 attachments totaling ~95KB, the 4th+ attachments got truncated
+      // because the budget was already exhausted (peers reported
+      // `truncated to 33273 of 38412 bytes` while the file content
+      // had legitimate 38KB). 200_000 default accommodates ~5 attachments
+      // averaging ~30KB each before any per-file truncation. Operator
+      // can still tune via CROSS_REVIEW_V2_MAX_ATTACHED_EVIDENCE_CHARS.
+      max_attached_evidence_chars: intEnv("CROSS_REVIEW_V2_MAX_ATTACHED_EVIDENCE_CHARS", 200_000),
     },
     max_output_tokens: intEnv("CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
     streaming: {
