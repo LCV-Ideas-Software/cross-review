@@ -12,8 +12,7 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
-  actions: write
-  contents: write
+  contents: read
 concurrency:
   group: auto-tag-${{ github.ref }}
   cancel-in-progress: false
@@ -21,6 +20,9 @@ jobs:
   auto-tag:
     name: Create org-standard tag from package.json version
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
