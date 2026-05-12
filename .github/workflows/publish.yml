@@ -16,7 +16,7 @@ concurrency:
 env:
   # StepSecurity Secure Registry auth for `npm ci`/`npm install` per project .npmrc.
   # Token is the StepSecurity API key with proxy read scope; never used for publish.
-  NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
+  STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
 jobs:
   gate:
     name: Pre-publish gate (test + metadata)
@@ -147,7 +147,7 @@ jobs:
           fi
       - name: Publish (public, with provenance)
         if: steps.npmjs-version.outputs.exists != 'true'
-        run: npm publish --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
+        run: npm publish --registry=https://registry.npmjs.org --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
       - name: Verify npmjs.com public visibility
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}

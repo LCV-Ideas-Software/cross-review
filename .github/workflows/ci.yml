@@ -9,7 +9,7 @@ permissions:
 env:
   # StepSecurity Secure Registry auth for `npm ci`/`npm install` per project .npmrc.
   # Token is the StepSecurity API key with proxy read scope; never used for publish.
-  NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
+  STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
 jobs:
   verify:
     name: Build, lint and smoke
