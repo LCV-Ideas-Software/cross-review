@@ -558,6 +558,21 @@ export class SessionStore {
   ): ReviewRound {
     return this.withSessionLock(sessionId, () => {
       const meta = this.read(sessionId);
+      // v3.2.0 (Codex bug report 2026-05-12): refuse to append a round
+      // to a finalized session. Otherwise the per-round
+      // `convergence_health` write below would clobber the converged
+      // health set by `finalize()`, producing the contradictory
+      // `outcome=converged / health=blocked` state observed in session
+      // 41244a1c (R6 ran after a `session_finalize` call corrupted the
+      // meta — but the orchestrator path can also produce this if any
+      // post-finalize round mutator slips through).
+      if (meta.outcome) {
+        const err = new Error(
+          `session_already_finalized: cannot append round to session ${sessionId} (outcome="${meta.outcome}")`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
       const round: ReviewRound = {
         round: meta.rounds.length + 1,
         started_at: params.started_at,
@@ -626,6 +641,24 @@ export class SessionStore {
     });
   }
 
+  // v3.2.0 (Codex bug report 2026-05-12): public guard for orchestrator
+  // entry points. Throws when the session has already been finalized so
+  // round-starting tools fail fast instead of appending rounds onto a
+  // closed session (which would re-derive `convergence_health` from the
+  // post-final round's `convergence.converged` and leave the meta in the
+  // contradictory `outcome=converged / health=blocked` state observed in
+  // session 41244a1c). Error code is structured for upstream callers.
+  assertNotFinalized(sessionId: string): void {
+    const meta = this.read(sessionId);
+    if (meta.outcome) {
+      const err = new Error(
+        `session_already_finalized: session ${sessionId} is finalized with outcome="${meta.outcome}"; cannot start new rounds`,
+      );
+      (err as Error & { code?: string }).code = "session_already_finalized";
+      throw err;
+    }
+  }
+
   finalize(
     sessionId: string,
     outcome: NonNullable<SessionMeta["outcome"]>,
@@ -633,6 +666,25 @@ export class SessionStore {
   ): SessionMeta {
     return this.withSessionLock(sessionId, () => {
       const meta = this.read(sessionId);
+      // v3.2.0 (Codex bug report 2026-05-12): when the caller asserts
+      // outcome="converged", the latest round (if any) MUST have
+      // `convergence.converged === true`. Otherwise we would persist the
+      // contradictory `outcome=converged / health=blocked` state observed
+      // in session 41244a1c (R6 had perplexity:unparseable_after_recovery
+      // → convergence.converged=false, but session_finalize was invoked
+      // with outcome="converged"/"unanimous_ready" anyway). Refuse with a
+      // structured error so the operator/caller fixes the mismatch
+      // upstream instead of corrupting the meta.
+      if (outcome === "converged" && meta.rounds.length > 0) {
+        const latest = meta.rounds[meta.rounds.length - 1];
+        if (latest.convergence?.converged !== true) {
+          const err = new Error(
+            `session_finalize_outcome_mismatch: cannot finalize as "converged" — latest round (round=${latest.round}) has convergence.converged=${latest.convergence?.converged ?? "undefined"}, reason="${latest.convergence?.reason ?? "n/a"}"`,
+          );
+          (err as Error & { code?: string }).code = "session_finalize_outcome_mismatch";
+          throw err;
+        }
+      }
       meta.outcome = outcome;
       if (reason) meta.outcome_reason = reason;
       delete meta.in_flight;

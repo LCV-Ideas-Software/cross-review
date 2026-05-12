@@ -2093,6 +2093,11 @@ export class CrossReviewOrchestrator {
       );
     }
     const missingFinancialVars = missingFinancialControlVars(this.config, selectedPeers);
+    // v3.2.0 (Codex bug report 2026-05-12): fail fast when the caller
+    // targets a finalized session. Prior to v3.2.0 the round would run,
+    // burn budget, and corrupt the session meta with a stale
+    // `convergence_health` derived from the post-finalize round.
+    if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const session = input.session_id
       ? this.store.read(input.session_id)
       : missingFinancialVars.length
@@ -2663,8 +2668,19 @@ export class CrossReviewOrchestrator {
       // at least 2 enabled peers. Operator-flexible: keeps single-peer
       // backward-compatible while letting the operator opt into consensus
       // without code changes.
+      // v3.2.0 (Codex bug report 2026-05-12): when the caller passed an
+      // explicit `peers: [...]` list, autowire judges are intersected
+      // against `selectedPeers` so a peer NOT on the explicit reviewer
+      // panel cannot enter the session via the autowire judge path.
+      // Without this guard, a default-enabled judge (e.g. perplexity in
+      // CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS) ran on
+      // sessions whose `peers: [codex,gemini,deepseek,grok]` explicitly
+      // excluded it (observed in session 73036fbb).
+      const hadExplicitPeers = (input.peers?.length ?? 0) > 0;
+      const judgeRespectsExplicitPeers = (peer: PeerId): boolean =>
+        !hadExplicitPeers || selectedPeers.includes(peer);
       const consensusEnabled = autowire.consensus_peers.filter(
-        (peer) => this.config.peer_enabled[peer],
+        (peer) => this.config.peer_enabled[peer] && judgeRespectsExplicitPeers(peer),
       );
       const useConsensus = consensusEnabled.length >= 2;
       if (useConsensus && !hasOpenItems) {
@@ -2698,17 +2714,26 @@ export class CrossReviewOrchestrator {
             },
           });
         }
-      } else if (autowire.peer === undefined) {
+      } else if (autowire.peer === undefined || !judgeRespectsExplicitPeers(autowire.peer)) {
         this.emit({
           type: "session.evidence_judge_pass.autowire_skipped",
           session_id: session.session_id,
           round: round.round,
-          message: `Autowire enabled but neither CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER (got "${autowire.configured_peer_raw}") nor CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS (got "${autowire.configured_consensus_peers_raw}", needs >=2 enabled peers) resolved to a valid configuration; ${autowire.mode} pass skipped.`,
+          message:
+            autowire.peer !== undefined && !judgeRespectsExplicitPeers(autowire.peer)
+              ? `Autowire single-peer judge "${autowire.peer}" is NOT in this session's explicit peers list (selected=[${selectedPeers.join(",")}]); ${autowire.mode} pass skipped to honor caller intent (v3.2.0).`
+              : `Autowire enabled but neither CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER (got "${autowire.configured_peer_raw}") nor CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS (got "${autowire.configured_consensus_peers_raw}", needs >=2 enabled peers) resolved to a valid configuration; ${autowire.mode} pass skipped.`,
           data: {
             mode: autowire.mode,
             configured_peer: autowire.configured_peer_raw,
             configured_consensus_peers: autowire.configured_consensus_peers_raw,
             enabled_consensus_count: consensusEnabled.length,
+            // v3.2.0: surface whether the explicit-peers filter caused
+            // the skip so operators can distinguish honor-intent skips
+            // from misconfig skips.
+            skipped_for_explicit_peers:
+              autowire.peer !== undefined && !judgeRespectsExplicitPeers(autowire.peer),
+            session_explicit_peers: hadExplicitPeers ? selectedPeers : undefined,
           },
         });
       } else if (!hasOpenItems) {
@@ -3301,6 +3326,11 @@ export class CrossReviewOrchestrator {
     // reviewer pool that downstream rounds see.
     const selectedPeers = sessionPeers;
     const chargeablePeers = uniquePeers([...selectedPeers, leadPeer]);
+    // v3.2.0 (Codex bug report 2026-05-12): fail fast when run_until_unanimous
+    // targets a finalized session. Without this guard the orchestrator would
+    // start rounds whose `appendRound` would clobber `convergence_health`,
+    // leaving the meta with `outcome=converged / health=blocked` (or worse).
+    if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const missingFinancialVars = missingFinancialControlVars(this.config, chargeablePeers, {
       untilStopped: input.until_stopped,
     });

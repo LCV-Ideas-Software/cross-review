@@ -130,10 +130,29 @@ function usageFromSonar(
 // not strictly honor the requested JSON schema. Callers downstream
 // (resultFromText -> status.ts decisionQualityFromStatus) classify the
 // quality of the parsed response.
+//
+// v3.2.0 fix (codex catch sess 41244a1c, observed across v3.0.0+):
+// sonar-reasoning-pro and sonar-deep-research models always emit a
+// `<think>...</think>` reasoning preamble before the actual structured
+// answer. The shared status parser in `core/status.ts` requires the
+// text to begin with JSON-shaped content (or contain it within
+// extractable shape); the thinking block breaks both code paths and
+// the format-recovery retry inherits the same problem. Strip every
+// `<think>...</think>` block (greedy across lines, multiple
+// occurrences) before downstream extraction. Real Sonar responses
+// never legitimately include the literal substring "<think>" inside
+// the structured payload, so this is safe.
+const PERPLEXITY_THINKING_BLOCK = /<think\b[^>]*>[\s\S]*?<\/think>/gi;
+
+export function stripPerplexityThinkingBlock(raw: string): string {
+  return raw.replace(PERPLEXITY_THINKING_BLOCK, "").trim();
+}
+
 function sonarText(response: {
   choices?: Array<{ message?: { content?: string | null } }>;
 }): string {
-  return response.choices?.[0]?.message?.content?.trim() || JSON.stringify(response);
+  const raw = response.choices?.[0]?.message?.content?.trim() || JSON.stringify(response);
+  return stripPerplexityThinkingBlock(raw);
 }
 
 // v3.0.0: Perplexity reasoning_effort enum is `minimal|low|medium|high`.

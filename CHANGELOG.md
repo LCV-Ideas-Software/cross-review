@@ -7,6 +7,65 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.02.00] - 2026-05-12
+
+**Patch — three bug fixes from Codex's external bug report 2026-05-12.** Closes the long-standing Perplexity `<think>` parser blocker, eliminates a session-state corruption pattern observed in production sessions, and tightens the orchestrator to honor the caller's explicit `peers: [...]` list across the autowire judge path. Backward-compatible at the public surface; defensive at the storage and orchestrator layers.
+
+### Fix #1 — Perplexity `<think>` block stripped before downstream JSON extraction (`src/peers/perplexity.ts`)
+
+`sonar-reasoning-pro` and `sonar-deep-research` emit a `<think>...</think>` reasoning preamble before the structured JSON payload. Pre-v3.2.0 the parser fed that raw string straight into the format-recovery pipeline, which then failed `unparseable_after_recovery` even when the trailing JSON was a substantively valid READY verdict. Three v3.0.0 + v3.1.0 ships had to self-bypass cross-review HARD GATE because of this exact failure mode (sessions `57b4c1a9`, `73036fbb`, `a02c840e`).
+
+- New regex `PERPLEXITY_THINKING_BLOCK = /<think\b[^>]*>[\s\S]*?<\/think>/gi` — greedy (multi-line), multi-occurrence, attribute-tolerant.
+- New exported helper `stripPerplexityThinkingBlock(raw)` — strip + trim + return. Empty input is legal (callers' format-recovery paths handle empty strings).
+- `sonarText()` now strips before returning, so the recovery pipeline sees only the structured payload.
+- Why exported: smoke pin (anti-drift) + future call sites that need the same strip semantics.
+
+### Fix #2 — Session state invariant: `outcome="converged"` MUST match the latest round's convergence (`src/core/session-store.ts`)
+
+Codex bug report 2026-05-12 (session `41244a1c-e7e8-439a-a59e-9339f7c7175d`): R1-R3 didn't converge, R4 converged (orchestrator finalized as `converged`/`unanimous_ready`), then R5 + R6 ran on top of the finalized session and clobbered `convergence_health` back to `"blocked"` (perplexity:unparseable_after_recovery). Result: meta with `outcome="converged" / outcome_reason="unanimous_ready" / convergence_health.state="blocked"` — the contradictory state Codex flagged.
+
+- **`finalize()` validation**: when `outcome="converged"` and the session has at least one round, the latest round MUST have `convergence.converged === true`. Otherwise throw with `code: "session_finalize_outcome_mismatch"`. Refuses to silently corrupt state when an external `session_finalize` MCP call disagrees with the round-level signal.
+- **`appendRound()` guard**: refuses to append a round to a finalized session (`code: "session_already_finalized"`). Defense-in-depth at the storage layer — even if an orchestrator-level guard slips, the storage layer cannot be coerced into rewriting `convergence_health` on a finalized session.
+- **`assertNotFinalized(sessionId)` helper**: public method exposed for orchestrator entry points (and future re-open flows). Throws structured error with `code: "session_already_finalized"`.
+
+### Fix #3 — Orchestrator strictly honors `peers: [...]` across the autowire judge path (`src/core/orchestrator.ts`)
+
+Pre-v3.2.0 a peer that was `peer_enabled` AND listed in `CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS` (or `_AUTOWIRE_PEER`) was invoked as an evidence-checklist judge even when the caller passed an explicit `peers: [...]` list that excluded it. Observed in session `73036fbb` (peers=[codex,gemini,deepseek,grok], lottery picked codex as lead, judges ended up calling perplexity).
+
+- New `hadExplicitPeers` flag (`(input.peers?.length ?? 0) > 0`).
+- New `judgeRespectsExplicitPeers(peer)` helper: short-circuits to `true` when no explicit list, else `selectedPeers.includes(peer)`.
+- Consensus path: filters `consensusEnabled` through both `peer_enabled` AND `judgeRespectsExplicitPeers`.
+- Single-peer path: when `autowire.peer` is configured but excluded by explicit peers, skip with structured `session.evidence_judge_pass.autowire_skipped` event carrying `skipped_for_explicit_peers: true` + `session_explicit_peers: [...]` for operator audit visibility.
+
+### Smoke
+
+3 new markers, anti-drift + behavioral + source-pin:
+
+- `perplexity_thinking_block_strip_test` — 7 behavioral scenarios + 3 source pins (export shape, sonarText invocation, regex word-boundary).
+- `session_finalize_state_invariant_test` — 5 scenarios + source pin (assertNotFinalized called in BOTH askPeers and runUntilUnanimous orchestrator entry points).
+- `orchestrator_strict_peer_panel_test` — 5 source pins covering the flag, helper, both filter sites, and the audit field on the skip event.
+
+The pre-existing `cross-review-v2-attachment-inline-test` was migrated to `caller_status: "NOT_READY"` so R1 doesn't auto-converge in stub mode — preserves the test intent (attachment inline across rounds) while staying compatible with the v3.2.0 appendRound guard. **Total: 99 events / `ok: true`.**
+
+### Public surface
+
+100% backward-compatible additive. No tool surface change. The only observable runtime delta is the rejection of two pre-existing anti-patterns:
+
+- `session_finalize` with `outcome="converged"` against a non-converged latest round → throws `session_finalize_outcome_mismatch`.
+- `session_start_round` / `run_until_unanimous` against a finalized session → throws `session_already_finalized` (call `contest_verdict` instead, the canonical v2.14.0 chain-of-custody flow).
+- `peers: [...]` excluding a peer that the autowire config includes → autowire judge skips that peer for the session, emitting `autowire_skipped` with `skipped_for_explicit_peers: true`.
+
+### Pós-ship operator action
+
+1. `npm update -g @lcv-ideas-software/cross-review-v2` post GHA publish (3.1.0 → 3.2.0).
+2. No host config change required. Existing `~/.cross-review/data_v2/config.json` continues to work unchanged.
+
+### Lessons
+
+1. **Per-call signals beat global config for billing/identity** (recurring lesson, now applied to autowire judges): the explicit `peers: [...]` list is the per-session ground truth; autowire config is a default that must respect per-session intent.
+2. **Defense-in-depth at the storage layer** prevents single-point failures: even when an external MCP tool is misused, the session-store guards prevent corrupted state from landing on disk.
+3. **Strip provider preambles BEFORE the format-recovery pipeline**, not inside it: format-recovery is for malformed JSON, not for envelope trimming. Mixing the two layers caused the multi-week perplexity blocker.
+
 ## [v03.01.00] - 2026-05-12
 
 **Minor — Central config file (`config.json`). Eliminates ~700 redundant env-var declarations across the 7 MCP host configs.** Operator directive 2026-05-12. Backward-compatible additive feature; pre-v3.1.0 env-only setups continue to work unchanged.

@@ -3570,10 +3570,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   holder.orch = aeOrch;
   // Init session, attach 2 evidence files, run askPeers, read R1 prompt.
+  // v3.2.0: caller_status=NOT_READY keeps R1 from converging in stub mode
+  // (stub returns READY by default → R1 would finalize the session, and
+  // the v3.2.0 appendRound guard rejects appending R2 to a finalized
+  // session — the corruption pattern observed in session 41244a1c R5+R6
+  // that the guard exists to prevent).
   const initial = await aeOrch.askPeers({
     task: "Cross-review attachment inline test",
     draft: "Initial draft body — peers should see attachments below.",
     caller: "operator",
+    caller_status: "NOT_READY",
     peers: ["claude"],
   });
   const sessionId = initial.session.session_id;
@@ -3594,6 +3600,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     task: "Cross-review attachment inline test",
     draft: "Revised draft body for R2 with attachments now present.",
     caller: "operator",
+    caller_status: "NOT_READY",
     peers: ["claude"],
   });
   // Read R2 prompt from disk and assert attached evidence is present.
@@ -4460,6 +4467,312 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.0.0 R1 fix: estimateCost must gate request_cost on usage.search_performed (with config fallback)",
   );
   console.log("[smoke] perplexity_request_cost_search_aware_test: PASS");
+}
+
+// v3.2.0 (Codex bug report 2026-05-12) — `sonar-reasoning-pro` and
+// `sonar-deep-research` emit a `<think>...</think>` reasoning preamble
+// before the structured JSON payload. The pre-v3.2.0 parser fed that
+// raw string straight into the format-recovery pipeline, which then
+// failed `unparseable_after_recovery` even when the trailing JSON was
+// substantively valid READY. Strip every `<think>` block (greedy,
+// multi-line, multi-occurrence) before downstream extraction.
+{
+  const { stripPerplexityThinkingBlock } = await import("../src/peers/perplexity.js");
+  // Scenario A: clean JSON payload — must be returned unchanged.
+  const cleanJson = '{"status":"READY","notes":"All checks pass."}';
+  assert.equal(
+    stripPerplexityThinkingBlock(cleanJson),
+    cleanJson,
+    "clean JSON without <think> blocks must be returned unchanged",
+  );
+  // Scenario B: single `<think>` block followed by JSON — strip block,
+  // trim whitespace, return JSON.
+  const singleThink =
+    "<think>\nLet me reason about this carefully.\nThe evidence shows...\n</think>\n\n" + cleanJson;
+  assert.equal(
+    stripPerplexityThinkingBlock(singleThink),
+    cleanJson,
+    "single <think> block must be stripped; trailing JSON preserved",
+  );
+  // Scenario C: multiple `<think>` blocks (rare but legal) — every
+  // occurrence must be removed.
+  const multipleThinks =
+    "<think>first thought</think>\nintermediate text\n<think>second thought</think>\n" + cleanJson;
+  const strippedMultiple = stripPerplexityThinkingBlock(multipleThinks);
+  assert.ok(!/<think/i.test(strippedMultiple), "multiple <think> blocks must all be stripped");
+  assert.ok(
+    strippedMultiple.includes(cleanJson),
+    "multi-think strip must preserve trailing JSON payload",
+  );
+  // Scenario D: `<think>` block spanning multiple lines with arbitrary
+  // whitespace and nested-looking content (no actual nesting since
+  // Perplexity never emits nested reasoning blocks).
+  const multilineThink =
+    "<think>\n  Line 1\n    Line 2 with <b>html</b>\n  Line 3\n</think>\n" + cleanJson;
+  assert.equal(
+    stripPerplexityThinkingBlock(multilineThink),
+    cleanJson,
+    "multi-line <think> with arbitrary indentation must strip cleanly",
+  );
+  // Scenario E: `<think>` with attribute-like content (`<think foo="bar">`)
+  // — regex must allow attribute fragment before close `>`.
+  const attributedThink = '<think foo="bar">reasoning</think>\n' + cleanJson;
+  assert.equal(
+    stripPerplexityThinkingBlock(attributedThink),
+    cleanJson,
+    "<think> tag with attribute fragment must still strip",
+  );
+  // Scenario F: empty `<think></think>` (degenerate case) — strip + trim
+  // still yields the trailing JSON.
+  const emptyThink = "<think></think>\n" + cleanJson;
+  assert.equal(
+    stripPerplexityThinkingBlock(emptyThink),
+    cleanJson,
+    "empty <think></think> must strip cleanly",
+  );
+  // Scenario G: only `<think>` block, no trailing JSON — output is empty
+  // string after trim (caller's downstream parser then triggers
+  // format-recovery; not this function's responsibility to synthesize).
+  const onlyThink = "<think>just reasoning, no JSON follows</think>";
+  assert.equal(
+    stripPerplexityThinkingBlock(onlyThink),
+    "",
+    "only-<think> input must produce empty trimmed output (downstream parser handles recovery)",
+  );
+  // Scenario H: source-level pins — sonarText() must call the strip
+  // helper, and the helper must be exported.
+  const perplexitySrc = fs.readFileSync("src/peers/perplexity.ts", "utf8");
+  assert.ok(
+    /export function stripPerplexityThinkingBlock/.test(perplexitySrc),
+    "v3.2.0: stripPerplexityThinkingBlock must be exported (smoke + anti-drift)",
+  );
+  assert.ok(
+    /return stripPerplexityThinkingBlock\(raw\)/.test(perplexitySrc),
+    "v3.2.0: sonarText() must strip <think> blocks before returning",
+  );
+  assert.ok(
+    /PERPLEXITY_THINKING_BLOCK\s*=\s*\/<think\\b/.test(perplexitySrc),
+    "v3.2.0: PERPLEXITY_THINKING_BLOCK regex must use word-boundary on tag name",
+  );
+  console.log("[smoke] perplexity_thinking_block_strip_test: PASS");
+}
+
+// v3.2.0 (Codex bug report 2026-05-12) — session-state invariant: an
+// `outcome=converged` session MUST have `convergence_health.state=converged`,
+// and no path can append a round (which would rewrite
+// `convergence_health` from the new round's outcome) onto a finalized
+// session. Pre-v3.2.0 the MCP tool `session_finalize` accepted any
+// outcome regardless of round state; observed corruption in session
+// 41244a1c (R6 had perplexity:unparseable_after_recovery → convergence
+// false; session_finalize was then called with `outcome=converged`,
+// `outcome_reason=unanimous_ready`, leaving the meta with
+// `outcome=converged / health=blocked`).
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const invariantStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("finalize-invariant"),
+  });
+  // Helper: full decision_quality record (all 6 peers) defaulting to "clean".
+  const fullClean = {
+    codex: "clean" as const,
+    claude: "clean" as const,
+    gemini: "clean" as const,
+    deepseek: "clean" as const,
+    grok: "clean" as const,
+    perplexity: "clean" as const,
+  };
+  // Scenario A: finalize("converged") on a session whose latest round
+  // did NOT converge MUST be rejected with a structured error code.
+  const sess = invariantStore.init("invariant-fixture", "operator", []);
+  invariantStore.appendRound(sess.session_id, {
+    caller_status: "READY",
+    prompt_file: "round-1-prompt.md",
+    peers: [],
+    rejected: [],
+    convergence: {
+      converged: false,
+      reason: "peers failed or did not respond: perplexity:unparseable_after_recovery",
+      ready_peers: ["codex", "claude", "gemini"],
+      not_ready_peers: [],
+      needs_evidence_peers: [],
+      rejected_peers: ["perplexity"],
+      decision_quality: fullClean,
+      blocking_details: ["perplexity:unparseable_after_recovery"],
+    },
+    convergence_scope: {
+      petitioner: "operator",
+      caller: "operator",
+      acting_peer: "operator",
+      caller_status: "READY",
+      expected_peers: ["codex", "claude", "gemini"],
+      reviewer_peers: ["codex", "claude", "gemini"],
+    },
+    started_at: new Date().toISOString(),
+  });
+  let rejected: Error | null = null;
+  try {
+    invariantStore.finalize(sess.session_id, "converged", "unanimous_ready");
+  } catch (err) {
+    rejected = err as Error;
+  }
+  assert.ok(
+    rejected,
+    "finalize(converged) MUST reject when latest round.convergence.converged=false",
+  );
+  assert.equal(
+    (rejected as Error & { code?: string }).code,
+    "session_finalize_outcome_mismatch",
+    "rejection MUST carry the session_finalize_outcome_mismatch code for structured downstream handling",
+  );
+  // Meta must remain untouched (outcome unset).
+  assert.equal(
+    invariantStore.read(sess.session_id).outcome,
+    undefined,
+    "finalize-reject MUST NOT mutate meta.outcome",
+  );
+
+  // Scenario B: finalize("converged") on a session whose latest round
+  // DID converge succeeds and leaves a consistent meta.
+  const sess2 = invariantStore.init("invariant-fixture-2", "operator", []);
+  invariantStore.appendRound(sess2.session_id, {
+    caller_status: "READY",
+    prompt_file: "round-1-prompt.md",
+    peers: [],
+    rejected: [],
+    convergence: {
+      converged: true,
+      reason: "all peers READY",
+      ready_peers: ["codex", "claude", "gemini"],
+      not_ready_peers: [],
+      needs_evidence_peers: [],
+      rejected_peers: [],
+      decision_quality: fullClean,
+      blocking_details: [],
+    },
+    convergence_scope: {
+      petitioner: "operator",
+      caller: "operator",
+      acting_peer: "operator",
+      caller_status: "READY",
+      expected_peers: ["codex", "claude", "gemini"],
+      reviewer_peers: ["codex", "claude", "gemini"],
+    },
+    started_at: new Date().toISOString(),
+  });
+  const finalized = invariantStore.finalize(sess2.session_id, "converged", "unanimous_ready");
+  assert.equal(finalized.outcome, "converged");
+  assert.equal(finalized.convergence_health?.state, "converged");
+
+  // Scenario C: appendRound on a finalized session MUST throw with the
+  // structured code.
+  let appendRejected: Error | null = null;
+  try {
+    invariantStore.appendRound(sess2.session_id, {
+      caller_status: "READY",
+      prompt_file: "round-2-prompt.md",
+      peers: [],
+      rejected: [],
+      convergence: {
+        converged: false,
+        reason: "stale round on finalized session",
+        ready_peers: [],
+        not_ready_peers: [],
+        needs_evidence_peers: [],
+        rejected_peers: [],
+        decision_quality: fullClean,
+        blocking_details: [],
+      },
+      convergence_scope: {
+        petitioner: "operator",
+        caller: "operator",
+        acting_peer: "operator",
+        caller_status: "READY",
+        expected_peers: [],
+        reviewer_peers: [],
+      },
+      started_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    appendRejected = err as Error;
+  }
+  assert.ok(appendRejected, "appendRound on a finalized session MUST throw");
+  assert.equal(
+    (appendRejected as Error & { code?: string }).code,
+    "session_already_finalized",
+    "appendRound rejection MUST carry session_already_finalized code",
+  );
+  // Meta must still show converged health (no corruption).
+  const after = invariantStore.read(sess2.session_id);
+  assert.equal(after.outcome, "converged");
+  assert.equal(after.convergence_health?.state, "converged");
+
+  // Scenario D: assertNotFinalized helper exposed and behaves
+  // symmetrically (no-throw on open session, throw on finalized).
+  invariantStore.assertNotFinalized(sess.session_id); // sess is NOT finalized
+  let assertRejected: Error | null = null;
+  try {
+    invariantStore.assertNotFinalized(sess2.session_id);
+  } catch (err) {
+    assertRejected = err as Error;
+  }
+  assert.ok(assertRejected, "assertNotFinalized MUST throw on a finalized session");
+  assert.equal((assertRejected as Error & { code?: string }).code, "session_already_finalized");
+
+  // Scenario E: source-level pins for orchestrator entry-point wiring.
+  const orchSrc = fs.readFileSync("src/core/orchestrator.ts", "utf8");
+  const askPeersGuards = (
+    orchSrc.match(/this\.store\.assertNotFinalized\(input\.session_id\)/g) ?? []
+  ).length;
+  assert.ok(
+    askPeersGuards >= 2,
+    `orchestrator MUST call assertNotFinalized in BOTH askPeers and runUntilUnanimous (found ${askPeersGuards})`,
+  );
+
+  console.log("[smoke] session_finalize_state_invariant_test: PASS");
+}
+
+// v3.2.0 (Codex bug report 2026-05-12) — orchestrator MUST honor the
+// caller's explicit `peers: [...]` list across the whole session,
+// including the autowire judge path. Pre-v3.2.0 a peer that was
+// `peer_enabled` and listed in `CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_*`
+// would still be invoked as a judge even when the caller passed an
+// explicit `peers` list that excluded it (observed in session 73036fbb:
+// peers=[codex,gemini,deepseek,grok] but reviewers/judges included
+// perplexity). Source-level pin only — full behavioral coverage requires
+// the orchestrator round path which is exercised by integration tests.
+{
+  const orchSrc = fs.readFileSync("src/core/orchestrator.ts", "utf8");
+  // Pin: hadExplicitPeers flag derived from input.peers length.
+  assert.ok(
+    /const hadExplicitPeers = \(input\.peers\?\.length \?\? 0\) > 0/.test(orchSrc),
+    "v3.2.0: orchestrator MUST track whether the caller passed an explicit peers list",
+  );
+  // Pin: judgeRespectsExplicitPeers helper is defined and respects the
+  // explicit list when present.
+  assert.ok(
+    /const judgeRespectsExplicitPeers = \(peer: PeerId\): boolean =>\s+!hadExplicitPeers \|\| selectedPeers\.includes\(peer\)/m.test(
+      orchSrc,
+    ),
+    "v3.2.0: judgeRespectsExplicitPeers helper MUST short-circuit when no explicit peers list",
+  );
+  // Pin: consensus path filters via judgeRespectsExplicitPeers.
+  assert.ok(
+    /this\.config\.peer_enabled\[peer\] && judgeRespectsExplicitPeers\(peer\)/.test(orchSrc),
+    "v3.2.0: consensus autowire MUST intersect with explicit peers list",
+  );
+  // Pin: single-peer path also honors the filter.
+  assert.ok(
+    /!judgeRespectsExplicitPeers\(autowire\.peer\)/.test(orchSrc),
+    "v3.2.0: single-peer autowire MUST be skipped when peer is excluded by explicit peers list",
+  );
+  // Pin: structured `skipped_for_explicit_peers` flag exposed in the
+  // skip event so operators can distinguish intent-honor from misconfig.
+  assert.ok(
+    /skipped_for_explicit_peers/.test(orchSrc),
+    "v3.2.0: autowire_skipped event MUST surface skipped_for_explicit_peers boolean for operator audit",
+  );
+  console.log("[smoke] orchestrator_strict_peer_panel_test: PASS");
 }
 
 // v3.1.0 (central config file) — operator directive 2026-05-12. Verify:
