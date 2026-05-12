@@ -398,15 +398,72 @@ export class SessionStore {
       .filter((event) => event.seq > sinceSeq);
   }
 
+  // v2.27.0: corrupted meta.json files are silently skipped + quarantined to
+  // `<session_dir>/meta.json.bad` so subsequent startup sweeps do not re-throw.
+  // Empirically demonstrated by 3 sessions corrupted by the v2.25.1 redact
+  // escape-boundary bug (77c47284, be47a5b0, 7edf63e3) that caused parse
+  // errors on every Claude Code reload until manually deleted 2026-05-12.
   list(): SessionMeta[] {
     if (!fs.existsSync(this.sessionsDir())) return [];
-    return fs
-      .readdirSync(this.sessionsDir(), { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(this.sessionsDir(), entry.name, "meta.json"))
-      .filter((file) => fs.existsSync(file))
-      .map((file) => readJson<SessionMeta>(file))
-      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    const entries = fs.readdirSync(this.sessionsDir(), { withFileTypes: true });
+    const metas: SessionMeta[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const sessionDir = path.join(this.sessionsDir(), entry.name);
+      const file = path.join(sessionDir, "meta.json");
+      if (!fs.existsSync(file)) continue;
+      try {
+        metas.push(readJson<SessionMeta>(file));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const quarantine = path.join(sessionDir, "meta.json.bad");
+        try {
+          if (!fs.existsSync(quarantine)) {
+            fs.renameSync(file, quarantine);
+            console.error(
+              `[cross-review-v2] quarantined corrupted meta.json at ${file} -> ${quarantine} (${message})`,
+            );
+          }
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+    return metas.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  // v2.27.0: prune finalized sessions older than `maxAgeDays` days. Default
+  // 60 days (configurable via CROSS_REVIEW_V2_PRUNE_AFTER_DAYS env var or
+  // explicit arg). Only removes sessions whose outcome is terminal (converged
+  // | aborted | max-rounds) AND whose updated_at is older than the cutoff.
+  // In-flight or untyped-outcome sessions are never pruned. Idempotent +
+  // best-effort. Empirically motivated by 534 sessions accumulated on disk
+  // by 2026-05-12 inflating cold-start sweep cost.
+  pruneOldSessions(maxAgeDays?: number): { scanned: number; pruned: number } {
+    const envDays = Number.parseFloat(process.env.CROSS_REVIEW_V2_PRUNE_AFTER_DAYS ?? "");
+    const days =
+      maxAgeDays != null && maxAgeDays > 0
+        ? maxAgeDays
+        : Number.isFinite(envDays) && envDays > 0
+          ? envDays
+          : 60;
+    const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+    let scanned = 0;
+    let pruned = 0;
+    for (const session of this.list()) {
+      scanned += 1;
+      if (!session.outcome) continue;
+      const lastTouched = Date.parse(session.updated_at);
+      if (!Number.isFinite(lastTouched) || lastTouched >= cutoffMs) continue;
+      const dir = this.sessionDir(session.session_id);
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+        pruned += 1;
+      } catch {
+        /* best-effort */
+      }
+    }
+    return { scanned, pruned };
   }
 
   savePrompt(sessionId: string, round: number, prompt: string): string {

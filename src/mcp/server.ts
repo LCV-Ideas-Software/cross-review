@@ -1546,6 +1546,22 @@ export async function main(): Promise<void> {
       console.error(`[cross-review-v2] startup stale-session abort sweep error: ${message}`);
     }
   });
+  // v2.27.0: prune finalized sessions older than CROSS_REVIEW_V2_PRUNE_AFTER_DAYS
+  // (default 60). Empirically motivated by 534 sessions accumulated by
+  // 2026-05-12 inflating sweep + list cost. Disable with PRUNE_AFTER_DAYS=0.
+  setImmediate(() => {
+    try {
+      const envDisable = (process.env.CROSS_REVIEW_V2_PRUNE_AFTER_DAYS ?? "").trim() === "0";
+      if (envDisable) return;
+      const pruneSweep = runtime.orchestrator.store.pruneOldSessions();
+      if (pruneSweep.pruned > 0) {
+        console.error("[cross-review-v2] startup prune sweep:", JSON.stringify(pruneSweep));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[cross-review-v2] startup prune sweep error: ${message}`);
+    }
+  });
   // v2.10.0 / v2.12.0: surface judge auto-wire misconfiguration at boot.
   // Per operator request the runtime never throws on a stray env value (a
   // typo must not break a paying review-host); we log a single notice so

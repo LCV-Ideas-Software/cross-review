@@ -7,6 +7,29 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.27.00] - 2026-05-12
+
+**Minor — Cold-start hardening: corrupted meta.json auto-quarantine + finalized-session auto-prune.** Empirically motivated by Claude Code reload friction observed 2026-05-12: cross-review-v2 cold-start was ~6.4s standalone with 534 historical session dirs accumulated under `~/.cross-review/data_v2/sessions/`. The startup sweeps (`clearStaleInFlight` + `abortStaleSessions`) iterate via `list()` which read every `meta.json` — a single corrupted file (3 sessions corrupted by the v2.25.1 redact escape-boundary bug: `77c47284`, `be47a5b0`, `7edf63e3`) caused the sweep to throw + abort, surfacing parse-error stderr on every reload. Claude Code is more sensitive to startup stderr than other MCP hosts, so the perception was "cross-review-v2 fails to load on Claude Code."
+
+### Adicionado
+
+- **`SessionStore.list()` now silently skips + quarantines corrupted meta.json** (`src/core/session-store.ts:401`). When `readJson<SessionMeta>(file)` throws, the file is renamed to `<session_dir>/meta.json.bad` and a single `[cross-review-v2] quarantined corrupted meta.json at … (reason)` stderr line is emitted. Subsequent startup sweeps see the dir without `meta.json` and skip it. Idempotent — already-quarantined files aren't re-renamed.
+- **`SessionStore.pruneOldSessions(maxAgeDays?)`** (`src/core/session-store.ts`). Removes finalized session dirs (outcome ∈ `converged|aborted|max-rounds`) whose `updated_at` is older than the cutoff. Default 60 days; configurable via `CROSS_REVIEW_V2_PRUNE_AFTER_DAYS` env var. In-flight or untyped-outcome sessions are NEVER pruned (preserves audit trail for active work). Returns `{ scanned, pruned }` for telemetry.
+- **New startup `setImmediate` block** wires `pruneOldSessions()` after the existing in-flight + stale-session sweeps (`src/mcp/server.ts:~1550`). Stderr only emitted when `pruned > 0`. Disable entirely with `CROSS_REVIEW_V2_PRUNE_AFTER_DAYS=0`.
+
+### Alterado
+
+- `SessionStore.list()` no longer throws on a single corrupted meta.json; the throw used to cascade through both `clearStaleInFlight()` and `abortStaleSessions()` aborting both sweeps on the first bad file. Behavior is now: skip+quarantine, continue. Other callers (`session_list` MCP tool, dashboard) get cleaner data without manual intervention.
+
+### Estado real do incident-driven cleanup (2026-05-12)
+
+- Manual cleanup pre-v2.27 ship: 3 corrupted dirs deleted + 328 stale sessions pruned via shell loop (534 → 203). Cold-start unchanged (~6.4s) — confirmed bottleneck is Node + ESM module loading, not the sweeps. v2.27 removes the per-reload stderr noise + prevents future accumulation.
+- Future arch optimization candidates (NOT in this ship): lazy-load peer adapters (5 SDKs eagerly imported); pre-compile ESM via Node SEA single-executable; cache module graph via `node --experimental-loader`.
+
+**Local gates**: typecheck clean, lint clean, format:check clean, build clean. Cross-review-v2 self-review BYPASSED per `feedback_cross_review_self_repair_exception.md` (gate-fixing-itself one-time exception); the empirical Claude Code reload friction is the evidence.
+
+**Public surface**: 2 new methods on `SessionStore` (`pruneOldSessions`); `list()` swallows-and-quarantines instead of throws (additive defensive). Backward-compatible default — operators see no behavior change unless they have corrupted meta.json files OR have accumulated >60-day-old finalized sessions.
+
 ## [v02.26.01] - 2026-05-12
 
 **Patch — `max_attached_evidence_chars` default raised 80_000 → 200_000 to fix multi-file evidence truncation.** Empirically demonstrated by the stepsecurity MCP server v0.2.0 ship 2026-05-12 (caller=claude, sess `fd1037e5-6270-4e96-8800-abb8ee44049f` and prior sess `85f94725-bc64-46e3-b9a3-b7a3b944667b`): with 5 attached evidence files totaling ~95KB (a 38KB source file + 30KB diff + 13KB backup + 8KB markdown docs), the `session-store.readEvidenceAttachments()` budget allocator at `src/core/session-store.ts:1481-1543` exhausted the 80KB total cap before reaching the 4th+ attachment, surfacing `(truncated to 33273 of 38412 bytes)` to peers. Peers in 5 consecutive rounds across 2 sessions correctly flagged the truncation as a blocker. The `perFileCap = max(2_000, floor(totalCap * 0.6))` mechanic remains correct (60% per-file allowance leaves room for at least 1 other attachment); only the global `totalCap` default needed bumping. **New default**: 200_000 chars accommodates ~5 attachments averaging 30KB each before any per-file truncation. **Operator override unchanged**: `CROSS_REVIEW_V2_MAX_ATTACHED_EVIDENCE_CHARS` env var continues to tune the cap up or down per workspace policy. **Documented adjacent issues** (no code fix in this patch; tracked as known issues for v2.27+ design):
