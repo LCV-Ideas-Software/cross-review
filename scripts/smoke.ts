@@ -5718,6 +5718,78 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] startup_sweeps_use_setTimeout_test: PASS");
 }
 
+// v2.28.0 — windows_registry_env_bulk_cache_test. Pins the cold-start
+// hardening Part 3: Windows `reg query` must be invoked ONCE per scope
+// at first miss to populate a Map, NOT once per env var. Pre-v2.28.0
+// `readWindowsRegistryEnv(name)` spawned `reg query <root> /v NAME`
+// for every miss × 2 scopes — with ~140 config env vars and a partial
+// `process.env` (the typical .mcp.json spawn shape), this consumed
+// 3-7 s of `loadConfig()` time on Windows, dwarfing every other boot
+// cost combined. The fix is structural: bulk-read the entire
+// `HKCU\Environment` + HKLM `Session Manager\Environment` once, cache
+// in a module-level `Map<string,string>`, and have
+// `readWindowsRegistryEnv(name)` return `cache.get(name)`.
+//
+// Invariants pinned here:
+// (1) `src/core/config.ts` declares the module-level cache variable.
+// (2) The bulk loader function exists and parses `reg query <root>` output.
+// (3) `readWindowsRegistryEnv` is a thin `cache.get(name)` lookup (no
+//     `execFileSync` directly in the function — that goes through the
+//     loader). Per-var `reg query <root> /v <NAME>` calls must NOT
+//     reappear in the source.
+// (4) The orphan `escapeRegExp` helper (only used by the per-var
+//     pattern) is gone from the source.
+// (5) Compiled dist mirrors all four invariants.
+{
+  const configSrc = fs.readFileSync("src/core/config.ts", "utf8");
+  assert.ok(
+    /let\s+_winRegistryEnvCache\s*:\s*Map<string,\s*string>\s*\|\s*null/.test(configSrc),
+    "v2.28.0 / windows_registry_env_bulk_cache: module-level Map cache must be declared",
+  );
+  assert.ok(
+    /function\s+loadWindowsRegistryEnvCache\s*\(\s*\)\s*:\s*Map<string,\s*string>/.test(configSrc),
+    "v2.28.0 / windows_registry_env_bulk_cache: bulk loader function must be declared",
+  );
+  assert.ok(
+    /execFileSync\(\s*"reg",\s*\[\s*"query",\s*root\s*\]/.test(configSrc),
+    "v2.28.0 / windows_registry_env_bulk_cache: bulk `reg query <root>` (no /v NAME) must be the canonical invocation",
+  );
+  // Negative invariant: per-var `reg query ... /v NAME` form must NOT
+  // come back in any future refactor.
+  assert.ok(
+    !/execFileSync\(\s*"reg",\s*\[\s*"query",\s*[^\]]+,\s*"\/v"/.test(configSrc),
+    "v2.28.0 / windows_registry_env_bulk_cache: per-var `reg query ... /v NAME` must NOT reappear",
+  );
+  assert.ok(
+    !/function\s+escapeRegExp\b/.test(configSrc),
+    "v2.28.0 / windows_registry_env_bulk_cache: orphan escapeRegExp helper must remain removed",
+  );
+  // readWindowsRegistryEnv shape — must be the thin cache lookup.
+  assert.ok(
+    /function\s+readWindowsRegistryEnv\s*\(\s*name\s*:\s*string\s*\)\s*:\s*string\s*\|\s*undefined\s*\{\s*if\s*\(\s*process\.platform\s*!==\s*"win32"\s*\)\s*return\s+undefined;\s*return\s+loadWindowsRegistryEnvCache\(\)\.get\(name\);/.test(
+      configSrc,
+    ),
+    "v2.28.0 / windows_registry_env_bulk_cache: readWindowsRegistryEnv must be a thin loadWindowsRegistryEnvCache().get(name) lookup",
+  );
+  // Dist verification — same invariants in compiled JS.
+  if (fs.existsSync("dist/src/core/config.js")) {
+    const distSrc = fs.readFileSync("dist/src/core/config.js", "utf8");
+    assert.ok(
+      /_winRegistryEnvCache/.test(distSrc),
+      "v2.28.0 / windows_registry_env_bulk_cache: dist must contain _winRegistryEnvCache",
+    );
+    assert.ok(
+      /loadWindowsRegistryEnvCache/.test(distSrc),
+      "v2.28.0 / windows_registry_env_bulk_cache: dist must contain loadWindowsRegistryEnvCache",
+    );
+    assert.ok(
+      !/execFileSync\(["']reg["'],\s*\[["']query["'],\s*[^\]]+,\s*["']\/v["']/.test(distSrc),
+      "v2.28.0 / windows_registry_env_bulk_cache: dist must NOT contain per-var `reg query ... /v NAME`",
+    );
+  }
+  console.log("[smoke] windows_registry_env_bulk_cache_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight

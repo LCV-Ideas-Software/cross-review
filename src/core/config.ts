@@ -18,7 +18,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.27.1";
+export const VERSION = "2.28.0";
 export const RELEASE_DATE = "2026-05-12";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -40,36 +40,61 @@ const PROJECT_ROOT =
     ? path.resolve(RUNTIME_ROOT, "..")
     : RUNTIME_ROOT;
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+// v2.28.0 (cold-start hardening Part 3): single bulk read of the Windows
+// registry environment scopes at first miss, then pure Map lookups. The
+// previous per-var `reg query <root> /v NAME` design fired 2 subprocesses
+// per missing env var (HKCU + HKLM, ~30 ms each). With ~140 config env
+// vars consulted per `loadConfig()` and only some present in
+// `process.env`, the missing-var fallback alone consumed 3-7 seconds of
+// boot time on Windows — the dominant cost outside MCP SDK module load.
+// Caching makes the cost O(1 + 2 registry reads) instead of O(N missing
+// × 2 spawns). The cache is populated on the first call that would have
+// gone to the registry; if `process.env` already has every var, it is
+// never populated. Cross-process cache isolation is preserved (each Node
+// process has its own).
+let _winRegistryEnvCache: Map<string, string> | null = null;
 
-function readWindowsRegistryEnv(name: string): string | undefined {
-  if (process.platform !== "win32") return undefined;
-
+function loadWindowsRegistryEnvCache(): Map<string, string> {
+  if (_winRegistryEnvCache) return _winRegistryEnvCache;
+  const cache = new Map<string, string>();
   const roots = [
     "HKCU\\Environment",
     "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
   ];
-
-  for (const root of roots) {
+  // HKCU wins over HKLM on collision (per Windows env-resolution order),
+  // so populate HKLM first and overwrite with HKCU last.
+  for (const root of [roots[1], roots[0]]) {
     try {
-      const output = execFileSync("reg", ["query", root, "/v", name], {
+      const output = execFileSync("reg", ["query", root], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
       });
-      const match = output.match(
-        new RegExp(`^\\s*${escapeRegExp(name)}\\s+REG_\\w+\\s+(.*)$`, "im"),
-      );
-      const value = match?.[1]?.trim();
-      if (value) return value;
+      // `reg query <root>` emits one line per value:
+      //   <whitespace><Name><whitespace>REG_<TYPE><whitespace><Value>
+      // Header lines (the root path itself) and blank lines are
+      // filtered by the REG_<TYPE> token requirement.
+      for (const line of output.split(/\r?\n/)) {
+        const match = line.match(
+          /^\s*([^\s]+)\s+REG_(?:SZ|EXPAND_SZ|MULTI_SZ|DWORD|QWORD|BINARY)\s+(.*)$/,
+        );
+        if (!match) continue;
+        const [, name, rawValue] = match;
+        if (!name || rawValue == null) continue;
+        cache.set(name, rawValue.trim());
+      }
     } catch {
-      // Missing values are expected when users store a key in another scope.
+      // Missing root is unusual but not fatal — env-var lookups simply
+      // fall back to `undefined` after the cache miss.
     }
   }
+  _winRegistryEnvCache = cache;
+  return cache;
+}
 
-  return undefined;
+function readWindowsRegistryEnv(name: string): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  return loadWindowsRegistryEnvCache().get(name);
 }
 
 function envValue(name: string): string | undefined {

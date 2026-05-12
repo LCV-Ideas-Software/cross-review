@@ -7,6 +7,43 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v02.28.00] - 2026-05-12
+
+**Minor — Cold-start hardening Part 3: Windows registry env-var lookup bulk-cached (3-7 s → ~100 ms).** Empirical profile of the v2.27.1 boot revealed the real bottleneck: `loadConfig()` consuming 3.1-7.0 s on Windows. Root cause was `readWindowsRegistryEnv(name)` in `src/core/config.ts` firing `execFileSync("reg", ["query", root, "/v", NAME])` once per missing env var × 2 registry scopes (HKCU + HKLM). With ~140 config env vars consulted per call and only a subset present in `process.env` (the typical `.mcp.json` spawn provides ~57 of them), the per-var fallback alone burned 3-7 seconds — dwarfing every other boot cost combined. The provider-SDK lazy-load + sweep deferral work in v2.27.0 + v2.27.1 was attacking a side concern (~340 ms of module loading) while the registry-query path silently dominated.
+
+**v2.28.0 fix**: single bulk `reg query <root>` at first miss populates a module-level `Map<string,string>` cache; `readWindowsRegistryEnv(name)` becomes a pure `cache.get(name)` lookup. Cost goes from `O(N missing × 2 spawns)` to `O(1 + 2 registry reads)`. Cache is per-process (no cross-process state); if `process.env` already has every var, the cache is never populated.
+
+**Empirical handshake measurement** (3 trials each, side-by-side):
+
+| Build                   | T1         | T2         | T3         |
+| ----------------------- | ---------- | ---------- | ---------- |
+| v2.27.1 (npm-installed) | 3.18 s     | 3.12 s     | 3.14 s     |
+| v2.28.0 (local build)   | **0.37 s** | **0.37 s** | **0.38 s** |
+
+**8.4× speedup**. Cold-start now well below every host's spawn-to-initialize threshold, including Claude Code's strict window. The standalone `loadConfig()` profile dropped from 3,307 ms → 87 ms (38× speedup on that single function).
+
+### Alterado
+
+- `src/core/config.ts`: replaced per-var `readWindowsRegistryEnv` with bulk loader `loadWindowsRegistryEnvCache(): Map<string, string>` that runs `reg query <root>` once per scope. HKLM is parsed first then HKCU overwrites on collision (matching Windows env-resolution order). `readWindowsRegistryEnv(name)` is now a thin lookup. Orphan `escapeRegExp` helper removed (it was only used by the per-var regex construction).
+
+### Smoke
+
+`windows_registry_env_bulk_cache_test` — 7-class assertion: (1) Map cache declared; (2) bulk loader function declared; (3) bulk `reg query <root>` (no `/v NAME`) is canonical invocation; (4) per-var `reg query ... /v NAME` MUST NOT reappear in source; (5) orphan `escapeRegExp` MUST remain removed; (6) `readWindowsRegistryEnv` is a thin `cache.get(name)` lookup; (7) compiled dist mirrors all invariants. Plus all v2.27.1 markers retained (`lazy_provider_sdk_imports_test` + `startup_sweeps_use_setTimeout_test`).
+
+Smoke 97 events / ok:true.
+
+**Public surface**: 100% backward-compatible. No tool change. No event change. No env var change. The fix is internal to `config.ts`; `loadConfig()` returns identical results.
+
+**Cross-review-v2 HARD GATE BYPASSED** per `feedback_cross_review_self_repair_exception.md`. v2.28.0 is the third installment of the cold-start hardening series (v2.27.0 + v2.27.1 + v2.28.0); routing a fix for the gate's own startup time through the broken gate is the failure mode being fixed. Local gates GREEN (typecheck + lint + format + build + smoke); empirical 8.4× speedup is the evidence.
+
+**Lessons learned**:
+
+1. **Profile before scoping**. v2.27.0 + v2.27.1 attacked SDK imports + sweeps (~340 ms total) without empirically measuring where the 3+ seconds were actually going. A 30-line profiling script identified the real bottleneck in 5 minutes and pointed at a 38× speedup target. The operator was right to push back on "fazer tudo de uma só vez" — the audit step belonged at the START of v2.27.1, not after.
+2. **Per-var subprocess spawn for env-var lookups is an anti-pattern on Windows.** `reg query` is a process spawn (~30 ms each); 140+ vars × 2 scopes = thousands of ms even when each individual call is fast. Bulk-read once, cache, look up.
+3. **The Windows registry env-var fallback was undetectable on Linux/Mac** (where the function early-returns). Empirical profiling on the target OS would have caught this at v2.4.0 introduction, not v2.28.0.
+
+**Minor bump**: internal behavior change with measurable runtime impact (8.4× cold-start speedup). No breaking API change.
+
 ## [v02.27.01] - 2026-05-12
 
 **Patch — Cold-start hardening Part 2: lazy-load provider SDKs + defer 6 startup sweeps to setTimeout(30s).** Completes the cold-start fix initiated in v2.27.0. Empirical motivation: 2026-05-12 the operator reported cross-review-v2 failing to register tools in a Claude Code session (other 5 MCP hosts unaffected: Codex CLI extension + Gemini Code Assist + Antigravity + Grok CLI + DeepSeek CLI all loaded normally with the same `.cmd`-bypass shim). Diagnostic measurements via real JSON-RPC initialize handshake showed the server taking ~4.2 s to respond, exactly on top of Claude Code's per-spawn timeout window. Two contributors stacked: (a) eager top-level imports of 5 provider SDK module trees (`@anthropic-ai/sdk`, `openai` × 3 for OpenAI/DeepSeek/Grok, `@google/genai`) loaded ~3 s of CommonJS/ESM dependency graph at server boot before the MCP transport could connect; (b) v2.27.0's 4 boot-time FS sweeps (`sweepOrphanTmpFiles` + `clearStaleInFlight` + `abortStaleSessions` + `pruneOldSessions`) plus 2 boot notices (autowire + grok-reasoning) ran via `setImmediate` on the same event-loop tick that processes the initialize message, competing for CPU during the critical window. v2.27.1 addresses both contributors at once.
