@@ -7,6 +7,63 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.01.00] - 2026-05-12
+
+**Minor — Central config file (`config.json`). Eliminates ~700 redundant env-var declarations across the 7 MCP host configs.** Operator directive 2026-05-12. Backward-compatible additive feature; pre-v3.1.0 env-only setups continue to work unchanged.
+
+### Why
+
+After v3.0.0 the sexteto introduced ~14 Perplexity env vars on top of the existing pricing/budget/autowire matrix, raising the per-host env-var count to ~100 and the workspace-wide redundant-declaration count to ~700 (100 × 7 hosts). Pricing rollouts (e.g., v2.26.0 Gemini bump) required 7 parallel edits with drift risk. Per-host `consensus_peers` lists were also asymmetric — each host hand-excluded its own caller, producing the kind of bug observed in `.deepseek/settings.json` (caller appeared in own panel).
+
+### Adicionado
+
+- **`src/core/file-config.ts`** NEW (~440 LOC). Module providing:
+  - `FileConfigSchema` (zod, `.strict()`) covering models, fallback_models, reasoning_effort, peer_enabled, cost_rates (18 fields per peer), budget, retry, evidence_judge_autowire, cache, perplexity sub-config, token_streaming, max_output_tokens, log_level, stub, dashboard_port.
+  - `flattenFileConfigToEnvMap(config)` exported — deterministic mapping from structured JSON to the flat `CROSS_REVIEW_*` env-var names the existing pipeline consumes. Anti-drift surface: when the runtime adds a new env var, the file schema + flatten mapping must update together.
+  - `resolveConfigFilePath(dataDir)` exported — returns `process.env.CROSS_REVIEW_V2_CONFIG_FILE` if set, else `${dataDir}/config.json`.
+  - `applyFileConfigToEnv(dataDir, envValueFn)` exported — reads file, validates, applies values to `process.env` IFF the var is not already set in env or Windows registry. Returns `ApplyFileConfigResult` for boot-notice telemetry. Idempotent. Non-fatal on file absence, parse failure, or schema violation (returns `parse_error` field; boot proceeds with env+defaults).
+- **`src/core/config.ts`** new `getLastFileConfigResult()` exported helper returning the last `applyFileConfigToEnv()` outcome (path, fields_applied, fields_overridden_by_env, parse_error). Useful for server_info boot notices and operator debugging.
+- **`scripts/smoke.ts`** new marker `central_config_file_load_test` covering: (a) file absent → graceful no-op + result.applied=false; (b) file present + valid → fields_applied > 0; (c) file present + env override → file values for those keys are skipped, fields_overridden_by_env > 0; (d) malformed JSON → parse_error set, no crash; (e) zod validation failure → parse_error set with "schema_validation_failed:" prefix; (f) `CROSS_REVIEW_V2_CONFIG_FILE` env override resolves a non-default path.
+
+### Precedence (high → low)
+
+1. `process.env` (MCP host config explicit declaration)
+2. Windows registry `HKCU\Environment` / `HKLM\Environment` (v2.28.0 bulk cache)
+3. **Central config file** (this release)
+4. Hardcoded defaults inside `loadConfig()`
+
+The file is a _default layer_, never an override. Explicit env declarations (per-host caller token, secrets in Windows registry) always win, preserving the v2.18.0 F1 identity model and the workspace `secrets_policy: "API keys are read from Windows environment variables only"` (the file has no `api_keys` section by design).
+
+### What stays per-host (cannot be centralized)
+
+- `CROSS_REVIEW_CALLER_TOKEN` (per-agent-identity hex; binds host → agent identity for the F1 token gate)
+- `CROSS_REVIEW_REQUIRE_TOKEN` (per-host opt-in; VS Code + Antigravity run gate-off)
+- API keys (operator-controlled secrets; remain in Windows registry only — `secrets_policy` invariant)
+
+After Tier 1 migration each host config shrinks from ~100 env vars to ~3 (caller_token + require_token + optionally API key passthrough, though v2.28.0+ reads API keys from registry directly as fallback when host does not declare them).
+
+### Bonus wins
+
+- **`consensus_peers` asymmetry resolved**: the file defines a single list of all 6 peers. The runtime continues to exclude the caller of each call dynamically (existing HARD GATE caller≠judge logic). No more per-host hand-maintained exclusion masks.
+- **Version control of operator config**: file lives at `~/.cross-review/data_v2/config.json` and can be committed to a private dotfiles repo or symlinked from a workspace-tracked file. Diff + history + rollback become possible without editing 7 host configs.
+- **Faster pricing rollouts**: e.g., Anthropic/OpenAI/Gemini price changes become 1 edit in `config.json` + 7 reloads, instead of 7 hand-coordinated edits.
+
+### File location + override
+
+- Default: `${data_dir}/config.json` where `data_dir = process.env.CROSS_REVIEW_V2_DATA_DIR ?? <project>/data` (Windows operator default: `C:\Users\<user>\.cross-review\data_v2\config.json`).
+- Override: `CROSS_REVIEW_V2_CONFIG_FILE` env var with absolute or `~/`-expanded path.
+
+### Pós-ship operator action
+
+1. `npm update -g @lcv-ideas-software/cross-review-v2` post GHA publish (3.0.0 → 3.1.0).
+2. Create `~/.cross-review/data_v2/config.json` with current operator-tuned values (the ship includes a documented example in README).
+3. Strip ~95 env vars from each of the 7 MCP host configs, leaving only `CROSS_REVIEW_CALLER_TOKEN` + `CROSS_REVIEW_REQUIRE_TOKEN` (API keys auto-resolve from Windows registry via v2.28.0's `readWindowsRegistryEnv` fallback).
+4. Reload all 7 MCP hosts.
+
+### Compatibilidade pública
+
+100% backward-compatible. Tool surface unchanged. Event stream unchanged. Existing env-only setups continue to load identically because the file is optional + absent = no-op. The file's contribution is a default LAYER; explicit env declarations override file values.
+
 ## [v03.00.00] - 2026-05-12
 
 **Major — Perplexity joins the sexteto. 5-peer cross-review → 6-peer.** Operator directive 2026-05-12. The cross-review-v2 tribunal expands from quinteto (codex / claude / gemini / deepseek / grok) to sexteto with the addition of **Perplexity** via the Sonar API. All 6 peers are symmetric in role assignment — Perplexity can be caller, lead_peer (relator), or reviewer. The workspace HARD GATE (caller != lead_peer != reviewer per session) applies uniformly across all 6.

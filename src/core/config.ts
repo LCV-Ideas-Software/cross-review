@@ -3,6 +3,7 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { AppConfig, PeerId } from "./types.js";
+import { applyFileConfigToEnv } from "./file-config.js";
 
 // v2.4.0 / audit closure (P3.12): tilde expansion for env-provided paths.
 // `path.resolve` does NOT expand `~` to the user's home directory on any
@@ -18,7 +19,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "3.0.0";
+export const VERSION = "3.1.0";
 export const RELEASE_DATE = "2026-05-12";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -174,11 +175,32 @@ function reasoningEffort(
   return fallback;
 }
 
+// v3.1.0: telemetry of the file-config load attempt; readers can call
+// `getLastFileConfigResult()` to surface a boot notice or expose it via
+// server_info. Not part of AppConfig (intentionally) so existing
+// snapshots remain backward-compatible.
+let LAST_FILE_CONFIG_RESULT: import("./file-config.js").ApplyFileConfigResult | undefined;
+
+export function getLastFileConfigResult():
+  | import("./file-config.js").ApplyFileConfigResult
+  | undefined {
+  return LAST_FILE_CONFIG_RESULT;
+}
+
 export function loadConfig(): AppConfig {
   const configuredDataDir = envValue("CROSS_REVIEW_V2_DATA_DIR");
   const dataDir = configuredDataDir
     ? path.resolve(expandHome(configuredDataDir))
     : path.join(PROJECT_ROOT, "data");
+
+  // v3.1.0 central config file: hydrate `process.env` with values from
+  // `${dataDir}/config.json` (or path overridden via
+  // CROSS_REVIEW_V2_CONFIG_FILE) BEFORE any of the per-field readers
+  // below consult envValue(). The file's contribution is a default
+  // layer: env (process.env + Windows registry) wins, file second,
+  // hardcoded defaults last. See src/core/file-config.ts for the
+  // mapping table from structured JSON fields to flat env-var names.
+  LAST_FILE_CONFIG_RESULT = applyFileConfigToEnv(dataDir, envValue);
 
   return {
     version: VERSION,

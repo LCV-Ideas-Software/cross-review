@@ -16,17 +16,17 @@ import path from "node:path";
 function smokeTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-v2-${label}-`));
 }
-import { checkConvergence } from "../src/core/convergence.js";
 import { loadConfig } from "../src/core/config.js";
+import { checkConvergence } from "../src/core/convergence.js";
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import { SWEEP_MIN_IDLE_MS } from "../src/core/session-store.js";
 import { parsePeerStatus } from "../src/core/status.js";
 import { PEERS } from "../src/core/types.js";
 import type { PeerResult } from "../src/core/types.js";
 import {
-  SessionIdSchema,
   getCallerCandidatesFromClientInfo,
   pruneCompletedJobs,
+  SessionIdSchema,
   setHostTokensRecord,
   verifyCallerIdentity,
 } from "../src/mcp/server.js";
@@ -494,14 +494,20 @@ assert.equal(
   (2_000 / 1_000_000) * 1.74,
   "cache_write_cost = cache_write_tokens × promo_cache_write_per_million",
 );
-assert.ok(
-  est.total_cost! > 0 &&
-    Math.abs(
-      est.total_cost! -
-        (est.input_cost! + est.output_cost! + est.cache_read_cost! + est.cache_write_cost!),
-    ) < 1e-9,
-  "total_cost = sum of all categories",
-);
+{
+  // CostEstimate fields are optional<number>; this test path guarantees
+  // all 5 are present (full cost rate + non-zero usage). Read into
+  // narrowed locals so biome's no-non-null-assertion stays happy.
+  const total = est.total_cost ?? 0;
+  const input = est.input_cost ?? 0;
+  const output = est.output_cost ?? 0;
+  const cacheRead = est.cache_read_cost ?? 0;
+  const cacheWrite = est.cache_write_cost ?? 0;
+  assert.ok(
+    total > 0 && Math.abs(total - (input + output + cacheRead + cacheWrite)) < 1e-9,
+    "total_cost = sum of all categories",
+  );
+}
 console.error("[smoke] full_pricing_model_v2260_test: PASS");
 
 // v2.18.4 / Codex audit 2026-05-07 P2.1: grok-4.3 added to the
@@ -4454,6 +4460,235 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.0.0 R1 fix: estimateCost must gate request_cost on usage.search_performed (with config fallback)",
   );
   console.log("[smoke] perplexity_request_cost_search_aware_test: PASS");
+}
+
+// v3.1.0 (central config file) — operator directive 2026-05-12. Verify:
+// (a) file absent → graceful no-op + result.applied=false;
+// (b) file present + valid → fields applied; values land in process.env
+//     for env vars NOT already set;
+// (c) file present + env override → file values are skipped for those
+//     env names (fields_overridden_by_env > 0);
+// (d) malformed JSON → parse_error includes "json_parse_failed:" prefix
+//     + result.applied=false (no crash, no exception);
+// (e) zod validation failure → parse_error includes
+//     "schema_validation_failed:" prefix + result.applied=false;
+// (f) CROSS_REVIEW_V2_CONFIG_FILE env override resolves a non-default
+//     absolute path.
+{
+  const tmpModule = await import("node:fs");
+  const tmpFs = tmpModule.default;
+  const fileConfigMod = await import("../src/core/file-config.js");
+  const { applyFileConfigToEnv, resolveConfigFilePath, flattenFileConfigToEnvMap } = fileConfigMod;
+  const tmpDir = smokeTmpDir("central-config-file");
+  // Always start with a clean process.env baseline for the keys we
+  // exercise; the smoke harness presets several env vars at the top of
+  // the script, so we capture+restore to keep tests hermetic.
+  // v3.1.0 R1 fix (codex catch): KEYS_UNDER_TEST must include EVERY
+  // env var that the smoke's validConfig might write to process.env so
+  // cleanup in `finally` fully restores the baseline; otherwise the
+  // marker leaks env into later smoke blocks.
+  const KEYS_UNDER_TEST = [
+    "CROSS_REVIEW_OPENAI_MODEL",
+    "CROSS_REVIEW_PERPLEXITY_MODEL",
+    "CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS",
+    "CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD",
+    "CROSS_REVIEW_V2_TOKEN_DELTA_MS_THRESHOLD",
+    "CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS",
+    "CROSS_REVIEW_V2_PEER_PERPLEXITY",
+    "CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE",
+    "CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER",
+    "CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS",
+  ];
+  const restore: Record<string, string | undefined> = {};
+  for (const k of KEYS_UNDER_TEST) {
+    restore[k] = process.env[k];
+    delete process.env[k];
+  }
+  const prevConfigFileEnv = process.env.CROSS_REVIEW_V2_CONFIG_FILE;
+  delete process.env.CROSS_REVIEW_V2_CONFIG_FILE;
+  // Use the smoke's existing envValue shim that mirrors config.ts
+  // semantics enough for this test (no Windows registry fallback path
+  // needed here; the file-config module only consults the function
+  // for "is this var already set in env or registry" gating).
+  const envValueFn = (name: string) => {
+    const v = process.env[name];
+    return v && v.length > 0 ? v : undefined;
+  };
+  try {
+    // (a) file absent
+    {
+      const r = applyFileConfigToEnv(tmpDir, envValueFn);
+      assert.equal(r.applied, false, "absent file must yield applied=false");
+      assert.equal(r.fields_applied, 0);
+      assert.equal(r.fields_overridden_by_env, 0);
+      assert.equal(r.parse_error, undefined);
+    }
+    // (b) file present + valid
+    const validConfig = {
+      version: "1.0",
+      models: { codex: "gpt-5.5", perplexity: "sonar-reasoning-pro" },
+      budget: { default_max_rounds: 12 },
+      peer_enabled: { perplexity: true },
+      token_streaming: { chars_threshold: 4096, ms_threshold: 1000 },
+      evidence_judge_autowire: {
+        mode: "shadow" as const,
+        peer: "codex",
+        consensus_peers: ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"],
+      },
+    };
+    const filePath = resolveConfigFilePath(tmpDir);
+    tmpFs.mkdirSync(tmpDir, { recursive: true });
+    tmpFs.writeFileSync(filePath, JSON.stringify(validConfig));
+    {
+      const r = applyFileConfigToEnv(tmpDir, envValueFn);
+      assert.equal(r.applied, true, "valid file must yield applied=true");
+      assert.ok(r.fields_applied > 0, "valid file must apply at least one field");
+      assert.equal(r.parse_error, undefined);
+      assert.equal(process.env.CROSS_REVIEW_OPENAI_MODEL, "gpt-5.5");
+      assert.equal(process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS, "12");
+      assert.equal(process.env.CROSS_REVIEW_V2_PEER_PERPLEXITY, "on");
+      assert.equal(process.env.CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD, "4096");
+      assert.equal(process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE, "shadow");
+    }
+    // (c) env override wins over file
+    for (const k of KEYS_UNDER_TEST) delete process.env[k];
+    process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS = "99"; // operator override
+    {
+      const r = applyFileConfigToEnv(tmpDir, envValueFn);
+      assert.equal(r.applied, true);
+      assert.ok(r.fields_overridden_by_env >= 1, "env-set var must be counted as overridden");
+      assert.equal(
+        process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS,
+        "99",
+        "env override must win over file value",
+      );
+      assert.equal(process.env.CROSS_REVIEW_OPENAI_MODEL, "gpt-5.5");
+    }
+    // (d) malformed JSON
+    for (const k of KEYS_UNDER_TEST) delete process.env[k];
+    tmpFs.writeFileSync(filePath, "{ not valid json");
+    {
+      const r = applyFileConfigToEnv(tmpDir, envValueFn);
+      assert.equal(r.applied, false);
+      assert.ok(
+        r.parse_error?.startsWith("json_parse_failed:"),
+        "malformed JSON must surface parse_error",
+      );
+      assert.equal(process.env.CROSS_REVIEW_OPENAI_MODEL, undefined);
+    }
+    // (e) zod schema failure (unknown top-level field due to .strict())
+    tmpFs.writeFileSync(filePath, JSON.stringify({ totally_unknown_field: 42 }));
+    {
+      const r = applyFileConfigToEnv(tmpDir, envValueFn);
+      assert.equal(r.applied, false);
+      assert.ok(
+        r.parse_error?.startsWith("schema_validation_failed:"),
+        "unknown field must trigger schema_validation_failed",
+      );
+    }
+    // (f) CROSS_REVIEW_V2_CONFIG_FILE override
+    const overrideDir = smokeTmpDir("central-config-override");
+    const overridePath = `${overrideDir}/custom.json`;
+    tmpFs.mkdirSync(overrideDir, { recursive: true });
+    tmpFs.writeFileSync(overridePath, JSON.stringify({ models: { codex: "gpt-5.5-override" } }));
+    process.env.CROSS_REVIEW_V2_CONFIG_FILE = overridePath;
+    // path.resolve() normalizes separators (Windows: forward → back),
+    // so compare resolved equivalent rather than literal input.
+    assert.equal(resolveConfigFilePath(tmpDir), path.resolve(overridePath));
+    delete process.env.CROSS_REVIEW_OPENAI_MODEL;
+    {
+      const r = applyFileConfigToEnv(tmpDir, envValueFn);
+      assert.equal(r.applied, true);
+      assert.equal(process.env.CROSS_REVIEW_OPENAI_MODEL, "gpt-5.5-override");
+    }
+    // (g) v3.1.0 R1 fix (codex catch): resolveConfigFilePath honors
+    // envValue() so CROSS_REVIEW_V2_CONFIG_FILE stored in Windows
+    // registry is picked up. Simulate registry-only value by providing
+    // an envValueFn that returns the override path when process.env
+    // does NOT have it.
+    delete process.env.CROSS_REVIEW_V2_CONFIG_FILE;
+    const registryOnlyPath = `${overrideDir}/registry-only.json`;
+    tmpFs.writeFileSync(
+      registryOnlyPath,
+      JSON.stringify({ models: { codex: "gpt-5.5-registry-only" } }),
+    );
+    const envValueWithRegistry = (name: string) => {
+      if (name === "CROSS_REVIEW_V2_CONFIG_FILE") return registryOnlyPath;
+      const v = process.env[name];
+      return v && v.length > 0 ? v : undefined;
+    };
+    assert.equal(
+      resolveConfigFilePath(tmpDir, envValueWithRegistry),
+      path.resolve(registryOnlyPath),
+      "v3.1.0 R1 fix: resolveConfigFilePath must honor envValue() for registry fallback",
+    );
+    delete process.env.CROSS_REVIEW_OPENAI_MODEL;
+    {
+      const r = applyFileConfigToEnv(tmpDir, envValueWithRegistry);
+      assert.equal(r.applied, true);
+      assert.equal(
+        process.env.CROSS_REVIEW_OPENAI_MODEL,
+        "gpt-5.5-registry-only",
+        "v3.1.0 R1 fix: registry-stored CROSS_REVIEW_V2_CONFIG_FILE must resolve to actual override file",
+      );
+    }
+    // Source-level pins.
+    const fcSrc = fs.readFileSync("src/core/file-config.ts", "utf8");
+    assert.ok(
+      /FileConfigSchema\s*=\s*z\s*\.object\(/.test(fcSrc),
+      "v3.1.0: file-config.ts must export FileConfigSchema as a zod object",
+    );
+    assert.ok(
+      /\.strict\(\)/.test(fcSrc),
+      "v3.1.0: zod schema must use .strict() so unknown fields surface as errors",
+    );
+    assert.ok(
+      /applyFileConfigToEnv/.test(fcSrc) && /resolveConfigFilePath/.test(fcSrc),
+      "v3.1.0: file-config.ts must export applyFileConfigToEnv + resolveConfigFilePath",
+    );
+    const configSrc = fs.readFileSync("src/core/config.ts", "utf8");
+    assert.ok(
+      /LAST_FILE_CONFIG_RESULT\s*=\s*applyFileConfigToEnv\(dataDir,\s*envValue\)/.test(configSrc),
+      "v3.1.0: loadConfig() must invoke applyFileConfigToEnv(dataDir, envValue) and capture the result",
+    );
+    // v3.1.0 R1 fix (codex catch): resolveConfigFilePath signature must
+    // accept an optional envValue helper so the path-lookup honors the
+    // v2.28.0 Windows registry fallback when called from applyFileConfigToEnv.
+    assert.ok(
+      /resolveConfigFilePath\(\s*\n?\s*dataDir:\s*string,\s*\n?\s*envValue\?:\s*\(name:\s*string\)\s*=>\s*string\s*\|\s*undefined,?\s*\n?\s*\)/.test(
+        fcSrc,
+      ) ||
+        /resolveConfigFilePath\(dataDir:\s*string,\s*envValue\?:/.test(fcSrc) ||
+        /export function resolveConfigFilePath\([\s\S]{0,300}envValue\?:/.test(fcSrc),
+      "v3.1.0 R1 fix: resolveConfigFilePath must accept optional envValue param",
+    );
+    assert.ok(
+      /resolveConfigFilePath\(dataDir,\s*envValue\)/.test(fcSrc),
+      "v3.1.0 R1 fix: applyFileConfigToEnv must call resolveConfigFilePath with envValue",
+    );
+    // Verify flatten mapping handles all 6 peers' cost_rates suffixes.
+    const flat = flattenFileConfigToEnvMap({
+      cost_rates: {
+        perplexity: {
+          input_per_million: 2,
+          output_per_million: 8,
+          request_fee_low_per_1000: 6,
+        },
+      },
+    });
+    assert.equal(flat.CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION, "2");
+    assert.equal(flat.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION, "8");
+    assert.equal(flat.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS, "6");
+    console.log("[smoke] central_config_file_load_test: PASS");
+  } finally {
+    for (const k of KEYS_UNDER_TEST) {
+      const prev = restore[k];
+      if (prev === undefined) delete process.env[k];
+      else process.env[k] = prev;
+    }
+    if (prevConfigFileEnv === undefined) delete process.env.CROSS_REVIEW_V2_CONFIG_FILE;
+    else process.env.CROSS_REVIEW_V2_CONFIG_FILE = prevConfigFileEnv;
+  }
 }
 
 // v2.15.0 (item 1) — consensus-based autowire config. Operator sets
