@@ -5,6 +5,7 @@ import { DeepSeekAdapter } from "./deepseek.js";
 import { GeminiAdapter } from "./gemini.js";
 import { GrokAdapter } from "./grok.js";
 import { OpenAIAdapter } from "./openai.js";
+import { PerplexityAdapter } from "./perplexity.js";
 import { StubAdapter } from "./stub.js";
 
 // v2.4.0 / audit closure (P1.1) — refined after cross-review-v2 R1 (gemini
@@ -63,6 +64,8 @@ export function createAdapters(
       deepseek: new StubAdapter(config, "deepseek", modelOverrides.deepseek),
       // v2.14.0: Grok stub for offline / CI / budget-kill smoke runs.
       grok: new StubAdapter(config, "grok", modelOverrides.grok),
+      // v3.0.0: Perplexity stub for offline / CI / budget-kill smoke runs.
+      perplexity: new StubAdapter(config, "perplexity", modelOverrides.perplexity),
     };
   }
 
@@ -73,6 +76,10 @@ export function createAdapters(
     deepseek: new DeepSeekAdapter(config, modelOverrides.deepseek),
     // v2.14.0: Grok via xAI's OpenAI-Responses-API surface.
     grok: new GrokAdapter(config, modelOverrides.grok),
+    // v3.0.0: Perplexity via Sonar API at https://api.perplexity.ai
+    // (OpenAI-Chat-Completions compatible; uses the shared
+    // loadOpenAICtor helper from peers/openai.ts).
+    perplexity: new PerplexityAdapter(config, modelOverrides.perplexity),
   };
 }
 

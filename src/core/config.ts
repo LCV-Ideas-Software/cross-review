@@ -18,7 +18,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.28.0";
+export const VERSION = "3.0.0";
 export const RELEASE_DATE = "2026-05-12";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -30,6 +30,13 @@ const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   // populates `CROSS_REVIEW_GROK_INPUT_USD_PER_MILLION` +
   // `CROSS_REVIEW_GROK_OUTPUT_USD_PER_MILLION`).
   grok: "CROSS_REVIEW_GROK",
+  // v3.0.0: Perplexity pricing via env. Sonar API bills both per-token
+  // (INPUT/OUTPUT) AND per-1000-requests where the fee scales with
+  // search_context_size (REQUEST_FEE_LOW/MEDIUM/HIGH). Sonar Deep
+  // Research model additionally bills citation_tokens, reasoning_tokens
+  // and search_queries — those fields are optional and left undefined
+  // for the other Perplexity models.
+  perplexity: "CROSS_REVIEW_PERPLEXITY",
 };
 
 const __filename = fileURLToPath(import.meta.url);
@@ -147,6 +154,11 @@ function keyForPeer(peer: PeerId): string | undefined {
     // 2026-05-04 — peer name is "grok" not "xai", env var follows).
     case "grok":
       return envValue("GROK_API_KEY");
+    // v3.0.0: Perplexity auth via PERPLEXITY_API_KEY (canonical per
+    // docs.perplexity.ai). The Sonar API accepts the key as a Bearer
+    // token in the Authorization header.
+    case "perplexity":
+      return envValue("PERPLEXITY_API_KEY");
   }
 }
 
@@ -242,6 +254,14 @@ export function loadConfig(): AppConfig {
       // CROSS_REVIEW_GROK_MODEL. The adapter detects the chosen model
       // before deciding whether to send the reasoning field.
       grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.20-multi-agent",
+      // v3.0.0 (operator directive 2026-05-12): Perplexity default
+      // `sonar-reasoning-pro` — reasoning + grounding + chain-of-thought,
+      // best fit for cross-review where the peer must reason about the
+      // attached draft (not just fact-lookup). Operator can override via
+      // CROSS_REVIEW_PERPLEXITY_MODEL to switch to `sonar`, `sonar-pro`,
+      // or `sonar-deep-research`. The adapter validates the chosen model
+      // against the documented allowlist at call time.
+      perplexity: envValue("CROSS_REVIEW_PERPLEXITY_MODEL") || "sonar-reasoning-pro",
     },
     fallback_models: {
       codex: listEnv("CROSS_REVIEW_OPENAI_FALLBACK_MODELS"),
@@ -249,12 +269,20 @@ export function loadConfig(): AppConfig {
       gemini: listEnv("CROSS_REVIEW_GEMINI_FALLBACK_MODELS"),
       deepseek: listEnv("CROSS_REVIEW_DEEPSEEK_FALLBACK_MODELS"),
       grok: listEnv("CROSS_REVIEW_GROK_FALLBACK_MODELS"),
+      perplexity: listEnv("CROSS_REVIEW_PERPLEXITY_FALLBACK_MODELS"),
     },
     reasoning_effort: {
       codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh"),
       claude: reasoningEffort("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "xhigh"),
       deepseek: reasoningEffort("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max"),
       grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh"),
+      // v3.0.0: Perplexity Sonar API only accepts `minimal|low|medium|high`
+      // for sonar-reasoning-pro / sonar-deep-research (other models
+      // ignore the field entirely). Default `high` matches the
+      // canonical "max reasoning per peer" stance the other peers take
+      // (xhigh/max for OpenAI/Anthropic/Grok/DeepSeek). The adapter
+      // clamps internal scale (`xhigh`/`max`) to `high` for Perplexity.
+      perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high"),
     },
     model_selection: {},
     api_keys: {
@@ -263,6 +291,7 @@ export function loadConfig(): AppConfig {
       gemini: keyForPeer("gemini"),
       deepseek: keyForPeer("deepseek"),
       grok: keyForPeer("grok"),
+      perplexity: keyForPeer("perplexity"),
     },
     cost_rates: {
       codex: costRate(COST_RATE_ENV_PREFIX.codex),
@@ -270,10 +299,40 @@ export function loadConfig(): AppConfig {
       gemini: costRate(COST_RATE_ENV_PREFIX.gemini),
       deepseek: costRate(COST_RATE_ENV_PREFIX.deepseek),
       grok: costRate(COST_RATE_ENV_PREFIX.grok),
+      perplexity: costRate(COST_RATE_ENV_PREFIX.perplexity),
     },
     evidence_judge_autowire: loadEvidenceJudgeAutowireConfig(),
     peer_enabled: loadPeerEnabledConfig(),
     cache: loadCacheConfig(),
+    perplexity: loadPerplexityConfig(),
+  };
+}
+
+// v3.0.0 (Perplexity 6th peer): per-call Perplexity-specific knobs.
+// `search_context_size` controls the breadth of the web search and
+// drives both quality AND per-1000-request fee (low=$5-6 / medium=$8-10
+// / high=$12-14 depending on model). Default `low` minimizes noise
+// and cost for cross-review use (peer reasons about attached draft;
+// search is a fact-check overlay). `disable_search` turns off the
+// web-search component entirely (peer becomes a pure LLM; pricing
+// reduces to token-based only). Default `false` per operator directive
+// 2026-05-12 — search-active is the differentiator versus the other 5
+// peers.
+function loadPerplexityConfig(): AppConfig["perplexity"] {
+  const sizeRaw = (envValue("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE") ?? "")
+    .trim()
+    .toLowerCase();
+  let searchContextSize: AppConfig["perplexity"]["search_context_size"] = "low";
+  if (sizeRaw === "medium" || sizeRaw === "high") {
+    searchContextSize = sizeRaw;
+  } else if (sizeRaw !== "" && sizeRaw !== "low") {
+    console.error(
+      `[cross-review-v2] notice: CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE="${sizeRaw}" not recognized; defaulting to "low". Recognized values: low, medium, high.`,
+    );
+  }
+  return {
+    search_context_size: searchContextSize,
+    disable_search: boolEnv("CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH", false),
   };
 }
 
@@ -320,7 +379,7 @@ function parseTtlEnv(name: string, fallback: "5m" | "1h"): "5m" | "1h" {
 // (orchestrator construction) — keeping the parser pure makes it easy
 // to test in isolation.
 function loadPeerEnabledConfig(): Record<PeerId, boolean> {
-  const peers: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok"];
+  const peers: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
   const result = {} as Record<PeerId, boolean>;
   for (const peer of peers) {
     const envName = `CROSS_REVIEW_V2_PEER_${peer.toUpperCase()}`;
@@ -356,7 +415,7 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
   const rawConsensusPeers = (
     process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS ?? ""
   ).trim();
-  const peerKnown: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok"];
+  const peerKnown: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
   const peer = (peerKnown as readonly string[]).includes(rawPeer) ? (rawPeer as PeerId) : undefined;
   // v2.15.0 (item 1): parse consensus peers list. Comma-separated; only
   // peers that are members of PEERS are kept. Need >=2 valid entries
@@ -433,6 +492,36 @@ export function missingFinancialControlVars(
     missing.add(`${prefix}_OUTPUT_USD_PER_MILLION`);
   }
 
+  // v3.0.0 (Perplexity 6th peer): when the perplexity peer is in scope
+  // AND search is enabled (default), the request fee for the configured
+  // search_context_size MUST be set — Perplexity bills BOTH per-token
+  // AND per-1000-requests, and the request fee is the only way the
+  // cost layer can account for the search cost dimension. When
+  // disable_search is true, the request fee is irrelevant (peer
+  // becomes pure-LLM and the missing fee is harmless). This preserves
+  // the v2.26.0 "no-hardcoded-financials" contract: every dimension of
+  // pricing that applies to the current call must be operator-
+  // configured before paid traffic is allowed.
+  if (peers.includes("perplexity") && !config.perplexity.disable_search) {
+    const rate = config.cost_rates.perplexity;
+    const size = config.perplexity.search_context_size;
+    const requestFeeField =
+      size === "high"
+        ? "request_fee_high_per_1000"
+        : size === "medium"
+          ? "request_fee_medium_per_1000"
+          : "request_fee_low_per_1000";
+    const requestFeeEnvSuffix =
+      size === "high"
+        ? "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS"
+        : size === "medium"
+          ? "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS"
+          : "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS";
+    if (!rate || rate[requestFeeField] == null) {
+      missing.add(`${COST_RATE_ENV_PREFIX.perplexity}_${requestFeeEnvSuffix}`);
+    }
+  }
+
   return [...missing].sort();
 }
 
@@ -480,6 +569,23 @@ function costRate(
     ["promo_cache_write_per_million", "PROMO_CACHE_WRITE_USD_PER_MILLION"],
     ["promo_cache_read_extended_per_million", "PROMO_CACHE_READ_EXTENDED_USD_PER_MILLION"],
     ["promo_cache_write_extended_per_million", "PROMO_CACHE_WRITE_EXTENDED_USD_PER_MILLION"],
+    // v3.0.0 (Perplexity 6th peer): Perplexity bills both per-token AND
+    // per-1000-requests where the request fee scales with
+    // `search_context_size`. Other peers' costRate calls leave these
+    // suffixes undefined; perplexity costRate (env prefix
+    // CROSS_REVIEW_PERPLEXITY) sets them when operator configures them.
+    ["request_fee_low_per_1000", "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS"],
+    ["request_fee_medium_per_1000", "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS"],
+    ["request_fee_high_per_1000", "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS"],
+    // v3.0.0 (Perplexity Sonar Deep Research): three distinct line
+    // items billed separately from input/output. Other Sonar models
+    // (sonar / sonar-pro / sonar-reasoning-pro) leave these undefined.
+    ["citation_tokens_per_million", "CITATION_TOKENS_USD_PER_MILLION"],
+    [
+      "deep_research_reasoning_tokens_per_million",
+      "DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
+    ],
+    ["search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS"],
   ];
   for (const [key, suffix] of fields) {
     const value = opt(suffix);

@@ -158,7 +158,80 @@ export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage
   const cacheWriteCost = cacheWriteSel
     ? (cacheWriteTokens / 1_000_000) * cacheWriteSel.rate_per_million
     : 0;
-  const total = inputCost + outputCost + cacheReadCost + cacheWriteCost;
+  // v3.0.0 (Perplexity 6th peer): three additional cost dimensions —
+  // (1) per-1000-requests fee scaled by search_context_size,
+  // (2) citation_tokens (sonar-deep-research only),
+  // (3) deep_research_reasoning_tokens (sonar-deep-research only),
+  // (4) search_queries per-1000 fee (sonar-deep-research only).
+  // All four are zero for non-perplexity peers (their cost_rates entry
+  // never defines these fields) AND zero for non-deep-research
+  // perplexity models (operator leaves citation/reasoning/queries
+  // rates unset; usage.citation_tokens / usage.num_search_queries are
+  // absent). When `disable_search` is true the request fee is zero
+  // because no web search runs; the operator config-driven check
+  // mirrors the adapter's `disable_search` flag exactly.
+  let requestCost = 0;
+  let citationTokensCost = 0;
+  let deepResearchReasoningTokensCost = 0;
+  let searchQueriesCost = 0;
+  // v3.0.0 R1 fix (codex cross-review catch 2026-05-12): the per-call
+  // `usage.search_performed` signal from PerplexityAdapter overrides
+  // the global config for request-fee attribution. The relator
+  // (generate) role ALWAYS forces disable_search:true on the wire
+  // regardless of operator config, so charging a request fee based
+  // only on the config would bill for searches that did not run.
+  // When the signal is unset (legacy / stub / non-perplexity peers),
+  // fall back to the config check to preserve backward compatibility.
+  // Defensive against minimal test configs without a `perplexity`
+  // sub-config: the gate first narrows by peer === "perplexity", so
+  // for any other peer the search-cost block is never entered.
+  if (peer === "perplexity") {
+    const callSearchPerformed = usage.search_performed ?? !config.perplexity?.disable_search;
+    if (callSearchPerformed) {
+      const size = config.perplexity?.search_context_size ?? "low";
+      const requestFeePer1000 =
+        size === "high"
+          ? rate.request_fee_high_per_1000
+          : size === "medium"
+            ? rate.request_fee_medium_per_1000
+            : rate.request_fee_low_per_1000;
+      if (typeof requestFeePer1000 === "number" && requestFeePer1000 > 0) {
+        requestCost = requestFeePer1000 / 1000;
+      }
+    }
+  }
+  if (peer === "perplexity") {
+    const citationTokens = usage.citation_tokens ?? 0;
+    if (citationTokens > 0 && typeof rate.citation_tokens_per_million === "number") {
+      citationTokensCost = (citationTokens / 1_000_000) * rate.citation_tokens_per_million;
+    }
+    // sonar-deep-research bills reasoning_tokens at a separate rate
+    // from output. Other Perplexity models fold reasoning into output
+    // (the field is undefined). usage.reasoning_tokens is reused —
+    // there's no separate field — and only the presence of the rate
+    // config decides whether to bill separately.
+    const reasoningTokens = usage.reasoning_tokens ?? 0;
+    if (
+      reasoningTokens > 0 &&
+      typeof rate.deep_research_reasoning_tokens_per_million === "number"
+    ) {
+      deepResearchReasoningTokensCost =
+        (reasoningTokens / 1_000_000) * rate.deep_research_reasoning_tokens_per_million;
+    }
+    const numSearchQueries = usage.num_search_queries ?? 0;
+    if (numSearchQueries > 0 && typeof rate.search_queries_per_1000 === "number") {
+      searchQueriesCost = (numSearchQueries / 1000) * rate.search_queries_per_1000;
+    }
+  }
+  const total =
+    inputCost +
+    outputCost +
+    cacheReadCost +
+    cacheWriteCost +
+    requestCost +
+    citationTokensCost +
+    deepResearchReasoningTokensCost +
+    searchQueriesCost;
   const base: CostEstimate = {
     currency: "USD",
     input_cost: inputCost,
@@ -169,6 +242,12 @@ export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage
   };
   if (cacheReadCost > 0) base.cache_read_cost = cacheReadCost;
   if (cacheWriteCost > 0) base.cache_write_cost = cacheWriteCost;
+  if (requestCost > 0) base.request_cost = requestCost;
+  if (citationTokensCost > 0) base.citation_tokens_cost = citationTokensCost;
+  if (deepResearchReasoningTokensCost > 0) {
+    base.deep_research_reasoning_tokens_cost = deepResearchReasoningTokensCost;
+  }
+  if (searchQueriesCost > 0) base.search_queries_cost = searchQueriesCost;
   // Surface the selected tier (priority: extended/promo over base) for
   // FinOps audit. When categories disagree (rare; only when promo or
   // extended apply to one but not the other), pick input's tier as the
@@ -197,6 +276,14 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   let savings = 0;
   let savingsKnown = false;
   let savingsUnknown = false;
+  // v3.0.0 (Perplexity 6th peer): accumulate the four Perplexity-specific
+  // line items so multi-call sessions show the full pricing breakdown
+  // in session reports + the dashboard. These remain zero for sessions
+  // that don't include perplexity peer calls.
+  let request = 0;
+  let citationTokens = 0;
+  let deepResearchReasoningTokens = 0;
+  let searchQueries = 0;
   for (const cost of costs) {
     if (cost?.total_cost == null) {
       // continue to inspect savings even when total is missing
@@ -213,6 +300,12 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
     if (cost?.cache_savings_unknown) {
       savingsUnknown = true;
     }
+    if (cost?.request_cost != null) request += cost.request_cost;
+    if (cost?.citation_tokens_cost != null) citationTokens += cost.citation_tokens_cost;
+    if (cost?.deep_research_reasoning_tokens_cost != null) {
+      deepResearchReasoningTokens += cost.deep_research_reasoning_tokens_cost;
+    }
+    if (cost?.search_queries_cost != null) searchQueries += cost.search_queries_cost;
   }
   if (!known) {
     return { currency: "USD", estimated: false, source: "unknown-rate" };
@@ -227,6 +320,12 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   if (cacheWrite > 0) merged.cache_write_cost = cacheWrite;
   if (savingsKnown && savings > 0) merged.cache_savings_usd = savings;
   if (savingsUnknown) merged.cache_savings_unknown = true;
+  if (request > 0) merged.request_cost = request;
+  if (citationTokens > 0) merged.citation_tokens_cost = citationTokens;
+  if (deepResearchReasoningTokens > 0) {
+    merged.deep_research_reasoning_tokens_cost = deepResearchReasoningTokens;
+  }
+  if (searchQueries > 0) merged.search_queries_cost = searchQueries;
   return merged;
 }
 

@@ -19,6 +19,9 @@ const PROVIDERS: Record<PeerId, string> = {
   // v2.14.0: stub provider id for the Grok adapter so smoke runs
   // without the real xAI API key.
   grok: "stub-xai",
+  // v3.0.0: stub provider id for the Perplexity adapter so smoke runs
+  // without the real Sonar API key.
+  perplexity: "stub-perplexity",
 };
 
 // v2.5.0 fix (Codex audit P1, 2026-05-03): stub adapters must NEVER attribute

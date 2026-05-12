@@ -47,10 +47,16 @@ const ReasoningEffortOverridesSchema = z
     gemini: ReasoningEffortSchema.optional(),
     deepseek: ReasoningEffortSchema.optional(),
     grok: ReasoningEffortSchema.optional(),
+    // v3.0.0: Perplexity 6th peer. Sonar API accepts only
+    // `minimal|low|medium|high` on-the-wire (clamped at the adapter
+    // boundary); the schema still accepts the full internal scale so
+    // operators can mirror their global config style — the adapter
+    // narrows to Perplexity's accepted set at call time.
+    perplexity: ReasoningEffortSchema.optional(),
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok); missing keys fall back to global config. Useful to dial down expensive peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents) for routine reviews without editing the 6 MCP configs.",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. Useful to dial down expensive peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents, or Perplexity sonar-deep-research that bills citation + reasoning + search queries separately) for routine reviews without editing the 7 MCP configs.",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -1625,6 +1631,23 @@ export async function main(): Promise<void> {
       `[cross-review-v2] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs (only grok-4.20-multi-agent does). CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. xAI auto-applies reasoning internally for the Grok-4 lineup. Set CROSS_REVIEW_GROK_MODEL=grok-4.20-multi-agent to enable agent-count control via reasoning.effort.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
+  // v3.0.0: Perplexity sixth peer — boot notice for reasoning_effort
+  // capability. Only `sonar-reasoning-pro` and `sonar-deep-research`
+  // accept `reasoning_effort` per Perplexity docs (sonar / sonar-pro
+  // ignore the field — no chain-of-thought stage). When the operator
+  // configures CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT but the chosen
+  // model lacks the capability, surface a stderr notice so the operator
+  // sees the dead-letter case during real runs.
+  setTimeout(() => {
+    if (!runtime.config.peer_enabled.perplexity) return;
+    const perplexityModel = runtime.config.models.perplexity;
+    const reasoningSetExplicitly = Boolean(process.env.CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT);
+    if (!reasoningSetExplicitly) return;
+    if (PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(perplexityModel)) return;
+    console.error(
+      `[cross-review-v2] notice: PerplexityAdapter — model="${perplexityModel}" does NOT accept reasoning_effort per Perplexity docs (only sonar-reasoning-pro and sonar-deep-research do). CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT="${process.env.CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Set CROSS_REVIEW_PERPLEXITY_MODEL=sonar-reasoning-pro (default) to enable explicit reasoning_effort control.`,
+    );
+  }, STARTUP_SWEEP_DELAY_MS);
 }
 
 // v2.15.0: shadow copy of `peers/grok.ts:GROK_REASONING_EFFORT_MODELS`
@@ -1633,6 +1656,16 @@ export async function main(): Promise<void> {
 // to the reasoning-capable set, both lists must update together.
 const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
   "grok-4.20-multi-agent",
+]);
+
+// v3.0.0: shadow copy of `peers/perplexity.ts:PERPLEXITY_REASONING_EFFORT_MODELS`
+// for the boot notice (same rationale as the GROK_* shadow above — no
+// hard import dependency from server boot path into the adapter).
+// When Perplexity adds new reasoning-capable models, both lists must
+// update together.
+const PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
+  "sonar-reasoning-pro",
+  "sonar-deep-research",
 ]);
 
 // v2.4.0 / cross-review-v2 R6 follow-up (CI failure 25199679588): guard

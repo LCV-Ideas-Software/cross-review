@@ -7,6 +7,92 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.00.00] - 2026-05-12
+
+**Major — Perplexity joins the sexteto. 5-peer cross-review → 6-peer.** Operator directive 2026-05-12. The cross-review-v2 tribunal expands from quinteto (codex / claude / gemini / deepseek / grok) to sexteto with the addition of **Perplexity** via the Sonar API. All 6 peers are symmetric in role assignment — Perplexity can be caller, lead_peer (relator), or reviewer. The workspace HARD GATE (caller != lead_peer != reviewer per session) applies uniformly across all 6.
+
+### Why this is a major bump
+
+The PEERS const expands from 5 to 6 entries. Callers that depend on `PEERS` array semantics see a different default. The internal contracts (cost_rates entry per peer; reasoning_effort entry per peer; api_keys entry per peer; peer_enabled entry per peer; lottery candidate-pool size; consensus_peers default) all expand. Even though the public MCP tool surface remains backward-compatible (no tool removed; existing tools accept additive `perplexity` enum value where peer/caller appears), the magnitude of the structural shift warrants a major bump.
+
+### Architectural traits of Perplexity vs the other 5 peers
+
+Perplexity's Sonar API differs from the other peers in five ways the adapter handles explicitly:
+
+1. **Web search is the default.** Every Sonar call performs a real-time web search unless `disable_search: true` is set. The peer becomes a fact-check overlay on top of the reasoning; `citations` + `search_results` are always returned alongside the assistant message.
+2. **System prompt is half-honored.** Per Perplexity docs: _"the real-time search component of Sonar models does not attend to the system prompt."_ System messages shape only the tone/style of the final answer; the web-search query is derived from the user message content. The adapter is tolerant of soft-format responses (the structured `statusJsonSchema` may be less strictly followed than with the other 5 peers).
+3. **`reasoning_effort` enum is `minimal|low|medium|high` only.** No `none`, no `xhigh`, no `max`. The exported `clampEffortForPerplexity()` helper narrows the internal config scale to the 4-value Perplexity-accepted set (`xhigh`/`max` → `high`; `none` → `minimal`).
+4. **Pricing is 3-dimensional.** Input + output ($/M tokens) PLUS a per-1000-request fee that scales with `search_context_size` (low/medium/high). Sonar Deep Research adds a 4th dimension (`citation_tokens`, `reasoning_tokens`, `search_queries` — all separately billed). The cost layer reads ALL of these from `AppConfig.cost_rates.perplexity` via 14 new env vars (see Configuration below).
+5. **`usage.cost` is reported per-call by the API.** Distinct from the config-driven cost layer, Perplexity returns a `usage.cost` block with USD breakdown (`input_tokens_cost`, `output_tokens_cost`, `reasoning_tokens_cost`, `request_cost`, `citation_tokens_cost`, `search_queries_cost`, `total_cost`). The adapter captures it as `TokenUsage.provider_reported_total_cost_usd` for telemetry; the config-driven cost layer remains AUTHORITATIVE for budget decisions (operator-controlled rates take precedence over provider-reported costs to preserve the no-hardcoded-financials contract).
+
+### Role-aware search behavior
+
+Perplexity's web-search differentiator is most valuable in the REVIEWER role (fact-check overlay on the draft under review). In the RELATOR role (lead_peer revising consensus into a new draft) or during PROBE (health check), the search component is structurally inappropriate — the task is synthesis, not external lookup. The adapter infers role from which method the orchestrator invokes:
+
+- `call()` → REVIEWER → search HONORED per config (default ON)
+- `generate()` → RELATOR → search FORCED OFF (regardless of operator config)
+- `probe()` → health check → search FORCED OFF (already inline)
+
+This keeps Perplexity's role-symmetry across the sexteto (it can still be caller / lead_peer / reviewer per session) while the adapter's internal contract ensures the search behavior matches the role the peer is currently playing.
+
+### Adicionado
+
+- **`PerplexityAdapter`** (`src/peers/perplexity.ts`, +400 LOC) — OpenAI-Chat-Completions-compatible adapter at `https://api.perplexity.ai`. Reuses the shared `loadOpenAICtor` helper from v2.27.1 (lazy SDK load; no boot-time module cost). Supports structured outputs via `response_format: {type:"json_schema", json_schema:{name,schema}}` (name is REQUIRED 1-64 alphanumeric chars per Perplexity docs). Streaming via `stream_mode: "full"` (default; OpenAI-compatible 1-event-type SSE). Probes the API with a single `disable_search: true` `max_tokens: 1` round-trip to avoid burning request fees on health checks.
+- **`clampEffortForPerplexity(effort)`** + **`PERPLEXITY_REASONING_EFFORT_MODELS`** allowlist (exported, mirrors the Grok pattern). `sonar-reasoning-pro` + `sonar-deep-research` accept `reasoning_effort`; `sonar` + `sonar-pro` ignore the field (no chain-of-thought stage).
+- **14 new env vars** for the Perplexity peer:
+  - `PERPLEXITY_API_KEY` — Bearer token auth.
+  - `CROSS_REVIEW_PERPLEXITY_MODEL` — default `sonar-reasoning-pro`. Choices: `sonar` / `sonar-pro` / `sonar-reasoning-pro` / `sonar-deep-research`.
+  - `CROSS_REVIEW_PERPLEXITY_FALLBACK_MODELS` — comma-separated fallback list.
+  - `CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT` — default `high`. Clamped internally to the 4-value Perplexity set.
+  - `CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` — `low` (default) / `medium` / `high`. Drives both quality AND per-1000-request fee.
+  - `CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH` — default `false` (search ATIVO per operator directive; the fact-check overlay is Perplexity's differentiator value over the other 5 peers).
+  - `CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION` + `CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION` — required per-token rates.
+  - `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS` + `_MEDIUM_USD_PER_1000_REQUESTS` + `_HIGH_USD_PER_1000_REQUESTS` — three request-fee tiers. The fee for the configured `search_context_size` is REQUIRED when `disable_search=false` (the v2.26.0 "no-hardcoded-financials" pricing contract is extended: every pricing dimension that applies to the current call must be operator-configured before paid traffic is allowed).
+  - `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` + `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION` + `CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS` — Sonar Deep Research only. Optional for other models.
+- **`AppConfig.perplexity`** sub-config (`search_context_size` + `disable_search`) — exposed at runtime alongside `cost_rates`/`models`/`reasoning_effort`/`peer_enabled`.
+- **`AppConfig.cost_rates[peer]` extended** with 6 new optional fields: `request_fee_low_per_1000` / `_medium_per_1000` / `_high_per_1000`, `citation_tokens_per_million`, `deep_research_reasoning_tokens_per_million`, `search_queries_per_1000`. All optional; only Perplexity populates them. Backward-compatible with the v2.26.0 + v2.27.x + v2.28.x cost_rates entries for the other 5 peers (which leave them undefined).
+- **`CostEstimate` extended** with 4 new optional output fields: `request_cost`, `citation_tokens_cost`, `deep_research_reasoning_tokens_cost`, `search_queries_cost`. All ADD to `total_cost`. Absent for non-perplexity peers.
+- **`TokenUsage` extended** with 3 new optional fields: `citation_tokens`, `num_search_queries`, `provider_reported_total_cost_usd`. Absent for non-perplexity peers.
+- **Boot notice in `src/mcp/server.ts`**: when operator sets `CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT` but the chosen model is `sonar` or `sonar-pro` (which ignore the field), surface a stderr notice so the operator sees the dead-letter case during real runs. Mirrors the existing Grok boot notice pattern.
+- **3 new smoke markers**: `perplexity_integration_test` (PEERS expansion + config sub-config + cost_rates parsing + role-aware search source invariants + askPeers stub round-trip), `perplexity_reasoning_capability_allowlist_test` (clamp shape + allowlist contract), and **`perplexity_request_cost_search_aware_test`** (per-call `search_performed` signal correctly gates `request_cost` accrual; relator path produces no request fee; reviewer path does; legacy path falls back to config check).
+- **R1 fix (codex cross-review catch 2026-05-12, pre-publish)** — `TokenUsage.search_performed?: boolean`: per-call signal the `PerplexityAdapter` sets from the on-wire `disable_search` option. `estimateCost()` gates the request fee on this signal (with config fallback when unset). Closes a real bug where Perplexity-as-relator (which forces `disable_search:true` regardless of operator config) would still have accrued the per-1000-request fee from the config-only check. Threaded through 4 call sites in `peers/perplexity.ts` (streamed + non-streamed × call + generate); defensive against minimal test configs without a `perplexity` sub-config via optional chaining.
+
+### Alterado
+
+- **`PEERS` const** (`src/core/types.ts`): expanded from 5 to 6 entries. Adds `"perplexity"` after `"grok"`.
+- **`COST_RATE_ENV_PREFIX`** (`src/core/config.ts`): adds `perplexity: "CROSS_REVIEW_PERPLEXITY"`.
+- **`keyForPeer`** (`src/core/config.ts`): adds `case "perplexity"` returning `PERPLEXITY_API_KEY`.
+- **`loadConfig()`** (`src/core/config.ts`): adds perplexity entries to models / fallback_models / reasoning_effort / api_keys / cost_rates + new `loadPerplexityConfig()` returns the per-call knobs sub-config.
+- **`loadPeerEnabledConfig` peer list** (`src/core/config.ts`): now iterates 6 peers (includes perplexity). Default `on` for perplexity unless `CROSS_REVIEW_V2_PEER_PERPLEXITY=off`.
+- **`missingFinancialControlVars`** (`src/core/config.ts`): when perplexity is in scope AND `disable_search=false`, the request fee for the configured `search_context_size` is REQUIRED. The check mirrors the existing `_INPUT/_OUTPUT_USD_PER_MILLION` requirement for every peer. Preserves the v2.26.0 contract.
+- **`estimateCost`** (`src/core/cost.ts`): new perplexity-specific branch that adds request_fee + citation/reasoning/search_queries to `total_cost`. Other peers unchanged (their rate entries leave the new fields undefined → branch zero-cost).
+- **`mergeCost`** (`src/core/cost.ts`): rolls up the 4 new Perplexity cost line items across session totals.
+- **`createAdapters`** (`src/peers/registry.ts`): instantiates `PerplexityAdapter` (real mode) or `StubAdapter("perplexity")` (stub mode).
+- **`PRIORITY[peer]` + `DOCS[peer]` + `envOverrideName(peer)`** (`src/peers/model-selection.ts`): adds perplexity entries. `perplexityModels()` returns empty live candidates (Perplexity has no public `models.list` endpoint via OpenAI-SDK base path; resolver falls through to documented PRIORITY with confidence `inferred`).
+- **`ReasoningEffortOverridesSchema`** (`src/mcp/server.ts`): zod schema gains `perplexity` field. PeerSchema and CallerSchema auto-update via the PEERS const expansion.
+
+### Compatibilidade pública
+
+Tool surface: 100% backward-compatible additive. No tool removed; no tool argument required to be set; all existing zod enums (PeerSchema, CallerSchema) gain `perplexity` as an additional accepted value but reject neither the legacy 5-peer values nor sessions that explicitly pass `peers: [...]` lists excluding perplexity. Events stream is additive (new optional fields on `TokenUsage` / `CostEstimate`); legacy event consumers ignore them transparently. Default behavior of `session_start_unanimous` / `run_until_unanimous` (which use `PEERS` as the default peers list) now dispatches 6 reviewers instead of 5 — callers who want to preserve quinteto-only sessions pass `peers: ["codex", "claude", "gemini", "deepseek", "grok"]` explicitly OR set `CROSS_REVIEW_V2_PEER_PERPLEXITY=off` per host.
+
+### Operator action required after npm publish
+
+1. `npm update -g @lcv-ideas-software/cross-review-v2` to sync 2.28.0 → 3.0.0.
+2. Add `PERPLEXITY_API_KEY` to operator env (Windows registry HKCU\Environment per workspace policy).
+3. Add the 14 `CROSS_REVIEW_PERPLEXITY_*` env vars to ALL 7 MCP host configs (`.mcp.json` + 6 others — same propagation pattern as v2.26.0 pricing rollout).
+4. Reload all 7 MCP hosts to pick up v3.0.0 + the new env block.
+5. Regenerate caller tokens (`regenerate_caller_tokens` MCP tool) to mint a token for the new `perplexity` agent.
+
+### Cross-review-v2 HARD GATE
+
+Self-bypass per `feedback_cross_review_self_repair_exception.md` is NOT applicable here (this ship is feature-additive, not gate-bug-fix). The v3.0.0 ship was submitted to cross-review-v2 itself with caller=claude — see commit message for session id + outcome.
+
+### Smoke + local gates
+
+99 events / ok:true. New markers `perplexity_integration_test: PASS` + `perplexity_reasoning_capability_allowlist_test: PASS`. All existing markers retained including v2.28.0 `windows_registry_env_bulk_cache_test`. Typecheck + lint + format:check + build all clean.
+
+**Major bump** — sexteto transition is an epoch shift over the quinteto baseline that held since v2.14.0.
+
 ## [v02.28.00] - 2026-05-12
 
 **Minor — Cold-start hardening Part 3: Windows registry env-var lookup bulk-cached (3-7 s → ~100 ms).** Empirical profile of the v2.27.1 boot revealed the real bottleneck: `loadConfig()` consuming 3.1-7.0 s on Windows. Root cause was `readWindowsRegistryEnv(name)` in `src/core/config.ts` firing `execFileSync("reg", ["query", root, "/v", NAME])` once per missing env var × 2 registry scopes (HKCU + HKLM). With ~140 config env vars consulted per call and only a subset present in `process.env` (the typical `.mcp.json` spawn provides ~57 of them), the per-var fallback alone burned 3-7 seconds — dwarfing every other boot cost combined. The provider-SDK lazy-load + sweep deferral work in v2.27.0 + v2.27.1 was attacking a side concern (~340 ms of module loading) while the registry-query path silently dominated.

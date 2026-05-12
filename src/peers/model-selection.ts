@@ -15,6 +15,12 @@ const DOCS = {
   gemini: "https://ai.google.dev/gemini-api/docs/models",
   deepseek: "https://api-docs.deepseek.com/updates",
   grok: "https://docs.x.ai/developers/model-capabilities/text/reasoning",
+  // v3.0.0: Perplexity Sonar API documents 4 models. Reference page
+  // lists `sonar`, `sonar-pro`, `sonar-reasoning-pro`, and
+  // `sonar-deep-research`. The Sonar API does NOT publish a
+  // `models.list` endpoint via the OpenAI-SDK base path, so model
+  // selection here is documented-priority only (no live API probe).
+  perplexity: "https://docs.perplexity.ai/getting-started/models",
 } satisfies Record<PeerId, string>;
 
 const PRIORITY: Record<PeerId, string[]> = {
@@ -48,6 +54,15 @@ const PRIORITY: Record<PeerId, string[]> = {
     "grok-3-fast",
     "grok-3",
   ],
+  // v3.0.0: Perplexity Sonar models ordered by reasoning + grounding
+  // strength. `sonar-reasoning-pro` is the canonical default for
+  // cross-review (reasoning + grounding + chain-of-thought). Operators
+  // can switch via CROSS_REVIEW_PERPLEXITY_MODEL. `sonar-deep-research`
+  // is intentionally NOT first because it incurs multi-minute latency
+  // and a 4-dimension pricing profile (input + output + citation_tokens
+  // + reasoning_tokens + search_queries) — overkill for routine
+  // cross-review.
+  perplexity: ["sonar-reasoning-pro", "sonar-pro", "sonar", "sonar-deep-research"],
 };
 
 function envOverrideName(peer: PeerId): string {
@@ -62,6 +77,8 @@ function envOverrideName(peer: PeerId): string {
       return "CROSS_REVIEW_DEEPSEEK_MODEL";
     case "grok":
       return "CROSS_REVIEW_GROK_MODEL";
+    case "perplexity":
+      return "CROSS_REVIEW_PERPLEXITY_MODEL";
   }
 }
 
@@ -204,6 +221,20 @@ async function grokModels(config: AppConfig): Promise<ModelCandidate[]> {
   }));
 }
 
+// v3.0.0: Perplexity does NOT expose a public `models.list` endpoint
+// via the OpenAI-SDK base path (the Sonar API is the only documented
+// surface). Operators choose among the 4 documented Sonar models via
+// CROSS_REVIEW_PERPLEXITY_MODEL; this resolver returns an empty live-
+// candidate set so `selectFromCandidates` falls through to the
+// documented PRIORITY list with confidence "inferred". The probe step
+// in `peers/perplexity.ts` still validates that the API key works at
+// boot via a minimal `disable_search` round-trip.
+async function perplexityModels(config: AppConfig): Promise<ModelCandidate[]> {
+  const apiKey = config.api_keys.perplexity;
+  if (!apiKey) return [];
+  return [];
+}
+
 async function candidatesForPeer(config: AppConfig, peer: PeerId): Promise<ModelCandidate[]> {
   switch (peer) {
     case "codex":
@@ -216,6 +247,8 @@ async function candidatesForPeer(config: AppConfig, peer: PeerId): Promise<Model
       return deepSeekModels(config);
     case "grok":
       return grokModels(config);
+    case "perplexity":
+      return perplexityModels(config);
   }
 }
 

@@ -52,10 +52,19 @@ process.env.CROSS_REVIEW_V2_DATA_DIR = smokeTmpDir(`smoke-${process.pid}`);
 process.env.CROSS_REVIEW_OPENAI_FALLBACK_MODELS ??= "stub-codex-fallback";
 // v2.14.0 (item 5): GROK joined the quinteto — its rate envs use the
 // canonical `CROSS_REVIEW_GROK_*` prefix (see config.ts COST_RATE_ENV_PREFIX).
-for (const provider of ["OPENAI", "ANTHROPIC", "GEMINI", "DEEPSEEK", "GROK"]) {
+// v3.0.0: Perplexity joined the sexteto — its rate envs use the
+// `CROSS_REVIEW_PERPLEXITY_*` prefix. Perplexity ALSO bills a
+// per-1000-request fee that scales with search_context_size; the
+// `missingFinancialControlVars` check rejects paid calls unless the
+// fee for the configured search_context_size (default `low`) is set,
+// so the smoke pre-populates the low-tier fee. The stub adapter never
+// actually charges, but the financial-controls preflight runs against
+// the configured rate cards regardless of stub mode.
+for (const provider of ["OPENAI", "ANTHROPIC", "GEMINI", "DEEPSEEK", "GROK", "PERPLEXITY"]) {
   process.env[`CROSS_REVIEW_${provider}_INPUT_USD_PER_MILLION`] ??= "1000";
   process.env[`CROSS_REVIEW_${provider}_OUTPUT_USD_PER_MILLION`] ??= "1000";
 }
+process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS ??= "1000";
 process.env.CROSS_REVIEW_V2_MAX_SESSION_COST_USD ??= "1000";
 process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD ??= "1000";
 process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD ??= "1000";
@@ -2916,7 +2925,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.11.0 Relator Lottery — exclui o caller.
-// 100 sorteios com caller=claude → assigned ∈ {codex,gemini,deepseek}; nunca claude.
+// 100 sorteios com caller=claude → assigned ∈ {codex,gemini,deepseek,grok,perplexity}; nunca claude.
+// v3.0.0: PEERS expanded from 5 (v2.14.0+) to 6 (sexteto with Perplexity).
+// caller-exclusion still applies; pool size = 5 (was 4 in v2.14.x-v2.28.x).
 {
   const { assignRelator } = await import("../src/core/relator-lottery.js");
   for (let i = 0; i < 100; i++) {
@@ -2927,17 +2938,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       `iter ${i}: relator assigned=claude (caller exclusion failed)`,
     );
     assert.ok(
-      ["codex", "gemini", "deepseek", "grok"].includes(a.assigned),
+      ["codex", "gemini", "deepseek", "grok", "perplexity"].includes(a.assigned),
       `iter ${i}: assigned=${a.assigned} not in pool`,
     );
-    // v2.14.0: 5 peers (PEERS includes grok) → caller=claude excluded
-    // → pool size = 4 (was 3 in v2.11-v2.13).
-    assert.equal(a.candidate_pool.length, 4);
+    // v3.0.0: 6 peers (PEERS includes perplexity) → caller=claude excluded
+    // → pool size = 5 (was 4 in v2.14.x).
+    assert.equal(a.candidate_pool.length, 5);
     assert.ok(!a.candidate_pool.includes("claude"));
     assert.equal(a.entropy_source, "crypto.randomInt");
   }
-  // Mesmo teste para os outros 4 callers, garantindo simetria.
-  for (const caller of ["codex", "gemini", "deepseek", "grok"] as const) {
+  // Mesmo teste para os outros 5 callers, garantindo simetria.
+  for (const caller of ["codex", "gemini", "deepseek", "grok", "perplexity"] as const) {
     for (let i = 0; i < 50; i++) {
       const a = assignRelator(caller);
       assert.notEqual(
@@ -2945,32 +2956,41 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         caller,
         `caller=${caller} iter ${i}: assigned=${caller} (exclusion failed)`,
       );
-      assert.equal(a.candidate_pool.length, 4);
+      assert.equal(a.candidate_pool.length, 5);
       assert.ok(!a.candidate_pool.includes(caller));
     }
   }
-  // operator caller → todos os 5 peers elegíveis (sem exclusão).
+  // operator caller → todos os 6 peers elegíveis (sem exclusão).
+  // v3.0.0: PEERS expandiu de 5 para 6 (perplexity adicionado).
   const opAssign = assignRelator("operator");
-  assert.equal(opAssign.candidate_pool.length, 5);
+  assert.equal(opAssign.candidate_pool.length, 6);
   console.log("[smoke] relator_lottery_excludes_caller_test: PASS");
 }
 
 // v2.11.0 Relator Lottery — distribuição uniforme.
-// 1500 sorteios com caller=claude → counts de codex/gemini/deepseek dentro de ±15% de 500 cada.
-// Guard contra Math.random slipping in (não-uniforme/previsível).
+// 2000 sorteios com caller=claude → counts de codex/gemini/deepseek/grok/perplexity
+// dentro de ±15% de 400 cada. Guard contra Math.random slipping in
+// (não-uniforme/previsível).
 {
   const { assignRelator } = await import("../src/core/relator-lottery.js");
-  // v2.14.0: 5-peer roster, caller=claude → pool of 4 (codex/gemini/
-  // deepseek/grok). Expected count per peer = N/4 = 500.
-  const counts: Record<string, number> = { codex: 0, gemini: 0, deepseek: 0, grok: 0 };
+  // v3.0.0: 6-peer roster (perplexity adicionado), caller=claude → pool
+  // of 5 (codex/gemini/deepseek/grok/perplexity). Expected count per
+  // peer = N/5 = 400 (was N/4 = 500 in v2.14.x).
+  const counts: Record<string, number> = {
+    codex: 0,
+    gemini: 0,
+    deepseek: 0,
+    grok: 0,
+    perplexity: 0,
+  };
   const N = 2000;
   for (let i = 0; i < N; i++) {
     const a = assignRelator("claude");
     counts[a.assigned] = (counts[a.assigned] ?? 0) + 1;
   }
-  const expected = N / 4; // 500
-  const tolerance = expected * 0.15; // ±75
-  for (const peer of ["codex", "gemini", "deepseek", "grok"]) {
+  const expected = N / 5; // 400
+  const tolerance = expected * 0.15; // ±60
+  for (const peer of ["codex", "gemini", "deepseek", "grok", "perplexity"]) {
     const c = counts[peer];
     assert.ok(
       Math.abs(c - expected) <= tolerance,
@@ -2999,11 +3019,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   }
   assert.ok(threw, "lead_peer === caller must throw");
   // Casos válidos: caller=claude + lead_peer=non-claude → no-op.
-  for (const lead of ["codex", "gemini", "deepseek", "grok"] as const) {
+  // v3.0.0: include perplexity in the eligible-lead set.
+  for (const lead of ["codex", "gemini", "deepseek", "grok", "perplexity"] as const) {
     assertLeadPeerNotCaller("claude", lead);
   }
   // operator caller → qualquer lead_peer permitido.
-  for (const lead of ["codex", "claude", "gemini", "deepseek", "grok"] as const) {
+  for (const lead of ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const) {
     assertLeadPeerNotCaller("operator", lead);
   }
   console.log("[smoke] lead_peer_caller_match_rejected_test: PASS");
@@ -3682,17 +3703,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // v2.14.0 — boot-time minimum-2-enabled validation. Constructing the
 // orchestrator with < 2 enabled peers throws InsufficientEnabledPeersError.
 {
+  // v3.0.0: 6-peer roster (perplexity added) — must disable 5 to land
+  // below the min-2 threshold (was disable-4 in v2.14.x).
+  const peerEnvs = ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK", "GROK", "PERPLEXITY"];
   const prevs: Partial<Record<string, string | undefined>> = {};
-  for (const peer of ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK", "GROK"]) {
+  for (const peer of peerEnvs) {
     prevs[peer] = process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
   }
   try {
-    // v2.14.0: 5-peer roster — must disable 4 to land below the min-2 threshold.
     process.env.CROSS_REVIEW_V2_PEER_CODEX = "on";
     process.env.CROSS_REVIEW_V2_PEER_CLAUDE = "off";
     process.env.CROSS_REVIEW_V2_PEER_GEMINI = "off";
     process.env.CROSS_REVIEW_V2_PEER_DEEPSEEK = "off";
     process.env.CROSS_REVIEW_V2_PEER_GROK = "off";
+    process.env.CROSS_REVIEW_V2_PEER_PERPLEXITY = "off";
     const cfg = { ...loadConfig(), data_dir: smokeTmpDir("min-two-fail") };
     let threw: unknown = null;
     try {
@@ -3708,7 +3732,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.ok(orchOk);
     console.log("[smoke] peer_minimum_two_required_test: PASS");
   } finally {
-    for (const peer of ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK", "GROK"]) {
+    for (const peer of peerEnvs) {
       const prev = prevs[peer];
       if (prev === undefined) delete process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
       else process.env[`CROSS_REVIEW_V2_PEER_${peer}`] = prev;
@@ -4137,7 +4161,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const { PEERS } = await import("../src/core/types.js");
   assert.ok(PEERS.includes("grok"), "PEERS array must include 'grok'");
-  assert.equal(PEERS.length, 5, "PEERS must have 5 entries (codex/claude/gemini/deepseek/grok)");
+  // v3.0.0: PEERS now has 6 entries (perplexity added).
+  assert.equal(
+    PEERS.length,
+    6,
+    "PEERS must have 6 entries (codex/claude/gemini/deepseek/grok/perplexity)",
+  );
   const cfg = loadConfig();
   // v2.14.1: default switched to grok-4.20-multi-agent (only Grok-4
   // model that accepts reasoning.effort per official xAI docs).
@@ -4229,6 +4258,202 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.20-multi-agent"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.3"));
   console.log("[smoke] grok_reasoning_capability_allowlist_test: PASS");
+}
+
+// v3.0.0 (operator directive 2026-05-12) — Perplexity 6th peer. Verify:
+// (a) PEERS const includes 'perplexity';
+// (b) loadConfig populates perplexity in models, fallback_models,
+//     reasoning_effort, api_keys, cost_rates, peer_enabled +
+//     dedicated config.perplexity sub-config (search_context_size,
+//     disable_search);
+// (c) StubAdapter honors 'perplexity' as a peer id and returns READY
+//     in stub mode;
+// (d) lottery includes 'perplexity' in the 6-peer pool when caller is
+//     one of the other 5;
+// (e) clampEffortForPerplexity narrows internal scale (xhigh/max) to
+//     'high' which is the Perplexity Sonar API's upper bound;
+// (f) PERPLEXITY_REASONING_EFFORT_MODELS allowlist holds exactly
+//     sonar-reasoning-pro + sonar-deep-research (sonar / sonar-pro
+//     ignore the field);
+// (g) PerplexityAdapter exists and uses the shared loadOpenAICtor
+//     helper (cold-start lazy SDK pattern from v2.27.1);
+// (h) source-level invariants for the role-aware search behavior
+//     (call → reviewer keeps search; generate → relator forces
+//     disable_search:true) are present.
+{
+  const { PEERS } = await import("../src/core/types.js");
+  assert.ok(PEERS.includes("perplexity"), "PEERS array must include 'perplexity'");
+  const cfg = loadConfig();
+  assert.equal(
+    cfg.models.perplexity,
+    "sonar-reasoning-pro",
+    "default perplexity model must be sonar-reasoning-pro (operator directive 2026-05-12)",
+  );
+  assert.ok("perplexity" in cfg.fallback_models, "fallback_models must have perplexity entry");
+  assert.equal(cfg.peer_enabled.perplexity, true, "perplexity must be enabled by default");
+  assert.ok(
+    cfg.cost_rates.perplexity,
+    "perplexity cost rates must be configured (env-set in smoke setup)",
+  );
+  // v3.0.0: per-call Perplexity-specific knobs sub-config.
+  assert.equal(
+    cfg.perplexity.search_context_size,
+    "low",
+    "search_context_size default must be 'low' (cheapest tier)",
+  );
+  assert.equal(
+    cfg.perplexity.disable_search,
+    false,
+    "disable_search default must be false (search ATIVO per operator directive 2026-05-12)",
+  );
+  assert.ok(
+    typeof cfg.cost_rates.perplexity.request_fee_low_per_1000 === "number",
+    "request_fee_low_per_1000 must be parsed from env (smoke seeds 1000)",
+  );
+  // Stub adapter honoring perplexity.
+  const cfgWithDir = {
+    ...cfg,
+    data_dir: smokeTmpDir("perplexity-integration"),
+    budget: {
+      ...cfg.budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+  };
+  const orch = new CrossReviewOrchestrator(cfgWithDir, () => {});
+  const askResult = await orch.askPeers({
+    task: "perplexity peer reachability probe via stub adapter",
+    draft: "draft content for stub peer probe",
+    peers: ["perplexity", "codex"],
+    review_focus: "perplexity-integration",
+    caller: "operator",
+  });
+  assert.ok(askResult.session?.session_id, "askPeers must return a session id");
+  assert.ok(
+    askResult.session.rounds.length > 0,
+    "askPeers must produce at least one round when peers=[perplexity,codex]",
+  );
+  // Source-level invariants — role-aware search behavior.
+  const perplexitySrc = fs.readFileSync("src/peers/perplexity.ts", "utf8");
+  assert.ok(
+    /loadOpenAICtor/.test(perplexitySrc),
+    "v3.0.0 / perplexity_integration: adapter must consume the shared loadOpenAICtor (cold-start lazy SDK pattern)",
+  );
+  assert.ok(
+    /PERPLEXITY_BASE_URL\s*=\s*["']https:\/\/api\.perplexity\.ai["']/.test(perplexitySrc),
+    "v3.0.0 / perplexity_integration: baseURL must be https://api.perplexity.ai (OpenAI-SDK compat routes /v1/chat/completions to /v1/sonar)",
+  );
+  assert.ok(
+    /buildSonarOptions\(\s*this\.config,\s*this\.model,\s*"reviewer"/.test(perplexitySrc),
+    "v3.0.0 / perplexity_integration: call() method must invoke buildSonarOptions with role='reviewer' (search HONORED per config)",
+  );
+  assert.ok(
+    /buildSonarOptions\(\s*this\.config,\s*this\.model,\s*"relator"/.test(perplexitySrc),
+    "v3.0.0 / perplexity_integration: generate() method must invoke buildSonarOptions with role='relator' (search FORCED OFF)",
+  );
+  assert.ok(
+    /role === "relator" \|\| config\.perplexity\.disable_search/.test(perplexitySrc),
+    "v3.0.0 / perplexity_integration: relator role must force disable_search regardless of config",
+  );
+  console.log("[smoke] perplexity_integration_test: PASS");
+}
+
+// v3.0.0 — Perplexity reasoning_effort capability detection.
+// Allowlist `PERPLEXITY_REASONING_EFFORT_MODELS` controls whether
+// the adapter includes `reasoning_effort` in the request body. Only
+// `sonar-reasoning-pro` and `sonar-deep-research` accept the field;
+// `sonar` and `sonar-pro` ignore it (no chain-of-thought stage).
+{
+  const {
+    perplexityAcceptsReasoningEffort,
+    PERPLEXITY_REASONING_EFFORT_MODELS,
+    clampEffortForPerplexity,
+  } = await import("../src/peers/perplexity.js");
+  // Allowlist contract: sonar-reasoning-pro + sonar-deep-research.
+  assert.equal(perplexityAcceptsReasoningEffort("sonar-reasoning-pro"), true);
+  assert.equal(perplexityAcceptsReasoningEffort("sonar-deep-research"), true);
+  assert.equal(perplexityAcceptsReasoningEffort("sonar"), false);
+  assert.equal(perplexityAcceptsReasoningEffort("sonar-pro"), false);
+  // Set is exposed as ReadonlySet for future model additions.
+  assert.equal(PERPLEXITY_REASONING_EFFORT_MODELS.size, 2);
+  assert.ok(PERPLEXITY_REASONING_EFFORT_MODELS.has("sonar-reasoning-pro"));
+  assert.ok(PERPLEXITY_REASONING_EFFORT_MODELS.has("sonar-deep-research"));
+  // Clamp contract: internal scale narrows to the 4-value Perplexity
+  // accepted set (minimal / low / medium / high). xhigh/max → high;
+  // none → minimal.
+  assert.equal(clampEffortForPerplexity("none"), "minimal");
+  assert.equal(clampEffortForPerplexity("minimal"), "minimal");
+  assert.equal(clampEffortForPerplexity("low"), "low");
+  assert.equal(clampEffortForPerplexity("medium"), "medium");
+  assert.equal(clampEffortForPerplexity("high"), "high");
+  assert.equal(clampEffortForPerplexity("xhigh"), "high");
+  assert.equal(clampEffortForPerplexity("max"), "high");
+  assert.equal(clampEffortForPerplexity(undefined), "high");
+  console.log("[smoke] perplexity_reasoning_capability_allowlist_test: PASS");
+}
+
+// v3.0.0 R1 fix (codex cross-review catch 2026-05-12) — request_cost
+// is per-call search-aware. The relator (generate) role forces
+// disable_search:true on the wire regardless of operator config; the
+// PerplexityAdapter signals this via `TokenUsage.search_performed`,
+// and estimateCost() must NOT charge the request fee when search did
+// not run. Conversely, reviewer (call) calls with the default config
+// DO accrue the request fee. Legacy/stub paths (search_performed
+// undefined) fall back to the config check for backward compatibility.
+{
+  const { estimateCost } = await import("../src/core/cost.js");
+  const cfg = loadConfig();
+  // Scenario A: relator path — search_performed=false → NO request_cost.
+  const relatorUsage = {
+    input_tokens: 100,
+    output_tokens: 50,
+    search_performed: false,
+  };
+  const relatorCost = estimateCost(cfg, "perplexity", relatorUsage);
+  assert.equal(
+    relatorCost.request_cost,
+    undefined,
+    "relator call (search_performed=false) MUST NOT accrue request_cost even when config.perplexity.disable_search=false",
+  );
+  // Scenario B: reviewer path — search_performed=true → YES request_cost
+  // (smoke seeds CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW=1000 so a real
+  // non-zero value lands).
+  const reviewerUsage = {
+    input_tokens: 100,
+    output_tokens: 50,
+    search_performed: true,
+  };
+  const reviewerCost = estimateCost(cfg, "perplexity", reviewerUsage);
+  assert.ok(
+    typeof reviewerCost.request_cost === "number" && reviewerCost.request_cost > 0,
+    "reviewer call (search_performed=true) MUST accrue request_cost when fee is configured",
+  );
+  // Scenario C: legacy/stub path — search_performed undefined → fall
+  // back to config.perplexity.disable_search check (default false →
+  // request_cost present).
+  const legacyUsage = { input_tokens: 100, output_tokens: 50 };
+  const legacyCost = estimateCost(cfg, "perplexity", legacyUsage);
+  assert.ok(
+    typeof legacyCost.request_cost === "number" && legacyCost.request_cost > 0,
+    "legacy call (search_performed unset) with config.disable_search=false MUST preserve v3.0.0 baseline (request_cost present)",
+  );
+  // Scenario D: source-level pins for the fix sites.
+  const perplexitySrc = fs.readFileSync("src/peers/perplexity.ts", "utf8");
+  assert.ok(
+    /sonarOptions\.disable_search !== true/.test(perplexitySrc),
+    "v3.0.0 R1 fix: search_performed must be derived from the on-wire sonarOptions.disable_search",
+  );
+  assert.ok(
+    /searchPerformed: boolean/.test(perplexitySrc),
+    "v3.0.0 R1 fix: usageFromSonar must accept searchPerformed parameter",
+  );
+  const costSrc = fs.readFileSync("src/core/cost.ts", "utf8");
+  assert.ok(
+    /usage\.search_performed \?\? !config\.perplexity\?\.disable_search/.test(costSrc),
+    "v3.0.0 R1 fix: estimateCost must gate request_cost on usage.search_performed (with config fallback)",
+  );
+  console.log("[smoke] perplexity_request_cost_search_aware_test: PASS");
 }
 
 // v2.15.0 (item 1) — consensus-based autowire config. Operator sets
@@ -4451,11 +4676,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const map = r1?.map;
   assert.ok(map, "tokens map present");
   if (!map) throw new Error("tokens map missing");
-  for (const agent of ["codex", "claude", "gemini", "deepseek", "grok"] as const) {
+  // v3.0.0: perplexity added to the canonical agent roster.
+  for (const agent of ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const) {
     assert.match(map[agent], /^[0-9a-f]{64}$/, `${agent} token is 64-char lowercase hex`);
   }
   const distinct = new Set(Object.values(map));
-  assert.equal(distinct.size, 5, "all 5 tokens are distinct");
+  assert.equal(distinct.size, 6, "all 6 tokens are distinct");
 
   // (2) loadHostTokens is idempotent — re-read returns the same map.
   const r2 = f1.loadHostTokens(tmpRoot);
