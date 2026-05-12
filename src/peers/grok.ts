@@ -19,7 +19,9 @@
 // shapes, error classification heuristics) that are easier to maintain
 // per-adapter than to abstract; same precedent the codebase already
 // follows with deepseek (which also uses an OpenAI-compatible surface).
-import OpenAI from "openai";
+// v2.27.1 (cold-start hardening): reuse the lazy OpenAI ctor loaded by
+// peers/openai.ts. Type-only import preserves annotations.
+import type OpenAI from "openai";
 import type {
   AppConfig,
   GenerationResult,
@@ -33,6 +35,7 @@ import type {
 import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
+import { loadOpenAICtor } from "./openai.js";
 import { pairScopedCacheKey } from "../core/prompt-parts.js";
 import { withRetry } from "./retry.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
@@ -192,24 +195,25 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
   // key. xAI uses the header to bucket cache entries the same way
   // OpenAI uses prompt_cache_key — it ties a sequence of calls to the
   // same conversation/cache scope.
-  private client(callerForCache?: PeerId | "operator"): OpenAI {
+  private async client(callerForCache?: PeerId | "operator"): Promise<OpenAI> {
     const apiKey = this.config.api_keys.grok;
     if (!apiKey) {
       throw new Error("GROK_API_KEY was not found in environment variables.");
     }
+    const Ctor = await loadOpenAICtor();
     if (this.config.cache.enabled) {
       const convId = pairScopedCacheKey(
         this.id,
         callerForCache ?? "operator",
         this.config.cache.schema_version,
       );
-      return new OpenAI({
+      return new Ctor({
         apiKey,
         baseURL: GROK_BASE_URL,
         defaultHeaders: { "x-grok-conv-id": convId },
       });
     }
-    return new OpenAI({ apiKey, baseURL: GROK_BASE_URL });
+    return new Ctor({ apiKey, baseURL: GROK_BASE_URL });
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -229,7 +233,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
     }
     try {
       // probe does not need cache scope — it lists models, not posts.
-      await this.client().models.list();
+      const probeClient = await this.client();
+      await probeClient.models.list();
       return {
         peer: this.id,
         provider: this.provider,
@@ -321,7 +326,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
-          const stream = await this.client(context.caller).responses.create(
+          const reviewClient = await this.client(context.caller);
+          const stream = await reviewClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
@@ -352,7 +358,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client(context.caller).responses.create(body, {
+        const reviewClient = await this.client(context.caller);
+        const response = await reviewClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
@@ -425,7 +432,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
-          const stream = await this.client(context.caller).responses.create(
+          const generateClient = await this.client(context.caller);
+          const stream = await generateClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
@@ -456,7 +464,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client(context.caller).responses.create(body, {
+        const generateClient = await this.client(context.caller);
+        const response = await generateClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });

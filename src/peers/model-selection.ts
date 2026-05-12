@@ -1,7 +1,13 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { GoogleGenAI } from "@google/genai";
-import OpenAI from "openai";
+// v2.27.1 (cold-start hardening): SDK ctors lazy-loaded inside the
+// per-provider model-listing helpers so the SDK module trees are not
+// pulled at server boot. `resolveBestModels` only runs when an operator
+// explicitly invokes model probing — paying the SDK load cost there is
+// expected and amortized across all 5 peer probes via the per-module
+// promise cache shared with the runtime adapters.
 import type { AppConfig, ModelCandidate, ModelSelection, PeerId } from "../core/types.js";
+import { loadAnthropicCtor } from "./anthropic.js";
+import { loadGenaiModule } from "./gemini.js";
+import { loadOpenAICtor } from "./openai.js";
 
 const DOCS = {
   codex: "https://developers.openai.com/api/docs/guides/latest-model",
@@ -114,7 +120,8 @@ function overrideSelection(peer: PeerId, value: string): ModelSelection {
 async function openAIModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.codex;
   if (!apiKey) return [];
-  const list = await new OpenAI({ apiKey }).models.list();
+  const Ctor = await loadOpenAICtor();
+  const list = await new Ctor({ apiKey }).models.list();
   return list.data
     .map((model) => ({
       id: model.id,
@@ -127,7 +134,8 @@ async function openAIModels(config: AppConfig): Promise<ModelCandidate[]> {
 async function anthropicModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.claude;
   if (!apiKey) return [];
-  const client = new Anthropic({ apiKey, timeout: config.retry.timeout_ms });
+  const Ctor = await loadAnthropicCtor();
+  const client = new Ctor({ apiKey, timeout: config.retry.timeout_ms });
   const page = await client.models.list({ limit: 100 });
   return page.data.map((model) => ({
     id: model.id,
@@ -145,7 +153,10 @@ async function anthropicModels(config: AppConfig): Promise<ModelCandidate[]> {
 async function geminiModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.gemini;
   if (!apiKey) return [];
-  const pager = await new GoogleGenAI({ apiKey }).models.list({ config: { pageSize: 1000 } });
+  const genai = await loadGenaiModule();
+  const pager = await new genai.GoogleGenAI({ apiKey }).models.list({
+    config: { pageSize: 1000 },
+  });
   const candidates: ModelCandidate[] = [];
   for await (const model of pager) {
     const id = modelId(model.name ?? model.displayName ?? "");
@@ -171,7 +182,8 @@ async function geminiModels(config: AppConfig): Promise<ModelCandidate[]> {
 async function deepSeekModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.deepseek;
   if (!apiKey) return [];
-  const list = await new OpenAI({ apiKey, baseURL: "https://api.deepseek.com" }).models.list();
+  const Ctor = await loadOpenAICtor();
+  const list = await new Ctor({ apiKey, baseURL: "https://api.deepseek.com" }).models.list();
   return list.data.map((model) => ({
     id: model.id,
     source: "api" as const,
@@ -183,7 +195,8 @@ async function deepSeekModels(config: AppConfig): Promise<ModelCandidate[]> {
 async function grokModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.grok;
   if (!apiKey) return [];
-  const list = await new OpenAI({ apiKey, baseURL: "https://api.x.ai/v1" }).models.list();
+  const Ctor = await loadOpenAICtor();
+  const list = await new Ctor({ apiKey, baseURL: "https://api.x.ai/v1" }).models.list();
   return list.data.map((model) => ({
     id: model.id,
     source: "api" as const,

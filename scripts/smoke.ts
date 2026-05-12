@@ -189,8 +189,12 @@ const adapterExpectations: Array<{ file: string; field: string }> = [
   { file: "src/peers/anthropic.ts", field: 'type: "adaptive"' },
   { file: "src/peers/anthropic.ts", field: "messages.stream" },
   { file: "src/peers/gemini.ts", field: "maxOutputTokens: this.config.max_output_tokens" },
-  { file: "src/peers/gemini.ts", field: "thinkingConfig: geminiThinkingConfig(this.model)" },
-  { file: "src/peers/gemini.ts", field: "ThinkingLevel.HIGH" },
+  // v2.27.1: geminiThinkingConfig now takes the lazy-loaded ThinkingLevel
+  // enum as a 2nd arg so the SDK module is not pulled at server boot.
+  { file: "src/peers/gemini.ts", field: "thinkingConfig: geminiThinkingConfig(this.model," },
+  // v2.27.1: ThinkingLevel.HIGH is now read off the lazy-loaded enum
+  // instance passed in via the function arg (ThinkingLevelEnum.HIGH).
+  { file: "src/peers/gemini.ts", field: "ThinkingLevelEnum.HIGH" },
   { file: "src/peers/gemini.ts", field: "generateContentStream" },
   { file: "src/peers/deepseek.ts", field: "max_tokens: this.config.max_output_tokens" },
   { file: "src/peers/deepseek.ts", field: 'type: "enabled"' },
@@ -5540,6 +5544,178 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   }
 
   console.log("[smoke] circular_mode_test: PASS");
+}
+
+// v2.27.1 — lazy_provider_sdk_imports_test. Pins the cold-start
+// hardening contract: every peer adapter must keep provider SDK imports
+// as `import type` at the top of the file and resolve the runtime ctor
+// via a cached dynamic `import()` inside `client()` / loader helper.
+// Pre-v2.27.1 the @anthropic-ai/sdk + openai + @google/genai module
+// trees loaded synchronously at server boot (~4 s on a busy operator,
+// in addition to the 209-session FS sweep) which pushed the MCP
+// initialize handshake past Claude Code's per-spawn timeout — the
+// process stayed alive but its tools never registered with Claude
+// Code. Anti-drift assertions force future refactors to keep the SDK
+// modules lazy.
+//
+// Invariants pinned here:
+// (1) Every adapter source file imports its SDK as `import type` ONLY
+//     (no top-level runtime import that the TS compiler would emit
+//     into dist as `import X from "<sdk>"`).
+// (2) `peers/model-selection.ts` (which runs only on operator demand)
+//     also uses `import type` plus the shared loader helpers, so the
+//     fast path of `resolveBestModels` is still lazy.
+// (3) Compiled dist files do NOT contain top-level `from "@anthropic-ai/sdk"`,
+//     `from "openai"`, or `from "@google/genai"` — confirmation that
+//     `import type` was correctly erased.
+// (4) Each peer adapter exposes (or imports) a cached `loadXxxCtor` /
+//     `loadGenaiModule` helper so concurrent first-callers resolve the
+//     SDK module exactly once across the process lifetime.
+{
+  const peerSources = [
+    "src/peers/anthropic.ts",
+    "src/peers/openai.ts",
+    "src/peers/gemini.ts",
+    "src/peers/deepseek.ts",
+    "src/peers/grok.ts",
+    "src/peers/model-selection.ts",
+  ];
+  const runtimeImportPatterns = [
+    /^import\s+(?!type\s)[^;]*from\s+["']@anthropic-ai\/sdk["']/m,
+    /^import\s+(?!type\s)[^;]*from\s+["']openai["']/m,
+    /^import\s+(?!type\s)[^;]*from\s+["']@google\/genai["']/m,
+  ];
+  for (const file of peerSources) {
+    const source = fs.readFileSync(file, "utf8");
+    for (const pattern of runtimeImportPatterns) {
+      assert.ok(
+        !pattern.test(source),
+        `v2.27.1 / lazy_provider_sdk_imports: ${file} must keep provider SDK imports as type-only (pattern matched: ${pattern})`,
+      );
+    }
+  }
+  // Compiled dist must be free of every provider SDK top-level import.
+  const distFiles = [
+    "dist/src/peers/anthropic.js",
+    "dist/src/peers/openai.js",
+    "dist/src/peers/gemini.js",
+    "dist/src/peers/deepseek.js",
+    "dist/src/peers/grok.js",
+    "dist/src/peers/model-selection.js",
+  ];
+  for (const file of distFiles) {
+    if (!fs.existsSync(file)) continue; // dist not built — local dev path
+    const compiled = fs.readFileSync(file, "utf8");
+    assert.ok(
+      !/from\s+["']@anthropic-ai\/sdk["']/.test(compiled),
+      `v2.27.1 / lazy_provider_sdk_imports: ${file} must not contain @anthropic-ai/sdk runtime import`,
+    );
+    assert.ok(
+      !/from\s+["']openai["']/.test(compiled),
+      `v2.27.1 / lazy_provider_sdk_imports: ${file} must not contain openai runtime import`,
+    );
+    assert.ok(
+      !/from\s+["']@google\/genai["']/.test(compiled),
+      `v2.27.1 / lazy_provider_sdk_imports: ${file} must not contain @google/genai runtime import`,
+    );
+  }
+  // Each adapter must expose or import a cached SDK loader.
+  const anthropicSrc = fs.readFileSync("src/peers/anthropic.ts", "utf8");
+  assert.ok(
+    /export function loadAnthropicCtor\b/.test(anthropicSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: anthropic.ts must export loadAnthropicCtor",
+  );
+  const openaiSrc = fs.readFileSync("src/peers/openai.ts", "utf8");
+  assert.ok(
+    /export function loadOpenAICtor\b/.test(openaiSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: openai.ts must export loadOpenAICtor",
+  );
+  const geminiSrc = fs.readFileSync("src/peers/gemini.ts", "utf8");
+  assert.ok(
+    /export function loadGenaiModule\b/.test(geminiSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: gemini.ts must export loadGenaiModule",
+  );
+  const deepseekSrc = fs.readFileSync("src/peers/deepseek.ts", "utf8");
+  assert.ok(
+    /loadOpenAICtor/.test(deepseekSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: deepseek.ts must consume loadOpenAICtor",
+  );
+  const grokSrc = fs.readFileSync("src/peers/grok.ts", "utf8");
+  assert.ok(
+    /loadOpenAICtor/.test(grokSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: grok.ts must consume loadOpenAICtor",
+  );
+  const modelSelSrc = fs.readFileSync("src/peers/model-selection.ts", "utf8");
+  for (const loader of ["loadAnthropicCtor", "loadOpenAICtor", "loadGenaiModule"]) {
+    assert.ok(
+      new RegExp(`\\b${loader}\\b`).test(modelSelSrc),
+      `v2.27.1 / lazy_provider_sdk_imports: model-selection.ts must consume ${loader}`,
+    );
+  }
+  console.log("[smoke] lazy_provider_sdk_imports_test: PASS");
+}
+
+// v2.27.1 — startup_sweeps_use_setTimeout_test. Pins the second half of
+// the cold-start fix: the 6 boot-time sweeps and notices in server.ts
+// must be deferred via `setTimeout(..., STARTUP_SWEEP_DELAY_MS)` so they
+// do not compete with the MCP initialize handshake event-loop tick.
+// Pre-v2.27.1 they ran via `setImmediate` — same tick as the
+// transport's initialize response, which on Claude Code pushed
+// response past the host's spawn timeout.
+//
+// Invariants pinned here:
+// (1) `src/mcp/server.ts` declares `STARTUP_SWEEP_DELAY_MS` as a numeric
+//     constant set to 30_000 ms.
+// (2) Zero `setImmediate(` calls remain in the boot path (between
+//     `await server.connect` and the end of `main`).
+// (3) At least 6 `setTimeout(...) , STARTUP_SWEEP_DELAY_MS)` wirings
+//     exist in server.ts.
+// (4) The expensive FS sweeps (`sweepOrphanTmpFiles`, `clearStaleInFlight`,
+//     `abortStaleSessions`, `pruneOldSessions`) all appear inside a
+//     deferred `setTimeout` block, not a `setImmediate`.
+{
+  const serverSrc = fs.readFileSync("src/mcp/server.ts", "utf8");
+  assert.ok(
+    /const\s+STARTUP_SWEEP_DELAY_MS\s*=\s*30_000/.test(serverSrc),
+    "v2.27.1 / startup_sweeps_use_setTimeout: STARTUP_SWEEP_DELAY_MS must be declared = 30_000",
+  );
+  assert.ok(
+    !/\bsetImmediate\s*\(/.test(serverSrc),
+    "v2.27.1 / startup_sweeps_use_setTimeout: setImmediate(...) must not appear in server.ts boot path",
+  );
+  const setTimeoutMatches = serverSrc.match(/setTimeout\(\s*\(\)\s*=>\s*\{/g) ?? [];
+  assert.ok(
+    setTimeoutMatches.length >= 6,
+    `v2.27.1 / startup_sweeps_use_setTimeout: expected ≥6 setTimeout(() => { boot sweeps; found ${setTimeoutMatches.length}`,
+  );
+  const delaySuffixMatches = serverSrc.match(/\}\s*,\s*STARTUP_SWEEP_DELAY_MS\s*\)\s*;/g) ?? [];
+  assert.ok(
+    delaySuffixMatches.length >= 6,
+    `v2.27.1 / startup_sweeps_use_setTimeout: expected ≥6 closures ending with }, STARTUP_SWEEP_DELAY_MS); found ${delaySuffixMatches.length}`,
+  );
+  // Each expensive sweep must live inside a setTimeout-wrapped block.
+  // We slice the server source from the closure declaration to the
+  // matching closing }, STARTUP_SWEEP_DELAY_MS); to confirm no expensive
+  // sweep slips back into setImmediate scope in a future refactor.
+  for (const sweep of [
+    "sweepOrphanTmpFiles",
+    "clearStaleInFlight",
+    "abortStaleSessions",
+    "pruneOldSessions",
+  ]) {
+    const sweepIdx = serverSrc.indexOf(`store.${sweep}(`);
+    assert.ok(
+      sweepIdx > 0,
+      `v2.27.1 / startup_sweeps_use_setTimeout: ${sweep} must still be invoked from boot path`,
+    );
+    // Look for the closest preceding setTimeout( above this index.
+    const preceding = serverSrc.slice(Math.max(0, sweepIdx - 600), sweepIdx);
+    assert.ok(
+      /setTimeout\(\s*\(\)\s*=>\s*\{[\s\S]*$/.test(preceding),
+      `v2.27.1 / startup_sweeps_use_setTimeout: ${sweep} call site must sit inside a setTimeout(() => { ... }) block`,
+    );
+  }
+  console.log("[smoke] startup_sweeps_use_setTimeout_test: PASS");
 }
 
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and

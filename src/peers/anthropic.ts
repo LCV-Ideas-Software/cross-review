@@ -15,7 +15,10 @@
 //      cache_control headers but Anthropic may not actually create a
 //      cache entry. We emit an info-level warning when the system
 //      prompt is suspiciously short, but do NOT block the call.
-import Anthropic from "@anthropic-ai/sdk";
+// v2.27.1 (cold-start hardening): SDK ctor lazy-loaded via dynamic
+// import inside `client()` so the @anthropic-ai/sdk module tree is not
+// pulled at server boot. Type-only import preserves all annotations.
+import type Anthropic from "@anthropic-ai/sdk";
 import type {
   AppConfig,
   GenerationResult,
@@ -94,6 +97,18 @@ function anthropicEffort(value: AppConfig["reasoning_effort"][PeerId]): Anthropi
   return value ?? "max";
 }
 
+// v2.27.1 (cold-start hardening): cache the SDK ctor between calls so
+// the dynamic import only resolves once. The promise is reused across
+// concurrent first-callers so the SDK module loads exactly once. Exported
+// so peers/model-selection.ts can share the same module promise.
+let _AnthropicCtorPromise: Promise<typeof Anthropic> | null = null;
+export function loadAnthropicCtor(): Promise<typeof Anthropic> {
+  if (!_AnthropicCtorPromise) {
+    _AnthropicCtorPromise = import("@anthropic-ai/sdk").then((mod) => mod.default);
+  }
+  return _AnthropicCtorPromise;
+}
+
 function anthropicThinking(): { type: "adaptive"; display: "omitted" } {
   return { type: "adaptive", display: "omitted" };
 }
@@ -108,10 +123,11 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
     this.model = modelOverride ?? config.models.claude;
   }
 
-  private client(): Anthropic {
+  private async client(): Promise<Anthropic> {
     const apiKey = this.config.api_keys.claude;
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY was not found in environment variables.");
-    return new Anthropic({ apiKey, timeout: this.config.retry.timeout_ms });
+    const Ctor = await loadAnthropicCtor();
+    return new Ctor({ apiKey, timeout: this.config.retry.timeout_ms });
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -130,7 +146,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
       };
     }
     try {
-      await this.client().messages.countTokens({
+      const probeClient = await this.client();
+      await probeClient.messages.countTokens({
         model: this.model,
         messages: [{ role: "user", content: "probe" }],
       });
@@ -214,7 +231,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           // resolves. We cannot interrupt the SDK's internal buffer
           // directly, but throwing on overflow propagates through the
           // promise chain and the retry layer classifies the failure.
-          const stream = this.client().messages.stream(body, { signal: context.signal });
+          const reviewClient = await this.client();
+          const stream = reviewClient.messages.stream(body, { signal: context.signal });
           const tokenStream = this.createTokenEventBuffer(
             context,
             "review",
@@ -242,7 +260,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
           });
         }
-        const message = await this.client().messages.create(body, { signal: context.signal });
+        const reviewClient = await this.client();
+        const message = await reviewClient.messages.create(body, { signal: context.signal });
         const parsed = parseAnthropicContent(message.content);
         return this.resultFromText({
           text: parsed.text,
@@ -284,7 +303,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           },
         };
         if (this.shouldStreamTokens(context)) {
-          const stream = this.client().messages.stream(body, { signal: context.signal });
+          const generateClient = await this.client();
+          const stream = generateClient.messages.stream(body, { signal: context.signal });
           const tokenStream = this.createTokenEventBuffer(
             context,
             "generation",
@@ -312,7 +332,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
           });
         }
-        const message = await this.client().messages.create(body, { signal: context.signal });
+        const generateClient = await this.client();
+        const message = await generateClient.messages.create(body, { signal: context.signal });
         const parsed = parseAnthropicContent(message.content);
         return this.generationFromText({
           text: parsed.text,

@@ -1501,12 +1501,20 @@ export async function main(): Promise<void> {
   await server.connect(new StdioServerTransport());
   console.error("cross-review-v2 running on stdio");
 
-  // v2.4.0 / audit closure (P1.3 + P3.11 wiring): boot-time resilience
-  // sweeps. Run fire-and-forget AFTER the transport is connected so they
-  // do not delay the MCP initialize handshake. Both sweeps are pure
-  // filesystem walks against the configured data_dir; failures are
-  // surfaced to stderr but never propagate to the MCP client.
-  setImmediate(() => {
+  // v2.27.1 (cold-start hardening): boot-time sweeps + notices are
+  // deferred 30s instead of running on `setImmediate`. The Claude Code
+  // MCP host has a stricter spawn-to-initialize timeout than other hosts;
+  // pre-v2.27.1 the FS walks (4 sweeps × up to 209 session dirs each on
+  // a busy operator) plus the boot notices ran on the same event-loop
+  // tick as the initialize handshake response, pushing it past Claude
+  // Code's threshold while remaining tolerated by Codex CLI / Gemini
+  // Code Assist / VS Code / Antigravity / Grok CLI / DeepSeek CLI.
+  // Deferring 30s lets the handshake respond in <200 ms while keeping
+  // the housekeeping work — it just runs once the operator is idle.
+  // 0 ms would also work but a small delay leaves room for an
+  // immediate `tools/list` follow-up to also clear before disk I/O.
+  const STARTUP_SWEEP_DELAY_MS = 30_000;
+  setTimeout(() => {
     try {
       const tmpSweep = runtime.orchestrator.store.sweepOrphanTmpFiles();
       if (tmpSweep.scanned > 0) {
@@ -1516,8 +1524,8 @@ export async function main(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[cross-review-v2] startup tmp sweep error: ${message}`);
     }
-  });
-  setImmediate(() => {
+  }, STARTUP_SWEEP_DELAY_MS);
+  setTimeout(() => {
     try {
       const inFlightSweep = runtime.orchestrator.store.clearStaleInFlight();
       if (inFlightSweep.scanned > 0) {
@@ -1527,12 +1535,13 @@ export async function main(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[cross-review-v2] startup in_flight sweep error: ${message}`);
     }
-  });
+  }, STARTUP_SWEEP_DELAY_MS);
   // v2.5.0: companion to clearStaleInFlight — abort sessions that the
-  // caller never finalized. Runs AFTER the in_flight sweep (FIFO setImmediate
-  // ordering) so a session whose in_flight got cleared this same boot is
+  // caller never finalized. Runs AFTER the in_flight sweep (deferred via
+  // setTimeout, same delay so order is preserved by registration order)
+  // so a session whose in_flight got cleared this same boot is
   // immediately eligible for staleness review.
-  setImmediate(() => {
+  setTimeout(() => {
     try {
       const abortSweep = runtime.orchestrator.store.abortStaleSessions();
       if (abortSweep.scanned > 0) {
@@ -1545,11 +1554,11 @@ export async function main(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[cross-review-v2] startup stale-session abort sweep error: ${message}`);
     }
-  });
+  }, STARTUP_SWEEP_DELAY_MS);
   // v2.27.0: prune finalized sessions older than CROSS_REVIEW_V2_PRUNE_AFTER_DAYS
   // (default 60). Empirically motivated by 534 sessions accumulated by
   // 2026-05-12 inflating sweep + list cost. Disable with PRUNE_AFTER_DAYS=0.
-  setImmediate(() => {
+  setTimeout(() => {
     try {
       const envDisable = (process.env.CROSS_REVIEW_V2_PRUNE_AFTER_DAYS ?? "").trim() === "0";
       if (envDisable) return;
@@ -1561,14 +1570,14 @@ export async function main(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[cross-review-v2] startup prune sweep error: ${message}`);
     }
-  });
+  }, STARTUP_SWEEP_DELAY_MS);
   // v2.10.0 / v2.12.0: surface judge auto-wire misconfiguration at boot.
   // Per operator request the runtime never throws on a stray env value (a
   // typo must not break a paying review-host); we log a single notice so
   // the operator notices the dead-letter case during real runs. Source of
   // truth is `runtime.config.evidence_judge_autowire` (parsed by
   // loadConfig); this notice no longer re-reads env vars.
-  setImmediate(() => {
+  setTimeout(() => {
     const autowire = runtime.config.evidence_judge_autowire;
     if (autowire.mode === "off" && autowire.configured_mode_raw === "") return;
     if (autowire.mode !== "off" && autowire.mode !== "shadow" && autowire.mode !== "active") {
@@ -1598,7 +1607,7 @@ export async function main(): Promise<void> {
     console.error(
       `[cross-review-v2] notice: judge auto-wire active in SHADOW mode via peer "${autowire.peer}" (max_items_per_pass=${autowire.max_items_per_pass}). Every askPeers round will fire a non-mutating judge pass; events session.evidence_judge_pass.shadow_decision are emitted per item.`,
     );
-  });
+  }, STARTUP_SWEEP_DELAY_MS);
   // v2.15.0 (item 4A boot warning): when operator configured a
   // CROSS_REVIEW_GROK_REASONING_EFFORT but the chosen model is NOT in
   // the allowlist (only grok-4.20-multi-agent accepts the field per xAI
@@ -1606,7 +1615,7 @@ export async function main(): Promise<void> {
   // Catches misconfigurations early instead of letting the operator
   // assume reasoning intensity is being applied when xAI silently
   // ignores it (or when a future model would reject with 400).
-  setImmediate(() => {
+  setTimeout(() => {
     if (!runtime.config.peer_enabled.grok) return;
     const grokModel = runtime.config.models.grok;
     const reasoningSetExplicitly = Boolean(process.env.CROSS_REVIEW_GROK_REASONING_EFFORT);
@@ -1615,7 +1624,7 @@ export async function main(): Promise<void> {
     console.error(
       `[cross-review-v2] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs (only grok-4.20-multi-agent does). CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. xAI auto-applies reasoning internally for the Grok-4 lineup. Set CROSS_REVIEW_GROK_MODEL=grok-4.20-multi-agent to enable agent-count control via reasoning.effort.`,
     );
-  });
+  }, STARTUP_SWEEP_DELAY_MS);
 }
 
 // v2.15.0: shadow copy of `peers/grok.ts:GROK_REASONING_EFFORT_MODELS`

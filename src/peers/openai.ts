@@ -4,7 +4,10 @@
 // other's cache buckets, and parse `prompt_tokens_details.cached_tokens`
 // from the response usage. No structural payload change beyond the new
 // header — OpenAI auto-detects cacheable prefix tokens.
-import OpenAI from "openai";
+// v2.27.1 (cold-start hardening): SDK ctor lazy-loaded via dynamic
+// import inside `client()` so the openai module tree is not pulled at
+// server boot. Type-only import preserves all annotations.
+import type OpenAI from "openai";
 import type {
   AppConfig,
   GenerationResult,
@@ -91,6 +94,17 @@ function openAIEffort(value: AppConfig["reasoning_effort"][PeerId]): OpenAIReaso
   return value === "max" ? "xhigh" : (value ?? "xhigh");
 }
 
+// v2.27.1 (cold-start hardening): cache the SDK ctor between calls so
+// the dynamic import only resolves once. Shared across OpenAI + DeepSeek
+// + Grok adapters because all three drive the same `openai` package.
+let _OpenAICtorPromise: Promise<typeof OpenAI> | null = null;
+export function loadOpenAICtor(): Promise<typeof OpenAI> {
+  if (!_OpenAICtorPromise) {
+    _OpenAICtorPromise = import("openai").then((mod) => mod.default);
+  }
+  return _OpenAICtorPromise;
+}
+
 export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
   id: PeerId = "codex";
   provider = "openai";
@@ -101,10 +115,11 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
     this.model = modelOverride ?? config.models.codex;
   }
 
-  private client(): OpenAI {
+  private async client(): Promise<OpenAI> {
     const apiKey = this.config.api_keys.codex;
     if (!apiKey) throw new Error("OPENAI_API_KEY was not found in environment variables.");
-    return new OpenAI({ apiKey });
+    const Ctor = await loadOpenAICtor();
+    return new Ctor({ apiKey });
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -123,7 +138,8 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
       };
     }
     try {
-      await this.client().models.list();
+      const probeClient = await this.client();
+      await probeClient.models.list();
       return {
         peer: this.id,
         provider: this.provider,
@@ -214,7 +230,8 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
-          const stream = await this.client().responses.create(
+          const reviewClient = await this.client();
+          const stream = await reviewClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
@@ -245,7 +262,8 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client().responses.create(body, {
+        const reviewClient = await this.client();
+        const response = await reviewClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
@@ -313,7 +331,8 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
-          const stream = await this.client().responses.create(
+          const generateClient = await this.client();
+          const stream = await generateClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
@@ -344,7 +363,8 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client().responses.create(body, {
+        const generateClient = await this.client();
+        const response = await generateClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });

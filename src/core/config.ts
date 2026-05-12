@@ -18,7 +18,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.27.0";
+export const VERSION = "2.27.1";
 export const RELEASE_DATE = "2026-05-12";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {

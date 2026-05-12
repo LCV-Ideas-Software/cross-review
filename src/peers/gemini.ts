@@ -1,4 +1,10 @@
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+// v2.27.1 (cold-start hardening): SDK lazy-loaded via dynamic import
+// inside `client()` so the @google/genai module tree is not pulled at
+// server boot. The `ThinkingLevel` enum is also runtime — exposed via
+// the loader's return shape so `geminiThinkingConfig` keeps a stable
+// signature without re-importing the module per call. Type-only import
+// preserves all annotations.
+import type { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import type {
   AppConfig,
   GenerationResult,
@@ -53,15 +59,27 @@ function usageFromGemini(usage: GeminiUsage | undefined): TokenUsage | undefined
   return result;
 }
 
-function geminiThinkingConfig(model: string): {
+function geminiThinkingConfig(
+  model: string,
+  ThinkingLevelEnum: typeof ThinkingLevel,
+): {
   includeThoughts: false;
   thinkingBudget?: number;
   thinkingLevel?: ThinkingLevel;
 } {
   if (/gemini-3/i.test(model)) {
-    return { includeThoughts: false, thinkingLevel: ThinkingLevel.HIGH };
+    return { includeThoughts: false, thinkingLevel: ThinkingLevelEnum.HIGH };
   }
   return { includeThoughts: false, thinkingBudget: -1 };
+}
+
+// v2.27.1 (cold-start hardening): cache the @google/genai module promise
+// so the dynamic import resolves exactly once across all callers.
+// Exported so peers/model-selection.ts can share the same module promise.
+let _genaiModulePromise: Promise<typeof import("@google/genai")> | null = null;
+export function loadGenaiModule(): Promise<typeof import("@google/genai")> {
+  if (!_genaiModulePromise) _genaiModulePromise = import("@google/genai");
+  return _genaiModulePromise;
 }
 
 export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
@@ -74,10 +92,11 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     this.model = modelOverride ?? config.models.gemini;
   }
 
-  private client(): GoogleGenAI {
+  private async client(): Promise<{ ai: GoogleGenAI; ThinkingLevel: typeof ThinkingLevel }> {
     const apiKey = this.config.api_keys.gemini;
     if (!apiKey) throw new Error("GEMINI_API_KEY was not found in environment variables.");
-    return new GoogleGenAI({ apiKey });
+    const genai = await loadGenaiModule();
+    return { ai: new genai.GoogleGenAI({ apiKey }), ThinkingLevel: genai.ThinkingLevel };
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -96,7 +115,8 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       };
     }
     try {
-      const pager = await this.client().models.list({ config: { pageSize: 1 } });
+      const probeClient = await this.client();
+      const pager = await probeClient.ai.models.list({ config: { pageSize: 1 } });
       for await (const model of pager) {
         void model;
         break;
@@ -142,6 +162,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // session_cancel_job cannot interrupt an in-flight Gemini call
         // and continues burning tokens until the response naturally
         // arrives.
+        const reviewClient = await this.client();
         const params = {
           model: this.model,
           contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt)}\n\n${statusInstruction()}`,
@@ -149,12 +170,12 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             responseMimeType: "application/json",
             responseJsonSchema: statusJsonSchema,
             maxOutputTokens: this.config.max_output_tokens,
-            thinkingConfig: geminiThinkingConfig(this.model),
+            thinkingConfig: geminiThinkingConfig(this.model, reviewClient.ThinkingLevel),
             abortSignal: context.signal,
           },
         };
         if (this.shouldStreamTokens(context)) {
-          const stream = await this.client().models.generateContentStream(params);
+          const stream = await reviewClient.ai.models.generateContentStream(params);
           const stream_buffer = new StreamBuffer(this.id);
           const tokenStream = this.createTokenEventBuffer(
             context,
@@ -179,7 +200,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported: last?.modelVersion,
           });
         }
-        const response = (await this.client().models.generateContent(params)) as GeminiResponse;
+        const response = (await reviewClient.ai.models.generateContent(params)) as GeminiResponse;
         return this.resultFromText({
           text: response.text ?? JSON.stringify(response),
           raw: response,
@@ -206,17 +227,18 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `Gemini generation attempt ${attempt}`,
         });
+        const generateClient = await this.client();
         const params = {
           model: this.model,
           contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt)}`,
           config: {
             maxOutputTokens: this.config.max_output_tokens,
-            thinkingConfig: geminiThinkingConfig(this.model),
+            thinkingConfig: geminiThinkingConfig(this.model, generateClient.ThinkingLevel),
             abortSignal: context.signal,
           },
         };
         if (this.shouldStreamTokens(context)) {
-          const stream = await this.client().models.generateContentStream(params);
+          const stream = await generateClient.ai.models.generateContentStream(params);
           const stream_buffer = new StreamBuffer(this.id);
           const tokenStream = this.createTokenEventBuffer(
             context,
@@ -241,7 +263,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported: last?.modelVersion,
           });
         }
-        const response = (await this.client().models.generateContent(params)) as GeminiResponse;
+        const response = (await generateClient.ai.models.generateContent(params)) as GeminiResponse;
         return this.generationFromText({
           text: response.text ?? JSON.stringify(response),
           raw: response,

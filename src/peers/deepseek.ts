@@ -1,4 +1,9 @@
-import OpenAI from "openai";
+// v2.27.1 (cold-start hardening): reuse the lazy OpenAI ctor loaded by
+// peers/openai.ts. DeepSeek + OpenAI + Grok share the same `openai`
+// package, so a single dynamic import resolves the SDK module exactly
+// once across all three adapters. Type-only import preserves the
+// `OpenAI.ChatCompletionCreateParams*` namespace types at compile time.
+import type OpenAI from "openai";
 import type {
   AppConfig,
   GenerationResult,
@@ -12,6 +17,7 @@ import type {
 import { statusInstruction } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
+import { loadOpenAICtor } from "./openai.js";
 import { withRetry } from "./retry.js";
 import { userPrompt } from "./text.js";
 
@@ -96,10 +102,11 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
     this.model = modelOverride ?? config.models.deepseek;
   }
 
-  private client(): OpenAI {
+  private async client(): Promise<OpenAI> {
     const apiKey = this.config.api_keys.deepseek;
     if (!apiKey) throw new Error("DEEPSEEK_API_KEY was not found in environment variables.");
-    return new OpenAI({ apiKey, baseURL: "https://api.deepseek.com" });
+    const Ctor = await loadOpenAICtor();
+    return new Ctor({ apiKey, baseURL: "https://api.deepseek.com" });
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -118,7 +125,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
       };
     }
     try {
-      await this.client().models.list({ timeout: this.config.retry.timeout_ms });
+      const probeClient = await this.client();
+      await probeClient.models.list({ timeout: this.config.retry.timeout_ms });
       return {
         peer: this.id,
         provider: this.provider,
@@ -173,7 +181,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             stream: true,
             stream_options: { include_usage: true },
           };
-          const stream = await this.client().chat.completions.create(streamPayload, {
+          const reviewClient = await this.client();
+          const stream = await reviewClient.chat.completions.create(streamPayload, {
             signal: context.signal,
             timeout: this.config.retry.timeout_ms,
           });
@@ -207,7 +216,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client().chat.completions.create(payload, {
+        const reviewClient = await this.client();
+        const response = await reviewClient.chat.completions.create(payload, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
@@ -254,7 +264,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             stream: true,
             stream_options: { include_usage: true },
           };
-          const stream = await this.client().chat.completions.create(streamPayload, {
+          const generateClient = await this.client();
+          const stream = await generateClient.chat.completions.create(streamPayload, {
             signal: context.signal,
             timeout: this.config.retry.timeout_ms,
           });
@@ -288,7 +299,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const response = await this.client().chat.completions.create(payload, {
+        const generateClient = await this.client();
+        const response = await generateClient.chat.completions.create(payload, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
