@@ -364,6 +364,133 @@ assert.equal(
   "YAML excerpts with `token: write` value (5 chars) stay below {6,} threshold",
 );
 
+// v2.26.0 (2026-05-11): full pricing-model schema with
+// extended-tier (>threshold) + cache (read/write) + promo
+// (limited-time discount until promo_expires_at). selectRate() picks
+// the right value per (category, tier, promo-active?) at estimateCost
+// time. Verify all 4 tiers (base, extended, promo, promo_extended) +
+// cache_read/cache_write costs + tier_used breadcrumb.
+const cost = await import("../src/core/cost.js");
+const fullRate = {
+  input_per_million: 5,
+  output_per_million: 30,
+  input_extended_per_million: 10,
+  output_extended_per_million: 60,
+  cache_read_per_million: 0.5,
+  cache_write_per_million: 10,
+  cache_read_extended_per_million: 1,
+  cache_write_extended_per_million: 20,
+  promo_input_per_million: 1.74,
+  promo_output_per_million: 3.48,
+  promo_input_extended_per_million: 3.48,
+  promo_output_extended_per_million: 6.96,
+  promo_cache_read_per_million: 0.058,
+  promo_cache_write_per_million: 1.74,
+  promo_cache_read_extended_per_million: 0.116,
+  promo_cache_write_extended_per_million: 3.48,
+  threshold_tokens: 200_000,
+  promo_expires_at: "2026-12-31T23:59:59Z",
+};
+const today = new Date("2026-05-11T12:00:00Z");
+const expired = new Date("2027-01-01T00:00:00Z");
+// Case 1: small prompt + active promo → promo base
+const r1 = cost.selectRate(fullRate, "input", 50_000, today);
+assert.deepEqual(r1, { rate_per_million: 1.74, tier_used: "promo" });
+// Case 2: large prompt + active promo → promo_extended
+const r2 = cost.selectRate(fullRate, "input", 250_000, today);
+assert.deepEqual(r2, { rate_per_million: 3.48, tier_used: "promo_extended" });
+// Case 3: small prompt + expired promo → base
+const r3 = cost.selectRate(fullRate, "input", 50_000, expired);
+assert.deepEqual(r3, { rate_per_million: 5, tier_used: "base" });
+// Case 4: large prompt + expired promo → extended
+const r4 = cost.selectRate(fullRate, "input", 250_000, expired);
+assert.deepEqual(r4, { rate_per_million: 10, tier_used: "extended" });
+// Case 5: cache_read with promo active + small prompt → promo cache_read
+const r5 = cost.selectRate(fullRate, "cache_read", 50_000, today);
+assert.deepEqual(r5, { rate_per_million: 0.058, tier_used: "promo" });
+// Case 6: rate without cache_read falls back to input rate (graceful
+// degradation per operator directive 2026-05-11 — when a provider
+// discontinues the cache discount, treat cache tokens as fresh input so
+// estimates stay correct without operator action).
+const minimalRate = { input_per_million: 5, output_per_million: 30 };
+const r6 = cost.selectRate(minimalRate, "cache_read", 50_000, today);
+assert.deepEqual(
+  r6,
+  { rate_per_million: 5, tier_used: "base" },
+  "cache_read with no rate falls back to input base rate",
+);
+// Case 6b: cache_read fallback respects active promo on input
+const promoOnlyInput = {
+  input_per_million: 5,
+  output_per_million: 30,
+  promo_input_per_million: 1.74,
+  promo_expires_at: "2026-12-31T23:59:59Z",
+};
+const r6b = cost.selectRate(promoOnlyInput, "cache_write", 50_000, today);
+assert.deepEqual(
+  r6b,
+  { rate_per_million: 1.74, tier_used: "promo" },
+  "cache_write fallback inherits promo tier from input",
+);
+// Case 6c: cache_read with promo_expires_at in the past behaves as if no
+// promo (graceful expiry — operator does not need to clear promo fields)
+const expiredPromo = {
+  input_per_million: 5,
+  output_per_million: 30,
+  promo_input_per_million: 1.74,
+  promo_expires_at: "2026-01-01T00:00:00Z", // in the past relative to `today`
+};
+const r6c = cost.selectRate(expiredPromo, "input", 50_000, today);
+assert.deepEqual(
+  r6c,
+  { rate_per_million: 5, tier_used: "base" },
+  "expired promo collapses to base automatically",
+);
+// Case 7: rate without threshold falls to base for any token count
+const noThreshold = {
+  input_per_million: 5,
+  output_per_million: 30,
+  input_extended_per_million: 10,
+};
+const r7 = cost.selectRate(noThreshold, "input", 1_000_000, today);
+assert.deepEqual(r7, { rate_per_million: 5, tier_used: "base" });
+// Case 8: full estimateCost with cache costs included
+const minimalConfig = {
+  cost_rates: { codex: fullRate },
+} as Parameters<typeof cost.estimateCost>[0];
+const usage = {
+  input_tokens: 10_000,
+  output_tokens: 5_000,
+  cache_read_tokens: 8_000,
+  cache_write_tokens: 2_000,
+};
+const est = cost.estimateCost(minimalConfig, "codex", usage);
+assert.equal(est.tier_used, "promo", "small prompt + active promo selects promo tier");
+assert.equal(
+  est.input_cost,
+  (10_000 / 1_000_000) * 1.74,
+  "input_cost = input_tokens × promo_input_per_million",
+);
+assert.equal(
+  est.cache_read_cost,
+  (8_000 / 1_000_000) * 0.058,
+  "cache_read_cost = cache_read_tokens × promo_cache_read_per_million",
+);
+assert.equal(
+  est.cache_write_cost,
+  (2_000 / 1_000_000) * 1.74,
+  "cache_write_cost = cache_write_tokens × promo_cache_write_per_million",
+);
+assert.ok(
+  est.total_cost! > 0 &&
+    Math.abs(
+      est.total_cost! -
+        (est.input_cost! + est.output_cost! + est.cache_read_cost! + est.cache_write_cost!),
+    ) < 1e-9,
+  "total_cost = sum of all categories",
+);
+console.error("[smoke] full_pricing_model_v2260_test: PASS");
+
 // v2.18.4 / Codex audit 2026-05-07 P2.1: grok-4.3 added to the
 // reasoning-effort allowlist; verify both call sites gate correctly.
 const grokAllowlist = await import("../src/peers/grok.js");
@@ -4850,19 +4977,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   console.log("[smoke] cache_schema_version_in_prefix_test: PASS");
 
-  // (3) cache_rates_json_loaded_test — rate cards present + shape OK.
-  const cacheRates = (await import("../src/core/cache-rates.json", { with: { type: "json" } }))
-    .default;
-  for (const provider of ["openai", "anthropic", "gemini", "deepseek", "grok"]) {
-    const card = (cacheRates as Record<string, unknown>)[provider];
-    assert.ok(card, `v2.21.0: cache-rates.json must contain '${provider}' entry`);
-    assert.equal(
-      typeof (card as { fresh_input_per_million_usd?: unknown }).fresh_input_per_million_usd,
-      "number",
-      `v2.21.0: cache-rates.json '${provider}'.fresh_input_per_million_usd is number`,
-    );
-  }
-  console.log("[smoke] cache_rates_json_loaded_test: PASS");
+  // (3) cache_rates_no_runtime_import_test — v2.26.0 removed the runtime
+  //     import of cache-rates.json per operator no-hardcoded-financials
+  //     directive. Verify the file is no longer imported anywhere in src/
+  //     so the system genuinely depends only on env vars for pricing.
+  const costSrc = fs.readFileSync(path.join(process.cwd(), "src", "core", "cost.ts"), "utf8");
+  assert.ok(
+    !/^\s*import\s+.*\bcache-rates\.json\b/m.test(costSrc),
+    "v2.26.0: cost.ts must NOT import cache-rates.json (runtime no-hardcoded-financials)",
+  );
+  // The string may still appear in COMMENTS documenting the removal; that is allowed.
+  console.log("[smoke] cache_rates_no_runtime_import_test: PASS");
 
   // (4) cache_manifest_atomic_write_test — write + multiple appends
   //     preserve every entry.

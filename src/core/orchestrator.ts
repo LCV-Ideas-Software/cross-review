@@ -1696,7 +1696,11 @@ export class CrossReviewOrchestrator {
       if (readTokens === 0 && writeTokens === 0) return;
       const mode = usage.cache_provider_mode ?? "auto";
       const keyHash = usage.cache_key_hash ?? "";
-      const savings = estimateCacheSavings(peerResult.peer, usage);
+      const savings = estimateCacheSavings(
+        peerResult.peer,
+        usage,
+        this.config.cost_rates[peerResult.peer],
+      );
       this.emit({
         type: "provider.cache.usage",
         session_id: sessionId,

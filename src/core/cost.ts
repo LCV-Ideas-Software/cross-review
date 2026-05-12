@@ -1,32 +1,115 @@
 // v2.21.0 (caching): cost layer extends to merge cache_read/cache_write
-// tokens and surface estimated cache savings on CostEstimate. Primary
-// flat input/output rates still come from config.cost_rates (env);
-// cache-rates.json provides FALLBACK fresh-vs-cached deltas used by
-// estimateCacheSavings only.
+// tokens and surface estimated cache savings on CostEstimate.
+// v2.26.0 (full pricing model + no-hardcoded-financials): cost_rates is
+// now a complete schema supporting base + extended-tier (>threshold) +
+// cache (read/write) + promo (limited-time discount until
+// promo_expires_at). selectRate() chooses the right value per
+// (category, tier, promo-active?) at estimation time. The legacy
+// cache-rates.json fallback was REMOVED per operator directive
+// 2026-05-11 ("nada hardcoded para preços financeiros — o sistema deve
+// travar até o operador configurar as variáveis"). When cache rate env
+// vars are absent, selectRate() gracefully degrades to the input rate
+// (zero savings) instead of synthesizing prices from a static file.
 
-import cacheRatesJson from "./cache-rates.json" with { type: "json" };
 import type { AppConfig, CostEstimate, PeerId, TokenUsage } from "./types.js";
 
-type CacheRateCard =
-  | {
-      fresh_input_per_million_usd: number;
-      cached_input_per_million_usd?: number;
-      cache_read_per_million_usd?: number;
-      cache_write_5min_per_million_usd?: number;
-      cache_write_1h_per_million_usd?: number;
-      note?: string;
+// v2.26.0: pricing categories and rate selection.
+type CostRate = NonNullable<AppConfig["cost_rates"]["codex"]>;
+type RateCategory = "input" | "output" | "cache_read" | "cache_write";
+
+/**
+ * v2.26.0: select the right per-million USD rate for a given (category,
+ * tier, promo-active?) combination, with graceful fallback to the next
+ * available rate when fields are absent or expired.
+ *
+ * Selection priority (each step falls through to the next when the
+ * corresponding field is unset OR the condition does not apply):
+ *   1. promo_<category>_extended_per_million — IFF in promo period AND
+ *      large prompt AND field set
+ *   2. promo_<category>_per_million — IFF in promo period AND field set
+ *   3. <category>_extended_per_million — IFF large prompt AND field set
+ *   4. <category>_per_million — base rate, set
+ *   5. (cache_read / cache_write only) recurse into "input" category
+ *      — gracefully degrade to "no cache discount" billing when the
+ *      operator stops configuring cache rates entirely
+ *
+ * Fallback semantics intent (operator directive 2026-05-11):
+ *   - When promo expires (today >= promo_expires_at) or promo fields are
+ *     unset, automatically use base rates without operator intervention.
+ *   - When extended-tier rates are unset for a tier-aware provider, use
+ *     base for ALL prompt sizes (no penalty for missing config).
+ *   - When cache rates are unset entirely, treat cache tokens as fresh
+ *     input (no discount, no penalty). The provider may still bill them
+ *     at a lower rate; we just stop modeling that detail.
+ *
+ * `now` is injected so tests and FinOps replays can pin the clock.
+ */
+export function selectRate(
+  rate: CostRate,
+  category: RateCategory,
+  totalInputTokens: number,
+  now: Date = new Date(),
+): { rate_per_million: number; tier_used: NonNullable<CostEstimate["tier_used"]> } | undefined {
+  const inPromo =
+    rate.promo_expires_at != null && Date.parse(rate.promo_expires_at) > now.getTime();
+  const isExtended = rate.threshold_tokens != null && totalInputTokens > rate.threshold_tokens;
+  const promoBase = (
+    {
+      input: rate.promo_input_per_million,
+      output: rate.promo_output_per_million,
+      cache_read: rate.promo_cache_read_per_million,
+      cache_write: rate.promo_cache_write_per_million,
+    } as const
+  )[category];
+  const promoExtended = (
+    {
+      input: rate.promo_input_extended_per_million,
+      output: rate.promo_output_extended_per_million,
+      cache_read: rate.promo_cache_read_extended_per_million,
+      cache_write: rate.promo_cache_write_extended_per_million,
+    } as const
+  )[category];
+  const base = (
+    {
+      input: rate.input_per_million,
+      output: rate.output_per_million,
+      cache_read: rate.cache_read_per_million,
+      cache_write: rate.cache_write_per_million,
+    } as const
+  )[category];
+  const extended = (
+    {
+      input: rate.input_extended_per_million,
+      output: rate.output_extended_per_million,
+      cache_read: rate.cache_read_extended_per_million,
+      cache_write: rate.cache_write_extended_per_million,
+    } as const
+  )[category];
+  if (inPromo) {
+    if (isExtended && promoExtended != null) {
+      return { rate_per_million: promoExtended, tier_used: "promo_extended" };
     }
-  | undefined;
-
-type RatesByProvider = Record<string, CacheRateCard>;
-
-const PROVIDER_FOR_PEER: Record<PeerId, keyof typeof cacheRatesJson | string> = {
-  codex: "openai",
-  claude: "anthropic",
-  gemini: "gemini",
-  deepseek: "deepseek",
-  grok: "grok",
-};
+    if (promoBase != null) {
+      return { rate_per_million: promoBase, tier_used: "promo" };
+    }
+    // No promo rate for this category → fall through to non-promo cascade.
+  }
+  if (isExtended && extended != null) {
+    return { rate_per_million: extended, tier_used: "extended" };
+  }
+  if (base != null) {
+    return { rate_per_million: base, tier_used: "base" };
+  }
+  // v2.26.0 graceful degradation: when a cache category has no rate at
+  // all (operator stopped configuring it OR provider discontinued the
+  // cache discount), bill cache tokens at the input rate instead of
+  // dropping them silently. The tier_used reflects the input tier so
+  // FinOps still sees promo/extended applied to the input fallback.
+  if (category === "cache_read" || category === "cache_write") {
+    return selectRate(rate, "input", totalInputTokens, now);
+  }
+  return undefined;
+}
 
 export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
   const total: TokenUsage = {};
@@ -51,24 +134,52 @@ export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage
   if (!usage || !rate) {
     return { currency: "USD", estimated: false, source: "unknown-rate" };
   }
-  const input = ((usage.input_tokens ?? 0) / 1_000_000) * rate.input_per_million;
-  const output = ((usage.output_tokens ?? 0) / 1_000_000) * rate.output_per_million;
+  const inputTokens = usage.input_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? 0;
+  const cacheReadTokens = usage.cache_read_tokens ?? 0;
+  const cacheWriteTokens = usage.cache_write_tokens ?? 0;
+  // v2.26.0: tier selection considers the FULL prompt size (fresh input +
+  // cached read + cache write) because providers like Gemini price by
+  // total prompt length, not by post-cache fresh input.
+  const totalInputForTier = inputTokens + cacheReadTokens + cacheWriteTokens;
+  const inputSel = selectRate(rate, "input", totalInputForTier);
+  const outputSel = selectRate(rate, "output", totalInputForTier);
+  const cacheReadSel =
+    cacheReadTokens > 0 ? selectRate(rate, "cache_read", totalInputForTier) : undefined;
+  const cacheWriteSel =
+    cacheWriteTokens > 0 ? selectRate(rate, "cache_write", totalInputForTier) : undefined;
+  // selectRate always returns a value for input/output because base
+  // _INPUT/_OUTPUT_USD_PER_MILLION is required at parse time.
+  const inputCost = inputSel ? (inputTokens / 1_000_000) * inputSel.rate_per_million : 0;
+  const outputCost = outputSel ? (outputTokens / 1_000_000) * outputSel.rate_per_million : 0;
+  const cacheReadCost = cacheReadSel
+    ? (cacheReadTokens / 1_000_000) * cacheReadSel.rate_per_million
+    : 0;
+  const cacheWriteCost = cacheWriteSel
+    ? (cacheWriteTokens / 1_000_000) * cacheWriteSel.rate_per_million
+    : 0;
+  const total = inputCost + outputCost + cacheReadCost + cacheWriteCost;
   const base: CostEstimate = {
     currency: "USD",
-    input_cost: input,
-    output_cost: output,
-    total_cost: input + output,
+    input_cost: inputCost,
+    output_cost: outputCost,
+    total_cost: total,
     estimated: true,
     source: "configured-rate",
   };
+  if (cacheReadCost > 0) base.cache_read_cost = cacheReadCost;
+  if (cacheWriteCost > 0) base.cache_write_cost = cacheWriteCost;
+  // Surface the selected tier (priority: extended/promo over base) for
+  // FinOps audit. When categories disagree (rare; only when promo or
+  // extended apply to one but not the other), pick input's tier as the
+  // representative — operators reading reports care most about which
+  // BILLING regime the call landed under.
+  if (inputSel) base.tier_used = inputSel.tier_used;
   // v2.21.0 (caching): when cache telemetry is present, populate
   // savings on the CostEstimate so dashboards + reports see it next to
-  // input/output cost. Pure addition — no subtraction from total_cost
-  // because the configured input rate already reflects the discounted
-  // billing (provider returns lower input_tokens or charges less for
-  // cached tokens internally).
-  if ((usage.cache_read_tokens ?? 0) > 0 || (usage.cache_write_tokens ?? 0) > 0) {
-    const savings = estimateCacheSavings(peer, usage);
+  // input/output cost.
+  if (cacheReadTokens > 0 || cacheWriteTokens > 0) {
+    const savings = estimateCacheSavings(peer, usage, rate);
     if (savings.unknown) {
       base.cache_savings_unknown = true;
     } else if (savings.savings_usd > 0) {
@@ -81,6 +192,8 @@ export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage
 export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate {
   let known = false;
   let total = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
   let savings = 0;
   let savingsKnown = false;
   let savingsUnknown = false;
@@ -91,6 +204,8 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
       known = true;
       total += cost.total_cost;
     }
+    if (cost?.cache_read_cost != null) cacheRead += cost.cache_read_cost;
+    if (cost?.cache_write_cost != null) cacheWrite += cost.cache_write_cost;
     if (cost?.cache_savings_usd != null) {
       savings += cost.cache_savings_usd;
       savingsKnown = true;
@@ -108,6 +223,8 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
     estimated: true,
     source: "configured-rate",
   };
+  if (cacheRead > 0) merged.cache_read_cost = cacheRead;
+  if (cacheWrite > 0) merged.cache_write_cost = cacheWrite;
   if (savingsKnown && savings > 0) merged.cache_savings_usd = savings;
   if (savingsUnknown) merged.cache_savings_unknown = true;
   return merged;
@@ -119,25 +236,36 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
  * when the rate card has no entry for the provider — operators see
  * "we got a cache hit but cannot price it" instead of a silent zero.
  */
+/**
+ * v2.26.0: estimate cache-read savings using ONLY env-configured rates
+ * via selectRate(). The legacy `cache-rates.json` fallback was removed
+ * per operator directive 2026-05-11 ("nada hardcoded para preços
+ * financeiros") — when an operator omits cache rate env vars, the
+ * intelligent fallback in selectRate() treats cache reads as priced at
+ * the input rate (zero savings) rather than synthesizing a fictional
+ * cached rate from a hardcoded JSON. Returns `unknown: true` only when
+ * no configRate is provided at all (defensive — `estimateCost()` already
+ * short-circuits with "unknown-rate" before reaching this path).
+ */
 export function estimateCacheSavings(
   peer: PeerId,
   usage: TokenUsage,
+  configRate: CostRate | undefined,
 ): { savings_usd: number; unknown: boolean } {
-  const provider = PROVIDER_FOR_PEER[peer];
-  const ratesMap = cacheRatesJson as unknown as RatesByProvider;
-  const card = ratesMap[provider];
-  if (!card) return { savings_usd: 0, unknown: true };
+  void peer; // peer is kept in the signature for API stability + future telemetry
   const readTokens = usage.cache_read_tokens ?? 0;
   if (readTokens <= 0) return { savings_usd: 0, unknown: false };
-
-  const fresh = card.fresh_input_per_million_usd ?? 0;
-  // Anthropic rate card uses cache_read_per_million_usd; OpenAI/Grok/
-  // DeepSeek/Gemini use cached_input_per_million_usd. Try both keys.
-  const cached = card.cache_read_per_million_usd ?? card.cached_input_per_million_usd ?? 0;
-  if (fresh <= 0 || cached < 0 || fresh <= cached) {
-    // Fresh cheaper or equal → no positive savings to report.
+  if (!configRate) return { savings_usd: 0, unknown: true };
+  const totalInputForTier =
+    (usage.input_tokens ?? 0) + readTokens + (usage.cache_write_tokens ?? 0);
+  const freshSel = selectRate(configRate, "input", totalInputForTier);
+  const cachedSel = selectRate(configRate, "cache_read", totalInputForTier);
+  // Both should be defined because input is required and cache_read
+  // gracefully degrades to input. Defensive guard for type narrowing.
+  if (!freshSel || !cachedSel) return { savings_usd: 0, unknown: true };
+  if (freshSel.rate_per_million <= cachedSel.rate_per_million) {
     return { savings_usd: 0, unknown: false };
   }
-  const savings = ((fresh - cached) * readTokens) / 1_000_000;
-  return { savings_usd: savings, unknown: false };
+  const delta = freshSel.rate_per_million - cachedSel.rate_per_million;
+  return { savings_usd: (delta * readTokens) / 1_000_000, unknown: false };
 }

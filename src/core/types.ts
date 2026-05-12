@@ -96,6 +96,18 @@ export interface CostEstimate {
   // got a cache hit but cannot price it" instead of a silent zero.
   cache_savings_usd?: number;
   cache_savings_unknown?: boolean;
+  // v2.26.0: itemized cache costs surfaced when env-configured cache rates are
+  // present and the call exhibited cache_read or cache_write tokens. These
+  // ADD to total_cost (separate from input_cost which represents fresh
+  // non-cached input). Operators see the full-precision breakdown in
+  // session reports + dashboards.
+  cache_read_cost?: number;
+  cache_write_cost?: number;
+  // v2.26.0: pricing-tier breadcrumbs for FinOps audit. `tier_used` indicates
+  // which rate variant was picked by selectRate() at estimation time.
+  // Possible values: "base" | "extended" | "promo" | "promo_extended".
+  // Absent when source is "stub" or "unknown-rate".
+  tier_used?: "base" | "extended" | "promo" | "promo_extended";
 }
 
 // v2.21.0 (caching): per-session manifest of every cached call. Persisted
@@ -636,7 +648,49 @@ export interface AppConfig {
   reasoning_effort: Partial<Record<PeerId, ReasoningEffort>>;
   model_selection: Partial<Record<PeerId, ModelSelection>>;
   api_keys: Record<PeerId, string | undefined>;
-  cost_rates: Partial<Record<PeerId, { input_per_million: number; output_per_million: number }>>;
+  // v2.26.0: cost_rates expanded to a complete pricing model — base + extended-tier
+  // (e.g. Gemini >200K) + cache (read+write) + promo (limited-time discount that
+  // expires at promo_expires_at) for each variant. Only `input_per_million` and
+  // `output_per_million` are required (backward compat with v2.0.0+); every
+  // other field is optional. The cost layer's selectRate() chooses the right
+  // value per (category, tier, promo-active?) at estimateCost() time.
+  cost_rates: Partial<
+    Record<
+      PeerId,
+      {
+        input_per_million: number;
+        output_per_million: number;
+        // Extended-tier rates (used when total input tokens exceed
+        // threshold_tokens; e.g., Gemini ≤200K vs >200K).
+        input_extended_per_million?: number;
+        output_extended_per_million?: number;
+        // Cache rates (read = cache hit, write = cache creation).
+        // For Anthropic, cache_write reflects 1h TTL pricing per workspace
+        // policy (most common server-default); operators can set a lower
+        // value if they exclusively use 5m TTL.
+        cache_read_per_million?: number;
+        cache_write_per_million?: number;
+        cache_read_extended_per_million?: number;
+        cache_write_extended_per_million?: number;
+        // Promo rates (limited-time discounts; e.g., DeepSeek v4-pro 75% off
+        // until 2026-05-31). Selection requires promo_expires_at to be present
+        // AND today < promo_expires_at AND the corresponding promo field set.
+        promo_input_per_million?: number;
+        promo_output_per_million?: number;
+        promo_input_extended_per_million?: number;
+        promo_output_extended_per_million?: number;
+        promo_cache_read_per_million?: number;
+        promo_cache_write_per_million?: number;
+        promo_cache_read_extended_per_million?: number;
+        promo_cache_write_extended_per_million?: number;
+        promo_expires_at?: string; // ISO 8601 UTC timestamp
+        // Threshold for extended tier (in tokens). When total input >
+        // threshold, *_extended_per_million fields are used (when set). Null
+        // or undefined means no tier split for this provider.
+        threshold_tokens?: number;
+      }
+    >
+  >;
   // v2.12.0: judge auto-wire surfaced as first-class config so server_info,
   // dashboard and orchestrator share one source of truth instead of each
   // call site re-reading env vars. The boot notice and the shadow path in

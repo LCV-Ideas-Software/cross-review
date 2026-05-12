@@ -18,7 +18,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "2.25.1";
+export const VERSION = "2.26.0";
 export const RELEASE_DATE = "2026-05-11";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -400,11 +400,71 @@ export function missingFinancialControlVars(
   return [...missing].sort();
 }
 
+// v2.26.0: cost rate parser expanded to a complete pricing model.
+// Required: _INPUT_USD_PER_MILLION + _OUTPUT_USD_PER_MILLION (backward
+// compat). Optional extensions:
+//   - Extended tier (≤ vs > threshold): _INPUT_EXTENDED, _OUTPUT_EXTENDED
+//   - Cache pricing: _CACHE_READ, _CACHE_WRITE, _CACHE_READ_EXTENDED,
+//     _CACHE_WRITE_EXTENDED
+//   - Promo pricing (limited-time discount): _PROMO_INPUT, _PROMO_OUTPUT,
+//     _PROMO_INPUT_EXTENDED, _PROMO_OUTPUT_EXTENDED, _PROMO_CACHE_READ,
+//     _PROMO_CACHE_WRITE, _PROMO_CACHE_READ_EXTENDED,
+//     _PROMO_CACHE_WRITE_EXTENDED, _PROMO_EXPIRES_AT_UTC (ISO 8601)
+//   - Tier threshold: _THRESHOLD_TOKENS (e.g., 200000 for Gemini)
+// Selection logic (in cost.ts selectRate()): if today < promo_expires_at
+// AND a corresponding promo field is set, use promo. Else if total input
+// tokens > threshold AND extended field is set, use extended. Else use
+// base. Each category (input/output/cache_read/cache_write) selects
+// independently.
 function costRate(
   prefix: string,
-): { input_per_million: number; output_per_million: number } | undefined {
+): NonNullable<import("./types.js").AppConfig["cost_rates"]["codex"]> | undefined {
   const input = numberEnv(`${prefix}_INPUT_USD_PER_MILLION`);
   const output = numberEnv(`${prefix}_OUTPUT_USD_PER_MILLION`);
   if (input == null || output == null) return undefined;
-  return { input_per_million: input, output_per_million: output };
+  const opt = (suffix: string): number | undefined => numberEnv(`${prefix}_${suffix}`) ?? undefined;
+  const promoExpiresRaw = envValue(`${prefix}_PROMO_EXPIRES_AT_UTC`);
+  const thresholdTokensRaw = numberEnv(`${prefix}_THRESHOLD_TOKENS`);
+  const rate: NonNullable<import("./types.js").AppConfig["cost_rates"]["codex"]> = {
+    input_per_million: input,
+    output_per_million: output,
+  };
+  const fields: [keyof typeof rate, string][] = [
+    ["input_extended_per_million", "INPUT_EXTENDED_USD_PER_MILLION"],
+    ["output_extended_per_million", "OUTPUT_EXTENDED_USD_PER_MILLION"],
+    ["cache_read_per_million", "CACHE_READ_USD_PER_MILLION"],
+    ["cache_write_per_million", "CACHE_WRITE_USD_PER_MILLION"],
+    ["cache_read_extended_per_million", "CACHE_READ_EXTENDED_USD_PER_MILLION"],
+    ["cache_write_extended_per_million", "CACHE_WRITE_EXTENDED_USD_PER_MILLION"],
+    ["promo_input_per_million", "PROMO_INPUT_USD_PER_MILLION"],
+    ["promo_output_per_million", "PROMO_OUTPUT_USD_PER_MILLION"],
+    ["promo_input_extended_per_million", "PROMO_INPUT_EXTENDED_USD_PER_MILLION"],
+    ["promo_output_extended_per_million", "PROMO_OUTPUT_EXTENDED_USD_PER_MILLION"],
+    ["promo_cache_read_per_million", "PROMO_CACHE_READ_USD_PER_MILLION"],
+    ["promo_cache_write_per_million", "PROMO_CACHE_WRITE_USD_PER_MILLION"],
+    ["promo_cache_read_extended_per_million", "PROMO_CACHE_READ_EXTENDED_USD_PER_MILLION"],
+    ["promo_cache_write_extended_per_million", "PROMO_CACHE_WRITE_EXTENDED_USD_PER_MILLION"],
+  ];
+  for (const [key, suffix] of fields) {
+    const value = opt(suffix);
+    if (value != null) {
+      (rate as Record<string, unknown>)[key as string] = value;
+    }
+  }
+  if (thresholdTokensRaw != null && thresholdTokensRaw > 0) {
+    rate.threshold_tokens = Math.floor(thresholdTokensRaw);
+  }
+  if (promoExpiresRaw && promoExpiresRaw.trim() !== "") {
+    const trimmed = promoExpiresRaw.trim();
+    // Validate ISO 8601 parseability so a typo doesn't silently disable promo.
+    const parsed = Date.parse(trimmed);
+    if (Number.isNaN(parsed)) {
+      console.error(
+        `[cross-review-v2] notice: ${prefix}_PROMO_EXPIRES_AT_UTC="${trimmed}" is not a valid ISO 8601 timestamp; promo rates will be ignored.`,
+      );
+    } else {
+      rate.promo_expires_at = trimmed;
+    }
+  }
+  return rate;
 }
