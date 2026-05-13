@@ -139,6 +139,14 @@ function sessionContractDirectives(): string[] {
     "2) Anti-verbosity (applies especially to Claude — historically the worst offender for verbosity in this protocol): keep the verdict surface short and dense. A long verdict is a defect, not thoroughness. Detail belongs in `evidence_sources`, never in `summary`.",
     "3) Compactness symmetry: the caller's draft is reviewed material; it should obey the same compactness budget peers do. Pad the evidence list, not the prose.",
     "4) Caller finalize obligation: as soon as caller + every peer reach READY (trilateral or quadrilateral READY), the caller MUST invoke `session_finalize` IMMEDIATELY. Leaving an unanimous-READY session in `outcome: null` is a defect; the boot-time stale-session sweep will eventually abort it, but the correct pattern is an explicit, prompt finalize the moment unanimity is observed.",
+    // v3.4.0 — proportionality guidance. Observed in sess 0003b2fe
+    // (2026-05-12, Perplexity reviewer): for a small config/script
+    // change validated only by static scans, Perplexity demanded a
+    // separate `session_attach_evidence` of the same rg output the
+    // caller had narrated inline. This wastes rounds without improving
+    // safety. Default remains "rigor > economy" for runtime work —
+    // this clause only loosens the bar for pure static-scan reviews.
+    "5) Proportionality: scale evidence demands to change risk. For pure config/script/text changes validated by static scans (rg/grep, JSON parse, git diff --check) where the caller narrates the scan inline, that inline narration IS the evidence — do not also demand separate `session_attach_evidence` of the same scan output unless you suspect the scan was performed incorrectly. For changes with runtime effect (build, test, deploy, migration, network call), always demand raw output. When in doubt, prefer asking for evidence over assuming.",
     "",
   ];
 }
@@ -522,6 +530,61 @@ export function detectFabricatedEvidence(
   };
 }
 
+// v3.4.0 — anti-meta-audit detector. Closes the failure mode observed
+// in sess 51973fac (2026-05-13, Perplexity-as-relator): instead of
+// refining the artifact, the relator produced a meta-audit checklist
+// with `MISSING:` placeholders, contaminating the entire round.
+//
+// Two anti-pattern signals:
+//
+//  1. Placeholder labels — structured `MISSING:|UNKNOWN:|PENDING:|TBD:`
+//     immediately followed by a colon. The colon distinguishes
+//     placeholders from prose ("a function is missing a return value"
+//     does NOT trip; `MISSING: diff hunk` DOES). Markdown bold/italic
+//     decorators (`**MISSING:**`, `*MISSING:*`) are accepted via the
+//     `\*{0,2}` prefix.
+//
+//  2. Section headers anchoring a meta-audit structure: `Evidence Gap`,
+//     `Validation Claims (NARRATIVE`, `Peer Review Readiness Blockers`,
+//     `Missing Evidence`, `Evidence Status` as h1-h6 headers.
+//
+// Trip condition uses a double-bar to limit false positives on
+// legitimate revisions that note a single specific gap:
+//   (placeholders >= 3) OR (sections >= 1 AND placeholders >= 2).
+//
+// A revision noting "one TBD:" with no anchor section, or a single
+// section reference without enumerated placeholders, does NOT trip.
+// The 51973fac pattern (6+ placeholders + 3+ section headers) is
+// detected cleanly.
+const META_AUDIT_PLACEHOLDER_PATTERN = /\*{0,2}(MISSING|UNKNOWN|PENDING|TBD):/gi;
+const META_AUDIT_SECTION_HEADER_PATTERN =
+  /^#{1,6}\s+(Evidence Gap|Validation Claims \(NARRATIVE|Peer Review Readiness Blockers|Missing Evidence|Evidence Status)\b/gim;
+const META_AUDIT_PLACEHOLDER_THRESHOLD = 3;
+const META_AUDIT_SECTION_PLUS_PLACEHOLDER_THRESHOLD = 2;
+
+export interface MetaAuditDetectionResult {
+  fabricated: boolean;
+  placeholder_count: number;
+  placeholder_sample: string[];
+  section_count: number;
+  section_sample: string[];
+}
+
+export function detectMetaAuditFabrication(revisionText: string): MetaAuditDetectionResult {
+  const placeholders = revisionText.match(META_AUDIT_PLACEHOLDER_PATTERN) ?? [];
+  const sections = revisionText.match(META_AUDIT_SECTION_HEADER_PATTERN) ?? [];
+  const fabricated =
+    placeholders.length >= META_AUDIT_PLACEHOLDER_THRESHOLD ||
+    (sections.length >= 1 && placeholders.length >= META_AUDIT_SECTION_PLUS_PLACEHOLDER_THRESHOLD);
+  return {
+    fabricated,
+    placeholder_count: placeholders.length,
+    placeholder_sample: placeholders.slice(0, 6),
+    section_count: sections.length,
+    section_sample: sections.slice(0, 4),
+  };
+}
+
 // v2.13.0: ship-mode lead directive. Codifies for the lead_peer that
 // it is the relator producing a refined artifact (prose), NOT a peer
 // reviewer voting on the artifact. Inserted into both buildRevisionPrompt
@@ -554,6 +617,23 @@ function leadShipModeDirective(): string[] {
     "Do NOT generate plausible-looking SHAs, hashes, or build output to make the revision feel complete. Do NOT paraphrase tool output with ellipses, pseudocode, or summary counts when the raw output is missing. The relator may not fabricate AND may not propagate caller narrative as if it were fact.",
     "A post-revision heuristic detector flags net-new operational tokens (hex strings, test counts, command-output assertions) and causes the revision to be discarded if the threshold trips. Two consecutive discards abort the session.",
     "Distinguish `peer_analysis` (your interpretation, free-form) from `cited_evidence` (verbatim from `## Attached Evidence`, marked with source path/line). When in doubt about the provenance level of a claim, prefer marking it as a blocker over quoting it as evidence.",
+    "",
+    // v3.4.0 — anti-meta-audit lock (sess 51973fac, 2026-05-13, caller
+    // codex, Perplexity-as-relator). The Evidence Provenance Lock above
+    // was misread by sonar-reasoning-pro as authorization to enumerate
+    // evidence gaps rather than refine the artifact. The relator
+    // produced a meta-audit checklist with `MISSING:` placeholders for
+    // every tracked change, and all 4 reviewers ended up reviewing the
+    // fabricated audit instead of the caller's substantive draft. This
+    // clause explicitly forbids that drift.
+    "## Anti-Meta-Audit Lock (HARD)",
+    "You are NOT an auditor. You produce a REVISED ARTIFACT, not an evidence-gap checklist. If the caller's draft is incomplete or lacks attached evidence, that concern is for the peer REVIEWERS to surface via `caller_requests` after they read your revision. Your role is to refine the artifact text itself, not to enumerate what is missing from it.",
+    "Specifically, you MUST NOT:",
+    "  - Produce tables with `Evidence Status` columns whose cells contain `MISSING:`, `UNKNOWN:`, `PENDING:`, or `TBD:` placeholders.",
+    "  - Produce sections titled `Evidence Gap`, `Validation Claims (NARRATIVE, Not Attached)`, `Peer Review Readiness Blockers`, `Missing Evidence`, or any equivalent evidence-status-tracker section header.",
+    "  - Enumerate gaps for the caller to fill. The reviewers do that, not you.",
+    "If the caller's draft is already correct and there is nothing substantive to revise, output it verbatim with no edits. Do NOT add a meta-audit layer on top.",
+    "A post-revision heuristic detector flags meta-audit anti-patterns (placeholder counts, section headers); two consecutive trips abort the session via the shared consecutive-drift counter.",
     "",
     "If the artifact already addresses every outstanding ask and you cannot improve it, output it verbatim with no edits.",
     "",
@@ -3626,6 +3706,7 @@ export class CrossReviewOrchestrator {
         // tokens) still slip through but are caught by the prompt-level
         // anti-fabrication clause in leadShipModeDirective.
         let fabricationResult: FabricationDetectionResult | null = null;
+        let metaAuditResult: MetaAuditDetectionResult | null = null;
         if (sessionMode === "ship" && !emptyText && !driftDetected) {
           const attachmentsForCheck = this.store.readEvidenceAttachments(
             session.session_id,
@@ -3643,19 +3724,28 @@ export class CrossReviewOrchestrator {
             provenanceCorpus: attachmentsForCheck.map((a) => a.content).join("\n"),
             narrativeCorpus: `${input.task}\n${draft}`,
           });
+          // v3.4.0: meta-audit detector. Sess 51973fac shipped a
+          // checklist of `MISSING: diff hunk` placeholders instead of
+          // a revised artifact. Caught by structured placeholder +
+          // section-header heuristics (see detectMetaAuditFabrication).
+          metaAuditResult = detectMetaAuditFabrication(generation.text);
         }
         const fabricationDetected = fabricationResult?.fabricated === true;
-        if (emptyText || driftDetected || fabricationDetected) {
+        const metaAuditDetected = metaAuditResult?.fabricated === true;
+        if (emptyText || driftDetected || fabricationDetected || metaAuditDetected) {
           consecutiveLeadDrifts += 1;
           const driftReason = emptyText
             ? "empty_revision"
             : fabricationDetected
               ? "fabricated_evidence"
-              : "structured_review";
+              : metaAuditDetected
+                ? "meta_audit_fabrication"
+                : "structured_review";
           const parserWarnings = generation.parser_warnings ?? [];
           let eventType: string;
           if (emptyText) eventType = "session.lead_empty_revision";
           else if (fabricationDetected) eventType = "session.lead_fabrication_detected";
+          else if (metaAuditDetected) eventType = "session.lead_meta_audit_fabrication_detected";
           else eventType = "session.lead_drift_detected";
           let messageText: string;
           if (emptyText) {
@@ -3679,6 +3769,18 @@ export class CrossReviewOrchestrator {
               `Signals: net_new_hex_tokens=${sample.net_new_hex_count} [${sample.net_new_hex_sample.join(",")}]; suspicious_assertions=${sample.suspicious_assertion_count} [${assertionLabels}]. ` +
               `Preserving prior draft for next round per evidence-provenance lock (v2.24.0); the relator may not fabricate SHAs, hashes, test counts, or build outputs. ` +
               `If the citation is real, the caller must attach the proof via session_attach_evidence before the next round.`;
+          } else if (metaAuditDetected) {
+            const sample = metaAuditResult ?? {
+              placeholder_count: 0,
+              placeholder_sample: [],
+              section_count: 0,
+              section_sample: [],
+            };
+            messageText =
+              `Lead ${leadPeer} produced a meta-audit checklist instead of a revised artifact (consecutive drift count: ${consecutiveLeadDrifts}). ` +
+              `Signals: placeholder_count=${sample.placeholder_count} [${sample.placeholder_sample.join(",")}]; section_count=${sample.section_count} [${sample.section_sample.join(" / ")}]. ` +
+              `Preserving prior draft for next round per anti-meta-audit lock (v3.4.0); the relator must refine the artifact text, not enumerate evidence gaps. ` +
+              `If the draft is already optimal, the relator MUST output it verbatim; if it is incomplete, the reviewers (not the relator) will surface caller_requests for missing evidence.`;
           } else {
             messageText = `Lead ${leadPeer} emitted a structured peer-review response instead of a revised draft (consecutive drift count: ${consecutiveLeadDrifts}). Preserving prior draft for next round.`;
           }
@@ -3698,6 +3800,14 @@ export class CrossReviewOrchestrator {
               suspicious_assertion_sample: fabricationResult.suspicious_assertion_sample,
             };
           }
+          if (metaAuditDetected && metaAuditResult) {
+            eventData.meta_audit_signals = {
+              placeholder_count: metaAuditResult.placeholder_count,
+              placeholder_sample: metaAuditResult.placeholder_sample,
+              section_count: metaAuditResult.section_count,
+              section_sample: metaAuditResult.section_sample,
+            };
+          }
           this.emit({
             type: eventType,
             session_id: session.session_id,
@@ -3710,6 +3820,7 @@ export class CrossReviewOrchestrator {
             let finalizeReason: string;
             if (emptyText) finalizeReason = "lead_empty_revision_repeated";
             else if (fabricationDetected) finalizeReason = "lead_fabrication_repeated";
+            else if (metaAuditDetected) finalizeReason = "lead_meta_audit_repeated";
             else finalizeReason = "lead_meta_review_drift";
             this.store.finalize(session.session_id, "aborted", finalizeReason);
             return {

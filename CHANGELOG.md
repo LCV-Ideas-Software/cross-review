@@ -7,7 +7,102 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.04.00] — 2026-05-13
+
 ### Fixed
+
+- **Perplexity streaming-path strip parity (Fix #1)** — `src/peers/perplexity.ts`
+  streaming `call()` and `generate()` branches now wrap `stream_buffer.text()`
+  with `stripPerplexityThinkingBlock(...)`, mirroring what the non-streaming
+  path has done since v3.2.0 via `sonarText(response)`. The v3.2.0 fix was
+  architecturally incomplete: it only ran in the non-streaming code path
+  (`perplexity.ts:~426/~521`), while production traffic with
+  `server_info.streaming.tokens=true` (the default) flowed through the
+  streaming branches (`perplexity.ts:~409/~504`) which used the raw
+  `stream_buffer.text()` directly. The `<think>...</think>` reasoning
+  preamble emitted by `sonar-reasoning-pro` and `sonar-deep-research`
+  models therefore reached the status parser, producing
+  `unparseable_after_recovery` failures despite the structured JSON
+  arriving correctly at the end of each response. Forensic evidence:
+  sess `f9a19401-78b6-4382-8c2c-868fcbf8d6e4` (v3.3.0 self-investigation,
+  2026-05-13) — `codex+gemini+deepseek+grok` converged READY on the
+  diagnosis. Affected production sessions: `f72e597a`, `99d46a2b`,
+  `00d92cce`, `59776026`, `41244a1c`, `e23d6920`. Perplexity
+  `ready_rate=0.28125` (9 ready of 32 results) with 9
+  `unparseable_after_recovery` failures, contrasted with `~1.0` for the
+  other 4 peers and `0` rejected. The fix restores parity at the
+  streaming boundary so every Perplexity response path strips uniformly.
+
+### Added
+
+- **Anti-meta-audit lock for relator (Fix #2)** — sess `51973fac-7afd-4597-956a-d3ecf34e971b`
+  (2026-05-13, Perplexity-as-relator) shipped a checklist of
+  `MISSING: diff hunk` / `MISSING: rg invocation` placeholders structured
+  as `Evidence Gap` / `Validation Claims (NARRATIVE, Not Attached)` /
+  `Peer Review Readiness Blockers` sections instead of refining the
+  artifact. All 4 downstream reviewers (`claude`, `gemini`, `deepseek`,
+  `grok`) returned `NEEDS_EVIDENCE` against the fabricated audit instead
+  of the caller's substantive draft, contaminating the entire round.
+  Two-layer defense:
+  - **Prompt layer**: `leadShipModeDirective()` gains an
+    `## Anti-Meta-Audit Lock (HARD)` clause after the Evidence
+    Provenance Lock. Explicit forbiddance of tables with `MISSING:`/
+    `UNKNOWN:`/`PENDING:`/`TBD:` placeholder cells and sections titled
+    `Evidence Gap`/`Validation Claims (NARRATIVE`/`Peer Review
+Readiness Blockers`/`Missing Evidence`. Relator role clarified:
+    refine the artifact text itself; gap-enumeration is for peer
+    reviewers via `caller_requests`, not for the relator.
+  - **Detector layer**: new exported `detectMetaAuditFabrication(text)`
+    in `src/core/orchestrator.ts` with two heuristic signals — structured
+    placeholder labels (`\*{0,2}(MISSING|UNKNOWN|PENDING|TBD):` allowing
+    markdown bold decorators, requires the literal colon to distinguish
+    placeholders from prose) and meta-audit section headers (h1-h6 +
+    canonical anchor titles). Trip condition uses a double-bar to limit
+    false positives: `(placeholders ≥ 3) OR (sections ≥ 1 AND
+placeholders ≥ 2)`. Single-placeholder revisions and prose without
+    colon-discriminator do NOT trip. The detector reuses the shared
+    `consecutiveLeadDrifts` counter (cap=2 abort) introduced in v2.23.0 - v2.24.0 — two consecutive trips finalize the session with reason
+    `lead_meta_audit_repeated`. New event type:
+    `session.lead_meta_audit_fabrication_detected` carrying
+    `meta_audit_signals: { placeholder_count, placeholder_sample,
+section_count, section_sample }` for operator forensic visibility.
+
+- **Reviewer proportionality guidance (Fix #3)** — sess `0003b2fe-f978-4ebb-9f64-f98ae3e66a20`
+  (2026-05-12, Perplexity reviewer): for a small config/script change
+  validated by static scans (`rg`, `node -e JSON.parse`,
+  `git diff --check`), Perplexity demanded separate
+  `session_attach_evidence` of the same scan output the caller had
+  narrated inline, blocking convergence at `NEEDS_EVIDENCE` then
+  `NOT_READY` over rounds. `sessionContractDirectives()` (shared by
+  every peer + caller) gains item 5: "Proportionality: scale evidence
+  demands to change risk." The clause scopes the relaxation tightly to
+  **pure config/script/text changes validated by static scans** — for
+  changes with runtime effect (build, test, deploy, migration, network
+  call) the default remains **always demand raw output**, and "when in
+  doubt, prefer asking for evidence over assuming" preserves the rigor
+  default. The clause does NOT loosen the bar for runtime work; it only
+  prevents redundant attachment demands on the same static scan the
+  caller has already narrated inline.
+
+### Notes
+
+- All three fixes target one architectural failure class: Perplexity's
+  Sonar search-first bias plus the v3.2.0 strip incompleteness. Fix #1
+  alone resolves 6 of the 7 sessions Codex flagged; Fix #2 adds
+  behavioral defense for the relator-as-meta-auditor variant; Fix #3
+  closes the over-strict reviewer variant. Bundled because they share a
+  single root and validate as one coordinated minor release.
+- **Minor bump (3.3.0 → 3.4.0)**. Public surface is 100%
+  backward-compatible additive: one new exported helper
+  (`detectMetaAuditFabrication`), one new event type
+  (`session.lead_meta_audit_fabrication_detected`), one new finalize
+  reason (`lead_meta_audit_repeated`). No tool schema change; no
+  breaking change. The additive public surface is the reason this is a
+  minor (Y) bump rather than a patch (Z) bump under SemVer — callers
+  may opt into the new exported helper / observe the new event type
+  without code change.
+
+### Fixed (carried over from Unreleased)
 
 - **npm registry split for StepSecurity** — release artifact packing now passes
   `--registry=https://registry.npmjs.org/` explicitly so the install/update

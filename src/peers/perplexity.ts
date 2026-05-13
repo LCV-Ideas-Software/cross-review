@@ -406,7 +406,18 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
               tokenStream.append(delta);
             }
           }
-          const text = stream_buffer.text();
+          // v3.4.0 Fix #1: apply stripPerplexityThinkingBlock to the
+          // streamed text. Non-streaming path at line ~426 uses
+          // sonarText(response) which already strips; streaming path was
+          // bypassing the strip entirely, causing <think> preambles from
+          // sonar-reasoning-pro to reach the status parser and fail with
+          // unparseable_after_recovery despite valid trailing JSON.
+          // Forensic evidence: sess f9a19401 (v3.3.0 self-investigation)
+          // — 4 peers converged READY on this exact diagnosis. Affected
+          // sessions: f72e597a, 99d46a2b, 00d92cce, 59776026, 41244a1c,
+          // e23d6920. Perplexity ready_rate was 0.28125 vs ~1.0 for
+          // other peers; this restores parity at the streaming path.
+          const text = stripPerplexityThinkingBlock(stream_buffer.text());
           tokenStream.complete(text.length);
           return this.resultFromText({
             text,
@@ -501,7 +512,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
               tokenStream.append(delta);
             }
           }
-          const text = stream_buffer.text();
+          // v3.4.0 Fix #1: streaming-path strip parity for generation
+          // (relator) path — same root cause as the call() branch above.
+          // When Perplexity is sortead as relator (e.g. sess 51973fac),
+          // the streamed `<think>` block reached round-N-draft.md
+          // verbatim and confused downstream reviewers into reviewing
+          // the think reasoning itself. Strip at the streaming boundary
+          // so the relator artifact is clean before persistence.
+          const text = stripPerplexityThinkingBlock(stream_buffer.text());
           tokenStream.complete(text.length);
           return this.generationFromText({
             text,

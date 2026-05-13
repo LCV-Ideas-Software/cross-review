@@ -6684,6 +6684,240 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] windows_registry_env_bulk_cache_test: PASS");
 }
 
+// v3.4.0 Fix #1 — perplexity streaming-path strip parity.
+//
+// The non-streaming Perplexity path at perplexity.ts:~426/~521 uses
+// `sonarText(response)` which calls `stripPerplexityThinkingBlock`.
+// Pre-v3.4.0 the streaming paths at perplexity.ts:~409/~504 used
+// `stream_buffer.text()` directly without stripping, causing the
+// `<think>` reasoning preamble emitted by sonar-reasoning-pro to reach
+// the status parser. v3.4.0 wraps the streaming text with
+// `stripPerplexityThinkingBlock(...)` so both paths strip uniformly.
+//
+// Source-level pins prevent regressions: (a) both streaming branches
+// MUST wrap with `stripPerplexityThinkingBlock`; (b) the negative form
+// (bare `stream_buffer.text()` flowing to `resultFromText`/
+// `generationFromText` without strip) MUST NOT reappear; (c) dist
+// parity — same invariants in compiled JS.
+{
+  const perplexitySrc = fs.readFileSync(
+    new URL("../src/peers/perplexity.ts", import.meta.url),
+    "utf8",
+  );
+  const strippedStreamMatches = perplexitySrc.match(
+    /stripPerplexityThinkingBlock\(stream_buffer\.text\(\)\)/g,
+  );
+  assert.ok(
+    strippedStreamMatches !== null && strippedStreamMatches.length >= 2,
+    `v3.4.0 / perplexity_streaming_strip_parity: src/peers/perplexity.ts must wrap stream_buffer.text() with stripPerplexityThinkingBlock at BOTH call() and generate() streaming branches (found ${strippedStreamMatches?.length ?? 0})`,
+  );
+  // Negative pin: bare `const text = stream_buffer.text();` must not
+  // appear (it would mean a streaming branch is bypassing the strip).
+  assert.ok(
+    !/const\s+text\s*=\s*stream_buffer\.text\(\)\s*;/.test(perplexitySrc),
+    "v3.4.0 / perplexity_streaming_strip_parity: src/peers/perplexity.ts must NOT contain bare `const text = stream_buffer.text();` — that pattern is the pre-v3.4.0 bypass and would cause unparseable_after_recovery failures",
+  );
+  // Dist parity.
+  const perplexityDistPath = new URL("../dist/src/peers/perplexity.js", import.meta.url);
+  try {
+    const perplexityDist = fs.readFileSync(perplexityDistPath, "utf8");
+    const distStrippedMatches = perplexityDist.match(
+      /stripPerplexityThinkingBlock\(stream_buffer\.text\(\)\)/g,
+    );
+    assert.ok(
+      distStrippedMatches !== null && distStrippedMatches.length >= 2,
+      `v3.4.0 / perplexity_streaming_strip_parity: dist must mirror source — stripPerplexityThinkingBlock(stream_buffer.text()) ≥ 2 occurrences (found ${distStrippedMatches?.length ?? 0})`,
+    );
+    assert.ok(
+      !/const\s+text\s*=\s*stream_buffer\.text\(\)\s*;/.test(perplexityDist),
+      "v3.4.0 / perplexity_streaming_strip_parity: dist must NOT contain bare `const text = stream_buffer.text();`",
+    );
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    // dist not built yet: source-only assertions are sufficient for the
+    // smoke run that precedes build.
+  }
+  // Behavioral coverage: confirm the same strip function used at the
+  // streaming sites is the canonical thinking-block stripper. Reuses
+  // the existing v3.2.0 thinking-block-strip helper test surface.
+  const { stripPerplexityThinkingBlock } = await import("../src/peers/perplexity.js");
+  const synthetic = '<think>\nrelator reasoning\n</think>\n\n{"status":"READY"}';
+  assert.equal(
+    stripPerplexityThinkingBlock(synthetic),
+    '{"status":"READY"}',
+    "v3.4.0 / perplexity_streaming_strip_parity: helper must strip <think>...</think> and yield trailing JSON unchanged",
+  );
+  console.log("[smoke] perplexity_streaming_strip_parity_test: PASS");
+}
+
+// v3.4.0 Fix #2 — meta-audit fabrication detector.
+//
+// Sess 51973fac (2026-05-13, Perplexity-as-relator) shipped a checklist
+// of `MISSING: diff hunk` placeholders + sections titled `Evidence Gap`
+// / `Validation Claims (NARRATIVE, Not Attached)` / `Peer Review
+// Readiness Blockers` instead of refining the artifact. The new
+// `detectMetaAuditFabrication` function catches that pattern via
+// structured placeholder + section-header heuristics.
+//
+// Behavioral matrix covers: (a) clean revision passes; (b) ≥3
+// placeholders trips; (c) section header + ≥2 placeholders trips;
+// (d) single placeholder without anchor section does NOT trip (false-
+// positive guard); (e) "missing return value" prose does NOT trip
+// (colon discriminator); (f) bold-decorated `**MISSING:**` trips;
+// (g) the literal 51973fac round-1-draft.md pattern trips.
+//
+// Source-level pin: detector function + constants + wiring in the
+// ship-mode revision branch + finalize reason `lead_meta_audit_repeated`
+// + prompt clause `Anti-Meta-Audit Lock` in leadShipModeDirective.
+{
+  const { detectMetaAuditFabrication } = await import("../src/core/orchestrator.js");
+
+  // (a) Clean revision — no placeholders, no anchor sections.
+  const clean =
+    "# Revised Artifact\n\nThe policy split is correct. registry.npmjs.org is pinned at all 5 call sites...";
+  assert.equal(
+    detectMetaAuditFabrication(clean).fabricated,
+    false,
+    "v3.4.0 / meta_audit: clean prose must NOT trip detector",
+  );
+
+  // (b) ≥3 placeholders, no anchor section.
+  const placeholderHeavy =
+    "Item 1: **MISSING:** diff hunk\nItem 2: **MISSING:** rg output\nItem 3: **MISSING:** changelog";
+  assert.equal(
+    detectMetaAuditFabrication(placeholderHeavy).fabricated,
+    true,
+    "v3.4.0 / meta_audit: ≥3 placeholders must trip",
+  );
+
+  // (c) 1 anchor section + ≥2 placeholders trips.
+  const sectionPlusTwo = "## Evidence Gap\nItem A: **MISSING:** diff\nItem B: **UNKNOWN:** result";
+  assert.equal(
+    detectMetaAuditFabrication(sectionPlusTwo).fabricated,
+    true,
+    "v3.4.0 / meta_audit: 1 anchor section + 2 placeholders must trip",
+  );
+
+  // (d) 1 placeholder, no anchor section — false-positive guard.
+  const singlePlaceholder =
+    "# Revised\n\nThe d1:migrate script is fine; one TBD: integration test pending — review post-merge.";
+  assert.equal(
+    detectMetaAuditFabrication(singlePlaceholder).fabricated,
+    false,
+    "v3.4.0 / meta_audit: single placeholder + no anchor section MUST NOT trip",
+  );
+
+  // (e) Prose without colon discriminator — false-positive guard.
+  const prose =
+    "The function is missing a return value and may be pending review until tests pass.";
+  assert.equal(
+    detectMetaAuditFabrication(prose).fabricated,
+    false,
+    "v3.4.0 / meta_audit: prose 'missing'/'pending' without colon MUST NOT trip",
+  );
+
+  // (f) Bold-decorated `**MISSING:**` form must be recognized.
+  const boldDecorated = "**MISSING:** hunk A\n**MISSING:** hunk B\n**MISSING:** hunk C";
+  assert.equal(
+    detectMetaAuditFabrication(boldDecorated).fabricated,
+    true,
+    "v3.4.0 / meta_audit: bold-decorated **MISSING:** must be recognized",
+  );
+
+  // (g) Replica of sess 51973fac round-1-draft.md key fragments.
+  const session51973facPattern =
+    "## Validation Claims (NARRATIVE, Not Attached)\n" +
+    "Caller states the following validations were performed but **raw command output not provided**:\n\n" +
+    "1. **rg scan for npm operational commands:** ...\n   - **MISSING:** Raw `rg` invocation and full output\n" +
+    "2. **rg scan for npx commands:** ...\n   - **MISSING:** Raw `rg` invocation and full output\n" +
+    "3. **JSON parsing:** ...\n   - **MISSING:** `node -e` output or parse attempt log\n" +
+    "4. **git diff --check:** ...\n   - **MISSING:** Raw `git diff --check` output for both repos\n\n" +
+    "## Peer Review Readiness Blockers\n";
+  const result51973fac = detectMetaAuditFabrication(session51973facPattern);
+  assert.equal(
+    result51973fac.fabricated,
+    true,
+    "v3.4.0 / meta_audit: the literal sess 51973fac pattern MUST trip",
+  );
+  assert.ok(
+    result51973fac.placeholder_count >= 4,
+    "v3.4.0 / meta_audit: sess 51973fac pattern must yield ≥4 placeholders",
+  );
+  assert.ok(
+    result51973fac.section_count >= 2,
+    "v3.4.0 / meta_audit: sess 51973fac pattern must yield ≥2 anchor sections",
+  );
+
+  // Source-level pins: function exported + wiring + prompt clause +
+  // finalize reason all present.
+  const orchestratorSrc = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /export function detectMetaAuditFabrication\b/.test(orchestratorSrc),
+    "v3.4.0 / meta_audit: detectMetaAuditFabrication must be exported",
+  );
+  assert.ok(
+    /META_AUDIT_PLACEHOLDER_PATTERN\s*=\s*\/\\\*\{0,2\}\(MISSING\|UNKNOWN\|PENDING\|TBD\):/.test(
+      orchestratorSrc,
+    ),
+    "v3.4.0 / meta_audit: META_AUDIT_PLACEHOLDER_PATTERN must use the canonical regex shape",
+  );
+  assert.ok(
+    /## Anti-Meta-Audit Lock \(HARD\)/.test(orchestratorSrc),
+    "v3.4.0 / meta_audit: leadShipModeDirective must include `## Anti-Meta-Audit Lock (HARD)` clause",
+  );
+  assert.ok(
+    /lead_meta_audit_repeated/.test(orchestratorSrc),
+    "v3.4.0 / meta_audit: finalize reason `lead_meta_audit_repeated` must be wired",
+  );
+  assert.ok(
+    /session\.lead_meta_audit_fabrication_detected/.test(orchestratorSrc),
+    "v3.4.0 / meta_audit: event type `session.lead_meta_audit_fabrication_detected` must be emitted",
+  );
+
+  console.log("[smoke] meta_audit_fabrication_detection_test: PASS");
+}
+
+// v3.4.0 Fix #3 — proportionality guidance in sessionContractDirectives.
+//
+// Sess 0003b2fe (2026-05-12, Perplexity reviewer): for a small config-
+// only change validated by static scans, Perplexity demanded separate
+// `session_attach_evidence` of the same rg output the caller had
+// narrated inline. Wasteful without improving safety. v3.4.0 adds a
+// proportionality clause (item 5) that scopes the relaxation tightly:
+// only pure config/script/text static-scan reviews; runtime work still
+// requires raw output. "When in doubt, prefer asking for evidence over
+// assuming" is preserved so the default stays rigorous.
+//
+// Source pin: item 5 wording + key proportionality phrases present.
+{
+  const orchestratorSrc = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /5\) Proportionality: scale evidence demands to change risk\./.test(orchestratorSrc),
+    "v3.4.0 / proportionality_guidance: sessionContractDirectives must contain item 5 with the canonical `Proportionality: scale evidence demands to change risk.` lead",
+  );
+  assert.ok(
+    /pure config\/script\/text changes validated by static scans/.test(orchestratorSrc),
+    "v3.4.0 / proportionality_guidance: scope must explicitly cover pure config/script/text static-scan changes",
+  );
+  assert.ok(
+    /runtime effect \(build, test, deploy, migration, network call\), always demand raw output/.test(
+      orchestratorSrc,
+    ),
+    "v3.4.0 / proportionality_guidance: runtime-effect default MUST remain 'always demand raw output'",
+  );
+  assert.ok(
+    /When in doubt, prefer asking for evidence over assuming/.test(orchestratorSrc),
+    "v3.4.0 / proportionality_guidance: 'when in doubt' fallback must preserve the rigor default",
+  );
+  console.log("[smoke] proportionality_guidance_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight
