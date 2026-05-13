@@ -22,9 +22,10 @@ import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import { SWEEP_MIN_IDLE_MS } from "../src/core/session-store.js";
 import { parsePeerStatus } from "../src/core/status.js";
 import { PEERS } from "../src/core/types.js";
-import type { PeerResult } from "../src/core/types.js";
+import type { PeerId, PeerResult } from "../src/core/types.js";
 import {
   getCallerCandidatesFromClientInfo,
+  lockCallerPeerSelection,
   pruneCompletedJobs,
   SessionIdSchema,
   setHostTokensRecord,
@@ -4773,6 +4774,125 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.2.0: autowire_skipped event MUST surface skipped_for_explicit_peers boolean for operator audit",
   );
   console.log("[smoke] orchestrator_strict_peer_panel_test: PASS");
+}
+
+// v3.3.0 (operator directive 2026-05-12 — caller peer-selection lock):
+// "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU
+// VONTADE DO CALLER." The MCP-handler layer strips caller-supplied
+// `peers` (always) and `lead_peer` (for peer callers) and emits a
+// `session.caller_peer_selection_ignored` audit event. Operator caller
+// retains explicit lead_peer (legitimate testing). Internal call sites
+// (orchestrator's own runUntilUnanimous → askPeers loop, smoke harness)
+// bypass the lock by construction (they don't traverse the MCP boundary).
+{
+  type CapturedEvent = { type: string; data?: Record<string, unknown> };
+  const captured: CapturedEvent[] = [];
+  const captureEmit = (event: { type: string; data?: Record<string, unknown> }) => {
+    if (event.type === "session.caller_peer_selection_ignored") {
+      captured.push({ type: event.type, data: event.data });
+    }
+  };
+
+  // Scenario A: peer caller passes `peers: [a,b]` → stripped + audit
+  // event emitted with the diff.
+  const aIn = {
+    task: "lock-test-A",
+    draft: "draft",
+    caller: "claude" as const,
+    peers: ["codex", "gemini"] as PeerId[],
+  };
+  const aOut = lockCallerPeerSelection(aIn, { site: "ask_peers", emit: captureEmit });
+  assert.equal(aOut.peers, undefined, "peer caller's `peers` MUST be stripped");
+  assert.equal(captured.length, 1, "caller-supplied peers MUST emit one audit event");
+  assert.equal(captured[0]?.data?.peer_panel_overridden, true);
+  assert.equal(captured[0]?.data?.lead_peer_overridden, false);
+  assert.deepEqual(captured[0]?.data?.ignored_peers, ["codex", "gemini"]);
+  assert.equal(captured[0]?.data?.caller, "claude");
+
+  // Scenario B: peer caller passes `lead_peer: gemini` → stripped + audit
+  // event emitted (forces lottery).
+  captured.length = 0;
+  const bIn = {
+    task: "lock-test-B",
+    draft: "draft",
+    caller: "codex" as const,
+    lead_peer: "gemini" as PeerId,
+  };
+  const bOut = lockCallerPeerSelection(bIn, { site: "run_until_unanimous", emit: captureEmit });
+  assert.equal(bOut.lead_peer, undefined, "peer caller's `lead_peer` MUST be stripped");
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0]?.data?.lead_peer_overridden, true);
+  assert.equal(captured[0]?.data?.peer_panel_overridden, false);
+  assert.equal(captured[0]?.data?.ignored_lead_peer, "gemini");
+
+  // Scenario C: operator caller passes `lead_peer: gemini` → preserved
+  // (operator is the meta-authority, may pin lead_peer for legitimate
+  // testing). `peers` is still stripped though.
+  captured.length = 0;
+  const cIn = {
+    task: "lock-test-C",
+    draft: "draft",
+    caller: "operator" as const,
+    peers: ["codex"] as PeerId[],
+    lead_peer: "gemini" as PeerId,
+  };
+  const cOut = lockCallerPeerSelection(cIn, { site: "run_until_unanimous", emit: captureEmit });
+  assert.equal(cOut.peers, undefined, "operator's `peers` MUST be stripped (TODOS SEMPRE)");
+  assert.equal(cOut.lead_peer, "gemini", "operator's `lead_peer` MUST be preserved");
+  assert.equal(captured.length, 1, "operator's peers override MUST emit audit event");
+  assert.equal(captured[0]?.data?.peer_panel_overridden, true);
+  assert.equal(captured[0]?.data?.lead_peer_overridden, false);
+
+  // Scenario D: caller passes nothing (no peers, no lead_peer) → no
+  // event, input passes through unchanged.
+  captured.length = 0;
+  const dIn: { task: string; draft: string; caller: PeerId; peers?: PeerId[]; lead_peer?: PeerId } =
+    {
+      task: "lock-test-D",
+      draft: "draft",
+      caller: "codex",
+    };
+  const dOut = lockCallerPeerSelection(dIn, { site: "ask_peers", emit: captureEmit });
+  assert.equal(dOut.peers, undefined);
+  assert.equal(dOut.lead_peer, undefined);
+  assert.equal(captured.length, 0, "no caller override MUST NOT emit audit event");
+
+  // Scenario E: caller passes empty `peers: []` → not treated as override
+  // (empty list is functionally equivalent to "no preference").
+  captured.length = 0;
+  const eIn = {
+    task: "lock-test-E",
+    draft: "draft",
+    caller: "claude" as const,
+    peers: [] as PeerId[],
+  };
+  lockCallerPeerSelection(eIn, { site: "ask_peers", emit: captureEmit });
+  assert.equal(captured.length, 0, "empty peers list MUST NOT emit audit event");
+
+  // Scenario F: source-level pin — server.ts MUST call
+  // lockCallerPeerSelection from EVERY caller-facing tool handler so
+  // future tools added to the surface inherit the lock.
+  const serverSrc = fs.readFileSync("src/mcp/server.ts", "utf8");
+  const lockCallSites = (serverSrc.match(/lockCallerPeerSelection\(input,\s*\{\s*site:/g) ?? [])
+    .length;
+  assert.ok(
+    lockCallSites >= 4,
+    `server.ts MUST call lockCallerPeerSelection from all 4 caller-facing handlers (ask_peers, session_start_round, run_until_unanimous, session_start_unanimous); found ${lockCallSites}`,
+  );
+  // Pin: every site label appears at least once.
+  for (const site of [
+    "ask_peers",
+    "session_start_round",
+    "run_until_unanimous",
+    "session_start_unanimous",
+  ]) {
+    assert.ok(
+      serverSrc.includes(`site: "${site}"`),
+      `server.ts MUST pass site="${site}" to lockCallerPeerSelection at least once`,
+    );
+  }
+
+  console.log("[smoke] caller_peer_selection_lock_test: PASS");
 }
 
 // v3.1.0 (central config file) — operator directive 2026-05-12. Verify:

@@ -2069,6 +2069,16 @@ export class CrossReviewOrchestrator {
     // explicit list, default to the enabled subset (NOT the global
     // PEERS) so a misconfigured workspace cannot silently re-enable a
     // peer the operator turned off.
+    //
+    // v3.3.0 (caller peer-selection lock at MCP layer): when the input
+    // arrives through the MCP server.ts handlers, `input.peers` and
+    // `input.lead_peer` have already been stripped via
+    // `lockCallerPeerSelection` so externally-driven calls always reach
+    // here with `input.peers === undefined` and (for peer callers)
+    // `input.lead_peer === undefined`. Internal call sites — runUntilUnanimous
+    // → askPeers, smoke harness — bypass the lock and may pass an explicit
+    // list legitimately (the loop excludes the relator from voters; tests
+    // exercise specific peers).
     const requestedPeers = uniquePeers(input.peers?.length ? input.peers : [...PEERS]);
     if (input.peers?.length) {
       for (const peer of requestedPeers) {
@@ -3251,6 +3261,13 @@ export class CrossReviewOrchestrator {
     // v2.14.0: explicit `peers` entries referencing a disabled peer are
     // rejected before any work; lead_peer is checked below. Without an
     // explicit list, default to the enabled subset (NOT global PEERS).
+    //
+    // v3.3.0 (caller peer-selection lock at MCP layer): when this method
+    // is invoked through the MCP tool handlers, `input.peers` and
+    // `input.lead_peer` have already been stripped via
+    // `lockCallerPeerSelection`. Internal call sites (smoke harness,
+    // future internal pipelines) bypass the lock and may pass explicit
+    // values legitimately.
     const requestedPeers = input.peers?.length ? input.peers : [...PEERS];
     if (input.peers?.length) {
       for (const peer of requestedPeers) {

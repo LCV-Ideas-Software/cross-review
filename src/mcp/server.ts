@@ -266,6 +266,69 @@ export function verifyCallerIdentity(
   };
 }
 
+// v3.3.0 (operator directive 2026-05-12): caller peer-selection lock.
+// "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU
+// VONTADE DO CALLER." Applied at the MCP-tool boundary so every
+// externally-driven call has caller-supplied `peers` and (for peer
+// callers) `lead_peer` stripped before reaching the orchestrator.
+// Internal call sites (orchestrator's own runUntilUnanimous → askPeers
+// loop, smoke harness) bypass the lock by construction — they do not go
+// through this boundary. Operator caller may still pin `lead_peer`
+// explicitly (legitimate testing/debug; operator is the meta-authority,
+// not a session participant whose vote can be biased).
+//
+// `emitFn` carries the audit trail to the eventLog/store so the operator
+// can inspect who tried to game which peer in/out via `session_events`.
+export function lockCallerPeerSelection<
+  T extends {
+    peers?: PeerId[];
+    lead_peer?: PeerId;
+    caller?: PeerId | "operator";
+    session_id?: string;
+  },
+>(
+  input: T,
+  ctx: {
+    site: "ask_peers" | "session_start_round" | "run_until_unanimous" | "session_start_unanimous";
+    emit: (event: RuntimeEvent) => void;
+  },
+): T {
+  const caller: PeerId | "operator" = input.caller ?? "operator";
+  // peers panel: locked for ALL callers (including operator). The
+  // server-configured `peer_enabled` set is the only knob; operators
+  // tune via env vars, not via per-call overrides that callers can
+  // exploit.
+  const callerSuppliedPeers = Array.isArray(input.peers) ? [...input.peers] : undefined;
+  const peerPanelOverridden = !!callerSuppliedPeers && callerSuppliedPeers.length > 0;
+  // lead_peer: locked for peer callers (forces lottery so callers cannot
+  // pin a sympathetic relator). Operator caller may pin lead_peer for
+  // legitimate testing.
+  const leadPeerOverridden = caller !== "operator" && input.lead_peer !== undefined;
+
+  if (peerPanelOverridden || leadPeerOverridden) {
+    ctx.emit({
+      type: "session.caller_peer_selection_ignored",
+      session_id: input.session_id,
+      message: `caller_peer_selection_lock: caller=${caller} attempted to ${peerPanelOverridden ? "override the reviewer panel" : "pin lead_peer"} via ${ctx.site}; the request was silently overridden — operator directive 2026-05-12 ("TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM").`,
+      data: {
+        site: ctx.site,
+        caller,
+        peer_panel_overridden: peerPanelOverridden,
+        ignored_peers: peerPanelOverridden ? callerSuppliedPeers : undefined,
+        lead_peer_overridden: leadPeerOverridden,
+        ignored_lead_peer: leadPeerOverridden ? input.lead_peer : undefined,
+      },
+    });
+  }
+
+  // Strip the locked fields. The orchestrator's defaults (full PEERS,
+  // lottery for lead_peer when caller is a peer) take over.
+  const sanitized: T = { ...input };
+  if (peerPanelOverridden) delete sanitized.peers;
+  if (leadPeerOverridden) delete sanitized.lead_peer;
+  return sanitized;
+}
+
 type JobKind = "ask_peers" | "run_until_unanimous";
 export type JobStatus = {
   job_id: string;
@@ -292,6 +355,11 @@ function createRuntime() {
     config,
     eventLog,
     orchestrator,
+    // v3.3.0: exposed so the caller-peer-selection lock can route audit
+    // events through the same emitter the orchestrator uses (eventLog +
+    // session-store append). Public so the handler closures below can
+    // grab it without re-plumbing the orchestrator's private emit.
+    emit,
     jobs: new Map<string, JobStatus>(),
     controllers: new Map<string, AbortController>(),
   };
@@ -678,7 +746,15 @@ export async function main(): Promise<void> {
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       verifyCallerIdentity(input.caller, server.server.getClientVersion());
-      return textResult(await runtime.orchestrator.askPeers(input), response_format);
+      // v3.3.0: caller peer-selection lock — silently strips
+      // caller-supplied `peers` (and, for peer callers, `lead_peer`) and
+      // emits an audit event for the operator. See lockCallerPeerSelection
+      // for the full rationale.
+      const locked = lockCallerPeerSelection(input, {
+        site: "ask_peers",
+        emit: runtime.emit,
+      });
+      return textResult(await runtime.orchestrator.askPeers(locked), response_format);
     },
   );
 
@@ -713,11 +789,16 @@ export async function main(): Promise<void> {
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       verifyCallerIdentity(input.caller, server.server.getClientVersion());
-      const session = input.session_id
-        ? runtime.orchestrator.store.read(input.session_id)
-        : await runtime.orchestrator.initSession(input.task, input.caller, input.review_focus);
+      // v3.3.0: caller peer-selection lock.
+      const locked = lockCallerPeerSelection(input, {
+        site: "session_start_round",
+        emit: runtime.emit,
+      });
+      const session = locked.session_id
+        ? runtime.orchestrator.store.read(locked.session_id)
+        : await runtime.orchestrator.initSession(locked.task, locked.caller, locked.review_focus);
       const job = startJob(runtime, "ask_peers", session.session_id, (signal) =>
-        runtime.orchestrator.askPeers({ ...input, session_id: session.session_id, signal }),
+        runtime.orchestrator.askPeers({ ...locked, session_id: session.session_id, signal }),
       );
       return textResult(
         {
@@ -785,7 +866,13 @@ export async function main(): Promise<void> {
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       verifyCallerIdentity(input.caller, server.server.getClientVersion());
-      return textResult(await runtime.orchestrator.runUntilUnanimous(input), response_format);
+      // v3.3.0: caller peer-selection lock — peers panel always full
+      // enabled set; lead_peer ignored for peer callers (forced lottery).
+      const locked = lockCallerPeerSelection(input, {
+        site: "run_until_unanimous",
+        emit: runtime.emit,
+      });
+      return textResult(await runtime.orchestrator.runUntilUnanimous(locked), response_format);
     },
   );
 
@@ -832,18 +919,23 @@ export async function main(): Promise<void> {
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      // v3.3.0: caller peer-selection lock.
+      const locked = lockCallerPeerSelection(input, {
+        site: "session_start_unanimous",
+        emit: runtime.emit,
+      });
       // v2.16.0: the durable session caller is always the petitioner,
       // never the relator. Older code used lead_peer as caller for some
       // operator-started unanimous jobs, which polluted audits with
       // caller/lead conflation. Relator identity belongs in
       // convergence_scope.lead_peer after runUntilUnanimous resolves it.
-      const initCaller = input.caller;
-      const session = input.session_id
-        ? runtime.orchestrator.store.read(input.session_id)
-        : await runtime.orchestrator.initSession(input.task, initCaller, input.review_focus);
+      const initCaller = locked.caller;
+      const session = locked.session_id
+        ? runtime.orchestrator.store.read(locked.session_id)
+        : await runtime.orchestrator.initSession(locked.task, initCaller, locked.review_focus);
       const job = startJob(runtime, "run_until_unanimous", session.session_id, (signal) =>
         runtime.orchestrator.runUntilUnanimous({
-          ...input,
+          ...locked,
           session_id: session.session_id,
           signal,
         }),

@@ -7,6 +7,53 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.03.00] - 2026-05-12
+
+**Minor — Caller peer-selection lock (operator directive 2026-05-12: "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU VONTADE DO CALLER").** Closes the systematic gaming pattern where peer callers (notably Codex, observed across multiple sessions) selectively excluded other peers from their own cross-review panels by passing curated `peers: [...]` lists or pinning a sympathetic relator via `lead_peer`. Backward-incompatible at the runtime-behavior level (caller preferences are now silently overridden) but 100% backward-compatible at the schema/tool-surface level (the parameters still exist; their values are just ignored).
+
+### Lock surface
+
+- **`peers` parameter**: locked for ALL callers (including operator). The reviewer panel is ALWAYS the full server-configured `peer_enabled` set. Operators tune peer participation via env vars (`CROSS_REVIEW_V2_PEER_<NAME>=on|off`) — server-side knobs that require deliberate config changes, not per-call overrides callers can exploit.
+- **`lead_peer` parameter**: locked for peer callers only (forces relator lottery so the caller cannot pin a sympathetic relator). Operator caller may still pin `lead_peer` explicitly — operator is the meta-authority for testing/debug, not a session participant whose vote can be biased.
+- **Audit event**: when the lock fires, `session.caller_peer_selection_ignored` is emitted to the event stream with structured data (`site`, `caller`, `peer_panel_overridden`, `ignored_peers`, `lead_peer_overridden`, `ignored_lead_peer`) so the operator can inspect via `session_events` who tried to game which peer in/out.
+
+### Implementation
+
+- New exported `lockCallerPeerSelection<T>(input, ctx): T` helper in `src/mcp/server.ts` — pure function that strips the locked fields and emits the audit event via the supplied `ctx.emit`. Lives at the MCP-handler boundary by design: external callers ALWAYS traverse the lock; internal call sites (orchestrator's own `runUntilUnanimous` → `askPeers` loop, smoke harness, future internal pipelines) bypass the lock by construction so they can pass legitimate explicit values (the loop excludes the relator from voters; tests exercise specific peer subsets).
+- Wired at all 4 caller-facing tool handlers: `ask_peers`, `session_start_round`, `run_until_unanimous`, `session_start_unanimous`. The `runtime` factory now exposes `runtime.emit` so handlers can route audit events through the same emitter the orchestrator uses (eventLog + session-store append).
+- `runtime` type widens to expose `emit` publicly; everything else identical.
+- v3.2.0's Fix #3 (`hadExplicitPeers` / `judgeRespectsExplicitPeers` autowire-judge filter) remains in place as defense-in-depth (now trivially satisfied since `input.peers` is always undefined post-lock).
+- `contest_verdict` does NOT need its own lock — it accepts only `new_caller`, and the new session it creates flows through normal `askPeers`/`runUntilUnanimous` which are MCP-locked.
+
+### Smoke
+
+New marker `caller_peer_selection_lock_test` (5 behavioral scenarios + source-pin):
+
+- A: peer caller passes `peers: [a,b]` → stripped, audit event emitted with diff
+- B: peer caller passes `lead_peer: gemini` → stripped, audit event emitted (forces lottery)
+- C: operator caller passes both `peers + lead_peer` → `peers` stripped (TODOS SEMPRE), `lead_peer` preserved (operator authority)
+- D: caller passes nothing → no audit event, input passes through unchanged
+- E: caller passes empty `peers: []` → not treated as override (functionally equivalent to no preference)
+- F: source-pin asserting all 4 caller-facing handlers in `server.ts` call `lockCallerPeerSelection` with their site label
+
+Pre-existing smoke tests that pass `peers: [...]` to orchestrator methods directly (e.g., `peers: ["codex"]` for fallback testing) continue to work — they bypass the MCP layer where the lock lives. **Smoke total: 99 events / `ok: true`.**
+
+### Public surface
+
+100% backward-compatible at schema/tool-surface level. Tool input schemas unchanged. Behavior change: callers passing `peers` or `lead_peer` (when caller is a peer) now see those preferences silently overridden, with one `session.caller_peer_selection_ignored` audit event per affected call. This is a deliberate behavior change to prevent caller-side panel curation; not a bug fix.
+
+### Lessons
+
+1. **Lock at the security boundary** (MCP-handler layer), not at the data layer (orchestrator). Internal callers and external callers have different trust profiles; locking at the boundary preserves internal flexibility (smoke tests, internal loops) without weakening external defense.
+2. **Operator caller is the meta-authority for `lead_peer`** but not for `peers` — TODOS PARTICIPAM means TODOS, including from the operator's own debug invocations.
+3. **Audit events beat error throws** for "ignored input" semantics. Throwing would break callers' workflows; silent override + structured event in the stream lets workflows continue while preserving forensic visibility of who tried to game what.
+
+### Pós-ship operator action
+
+1. `npm update -g @lcv-ideas-software/cross-review-v2` post GHA publish (3.2.0 → 3.3.0).
+2. No host config change required. Existing `~/.cross-review/data_v2/config.json` and per-host token configs continue to work unchanged.
+3. Reload all 7 MCP hosts. Future cross-review-v2 sessions will reject any caller attempt to curate the panel — `session.caller_peer_selection_ignored` events surface the attempts in `session_events` for operator audit.
+
 ## [v03.02.00] - 2026-05-12
 
 **Patch — three bug fixes from Codex's external bug report 2026-05-12.** Closes the long-standing Perplexity `<think>` parser blocker, eliminates a session-state corruption pattern observed in production sessions, and tightens the orchestrator to honor the caller's explicit `peers: [...]` list across the autowire judge path. Backward-compatible at the public surface; defensive at the storage and orchestrator layers.
