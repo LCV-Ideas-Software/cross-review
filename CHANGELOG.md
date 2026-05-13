@@ -8,6 +8,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
 ## [Unreleased]
 
 ### Fixed
+
 - **npm registry split for StepSecurity** — release artifact packing now passes
   `--registry=https://registry.npmjs.org/` explicitly so the install/update
   proxy configured in `.npmrc` cannot leak into non-install npm operations.
