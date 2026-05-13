@@ -7,6 +7,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- **npm registry split for StepSecurity** — release artifact packing now passes
+  `--registry=https://registry.npmjs.org/` explicitly so the install/update
+  proxy configured in `.npmrc` cannot leak into non-install npm operations.
+
 ## [v03.03.00] - 2026-05-12
 
 **Minor — Caller peer-selection lock (operator directive 2026-05-12: "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU VONTADE DO CALLER").** Closes the systematic gaming pattern where peer callers (notably Codex, observed across multiple sessions) selectively excluded other peers from their own cross-review panels by passing curated `peers: [...]` lists or pinning a sympathetic relator via `lead_peer`. Backward-incompatible at the runtime-behavior level (caller preferences are now silently overridden) but 100% backward-compatible at the schema/tool-surface level (the parameters still exist; their values are just ignored).

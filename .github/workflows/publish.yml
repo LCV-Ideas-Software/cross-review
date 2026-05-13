@@ -251,7 +251,7 @@ jobs:
       - name: Create artifact directory
         run: mkdir -p ./artifacts
       - name: Pack artifact
-        run: npm pack --pack-destination ./artifacts
+        run: npm pack --registry=https://registry.npmjs.org/ --pack-destination ./artifacts
       - name: Extract release notes from CHANGELOG.md
         id: notes
         env:
