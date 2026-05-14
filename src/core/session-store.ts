@@ -641,6 +641,41 @@ export class SessionStore {
     });
   }
 
+  // v3.5.0 (CRV2-1 + CRV2-6, Codex operational report): persist
+  // requested-vs-effective budget + max_rounds traceability once at the
+  // start of a run. Pre-v3.5.0 the durable record only had
+  // `cost_ceiling_usd` (always the effective value) and nothing for
+  // max_rounds — so retroactive analysis could not tell whether a
+  // ceiling came from a per-call arg or a config default, nor what
+  // max_rounds the caller actually requested. This fills that gap with
+  // pure-additive metadata; `cost_ceiling_usd` is kept in sync with
+  // `effective_cost_ceiling_usd` for back-compat with v3.4.x readers.
+  setSessionTraceability(
+    sessionId: string,
+    traceability: {
+      requested_max_rounds: number | null;
+      effective_max_rounds: number | null;
+      requested_max_cost_usd: number | null;
+      effective_cost_ceiling_usd: number | null;
+      cost_ceiling_source: "call_arg" | "env_default" | "config_default";
+    },
+  ): SessionMeta {
+    return this.withSessionLock(sessionId, () => {
+      const meta = this.read(sessionId);
+      meta.requested_max_rounds = traceability.requested_max_rounds;
+      meta.effective_max_rounds = traceability.effective_max_rounds;
+      meta.requested_max_cost_usd = traceability.requested_max_cost_usd;
+      meta.effective_cost_ceiling_usd = traceability.effective_cost_ceiling_usd;
+      meta.cost_ceiling_source = traceability.cost_ceiling_source;
+      // Keep the legacy field in sync so v3.4.x dashboard/readers that
+      // only know `cost_ceiling_usd` still see the effective ceiling.
+      meta.cost_ceiling_usd = traceability.effective_cost_ceiling_usd;
+      meta.updated_at = now();
+      writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
   // v3.2.0 (Codex bug report 2026-05-12): public guard for orchestrator
   // entry points. Throws when the session has already been finalized so
   // round-starting tools fail fast instead of appending rounds onto a
@@ -857,7 +892,11 @@ export class SessionStore {
     sessionId: string,
     currentRound: number,
   ): {
-    addressed: EvidenceChecklistItem[];
+    // v3.5.0 (CRV2-2): renamed `addressed` → `not_resurfaced`. The
+    // resurfacing-inference path no longer claims the evidence was
+    // confirmed — it only records that the peer did not re-ask. See the
+    // EvidenceChecklistStatus type doc for the semantics.
+    not_resurfaced: EvidenceChecklistItem[];
     reopened: EvidenceChecklistItem[];
     peer_resurfaced_terminal: EvidenceChecklistItem[];
   } {
@@ -865,9 +904,9 @@ export class SessionStore {
       const meta = this.read(sessionId);
       const checklist = meta.evidence_checklist ?? [];
       if (!checklist.length) {
-        return { addressed: [], reopened: [], peer_resurfaced_terminal: [] };
+        return { not_resurfaced: [], reopened: [], peer_resurfaced_terminal: [] };
       }
-      const addressed: EvidenceChecklistItem[] = [];
+      const notResurfaced: EvidenceChecklistItem[] = [];
       const reopened: EvidenceChecklistItem[] = [];
       const peerResurfacedTerminal: EvidenceChecklistItem[] = [];
       const history = meta.evidence_status_history ?? [];
@@ -875,7 +914,15 @@ export class SessionStore {
       for (const item of checklist) {
         const status: EvidenceChecklistStatus = item.status ?? "open";
         if (status === "open" && item.last_round < currentRound) {
-          item.status = "addressed";
+          // v3.5.0 (CRV2-2): an `open` item the peer did not resurface
+          // becomes `not_resurfaced`, NOT `addressed`. "The peer did not
+          // re-ask" is not proof the evidence was satisfied — only the
+          // judge autowire (verified-satisfied) or explicit operator
+          // action may move an item to a confirmed state. This keeps the
+          // audit trail honest. `not_resurfaced` is still not `open`, so
+          // it does not hard-block the `=== "open"` convergence gate;
+          // the inference is recorded, not enforced.
+          item.status = "not_resurfaced";
           item.addressed_at_round = currentRound;
           // v2.9.0: tag the inference path so the dashboard and audit
           // trail can distinguish runtime resurfacing from runtime judge
@@ -883,17 +930,25 @@ export class SessionStore {
           // this field; setEvidenceChecklistItemStatus clears it.
           item.address_method = "resurfacing";
           delete item.judge_rationale;
-          addressed.push(item);
+          notResurfaced.push(item);
           history.push({
             ts,
             item_id: item.id,
             from: "open",
-            to: "addressed",
+            to: "not_resurfaced",
             by: "runtime",
             round: currentRound,
-            note: `auto: peer did not resurface ask in round ${currentRound}`,
+            note: `auto: peer did not resurface ask in round ${currentRound} (not proof of satisfaction)`,
           });
-        } else if (status === "addressed" && item.last_round === currentRound) {
+        } else if (
+          (status === "not_resurfaced" || status === "addressed") &&
+          item.last_round === currentRound
+        ) {
+          // v3.5.0 (CRV2-2): a peer resurfacing an item reverts it to
+          // `open` regardless of whether the prior state was the soft
+          // `not_resurfaced` inference or a judge/operator `addressed` —
+          // the peer's renewed ask wins over either inference path.
+          const from: EvidenceChecklistStatus = status;
           item.status = "open";
           delete item.addressed_at_round;
           delete item.address_method;
@@ -902,7 +957,7 @@ export class SessionStore {
           history.push({
             ts,
             item_id: item.id,
-            from: "addressed",
+            from,
             to: "open",
             by: "runtime",
             round: currentRound,
@@ -915,28 +970,33 @@ export class SessionStore {
           peerResurfacedTerminal.push(item);
         }
       }
-      if (addressed.length || reopened.length) {
+      if (notResurfaced.length || reopened.length) {
         meta.evidence_status_history = history;
         meta.updated_at = ts;
         writeJson(this.metaPath(sessionId), meta);
       }
-      return { addressed, reopened, peer_resurfaced_terminal: peerResurfacedTerminal };
+      return {
+        not_resurfaced: notResurfaced,
+        reopened,
+        peer_resurfaced_terminal: peerResurfacedTerminal,
+      };
     });
   }
 
   // v2.8.0: operator workflow mutator for the evidence checklist. Used by
   // the session_evidence_checklist_update MCP tool. Allowed transitions
   // (operator): open → satisfied | deferred | rejected | open;
-  // addressed → satisfied | deferred | rejected | open. Terminal-state
-  // items can also be moved BACK to "open" by the operator (retract a
-  // deferral/rejection); that re-arms the runtime auto-promotion logic.
-  // Operator CANNOT move items to "addressed" — that status is
-  // runtime-managed (resurfacing inference). Returns the mutated item
-  // and the appended history entry.
+  // addressed | not_resurfaced → satisfied | deferred | rejected | open.
+  // Terminal-state items can also be moved BACK to "open" by the operator
+  // (retract a deferral/rejection); that re-arms the runtime
+  // auto-promotion logic. Operator CANNOT move items to "addressed" or
+  // "not_resurfaced" — both are runtime-managed (judge promotion and
+  // resurfacing inference respectively). Returns the mutated item and the
+  // appended history entry.
   setEvidenceChecklistItemStatus(
     sessionId: string,
     itemId: string,
-    status: Exclude<EvidenceChecklistStatus, "addressed">,
+    status: Exclude<EvidenceChecklistStatus, "addressed" | "not_resurfaced">,
     options: { note?: string; by?: "operator" | "runtime" } = {},
   ): { item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry } {
     return this.withSessionLock(sessionId, () => {

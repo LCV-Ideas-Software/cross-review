@@ -331,6 +331,22 @@ export interface ConvergenceScope {
   expected_peers: PeerId[];
   reviewer_peers: PeerId[];
   lead_peer?: PeerId;
+  // v3.5.0 (CRV2-3-meta, Codex operational report): explicit relator
+  // semantics. The lead_peer is the lottery-selected relator that
+  // authors/revises the artifact under review; it is DELIBERATELY
+  // excluded from `reviewer_peers` (the voting colegiado) because
+  // voting on its own revision would violate the anti-self-review HARD
+  // GATE. These fields make that intentional exclusion explicit in the
+  // durable record so it is not misread as a missing-vote bug.
+  // `voting_peers` mirrors `reviewer_peers` under a clearer name;
+  // `quorum_basis` documents the convergence rule; the exclusion reason
+  // is a fixed constant. Populated only when `lead_peer` is set
+  // (ship-mode relator lottery); absent on direct ask_peers / review /
+  // circular sessions where there is no relator-vs-colegiado split.
+  lead_peer_role?: "relator_non_voting";
+  voting_peers?: PeerId[];
+  quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready";
+  anti_self_review_exclusion_reason?: "lead_peer_authored_or_revised_artifact_under_review";
 }
 
 export interface ConvergenceHealth {
@@ -354,16 +370,36 @@ export interface EvidenceAttachment {
 // blockers across peers, and many sessions repeated the same ask
 // across multiple rounds without explicit acknowledgement.
 //
-// v2.8.0 lifecycle: items default to "open" and the runtime promotes
-// them to "addressed" when a subsequent round goes by without the
-// peer resurfacing the same ask (resurfacing-inference). The operator
-// can move items to terminal states via session_evidence_checklist_update.
-// Conflict rule: when a peer resurfaces an "addressed" item it reverts
-// to "open" — the peer's NEEDS_EVIDENCE wins over the runtime's
-// inference. Terminal operator statuses are NOT auto-reverted; the
-// runtime emits a peer_resurfaced_terminal event so the operator
-// notices peers still asking for something they explicitly closed.
-export type EvidenceChecklistStatus = "open" | "addressed" | "satisfied" | "deferred" | "rejected";
+// v2.8.0 lifecycle (v3.5.0-corrected): items default to "open". When a
+// subsequent round goes by without the peer resurfacing the same ask,
+// the runtime marks it "not_resurfaced" (v3.5.0 / CRV2-2 — NOT
+// "addressed"; non-resurfacing is not proof of satisfaction). "addressed"
+// is reserved for the judge-autowire verified-satisfied path. The
+// operator can move items to terminal states via
+// session_evidence_checklist_update. Conflict rule: when a peer
+// resurfaces a "not_resurfaced" OR "addressed" item it reverts to "open"
+// — the peer's renewed ask wins over either inference path. Terminal
+// operator statuses are NOT auto-reverted; the runtime emits a
+// peer_resurfaced_terminal event so the operator notices peers still
+// asking for something they explicitly closed.
+// v3.5.0 (CRV2-2, Codex operational report): `not_resurfaced` is a
+// distinct soft state. Pre-v3.5.0 the runtime promoted an `open` item
+// to `addressed` whenever a round went by without the peer resurfacing
+// the ask — but "the peer did not re-ask" is NOT proof the evidence was
+// satisfied. That promotion produced a false-positive audit trail.
+// `not_resurfaced` now carries that inference honestly: it is NOT
+// `open` (so it does not block the `=== "open"` convergence gate, i.e.
+// the runtime still does not hard-block on inference) and it is NOT
+// `addressed` (so the audit trail no longer claims the evidence was
+// confirmed). `addressed` is now reserved for judge verified-satisfied
+// promotions and explicit operator action — paths with real signal.
+export type EvidenceChecklistStatus =
+  | "open"
+  | "addressed"
+  | "not_resurfaced"
+  | "satisfied"
+  | "deferred"
+  | "rejected";
 
 export interface EvidenceChecklistItem {
   // Stable id derived from sha256(`${peer}:${ask}`); identical asks
@@ -635,6 +671,25 @@ export interface SessionMeta {
   cost_ceiling_usd?: number | null;
   costs_per_round?: number[];
   budget_warning_emitted?: boolean;
+  // v3.5.0 (CRV2-6, Codex operational report): budget traceability.
+  // `cost_ceiling_usd` above is kept for back-compat (it always equals
+  // `effective_cost_ceiling_usd`). These three fields disambiguate where
+  // the ceiling came from: `requested_max_cost_usd` is the caller's
+  // per-call `max_cost_usd` arg (null when the caller did not pass one),
+  // `effective_cost_ceiling_usd` is the value actually enforced, and
+  // `cost_ceiling_source` records whether it came from the call arg, an
+  // env default, or the config default. Optional for legacy back-compat.
+  requested_max_cost_usd?: number | null;
+  effective_cost_ceiling_usd?: number | null;
+  cost_ceiling_source?: "call_arg" | "env_default" | "config_default";
+  // v3.5.0 (CRV2-1, Codex operational report): max_rounds traceability.
+  // `requested_max_rounds` is the caller's per-call `max_rounds` arg
+  // (null when defaulted), `effective_max_rounds` is the value the loop
+  // actually used after config clamps. The `rounds` array length is
+  // already the authoritative peer-review-round count; these two fields
+  // only disambiguate the configured ceiling. Optional for back-compat.
+  requested_max_rounds?: number | null;
+  effective_max_rounds?: number | null;
 }
 
 export interface ReviewRound {
@@ -704,6 +759,10 @@ export interface AppConfig {
     max_attached_evidence_chars: number;
   };
   max_output_tokens: number;
+  // v3.5.0 (CRV2-4): when true (default), run_until_unanimous runs a
+  // pure-textual evidence preflight before any paid peer call and fails
+  // under-evidenced submissions locally with `needs_evidence_preflight`.
+  evidence_preflight_enabled: boolean;
   streaming: {
     events: boolean;
     tokens: boolean;

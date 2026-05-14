@@ -7,6 +7,115 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.05.00] — 2026-05-14
+
+Closes 5 of the 6 findings in Codex's 2026-05-13 operational report on
+cross-review-v2 (sessions `f0db3970` + `df052926`). CRV2-3 was
+reclassified by the operator as **not a bug** — the relator-non-voting
+exclusion is the correct tribunal design; only its metadata
+explicitness (CRV2-3-meta) is in scope. CRV2-5 (automatic evidence
+packaging) was removed from server scope entirely — cross-review-v2
+stays an API-only orchestrator with no shell/repo/filesystem surface;
+evidence packaging is a caller-side responsibility.
+
+### Fixed
+
+- **Evidence checklist no longer marks asks `addressed` by non-repetition
+  (CRV2-2)** — the substantive bug in the report. Pre-v3.5.0,
+  `runEvidenceChecklistAddressDetection` promoted an `open` item to
+  `addressed` whenever a round went by without the peer resurfacing the
+  ask, with the audit note "auto: peer did not resurface". But "the peer
+  did not re-ask" is **not proof the evidence was satisfied** — it
+  produced a false-positive audit trail that could mask real pending
+  blockers. The resurfacing-inference path now produces a new distinct
+  status `not_resurfaced`: it is **not** `open` (so it still does not
+  hard-block the `=== "open"` convergence gate — the runtime records the
+  inference, it does not enforce it) and it is **not** `addressed` (so
+  the audit trail no longer claims confirmation). `addressed` is now
+  reserved for the judge-autowire verified-satisfied path and explicit
+  operator action — paths with real signal. The reopen branch catches
+  both `not_resurfaced` and `addressed` when a peer resurfaces an item;
+  the operator-status mutator excludes both runtime-managed statuses.
+  Event `session.evidence_checklist_addressed` (resurfacing path) →
+  `session.evidence_checklist_not_resurfaced`; the judge-path
+  `session.evidence_checklist_addressed` event is unchanged.
+
+### Added
+
+- **Evidence preflight before paid peer calls (CRV2-4)** — `run_until_unanimous`
+  and `session_start_unanimous` now run a **pure textual** preflight
+  before dispatching any paid peer call. It catches the `f0db3970`-class
+  failure — a submission that _claims_ completed operational work (tests
+  pass, a diff exists, a build was validated) but embeds **zero concrete
+  evidence** — and fails locally with `outcome="aborted" /
+reason="needs_evidence_preflight"` instead of burning API across
+  multiple `NEEDS_EVIDENCE` rounds. New exported pure function
+  `evidencePreflight()`. **Conservative by construction** (the v3.4.0
+  meta-audit-detector lesson): it trips ONLY when BOTH a completed-work
+  claim is present (`\d+ passed/failed`, `git diff`, `npm run`, `cargo
+test`, `build passed`, `tests pass`, …) AND zero evidence markers are
+  found (fenced blocks, `@@` diff hunks, hashes, `file:line` refs,
+  command-prompt lines). Mere keyword presence ("I plan to write a
+  patch") does NOT trip — a design review legitimately has no diff. New
+  optional `evidence` field on both tool schemas: a non-empty value, or
+  any attached evidence, satisfies the preflight unconditionally.
+  cross-review-v2 stays **API-only** — it never runs git/shell to gather
+  evidence; packaging is a caller-side responsibility (see
+  `docs/evidence-preflight.md` for the minimum evidence format).
+  Opt-out: `CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off` (default `on`). New
+  event `session.evidence_preflight_failed`.
+
+- **Budget + max_rounds traceability metadata (CRV2-1 + CRV2-6)** — the
+  durable session record now distinguishes requested-vs-effective
+  ceilings. New `SessionMeta` fields: `requested_max_rounds` /
+  `effective_max_rounds` (CRV2-1 — the caller's per-call `max_rounds`
+  arg vs the resolved loop ceiling; the `rounds` array length remains
+  the authoritative peer-review-round count, so no counter conflation
+  exists — that part of CRV2-1 was a misread) and
+  `requested_max_cost_usd` / `effective_cost_ceiling_usd` /
+  `cost_ceiling_source` (CRV2-6 — disambiguates whether the cost ceiling
+  came from a per-call arg or the config default). The legacy
+  `cost_ceiling_usd` field is kept in sync with
+  `effective_cost_ceiling_usd` for v3.4.x reader back-compat. Persisted
+  once via the new `SessionStore.setSessionTraceability()` before any
+  round runs.
+
+- **Explicit relator-non-voting metadata in `convergence_scope`
+  (CRV2-3-meta)** — CRV2-3 was reclassified as not-a-bug (the lead_peer
+  is the lottery-selected relator; it authors/revises the artifact and
+  is deliberately excluded from the voting colegiado because voting on
+  its own revision would violate the anti-self-review HARD GATE). To
+  prevent that intentional exclusion from being misread as a
+  missing-vote bug, `convergence_scope` now carries explicit fields when
+  a `lead_peer` is set: `lead_peer_role: "relator_non_voting"`,
+  `voting_peers` (mirrors `reviewer_peers` under a clearer name),
+  `quorum_basis: "all_non_lead_panel_peers_ready"`, and
+  `anti_self_review_exclusion_reason:
+"lead_peer_authored_or_revised_artifact_under_review"`. Absent on
+  direct `ask_peers` calls with no relator.
+
+### Notes
+
+- **Minor bump (3.4.0 → 3.5.0; Y-component increment per SemVer)**. All
+  public surface changes are additive: new `EvidenceChecklistStatus`
+  union member (`not_resurfaced`), new exported helper
+  (`evidencePreflight`), new `SessionMeta` / `ConvergenceScope` fields,
+  new optional `evidence` input field on two tool schemas, new finalize
+  reason (`needs_evidence_preflight`), new events, new env var
+  (`CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT`). No breaking change; no tool
+  removed; no required arg added. The one observable behavior change —
+  the resurfacing-inference path now labels items `not_resurfaced`
+  instead of `addressed` — is a correctness fix to a false-positive
+  audit trail, not a contract break (convergence gating is unchanged
+  because `not_resurfaced` is still not `"open"`).
+- 4 new smoke markers: `evidence_preflight_test` (6-case behavioral
+  matrix incl. the design-review false-positive guard + 5 source pins),
+  `budget_max_rounds_traceability_test`,
+  `relator_non_voting_metadata_test`, `not_resurfaced_status_test`. The
+  pre-existing `evidence_checklist_address_detection_test` was updated
+  in-place for the `not_resurfaced` behavior. Smoke: `ok: true /
+events: 100`.
+
 ## [v03.04.00] — 2026-05-13
 
 ### Fixed

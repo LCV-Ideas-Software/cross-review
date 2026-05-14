@@ -2169,9 +2169,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "open item resurfaced in current round must not be classified as terminal",
   );
   // (2) Open item with last_round===currentRound is left alone (no auto-promote, no reopen).
+  // v3.5.0 (CRV2-2): the resurfacing-inference return key is `not_resurfaced` (was `addressed`).
   assert.ok(
-    !ad.addressed.some((entry) => entry.id === "0000000000000001"),
-    "open item must not be auto-promoted when last_round===currentRound",
+    !ad.not_resurfaced.some((entry) => entry.id === "0000000000000001"),
+    "open item must not be marked not_resurfaced when last_round===currentRound",
   );
   assert.ok(
     !ad.reopened.some((entry) => entry.id === "0000000000000001"),
@@ -2206,17 +2207,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     after.evidence_checklist?.find((entry) => entry.id === "0000000000000005")?.status,
     "open",
   );
-  // (6) Terminal items are NOT in addressed[] or reopened[] — operator-owned, never auto-mutated.
-  assert.ok(!ad.addressed.some((entry) => terminalIds.has(entry.id)));
+  // (6) Terminal items are NOT in not_resurfaced[] or reopened[] — operator-owned, never auto-mutated.
+  assert.ok(!ad.not_resurfaced.some((entry) => terminalIds.has(entry.id)));
   assert.ok(!ad.reopened.some((entry) => terminalIds.has(entry.id)));
   console.log("[smoke] evidence_checklist_terminal_preservation_test: PASS");
 }
 
-// v2.8.0 Address Detection: an open evidence checklist item whose peer
-// did NOT resurface the same ask in the next round is auto-promoted to
-// "addressed" via resurfacing-inference. The promotion is durable (lives
-// in meta.evidence_status_history) and the next revision prompt no
-// longer surfaces the item under "Outstanding Evidence Asks".
+// v2.8.0 Address Detection (v3.5.0-corrected / CRV2-2): an open evidence
+// checklist item whose peer did NOT resurface the same ask in the next
+// round is marked `not_resurfaced` via resurfacing-inference — NOT
+// `addressed`. "The peer did not re-ask" is not proof the evidence was
+// satisfied; v3.5.0 records the inference honestly. The status is
+// durable (lives in meta.evidence_status_history) and the next revision
+// prompt no longer surfaces the item under "Outstanding Evidence Asks".
 {
   const adEvents: string[] = [];
   const adConfig = {
@@ -2252,22 +2255,28 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   const r2List = adRound2.session.evidence_checklist ?? [];
   assert.equal(r2List.length, 1, `R2 must keep 1 item (no new ask), got ${r2List.length}`);
+  // v3.5.0 (CRV2-2): non-resurfacing yields `not_resurfaced`, NOT `addressed`.
   assert.equal(
     r2List[0]?.status,
-    "addressed",
-    `R2 item must be addressed, got ${r2List[0]?.status}`,
+    "not_resurfaced",
+    `R2 item must be not_resurfaced, got ${r2List[0]?.status}`,
   );
   assert.equal(r2List[0]?.addressed_at_round, 2, "addressed_at_round must be 2");
+  assert.equal(
+    r2List[0]?.address_method,
+    "resurfacing",
+    "address_method must remain 'resurfacing' (the inference path tag)",
+  );
   const history = adRound2.session.evidence_status_history ?? [];
   assert.ok(
     history.some(
-      (entry) => entry.to === "addressed" && entry.by === "runtime" && entry.round === 2,
+      (entry) => entry.to === "not_resurfaced" && entry.by === "runtime" && entry.round === 2,
     ),
-    "history must record runtime promotion to addressed in round 2",
+    "history must record runtime transition to not_resurfaced in round 2",
   );
   assert.ok(
-    adEvents.some((e) => e === "session.evidence_checklist_addressed"),
-    "must emit session.evidence_checklist_addressed",
+    adEvents.some((e) => e === "session.evidence_checklist_not_resurfaced"),
+    "must emit session.evidence_checklist_not_resurfaced",
   );
   console.log("[smoke] evidence_checklist_address_detection_test: PASS");
 }
@@ -6916,6 +6925,315 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.4.0 / proportionality_guidance: 'when in doubt' fallback must preserve the rigor default",
   );
   console.log("[smoke] proportionality_guidance_test: PASS");
+}
+
+// v3.5.0 (CRV2-4) — evidence_preflight pure-function behavioral matrix.
+//
+// The preflight is the highest-false-positive-risk item in v3.5.0, so
+// the matrix covers both trip and no-trip paths explicitly: (a) a
+// completed-work claim WITH no evidence marker trips; (b) the same
+// claim WITH an inline evidence marker passes; (c) a design-review that
+// merely mentions "patch" but makes no completed-work claim passes
+// (false-positive guard — the disconfirming case); (d) a non-empty
+// structured `evidence` field passes unconditionally; (e) attachments
+// present passes unconditionally; (f) empty/benign task passes.
+{
+  const { evidencePreflight } = await import("../src/core/orchestrator.js");
+
+  // (a) completed-work claim, zero evidence markers → TRIP.
+  const tripped = evidencePreflight({
+    task: "Pre-commit review of my patch. I ran the tests, 42 passed, and git diff --check is clean.",
+    initialDraft: "The change looks good. Build succeeded.",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    tripped.pass,
+    false,
+    "v3.5.0 / evidence_preflight: completed-work claim with zero evidence markers must trip",
+  );
+  assert.equal(tripped.completed_work_claim_matched, true);
+  assert.equal(tripped.evidence_marker_found, false);
+
+  // (b) same claim WITH an inline evidence marker (fenced block + diff hunk) → PASS.
+  const backed = evidencePreflight({
+    task: "Pre-commit review of my patch. 42 passed.",
+    initialDraft:
+      "```diff\n@@ -1,3 +1,4 @@\n+const x = 1;\n```\nsrc/foo.ts:12 changed; sha 1a2b3c4d5e6f.",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    backed.pass,
+    true,
+    "v3.5.0 / evidence_preflight: completed-work claim backed by inline evidence markers must pass",
+  );
+  assert.equal(backed.completed_work_claim_matched, true);
+  assert.equal(backed.evidence_marker_found, true);
+
+  // (c) DESIGN REVIEW false-positive guard: mentions "patch" but makes
+  //     no completed-work claim → must PASS (the disconfirming case).
+  const designReview = evidencePreflight({
+    task: "I plan to write a patch for the auth flow. Want design feedback on the approach before I implement — should I use a token refresh queue or a mutex?",
+    initialDraft: "Proposed approach: wrap the refresh in a single-flight mutex.",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    designReview.pass,
+    true,
+    "v3.5.0 / evidence_preflight: design review mentioning 'patch' with no completed-work claim must NOT trip (false-positive guard)",
+  );
+  assert.equal(designReview.completed_work_claim_matched, false);
+
+  // (d) structured `evidence` field supplied → PASS unconditionally
+  //     even when the task makes a bare completed-work claim.
+  const withStructured = evidencePreflight({
+    task: "Review my patch — 99 passed.",
+    initialDraft: "no markers here",
+    structuredEvidence: "git diff --stat: 3 files changed; test log: 99 passed 0 failed",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    withStructured.pass,
+    true,
+    "v3.5.0 / evidence_preflight: non-empty structured evidence field must satisfy preflight unconditionally",
+  );
+  assert.equal(withStructured.structured_evidence_supplied, true);
+
+  // (e) attachments present → PASS unconditionally.
+  const withAttachments = evidencePreflight({
+    task: "Review my patch — 99 passed.",
+    initialDraft: "no markers here",
+    attachmentsPresent: true,
+  });
+  assert.equal(
+    withAttachments.pass,
+    true,
+    "v3.5.0 / evidence_preflight: attached evidence must satisfy preflight unconditionally",
+  );
+  assert.equal(withAttachments.attachments_present, true);
+
+  // (f) benign task with no completed-work claim → PASS (nothing to preflight).
+  const benign = evidencePreflight({
+    task: "Review this CHANGELOG wording for clarity.",
+    initialDraft: "## v1.2.3\n- Improved wording.",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    benign.pass,
+    true,
+    "v3.5.0 / evidence_preflight: benign task with no completed-work claim must pass",
+  );
+
+  // Source pins: env var + config flag + orchestrator wiring + outcome reason.
+  const orchSrcPf = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  const configSrcPf = fs.readFileSync(new URL("../src/core/config.ts", import.meta.url), "utf8");
+  assert.ok(
+    /export function evidencePreflight\b/.test(orchSrcPf),
+    "v3.5.0 / evidence_preflight: evidencePreflight must be exported",
+  );
+  assert.ok(
+    /this\.config\.evidence_preflight_enabled/.test(orchSrcPf),
+    "v3.5.0 / evidence_preflight: runUntilUnanimous must gate on config.evidence_preflight_enabled",
+  );
+  assert.ok(
+    /"needs_evidence_preflight"/.test(orchSrcPf),
+    "v3.5.0 / evidence_preflight: finalize reason `needs_evidence_preflight` must be wired",
+  );
+  assert.ok(
+    /session\.evidence_preflight_failed/.test(orchSrcPf),
+    "v3.5.0 / evidence_preflight: event `session.evidence_preflight_failed` must be emitted",
+  );
+  assert.ok(
+    /boolEnv\("CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT", true\)/.test(configSrcPf),
+    "v3.5.0 / evidence_preflight: CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT env var must default ON",
+  );
+  console.log("[smoke] evidence_preflight_test: PASS");
+}
+
+// v3.5.0 (CRV2-1 + CRV2-6) — budget + max_rounds traceability.
+//
+// setSessionTraceability persists requested-vs-effective max_rounds and
+// the cost ceiling with its source. Behavioral: run a session through
+// the orchestrator and confirm the meta carries the new fields.
+{
+  const traceCfg = {
+    ...loadConfig(),
+    data_dir: smokeTmpDir("traceability"),
+    budget: {
+      ...loadConfig().budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+  };
+  const traceOrch = new CrossReviewOrchestrator(traceCfg, () => {});
+  const traceRun = await traceOrch.runUntilUnanimous({
+    task: "Traceability smoke: confirm requested/effective max_rounds + cost ceiling source persist.",
+    initial_draft: "Trivial draft, no completed-work claim, should converge in stub mode.",
+    caller: "operator",
+    peers: ["claude", "gemini"],
+    max_rounds: 3,
+    max_cost_usd: 7.5,
+  });
+  const traceMeta = traceOrch.store.read(traceRun.session.session_id);
+  assert.equal(
+    traceMeta.requested_max_rounds,
+    3,
+    `v3.5.0 / traceability: requested_max_rounds must persist the call arg (got ${traceMeta.requested_max_rounds})`,
+  );
+  assert.equal(
+    traceMeta.effective_max_rounds,
+    3,
+    "v3.5.0 / traceability: effective_max_rounds must persist the resolved ceiling",
+  );
+  assert.equal(
+    traceMeta.requested_max_cost_usd,
+    7.5,
+    "v3.5.0 / traceability: requested_max_cost_usd must persist the call arg",
+  );
+  assert.equal(
+    traceMeta.cost_ceiling_source,
+    "call_arg",
+    `v3.5.0 / traceability: cost_ceiling_source must be call_arg when max_cost_usd passed (got ${traceMeta.cost_ceiling_source})`,
+  );
+  assert.equal(
+    typeof traceMeta.effective_cost_ceiling_usd,
+    "number",
+    "v3.5.0 / traceability: effective_cost_ceiling_usd must be a number",
+  );
+  // Back-compat: legacy cost_ceiling_usd stays in sync with effective.
+  assert.equal(
+    traceMeta.cost_ceiling_usd,
+    traceMeta.effective_cost_ceiling_usd,
+    "v3.5.0 / traceability: legacy cost_ceiling_usd must mirror effective_cost_ceiling_usd",
+  );
+  // Default-source path: a run with no max_cost_usd records config_default.
+  const traceRun2 = await traceOrch.runUntilUnanimous({
+    task: "Traceability smoke 2: no max_cost_usd, no max_rounds.",
+    initial_draft: "Trivial draft, no completed-work claim.",
+    caller: "operator",
+    peers: ["claude", "gemini"],
+  });
+  const traceMeta2 = traceOrch.store.read(traceRun2.session.session_id);
+  assert.equal(
+    traceMeta2.requested_max_rounds,
+    null,
+    "v3.5.0 / traceability: requested_max_rounds is null when caller omits max_rounds",
+  );
+  assert.equal(
+    traceMeta2.cost_ceiling_source,
+    "config_default",
+    "v3.5.0 / traceability: cost_ceiling_source is config_default when max_cost_usd omitted",
+  );
+  console.log("[smoke] budget_max_rounds_traceability_test: PASS");
+}
+
+// v3.5.0 (CRV2-3-meta) — explicit relator-non-voting convergence_scope.
+//
+// When a ship-mode session has a lead_peer, convergence_scope must carry
+// the explicit relator semantics so the lead_peer's absence from the
+// voting panel is not misread as a missing-vote bug. Source pin + a
+// behavioral check via a peer-caller lottery session.
+{
+  const csOrchSrc = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /lead_peer_role: "relator_non_voting" as const/.test(csOrchSrc),
+    "v3.5.0 / relator_metadata: convergence_scope must set lead_peer_role=relator_non_voting",
+  );
+  assert.ok(
+    /quorum_basis: "all_non_lead_panel_peers_ready" as const/.test(csOrchSrc),
+    "v3.5.0 / relator_metadata: convergence_scope must set quorum_basis",
+  );
+  assert.ok(
+    /anti_self_review_exclusion_reason:\s*\n?\s*"lead_peer_authored_or_revised_artifact_under_review" as const/.test(
+      csOrchSrc,
+    ),
+    "v3.5.0 / relator_metadata: convergence_scope must set anti_self_review_exclusion_reason",
+  );
+  // Behavioral: a peer-caller ship session gets a lottery relator, so
+  // convergence_scope must populate the explicit fields.
+  const csCfg = {
+    ...loadConfig(),
+    data_dir: smokeTmpDir("relator-meta"),
+    budget: {
+      ...loadConfig().budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+  };
+  const csOrch = new CrossReviewOrchestrator(csCfg, () => {});
+  const csRun = await csOrch.runUntilUnanimous({
+    task: "Relator metadata smoke: peer-caller lottery session must populate explicit relator fields.",
+    initial_draft: "Trivial draft, no completed-work claim.",
+    caller: "claude",
+    peers: ["codex", "gemini", "deepseek"],
+    max_rounds: 2,
+  });
+  const csScope = csOrch.store.read(csRun.session.session_id).convergence_scope;
+  assert.ok(csScope, "v3.5.0 / relator_metadata: convergence_scope must exist");
+  assert.equal(
+    csScope?.lead_peer_role,
+    "relator_non_voting",
+    `v3.5.0 / relator_metadata: lead_peer_role must be relator_non_voting (got ${csScope?.lead_peer_role})`,
+  );
+  assert.equal(
+    csScope?.quorum_basis,
+    "all_non_lead_panel_peers_ready",
+    "v3.5.0 / relator_metadata: quorum_basis must be set on a lottery session",
+  );
+  assert.equal(
+    csScope?.anti_self_review_exclusion_reason,
+    "lead_peer_authored_or_revised_artifact_under_review",
+    "v3.5.0 / relator_metadata: anti_self_review_exclusion_reason must be set",
+  );
+  assert.ok(
+    Array.isArray(csScope?.voting_peers) && (csScope?.voting_peers?.length ?? 0) > 0,
+    "v3.5.0 / relator_metadata: voting_peers must be a non-empty array",
+  );
+  assert.ok(
+    csScope?.lead_peer && !csScope.voting_peers?.includes(csScope.lead_peer),
+    "v3.5.0 / relator_metadata: lead_peer must NOT appear in voting_peers (anti-self-review)",
+  );
+  console.log("[smoke] relator_non_voting_metadata_test: PASS");
+}
+
+// v3.5.0 (CRV2-2) — not_resurfaced status anti-drift source pins.
+// Behavioral coverage lives in evidence_checklist_address_detection_test
+// (updated in-place); these pins lock the type + the runtime path so a
+// future refactor cannot silently revert to the false-`addressed` bug.
+{
+  const typesSrcNr = fs.readFileSync(new URL("../src/core/types.ts", import.meta.url), "utf8");
+  const storeSrcNr = fs.readFileSync(
+    new URL("../src/core/session-store.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /\|\s*"not_resurfaced"/.test(typesSrcNr),
+    "v3.5.0 / not_resurfaced: EvidenceChecklistStatus union must include not_resurfaced",
+  );
+  assert.ok(
+    /item\.status = "not_resurfaced"/.test(storeSrcNr),
+    "v3.5.0 / not_resurfaced: the resurfacing-inference path must set status=not_resurfaced (NOT addressed)",
+  );
+  assert.ok(
+    !/item\.status = "addressed";[\s\S]{0,400}?address_method = "resurfacing"/.test(storeSrcNr),
+    "v3.5.0 / not_resurfaced: the resurfacing path must NOT set status=addressed anymore",
+  );
+  assert.ok(
+    /\(status === "not_resurfaced" \|\| status === "addressed"\)/.test(storeSrcNr),
+    "v3.5.0 / not_resurfaced: the reopen branch must catch BOTH not_resurfaced and addressed",
+  );
+  assert.ok(
+    /Exclude<EvidenceChecklistStatus, "addressed" \| "not_resurfaced">/.test(storeSrcNr),
+    "v3.5.0 / not_resurfaced: operator mutator must exclude both runtime-managed statuses",
+  );
+  console.log("[smoke] not_resurfaced_status_test: PASS");
 }
 
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and

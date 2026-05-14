@@ -854,6 +854,14 @@ export async function main(): Promise<void> {
         // shared prose/spec artifacts. For approve/reject judgments over
         // external code, prefer ship (default) or review.
         mode: z.enum(["ship", "review", "circular"]).default("ship"),
+        // v3.5.0 (CRV2-4): optional structured evidence the caller
+        // supplies up-front. When present (non-empty) it satisfies the
+        // evidence preflight unconditionally — it is the caller's
+        // authoritative declaration that concrete evidence exists for
+        // the review. cross-review-v2 stays API-only: it does not run
+        // git/shell to gather evidence; packaging is a caller-side
+        // responsibility (see docs/evidence-preflight.md).
+        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -907,6 +915,14 @@ export async function main(): Promise<void> {
         // shared prose/spec artifacts. For approve/reject judgments over
         // external code, prefer ship (default) or review.
         mode: z.enum(["ship", "review", "circular"]).default("ship"),
+        // v3.5.0 (CRV2-4): optional structured evidence the caller
+        // supplies up-front. When present (non-empty) it satisfies the
+        // evidence preflight unconditionally — it is the caller's
+        // authoritative declaration that concrete evidence exists for
+        // the review. cross-review-v2 stays API-only: it does not run
+        // git/shell to gather evidence; packaging is a caller-side
+        // responsibility (see docs/evidence-preflight.md).
+        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         response_format: ResponseFormatSchema,
       }),
       annotations: {

@@ -88,6 +88,17 @@ export interface RunUntilUnanimousInput {
   // when the `task` field is phrased as a review act ("Review v..."),
   // which previously caused the lead to treat the call as meta-review.
   mode?: import("./types.js").SessionMode;
+  // v3.5.0 (CRV2-4, Codex operational report): structured evidence the
+  // caller supplies up-front. When present, the evidence_preflight check
+  // treats the session as evidenced (it is the caller's authoritative
+  // declaration that concrete evidence exists for the review). Pure
+  // textual — cross-review-v2 stays an API-only orchestrator and never
+  // executes shell / reads the repo; evidence packaging is a caller-side
+  // responsibility (see docs/evidence-preflight.md). Free-form string;
+  // the caller is expected to embed file:line refs, diff hunks, command
+  // output, hashes, etc. — the same provenance-grade material the R1
+  // evidence-upfront contract already requires inside `initial_draft`.
+  evidence?: string;
 }
 
 export interface RunUntilUnanimousOutput {
@@ -582,6 +593,87 @@ export function detectMetaAuditFabrication(revisionText: string): MetaAuditDetec
     placeholder_sample: placeholders.slice(0, 6),
     section_count: sections.length,
     section_sample: sections.slice(0, 4),
+  };
+}
+
+// v3.5.0 (CRV2-4, Codex operational report) — evidence preflight.
+//
+// A PURE TEXTUAL pre-check that runs BEFORE any paid peer call.
+// cross-review-v2 stays an API-only orchestrator: this function never
+// executes shell, never reads the repo, never runs `git diff`. It only
+// inspects text the caller already supplied (task + initial_draft +
+// the structured `evidence` field + already-attached evidence).
+//
+// Goal: catch the f0db3970-class failure — a submission that CLAIMS
+// completed operational work (tests pass, a diff exists, a build was
+// validated) but embeds zero concrete evidence — and fail it locally
+// with `needs_evidence_preflight` instead of burning API across
+// multiple NEEDS_EVIDENCE rounds.
+//
+// Conservative by construction (the v3.4.0 meta-audit-detector lesson:
+// heuristics must resist false positives). It trips ONLY when BOTH:
+//   (a) the text makes a COMPLETED-WORK CLAIM — `\d+ passed/failed`,
+//       `git diff`, `git status`, `npm run`, `cargo test`, `build
+//       passed/succeeded/clean`, `tests? pass/passed/green`; AND
+//   (b) the text contains ZERO evidence markers — fenced code blocks,
+//       `@@ -`/`@@ +` diff hunks, 7+ hex-char hashes, `file.ext:NN`
+//       refs, `$ `/`> ` command-prompt lines.
+// Mere keyword presence ("I plan to write a patch", "the test plan
+// is...") does NOT trip — a design review legitimately has no diff.
+// A non-empty structured `evidence` field OR any attached evidence
+// makes the preflight pass unconditionally (caller's authoritative
+// declaration). Opt-out via CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off.
+const COMPLETED_WORK_CLAIM_PATTERN =
+  /\b\d+\s+(?:passed|failed)\b|\bgit\s+diff\b|\bgit\s+status\b|\bnpm\s+run\b|\bcargo\s+(?:test|build)\b|\bbuild\s+(?:passed|succeeded|clean|green)\b|\btests?\s+(?:pass|passed|green|all\s+green)\b|\bgit\s+diff\s+--check\b/i;
+const EVIDENCE_MARKER_PATTERN =
+  /```|@@\s*[-+]|\b[a-f0-9]{7,}\b|\b[\w./-]+\.\w+:\d+\b|(?:^|\n)\s*[$>]\s+\S/;
+
+export interface EvidencePreflightResult {
+  pass: boolean;
+  reason: string;
+  completed_work_claim_matched: boolean;
+  evidence_marker_found: boolean;
+  structured_evidence_supplied: boolean;
+  attachments_present: boolean;
+}
+
+export function evidencePreflight(params: {
+  task: string;
+  initialDraft?: string;
+  structuredEvidence?: string;
+  attachmentsPresent: boolean;
+}): EvidencePreflightResult {
+  const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
+  // A structured `evidence` field or any attached evidence is the
+  // caller's authoritative declaration that concrete evidence exists.
+  if (structuredEvidenceSupplied || params.attachmentsPresent) {
+    return {
+      pass: true,
+      reason: structuredEvidenceSupplied
+        ? "structured evidence field supplied by caller"
+        : "session has attached evidence",
+      completed_work_claim_matched: false,
+      evidence_marker_found: false,
+      structured_evidence_supplied: structuredEvidenceSupplied,
+      attachments_present: params.attachmentsPresent,
+    };
+  }
+  const corpus = `${params.task}\n${params.initialDraft ?? ""}`;
+  const claimMatched = COMPLETED_WORK_CLAIM_PATTERN.test(corpus);
+  const evidenceFound = EVIDENCE_MARKER_PATTERN.test(corpus);
+  // Trip ONLY on completed-work-claim WITHOUT any evidence marker.
+  const pass = !claimMatched || evidenceFound;
+  return {
+    pass,
+    reason: pass
+      ? claimMatched
+        ? "completed-work claim present and backed by inline evidence markers"
+        : "no completed-work claim detected — nothing to preflight"
+      : "task/draft claims completed operational work (tests/diff/build) but embeds no concrete evidence; attach evidence inline or via the `evidence` field before submitting",
+    completed_work_claim_matched: claimMatched,
+    evidence_marker_found: evidenceFound,
+    structured_evidence_supplied: false,
+    attachments_present: false,
   };
 }
 
@@ -2212,6 +2304,24 @@ export class CrossReviewOrchestrator {
       expected_peers: quorumPeers,
       reviewer_peers: selectedPeers,
       ...(input.lead_peer ? { lead_peer: input.lead_peer } : {}),
+      // v3.5.0 (CRV2-3-meta): make the relator-non-voting semantics
+      // explicit in the durable record. The lead_peer authors/revises
+      // the artifact and is DELIBERATELY excluded from the voting
+      // colegiado (`reviewer_peers` / `voting_peers`) — voting on its
+      // own revision would violate the anti-self-review HARD GATE. These
+      // fields document that intentional exclusion so a reader does not
+      // misread the relator's absence from the vote as a missing-vote
+      // bug. Populated only when a lead_peer exists (ship-mode relator
+      // lottery); absent on direct ask_peers calls with no relator.
+      ...(input.lead_peer
+        ? {
+            lead_peer_role: "relator_non_voting" as const,
+            voting_peers: selectedPeers,
+            quorum_basis: "all_non_lead_panel_peers_ready" as const,
+            anti_self_review_exclusion_reason:
+              "lead_peer_authored_or_revised_artifact_under_review" as const,
+          }
+        : {}),
     };
     const draftFile = this.store.saveDraft(session.session_id, roundNumber, input.draft);
     // v2.14.0 (path-A structural fix): resolve session-attached evidence
@@ -2695,15 +2805,19 @@ export class CrossReviewOrchestrator {
         session.session_id,
         round.round,
       );
-      if (addressDetection.addressed.length > 0) {
+      if (addressDetection.not_resurfaced.length > 0) {
+        // v3.5.0 (CRV2-2): event renamed + message corrected. The prior
+        // `session.evidence_checklist_addressed` falsely implied the
+        // evidence was confirmed; `not_resurfaced` records only that the
+        // peer did not re-ask, which is not proof of satisfaction.
         this.emit({
-          type: "session.evidence_checklist_addressed",
+          type: "session.evidence_checklist_not_resurfaced",
           session_id: session.session_id,
           round: round.round,
-          message: `${addressDetection.addressed.length} ask(s) auto-marked addressed (peer did not resurface in round ${round.round}).`,
+          message: `${addressDetection.not_resurfaced.length} ask(s) marked not_resurfaced (peer did not re-ask in round ${round.round}; not proof of satisfaction).`,
           data: {
-            ids: addressDetection.addressed.map((item) => item.id),
-            count: addressDetection.addressed.length,
+            ids: addressDetection.not_resurfaced.map((item) => item.id),
+            count: addressDetection.not_resurfaced.length,
           },
         });
       }
@@ -3460,6 +3574,57 @@ export class CrossReviewOrchestrator {
     const adapters = createAdapters(this.config);
     const reviewerPeers = selectedPeers.filter((peer) => peer !== leadPeer);
     let draft = input.initial_draft;
+
+    // v3.5.0 (CRV2-1 + CRV2-6): persist requested-vs-effective budget +
+    // max_rounds traceability once, before any round runs.
+    this.store.setSessionTraceability(session.session_id, {
+      requested_max_rounds: input.max_rounds ?? null,
+      effective_max_rounds: input.until_stopped ? null : effectiveMaxRounds,
+      requested_max_cost_usd: input.max_cost_usd ?? null,
+      effective_cost_ceiling_usd: costLimit ?? null,
+      cost_ceiling_source: input.max_cost_usd != null ? "call_arg" : "config_default",
+    });
+
+    // v3.5.0 (CRV2-4): evidence preflight. Pure textual pre-check — runs
+    // BEFORE any paid peer call. When the task/draft claims completed
+    // operational work but embeds no concrete evidence (and no structured
+    // `evidence` field / attachments were supplied), fail locally with
+    // `needs_evidence_preflight` instead of burning API across rounds.
+    // Opt-out via CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off.
+    if (this.config.evidence_preflight_enabled) {
+      const attachmentsPresent =
+        this.store.readEvidenceAttachments(
+          session.session_id,
+          this.config.prompt.max_attached_evidence_chars,
+        ).length > 0;
+      const preflight = evidencePreflight({
+        task: input.task,
+        initialDraft: draft,
+        structuredEvidence: input.evidence,
+        attachmentsPresent,
+      });
+      if (!preflight.pass) {
+        this.store.finalize(session.session_id, "aborted", "needs_evidence_preflight");
+        this.emit({
+          type: "session.evidence_preflight_failed",
+          session_id: session.session_id,
+          message: `Evidence preflight failed before any paid peer call: ${preflight.reason}`,
+          data: {
+            reason: preflight.reason,
+            completed_work_claim_matched: preflight.completed_work_claim_matched,
+            evidence_marker_found: preflight.evidence_marker_found,
+            structured_evidence_supplied: preflight.structured_evidence_supplied,
+            attachments_present: preflight.attachments_present,
+          },
+        });
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: false,
+          rounds: 0,
+        };
+      }
+    }
 
     if (this.config.budget.require_rates_for_budget && costLimit != null) {
       const missingRates = selectedPeers.filter((peer) => !this.config.cost_rates[peer]);

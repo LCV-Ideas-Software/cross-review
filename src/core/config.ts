@@ -19,8 +19,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "3.4.0";
-export const RELEASE_DATE = "2026-05-13";
+export const VERSION = "3.5.0";
+export const RELEASE_DATE = "2026-05-14";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -259,6 +259,12 @@ export function loadConfig(): AppConfig {
       max_attached_evidence_chars: intEnv("CROSS_REVIEW_V2_MAX_ATTACHED_EVIDENCE_CHARS", 200_000),
     },
     max_output_tokens: intEnv("CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
+    // v3.5.0 (CRV2-4): evidence preflight gate. Default ON — the check
+    // is conservative (only trips on a completed-work claim with zero
+    // evidence markers) and saves a full multi-round paid cross-review
+    // on under-evidenced submissions. Operators set
+    // CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off to disable.
+    evidence_preflight_enabled: boolEnv("CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT", true),
     streaming: {
       events: boolEnv("CROSS_REVIEW_V2_STREAM_EVENTS", true),
       tokens: boolEnv("CROSS_REVIEW_V2_STREAM_TOKENS", true),
