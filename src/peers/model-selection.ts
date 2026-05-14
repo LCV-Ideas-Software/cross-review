@@ -36,8 +36,20 @@ const PRIORITY: Record<PeerId, string[]> = {
     "gpt-5",
   ],
   claude: ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"],
-  gemini: ["gemini-2.5-pro", "gemini-3.1-pro-preview"],
-  deepseek: ["deepseek-v4-pro", "deepseek-v4-flash"],
+  // v3.7.1 (AUDIT-3, Codex super-audit 2026-05-14): trimmed to the lone
+  // canonical pin. selectFromCandidates picks the first PRIORITY entry the
+  // provider's live list contains, so a non-canonical fallback entry would
+  // be silently auto-selected whenever the canonical model was absent from
+  // that list. `gemini-3.1-pro-preview` is manual-override-only per the
+  // workspace Model Selection Standards directive (explicitly "NÃO é o
+  // default") and `deepseek-v4-flash` is a forbidden "flash" tier — neither
+  // may be auto-selected. With the lone canonical entry, selectFromCandidates
+  // falls back to the configured `fallback` (config.models[peer]) instead;
+  // operators opt into other models via CROSS_REVIEW_{GEMINI,DEEPSEEK}_MODEL.
+  // codex/claude/grok keep canonical-first SAME-PROVIDER degradation chains
+  // (not directive violations; documented resilience; smoke-pinned).
+  gemini: ["gemini-2.5-pro"],
+  deepseek: ["deepseek-v4-pro"],
   // v2.16.0 official-doc refresh (2026-05-05): xAI's reasoning docs
   // distinguish automatic-reasoning Grok models from the explicit
   // multi-agent model. `grok-4.20-multi-agent` remains first because it

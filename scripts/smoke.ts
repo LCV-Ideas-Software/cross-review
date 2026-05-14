@@ -7496,6 +7496,97 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] audit1_petitioner_recusal_test: PASS");
 }
 
+// v3.7.1 (AUDIT-1 + AUDIT-2 + AUDIT-3, Codex super-audit 2026-05-14) —
+// runUntilUnanimous must derive the EFFECTIVE petitioner from the persisted
+// session on a caller-omitted continuation. v3.7.0 fixed askPeers but left
+// runUntilUnanimous deriving callerForLottery from `input.caller ?? "operator"`
+// BEFORE reading the session, re-opening the anti-self-review HARD GATE on
+// the automatic path: a continuation that omitted `caller` could place the
+// real persisted peer-petitioner into the voting panel or the relator slot.
+{
+  const a2Cfg = {
+    ...loadConfig(),
+    data_dir: smokeTmpDir("audit1-run-until-unanimous-continuation"),
+    budget: {
+      ...loadConfig().budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+  };
+  const a2Orch = new CrossReviewOrchestrator(a2Cfg, () => {});
+  // R1: caller=codex creates the session; FORCE_NEEDS_EVIDENCE keeps it
+  // non-terminal so a continuation can run on top of it.
+  const a2r1 = await a2Orch.askPeers({
+    task: "AUDIT-2 smoke: runUntilUnanimous continuation recusal.",
+    draft: "FORCE_NEEDS_EVIDENCE",
+    caller: "codex",
+    peers: ["claude", "gemini", "deepseek"],
+  });
+  assert.equal(
+    a2r1.session.convergence_scope?.petitioner,
+    "codex",
+    "v3.7.1 / AUDIT-2: R1 must persist petitioner=codex",
+  );
+  // Continue via runUntilUnanimous with `caller` OMITTED — pre-v3.7.1 this
+  // derived callerForLottery="operator", skipped recusal, and could select
+  // codex (the real petitioner) as relator or leave it in the voting panel.
+  const a2run = await a2Orch.runUntilUnanimous({
+    session_id: a2r1.session.session_id,
+    task: "AUDIT-2 smoke: runUntilUnanimous continuation recusal.",
+    initial_draft: "FORCE_NEEDS_EVIDENCE",
+    max_rounds: 1,
+  });
+  const a2Scope = a2run.session.convergence_scope;
+  assert.equal(
+    a2Scope?.petitioner,
+    "codex",
+    "v3.7.1 / AUDIT-2: continuation must keep the persisted petitioner=codex (not reclassify to operator)",
+  );
+  assert.notEqual(
+    a2Scope?.lead_peer,
+    "codex",
+    "v3.7.1 / AUDIT-2: codex (the petitioner) must not be selected as relator/lead_peer of its own session",
+  );
+  assert.ok(
+    !(a2Scope?.reviewer_peers ?? []).includes("codex"),
+    `v3.7.1 / AUDIT-2: codex must be recused from reviewer_peers — got [${(a2Scope?.reviewer_peers ?? []).join(", ")}]`,
+  );
+  // Source pin: runUntilUnanimous derives callerForLottery from the
+  // persisted session, not from `input.caller ?? "operator"` alone.
+  const a2OrchSrc = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /const callerForLottery: PeerId \| "operator" =[\s\S]{0,200}?existingSession\?\.convergence_scope\?\.petitioner[\s\S]{0,120}?existingSession\?\.caller/.test(
+      a2OrchSrc,
+    ),
+    "v3.7.1 / AUDIT-1: runUntilUnanimous must derive callerForLottery from the persisted session before recusal/lottery",
+  );
+  // AUDIT-3 anti-drift: the trimmed PRIORITY lists must not re-grow
+  // non-canonical auto-fallback entries.
+  const a3ModelSrc = fs.readFileSync(
+    new URL("../src/peers/model-selection.ts", import.meta.url),
+    "utf8",
+  );
+  for (const offPolicyAutoModel of ["deepseek-v4-flash", "gemini-3.1-pro-preview"]) {
+    assert.ok(
+      !a3ModelSrc.includes(`"${offPolicyAutoModel}"`),
+      `v3.7.1 / AUDIT-3: ${offPolicyAutoModel} must not be in the auto-probe PRIORITY lists (off-policy / manual-override-only tier)`,
+    );
+  }
+  assert.ok(
+    /deepseek: \["deepseek-v4-pro"\],/.test(a3ModelSrc),
+    "v3.7.1 / AUDIT-3: deepseek PRIORITY must be the lone canonical pin",
+  );
+  assert.ok(
+    /gemini: \["gemini-2.5-pro"\],/.test(a3ModelSrc),
+    "v3.7.1 / AUDIT-3: gemini PRIORITY must be the lone canonical pin",
+  );
+  console.log("[smoke] audit1_run_until_unanimous_continuation_test: PASS");
+}
+
 // v3.7.0 (AUDIT-2 + AUDIT-3 + AUDIT-4, Codex super-audit) — source pins.
 // AUDIT-2: operator default relator respects peer_enabled.
 // AUDIT-3: peers + judge_peers schemas use .max(PEERS.length), not .max(5).

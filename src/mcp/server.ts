@@ -33,12 +33,14 @@ const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
 // v2.18.6 / Gemini-API compat: pre-v2.18.6 this was `z.record(PeerSchema,
 // ReasoningEffortSchema).optional()`. The MCP SDK serialized that as
 // `{type:"object", propertyNames:{enum:[...]}, additionalProperties:{enum:[...]},
-// required:[<all 5 peers>]}` — non-standard OpenAPI 3.0 (Gemini API
+// required:[<all peers>]}` — non-standard OpenAPI 3.0 (Gemini API
 // rejects `propertyNames`) plus a phantom `required` listing all peers
 // despite the field being `.optional()`. Flattening to an explicit
-// `z.object({codex?, claude?, gemini?, deepseek?, grok?})` produces a
-// clean `{type:"object", properties:{...}}` accepted by every host;
-// runtime accepts the same `{codex:"high", claude:"low"}` shape.
+// `z.object({codex?, claude?, gemini?, deepseek?, grok?, perplexity?})`
+// (v3.7.1 / AUDIT-4: comment refreshed — perplexity has been the 6th peer
+// since v3.0.0) produces a clean `{type:"object", properties:{...}}`
+// accepted by every host; runtime accepts the same
+// `{codex:"high", claude:"low"}` shape.
 const ReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const ReasoningEffortOverridesSchema = z
   .object({
@@ -895,9 +897,11 @@ export async function main(): Promise<void> {
         review_focus: ReviewFocusSchema,
         initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         // v2.11.0: lead_peer is now optional. When omitted with a peer
-        // caller, the relator lottery picks one. When omitted with
-        // operator caller, the orchestrator uses "codex" (v2.10 default
-        // preserved).
+        // caller, the relator lottery picks one. When omitted with an
+        // operator caller, the orchestrator uses "codex" if it is enabled,
+        // else the first enabled session peer (v3.7.1 / AUDIT-4: comment
+        // refreshed — v3.7.0 / AUDIT-2 replaced the pre-v3.7.0 hardcoded
+        // "codex" that ignored peer_enabled).
         lead_peer: PeerSchema.optional(),
         // v2.11.0: caller identifies the petitioner for the lottery.
         // Default "operator" preserves v2.10.0 behavior (no exclusion).

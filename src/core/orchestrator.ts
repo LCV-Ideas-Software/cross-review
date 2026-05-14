@@ -3470,7 +3470,26 @@ export class CrossReviewOrchestrator {
     // produces a non-participating relator like "deepseek". This is the
     // session-aware fix from the v2.11.0 R-fix trilateral (deepseek catch
     // session 38c6c076).
-    const callerForLottery: PeerId | "operator" = input.caller ?? "operator";
+    //
+    // v3.7.1 (AUDIT-1, Codex super-audit 2026-05-14): derive the EFFECTIVE
+    // petitioner BEFORE computing auto-recusal / the relator lottery. For a
+    // continuation (session_id set), the petitioner is the one persisted in
+    // the session — NOT the current call's `caller`, which the MCP schema
+    // defaults to "operator" when omitted. v3.7.0 fixed this in askPeers but
+    // left runUntilUnanimous deriving callerForLottery from
+    // `input.caller ?? "operator"` BEFORE reading the session: a
+    // continuation that omitted `caller` skipped recusal and could place the
+    // real persisted peer-petitioner into the voting colegiado or the relator
+    // slot — a direct anti-self-review HARD GATE violation. We now read the
+    // session once, up front, and derive callerForLottery from it. A brand-
+    // new session OR an explicit `input.caller` is identical to pre-v3.7.1.
+    if (input.session_id) this.store.assertNotFinalized(input.session_id);
+    const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
+    const callerForLottery: PeerId | "operator" =
+      input.caller ??
+      existingSession?.convergence_scope?.petitioner ??
+      existingSession?.caller ??
+      "operator";
     // v2.14.0: explicit `peers` entries referencing a disabled peer are
     // rejected before any work; lead_peer is checked below. Without an
     // explicit list, default to the enabled subset (NOT global PEERS).
@@ -3566,19 +3585,20 @@ export class CrossReviewOrchestrator {
     // targets a finalized session. Without this guard the orchestrator would
     // start rounds whose `appendRound` would clobber `convergence_health`,
     // leaving the meta with `outcome=converged / health=blocked` (or worse).
-    if (input.session_id) this.store.assertNotFinalized(input.session_id);
+    // v3.7.1 (AUDIT-1): assertNotFinalized now runs up front, alongside the
+    // existingSession read — see the callerForLottery derivation block above.
     const missingFinancialVars = missingFinancialControlVars(this.config, chargeablePeers, {
       untilStopped: input.until_stopped,
     });
     if (missingFinancialVars.length) {
-      const blockedSession = input.session_id
-        ? this.store.read(input.session_id)
-        : this.store.init(
-            input.task,
-            callerForLottery,
-            [],
-            normalizeReviewFocus(input.review_focus, this.config),
-          );
+      const blockedSession =
+        existingSession ??
+        this.store.init(
+          input.task,
+          callerForLottery,
+          [],
+          normalizeReviewFocus(input.review_focus, this.config),
+        );
       this.store.finalize(blockedSession.session_id, "max-rounds", "financial_controls_missing");
       this.emit({
         type: "session.blocked.financial_controls_missing",
@@ -3593,9 +3613,8 @@ export class CrossReviewOrchestrator {
         rounds: 0,
       };
     }
-    let session = input.session_id
-      ? this.store.read(input.session_id)
-      : await this.initSession(input.task, callerForLottery, input.review_focus);
+    let session =
+      existingSession ?? (await this.initSession(input.task, callerForLottery, input.review_focus));
     const adapters = createAdapters(this.config);
     const reviewerPeers = selectedPeers.filter((peer) => peer !== leadPeer);
     let draft = input.initial_draft;

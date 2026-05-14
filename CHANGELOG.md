@@ -7,6 +7,77 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.07.01] — 2026-05-14
+
+Close-out of Codex's super-audit of cross-review-v2 v3.7.0 — 4 findings
+(AUDIT-1..AUDIT-4), all verified against primary-source code before fixing.
+Codex verdict: REPROVADO without v3.7.1 because AUDIT-1 is a genuine
+remaining regression of the anti-self-review HARD GATE.
+
+### Fixed
+
+- **AUDIT-1 (BLOCKER)** — `runUntilUnanimous` derived the petitioner from
+  `input.caller ?? "operator"` _before_ reading the persisted session.
+  v3.7.0 fixed this in `askPeers` but left the sibling automatic entry
+  point untouched: a continuation (`session_id` set) that omitted `caller`
+  defaulted `callerForLottery` to `"operator"`, so the real persisted
+  peer-petitioner was not recused — it could be placed in the voting
+  colegiado or selected as the relator (`lead_peer`) of its own session,
+  a direct anti-self-review HARD GATE violation (Codex reproduced it:
+  a `caller=codex` session continued caller-omitted had `petitioner`
+  reclassified to `"operator"` and `lead_peer` set to `"codex"`). Fix:
+  `runUntilUnanimous` now reads the session once, up front, via
+  `existingSession`, and derives `callerForLottery = input.caller ??
+existingSession?.convergence_scope?.petitioner ?? existingSession?.caller
+?? "operator"` before any recusal/lottery decision. `existingSession` is
+  reused for `assertNotFinalized`, the `missingFinancialVars` block, and the
+  `session` binding (single read, no double-read). Brand-new sessions and
+  explicit `input.caller` are byte-identical to pre-v3.7.1.
+
+### Added
+
+- **AUDIT-2** — new smoke marker
+  `audit1_run_until_unanimous_continuation_test`: a behavioral test that
+  creates a `caller=codex` session, continues it via
+  `runUntilUnanimous({ session_id, caller omitted })`, and asserts the
+  persisted petitioner stays `codex`, `codex` is never `lead_peer`, and
+  `codex` is recused from `reviewer_peers`. v3.7.0's
+  `audit1_petitioner_recusal_test` only exercised `askPeers` — exactly the
+  path Codex flagged as uncovered.
+
+### Changed
+
+- **AUDIT-3** — `model-selection.ts` `PRIORITY`: trimmed the `deepseek` and
+  `gemini` lists to their lone canonical pin (`deepseek-v4-pro`,
+  `gemini-2.5-pro`). `selectFromCandidates` picks the first `PRIORITY` entry
+  the provider's live list contains, so a non-canonical fallback entry would
+  be silently auto-selected whenever the canonical model was absent — and
+  `deepseek-v4-flash` is a forbidden "flash" tier while
+  `gemini-3.1-pro-preview` is manual-override-only ("NÃO é o default") per
+  the workspace Model Selection Standards directive. With the lone canonical
+  entry, `selectFromCandidates` falls back to the configured
+  `config.models[peer]` instead; operators opt into other models via
+  `CROSS_REVIEW_{GEMINI,DEEPSEEK}_MODEL`. The `codex`/`claude`/`grok`
+  `PRIORITY` chains are canonical-first SAME-PROVIDER graceful-degradation
+  paths (not directive violations, documented resilience, smoke-pinned as
+  required) and are left intact. Anti-drift pins added to the new smoke
+  marker.
+- **AUDIT-4** — refreshed two stale internal comments: the
+  `ReasoningEffortOverridesSchema` comment in `src/mcp/server.ts`
+  ("all 5 peers" / `z.object({codex?..grok?})` → "all peers" /
+  `{codex?..perplexity?}`; the schema itself already included `perplexity`
+  since v3.0.0 — comment-only) and the `run_until_unanimous` `lead_peer`
+  description comment ("operator caller uses 'codex'" → "codex if enabled,
+  else first enabled session peer", per the v3.7.0 / AUDIT-2 change).
+
+### Notes
+
+100% backward-compatible. AUDIT-1 is a bug fix on the continuation path;
+AUDIT-2 is test coverage; AUDIT-3 narrows an auto-probe selection set
+(operators retain the explicit env override); AUDIT-4 is comments only. No
+tool schema change, no public-surface change. **Patch bump** (3.7.0 →
+3.7.1).
+
 ## [v03.07.00] — 2026-05-14
 
 Close-out of Codex's super-audit of cross-review-v2 v3.6.0 (bit-by-bit
