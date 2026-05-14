@@ -2,8 +2,9 @@
 // per-provider model-listing helpers so the SDK module trees are not
 // pulled at server boot. `resolveBestModels` only runs when an operator
 // explicitly invokes model probing — paying the SDK load cost there is
-// expected and amortized across all 5 peer probes via the per-module
-// promise cache shared with the runtime adapters.
+// expected and amortized across all 6 peer probes (v3.7.0 / AUDIT-5:
+// corrected stale "5" — the roster is 6 since Perplexity in v3.0.0) via
+// the per-module promise cache shared with the runtime adapters.
 import type { AppConfig, ModelCandidate, ModelSelection, PeerId } from "../core/types.js";
 import { loadAnthropicCtor } from "./anthropic.js";
 import { loadGenaiModule } from "./gemini.js";

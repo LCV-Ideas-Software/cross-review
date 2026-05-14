@@ -364,8 +364,9 @@ function buildReviewPrompt(
 // Each item shows the originating peer + the verbatim ask.
 //
 // v2.8.0: only items in `open` status (or status undefined for legacy
-// pre-v2.8 sessions) appear in the prompt. Items auto-promoted to
-// `addressed` by resurfacing inference, or moved to terminal states
+// pre-v2.8 sessions) appear in the prompt. Items marked `not_resurfaced`
+// by resurfacing inference (v3.5.0 — was `addressed` pre-v3.5.0),
+// `addressed` by the judge autowire, or moved to terminal states
 // (`satisfied`, `deferred`, `rejected`) by the operator, are suppressed
 // here so peers focus on what is still outstanding. The dashboard and
 // session_read still surface the full checklist with status badges.
@@ -2258,39 +2259,55 @@ export class CrossReviewOrchestrator {
       }
     }
     const enabledRequestedPeers = requestedPeers.filter((peer) => this.config.peer_enabled[peer]);
+    // v3.7.0 (AUDIT-1, Codex super-audit 2026-05-14): derive the
+    // EFFECTIVE petitioner BEFORE computing auto-recusal. For a
+    // continuation (session_id set), the petitioner is the one persisted
+    // in the session — NOT the current call's `caller`, which the MCP
+    // schema defaults to "operator" when omitted. Pre-v3.7.0 the recusal
+    // below used `requestedPetitioner` (the current-call caller); a
+    // continuation that omitted `caller` defaulted it to "operator",
+    // skipped recusal entirely, and let the real persisted
+    // peer-petitioner into the voting colegiado — a direct anti-self-
+    // review HARD GATE violation. We now read the session first and
+    // resolve the effective petitioner, then compute recusal/panel from
+    // it. For a brand-new session `existingSession` is undefined and
+    // `effectivePetitioner` falls through to `requestedPetitioner` —
+    // identical to pre-v3.7.0 behavior, zero regression on that path.
+    if (input.session_id) this.store.assertNotFinalized(input.session_id);
+    const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
+    const effectivePetitioner: PeerId | "operator" =
+      input.petitioner ??
+      existingSession?.convergence_scope?.petitioner ??
+      existingSession?.caller ??
+      requestedPetitioner;
     // Tribunal-colegiado hard gate: the petitioner/caller never votes as
     // a reviewer on their own petition. Direct ask_peers has no relator
     // unless the caller explicitly supplies one through the internal API,
     // but it still must auto-recuse the petitioner from the reviewer set.
     const selectedPeers =
-      requestedPetitioner === "operator"
+      effectivePetitioner === "operator"
         ? enabledRequestedPeers
-        : enabledRequestedPeers.filter((peer) => peer !== requestedPetitioner);
+        : enabledRequestedPeers.filter((peer) => peer !== effectivePetitioner);
     if (input.lead_peer !== undefined) {
-      assertLeadPeerNotCaller(requestedPetitioner, input.lead_peer);
+      assertLeadPeerNotCaller(effectivePetitioner, input.lead_peer);
     }
     if (!selectedPeers.length) {
       throw new Error(
-        `no_eligible_reviewer_peers: caller=${requestedPetitioner} left no reviewer peers after auto-recusal. Add at least one non-caller peer.`,
+        `no_eligible_reviewer_peers: caller=${effectivePetitioner} left no reviewer peers after auto-recusal. Add at least one non-caller peer.`,
       );
     }
     const missingFinancialVars = missingFinancialControlVars(this.config, selectedPeers);
-    // v3.2.0 (Codex bug report 2026-05-12): fail fast when the caller
-    // targets a finalized session. Prior to v3.2.0 the round would run,
-    // burn budget, and corrupt the session meta with a stale
-    // `convergence_health` derived from the post-finalize round.
-    if (input.session_id) this.store.assertNotFinalized(input.session_id);
-    const session = input.session_id
-      ? this.store.read(input.session_id)
+    const session = existingSession
+      ? existingSession
       : missingFinancialVars.length
         ? this.store.init(
             input.task,
-            requestedPetitioner,
+            effectivePetitioner,
             [],
             normalizeReviewFocus(input.review_focus, this.config),
           )
-        : await this.initSession(input.task, requestedPetitioner, input.review_focus);
-    const petitioner = input.petitioner ?? session.convergence_scope?.petitioner ?? session.caller;
+        : await this.initSession(input.task, effectivePetitioner, input.review_focus);
+    const petitioner = effectivePetitioner;
     const roundNumber = session.rounds.length + 1;
     const startedAt = now();
     const quorumPeers = resolveQuorumPeers(session, selectedPeers);
@@ -2792,8 +2809,10 @@ export class CrossReviewOrchestrator {
     }
     // v2.8.0 Address Detection: run resurfacing-inference after the
     // aggregation. Open items whose last_round did not advance to the
-    // current round are auto-promoted to "addressed"; previously-addressed
-    // items resurfaced this round revert to "open"; terminal operator
+    // current round are marked "not_resurfaced" (v3.5.0 / CRV2-2 — was
+    // "addressed" pre-v3.5.0; non-resurfacing is not proof of
+    // satisfaction); "not_resurfaced" OR judge-"addressed" items
+    // resurfaced this round revert to "open"; terminal operator
     // statuses surface a `peer_resurfaced_terminal` event for visibility
     // but the status itself is not auto-changed (operator-owned).
     // Always runs, even when evidenceAsks is empty: a round with zero
@@ -3485,7 +3504,13 @@ export class CrossReviewOrchestrator {
       if (input.lead_peer !== undefined) {
         leadPeer = input.lead_peer;
       } else {
-        leadPeer = "codex";
+        // v3.7.0 (AUDIT-2, Codex super-audit 2026-05-14): the operator
+        // default relator must respect peer_enabled. Pre-v3.7.0 this was
+        // hardcoded "codex" — so with CROSS_REVIEW_V2_PEER_CODEX=off an
+        // operator-caller with no lead_peer still got codex as relator,
+        // a disabled peer back in the loop. Prefer codex when enabled
+        // (back-compat), else the first enabled session peer.
+        leadPeer = this.config.peer_enabled.codex ? "codex" : (sessionPeers[0] ?? "codex");
       }
     } else {
       // v2.11.0 fix: pass sessionPeers so the lottery picks ONLY from

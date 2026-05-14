@@ -7428,6 +7428,114 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] session_doctor_repair_test: PASS");
 }
 
+// v3.7.0 (AUDIT-1, Codex super-audit) — askPeers must recuse the
+// EFFECTIVE petitioner (derived from the persisted session on a
+// continuation), not the current call's `caller`. Pre-v3.7.0 a
+// continuation that omitted `caller` defaulted it to "operator",
+// skipped recusal, and let the real persisted peer-petitioner into the
+// voting colegiado — an anti-self-review HARD GATE violation.
+{
+  const a1Cfg = {
+    ...loadConfig(),
+    data_dir: smokeTmpDir("audit1-petitioner-recusal"),
+    budget: {
+      ...loadConfig().budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+  };
+  const a1Orch = new CrossReviewOrchestrator(a1Cfg, () => {});
+  // R1: caller=codex creates the session; the FORCE_NEEDS_EVIDENCE
+  // draft keeps it non-terminal so a continuation can run.
+  const a1r1 = await a1Orch.askPeers({
+    task: "AUDIT-1 smoke: petitioner recusal on continuation.",
+    draft: "FORCE_NEEDS_EVIDENCE",
+    caller: "codex",
+    peers: ["claude", "gemini", "deepseek"],
+  });
+  assert.equal(
+    a1r1.session.convergence_scope?.petitioner,
+    "codex",
+    "v3.7.0 / AUDIT-1: R1 must persist petitioner=codex",
+  );
+  // R2: continuation with `caller` OMITTED — pre-v3.7.0 this defaulted
+  // requestedPetitioner to "operator" and skipped recusal. The fix
+  // derives the effective petitioner from the persisted session.
+  const a1r2 = await a1Orch.askPeers({
+    session_id: a1r1.session.session_id,
+    task: "AUDIT-1 smoke: petitioner recusal on continuation.",
+    draft: "FORCE_NEEDS_EVIDENCE",
+    peers: ["codex", "claude", "gemini", "deepseek"],
+  });
+  const a1Reviewers = a1r2.session.convergence_scope?.reviewer_peers ?? [];
+  assert.ok(
+    !a1Reviewers.includes("codex"),
+    `v3.7.0 / AUDIT-1: the persisted peer-petitioner (codex) must be recused from reviewer_peers on a caller-omitted continuation — got [${a1Reviewers.join(", ")}]`,
+  );
+  assert.equal(
+    a1r2.session.convergence_scope?.petitioner,
+    "codex",
+    "v3.7.0 / AUDIT-1: continuation must keep the persisted petitioner",
+  );
+  // Source pin.
+  const a1OrchSrc = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /const effectivePetitioner: PeerId \| "operator" =\s*\n?\s*input\.petitioner \?\?/.test(
+      a1OrchSrc,
+    ),
+    "v3.7.0 / AUDIT-1: askPeers must derive effectivePetitioner before recusal",
+  );
+  assert.ok(
+    /effectivePetitioner === "operator"\s*\n?\s*\? enabledRequestedPeers/.test(a1OrchSrc),
+    "v3.7.0 / AUDIT-1: the recusal must branch on effectivePetitioner, not requestedPetitioner",
+  );
+  console.log("[smoke] audit1_petitioner_recusal_test: PASS");
+}
+
+// v3.7.0 (AUDIT-2 + AUDIT-3 + AUDIT-4, Codex super-audit) — source pins.
+// AUDIT-2: operator default relator respects peer_enabled.
+// AUDIT-3: peers + judge_peers schemas use .max(PEERS.length), not .max(5).
+// AUDIT-4: server_info.financial_controls computes over enabled peers.
+{
+  const orchSrcA = fs.readFileSync(new URL("../src/core/orchestrator.ts", import.meta.url), "utf8");
+  const serverSrcA = fs.readFileSync(new URL("../src/mcp/server.ts", import.meta.url), "utf8");
+
+  // AUDIT-2.
+  assert.ok(
+    /this\.config\.peer_enabled\.codex \? "codex" : \(sessionPeers\[0\] \?\? "codex"\)/.test(
+      orchSrcA,
+    ),
+    "v3.7.0 / AUDIT-2: operator leadPeer default must respect peer_enabled (prefer codex when enabled, else first enabled session peer)",
+  );
+
+  // AUDIT-3: no bare `.max(5)` on the peers / judge_peers schemas; the
+  // 5 sites must use `.max(PEERS.length)`.
+  const maxPeersLen = serverSrcA.match(/\.max\(PEERS\.length\)/g) ?? [];
+  assert.ok(
+    maxPeersLen.length >= 5,
+    `v3.7.0 / AUDIT-3: expected >=5 .max(PEERS.length) sites (4 peers panels + judge_peers), found ${maxPeersLen.length}`,
+  );
+  assert.ok(
+    !/\.min\(1\)\s*\n?\s*[^]*?\.max\(5\)\s*\n?\s*\.default\(\[\.\.\.PEERS\]/.test(serverSrcA),
+    "v3.7.0 / AUDIT-3: the peers schema must NOT keep the stale `.max(5)` against a 6-element PEERS default",
+  );
+  assert.ok(
+    !/judge_peers: z\.array\(PeerSchema\)\.min\(2\)\.max\(5\)/.test(serverSrcA),
+    "v3.7.0 / AUDIT-3: judge_peers must NOT keep the stale `.max(5)`",
+  );
+
+  // AUDIT-4.
+  assert.ok(
+    /PEERS\.filter\(\(peer\) => runtime\.config\.peer_enabled\[peer\]\)/.test(serverSrcA),
+    "v3.7.0 / AUDIT-4: server_info.financial_controls must compute readiness over the enabled peer subset",
+  );
+  console.log("[smoke] audit_structural_pins_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight

@@ -19,7 +19,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "3.6.0";
+export const VERSION = "3.7.0";
 export const RELEASE_DATE = "2026-05-14";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -62,6 +62,15 @@ const PROJECT_ROOT =
 // process has its own).
 let _winRegistryEnvCache: Map<string, string> | null = null;
 
+// v3.7.0 (AUDIT-6, Codex super-audit 2026-05-14): cross-review-v2's
+// "API-only" claim means it does NOT execute caller-supplied shell or
+// repo commands — it is not a CLI runner and never shells out on behalf
+// of a caller. It DOES make a small number of fixed, internal process
+// calls with constant arguments (this `reg query` for the Windows
+// env-var fallback; `tasklist` for process-tree introspection in
+// caller-tokens). Those args are constants or PID-derived, never
+// caller-influenced. The precise statement is "no caller-supplied
+// shell/repo execution", not "no child processes at all".
 function loadWindowsRegistryEnvCache(): Map<string, string> {
   if (_winRegistryEnvCache) return _winRegistryEnvCache;
   const cache = new Map<string, string>();
@@ -221,7 +230,8 @@ export function loadConfig(): AppConfig {
       require_rates_for_budget: true,
       // v2.5.0: configurable fallback for run_until_unanimous when the
       // caller does not pass `max_rounds` and `until_stopped` is false.
-      // The MCP zod schema still caps caller-supplied values at 32; this
+      // The MCP zod schema caps caller-supplied `max_rounds` at 1000
+      // (v3.7.0 / AUDIT-5: corrected stale "32" in this comment); this
       // controls the SERVER-side default (previously hardcoded to 8 in
       // orchestrator.ts). Values <=0 fall back to 8.
       default_max_rounds: intEnv("CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS", 8),

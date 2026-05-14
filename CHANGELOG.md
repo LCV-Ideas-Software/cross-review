@@ -7,6 +7,84 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.07.00] — 2026-05-14
+
+Close-out of Codex's super-audit of cross-review-v2 v3.6.0 (bit-by-bit
+review, 6 findings AUDIT-1..AUDIT-6). All 6 verified against
+primary-source code before fixing; all 6 were real (no misreads in the
+consequential findings). Codex's verdict was REPROVADO-sem-v3.7.0
+because AUDIT-1 is a genuine anti-self-review HARD GATE violation.
+
+### Fixed
+
+- **AUDIT-1 (BLOCKER) — `askPeers` recused the wrong petitioner on a
+  continuation.** `orchestrator.ts` computed auto-recusal from
+  `requestedPetitioner` (the current call's `caller`, which the MCP
+  schema defaults to `"operator"` when omitted) _before_ reading the
+  persisted session. A continuation that omitted `caller` therefore
+  defaulted `requestedPetitioner` to `"operator"`, skipped recusal
+  entirely, and let the real persisted peer-petitioner back into the
+  voting colegiado — a direct anti-self-review HARD GATE violation
+  (Codex reproduced it locally: session created `caller=codex`,
+  continuation `askPeers()` with `caller` omitted, `reviewer_peers`
+  ended up including `codex`). Fix: `askPeers` now reads the existing
+  session first, derives `effectivePetitioner = input.petitioner ??
+existingSession?.convergence_scope?.petitioner ??
+existingSession?.caller ?? requestedPetitioner`, and computes recusal
+  / panel / `assertLeadPeerNotCaller` from it. For a brand-new session
+  `existingSession` is undefined and `effectivePetitioner` falls
+  through to `requestedPetitioner` — zero behavior change on the
+  new-session path.
+- **AUDIT-2 (HIGH) — operator default relator ignored `peer_enabled`.**
+  `runUntilUnanimous` with `caller="operator"` and `lead_peer` omitted
+  hardcoded `leadPeer = "codex"` with no `peer_enabled` check, so with
+  `CROSS_REVIEW_V2_PEER_CODEX=off` a disabled peer was still used as
+  relator. Fix: `leadPeer = this.config.peer_enabled.codex ? "codex" :
+(sessionPeers[0] ?? "codex")` — prefer codex when enabled
+  (back-compat), else the first enabled session peer.
+- **AUDIT-3 (MEDIUM) — `peers` / `judge_peers` schemas capped at
+  `.max(5)` against a 6-element roster.** `PEERS` has had 6 entries
+  since v3.0.0 (Perplexity), but the MCP zod schemas still used
+  `.max(5)` while defaulting to `.default([...PEERS])` (6 elements) —
+  an explicit full 6-peer panel failed schema validation before the
+  v3.3.0 peer-selection lock could act, and the emitted JSON Schema
+  announced `maxItems: 5` contradicting the 6-element default. Fix:
+  `.max(PEERS.length)` at all **5 sites** — the 4 caller-facing tool
+  `peers` panels (`ask_peers`, `session_start_round`,
+  `run_until_unanimous`, `session_start_unanimous`) plus
+  `judge_peers` on `session_evidence_judge_consensus_pass` (Codex's
+  audit caught the 4 panels; the 5th — `judge_peers` — was found
+  during primary-source verification of the same bug class).
+- **AUDIT-4 (LOW) — `server_info.financial_controls` computed
+  readiness over the full `PEERS` roster.** A missing rate card for a
+  peer the operator had disabled would falsely report
+  `paid_calls_ready=false`. Fix: compute over
+  `PEERS.filter((peer) => config.peer_enabled[peer])`.
+- **AUDIT-5 (NIT) — internal comment drift.** Corrected stale comments
+  that still described the pre-v3.5.0 resurfacing path as auto-promoting
+  to `addressed` (`orchestrator.ts` × 2 — now `not_resurfaced`), a stale
+  `max_rounds` cap of "32" in `config.ts` (the schema caps at 1000), and
+  "5 peer probes" in `model-selection.ts` (the roster is 6).
+- **AUDIT-6 (Observation) — "API-only" wording precision.** Added a
+  clarifying comment near the internal `reg query` call: cross-review-v2
+  makes a small number of fixed, constant-argument / PID-derived
+  internal process calls (`reg`, `tasklist`); the precise claim is "no
+  caller-supplied shell/repo execution", not "no child processes at
+  all". No code/behavior change — wording only.
+
+### Notes
+
+- **Minor bump (3.6.0 → 3.7.0; Y-component per SemVer)**. AUDIT-1/2 are
+  bug fixes; AUDIT-3 widens the public input schema (a 6-peer panel is
+  now accepted where it was previously rejected) — additive public
+  surface change → MINOR. AUDIT-4/5/6 are observability/comment-only.
+  No breaking change; no tool removed; no required arg added.
+- 2 new smoke markers: `audit1_petitioner_recusal_test` (behavioral —
+  creates a `caller=codex` session, runs a caller-omitted continuation,
+  asserts `codex` is recused from `reviewer_peers` + 2 source pins),
+  `audit_structural_pins_test` (source pins for AUDIT-2/3/4). Smoke:
+  `ok: true / events: 99`.
+
 ## [v03.06.00] — 2026-05-14
 
 Observability + caller-discipline improvements surfaced by a study of

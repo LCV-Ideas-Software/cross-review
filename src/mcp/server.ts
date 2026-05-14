@@ -593,17 +593,24 @@ export async function main(): Promise<void> {
           stub: runtime.config.stub,
           retry_timeout_ms: runtime.config.retry.timeout_ms,
           budget: runtime.config.budget,
-          financial_controls: {
-            paid_calls_ready:
-              missingFinancialControlVars(runtime.config, [...PEERS], {
-                untilStopped: true,
-              }).length === 0,
-            missing_variables: missingFinancialControlVars(runtime.config, [...PEERS], {
+          financial_controls: (() => {
+            // v3.7.0 (AUDIT-4, Codex super-audit 2026-05-14): readiness
+            // is computed over the ENABLED peer subset, not the full
+            // PEERS roster. Pre-v3.7.0 a missing rate card for a peer
+            // the operator had disabled (CROSS_REVIEW_V2_PEER_<NAME>=off)
+            // would falsely report paid_calls_ready=false even though
+            // that peer is never called.
+            const enabledPeers = PEERS.filter((peer) => runtime.config.peer_enabled[peer]);
+            const missingVars = missingFinancialControlVars(runtime.config, enabledPeers, {
               untilStopped: true,
-            }),
-            policy:
-              "Paid provider calls are blocked until budget ceilings and per-peer USD-per-million rate cards are explicitly configured.",
-          },
+            });
+            return {
+              paid_calls_ready: missingVars.length === 0,
+              missing_variables: missingVars,
+              policy:
+                "Paid provider calls are blocked until budget ceilings and per-peer USD-per-million rate cards are explicitly configured.",
+            };
+          })(),
           prompt: runtime.config.prompt,
           max_output_tokens: runtime.config.max_output_tokens,
           streaming: runtime.config.streaming,
@@ -775,7 +782,13 @@ export async function main(): Promise<void> {
         peers: z
           .array(PeerSchema)
           .min(1)
-          .max(5)
+          // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
+          // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
+          // regression that rejected an explicit full 6-peer panel
+          // before the v3.3.0 peer-selection lock could act, and the
+          // emitted JSON Schema announced maxItems:5 contradicting the
+          // 6-element default. `.max(PEERS.length)` tracks the roster.
+          .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
         reasoning_effort_overrides: ReasoningEffortOverridesSchema,
         response_format: ResponseFormatSchema,
@@ -823,7 +836,13 @@ export async function main(): Promise<void> {
         peers: z
           .array(PeerSchema)
           .min(1)
-          .max(5)
+          // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
+          // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
+          // regression that rejected an explicit full 6-peer panel
+          // before the v3.3.0 peer-selection lock could act, and the
+          // emitted JSON Schema announced maxItems:5 contradicting the
+          // 6-element default. `.max(PEERS.length)` tracks the roster.
+          .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
         reasoning_effort_overrides: ReasoningEffortOverridesSchema,
         response_format: ResponseFormatSchema,
@@ -886,7 +905,13 @@ export async function main(): Promise<void> {
         peers: z
           .array(PeerSchema)
           .min(1)
-          .max(5)
+          // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
+          // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
+          // regression that rejected an explicit full 6-peer panel
+          // before the v3.3.0 peer-selection lock could act, and the
+          // emitted JSON Schema announced maxItems:5 contradicting the
+          // 6-element default. `.max(PEERS.length)` tracks the roster.
+          .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
         max_rounds: z.number().int().min(1).max(1000).default(8),
         until_stopped: z.boolean().default(false),
@@ -958,7 +983,13 @@ export async function main(): Promise<void> {
         peers: z
           .array(PeerSchema)
           .min(1)
-          .max(5)
+          // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
+          // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
+          // regression that rejected an explicit full 6-peer panel
+          // before the v3.3.0 peer-selection lock could act, and the
+          // emitted JSON Schema announced maxItems:5 contradicting the
+          // 6-element default. `.max(PEERS.length)` tracks the roster.
+          .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
         max_rounds: z.number().int().min(1).max(1000).default(8),
         until_stopped: z.boolean().default(false),
@@ -1463,7 +1494,10 @@ export async function main(): Promise<void> {
         "v2.14.0 — multi-peer consensus judge pass. Fires `judgeEvidenceAsk` against ALL `judge_peers` in parallel for each open checklist item; promotes (active mode) ONLY when all peers return verified-satisfied with non-empty rationale and zero parser_warnings. Disagreement leaves the item open with `reason=consensus_disagreement` and `per_peer` details. Shadow mode emits `session.evidence_judge_pass.shadow_decision` events with `consensus_peers` so the precision report tool sees consensus runs in its corpus. Requires at least 2 judge_peers; single-peer callers should use `session_evidence_judge_pass`. All judge_peers must be enabled (CROSS_REVIEW_V2_PEER_<NAME>=on).",
       inputSchema: z.object({
         session_id: SessionIdSchema,
-        judge_peers: z.array(PeerSchema).min(2).max(5),
+        // v3.7.0 (AUDIT-3): .max(PEERS.length) — same stale-`.max(5)`
+        // regression as the `peers` panel; the 6-peer roster (Perplexity
+        // since v3.0.0) must be representable in a judge consensus.
+        judge_peers: z.array(PeerSchema).min(2).max(PEERS.length),
         draft: z.string().min(1).max(200_000),
         item_ids: z
           .array(
