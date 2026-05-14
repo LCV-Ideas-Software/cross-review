@@ -3474,21 +3474,30 @@ export class CrossReviewOrchestrator {
     // v3.7.1 (AUDIT-1, Codex super-audit 2026-05-14): derive the EFFECTIVE
     // petitioner BEFORE computing auto-recusal / the relator lottery. For a
     // continuation (session_id set), the petitioner is the one persisted in
-    // the session — NOT the current call's `caller`, which the MCP schema
-    // defaults to "operator" when omitted. v3.7.0 fixed this in askPeers but
-    // left runUntilUnanimous deriving callerForLottery from
-    // `input.caller ?? "operator"` BEFORE reading the session: a
-    // continuation that omitted `caller` skipped recusal and could place the
-    // real persisted peer-petitioner into the voting colegiado or the relator
-    // slot — a direct anti-self-review HARD GATE violation. We now read the
-    // session once, up front, and derive callerForLottery from it. A brand-
-    // new session OR an explicit `input.caller` is identical to pre-v3.7.1.
+    // the session — NOT the current call's `caller`.
+    //
+    // v3.7.2 (AUDIT-1, Codex 3rd super-audit 2026-05-14): the v3.7.1 chain
+    // led with `input.caller ?? existingSession?...`, which was DEAD on the
+    // public MCP path: the `run_until_unanimous` tool schema declares
+    // `caller: CallerSchema.default("operator")`, so `input.caller` is never
+    // `undefined` when a continuation omits it — it arrives as "operator",
+    // the `??` never falls through, and the real persisted peer-petitioner
+    // could still be re-classified to "operator", placed in the voting
+    // colegiado, or lottery-picked as relator of its own session (Codex
+    // reproduced it). The persisted session is the source of truth for the
+    // petitioner: on any continuation it MUST win over `input.caller`.
+    // `input.caller` is only the acting invoker's identity — it cannot
+    // re-open a session's petitioner. (askPeers does not share this bug: it
+    // keys off `input.petitioner`, which has NO MCP schema field, so it is
+    // genuinely `undefined` on the public path and its `existingSession`
+    // fallback is reached.) Brand-new session (existingSession undefined) →
+    // `input.caller ?? "operator"`, identical to pre-v3.7.2.
     if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
     const callerForLottery: PeerId | "operator" =
-      input.caller ??
       existingSession?.convergence_scope?.petitioner ??
       existingSession?.caller ??
+      input.caller ??
       "operator";
     // v2.14.0: explicit `peers` entries referencing a disabled peer are
     // rejected before any work; lead_peer is checked below. Without an

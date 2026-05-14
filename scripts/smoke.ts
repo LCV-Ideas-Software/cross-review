@@ -233,19 +233,20 @@ for (const deprecatedOrWeakModel of [
     `${deprecatedOrWeakModel} must not be in active priority lists`,
   );
 }
-for (const currentOfficialModel of [
+// v3.7.2 (AUDIT-3 + operator directive 2026-05-14): NO model fallback —
+// every peer is pinned to a SINGLE canonical model in PRIORITY. The
+// "must remain" list is therefore exactly the 6 lone canonical pins.
+for (const canonicalPin of [
   "gpt-5.5",
   "claude-opus-4-7",
   "gemini-2.5-pro",
   "deepseek-v4-pro",
-  "grok-4.20-multi-agent",
-  "grok-4.3",
-  "grok-4.20-reasoning",
   "grok-4-latest",
+  "sonar-reasoning-pro",
 ]) {
   assert.ok(
-    modelSelectionSource.includes(`"${currentOfficialModel}"`),
-    `${currentOfficialModel} must remain in the official-doc-backed priority lists`,
+    modelSelectionSource.includes(`"${canonicalPin}"`),
+    `${canonicalPin} must remain the lone canonical PRIORITY pin`,
   );
 }
 
@@ -4191,12 +4192,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "PEERS must have 6 entries (codex/claude/gemini/deepseek/grok/perplexity)",
   );
   const cfg = loadConfig();
-  // v2.14.1: default switched to grok-4.20-multi-agent (only Grok-4
-  // model that accepts reasoning.effort per official xAI docs).
+  // v3.7.2 (AUDIT-3 + operator directive 2026-05-14): default grok model
+  // is `grok-4-latest` — the operator's chosen canonical pin for
+  // cross-review-v2, superseding the v2.14.1 `grok-4.20-multi-agent`
+  // default. `grok-4.20-multi-agent` remains a valid env-override
+  // (CROSS_REVIEW_GROK_MODEL) for explicit reasoning.effort control — the
+  // adapter still handles it; the modelAcceptsReasoningEffort /
+  // clampEffortForModel tests below continue to pin that capability.
   assert.equal(
     cfg.models.grok,
-    "grok-4.20-multi-agent",
-    "default grok model must be grok-4.20-multi-agent (v2.14.1 hotfix)",
+    "grok-4-latest",
+    "default grok model must be grok-4-latest (v3.7.2, operator directive)",
   );
   assert.ok("grok" in cfg.fallback_models, "fallback_models must have grok entry");
   assert.equal(cfg.peer_enabled.grok, true, "grok must be enabled by default");
@@ -7496,13 +7502,18 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] audit1_petitioner_recusal_test: PASS");
 }
 
-// v3.7.1 (AUDIT-1 + AUDIT-2 + AUDIT-3, Codex super-audit 2026-05-14) —
-// runUntilUnanimous must derive the EFFECTIVE petitioner from the persisted
-// session on a caller-omitted continuation. v3.7.0 fixed askPeers but left
-// runUntilUnanimous deriving callerForLottery from `input.caller ?? "operator"`
-// BEFORE reading the session, re-opening the anti-self-review HARD GATE on
-// the automatic path: a continuation that omitted `caller` could place the
-// real persisted peer-petitioner into the voting panel or the relator slot.
+// v3.7.1 / v3.7.2 (AUDIT-1 + AUDIT-2 + AUDIT-3, Codex super-audits
+// 2026-05-14) — runUntilUnanimous must derive the EFFECTIVE petitioner from
+// the persisted session on a continuation. v3.7.0 fixed askPeers; v3.7.1
+// fixed runUntilUnanimous for a genuinely-undefined `input.caller` but the
+// `run_until_unanimous` MCP schema declares `caller: CallerSchema.default
+// ("operator")` — so on the PUBLIC path `input.caller` is never undefined,
+// the v3.7.1 `??` chain never fell through, and the real persisted
+// peer-petitioner could still be reclassified / placed in the voting panel /
+// lottery-picked as relator. v3.7.2: the persisted session wins over
+// `input.caller` on any continuation. The internal-path case below
+// (caller undefined) is kept; the post-schema cases simulate the public
+// path (explicit caller="operator" and a mismatching caller="claude").
 {
   const a2Cfg = {
     ...loadConfig(),
@@ -7552,38 +7563,82 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     !(a2Scope?.reviewer_peers ?? []).includes("codex"),
     `v3.7.1 / AUDIT-2: codex must be recused from reviewer_peers — got [${(a2Scope?.reviewer_peers ?? []).join(", ")}]`,
   );
-  // Source pin: runUntilUnanimous derives callerForLottery from the
-  // persisted session, not from `input.caller ?? "operator"` alone.
+  // v3.7.2 (AUDIT-2): the case above calls runUntilUnanimous directly so
+  // `input.caller` is undefined. The PUBLIC MCP tool schema materializes
+  // `caller: "operator"` when omitted, and a caller could also pass an
+  // explicit mismatching peer id. Both must keep petitioner=codex and
+  // recuse codex — the v3.7.1 fix was DEAD on the public path because it
+  // led the ?? chain with input.caller. Each iteration uses a FRESH codex
+  // session (the runUntilUnanimous call above finalized a2r1's session).
+  for (const postSchemaCaller of ["operator", "claude"] as const) {
+    const pscR1 = await a2Orch.askPeers({
+      task: "AUDIT-2 smoke: post-schema caller continuation.",
+      draft: "FORCE_NEEDS_EVIDENCE",
+      caller: "codex",
+      peers: ["claude", "gemini", "deepseek"],
+    });
+    const pscRun = await a2Orch.runUntilUnanimous({
+      session_id: pscR1.session.session_id,
+      task: "AUDIT-2 smoke: post-schema caller continuation.",
+      initial_draft: "FORCE_NEEDS_EVIDENCE",
+      caller: postSchemaCaller,
+      max_rounds: 1,
+    });
+    const pscScope = pscRun.session.convergence_scope;
+    assert.equal(
+      pscScope?.petitioner,
+      "codex",
+      `v3.7.2 / AUDIT-2: continuation with caller="${postSchemaCaller}" must keep the persisted petitioner=codex`,
+    );
+    assert.notEqual(
+      pscScope?.lead_peer,
+      "codex",
+      `v3.7.2 / AUDIT-2: codex must not be relator of its own session with post-schema caller="${postSchemaCaller}"`,
+    );
+    assert.ok(
+      !(pscScope?.reviewer_peers ?? []).includes("codex"),
+      `v3.7.2 / AUDIT-2: codex must be recused from reviewer_peers with post-schema caller="${postSchemaCaller}" — got [${(pscScope?.reviewer_peers ?? []).join(", ")}]`,
+    );
+  }
+  // Source pin: runUntilUnanimous derives callerForLottery with the
+  // persisted session BEFORE input.caller (v3.7.2 ordering — input.caller
+  // is schema-defaulted so it cannot lead the chain).
   const a2OrchSrc = fs.readFileSync(
     new URL("../src/core/orchestrator.ts", import.meta.url),
     "utf8",
   );
   assert.ok(
-    /const callerForLottery: PeerId \| "operator" =[\s\S]{0,200}?existingSession\?\.convergence_scope\?\.petitioner[\s\S]{0,120}?existingSession\?\.caller/.test(
+    /const callerForLottery: PeerId \| "operator" =\s*existingSession\?\.convergence_scope\?\.petitioner \?\?\s*existingSession\?\.caller \?\?\s*input\.caller \?\?\s*"operator";/.test(
       a2OrchSrc,
     ),
-    "v3.7.1 / AUDIT-1: runUntilUnanimous must derive callerForLottery from the persisted session before recusal/lottery",
+    "v3.7.2 / AUDIT-1: runUntilUnanimous must derive callerForLottery from the persisted session BEFORE input.caller",
   );
-  // AUDIT-3 anti-drift: the trimmed PRIORITY lists must not re-grow
-  // non-canonical auto-fallback entries.
+  // v3.7.2 (AUDIT-3): NO model fallback — every peer PRIORITY list is a
+  // SINGLE canonical pin. Negative pins (off-policy models that must never
+  // appear) + positive pins (the exact lone-entry shape per peer).
   const a3ModelSrc = fs.readFileSync(
     new URL("../src/peers/model-selection.ts", import.meta.url),
     "utf8",
   );
-  for (const offPolicyAutoModel of ["deepseek-v4-flash", "gemini-3.1-pro-preview"]) {
+  for (const offPolicyModel of ["deepseek-v4-flash", "gemini-3.1-pro-preview"]) {
     assert.ok(
-      !a3ModelSrc.includes(`"${offPolicyAutoModel}"`),
-      `v3.7.1 / AUDIT-3: ${offPolicyAutoModel} must not be in the auto-probe PRIORITY lists (off-policy / manual-override-only tier)`,
+      !a3ModelSrc.includes(`"${offPolicyModel}"`),
+      `v3.7.2 / AUDIT-3: ${offPolicyModel} must not appear in the PRIORITY lists`,
     );
   }
-  assert.ok(
-    /deepseek: \["deepseek-v4-pro"\],/.test(a3ModelSrc),
-    "v3.7.1 / AUDIT-3: deepseek PRIORITY must be the lone canonical pin",
-  );
-  assert.ok(
-    /gemini: \["gemini-2.5-pro"\],/.test(a3ModelSrc),
-    "v3.7.1 / AUDIT-3: gemini PRIORITY must be the lone canonical pin",
-  );
+  for (const [peer, pin] of [
+    ["codex", "gpt-5.5"],
+    ["claude", "claude-opus-4-7"],
+    ["gemini", "gemini-2.5-pro"],
+    ["deepseek", "deepseek-v4-pro"],
+    ["grok", "grok-4-latest"],
+    ["perplexity", "sonar-reasoning-pro"],
+  ] as const) {
+    assert.ok(
+      new RegExp(`${peer}: \\["${pin}"\\]`).test(a3ModelSrc),
+      `v3.7.2 / AUDIT-3: ${peer} PRIORITY must be the lone canonical pin ["${pin}"] (no fallback)`,
+    );
+  }
   console.log("[smoke] audit1_run_until_unanimous_continuation_test: PASS");
 }
 

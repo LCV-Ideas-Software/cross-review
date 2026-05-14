@@ -24,58 +24,30 @@ const DOCS = {
   perplexity: "https://docs.perplexity.ai/getting-started/models",
 } satisfies Record<PeerId, string>;
 
+// v3.7.2 (AUDIT-3, Codex 3rd super-audit + operator directive 2026-05-14):
+// NO MODEL FALLBACK. Every peer is pinned to a SINGLE canonical model — the
+// most advanced "pro" model with reasoning for that provider. Operator
+// directive: "não quero fallback de modelos. É um único modelo pinado e
+// pronto. E sempre o modelo mais avançado, pro, com reasoning."
+// `selectFromCandidates` picks the first PRIORITY entry the provider's live
+// list contains; with a lone entry it either selects that canonical model
+// or falls through to the configured `fallback` (config.models[peer]) — it
+// can NEVER silently auto-select an off-policy model. The only escape hatch
+// is the explicit per-host env override (CROSS_REVIEW_<PROVIDER>_MODEL).
+// Pre-v3.7.2 codex/claude/grok kept multi-entry same-provider chains and
+// gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
 const PRIORITY: Record<PeerId, string[]> = {
-  codex: [
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.2",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex",
-    "gpt-5.1",
-    "gpt-5-pro",
-    "gpt-5",
-  ],
-  claude: ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"],
-  // v3.7.1 (AUDIT-3, Codex super-audit 2026-05-14): trimmed to the lone
-  // canonical pin. selectFromCandidates picks the first PRIORITY entry the
-  // provider's live list contains, so a non-canonical fallback entry would
-  // be silently auto-selected whenever the canonical model was absent from
-  // that list. `gemini-3.1-pro-preview` is manual-override-only per the
-  // workspace Model Selection Standards directive (explicitly "NÃO é o
-  // default") and `deepseek-v4-flash` is a forbidden "flash" tier — neither
-  // may be auto-selected. With the lone canonical entry, selectFromCandidates
-  // falls back to the configured `fallback` (config.models[peer]) instead;
-  // operators opt into other models via CROSS_REVIEW_{GEMINI,DEEPSEEK}_MODEL.
-  // codex/claude/grok keep canonical-first SAME-PROVIDER degradation chains
-  // (not directive violations; documented resilience; smoke-pinned).
+  codex: ["gpt-5.5"],
+  claude: ["claude-opus-4-7"],
   gemini: ["gemini-2.5-pro"],
   deepseek: ["deepseek-v4-pro"],
-  // v2.16.0 official-doc refresh (2026-05-05): xAI's reasoning docs
-  // distinguish automatic-reasoning Grok models from the explicit
-  // multi-agent model. `grok-4.20-multi-agent` remains first because it
-  // accepts `reasoning.effort`; `grok-4-latest` / `grok-4.3` /
-  // `grok-4.20-reasoning` / `grok-4.20` follow and must omit the
-  // explicit reasoning field.
-  grok: [
-    "grok-4.20-multi-agent",
-    "grok-4-latest",
-    "grok-4.3",
-    "grok-4.20-reasoning",
-    "grok-4.20",
-    "grok-4-1-fast",
-    "grok-4",
-    "grok-3-fast",
-    "grok-3",
-  ],
-  // v3.0.0: Perplexity Sonar models ordered by reasoning + grounding
-  // strength. `sonar-reasoning-pro` is the canonical default for
-  // cross-review (reasoning + grounding + chain-of-thought). Operators
-  // can switch via CROSS_REVIEW_PERPLEXITY_MODEL. `sonar-deep-research`
-  // is intentionally NOT first because it incurs multi-minute latency
-  // and a 4-dimension pricing profile (input + output + citation_tokens
-  // + reasoning_tokens + search_queries) — overkill for routine
-  // cross-review.
-  perplexity: ["sonar-reasoning-pro", "sonar-pro", "sonar", "sonar-deep-research"],
+  // grok-4-latest: operator-chosen canonical pin for cross-review-v2
+  // (directive 2026-05-14, superseding the prior grok-4.20-multi-agent
+  // pin). It does automatic reasoning and must omit the explicit
+  // `reasoning.effort` field — the adapter handles that via
+  // `modelAcceptsReasoningEffort`.
+  grok: ["grok-4-latest"],
+  perplexity: ["sonar-reasoning-pro"],
 };
 
 function envOverrideName(peer: PeerId): string {

@@ -19,7 +19,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "3.7.1";
+export const VERSION = "3.7.2";
 export const RELEASE_DATE = "2026-05-14";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -285,13 +285,15 @@ export function loadConfig(): AppConfig {
       claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-opus-4-7",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-2.5-pro",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
-      // v2.16.0 clarification: operator may choose `grok-4-latest`,
-      // `grok-4.3`, `grok-4.20`, or `grok-4.20-reasoning` (xAI automatic
-      // reasoning; no reasoning.effort body field) or
-      // `grok-4.20-multi-agent` (explicit reasoning.effort supported) through
-      // CROSS_REVIEW_GROK_MODEL. The adapter detects the chosen model
-      // before deciding whether to send the reasoning field.
-      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.20-multi-agent",
+      // v3.7.2 (AUDIT-3 + operator directive 2026-05-14): grok default
+      // pinned to `grok-4-latest` — the operator's chosen "most advanced
+      // pro with reasoning" model for cross-review-v2, superseding the
+      // prior `grok-4.20-multi-agent` default. The operator may still
+      // env-override via CROSS_REVIEW_GROK_MODEL to any xAI model
+      // (`grok-4.20-multi-agent` for explicit `reasoning.effort` control,
+      // `grok-4.3` / `grok-4.20-reasoning` etc.); the adapter detects the
+      // chosen model before deciding whether to send the reasoning field.
+      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4-latest",
       // v3.0.0 (operator directive 2026-05-12): Perplexity default
       // `sonar-reasoning-pro` — reasoning + grounding + chain-of-thought,
       // best fit for cross-review where the peer must reason about the

@@ -7,6 +7,76 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.07.02] — 2026-05-14
+
+Close-out of Codex's 3rd super-audit (of v3.7.1) — 3 findings, all verified
+against primary-source code before fixing. Codex verdict: REPROVADO without
+v3.7.2 because AUDIT-1 is still an open anti-self-review HARD GATE hole on the
+public MCP path.
+
+### Fixed
+
+- **AUDIT-1 (BLOCKER)** — v3.7.1's `runUntilUnanimous` fix derived
+  `callerForLottery = input.caller ?? existingSession?.convergence_scope
+?.petitioner ?? existingSession?.caller ?? "operator"` — leading the `??`
+  chain with `input.caller`. But the `run_until_unanimous` MCP tool schema
+  declares `caller: CallerSchema.default("operator")`, so on the public path
+  `input.caller` is **never `undefined`** when a continuation omits it — it
+  arrives as `"operator"`, the `??` never falls through, and the
+  `existingSession` terms were dead code. The real persisted peer-petitioner
+  could still be reclassified to `"operator"`, placed in the voting
+  colegiado, or lottery-picked as the relator of its own session (Codex
+  reproduced it: a `caller=codex` session continued with `caller:"operator"`
+  had `petitioner` become `operator` and `lead_peer` become `codex`; with
+  `caller:"claude"` codex entered `voting_peers`). Fix: the persisted session
+  is the source of truth — `callerForLottery = existingSession
+?.convergence_scope?.petitioner ?? existingSession?.caller ?? input.caller
+?? "operator"`. On any continuation the persisted petitioner wins;
+  `input.caller` is only the acting invoker's identity and cannot re-open a
+  session's petitioner. Brand-new session (no `existingSession`) →
+  `input.caller ?? "operator"`, identical to pre-v3.7.2. (`askPeers` does not
+  share this bug — it keys off `input.petitioner`, which has no MCP schema
+  field, so it is genuinely `undefined` on the public path.)
+
+### Added
+
+- **AUDIT-2** — the `audit1_run_until_unanimous_continuation_test` smoke
+  marker gains post-schema cases: it now also continues a `caller=codex`
+  session via `runUntilUnanimous` with an explicit `caller:"operator"` and a
+  mismatching `caller:"claude"` (simulating the schema-materialized value the
+  public tool path produces), asserting both keep `petitioner=codex` and
+  recuse `codex`. v3.7.1's test only exercised the internal path
+  (`input.caller` undefined) — the exact path that did NOT reproduce the bug.
+  The source pin is tightened to assert the v3.7.2 chain ordering
+  (`existingSession` terms BEFORE `input.caller`).
+
+### Changed
+
+- **AUDIT-3 + operator directive 2026-05-14** — NO model fallback. Every peer
+  in `model-selection.ts` `PRIORITY` is now pinned to a SINGLE canonical
+  model — the most advanced "pro with reasoning" model per provider: `codex`
+  `gpt-5.5`, `claude` `claude-opus-4-7`, `gemini` `gemini-2.5-pro`,
+  `deepseek` `deepseek-v4-pro`, `grok` `grok-4-latest` (operator-chosen,
+  superseding the prior `grok-4.20-multi-agent` pin), `perplexity`
+  `sonar-reasoning-pro`. v3.7.1 trimmed only `gemini`/`deepseek`; this
+  completes the trim for all 6. `selectFromCandidates` can never silently
+  auto-select an off-policy model — with a lone entry it selects the
+  canonical model or falls through to the configured `config.models[peer]`.
+  The only escape hatch is the explicit per-host env override
+  (`CROSS_REVIEW_<PROVIDER>_MODEL` / central config) — a deliberate user
+  decision, never a hardcoded fallback. `config.ts` grok default updated to
+  `grok-4-latest`. The grok adapter's model-capability detection is
+  unchanged — it still handles whatever model the operator configures
+  (`grok-4.20-multi-agent` for explicit `reasoning.effort`, etc.). Smoke
+  `must remain` list + anti-drift pins updated to the 6 lone pins.
+
+### Notes
+
+100% backward-compatible. AUDIT-1 is a bug fix on the continuation path;
+AUDIT-2 is test coverage; AUDIT-3 narrows an auto-probe selection set per
+operator directive (the explicit env/config override is unaffected). No tool
+schema change, no public-surface change. **Patch bump** (3.7.1 → 3.7.2).
+
 ## [v03.07.01] — 2026-05-14
 
 Close-out of Codex's super-audit of cross-review-v2 v3.7.0 — 4 findings
