@@ -7,6 +7,90 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.06.00] — 2026-05-14
+
+Observability + caller-discipline improvements surfaced by a study of
+the cross-review-v2 logs + 169 past sessions (324 rounds, $45.92 total,
+42541 persisted events). Operator-directed close-out of that study.
+
+### Changed
+
+- **Token-delta default threshold raised 1024 → 16384 (B2)** —
+  `session_doctor`'s `event_noise` metric showed `peer.token.delta`
+  events were **79.5%** of all 42541 persisted events, even with the
+  operator's `config.json` at 4096. `src/peers/base.ts` raises the
+  hardcoded default for `CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD`
+  from 1024 to 16384 — ~16× fewer delta events vs the old default
+  (~4× vs 4096) while keeping streaming responsive. Operators who want
+  fine-grained streaming lower it via the env var; operators with a
+  `config.json` `token_streaming.chars_threshold` override should bump
+  that too.
+- **`session_doctor` is no longer unconditionally read-only** — see the
+  repair mode below. `readOnlyHint` is now `false`. The default
+  behavior (no `repair` arg) is still strictly read-only.
+
+### Added
+
+- **`session_doctor` repair mode (C)** — new opt-in `repair: boolean`
+  param (default `false` → tool stays read-only). When `true`, sessions
+  stuck in the contradictory `outcome="converged"` +
+  `convergence_health.state="blocked"` state — a pre-v3.2.0 corruption
+  artifact (v3.2.0 fixed the _cause_ via the finalize/appendRound
+  invariants, but old corrupt metas persist on disk; observed in
+  session `41244a1c`) — have their `convergence_health` recomputed from
+  the latest round's `convergence.converged`. Only that specific
+  contradiction is touched, only when the latest round actually
+  converged (deeper contradictions are left for manual inspection),
+  and only when explicitly requested. The report gains a `repaired`
+  array listing what changed; idempotent (a second pass repairs
+  nothing).
+- **Top-level `notices` array on tool responses (B3 + B4)** — the
+  169-session study found two recurring misreads even after the
+  relevant metadata existed. **B3**: a caller reading the relator's
+  deliberate exclusion from the voting colegiado as "the runtime
+  dropped a peer" (v3.5.0 added `convergence_scope.lead_peer_role` but
+  it sits nested — a peer caller still misread it live on session
+  `a3c2660d`). **B4**: `session.caller_peer_selection_ignored` fired
+  30× across the corpus — callers repeatedly try to curate the panel
+  and the v3.3.0 lock silently overrides without surfacing anything in
+  the response they read. New exported `buildResponseNotices()` derives
+  a short, can't-miss `notices: string[]` (bounded, max 2 entries):
+  a `relator_non_voting:` notice naming the relator + the voting peers,
+  and a `peer_selection_lock:` notice when a caller-supplied `peers`
+  panel or peer-caller `lead_peer` pin was stripped. Wired into all 4
+  caller-facing tools (`ask_peers`, `session_start_round`,
+  `run_until_unanimous`, `session_start_unanimous`); `session_poll`
+  also surfaces the relator notice so async callers see it once
+  `convergence_scope` resolves.
+- **`needs_attention` flag on `session_poll` (B1)** — the study found
+  28 non-terminal sessions (5 open + 9 stale + 14 blocked), many
+  abandoned by the caller until the 24h stale-session sweep aborted
+  them. `session_poll` now returns a derived `needs_attention: boolean`
+  — `true` when the session has no terminal `outcome`, its health is
+  `stale` or `blocked`, and there is no running job — plus a matching
+  `needs_attention:` entry in `notices`. The 24h sweep remains the
+  backstop; this just surfaces the abandonment risk sooner.
+
+### Notes
+
+- **Minor bump (3.5.0 → 3.6.0; Y-component increment per SemVer)**. All
+  public surface changes are additive: new optional `repair` input on
+  `session_doctor`, new `repaired` field on `SessionDoctorReport`, new
+  `notices` array + `needs_attention` flag on tool responses, new
+  exported `buildResponseNotices` helper. No breaking change; no tool
+  removed; no required arg added. The token-threshold default change is
+  tuning, not a contract break. The one annotation change
+  (`session_doctor` `readOnlyHint` false→true... i.e. true→false) is
+  required because `repair=true` mutates — accurate, not breaking.
+- 3 new smoke markers: `token_delta_default_threshold_test`,
+  `response_notices_test` (5-case behavioral matrix on
+  `buildResponseNotices` + source pins), `session_doctor_repair_test`
+  (fabricated corrupt-state session, read-only-vs-repair, idempotency).
+  Smoke: `ok: true / events: 99` (down from 100 — the raised
+  token-delta threshold is itself visible in the smoke run).
+- Drive-by: formatted a pre-existing prettier drift in
+  `.github/workflows/dependabot-automerge.yml`.
+
 ## [v03.05.00] — 2026-05-14
 
 Closes 5 of the 6 findings in Codex's 2026-05-13 operational report on

@@ -8,7 +8,7 @@ import { z } from "zod";
 import { RELEASE_DATE, VERSION, loadConfig, missingFinancialControlVars } from "../core/config.js";
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
 import { PEERS } from "../core/types.js";
-import type { PeerId, RuntimeCapabilities, RuntimeEvent } from "../core/types.js";
+import type { ConvergenceScope, PeerId, RuntimeCapabilities, RuntimeEvent } from "../core/types.js";
 import { sessionReportMarkdown } from "../core/reports.js";
 import { EventLog } from "../observability/logger.js";
 import { safeErrorMessage } from "../security/redact.js";
@@ -327,6 +327,50 @@ export function lockCallerPeerSelection<
   if (peerPanelOverridden) delete sanitized.peers;
   if (leadPeerOverridden) delete sanitized.lead_peer;
   return sanitized;
+}
+
+// v3.6.0 (B3 + B4, logs+sessions study) — top-level human-readable
+// `notices` for tool responses. The 169-session corpus showed two
+// recurring misreads even after the relevant metadata existed:
+//  - B3: a caller reading the relator's exclusion from the voting panel
+//    as "the runtime dropped a peer" (v3.5.0 added
+//    convergence_scope.lead_peer_role but it sits nested — Codex still
+//    misread it live on session a3c2660d).
+//  - B4: `session.caller_peer_selection_ignored` fired 30x — callers
+//    repeatedly try to curate the panel; the v3.3.0 lock silently
+//    overrides but nothing surfaces in the response they read.
+// This helper derives a short, can't-miss `notices: string[]` from the
+// pre-lock input vs the orchestrator output. Bounded (max 2 entries),
+// only populated when applicable.
+export function buildResponseNotices<
+  T extends { peers?: PeerId[]; lead_peer?: PeerId; caller?: PeerId | "operator" },
+>(originalInput: T, output: { session?: { convergence_scope?: ConvergenceScope } }): string[] {
+  const notices: string[] = [];
+  // B4 — peer-selection lock notice. If the caller supplied `peers` or
+  // (as a peer caller) `lead_peer`, the v3.3.0 lock stripped it.
+  const caller: PeerId | "operator" = originalInput.caller ?? "operator";
+  const triedPeers = Array.isArray(originalInput.peers) && originalInput.peers.length > 0;
+  const triedLeadPeer = caller !== "operator" && originalInput.lead_peer !== undefined;
+  if (triedPeers || triedLeadPeer) {
+    notices.push(
+      `peer_selection_lock: your ${triedPeers ? "`peers` panel" : "`lead_peer` pin"} was ignored — ` +
+        `cross-review-v2 always uses the full server-configured peer set (operator directive 2026-05-12: ` +
+        `"TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM"). Tune the panel via CROSS_REVIEW_V2_PEER_<NAME> env vars, not per-call.`,
+    );
+  }
+  // B3 — relator-non-voting notice. When a lead_peer is set, spell out
+  // that it is the non-voting relator and who the voting colegiado is,
+  // so its absence from the vote is never misread as a dropped peer.
+  const scope = output.session?.convergence_scope;
+  if (scope?.lead_peer && scope.lead_peer_role === "relator_non_voting") {
+    const voters = (scope.voting_peers ?? scope.reviewer_peers ?? []).join(", ");
+    notices.push(
+      `relator_non_voting: \`${scope.lead_peer}\` is the lottery-selected relator — it authors/revises the ` +
+        `artifact and is DELIBERATELY excluded from the voting colegiado (anti-self-review HARD GATE). ` +
+        `Voting peers: ${voters || "(none)"}. This is by design, not a dropped peer.`,
+    );
+  }
+  return notices;
 }
 
 type JobKind = "ask_peers" | "run_until_unanimous";
@@ -754,7 +798,12 @@ export async function main(): Promise<void> {
         site: "ask_peers",
         emit: runtime.emit,
       });
-      return textResult(await runtime.orchestrator.askPeers(locked), response_format);
+      const askPeersOut = await runtime.orchestrator.askPeers(locked);
+      // v3.6.0 (B3 + B4): surface relator-non-voting + peer-lock notices.
+      return textResult(
+        { ...askPeersOut, notices: buildResponseNotices(input, askPeersOut) },
+        response_format,
+      );
     },
   );
 
@@ -806,6 +855,10 @@ export async function main(): Promise<void> {
           job,
           poll_tool: "session_poll",
           events_tool: "session_events",
+          // v3.6.0 (B4): peer-lock notice surfaces at job start; the
+          // relator-non-voting notice (B3) surfaces later via session_poll
+          // once the round resolves convergence_scope.
+          notices: buildResponseNotices(input, {}),
         },
         response_format,
       );
@@ -880,7 +933,12 @@ export async function main(): Promise<void> {
         site: "run_until_unanimous",
         emit: runtime.emit,
       });
-      return textResult(await runtime.orchestrator.runUntilUnanimous(locked), response_format);
+      const runOut = await runtime.orchestrator.runUntilUnanimous(locked);
+      // v3.6.0 (B3 + B4): surface relator-non-voting + peer-lock notices.
+      return textResult(
+        { ...runOut, notices: buildResponseNotices(input, runOut) },
+        response_format,
+      );
     },
   );
 
@@ -962,6 +1020,9 @@ export async function main(): Promise<void> {
           job,
           poll_tool: "session_poll",
           events_tool: "session_events",
+          // v3.6.0 (B4): peer-lock notice at job start; relator-non-voting
+          // notice (B3) surfaces via session_poll once the round resolves.
+          notices: buildResponseNotices(input, {}),
         },
         response_format,
       );
@@ -1062,6 +1123,39 @@ export async function main(): Promise<void> {
     async ({ session_id, response_format }) => {
       const session = runtime.orchestrator.store.read(session_id);
       const jobs = [...runtime.jobs.values()].filter((job) => job.session_id === session_id);
+      // v3.6.0 (B1, logs+sessions study): `needs_attention` — derived
+      // convenience flag. The 169-session corpus showed 28 non-terminal
+      // sessions (5 open + 9 stale + 14 blocked), many abandoned by the
+      // caller until the 24h sweep aborted them. This flag is true when
+      // the session has no terminal `outcome` AND its health is stale or
+      // blocked AND there is no running job — i.e. it is sitting
+      // un-finalized with nothing in flight and needs the caller to
+      // finalize, contest, continue, or cancel it.
+      const hasRunningJob = jobs.some((job) => job.status === "running");
+      const healthState = session.convergence_health?.state;
+      const needsAttention =
+        !session.outcome &&
+        !hasRunningJob &&
+        (healthState === "stale" || healthState === "blocked");
+      // v3.6.0 (B3): relator-non-voting notice surfaced on poll, so an
+      // async caller that started via session_start_round /
+      // session_start_unanimous sees it once convergence_scope resolves.
+      const scope = session.convergence_scope;
+      const notices: string[] = [];
+      if (scope?.lead_peer && scope.lead_peer_role === "relator_non_voting") {
+        const voters = (scope.voting_peers ?? scope.reviewer_peers ?? []).join(", ");
+        notices.push(
+          `relator_non_voting: \`${scope.lead_peer}\` is the lottery-selected relator — it authors/revises the ` +
+            `artifact and is DELIBERATELY excluded from the voting colegiado (anti-self-review HARD GATE). ` +
+            `Voting peers: ${voters || "(none)"}. This is by design, not a dropped peer.`,
+        );
+      }
+      if (needsAttention) {
+        notices.push(
+          `needs_attention: this session is non-terminal (outcome=null), health=${healthState}, and has no ` +
+            `running job — finalize, contest, continue, or cancel it. The 24h stale-session sweep is only a backstop.`,
+        );
+      }
       return textResult(
         {
           session_id,
@@ -1072,6 +1166,8 @@ export async function main(): Promise<void> {
           latest_round: session.rounds.at(-1) ?? null,
           jobs,
           control: session.control,
+          needs_attention: needsAttention,
+          notices,
         },
         response_format,
       );
@@ -1104,25 +1200,33 @@ export async function main(): Promise<void> {
     {
       title: "Session Doctor",
       description:
-        "Read-only operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Does not modify sessions. Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible).",
+        'Operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Read-only by default (does not modify sessions). Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible). v3.6.0: pass repair=true (opt-in) to recompute convergence_health for sessions stuck in the contradictory outcome="converged"+health="blocked" state left by pre-v3.2.0 corruption — only that specific contradiction is touched, only when explicitly requested; the `repaired` array lists what was fixed.',
       inputSchema: z.object({
         limit: z.number().int().min(1).max(100).default(20),
         // v2.22.0 (A.P2): opt-in enumeration of legacy self_lead_metadata
         // entries. Defaults to false; the headline count in totals stays
         // visible even when the array is suppressed.
         include_legacy: z.boolean().optional(),
+        // v3.6.0 (C): opt-in repair pass. Default false keeps the tool
+        // strictly read-only. When true, the contradictory
+        // outcome="converged"+health="blocked" state (pre-v3.2.0
+        // corruption artifact) has convergence_health recomputed from the
+        // latest round; the `repaired` array reports what changed.
+        repair: z.boolean().optional(),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
-        readOnlyHint: true,
+        // v3.6.0: no longer unconditionally read-only — repair=true
+        // mutates sessions, so readOnlyHint must be false.
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
       },
     },
-    async ({ limit, include_legacy, response_format }) =>
+    async ({ limit, include_legacy, repair, response_format }) =>
       textResult(
-        runtime.orchestrator.store.sessionDoctor(limit, include_legacy ?? false),
+        runtime.orchestrator.store.sessionDoctor(limit, include_legacy ?? false, repair ?? false),
         response_format,
       ),
   );

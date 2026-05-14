@@ -1341,8 +1341,59 @@ export class SessionStore {
   // `item_types` (open items grouped by surfacing peer) and
   // `chronic_blockers` (item ids with `round_count >= 3`) so operators
   // can see which evidence asks are systemic vs cauda ruidosa.
-  sessionDoctor(limit = 20, includeLegacy = false): SessionDoctorReport {
+  sessionDoctor(limit = 20, includeLegacy = false, repair = false): SessionDoctorReport {
     const cappedLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 20));
+    // v3.6.0 (C): opt-in repair pass BEFORE the read-only audit. Fixes
+    // the contradictory `outcome="converged" + health.state="blocked"`
+    // state left on disk by pre-v3.2.0 sessions (v3.2.0 fixed the cause
+    // via the finalize/appendRound invariants; old corrupt metas
+    // persist). Only that specific contradiction is touched, only when
+    // the operator explicitly passes `repair: true`. Recomputes
+    // `convergence_health` from the latest round's `convergence.converged`.
+    const repaired: NonNullable<SessionDoctorReport["repaired"]> = [];
+    if (repair) {
+      for (const session of this.list()) {
+        if (session.outcome === "converged" && session.convergence_health?.state === "blocked") {
+          const latest = session.rounds.at(-1);
+          const latestConverged = latest?.convergence?.converged === true;
+          // Only repair when the latest round actually converged — i.e.
+          // the `outcome="converged"` finalize was legitimate and only
+          // the health field is the stale lie. If the latest round did
+          // NOT converge, the contradiction is deeper and we leave it
+          // for manual operator inspection rather than guessing.
+          if (latestConverged) {
+            const fromState = session.convergence_health?.state;
+            const fixed = this.withSessionLock(session.session_id, () => {
+              const meta = this.read(session.session_id);
+              if (
+                meta.outcome === "converged" &&
+                meta.convergence_health?.state === "blocked" &&
+                meta.rounds.at(-1)?.convergence?.converged === true
+              ) {
+                meta.convergence_health = {
+                  state: "converged",
+                  last_event_at: now(),
+                  detail: `v3.6.0 doctor repair: recomputed health from latest round (was "blocked" with outcome="converged" — pre-v3.2.0 corruption artifact)`,
+                };
+                meta.updated_at = now();
+                writeJson(this.metaPath(session.session_id), meta);
+                return true;
+              }
+              return false;
+            });
+            if (fixed) {
+              repaired.push({
+                session_id: session.session_id,
+                from_health_state: fromState,
+                to_health_state: "converged",
+                reason:
+                  "outcome=converged but health=blocked; latest round has convergence.converged=true — recomputed health",
+              });
+            }
+          }
+        }
+      }
+    }
     const sessions = this.list();
     const openSessions: SessionDoctorEntry[] = [];
     const staleSessions: SessionDoctorEntry[] = [];
@@ -1518,6 +1569,9 @@ export class SessionStore {
         token_delta_ratio: eventsTotal > 0 ? tokenDeltaEvents / eventsTotal : null,
       },
       recommendations,
+      // v3.6.0 (C): only present when repair was requested; lists the
+      // converged+blocked contradictions that were recomputed.
+      ...(repair ? { repaired } : {}),
     };
   }
 

@@ -7236,6 +7236,198 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] not_resurfaced_status_test: PASS");
 }
 
+// v3.6.0 (B2) — token-delta default threshold raised 1024 -> 16384.
+// The 169-session corpus showed token.delta = 79.5% of all events even
+// with the operator's config.json at 4096. Source pin on the default.
+{
+  const baseSrc = fs.readFileSync(new URL("../src/peers/base.ts", import.meta.url), "utf8");
+  assert.ok(
+    /\|\|\s*16384\s*,/.test(baseSrc),
+    "v3.6.0 / B2: base.ts token-delta charsThreshold default must be 16384",
+  );
+  assert.ok(!/\|\|\s*1024\s*,/.test(baseSrc), "v3.6.0 / B2: the old 1024 default must be gone");
+  console.log("[smoke] token_delta_default_threshold_test: PASS");
+}
+
+// v3.6.0 (B3 + B4) — buildResponseNotices behavioral matrix. Surfaces
+// the relator-non-voting notice + peer-selection-lock notice as
+// top-level human-readable strings so callers stop misreading the
+// relator's exclusion as a dropped peer (B3) and notice the v3.3.0
+// peer-lock silently overriding their panel (B4).
+{
+  const { buildResponseNotices } = await import("../src/mcp/server.js");
+
+  // (a) peer caller supplied `peers` -> peer-lock notice.
+  const lockNotice = buildResponseNotices({ caller: "codex", peers: ["claude", "gemini"] }, {});
+  assert.ok(
+    lockNotice.some((n: string) => n.startsWith("peer_selection_lock:")),
+    "v3.6.0 / B4: caller-supplied peers must produce a peer_selection_lock notice",
+  );
+
+  // (b) peer caller pinned `lead_peer` -> peer-lock notice.
+  const leadLockNotice = buildResponseNotices({ caller: "codex", lead_peer: "gemini" }, {});
+  assert.ok(
+    leadLockNotice.some((n: string) => n.startsWith("peer_selection_lock:")),
+    "v3.6.0 / B4: peer-caller lead_peer pin must produce a peer_selection_lock notice",
+  );
+
+  // (c) operator caller pinning lead_peer is legitimate -> NO notice.
+  const operatorLead = buildResponseNotices({ caller: "operator", lead_peer: "gemini" }, {});
+  assert.equal(
+    operatorLead.length,
+    0,
+    "v3.6.0 / B4: operator pinning lead_peer is legitimate — must NOT produce a notice",
+  );
+
+  // (d) relator-non-voting scope -> relator notice naming the voters.
+  const relatorNotice = buildResponseNotices(
+    { caller: "claude" },
+    {
+      session: {
+        convergence_scope: {
+          petitioner: "claude",
+          caller: "claude",
+          caller_status: "READY",
+          expected_peers: ["gemini", "deepseek", "grok", "perplexity"],
+          reviewer_peers: ["gemini", "deepseek", "grok", "perplexity"],
+          lead_peer: "codex",
+          lead_peer_role: "relator_non_voting",
+          voting_peers: ["gemini", "deepseek", "grok", "perplexity"],
+          quorum_basis: "all_non_lead_panel_peers_ready",
+          anti_self_review_exclusion_reason: "lead_peer_authored_or_revised_artifact_under_review",
+        },
+      },
+    },
+  );
+  assert.ok(
+    relatorNotice.some((n: string) => n.startsWith("relator_non_voting:") && n.includes("`codex`")),
+    "v3.6.0 / B3: a relator_non_voting scope must produce a relator notice naming the relator",
+  );
+  assert.ok(
+    relatorNotice.some((n: string) => n.includes("gemini, deepseek, grok, perplexity")),
+    "v3.6.0 / B3: the relator notice must enumerate the voting peers",
+  );
+
+  // (e) clean operator call, no scope -> empty.
+  assert.equal(
+    buildResponseNotices({ caller: "operator" }, {}).length,
+    0,
+    "v3.6.0 / B3+B4: a clean operator call with no relator scope produces no notices",
+  );
+
+  // Source pins: 4 caller-facing tools wire buildResponseNotices, and
+  // session_poll surfaces needs_attention + notices.
+  const serverSrc = fs.readFileSync(new URL("../src/mcp/server.ts", import.meta.url), "utf8");
+  // The definition is `export function buildResponseNotices<` (generic,
+  // no paren) so only the 4 caller-facing call sites match `(`.
+  const noticeWirings = serverSrc.match(/buildResponseNotices\(/g) ?? [];
+  assert.equal(
+    noticeWirings.length,
+    4,
+    `v3.6.0 / B3+B4: buildResponseNotices must be wired at all 4 caller-facing tools (ask_peers, session_start_round, run_until_unanimous, session_start_unanimous), found ${noticeWirings.length}`,
+  );
+  assert.ok(
+    /export function buildResponseNotices</.test(serverSrc),
+    "v3.6.0 / B3+B4: buildResponseNotices must be exported",
+  );
+  assert.ok(
+    /needs_attention: needsAttention/.test(serverSrc),
+    "v3.6.0 / B1: session_poll must surface a needs_attention flag",
+  );
+  console.log("[smoke] response_notices_test: PASS");
+}
+
+// v3.6.0 (C) — session_doctor repair mode. Recomputes convergence_health
+// for the contradictory outcome="converged"+health="blocked" state left
+// by pre-v3.2.0 corruption. Opt-in: default false keeps the tool
+// read-only. Behavioral: fabricate a corrupt-state session, confirm
+// repair=false leaves it alone, repair=true fixes it.
+{
+  const repairCfg = {
+    ...loadConfig(),
+    data_dir: smokeTmpDir("doctor-repair"),
+  };
+  const repairStore = new (await import("../src/core/session-store.js")).SessionStore(repairCfg);
+  // Fabricate a session whose meta carries the converged+blocked
+  // contradiction with a latest round that DID converge.
+  const corruptId = "c0bbc0de-1111-4222-8333-444455556666";
+  const corruptMeta = {
+    session_id: corruptId,
+    version: "3.1.0",
+    created_at: "2026-05-12T00:00:00Z",
+    updated_at: "2026-05-12T00:00:00Z",
+    task: "doctor-repair smoke fixture",
+    caller: "codex",
+    capability_snapshot: [],
+    outcome: "converged",
+    outcome_reason: "unanimous_ready",
+    convergence_health: {
+      state: "blocked",
+      last_event_at: "2026-05-12T00:00:00Z",
+      detail: "peers failed or did not respond: perplexity:unparseable_after_recovery",
+    },
+    rounds: [
+      {
+        round: 1,
+        started_at: "2026-05-12T00:00:00Z",
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [],
+        rejected: [],
+        convergence: { converged: true, reason: "unanimous", ready_peers: [], not_ready_peers: [] },
+      },
+    ],
+    totals: { usage: {}, cost: { currency: "USD", total_cost: 0, estimated: true } },
+  };
+  fs.mkdirSync(path.join(repairCfg.data_dir, "sessions", corruptId), { recursive: true });
+  fs.writeFileSync(
+    path.join(repairCfg.data_dir, "sessions", corruptId, "meta.json"),
+    JSON.stringify(corruptMeta, null, 2),
+  );
+
+  // repair=false (default) — read-only, the contradiction is NOT touched.
+  const readOnly = repairStore.sessionDoctor(20, false, false);
+  assert.equal(
+    readOnly.repaired,
+    undefined,
+    "v3.6.0 / C: repair=false must NOT include a `repaired` array (stays read-only)",
+  );
+  const afterReadOnly = repairStore.read(corruptId);
+  assert.equal(
+    afterReadOnly.convergence_health?.state,
+    "blocked",
+    "v3.6.0 / C: repair=false must leave the corrupt health state untouched",
+  );
+
+  // repair=true — the contradiction is recomputed from the latest round.
+  const repaired = repairStore.sessionDoctor(20, false, true);
+  assert.ok(
+    Array.isArray(repaired.repaired) && repaired.repaired.length === 1,
+    `v3.6.0 / C: repair=true must report exactly 1 repaired session, got ${repaired.repaired?.length}`,
+  );
+  assert.equal(repaired.repaired?.[0]?.session_id, corruptId);
+  assert.equal(repaired.repaired?.[0]?.from_health_state, "blocked");
+  assert.equal(repaired.repaired?.[0]?.to_health_state, "converged");
+  const afterRepair = repairStore.read(corruptId);
+  assert.equal(
+    afterRepair.convergence_health?.state,
+    "converged",
+    "v3.6.0 / C: repair=true must recompute health to converged",
+  );
+  assert.ok(
+    /v3\.6\.0 doctor repair/.test(afterRepair.convergence_health?.detail ?? ""),
+    "v3.6.0 / C: repaired health detail must record the repair provenance",
+  );
+  // Idempotent — a second repair pass finds nothing to fix.
+  const secondPass = repairStore.sessionDoctor(20, false, true);
+  assert.equal(
+    secondPass.repaired?.length,
+    0,
+    "v3.6.0 / C: repair must be idempotent — second pass repairs nothing",
+  );
+  console.log("[smoke] session_doctor_repair_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight

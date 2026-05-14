@@ -258,6 +258,13 @@ export abstract class BasePeerAdapter {
     // (we measure UTF-16 code units, not UTF-8 bytes). The legacy env
     // var name is preserved for op compatibility but read into the
     // semantically correct field. A new alias env var is also accepted.
+    // v3.6.0 (B2, logs+sessions study): default raised 1024 -> 16384.
+    // The 169-session corpus showed token.delta events were 79.5% of all
+    // 42541 persisted events even with the operator's config.json at
+    // 4096 — session_doctor flagged this directly. A 16384 default cuts
+    // delta-event volume ~16x vs the old 1024 default (~4x vs 4096)
+    // while keeping streaming responsive. Operators who want
+    // fine-grained streaming lower it via CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD.
     const charsThreshold = Math.max(
       1,
       Number.parseInt(
@@ -265,7 +272,7 @@ export abstract class BasePeerAdapter {
           process.env.CROSS_REVIEW_V2_TOKEN_DELTA_BYTES_THRESHOLD ??
           "",
         10,
-      ) || 1024,
+      ) || 16384,
     );
     const msThreshold = Math.max(
       1,

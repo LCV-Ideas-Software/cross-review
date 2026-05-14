@@ -1083,4 +1083,19 @@ export interface SessionDoctorReport {
     token_delta_ratio: number | null;
   };
   recommendations: string[];
+  // v3.6.0 (C, logs+sessions study): opt-in repair mode. When
+  // session_doctor is called with `repair: true`, sessions whose
+  // persisted state carries the contradictory `outcome="converged"` +
+  // `convergence_health.state="blocked"` combination (a pre-v3.2.0
+  // artifact — v3.2.0 fixed the cause but old corrupt metas persist)
+  // have their `convergence_health` recomputed from the latest round's
+  // `convergence.converged`. `repaired` lists what was fixed; absent
+  // (or empty) when `repair` is false or nothing needed fixing. The
+  // default `repair: false` keeps session_doctor strictly read-only.
+  repaired?: Array<{
+    session_id: string;
+    from_health_state: ConvergenceHealth["state"] | undefined;
+    to_health_state: ConvergenceHealth["state"];
+    reason: string;
+  }>;
 }
