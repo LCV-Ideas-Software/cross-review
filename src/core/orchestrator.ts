@@ -19,7 +19,7 @@ import type {
   TokenUsage,
 } from "./types.js";
 import { PEERS } from "./types.js";
-import { checkConvergence } from "./convergence.js";
+import { checkConvergence, isSkippableFailure } from "./convergence.js";
 import { sessionReportMarkdown } from "./reports.js";
 import { SessionStore } from "./session-store.js";
 import { decisionQualityFromStatus } from "./status.js";
@@ -1079,6 +1079,8 @@ function cancelledConvergence(peers: PeerId[]): ConvergenceResult {
     not_ready_peers: [],
     needs_evidence_peers: [],
     rejected_peers: peers,
+    // v3.7.3: no skip path here — a cancelled session has no peers to skip.
+    skipped_peers: [],
     decision_quality: Object.fromEntries(
       peers.map((peer) => [peer, "failed"]),
     ) as ConvergenceResult["decision_quality"],
@@ -2513,6 +2515,13 @@ export class CrossReviewOrchestrator {
 
     const peers: PeerResult[] = [];
     const rejected: PeerFailure[] = [];
+    // v3.7.3 (operator no-fallback directive 2026-05-14): peers whose
+    // pinned model was genuinely unavailable this round — an infra failure,
+    // retries exhausted, and the user declared no fallback model. These are
+    // classified out of `rejected` (see `isSkippableFailure`) so they SKIP
+    // rather than block: the round converges on the remaining peers,
+    // subject to the skip-gated quorum floor in `checkConvergence`.
+    const skipped: PeerFailure[] = [];
 
     // v2.4.0 / audit closure: format-recovery quota. Pre-v2.4.0 every
     // parser-failed response triggered a recovery + retry call (extra
@@ -2742,17 +2751,48 @@ export class CrossReviewOrchestrator {
         }
       } else if (item.failure) {
         const failure = item.failure;
-        rejected.push(failure);
-        this.store.savePeerFailure(session.session_id, roundNumber, failure);
+        // v3.7.3: an infra-unavailability failure (model genuinely
+        // unreachable, retries exhausted, no user-declared fallback) SKIPS
+        // the peer — the round continues on the remaining peers instead of
+        // this failure blocking convergence. A peer that responded but
+        // badly, or a policy/budget/content stop, stays in `rejected`.
+        if (isSkippableFailure(failure)) {
+          skipped.push(failure);
+          this.store.savePeerFailure(session.session_id, roundNumber, failure);
+          this.emit({
+            type: "session.peer_skipped_unavailable",
+            session_id: session.session_id,
+            round: roundNumber,
+            peer: failure.peer,
+            message: `Peer ${failure.peer} skipped this round — model ${
+              failure.model ?? "(pinned)"
+            } unavailable (${failure.failure_class}); the round continues with the remaining peers.`,
+            data: {
+              peer: failure.peer,
+              failure_class: failure.failure_class,
+              model: failure.model,
+              attempts: failure.attempts,
+            },
+          });
+        } else {
+          rejected.push(failure);
+          this.store.savePeerFailure(session.session_id, roundNumber, failure);
+        }
       }
     }
 
-    const latestRoundConvergence = checkConvergence(selectedPeers, callerStatus, peers, rejected);
+    const latestRoundConvergence = checkConvergence(
+      selectedPeers,
+      callerStatus,
+      peers,
+      rejected,
+      skipped,
+    );
     const quorumPeerResults = isRecoveryRound
       ? latestPeerResultsForQuorum(session, peers, quorumPeers)
       : peers;
     const quorumConvergence = isRecoveryRound
-      ? checkConvergence(quorumPeers, callerStatus, quorumPeerResults, rejected)
+      ? checkConvergence(quorumPeers, callerStatus, quorumPeerResults, rejected, skipped)
       : latestRoundConvergence;
     const convergence = {
       ...quorumConvergence,
@@ -2772,7 +2812,14 @@ export class CrossReviewOrchestrator {
       peers,
       rejected,
       convergence,
-      convergence_scope: convergenceScope,
+      // v3.7.3: surface skipped-for-unavailability peers in the durable
+      // convergence_scope so the degraded panel is auditable. Only added
+      // when a skip actually occurred — the zero-skip path persists the
+      // exact pre-v3.7.3 scope object.
+      convergence_scope:
+        skipped.length > 0
+          ? { ...convergenceScope, skipped_peers: skipped.map((failure) => failure.peer) }
+          : convergenceScope,
       started_at: startedAt,
     });
     // v2.22.0 (B.P3): emit `session.budget_warning` if cumulative cost
@@ -3359,6 +3406,9 @@ export class CrossReviewOrchestrator {
         not_ready_peers: unchanged ? [] : [rotator],
         needs_evidence_peers: [],
         rejected_peers: [],
+        // v3.7.3: circular mode is single-rotator; skip-peer (which is a
+        // ship/review parallel-panel concept) does not apply here.
+        skipped_peers: [],
         decision_quality: { [rotator]: "clean" } as Record<
           PeerId,
           import("./types.js").DecisionQuality

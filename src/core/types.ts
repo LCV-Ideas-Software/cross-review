@@ -347,6 +347,13 @@ export interface ConvergenceScope {
   voting_peers?: PeerId[];
   quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready";
   anti_self_review_exclusion_reason?: "lead_peer_authored_or_revised_artifact_under_review";
+  // v3.7.3 (operator no-fallback directive 2026-05-14): reviewer peers
+  // skipped this round because their pinned model was genuinely
+  // unavailable (infra failure, retries exhausted, no user-declared
+  // fallback). Surfaced in the durable record so the degraded panel is
+  // auditable — the round converged on the non-skipped peers. Absent/empty
+  // when no peer was skipped.
+  skipped_peers?: PeerId[];
 }
 
 export interface ConvergenceHealth {
@@ -490,7 +497,11 @@ export interface RuntimeCapabilities {
   event_streaming: true;
   token_streaming: boolean;
   budget_preflight: true;
-  model_fallback: true;
+  // v3.7.3 (operator no-fallback directive 2026-05-14): widened from the
+  // literal `true` to `boolean` — `runtimeCapabilities()` now derives it
+  // honestly from the central config (true ONLY when the user explicitly
+  // declared fallback models; false by default — no hardcoded downgrade).
+  model_fallback: boolean;
   metrics: true;
 }
 
@@ -715,6 +726,13 @@ export interface ConvergenceResult {
   not_ready_peers: PeerId[];
   needs_evidence_peers: PeerId[];
   rejected_peers: PeerId[];
+  // v3.7.3 (operator no-fallback directive): peers skipped this round for
+  // genuine model-unavailability (infra failure, retries exhausted, no
+  // user-declared fallback). A skipped peer neither blocks convergence nor
+  // counts toward the all-peers-READY tally — the round converges on the
+  // remaining peers, subject to the skip-gated quorum floor. Empty when no
+  // peer was skipped (the pre-v3.7.3 path).
+  skipped_peers: PeerId[];
   decision_quality: Record<PeerId, DecisionQuality>;
   blocking_details: string[];
 }

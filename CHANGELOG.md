@@ -7,6 +7,81 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.07.03] — 2026-05-14
+
+Close-out of the operator's "sem fallback é sem fallback" directive
+(2026-05-14, refined across three messages) + Codex's v3.7.2 parecer
+(APROVADO-COM-RESSALVAS) 3 LOW/NIT residuals.
+
+### Added
+
+- **Skip-peer on model-unavailability** — when a reviewer peer's pinned
+  model is genuinely unavailable (an infrastructure failure — `auth` /
+  `rate_limit` / `provider_error` / `network` / `timeout` /
+  `fallback_exhausted`, with retries exhausted and no user-declared
+  fallback), the round now SKIPS that peer and converges on the remaining
+  peers, instead of the failure landing in `rejected` and blocking
+  convergence. This is the operator's "pular aquele peer e trabalhar
+  apenas com os outros" path — a model-down peer must not hard-fail the
+  round, and cross-review-v2 must never silently downgrade to an older
+  model. New exported `SKIPPABLE_FAILURE_CLASSES` / `isSkippableFailure` /
+  `SKIP_QUORUM_FLOOR` in `convergence.ts`; the round loop in
+  `orchestrator.ts` classifies each `PeerFailure` into `skipped` vs
+  `rejected`; `checkConvergence` gains a `skipped` parameter. A peer that
+  DID respond but badly (`schema`, `unparseable_after_recovery`,
+  `format_recovery_exhausted`, `stream_buffer_overflow`), the
+  `silent_model_downgrade` the directive itself targets, or a
+  policy/budget/content stop, stays in `rejected` and blocks as before.
+- **Skip-gated quorum floor (`SKIP_QUORUM_FLOOR = 2`)** — skipping must
+  never let a session "converge" on a degenerate 0- or 1-peer panel. The
+  floor is GUARDED by `skipped.length > 0`: on a zero-skip round the
+  convergence DECISION is identical to pre-v3.7.3, including a legitimate
+  single-reviewer session that converges on one READY. When skips occur,
+  the round converges only if at least 2 non-skipped reviewer peers remain.
+- `session.peer_skipped_unavailable` event + `skipped_peers` on
+  `ConvergenceResult` and `ConvergenceScope` — the degraded panel is fully
+  auditable in the durable record.
+- New smoke marker `skip_peer_on_unavailability_test` (failure-class
+  taxonomy + convergence-on-skip + the quorum floor + the zero-skip
+  non-regression invariant + an orchestrator source pin).
+
+### Changed
+
+- **No model-downgrade fallback — fallback is 100% user-declared via the
+  central config.** Per the operator directive, the model-downgrade
+  fallback mechanism is NOT hardcoded: `config.fallback_models` (already
+  in the v3.1.0 central-config schema, populated from
+  `CROSS_REVIEW_<PROVIDER>_FALLBACK_MODELS`) is the per-peer list of models
+  the user explicitly accepts as fallback. Default empty `[]` per peer =
+  NO fallback → retry-same-model then skip-peer. Listing models is a
+  deliberate user opt-in; cross-review-v2 never hardcodes a downgrade.
+  `file-config.ts` gains a doc comment making the semantics first-class.
+- `server_info` `model_fallback` capability flag — was the literal `true`
+  unconditionally; now derived honestly from the config (`true` ONLY when
+  the user declared fallback models, `false` by default). (Codex v3.7.2
+  parecer AUDIT-1.)
+- `GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE` shadow set in `server.ts` had
+  drifted from `peers/grok.ts:GROK_REASONING_EFFORT_MODELS` — added
+  `grok-4.3` (accepted since v2.18.4) and corrected the stale boot warning
+  that claimed only `grok-4.20-multi-agent` accepts `reasoning.effort`.
+  (Codex v3.7.2 parecer AUDIT-2.)
+- `reasoning_effort_overrides` tool description: "the 7 MCP configs" →
+  "the host MCP configs" (the canonical set is 5 environments since
+  2026-05-13). (Codex v3.7.2 parecer AUDIT-3.)
+
+### Notes
+
+100% backward-compatible. The skip-peer logic is additive and skip-gated —
+on a zero-skip round the `checkConvergence` DECISION (converged / reason /
+ready*peers / rejected_peers / blocking_details) is identical to
+pre-v3.7.3, verified by the non-regression smoke case. `ConvergenceResult`
+and the persisted convergence objects gain one additive field,
+`skipped_peers`, which is `[]` when no peer was skipped — a
+backward-compatible schema addition, not a behavioral change (an earlier
+draft of this entry loosely called the path "byte-identical"; the
+convergence \_decision* is identical, the serialized output gains the
+additive field). No tool schema change. **Patch bump** (3.7.2 → 3.7.3).
+
 ## [v03.07.02] — 2026-05-14
 
 Close-out of Codex's 3rd super-audit (of v3.7.1) — 3 findings, all verified

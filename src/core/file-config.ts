@@ -219,6 +219,13 @@ export const FileConfigSchema = z
     dashboard_port: z.number().int().positive().optional(),
     max_output_tokens: z.number().int().positive().optional(),
     models: PerPeerStringSchema,
+    // v3.7.3 (operator no-fallback directive 2026-05-14): the user's
+    // explicit, per-peer list of models accepted as fallback. Default
+    // empty `[]` per peer = NO fallback — a peer whose pinned model is
+    // unavailable is retried on the SAME model, then skipped (the round
+    // converges on the remaining peers). Listing models here is a
+    // deliberate user decision via the central config; cross-review-v2
+    // never hardcodes a model downgrade.
     fallback_models: PerPeerStringListSchema,
     reasoning_effort: PerPeerReasoningSchema,
     peer_enabled: PerPeerBoolSchema,

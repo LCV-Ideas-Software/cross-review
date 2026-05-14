@@ -17,7 +17,12 @@ function smokeTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-v2-${label}-`));
 }
 import { loadConfig } from "../src/core/config.js";
-import { checkConvergence } from "../src/core/convergence.js";
+import {
+  checkConvergence,
+  isSkippableFailure,
+  SKIP_QUORUM_FLOOR,
+  SKIPPABLE_FAILURE_CLASSES,
+} from "../src/core/convergence.js";
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import { SWEEP_MIN_IDLE_MS } from "../src/core/session-store.js";
 import { parsePeerStatus } from "../src/core/status.js";
@@ -593,6 +598,153 @@ assert.equal(
     .converged,
   true,
 );
+
+// v3.7.3 (operator no-fallback directive 2026-05-14): skip-peer on
+// model-unavailability. A peer whose pinned model is genuinely unavailable
+// (an infra failure, retries exhausted, no user-declared fallback) is
+// SKIPPED — the round converges on the remaining peers — instead of the
+// failure blocking convergence. Verifies the skip-vs-block failure-class
+// taxonomy + the skip-gated quorum floor + the zero-skip non-regression
+// invariant.
+{
+  const fakeFailure = (
+    peer: PeerResult["peer"],
+    failureClass: import("../src/core/types.js").PeerFailure["failure_class"],
+  ): import("../src/core/types.js").PeerFailure => ({
+    peer,
+    provider: "stub",
+    model: "stub",
+    failure_class: failureClass,
+    message: `stub ${failureClass}`,
+    retryable: true,
+    attempts: 3,
+    latency_ms: 0,
+  });
+
+  // (a) failure-class taxonomy — infra-unavailability → skippable; a peer
+  // that responded badly, or a policy/budget/content stop → NOT skippable.
+  for (const fc of [
+    "auth",
+    "rate_limit",
+    "provider_error",
+    "network",
+    "timeout",
+    "fallback_exhausted",
+  ] as const) {
+    assert.equal(
+      isSkippableFailure(fakeFailure("grok", fc)),
+      true,
+      `v3.7.3 / skip-peer: ${fc} must be skippable (infra unavailability)`,
+    );
+    assert.equal(
+      SKIPPABLE_FAILURE_CLASSES.has(fc),
+      true,
+      `v3.7.3 / skip-peer: ${fc} must be in SKIPPABLE_FAILURE_CLASSES`,
+    );
+  }
+  for (const fc of [
+    "schema",
+    "unparseable_after_recovery",
+    "format_recovery_exhausted",
+    "silent_model_downgrade",
+    "prompt_flagged_by_moderation",
+    "budget_exceeded",
+    "budget_preflight",
+    "cancelled",
+    "stream_buffer_overflow",
+    "unknown",
+  ] as const) {
+    assert.equal(
+      isSkippableFailure(fakeFailure("grok", fc)),
+      false,
+      `v3.7.3 / skip-peer: ${fc} must NOT be skippable (responded-badly / policy / budget / content stop)`,
+    );
+  }
+
+  // (b) a skipped peer lets the round converge on the remaining peers.
+  const skipConverged = checkConvergence(
+    ["codex", "claude", "grok"],
+    "READY",
+    [fakeReady("codex"), fakeReady("claude")],
+    [],
+    [fakeFailure("grok", "provider_error")],
+  );
+  assert.equal(
+    skipConverged.converged,
+    true,
+    "v3.7.3 / skip-peer: round converges on the 2 non-skipped peers",
+  );
+  assert.deepEqual(
+    skipConverged.skipped_peers,
+    ["grok"],
+    "v3.7.3 / skip-peer: skipped_peers surfaces the skipped peer",
+  );
+
+  // (c) skip-gated quorum floor — skipping below SKIP_QUORUM_FLOOR
+  // non-skipped peers must NOT converge (a 0/1-peer "unanimous" review is
+  // meaningless).
+  const floorBlocked = checkConvergence(
+    ["codex", "claude", "grok"],
+    "READY",
+    [fakeReady("codex")],
+    [],
+    [fakeFailure("claude", "network"), fakeFailure("grok", "timeout")],
+  );
+  assert.equal(
+    floorBlocked.converged,
+    false,
+    "v3.7.3 / skip-peer: quorum floor blocks convergence below the floor",
+  );
+  assert.ok(
+    floorBlocked.reason.startsWith("quorum_floor_not_met_after_skips"),
+    `v3.7.3 / skip-peer: quorum-floor reason expected, got "${floorBlocked.reason}"`,
+  );
+  assert.equal(SKIP_QUORUM_FLOOR, 2, "v3.7.3 / skip-peer: quorum floor is 2");
+
+  // (d) NON-REGRESSION — the zero-skip path's convergence DECISION is
+  // identical to pre-v3.7.3 (the only output delta is the additive
+  // `skipped_peers: []` field): a legitimate 1-reviewer-peer session still
+  // converges (the floor is skip-GATED, it is NOT a new general minimum).
+  const oneReviewerNoSkip = checkConvergence(["codex"], "READY", [fakeReady("codex")], [], []);
+  assert.equal(
+    oneReviewerNoSkip.converged,
+    true,
+    "v3.7.3 / skip-peer: zero-skip 1-reviewer session still converges (floor is skip-gated)",
+  );
+  assert.deepEqual(
+    oneReviewerNoSkip.skipped_peers,
+    [],
+    "v3.7.3 / skip-peer: zero-skip → skipped_peers is []",
+  );
+
+  // (e) a substantive rejection still BLOCKS (it is not skipped).
+  const rejectionBlocks = checkConvergence(
+    ["codex", "claude"],
+    "READY",
+    [fakeReady("codex")],
+    [fakeFailure("claude", "unparseable_after_recovery")],
+    [],
+  );
+  assert.equal(
+    rejectionBlocks.converged,
+    false,
+    "v3.7.3 / skip-peer: an unparseable peer still blocks convergence (rejected, not skipped)",
+  );
+
+  // (f) source pin — the orchestrator round loop classifies each failure
+  // via isSkippableFailure into `skipped` vs `rejected`.
+  const orchSrc373 = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /if \(isSkippableFailure\(failure\)\) \{[\s\S]{0,500}?skipped\.push\(failure\)/.test(
+      orchSrc373,
+    ),
+    "v3.7.3 / skip-peer: orchestrator round loop must branch isSkippableFailure → skipped.push(failure)",
+  );
+  console.log("[smoke] skip_peer_on_unavailability_test: PASS");
+}
 
 const probes = await orchestrator.probeAll();
 assert.equal(probes.length, PEERS.length);
@@ -4613,6 +4765,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       not_ready_peers: [],
       needs_evidence_peers: [],
       rejected_peers: ["perplexity"],
+      skipped_peers: [],
       decision_quality: fullClean,
       blocking_details: ["perplexity:unparseable_after_recovery"],
     },
@@ -4663,6 +4816,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       not_ready_peers: [],
       needs_evidence_peers: [],
       rejected_peers: [],
+      skipped_peers: [],
       decision_quality: fullClean,
       blocking_details: [],
     },
@@ -4696,6 +4850,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         not_ready_peers: [],
         needs_evidence_peers: [],
         rejected_peers: [],
+        skipped_peers: [],
         decision_quality: fullClean,
         blocking_details: [],
       },

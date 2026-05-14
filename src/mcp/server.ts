@@ -58,7 +58,7 @@ const ReasoningEffortOverridesSchema = z
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. Useful to dial down expensive peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents, or Perplexity sonar-deep-research that bills citation + reasoning + search queries separately) for routine reviews without editing the 7 MCP configs.",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. Useful to dial down expensive peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents, or Perplexity sonar-deep-research that bills citation + reasoning + search queries separately) for routine reviews without editing the host MCP configs.",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -503,7 +503,15 @@ function runtimeCapabilities(runtime: Runtime): RuntimeCapabilities {
     event_streaming: true,
     token_streaming: runtime.config.streaming.tokens,
     budget_preflight: true,
-    model_fallback: true,
+    // v3.7.3 (operator no-fallback directive 2026-05-14): honest flag —
+    // `true` ONLY when the user has explicitly declared fallback models in
+    // the central config. The default is NO fallback: a peer whose pinned
+    // model is unavailable is retried on the SAME model, then skipped (the
+    // round converges on the remaining peers). cross-review-v2 never
+    // hardcodes a model downgrade — fallback is a deliberate user opt-in.
+    model_fallback: Object.values(runtime.config.fallback_models).some(
+      (models) => models.length > 0,
+    ),
     metrics: true,
   };
 }
@@ -1866,8 +1874,9 @@ export async function main(): Promise<void> {
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.15.0 (item 4A boot warning): when operator configured a
   // CROSS_REVIEW_GROK_REASONING_EFFORT but the chosen model is NOT in
-  // the allowlist (only grok-4.20-multi-agent accepts the field per xAI
-  // docs), inform that the value will be ignored at the wire level.
+  // the allowlist (grok-4.20-multi-agent and grok-4.3 accept the field
+  // per xAI docs — see GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE below),
+  // inform that the value will be ignored at the wire level.
   // Catches misconfigurations early instead of letting the operator
   // assume reasoning intensity is being applied when xAI silently
   // ignores it (or when a future model would reject with 400).
@@ -1878,7 +1887,7 @@ export async function main(): Promise<void> {
     if (!reasoningSetExplicitly) return;
     if (GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(grokModel)) return;
     console.error(
-      `[cross-review-v2] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs (only grok-4.20-multi-agent does). CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. xAI auto-applies reasoning internally for the Grok-4 lineup. Set CROSS_REVIEW_GROK_MODEL=grok-4.20-multi-agent to enable agent-count control via reasoning.effort.`,
+      `[cross-review-v2] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs (only grok-4.20-multi-agent and grok-4.3 do). CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. xAI auto-applies reasoning internally for the Grok-4 lineup. Set CROSS_REVIEW_GROK_MODEL=grok-4.20-multi-agent (or grok-4.3) to enable explicit reasoning.effort control.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
   // v3.0.0: Perplexity sixth peer — boot notice for reasoning_effort
@@ -1906,6 +1915,11 @@ export async function main(): Promise<void> {
 // to the reasoning-capable set, both lists must update together.
 const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
   "grok-4.20-multi-agent",
+  // v3.7.3 (Codex v3.7.2 parecer, AUDIT-2): this shadow set had drifted
+  // from `peers/grok.ts:GROK_REASONING_EFFORT_MODELS`, which has accepted
+  // grok-4.3 since v2.18.4 (xAI docs WebFetch-verified 2026-05-07). Kept
+  // in sync per the "both lists must update together" contract above.
+  "grok-4.3",
 ]);
 
 // v3.0.0: shadow copy of `peers/perplexity.ts:PERPLEXITY_REASONING_EFFORT_MODELS`

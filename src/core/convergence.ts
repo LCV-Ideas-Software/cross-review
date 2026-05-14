@@ -1,10 +1,59 @@
 import type { ConvergenceResult, PeerFailure, PeerId, PeerResult, ReviewStatus } from "./types.js";
 
+// v3.7.3 (operator no-fallback directive 2026-05-14): when a peer's pinned
+// model is genuinely unavailable — an infrastructure failure, retries
+// exhausted, and the user declared no fallback models — the round SKIPS
+// that peer and converges on the remaining peers, instead of letting the
+// failure block convergence. This is the operator's "pular aquele peer e
+// trabalhar apenas com os outros" path. A skipped peer is one whose
+// `failure_class` is in `SKIPPABLE_FAILURE_CLASSES` (classified at the
+// round loop in `orchestrator.ts`); everything else — a peer that DID
+// respond but badly (schema / unparseable / format-recovery-exhausted),
+// the no-fallback-directive's own `silent_model_downgrade`, or a
+// policy/budget/content stop — stays in `rejected` and blocks convergence
+// exactly as before.
+export const SKIP_QUORUM_FLOOR = 2;
+
+// v3.7.3: failure classes that mean "the peer's model was genuinely
+// UNAVAILABLE" — the call could not reach the provider or get a response
+// at all, retries are exhausted, and the user declared no fallback model.
+// These are SKIPPED (round continues on the remaining peers). Everything
+// else stays in `rejected` and blocks convergence: a peer that DID respond
+// but badly (`schema`, `unparseable_after_recovery`,
+// `format_recovery_exhausted`, `stream_buffer_overflow`), the no-fallback
+// directive's own `silent_model_downgrade` (a peer that answered on the
+// WRONG model — must never be silently tolerated), a content stop
+// (`prompt_flagged_by_moderation`), a budget stop (`budget_exceeded`,
+// `budget_preflight`), an operator `cancelled`, or `unknown` (conservative
+// — never skip on an unclassified failure). The round loop in
+// `orchestrator.ts` classifies each `PeerFailure` against this set.
+export const SKIPPABLE_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_class"]> = new Set([
+  "auth",
+  "rate_limit",
+  "provider_error",
+  "network",
+  "timeout",
+  "fallback_exhausted",
+]);
+
+export function isSkippableFailure(failure: PeerFailure): boolean {
+  return SKIPPABLE_FAILURE_CLASSES.has(failure.failure_class);
+}
+
 export function checkConvergence(
   expectedPeers: PeerId[],
   callerStatus: ReviewStatus,
   peers: PeerResult[],
   rejected: PeerFailure[],
+  // v3.7.3: peers skipped for genuine model-unavailability. Defaults to []
+  // so any call site that does not pass it keeps the exact pre-v3.7.3
+  // convergence DECISION — on the zero-skip path every branch below
+  // reduces to its original form (`effectiveExpected` === `expectedPeers`,
+  // the skip-gated floor is not entered, the converged reason string is
+  // unchanged). The only output delta is the additive `skipped_peers`
+  // field, `[]` when nothing was skipped — a backward-compatible schema
+  // addition, not a behavioral change.
+  skipped: PeerFailure[] = [],
 ): ConvergenceResult {
   const ready = peers.filter((p) => p.status === "READY").map((p) => p.peer);
   const notReady = peers.filter((p) => p.status === "NOT_READY").map((p) => p.peer);
@@ -18,8 +67,16 @@ export function checkConvergence(
     .filter((p) => p.status === "NEEDS_EVIDENCE" || p.status === null || p.status === undefined)
     .map((p) => p.peer);
   const rejectedPeers = rejected.map((f) => f.peer);
+  const skippedPeers = skipped.map((f) => f.peer);
+  // v3.7.3: a skipped peer is removed from the convergence quorum entirely
+  // — it neither blocks (the way `rejected` does) nor counts toward the
+  // all-peers-READY tally. When `skipped` is empty, `effectiveExpected` ===
+  // `expectedPeers`, so every branch below reduces to its pre-v3.7.3 form.
+  const effectiveExpected = expectedPeers.filter((p) => !skippedPeers.includes(p));
   const responded = new Set(peers.map((p) => p.peer));
-  const missing = expectedPeers.filter((p) => !responded.has(p) && !rejectedPeers.includes(p));
+  const missing = expectedPeers.filter(
+    (p) => !responded.has(p) && !rejectedPeers.includes(p) && !skippedPeers.includes(p),
+  );
   const decisionQuality = Object.fromEntries(
     peers.map((peer) => [peer.peer, peer.decision_quality]),
   ) as ConvergenceResult["decision_quality"];
@@ -38,6 +95,7 @@ export function checkConvergence(
       not_ready_peers: notReady,
       needs_evidence_peers: needsEvidence,
       rejected_peers: [...rejectedPeers, ...missing],
+      skipped_peers: skippedPeers,
       decision_quality: decisionQuality,
       blocking_details: [`caller_status=${callerStatus}`, ...blockingDetails],
     };
@@ -61,6 +119,7 @@ export function checkConvergence(
       not_ready_peers: notReady,
       needs_evidence_peers: needsEvidence,
       rejected_peers: [...rejectedPeers, ...missing],
+      skipped_peers: skippedPeers,
       decision_quality: decisionQuality,
       blocking_details: blockingDetails,
     };
@@ -73,11 +132,33 @@ export function checkConvergence(
       not_ready_peers: notReady,
       needs_evidence_peers: needsEvidence,
       rejected_peers: [],
+      skipped_peers: skippedPeers,
       decision_quality: decisionQuality,
       blocking_details: blockingDetails,
     };
   }
-  if (ready.length !== expectedPeers.length) {
+  // v3.7.3: skip-gated quorum floor. A 0- or 1-peer "unanimous" review is
+  // meaningless — skipping must never silently degrade the colegiado below
+  // a real cross-check. The floor is GUARDED by `skipped.length > 0`: a
+  // zero-skip session keeps its pre-v3.7.3 behavior exactly, including a
+  // legitimate single-reviewer-peer session that converges on 1 READY.
+  if (skipped.length > 0 && effectiveExpected.length < SKIP_QUORUM_FLOOR) {
+    return {
+      converged: false,
+      reason: `quorum_floor_not_met_after_skips: ${effectiveExpected.length} non-skipped reviewer peer(s) remain after skipping [${skippedPeers.join(", ")}]; at least ${SKIP_QUORUM_FLOOR} are required for a meaningful cross-review`,
+      ready_peers: ready,
+      not_ready_peers: notReady,
+      needs_evidence_peers: needsEvidence,
+      rejected_peers: [],
+      skipped_peers: skippedPeers,
+      decision_quality: decisionQuality,
+      blocking_details: [
+        ...blockingDetails,
+        `quorum_floor_not_met: ${effectiveExpected.length} < ${SKIP_QUORUM_FLOOR} after skips`,
+      ],
+    };
+  }
+  if (ready.length !== effectiveExpected.length) {
     return {
       converged: false,
       reason: "not all expected peers responded READY",
@@ -85,17 +166,22 @@ export function checkConvergence(
       not_ready_peers: notReady,
       needs_evidence_peers: needsEvidence,
       rejected_peers: missing,
+      skipped_peers: skippedPeers,
       decision_quality: decisionQuality,
       blocking_details: blockingDetails,
     };
   }
   return {
     converged: true,
-    reason: "caller and all peers declared READY with no rejected peers",
+    reason:
+      skipped.length > 0
+        ? `caller and all ${effectiveExpected.length} non-skipped peer(s) declared READY; skipped for model-unavailability: ${skippedPeers.join(", ")}`
+        : "caller and all peers declared READY with no rejected peers",
     ready_peers: ready,
     not_ready_peers: [],
     needs_evidence_peers: [],
     rejected_peers: [],
+    skipped_peers: skippedPeers,
     decision_quality: decisionQuality,
     blocking_details: [],
   };
