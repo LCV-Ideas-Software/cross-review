@@ -1,21 +1,30 @@
 # Model Selection
 
-The server uses automatic model selection unless an explicit environment override is present.
+The server pins each peer to ONE canonical model per the no-downgrade policy
+(operator directive 2026-05-14). The runtime never silently chains a
+multi-model fallback. An explicit operator override via
+`CROSS_REVIEW_<PROVIDER>_MODEL` env-var is the only way to deviate from the
+canonical pin.
 
 ## Rules
 
-1. Query the provider's official model API using the current API key.
+1. Query the provider's official model API using the current API key to
+   validate that the canonical pin is currently available.
 2. Keep only models that can perform text generation for the peer role.
-3. Exclude known non-thinking, low-capacity or deprecated models from cross-review priority lists.
-4. Compare returned model IDs against the documented priority list.
-5. Select the first available model in that priority list.
-6. Persist the selected model, candidate list, source URL, confidence and reason in the session snapshot.
-
-If a provider returns models but none match the advanced thinking priority list, the runtime keeps the documented advanced fallback instead of silently downgrading to a weaker random candidate. That makes availability problems visible in probes and review rounds.
+3. Exclude known non-thinking, low-capacity or deprecated models — they
+   never become the canonical pin.
+4. Compare returned model IDs against the canonical pin documented below.
+5. If the canonical pin is in the API response, select it; if the canonical
+   pin is NOT in the response, KEEP the canonical pin anyway (no silent
+   downgrade) so any provider availability problem surfaces visibly in
+   probes and review rounds instead of mutating into a weaker model behind
+   the operator's back.
+6. Persist the selected model, candidate list, source URL, confidence and
+   reason in the session snapshot.
 
 The no-downgrade behavior is covered by `scripts/smoke.ts`: when a provider
-returns only a weak/deprecated candidate such as `claude-haiku-4-5`, selection
-stays on the documented advanced fallback and records `confidence=unknown`.
+returns only a weak/deprecated candidate such as `claude-haiku-4-5`,
+selection stays on the canonical pin and records `confidence=unknown`.
 
 ## Current Canonical Pins (no-fallback policy, operator directive 2026-05-14)
 
@@ -90,6 +99,6 @@ repair:
 
 ## Important
 
-The priority list is intentionally code-level configuration, not hidden behavior. Provider model catalogs and deprecation schedules change often, so this file and `src/peers/model-selection.ts` must be reviewed against official provider documentation whenever defaults change.
+The canonical pin per peer is intentionally code-level configuration, not hidden behavior. Provider model catalogs and deprecation schedules change often, so this file and `src/peers/model-selection.ts` must be reviewed against official provider documentation whenever a pin changes.
 
 The redacted real-API capability smoke for the current default models is recorded in `docs/reports/cross-review-api-capability-smoke-2026-04-30.md`.

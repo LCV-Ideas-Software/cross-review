@@ -193,7 +193,13 @@ these environment variables before running real sessions (example):
 - `session_report`
 - `session_check_convergence`
 - `session_attach_evidence`
+- `session_evidence_checklist_update`
+- `session_evidence_judge_pass`
+- `session_evidence_judge_consensus_pass`
+- `session_judgment_precision_report`
+- `contest_verdict`
 - `escalate_to_operator`
+- `regenerate_caller_tokens`
 - `session_sweep`
 - `session_finalize`
 

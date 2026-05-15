@@ -7,6 +7,70 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.02] — 2026-05-15
+
+**Patch — Codex second-pass audit close-out (6 findings).** v4.0.1 closed 8
+findings from the first Codex parecer; this v4.0.2 closes 6 additional
+items the second parecer flagged. None affects runtime semantics.
+
+### Fixed
+
+- **AUDIT-1 (MEDIUM) — lockfile version drift.** v4.0.1 bumped
+  `package.json` to `4.0.1` but the lockfile root `.version` and
+  `.packages[""].version` stayed at `4.0.0` (the `npm install` ran
+  during v4.0.0 captured deps, then the version bump didn't trigger a
+  re-resolve). Full reinstall this release brings the lockfile back to
+  the current `package.json` version. **Plus: new anti-drift smoke
+  marker `package_version_consistency_test`** asserts the four
+  equalities `pkg.name === pkg-lock.name`, `pkg-lock.name ===
+"@lcv-ideas-software/cross-review"`, `pkg.version === pkg-lock.version`,
+  `pkg.version === pkg-lock.packages[""].version`. Any future version
+  bump that forgets the `npm install` re-resolve fails smoke loudly
+  instead of slipping through to publish.
+- **AUDIT-2 (MEDIUM) — model-selection wording aligned with no-fallback
+  policy.** Both `docs/model-selection.md` and `src/peers/model-selection.ts`
+  were still describing "automatic model selection", "priority list",
+  and "documented fallback" — terms from the pre-v3.7.2 multi-model era.
+  The runtime has used canonical pins (one model per peer, no auto-chain)
+  since v3.7.2 (operator directive "sem fallback é sem fallback").
+  Updated docs + the `selected/candidates/reason` messages in
+  `selectFromCandidates`, `overrideSelection`, and the no-API-key
+  path to use canonical-pin language consistently. The `confidence`
+  classification logic is unchanged.
+- **AUDIT-3 (LOW) — SECURITY.md stub wording.** The doc said
+  `CROSS_REVIEW_STUB=1` alone is "ignored"; the code at
+  `src/peers/registry.ts:36-44` actually throws an explicit error
+  referencing the missing confirmation flag. Updated wording to
+  "rejected fail-fast" to match runtime behavior.
+- **AUDIT-4 (LOW) — README MCP tools list completed.** The README
+  Section listing the available tools had 22 entries; the runtime
+  exposes 28. Added the 6 missing tools:
+  `session_evidence_checklist_update`,
+  `session_evidence_judge_pass`,
+  `session_evidence_judge_consensus_pass`,
+  `session_judgment_precision_report`,
+  `contest_verdict`,
+  `regenerate_caller_tokens`.
+- **AUDIT-5 (LOW) — `docs/architecture.md` rename event.** The "Stable
+  Rename" section said the rename to `cross-review` happened at
+  `2.1.0`; the actual event is v4.0.0 on 2026-05-15 (this rename ship).
+  Rewrote the section to record v4.0.0 as the rename event and note
+  that prior names live only in dated changelog and memory.
+- **AUDIT-6 (MEDIUM) — StepSecurity post-rename detections triaged.**
+  Two new org-level suppression rules created:
+  (a) `Source-Code-Overwritten` for `*/dist/*` in
+  `.github/workflows/publish.yml` under the `Pre-publish gate (test +
+metadata)` job for repo `cross-review` (the prior cross-review-v2
+  rules no longer match after rename); (b)
+  `Action-Uses-Commit-From-Non-Default-Branch` for
+  `github/codeql-action*` (GitHub's release-branch model — tagged
+  versions cut from `releases/vN` not from default branch are
+  intended/audited by GitHub Security; rejecting would force less
+  secure tag-based usage). Plus 20 existing detections (19
+  Source-Code-Overwritten dist/\* + 1 codeql-action SHA) suppressed
+  per-detection via `update_detection_status` with rule-id citations
+  in the suppress reason.
+
 ## [v04.00.01] — 2026-05-15
 
 **Patch — close-out of post-v4.0.0 audit (eight surfaces left stale by the

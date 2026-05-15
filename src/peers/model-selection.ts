@@ -90,10 +90,10 @@ export function selectFromCandidates(
     source_url: DOCS[peer],
     confidence: selected ? "verified" : candidates.length > 0 ? "unknown" : "inferred",
     reason: selected
-      ? `Selected the first available advanced thinking model from the documented priority list: ${priority.join(" > ")}.`
+      ? `Validated availability of the canonical pin in the provider's model API: ${priority.join(", ")}.`
       : candidates.length > 0
-        ? `Model API returned candidates, but none matched the advanced thinking priority list (${priority.join(" > ")}); using documented fallback ${fallback} so the run fails visibly if unavailable instead of silently downgrading.`
-        : `Model API unavailable; using documented fallback ${fallback}.`,
+        ? `Model API returned candidates, but the canonical pin (${priority.join(", ")}) was not among them; keeping the canonical pin ${fallback} so the run fails visibly instead of silently downgrading (no-fallback policy, operator directive 2026-05-14).`
+        : `Model API unavailable; keeping the canonical pin ${fallback} (no-fallback policy).`,
   };
 }
 
@@ -114,8 +114,8 @@ function overrideSelection(peer: PeerId, value: string): ModelSelection {
     source_url: DOCS[peer],
     confidence: known ? "verified" : "inferred",
     reason: known
-      ? `${envOverrideName(peer)} is set; the explicit override has priority over automatic selection.`
-      : `${envOverrideName(peer)}='${value}' is set but is not in the documented priority list (${PRIORITY[peer].join(" > ")}); honoring the operator override but flagging confidence=inferred so any provider 404 surfaces here.`,
+      ? `${envOverrideName(peer)} is set to the canonical pin; the explicit override is acknowledged but matches the canonical pin exactly.`
+      : `${envOverrideName(peer)}='${value}' is set and differs from the canonical pin (${PRIORITY[peer].join(", ")}); honoring the operator override (the only legitimate non-canonical path) but flagging confidence=inferred so any provider 404 surfaces here.`,
   };
 }
 
@@ -248,7 +248,7 @@ export async function resolveBestModel(config: AppConfig, peer: PeerId): Promise
       source_url: DOCS[peer],
       confidence: "inferred",
       reason:
-        "API key is missing in the current process; using the documented fallback until the key is available.",
+        "API key is missing in the current process; keeping the canonical pin until the key is available (no-fallback policy).",
     };
   }
   try {

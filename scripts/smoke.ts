@@ -8223,6 +8223,47 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] session_sweep_prune_corrupt_test: PASS");
 }
 
+// v4.0.2 (AUDIT-1, Codex audit close-out 2026-05-15): anti-drift check
+// that `package.json.version` === `package-lock.json.version` ===
+// `package-lock.json.packages[""].version`. The v4.0.1 ship bumped
+// package.json without re-running `npm install`, so the lockfile root
+// versions stayed at `4.0.0` while package.json said `4.0.1`. Codex's
+// audit caught it. This marker pins the consistency invariant so any
+// future bump that forgets to regenerate the lockfile fails smoke
+// loudly instead of slipping through to publish.
+{
+  const pjPath = path.join(process.cwd(), "package.json");
+  const plPath = path.join(process.cwd(), "package-lock.json");
+  const pj = JSON.parse(fs.readFileSync(pjPath, "utf8"));
+  const pl = JSON.parse(fs.readFileSync(plPath, "utf8"));
+  const pjVer: string = pj.version;
+  const plRootVer: string = pl.version;
+  const plPackagesRootVer: string = pl.packages?.[""]?.version;
+  assert.equal(
+    plRootVer,
+    pjVer,
+    `v4.0.2 / AUDIT-1: package-lock.json root .version (${plRootVer}) must equal package.json .version (${pjVer}); run \`npm install\` after bumping the version.`,
+  );
+  assert.equal(
+    plPackagesRootVer,
+    pjVer,
+    `v4.0.2 / AUDIT-1: package-lock.json packages[""].version (${plPackagesRootVer}) must equal package.json .version (${pjVer}); run \`npm install\` after bumping the version.`,
+  );
+  // Also verify package.json `name` matches the new canonical name; if
+  // the rename ever needs to happen again, this fails fast.
+  assert.equal(
+    pj.name,
+    "@lcv-ideas-software/cross-review",
+    `v4.0.2 / AUDIT-1: package.json .name must be "@lcv-ideas-software/cross-review" (post-v4.0.0 rename); got "${pj.name}".`,
+  );
+  assert.equal(
+    pl.name,
+    "@lcv-ideas-software/cross-review",
+    `v4.0.2 / AUDIT-1: package-lock.json .name must be "@lcv-ideas-software/cross-review"; got "${pl.name}".`,
+  );
+  console.log("[smoke] package_version_consistency_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight
