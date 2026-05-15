@@ -10,12 +10,3 @@ coverage
 # README release-history tables are hand-wrapped and contain long code spans.
 README.md
 **/README.md
-# v4.0.3 (operator directive 2026-05-15, 4-gate quality): biome owns JS/TS
-# formatting under src/ and scripts/. Prettier is scoped to non-JS/TS
-# surfaces (markdown, yaml, JSON, HTML) to avoid biome↔prettier formatter
-# conflicts (e.g. dynamic-import call-style: prettier prefers a multi-line
-# break of `const X = await import("...")`, biome prefers collapse).
-src/**/*.ts
-src/**/*.js
-scripts/**/*.ts
-scripts/**/*.js

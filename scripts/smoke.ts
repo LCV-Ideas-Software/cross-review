@@ -1597,9 +1597,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // (c) does NOT scan the accumulated buffer per delta — the contract is
 // `append measures only delta`.
 {
-  const { StreamBuffer, StreamBufferOverflowError, STREAM_TEXT_MAX_BYTES } = await import(
-    "../src/peers/base.js"
-  );
+  const baseMod = await import("../src/peers/base.js");
+  const { StreamBuffer, StreamBufferOverflowError, STREAM_TEXT_MAX_BYTES } = baseMod;
   const buffer = new StreamBuffer("smoke-peer");
   buffer.append("hello world");
   assert.equal(buffer.text(), "hello world");
@@ -3270,9 +3269,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // Chamada explícita com caller=claude e lead_peer=claude DEVE lançar
 // CallerCannotBeLeadPeerError. Sem fallback silencioso pra sorteio.
 {
-  const { assertLeadPeerNotCaller, CallerCannotBeLeadPeerError } = await import(
-    "../src/core/relator-lottery.js"
-  );
+  const lotteryMod1 = await import("../src/core/relator-lottery.js");
+  const { assertLeadPeerNotCaller, CallerCannotBeLeadPeerError } = lotteryMod1;
   let threw = false;
   try {
     assertLeadPeerNotCaller("claude", "claude");
@@ -3348,9 +3346,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // (não PEERS global). Sem isso, caller=claude com peers=["codex","gemini"]
 // poderia atribuir deepseek (não-participante) como lead_peer.
 {
-  const { assignRelator, resolveLeadPeer, LeadPeerNotInSessionError } = await import(
-    "../src/core/relator-lottery.js"
-  );
+  const lotteryMod2 = await import("../src/core/relator-lottery.js");
+  const { assignRelator, resolveLeadPeer, LeadPeerNotInSessionError } = lotteryMod2;
   // (1) Subset com 2 peers + caller=claude → assigned ∈ subset.
   for (let i = 0; i < 50; i++) {
     const a = assignRelator("claude", ["codex", "gemini"]);
@@ -4521,9 +4518,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // none/low/medium/high). Other Grok models (per xAI docs) reject the
 // param OR auto-apply reasoning internally, so we omit it.
 {
-  const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } = await import(
-    "../src/peers/grok.js"
-  );
+  const grokMod = await import("../src/peers/grok.js");
+  const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } = grokMod;
   // Allowlist contract: grok-4.20-multi-agent + grok-4.3.
   assert.equal(modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.3"), true);
@@ -5926,9 +5922,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // (4) Behavioral: loadConfig() with env unset returns max_items_per_pass = 4.
   delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS;
-  const { loadConfig: loadConfigFresh } = await import(
-    `../src/core/config.js?max_items_4=${Date.now()}`
-  );
+  const freshConfigMod = await import(`../src/core/config.js?max_items_4=${Date.now()}`);
+  const { loadConfig: loadConfigFresh } = freshConfigMod;
   const cfg4 = loadConfigFresh();
   assert.equal(
     cfg4.evidence_judge_autowire.max_items_per_pass,
@@ -6083,8 +6078,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // the new prompt caching surface. Pure-function tests (no API keys
 // required); they pin the structural invariants the runtime depends on.
 {
+  const promptPartsMod = await import("../src/core/prompt-parts.js");
   const { buildPromptParts, hashStablePrefix, assertHashInvariant, pairScopedCacheKey } =
-    await import("../src/core/prompt-parts.js");
+    promptPartsMod;
   const baseInput = {
     cacheSchemaVersion: "v1",
     systemRole: "You are a peer reviewer.",
@@ -6156,9 +6152,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
   // (4) cache_manifest_atomic_write_test — write + multiple appends
   //     preserve every entry.
-  const { writeCacheManifest, appendCacheManifestEntry, readCacheManifest } = await import(
-    "../src/core/cache-manifest.js"
-  );
+  const cacheManifestMod = await import("../src/core/cache-manifest.js");
+  const { writeCacheManifest, appendCacheManifestEntry, readCacheManifest } = cacheManifestMod;
   const manifestSession = "550e8400-e29b-41d4-a716-446655440099";
   const manifestData = {
     session_id: manifestSession,

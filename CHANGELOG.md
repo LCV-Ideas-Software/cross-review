@@ -7,7 +7,40 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
-## [v04.00.03] — 2026-05-15
+## [v04.00.04] — 2026-05-15
+
+**Patch — restore prettier coverage of `src/` and `scripts/` (close audit
+finding on v4.0.3 hard-gate gap).** The v4.0.3 ship added biome but also
+moved `src/**/*.ts`, `src/**/*.js`, `scripts/**/*.ts`, `scripts/**/*.js`
+into `.prettierignore` to dodge a biome↔prettier disagreement on the
+dynamic-import call-style. Net effect: prettier ran against zero JS/TS
+under `src/` and `scripts/`, silently turning one of the four hard-gate
+checks into a no-op there. v4.0.4 restores full prettier coverage and
+keeps both formatters green simultaneously.
+
+### Changed
+
+- `.prettierignore` no longer excludes `src/**/*.ts`, `src/**/*.js`,
+  `scripts/**/*.ts`, `scripts/**/*.js`. Prettier and biome now both
+  check the full JS/TS surface.
+- `scripts/smoke.ts` — the 7 dynamic-import sites that triggered the
+  biome↔prettier wrap disagreement were rewritten from the
+  destructure-from-call form to a 2-statement form (`const mod = await
+import("..."); const { A, B, C } = mod;`). Functionally identical;
+  static type inference preserved because the import argument remains a
+  string literal in 6 of 7 sites and a template literal in 1.
+
+### Why a 2-statement refactor instead of a config tweak
+
+Biome 2.x and Prettier 3.x disagree on where to wrap when
+`const { ... } = await import("...")` exceeds `lineWidth`/`printWidth`:
+prettier breaks after `=`, biome breaks inside the call parens. Neither
+tool exposes a per-rule config knob for this specific case. Aligning
+`lineWidth` (already 100 in both) doesn't help because the disagreement
+is about which axis to break on, not the threshold. Refactoring to a
+form short enough to keep on one line each removes the disagreement at
+the source — durable across future biome/prettier releases without
+relying on tool-internal heuristics matching.
 
 **Patch — biome integration to satisfy the 4-gate quality directive
 (operator 2026-05-15: eslint + biome + prettier + cross-review).** The
