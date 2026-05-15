@@ -7,6 +7,65 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.00] — 2026-05-15
+
+**Major — project renamed to `cross-review`.** After the companion
+`cross-review-v1` project was discontinued and archived 2026-05-15,
+this project drops the `-v2` suffix and becomes the canonical
+`cross-review` going forward.
+
+### Breaking
+
+- **Package name**: `@lcv-ideas-software/cross-review-v2` →
+  `@lcv-ideas-software/cross-review`. The old name remains on the npm
+  registry at its last published version (`3.7.5`) for historical
+  installs but receives no further updates. New installs should use
+  `npm install -g @lcv-ideas-software/cross-review`.
+- **Binaries**: `cross-review-v2` and `cross-review-v2-dashboard` →
+  `cross-review` and `cross-review-dashboard`. Any local PATH alias or
+  script that invoked the old binary names must be updated.
+- **Env-var prefix**: `CROSS_REVIEW_V2_*` → `CROSS_REVIEW_*` across all
+  config knobs that previously carried the `V2` infix (e.g.
+  `CROSS_REVIEW_V2_DATA_DIR` → `CROSS_REVIEW_DATA_DIR`,
+  `CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC` →
+  `CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC`). API-key env vars
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+  `DEEPSEEK_API_KEY`, `GROK_API_KEY`, `PERPLEXITY_API_KEY`) are
+  unchanged. Per-host identity (`CROSS_REVIEW_CALLER_TOKEN`,
+  `CROSS_REVIEW_REQUIRE_TOKEN`) was already prefix-free and is also
+  unchanged.
+- **GitHub repository URL**: `LCV-Ideas-Software/cross-review-v2` →
+  [`LCV-Ideas-Software/cross-review`](https://github.com/LCV-Ideas-Software/cross-review).
+  GitHub auto-redirects from the old URL.
+- **GitHub Pages URL**: `cross-review-v2.lcv.dev` → `cross-review.lcv.dev`.
+- **MCP server key** in host configs (Claude Code `.mcp.json`,
+  Gemini Code Assist `settings.json`, ChatGPT Codex `~/.codex/config.toml`,
+  etc.): operators who previously declared `cross-review-v2` should
+  rename the key to `cross-review` and point `command` at the
+  new package's binary. After reload, MCP tool prefix becomes
+  `mcp__cross-review__*` (was `mcp__cross-review-v2__*`).
+
+### Preserved
+
+- All persisted session data and config files at the existing
+  `${HOME}/.cross-review/data_v2/` data directory continue to work
+  with the renamed runtime (operator can keep the path or migrate).
+- The wire shape of all MCP tools, event types, and convergence
+  semantics is unchanged. Code consuming the v3.7.5 tools sees the
+  same JSON shape under the new package name; only the package name
+  and binary name changed.
+- All capabilities, peers, models, security defenses (identity-forgery
+  rejection, caller capability tokens, evidence-provenance lock,
+  detector layers), and runtime behaviors carry over from v3.7.5
+  verbatim.
+
+### Internal
+
+- 504 source/script/doc text substitutions across 26 files.
+- Source directory name (`cross-review-v2/`) and historical CHANGELOG
+  entries (below v4.0.0) preserve the prior naming as the historical
+  record of what existed under the previous name.
+
 ## [v03.07.05] — 2026-05-15
 
 Close-out of the 244-session/429-round logs+sessions study completed

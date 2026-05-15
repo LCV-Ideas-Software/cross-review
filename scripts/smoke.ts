@@ -14,7 +14,7 @@ import path from "node:path";
 // as a sanitizer — it only allowlists `mkdtempSync`. Switch to that
 // API to actually close the alerts.
 function smokeTmpDir(label: string): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-v2-${label}-`));
+  return fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-${label}-`));
 }
 import { loadConfig } from "../src/core/config.js";
 import {
@@ -41,20 +41,20 @@ import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { StubAdapter } from "../src/peers/stub.js";
 import { redact } from "../src/security/redact.js";
 
-process.env.CROSS_REVIEW_V2_STUB = "1";
+process.env.CROSS_REVIEW_STUB = "1";
 // v2.4.0 / audit closure (P1.1): stub activation requires explicit
 // double-confirmation. The smoke suite is the canonical legitimate
 // consumer of stubs and confirms here.
-process.env.CROSS_REVIEW_V2_STUB_CONFIRMED = "1";
+process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
 // v2.5.0: smoke MUST run in isolation. Pre-v2.5.0 we honored an operator-
-// provided CROSS_REVIEW_V2_DATA_DIR (`||` fallback), but if that env points
+// provided CROSS_REVIEW_DATA_DIR (`||` fallback), but if that env points
 // at the live MCP runtime dir (e.g. `C:\Users\leona\.cross-review\data`),
 // every smoke run pollutes the operator's session history AND inherits
 // arbitrary stale sessions from earlier real runs that can break
 // deterministic assertions (e.g. `sweepIdle` returning a non-zero count
 // because the operator dir already had >24h-old orphans). CI matches this
 // because it runs without the env. Always force a unique tmpdir.
-process.env.CROSS_REVIEW_V2_DATA_DIR = smokeTmpDir(`smoke-${process.pid}`);
+process.env.CROSS_REVIEW_DATA_DIR = smokeTmpDir(`smoke-${process.pid}`);
 process.env.CROSS_REVIEW_OPENAI_FALLBACK_MODELS ??= "stub-codex-fallback";
 // v2.14.0 (item 5): GROK joined the quinteto — its rate envs use the
 // canonical `CROSS_REVIEW_GROK_*` prefix (see config.ts COST_RATE_ENV_PREFIX).
@@ -71,73 +71,73 @@ for (const provider of ["OPENAI", "ANTHROPIC", "GEMINI", "DEEPSEEK", "GROK", "PE
   process.env[`CROSS_REVIEW_${provider}_OUTPUT_USD_PER_MILLION`] ??= "1000";
 }
 process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS ??= "1000";
-process.env.CROSS_REVIEW_V2_MAX_SESSION_COST_USD ??= "1000";
-process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD ??= "1000";
-process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD ??= "1000";
+process.env.CROSS_REVIEW_MAX_SESSION_COST_USD ??= "1000";
+process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD ??= "1000";
+process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD ??= "1000";
 
-const previousMaxOutputTokens = process.env.CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS;
-const previousMaxReviewFocusChars = process.env.CROSS_REVIEW_V2_MAX_REVIEW_FOCUS_CHARS;
-const previousMaxSessionCost = process.env.CROSS_REVIEW_V2_MAX_SESSION_COST_USD;
-const previousPreflightMaxRoundCost = process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD;
-const previousUntilStoppedMaxCost = process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD;
-const previousStreamTokens = process.env.CROSS_REVIEW_V2_STREAM_TOKENS;
-const previousStreamText = process.env.CROSS_REVIEW_V2_STREAM_TEXT;
-process.env.CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS = "32000";
+const previousMaxOutputTokens = process.env.CROSS_REVIEW_MAX_OUTPUT_TOKENS;
+const previousMaxReviewFocusChars = process.env.CROSS_REVIEW_MAX_REVIEW_FOCUS_CHARS;
+const previousMaxSessionCost = process.env.CROSS_REVIEW_MAX_SESSION_COST_USD;
+const previousPreflightMaxRoundCost = process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD;
+const previousUntilStoppedMaxCost = process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD;
+const previousStreamTokens = process.env.CROSS_REVIEW_STREAM_TOKENS;
+const previousStreamText = process.env.CROSS_REVIEW_STREAM_TEXT;
+process.env.CROSS_REVIEW_MAX_OUTPUT_TOKENS = "32000";
 assert.equal(loadConfig().max_output_tokens, 32_000);
-process.env.CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS = "not-a-number";
+process.env.CROSS_REVIEW_MAX_OUTPUT_TOKENS = "not-a-number";
 assert.equal(loadConfig().max_output_tokens, 20_000);
-process.env.CROSS_REVIEW_V2_MAX_REVIEW_FOCUS_CHARS = "1234";
+process.env.CROSS_REVIEW_MAX_REVIEW_FOCUS_CHARS = "1234";
 assert.equal(loadConfig().prompt.max_review_focus_chars, 1_234);
-process.env.CROSS_REVIEW_V2_MAX_SESSION_COST_USD = "20";
+process.env.CROSS_REVIEW_MAX_SESSION_COST_USD = "20";
 assert.equal(loadConfig().budget.max_session_cost_usd, 20);
-process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD = "2";
+process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD = "2";
 assert.equal(loadConfig().budget.preflight_max_round_cost_usd, 2);
-process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD = "20";
+process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD = "20";
 assert.equal(loadConfig().budget.until_stopped_max_cost_usd, 20);
-process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD = "not-a-number";
+process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD = "not-a-number";
 assert.equal(loadConfig().budget.until_stopped_max_cost_usd, undefined);
-process.env.CROSS_REVIEW_V2_STREAM_TOKENS = "0";
+process.env.CROSS_REVIEW_STREAM_TOKENS = "0";
 assert.equal(loadConfig().streaming.tokens, false);
-process.env.CROSS_REVIEW_V2_STREAM_TOKENS = "1";
+process.env.CROSS_REVIEW_STREAM_TOKENS = "1";
 assert.equal(loadConfig().streaming.tokens, true);
-process.env.CROSS_REVIEW_V2_STREAM_TEXT = "0";
+process.env.CROSS_REVIEW_STREAM_TEXT = "0";
 assert.equal(loadConfig().streaming.include_text, false);
-process.env.CROSS_REVIEW_V2_STREAM_TEXT = "1";
+process.env.CROSS_REVIEW_STREAM_TEXT = "1";
 assert.equal(loadConfig().streaming.include_text, true);
 if (previousMaxOutputTokens == null) {
-  delete process.env.CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS;
+  delete process.env.CROSS_REVIEW_MAX_OUTPUT_TOKENS;
 } else {
-  process.env.CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS = previousMaxOutputTokens;
+  process.env.CROSS_REVIEW_MAX_OUTPUT_TOKENS = previousMaxOutputTokens;
 }
 if (previousMaxReviewFocusChars == null) {
-  delete process.env.CROSS_REVIEW_V2_MAX_REVIEW_FOCUS_CHARS;
+  delete process.env.CROSS_REVIEW_MAX_REVIEW_FOCUS_CHARS;
 } else {
-  process.env.CROSS_REVIEW_V2_MAX_REVIEW_FOCUS_CHARS = previousMaxReviewFocusChars;
+  process.env.CROSS_REVIEW_MAX_REVIEW_FOCUS_CHARS = previousMaxReviewFocusChars;
 }
 if (previousMaxSessionCost == null) {
-  delete process.env.CROSS_REVIEW_V2_MAX_SESSION_COST_USD;
+  delete process.env.CROSS_REVIEW_MAX_SESSION_COST_USD;
 } else {
-  process.env.CROSS_REVIEW_V2_MAX_SESSION_COST_USD = previousMaxSessionCost;
+  process.env.CROSS_REVIEW_MAX_SESSION_COST_USD = previousMaxSessionCost;
 }
 if (previousPreflightMaxRoundCost == null) {
-  delete process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD;
+  delete process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD;
 } else {
-  process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD = previousPreflightMaxRoundCost;
+  process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD = previousPreflightMaxRoundCost;
 }
 if (previousUntilStoppedMaxCost == null) {
-  delete process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD;
+  delete process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD;
 } else {
-  process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD = previousUntilStoppedMaxCost;
+  process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD = previousUntilStoppedMaxCost;
 }
 if (previousStreamTokens == null) {
-  delete process.env.CROSS_REVIEW_V2_STREAM_TOKENS;
+  delete process.env.CROSS_REVIEW_STREAM_TOKENS;
 } else {
-  process.env.CROSS_REVIEW_V2_STREAM_TOKENS = previousStreamTokens;
+  process.env.CROSS_REVIEW_STREAM_TOKENS = previousStreamTokens;
 }
 if (previousStreamText == null) {
-  delete process.env.CROSS_REVIEW_V2_STREAM_TEXT;
+  delete process.env.CROSS_REVIEW_STREAM_TEXT;
 } else {
-  process.env.CROSS_REVIEW_V2_STREAM_TEXT = previousStreamText;
+  process.env.CROSS_REVIEW_STREAM_TEXT = previousStreamText;
 }
 
 const config = loadConfig();
@@ -863,14 +863,14 @@ assert.equal(
 assert.equal(orchestrator.store.read(stale.session_id).outcome, "aborted");
 assert.equal(orchestrator.store.read(fresh.session_id).outcome, undefined);
 
-process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL = "stub-downgraded";
+process.env.CROSS_REVIEW_STUB_REPORTED_MODEL = "stub-downgraded";
 const mismatch = await orchestrator.askPeers({
   task: "Verify silent model downgrade handling.",
   draft: "This draft is intentionally simple.",
   caller: "operator",
   peers: ["codex"],
 });
-delete process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL;
+delete process.env.CROSS_REVIEW_STUB_REPORTED_MODEL;
 assert.equal(mismatch.converged, false);
 assert.equal(mismatch.round.rejected.at(-1)?.failure_class, "silent_model_downgrade");
 assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_model_downgrade");
@@ -886,14 +886,14 @@ assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_mo
 // against it; a genuine cross-family downgrade is still flagged.
 {
   const aliasStub = new StubAdapter(config, "grok", "grok-4-latest");
-  process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL = "grok-4-0709";
+  process.env.CROSS_REVIEW_STUB_REPORTED_MODEL = "grok-4-0709";
   const aliasResult = await aliasStub.call("model-match -latest alias probe", {
     session_id: result.session.session_id,
     round: 98,
     task: "model-match -latest alias probe",
     emit() {},
   });
-  delete process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL;
+  delete process.env.CROSS_REVIEW_STUB_REPORTED_MODEL;
   assert.equal(
     aliasResult.model_match,
     true,
@@ -906,7 +906,7 @@ assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_mo
   );
 
   const downgradeAliasStub = new StubAdapter(config, "grok", "grok-4-latest");
-  process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL = "grok-3-fast";
+  process.env.CROSS_REVIEW_STUB_REPORTED_MODEL = "grok-3-fast";
   const downgradeAliasResult = await downgradeAliasStub.call(
     "model-match cross-family downgrade probe",
     {
@@ -916,7 +916,7 @@ assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_mo
       emit() {},
     },
   );
-  delete process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL;
+  delete process.env.CROSS_REVIEW_STUB_REPORTED_MODEL;
   assert.equal(
     downgradeAliasResult.model_match,
     false,
@@ -1099,7 +1099,7 @@ assert.equal(financialControlsBlocked.session.outcome_reason, "financial_control
 assert.equal(financialControlsBlocked.round.rejected.at(-1)?.failure_class, "budget_preflight");
 assert.match(
   financialControlsBlocked.round.rejected.at(-1)?.message ?? "",
-  /CROSS_REVIEW_V2_MAX_SESSION_COST_USD/,
+  /CROSS_REVIEW_MAX_SESSION_COST_USD/,
 );
 assert.match(
   financialControlsBlocked.round.rejected.at(-1)?.message ?? "",
@@ -1110,7 +1110,7 @@ assert.match(
 // `cost.total_cost`, so a budget-enforcement test that depends on cost
 // arithmetic now needs the explicit escape hatch to make stubs report
 // real estimated cost. Set the env around this assertion only.
-process.env.CROSS_REVIEW_V2_STUB_FORCE_REAL_COST = "1";
+process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST = "1";
 const budgetExceeded = await orchestrator.runUntilUnanimous({
   task: "Verify configured budget limit stops non-converged sessions.",
   initial_draft: "FORCE_NOT_READY",
@@ -1119,7 +1119,7 @@ const budgetExceeded = await orchestrator.runUntilUnanimous({
   max_rounds: 3,
   max_cost_usd: 0.000001,
 });
-delete process.env.CROSS_REVIEW_V2_STUB_FORCE_REAL_COST;
+delete process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST;
 assert.equal(budgetExceeded.converged, false);
 assert.equal(budgetExceeded.session.outcome, "max-rounds");
 assert.equal(budgetExceeded.session.outcome_reason, "budget_exceeded");
@@ -1154,7 +1154,7 @@ assert.equal(untilStoppedNoBudget.rounds, 0);
 // which would prevent the budget_exceeded path from ever firing and
 // turn this assertion into an infinite loop. Force real estimated
 // cost on the stub for the duration of this assertion.
-process.env.CROSS_REVIEW_V2_STUB_FORCE_REAL_COST = "1";
+process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST = "1";
 const untilStoppedDefaultBudget = await new CrossReviewOrchestrator({
   ...loadConfig(),
   data_dir: smokeTmpDir("until-stopped-budget"),
@@ -1171,7 +1171,7 @@ const untilStoppedDefaultBudget = await new CrossReviewOrchestrator({
   lead_peer: "codex",
   peers: ["claude"],
 });
-delete process.env.CROSS_REVIEW_V2_STUB_FORCE_REAL_COST;
+delete process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST;
 assert.equal(untilStoppedDefaultBudget.converged, false);
 assert.equal(untilStoppedDefaultBudget.session.outcome, "max-rounds");
 assert.equal(untilStoppedDefaultBudget.session.outcome_reason, "budget_exceeded");
@@ -1212,8 +1212,8 @@ const cancelledRound = await cancellableRound;
 assert.equal(cancelledRound.converged, false);
 assert.equal(cancelledRound.round.rejected.at(-1)?.failure_class, "cancelled");
 
-process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD = "0.000001";
-process.env.CROSS_REVIEW_V2_DATA_DIR = smokeTmpDir("preflight-smoke");
+process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD = "0.000001";
+process.env.CROSS_REVIEW_DATA_DIR = smokeTmpDir("preflight-smoke");
 const preflightOrchestrator = new CrossReviewOrchestrator(loadConfig());
 const preflightBlocked = await preflightOrchestrator.askPeers({
   task: "Verify budget preflight.",
@@ -1564,7 +1564,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] budget_warning_emit_test: PASS");
 }
 
-// v2.4.0 / cross-review-v2 R2 (codex): SessionIdSchema lowercase
+// v2.4.0 / cross-review R2 (codex): SessionIdSchema lowercase
 // normalization. Verify that the schema (a) accepts uppercase UUIDv4,
 // (b) emits the lowercase form, (c) preserves the existing UUIDv4
 // validation gate (rejects non-UUIDv4 input).
@@ -1576,7 +1576,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(
     parsed,
     expected,
-    "SessionIdSchema must lowercase uppercase UUIDv4 input (cross-review-v2 R2 codex)",
+    "SessionIdSchema must lowercase uppercase UUIDv4 input (cross-review R2 codex)",
   );
   const lower = "12345678-9abc-4def-8123-456789abcdef";
   assert.equal(SessionIdSchema.parse(lower), lower);
@@ -1590,7 +1590,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] session_id_schema_lowercase_test: PASS");
 }
 
-// v2.4.0 / cross-review-v2 R3 (gemini O(N^2) regression + codex evidence
+// v2.4.0 / cross-review R3 (gemini O(N^2) regression + codex evidence
 // requests): O(1) StreamBuffer. (a) accepts deltas under cap, (b) throws
 // StreamBufferOverflowError when projected bytes exceed STREAM_TEXT_MAX_BYTES,
 // (c) does NOT scan the accumulated buffer per delta — the contract is
@@ -1624,7 +1624,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] stream_buffer_overflow_test: PASS");
 }
 
-// v2.4.0 / cross-review-v2 R3 (codex+deepseek evidence requests): seq
+// v2.4.0 / cross-review R3 (codex+deepseek evidence requests): seq
 // cache durability under appendFileSync failure + restart. Approach:
 // (a) populate one event normally, (b) monkey-patch fs.appendFileSync to
 // throw, (c) attempt another emit — appendEvent silences errors, but the
@@ -1694,7 +1694,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] seq_cache_append_failure_restart_test: PASS");
 }
 
-// v2.4.0 / cross-review-v2 R5 (codex blocker): markInFlight refuses to
+// v2.4.0 / cross-review R5 (codex blocker): markInFlight refuses to
 // overwrite an existing in_flight. Same-session concurrent ask_peers
 // would otherwise race the format-recovery quota counter. The guard
 // throws a clear operator-actionable error.
@@ -1803,20 +1803,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] session_contract_directives_test: PASS");
 }
 
-// v2.5.0: CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS env override is honored.
+// v2.5.0: CROSS_REVIEW_DEFAULT_MAX_ROUNDS env override is honored.
 {
   const { loadConfig: reload } = await import("../src/core/config.js");
-  const prev = process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS;
-  process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS = "5";
+  const prev = process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS;
+  process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS = "5";
   assert.equal(reload().budget.default_max_rounds, 5);
-  process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS = "garbage";
+  process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS = "garbage";
   assert.equal(
     reload().budget.default_max_rounds,
     8,
     "default_max_rounds must fall back to 8 when env value is unparseable",
   );
-  if (prev == null) delete process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS;
-  else process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS = prev;
+  if (prev == null) delete process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS;
+  else process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS = prev;
   console.log("[smoke] default_max_rounds_env_honored_test: PASS");
 }
 
@@ -1956,7 +1956,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // (added in this same release) so both rounds see the marker and emit
 // NEEDS_EVIDENCE.
 {
-  // Earlier tests leak `CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD=0.000001`
+  // Earlier tests leak `CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD=0.000001`
   // into the env (line ~734), which would hard-block this auto-grant test
   // at the budget preflight gate before any peer call. Override budget
   // explicitly so the loop reaches the auto-grant gate as designed.
@@ -2050,7 +2050,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // 96k of 98k events in the 253-session corpus). v2.6.0 buffers deltas
 // and flushes a coalesced delta either when the buffer crosses 1 KiB or
 // when 250 ms has elapsed since the last flush. Verbose escape hatch
-// `CROSS_REVIEW_V2_TOKEN_DELTA_VERBOSE=1` restores legacy chunk-level
+// `CROSS_REVIEW_TOKEN_DELTA_VERBOSE=1` restores legacy chunk-level
 // emit. Smoke proof: with default thresholds, the stub's 32-char chunks
 // in a single response produce far fewer delta events than the chunk
 // count.
@@ -2201,7 +2201,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // max_session_cost_usd = 100: preflight (0 + ~96.5) ≤ 100 ✓ passes;
 // gate (0 + ~16.5 first-call + ~96 recoveryEstimate) > 100 ✓ fires.
 {
-  process.env.CROSS_REVIEW_V2_STUB_FORCE_REAL_COST = "1";
+  process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST = "1";
   const fmtBudgetEvents: string[] = [];
   const fmtBudgetConfig = {
     ...loadConfig(),
@@ -2222,7 +2222,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     caller: "operator",
     peers: ["codex"],
   });
-  delete process.env.CROSS_REVIEW_V2_STUB_FORCE_REAL_COST;
+  delete process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST;
   assert.ok(
     fmtBudgetEvents.includes("peer.format_recovery.budget_blocked"),
     `format-recovery hard budget gate must emit budget_blocked, events=${fmtBudgetEvents.filter((e) => e.startsWith("peer.")).join(",")}`,
@@ -3002,14 +3002,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.10.0 Judge Auto-wire — OFF (default).
-// Without CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE set, askPeers MUST
+// Without CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE set, askPeers MUST
 // NOT fire any judge events. Verifies the v2.9.0 contract is preserved
 // for callers that did not opt in.
 {
-  const prevMode = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  const prevPeer = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-  delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
   try {
     const offEvents: string[] = [];
     const offConfig = {
@@ -3039,10 +3039,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
     console.log("[smoke] evidence_judge_autowire_off_no_calls_test: PASS");
   } finally {
-    if (prevMode === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
-    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
+    if (prevMode === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
+    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
   }
 }
 
@@ -3053,10 +3053,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // fire with would_promote=true; checklist state MUST stay open
 // (mutation suppressed).
 {
-  const prevMode = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  const prevPeer = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
   try {
     const events: string[] = [];
     const eventData: Array<Record<string, unknown> | undefined> = [];
@@ -3127,10 +3127,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.ok(events.includes("session.evidence_judge_pass.completed"));
     console.log("[smoke] evidence_judge_autowire_shadow_emits_decision_test: PASS");
   } finally {
-    if (prevMode === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
-    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
+    if (prevMode === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
+    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
   }
 }
 
@@ -3500,19 +3500,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // honors valid mode+peer, rejects unknown peer, and treats unknown mode
 // as a passthrough so the boot notice can warn.
 {
-  const prevMode = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  const prevPeer = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
   try {
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
     const valid = loadConfig();
     assert.equal(valid.evidence_judge_autowire.mode, "shadow");
     assert.equal(valid.evidence_judge_autowire.peer, "codex");
     assert.equal(valid.evidence_judge_autowire.active, true);
     assert.ok(valid.evidence_judge_autowire.max_items_per_pass >= 1);
 
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "robotcat";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "robotcat";
     const badPeer = loadConfig();
     assert.equal(badPeer.evidence_judge_autowire.mode, "shadow");
     assert.equal(badPeer.evidence_judge_autowire.peer, undefined);
@@ -3522,31 +3522,31 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     // v2.14.0 (item 2): "active" is now a first-class mode (was treated
     // as unrecognized in v2.12-v2.13). Verify it parses to mode="active"
     // + active=true when paired with a valid peer.
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "ACTIVE";
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "ACTIVE";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
     const activeMode = loadConfig();
     assert.equal(activeMode.evidence_judge_autowire.mode, "active");
     assert.equal(activeMode.evidence_judge_autowire.active, true);
 
     // Genuinely unrecognized mode → preserved verbatim, active=false.
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "TURBO";
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "TURBO";
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
     const badMode = loadConfig();
     assert.equal(badMode.evidence_judge_autowire.mode, "turbo");
     assert.equal(badMode.evidence_judge_autowire.active, false);
 
-    delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-    delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+    delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+    delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
     const empty = loadConfig();
     assert.equal(empty.evidence_judge_autowire.mode, "off");
     assert.equal(empty.evidence_judge_autowire.peer, undefined);
     assert.equal(empty.evidence_judge_autowire.active, false);
     console.log("[smoke] config_evidence_judge_autowire_parsed_test: PASS");
   } finally {
-    if (prevMode === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
-    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
+    if (prevMode === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
+    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
   }
 }
 
@@ -3555,10 +3555,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // produces shadow decisions, then verify the rollup counts decisions,
 // would_promote, and confidence buckets correctly.
 {
-  const prevMode = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  const prevPeer = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
   try {
     const cfg = {
       ...loadConfig(),
@@ -3614,10 +3614,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.equal(metrics.shadow_judgment.decisions_total, rollup.decisions_total);
     console.log("[smoke] metrics_shadow_judgment_rollup_test: PASS");
   } finally {
-    if (prevMode === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
-    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
+    if (prevMode === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
+    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
   }
 }
 
@@ -3937,36 +3937,36 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const prevs: Partial<Record<string, string | undefined>> = {};
   for (const peer of ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK"]) {
-    prevs[peer] = process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
+    prevs[peer] = process.env[`CROSS_REVIEW_PEER_${peer}`];
   }
   try {
     for (const peer of ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK"]) {
-      delete process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
+      delete process.env[`CROSS_REVIEW_PEER_${peer}`];
     }
     const allEnabled = loadConfig();
     assert.equal(allEnabled.peer_enabled.codex, true);
     assert.equal(allEnabled.peer_enabled.claude, true);
     assert.equal(allEnabled.peer_enabled.gemini, true);
     assert.equal(allEnabled.peer_enabled.deepseek, true);
-    process.env.CROSS_REVIEW_V2_PEER_GEMINI = "off";
-    process.env.CROSS_REVIEW_V2_PEER_DEEPSEEK = "false";
+    process.env.CROSS_REVIEW_PEER_GEMINI = "off";
+    process.env.CROSS_REVIEW_PEER_DEEPSEEK = "false";
     const twoOff = loadConfig();
     assert.equal(twoOff.peer_enabled.gemini, false);
     assert.equal(twoOff.peer_enabled.deepseek, false);
-    process.env.CROSS_REVIEW_V2_PEER_GEMINI = "1";
-    process.env.CROSS_REVIEW_V2_PEER_DEEPSEEK = "no";
+    process.env.CROSS_REVIEW_PEER_GEMINI = "1";
+    process.env.CROSS_REVIEW_PEER_DEEPSEEK = "no";
     const mixed = loadConfig();
     assert.equal(mixed.peer_enabled.gemini, true);
     assert.equal(mixed.peer_enabled.deepseek, false);
-    process.env.CROSS_REVIEW_V2_PEER_GEMINI = "maybe";
+    process.env.CROSS_REVIEW_PEER_GEMINI = "maybe";
     const fallback = loadConfig();
     assert.equal(fallback.peer_enabled.gemini, true);
     console.log("[smoke] peer_enabled_env_parsed_test: PASS");
   } finally {
     for (const peer of ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK"]) {
       const prev = prevs[peer];
-      if (prev === undefined) delete process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
-      else process.env[`CROSS_REVIEW_V2_PEER_${peer}`] = prev;
+      if (prev === undefined) delete process.env[`CROSS_REVIEW_PEER_${peer}`];
+      else process.env[`CROSS_REVIEW_PEER_${peer}`] = prev;
     }
   }
 }
@@ -3979,15 +3979,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const peerEnvs = ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK", "GROK", "PERPLEXITY"];
   const prevs: Partial<Record<string, string | undefined>> = {};
   for (const peer of peerEnvs) {
-    prevs[peer] = process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
+    prevs[peer] = process.env[`CROSS_REVIEW_PEER_${peer}`];
   }
   try {
-    process.env.CROSS_REVIEW_V2_PEER_CODEX = "on";
-    process.env.CROSS_REVIEW_V2_PEER_CLAUDE = "off";
-    process.env.CROSS_REVIEW_V2_PEER_GEMINI = "off";
-    process.env.CROSS_REVIEW_V2_PEER_DEEPSEEK = "off";
-    process.env.CROSS_REVIEW_V2_PEER_GROK = "off";
-    process.env.CROSS_REVIEW_V2_PEER_PERPLEXITY = "off";
+    process.env.CROSS_REVIEW_PEER_CODEX = "on";
+    process.env.CROSS_REVIEW_PEER_CLAUDE = "off";
+    process.env.CROSS_REVIEW_PEER_GEMINI = "off";
+    process.env.CROSS_REVIEW_PEER_DEEPSEEK = "off";
+    process.env.CROSS_REVIEW_PEER_GROK = "off";
+    process.env.CROSS_REVIEW_PEER_PERPLEXITY = "off";
     const cfg = { ...loadConfig(), data_dir: smokeTmpDir("min-two-fail") };
     let threw: unknown = null;
     try {
@@ -3997,7 +3997,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     }
     assert.ok(threw, "constructor must throw when only 1 peer enabled");
     assert.equal((threw as Error).name, "InsufficientEnabledPeersError");
-    process.env.CROSS_REVIEW_V2_PEER_CLAUDE = "on";
+    process.env.CROSS_REVIEW_PEER_CLAUDE = "on";
     const cfgOk = { ...loadConfig(), data_dir: smokeTmpDir("min-two-ok") };
     const orchOk = new CrossReviewOrchestrator(cfgOk, () => {});
     assert.ok(orchOk);
@@ -4005,8 +4005,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   } finally {
     for (const peer of peerEnvs) {
       const prev = prevs[peer];
-      if (prev === undefined) delete process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
-      else process.env[`CROSS_REVIEW_V2_PEER_${peer}`] = prev;
+      if (prev === undefined) delete process.env[`CROSS_REVIEW_PEER_${peer}`];
+      else process.env[`CROSS_REVIEW_PEER_${peer}`] = prev;
     }
   }
 }
@@ -4016,13 +4016,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const prevs: Partial<Record<string, string | undefined>> = {};
   for (const peer of ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK"]) {
-    prevs[peer] = process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
+    prevs[peer] = process.env[`CROSS_REVIEW_PEER_${peer}`];
   }
   try {
-    process.env.CROSS_REVIEW_V2_PEER_CODEX = "on";
-    process.env.CROSS_REVIEW_V2_PEER_CLAUDE = "on";
-    process.env.CROSS_REVIEW_V2_PEER_GEMINI = "off";
-    process.env.CROSS_REVIEW_V2_PEER_DEEPSEEK = "on";
+    process.env.CROSS_REVIEW_PEER_CODEX = "on";
+    process.env.CROSS_REVIEW_PEER_CLAUDE = "on";
+    process.env.CROSS_REVIEW_PEER_GEMINI = "off";
+    process.env.CROSS_REVIEW_PEER_DEEPSEEK = "on";
     const cfg = {
       ...loadConfig(),
       data_dir: smokeTmpDir("disabled-reject"),
@@ -4072,8 +4072,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   } finally {
     for (const peer of ["CODEX", "CLAUDE", "GEMINI", "DEEPSEEK"]) {
       const prev = prevs[peer];
-      if (prev === undefined) delete process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
-      else process.env[`CROSS_REVIEW_V2_PEER_${peer}`] = prev;
+      if (prev === undefined) delete process.env[`CROSS_REVIEW_PEER_${peer}`];
+      else process.env[`CROSS_REVIEW_PEER_${peer}`] = prev;
     }
   }
 }
@@ -4084,10 +4084,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // → expected outcome is 1 TP. Then verify the report classifies it as
 // such and computes precision = 1.0.
 {
-  const prevMode = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  const prevPeer = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
   try {
     const cfg = {
       ...loadConfig(),
@@ -4153,10 +4153,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
     console.log("[smoke] judgment_precision_report_test: PASS");
   } finally {
-    if (prevMode === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
-    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
+    if (prevMode === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
+    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
   }
 }
 
@@ -4166,10 +4166,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // markEvidenceItemAddressedByJudge. Differentiated from shadow via
 // the resulting evidence_checklist item state.
 {
-  const prevMode = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  const prevPeer = process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "active";
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "active";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
   try {
     const cfg = {
       ...loadConfig(),
@@ -4226,10 +4226,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.ok(events.includes("session.evidence_judge_pass.completed"));
     console.log("[smoke] evidence_judge_autowire_active_promotes_test: PASS");
   } finally {
-    if (prevMode === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
-    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
-    else process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
+    if (prevMode === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = prevMode;
+    if (prevPeer === undefined) delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+    else process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = prevPeer;
   }
 }
 
@@ -4378,10 +4378,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Disabled-peer rejection.
   const prevs: Partial<Record<string, string | undefined>> = {};
   for (const peer of ["GEMINI"]) {
-    prevs[peer] = process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
+    prevs[peer] = process.env[`CROSS_REVIEW_PEER_${peer}`];
   }
   try {
-    process.env.CROSS_REVIEW_V2_PEER_GEMINI = "off";
+    process.env.CROSS_REVIEW_PEER_GEMINI = "off";
     const cfgDisabled = {
       ...loadConfig(),
       data_dir: smokeTmpDir("judge-consensus-disabled"),
@@ -4417,8 +4417,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   } finally {
     for (const peer of ["GEMINI"]) {
       const prev = prevs[peer];
-      if (prev === undefined) delete process.env[`CROSS_REVIEW_V2_PEER_${peer}`];
-      else process.env[`CROSS_REVIEW_V2_PEER_${peer}`] = prev;
+      if (prev === undefined) delete process.env[`CROSS_REVIEW_PEER_${peer}`];
+      else process.env[`CROSS_REVIEW_PEER_${peer}`] = prev;
     }
   }
   console.log("[smoke] judge_consensus_pass_test: PASS");
@@ -4441,7 +4441,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const cfg = loadConfig();
   // v3.7.2 (AUDIT-3 + operator directive 2026-05-14): default grok model
   // is `grok-4-latest` — the operator's chosen canonical pin for
-  // cross-review-v2, superseding the v2.14.1 `grok-4.20-multi-agent`
+  // cross-review, superseding the v2.14.1 `grok-4.20-multi-agent`
   // default. `grok-4.20-multi-agent` remains a valid env-override
   // (CROSS_REVIEW_GROK_MODEL) for explicit reasoning.effort control — the
   // adapter still handles it; the modelAcceptsReasoningEffort /
@@ -5001,7 +5001,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // v3.2.0 (Codex bug report 2026-05-12) — orchestrator MUST honor the
 // caller's explicit `peers: [...]` list across the whole session,
 // including the autowire judge path. Pre-v3.2.0 a peer that was
-// `peer_enabled` and listed in `CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_*`
+// `peer_enabled` and listed in `CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_*`
 // would still be invoked as a judge even when the caller passed an
 // explicit `peers` list that excluded it (observed in session 73036fbb:
 // peers=[codex,gemini,deepseek,grok] but reviewers/judges included
@@ -5170,7 +5170,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 //     + result.applied=false (no crash, no exception);
 // (e) zod validation failure → parse_error includes
 //     "schema_validation_failed:" prefix + result.applied=false;
-// (f) CROSS_REVIEW_V2_CONFIG_FILE env override resolves a non-default
+// (f) CROSS_REVIEW_CONFIG_FILE env override resolves a non-default
 //     absolute path.
 {
   const tmpModule = await import("node:fs");
@@ -5188,22 +5188,22 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const KEYS_UNDER_TEST = [
     "CROSS_REVIEW_OPENAI_MODEL",
     "CROSS_REVIEW_PERPLEXITY_MODEL",
-    "CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS",
-    "CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD",
-    "CROSS_REVIEW_V2_TOKEN_DELTA_MS_THRESHOLD",
-    "CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS",
-    "CROSS_REVIEW_V2_PEER_PERPLEXITY",
-    "CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE",
-    "CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER",
-    "CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS",
+    "CROSS_REVIEW_MAX_OUTPUT_TOKENS",
+    "CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD",
+    "CROSS_REVIEW_TOKEN_DELTA_MS_THRESHOLD",
+    "CROSS_REVIEW_DEFAULT_MAX_ROUNDS",
+    "CROSS_REVIEW_PEER_PERPLEXITY",
+    "CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE",
+    "CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER",
+    "CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS",
   ];
   const restore: Record<string, string | undefined> = {};
   for (const k of KEYS_UNDER_TEST) {
     restore[k] = process.env[k];
     delete process.env[k];
   }
-  const prevConfigFileEnv = process.env.CROSS_REVIEW_V2_CONFIG_FILE;
-  delete process.env.CROSS_REVIEW_V2_CONFIG_FILE;
+  const prevConfigFileEnv = process.env.CROSS_REVIEW_CONFIG_FILE;
+  delete process.env.CROSS_REVIEW_CONFIG_FILE;
   // Use the smoke's existing envValue shim that mirrors config.ts
   // semantics enough for this test (no Windows registry fallback path
   // needed here; the file-config module only consults the function
@@ -5243,20 +5243,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       assert.ok(r.fields_applied > 0, "valid file must apply at least one field");
       assert.equal(r.parse_error, undefined);
       assert.equal(process.env.CROSS_REVIEW_OPENAI_MODEL, "gpt-5.5");
-      assert.equal(process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS, "12");
-      assert.equal(process.env.CROSS_REVIEW_V2_PEER_PERPLEXITY, "on");
-      assert.equal(process.env.CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD, "4096");
-      assert.equal(process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE, "shadow");
+      assert.equal(process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS, "12");
+      assert.equal(process.env.CROSS_REVIEW_PEER_PERPLEXITY, "on");
+      assert.equal(process.env.CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD, "4096");
+      assert.equal(process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE, "shadow");
     }
     // (c) env override wins over file
     for (const k of KEYS_UNDER_TEST) delete process.env[k];
-    process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS = "99"; // operator override
+    process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS = "99"; // operator override
     {
       const r = applyFileConfigToEnv(tmpDir, envValueFn);
       assert.equal(r.applied, true);
       assert.ok(r.fields_overridden_by_env >= 1, "env-set var must be counted as overridden");
       assert.equal(
-        process.env.CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS,
+        process.env.CROSS_REVIEW_DEFAULT_MAX_ROUNDS,
         "99",
         "env override must win over file value",
       );
@@ -5284,12 +5284,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         "unknown field must trigger schema_validation_failed",
       );
     }
-    // (f) CROSS_REVIEW_V2_CONFIG_FILE override
+    // (f) CROSS_REVIEW_CONFIG_FILE override
     const overrideDir = smokeTmpDir("central-config-override");
     const overridePath = `${overrideDir}/custom.json`;
     tmpFs.mkdirSync(overrideDir, { recursive: true });
     tmpFs.writeFileSync(overridePath, JSON.stringify({ models: { codex: "gpt-5.5-override" } }));
-    process.env.CROSS_REVIEW_V2_CONFIG_FILE = overridePath;
+    process.env.CROSS_REVIEW_CONFIG_FILE = overridePath;
     // path.resolve() normalizes separators (Windows: forward → back),
     // so compare resolved equivalent rather than literal input.
     assert.equal(resolveConfigFilePath(tmpDir), path.resolve(overridePath));
@@ -5300,18 +5300,18 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       assert.equal(process.env.CROSS_REVIEW_OPENAI_MODEL, "gpt-5.5-override");
     }
     // (g) v3.1.0 R1 fix (codex catch): resolveConfigFilePath honors
-    // envValue() so CROSS_REVIEW_V2_CONFIG_FILE stored in Windows
+    // envValue() so CROSS_REVIEW_CONFIG_FILE stored in Windows
     // registry is picked up. Simulate registry-only value by providing
     // an envValueFn that returns the override path when process.env
     // does NOT have it.
-    delete process.env.CROSS_REVIEW_V2_CONFIG_FILE;
+    delete process.env.CROSS_REVIEW_CONFIG_FILE;
     const registryOnlyPath = `${overrideDir}/registry-only.json`;
     tmpFs.writeFileSync(
       registryOnlyPath,
       JSON.stringify({ models: { codex: "gpt-5.5-registry-only" } }),
     );
     const envValueWithRegistry = (name: string) => {
-      if (name === "CROSS_REVIEW_V2_CONFIG_FILE") return registryOnlyPath;
+      if (name === "CROSS_REVIEW_CONFIG_FILE") return registryOnlyPath;
       const v = process.env[name];
       return v && v.length > 0 ? v : undefined;
     };
@@ -5327,7 +5327,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       assert.equal(
         process.env.CROSS_REVIEW_OPENAI_MODEL,
         "gpt-5.5-registry-only",
-        "v3.1.0 R1 fix: registry-stored CROSS_REVIEW_V2_CONFIG_FILE must resolve to actual override file",
+        "v3.1.0 R1 fix: registry-stored CROSS_REVIEW_CONFIG_FILE must resolve to actual override file",
       );
     }
     // Source-level pins.
@@ -5384,20 +5384,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       if (prev === undefined) delete process.env[k];
       else process.env[k] = prev;
     }
-    if (prevConfigFileEnv === undefined) delete process.env.CROSS_REVIEW_V2_CONFIG_FILE;
-    else process.env.CROSS_REVIEW_V2_CONFIG_FILE = prevConfigFileEnv;
+    if (prevConfigFileEnv === undefined) delete process.env.CROSS_REVIEW_CONFIG_FILE;
+    else process.env.CROSS_REVIEW_CONFIG_FILE = prevConfigFileEnv;
   }
 }
 
 // v2.15.0 (item 1) — consensus-based autowire config. Operator sets
-// CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS=codex,gemini,deepseek
+// CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS=codex,gemini,deepseek
 // + MODE=shadow → boot parses 3 enabled peers into `consensus_peers`
 // and flips `active=true`. Boot trace also exposes the raw env value via
 // `configured_consensus_peers_raw` for operator debugging.
 {
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-  process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS = "codex,gemini,deepseek";
-  delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER;
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS = "codex,gemini,deepseek";
+  delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
   const { loadConfig } = await import("../src/core/config.js");
   const cfg = loadConfig();
   assert.equal(cfg.evidence_judge_autowire.mode, "shadow");
@@ -5411,8 +5411,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(cfg.evidence_judge_autowire.peer, undefined);
   // active flips on when consensus_peers >= 2
   assert.equal(cfg.evidence_judge_autowire.active, true);
-  delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE;
-  delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS;
+  delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
+  delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS;
   console.log("[smoke] consensus_autowire_config_parsed_test: PASS");
 }
 
@@ -5894,7 +5894,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] abort_signal_threading_anti_drift_test: PASS");
 }
 
-// P1.4 anti-drift: CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS
+// P1.4 anti-drift: CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS
 // default lowered from 8 to 4 (halves worst-case round paid judge
 // calls with 4-peer consensus). A future "fix" reverting `?? "8"` or
 // `: 8` would silently restore the doubled budget exposure.
@@ -5907,7 +5907,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // (1) Source-level: env-var default fallback is "4" (string for parseInt).
   assert.ok(
-    /process\.env\.CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS\s*\?\?\s*"4"/.test(configSrc),
+    /process\.env\.CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS\s*\?\?\s*"4"/.test(configSrc),
     'v2.18.5 / P1.4: env-var default fallback in config.ts is `?? "4"` (post-v2.18.4 cap reduction)',
   );
   // (2) Source-level: numeric fallback after Number.parseInt is also 4.
@@ -5917,13 +5917,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // (3) Anti-drift negative: the legacy `?? "8"` literal must NOT
   // appear on the same env-var line. We scope the check to the
-  // CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS reference.
+  // CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS reference.
   assert.ok(
-    !/CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS\s*\?\?\s*"8"/.test(configSrc),
+    !/CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS\s*\?\?\s*"8"/.test(configSrc),
     'v2.18.5 / P1.4: legacy `?? "8"` default is gone (would silently double the worst-case judge call budget)',
   );
   // (4) Behavioral: loadConfig() with env unset returns max_items_per_pass = 4.
-  delete process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS;
+  delete process.env.CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS;
   const { loadConfig: loadConfigFresh } = await import(
     `../src/core/config.js?max_items_4=${Date.now()}`
   );
@@ -6116,7 +6116,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const key = pairScopedCacheKey("codex", "claude", "v1");
   assert.equal(
     key,
-    "cross-review-v2:codex:claude:v1",
+    "cross-review:codex:claude:v1",
     `v2.21.0: pairScopedCacheKey shape stable; got ${key}`,
   );
   // Defensive normalization: if a caller forgets the v prefix and passes
@@ -6124,7 +6124,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const keyBare = pairScopedCacheKey("codex", "claude", "1");
   assert.equal(
     keyBare,
-    "cross-review-v2:codex:claude:v1",
+    "cross-review:codex:claude:v1",
     `v2.21.0: pairScopedCacheKey normalizes bare schema version; got ${keyBare}`,
   );
   // hash is sha256 hex (64 chars)
@@ -6196,23 +6196,23 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] cache_manifest_atomic_write_test: PASS");
 
   // (5) cache_disable_kill_switch_test — env var flips config.cache.enabled.
-  const previousDisable = process.env.CROSS_REVIEW_V2_DISABLE_CACHE;
-  process.env.CROSS_REVIEW_V2_DISABLE_CACHE = "true";
+  const previousDisable = process.env.CROSS_REVIEW_DISABLE_CACHE;
+  process.env.CROSS_REVIEW_DISABLE_CACHE = "true";
   assert.equal(
     loadConfig().cache.enabled,
     false,
-    "v2.21.0: CROSS_REVIEW_V2_DISABLE_CACHE=true → config.cache.enabled=false",
+    "v2.21.0: CROSS_REVIEW_DISABLE_CACHE=true → config.cache.enabled=false",
   );
-  process.env.CROSS_REVIEW_V2_DISABLE_CACHE = "false";
+  process.env.CROSS_REVIEW_DISABLE_CACHE = "false";
   assert.equal(
     loadConfig().cache.enabled,
     true,
-    "v2.21.0: CROSS_REVIEW_V2_DISABLE_CACHE=false → config.cache.enabled=true",
+    "v2.21.0: CROSS_REVIEW_DISABLE_CACHE=false → config.cache.enabled=true",
   );
   if (previousDisable == null) {
-    delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE;
+    delete process.env.CROSS_REVIEW_DISABLE_CACHE;
   } else {
-    process.env.CROSS_REVIEW_V2_DISABLE_CACHE = previousDisable;
+    process.env.CROSS_REVIEW_DISABLE_CACHE = previousDisable;
   }
   console.log("[smoke] cache_disable_kill_switch_test: PASS");
 }
@@ -6618,7 +6618,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 //     `leadCircularModeDirective()` when mode === "circular" (source-
 //     level check via ternary in directive selection).
 // (4) AppConfig.budget includes `circular_max_rotations` numeric field;
-//     loaded with default 3 and env override `CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS`.
+//     loaded with default 3 and env override `CROSS_REVIEW_CIRCULAR_MAX_ROTATIONS`.
 // (5) Orchestrator runUntilUnanimous branches to `runCircularLoop` when
 //     `sessionMode === "circular"` BEFORE entering the ship/review loop.
 // (6) `runCircularLoop` enforces rotation_order.length >= 2 (else
@@ -6686,10 +6686,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
   // (4) AppConfig.budget.circular_max_rotations + env var.
   assert.ok(
-    /circular_max_rotations:\s*intEnv\("CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS",\s*3\)/.test(
+    /circular_max_rotations:\s*intEnv\("CROSS_REVIEW_CIRCULAR_MAX_ROTATIONS",\s*3\)/.test(
       configSrc,
     ),
-    "v2.25.0 / circular_mode: config loads circular_max_rotations from CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS env (default 3)",
+    "v2.25.0 / circular_mode: config loads circular_max_rotations from CROSS_REVIEW_CIRCULAR_MAX_ROTATIONS env (default 3)",
   );
   assert.ok(
     /circular_max_rotations:\s*number/.test(typesSrc),
@@ -7377,8 +7377,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.5.0 / evidence_preflight: event `session.evidence_preflight_failed` must be emitted",
   );
   assert.ok(
-    /boolEnv\("CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT", true\)/.test(configSrcPf),
-    "v3.5.0 / evidence_preflight: CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT env var must default ON",
+    /boolEnv\("CROSS_REVIEW_EVIDENCE_PREFLIGHT", true\)/.test(configSrcPf),
+    "v3.5.0 / evidence_preflight: CROSS_REVIEW_EVIDENCE_PREFLIGHT env var must default ON",
   );
   console.log("[smoke] evidence_preflight_test: PASS");
 }
@@ -8125,13 +8125,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // parser exposes 7 env vars; file-config schema accepts the new keys.
   const configSrcA3 = fs.readFileSync(path.join(process.cwd(), "src", "core", "config.ts"), "utf8");
   assert.ok(
-    /CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC[\s\S]*?true/m.test(configSrcA3),
+    /CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC[\s\S]*?true/m.test(configSrcA3),
     "v3.7.5 / A3: ANTHROPIC default must be true (cache off) in loadCacheConfig",
   );
   for (const tag of ["OPENAI", "GEMINI", "DEEPSEEK", "GROK", "PERPLEXITY"]) {
     assert.ok(
-      new RegExp(`CROSS_REVIEW_V2_DISABLE_CACHE_${tag}`).test(configSrcA3),
-      `v3.7.5 / A3: env var CROSS_REVIEW_V2_DISABLE_CACHE_${tag} must be wired in loadCacheConfig`,
+      new RegExp(`CROSS_REVIEW_DISABLE_CACHE_${tag}`).test(configSrcA3),
+      `v3.7.5 / A3: env var CROSS_REVIEW_DISABLE_CACHE_${tag} must be wired in loadCacheConfig`,
     );
   }
   const anthropicSrcA3 = fs.readFileSync(
@@ -8163,13 +8163,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   }
   // Behavioral: loadCacheConfig produces disable_per_peer with anthropic=true default.
   const restore = {
-    a: process.env.CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC,
-    o: process.env.CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI,
-    g: process.env.CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI,
+    a: process.env.CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC,
+    o: process.env.CROSS_REVIEW_DISABLE_CACHE_OPENAI,
+    g: process.env.CROSS_REVIEW_DISABLE_CACHE_GEMINI,
   };
-  delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC;
-  delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI;
-  delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI;
+  delete process.env.CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC;
+  delete process.env.CROSS_REVIEW_DISABLE_CACHE_OPENAI;
+  delete process.env.CROSS_REVIEW_DISABLE_CACHE_GEMINI;
   const freshCfg = loadConfig();
   assert.equal(
     freshCfg.cache.disable_per_peer.claude,
@@ -8186,9 +8186,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     false,
     "v3.7.5 / A3: gemini default must be cache on (disable_per_peer.gemini === false)",
   );
-  if (restore.a !== undefined) process.env.CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC = restore.a;
-  if (restore.o !== undefined) process.env.CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI = restore.o;
-  if (restore.g !== undefined) process.env.CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI = restore.g;
+  if (restore.a !== undefined) process.env.CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC = restore.a;
+  if (restore.o !== undefined) process.env.CROSS_REVIEW_DISABLE_CACHE_OPENAI = restore.o;
+  if (restore.g !== undefined) process.env.CROSS_REVIEW_DISABLE_CACHE_GEMINI = restore.g;
   console.log("[smoke] per_provider_cache_disable_test: PASS");
 }
 
@@ -8253,7 +8253,7 @@ console.log(JSON.stringify(smokeResult, null, 2));
 // timeout even though the functional verdict is already known. Dump
 // active handles only when explicitly requested, then exit on the next
 // turn of the event loop so stdout/stderr flush naturally.
-if (process.env.CROSS_REVIEW_V2_SMOKE_DUMP_HANDLES === "1") {
+if (process.env.CROSS_REVIEW_SMOKE_DUMP_HANDLES === "1") {
   const activeHandles = (
     process as typeof process & {
       _getActiveHandles?: () => Array<{ constructor?: { name?: string } }>;

@@ -41,7 +41,7 @@ const PRIORITY: Record<PeerId, string[]> = {
   claude: ["claude-opus-4-7"],
   gemini: ["gemini-2.5-pro"],
   deepseek: ["deepseek-v4-pro"],
-  // grok-4-latest: operator-chosen canonical pin for cross-review-v2
+  // grok-4-latest: operator-chosen canonical pin for cross-review
   // (directive 2026-05-14, superseding the prior grok-4.20-multi-agent
   // pin). It does automatic reasoning and must omit the explicit
   // `reasoning.effort` field — the adapter handles that via

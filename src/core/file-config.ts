@@ -35,7 +35,7 @@
 // identity in its own config.
 //
 // File location: `${data_dir}/config.json` by default, overridable via
-// CROSS_REVIEW_V2_CONFIG_FILE env var. Absence is non-fatal (boot
+// CROSS_REVIEW_CONFIG_FILE env var. Absence is non-fatal (boot
 // proceeds with env+defaults exactly like pre-v3.1.0).
 import fs from "node:fs";
 import path from "node:path";
@@ -235,7 +235,7 @@ export const FileConfigSchema = z
     // empty `[]` per peer = NO fallback — a peer whose pinned model is
     // unavailable is retried on the SAME model, then skipped (the round
     // converges on the remaining peers). Listing models here is a
-    // deliberate user decision via the central config; cross-review-v2
+    // deliberate user decision via the central config; cross-review
     // never hardcodes a model downgrade.
     fallback_models: PerPeerStringListSchema,
     reasoning_effort: PerPeerReasoningSchema,
@@ -299,10 +299,10 @@ export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, st
     out[name] = String(value);
   };
 
-  set("CROSS_REVIEW_V2_LOG_LEVEL", config.log_level);
-  if (config.stub != null) set("CROSS_REVIEW_V2_STUB", config.stub ? "true" : "false");
-  set("CROSS_REVIEW_V2_DASHBOARD_PORT", config.dashboard_port);
-  set("CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS", config.max_output_tokens);
+  set("CROSS_REVIEW_LOG_LEVEL", config.log_level);
+  if (config.stub != null) set("CROSS_REVIEW_STUB", config.stub ? "true" : "false");
+  set("CROSS_REVIEW_DASHBOARD_PORT", config.dashboard_port);
+  set("CROSS_REVIEW_MAX_OUTPUT_TOKENS", config.max_output_tokens);
 
   // Per-peer model / reasoning / fallback / enabled.
   if (config.models) {
@@ -332,7 +332,7 @@ export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, st
       PeerId,
       boolean | undefined,
     ][]) {
-      if (on != null) set(`CROSS_REVIEW_V2_PEER_${peer.toUpperCase()}`, on ? "on" : "off");
+      if (on != null) set(`CROSS_REVIEW_PEER_${peer.toUpperCase()}`, on ? "on" : "off");
     }
   }
   if (config.cost_rates) {
@@ -352,64 +352,61 @@ export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, st
   }
 
   if (config.budget) {
-    set("CROSS_REVIEW_V2_MAX_SESSION_COST_USD", config.budget.max_session_cost_usd);
-    set("CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD", config.budget.until_stopped_max_cost_usd);
-    set("CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD", config.budget.preflight_max_round_cost_usd);
-    set("CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS", config.budget.default_max_rounds);
-    set("CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS", config.budget.circular_max_rotations);
+    set("CROSS_REVIEW_MAX_SESSION_COST_USD", config.budget.max_session_cost_usd);
+    set("CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD", config.budget.until_stopped_max_cost_usd);
+    set("CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD", config.budget.preflight_max_round_cost_usd);
+    set("CROSS_REVIEW_DEFAULT_MAX_ROUNDS", config.budget.default_max_rounds);
+    set("CROSS_REVIEW_CIRCULAR_MAX_ROTATIONS", config.budget.circular_max_rotations);
   }
   if (config.retry) {
-    set("CROSS_REVIEW_V2_RETRY_ATTEMPTS", config.retry.max_attempts);
-    set("CROSS_REVIEW_V2_RETRY_BASE_MS", config.retry.base_delay_ms);
-    set("CROSS_REVIEW_V2_RETRY_MAX_MS", config.retry.max_delay_ms);
-    set("CROSS_REVIEW_V2_TIMEOUT_MS", config.retry.timeout_ms);
+    set("CROSS_REVIEW_RETRY_ATTEMPTS", config.retry.max_attempts);
+    set("CROSS_REVIEW_RETRY_BASE_MS", config.retry.base_delay_ms);
+    set("CROSS_REVIEW_RETRY_MAX_MS", config.retry.max_delay_ms);
+    set("CROSS_REVIEW_TIMEOUT_MS", config.retry.timeout_ms);
   }
   if (config.evidence_judge_autowire) {
-    set("CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE", config.evidence_judge_autowire.mode);
-    set("CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER", config.evidence_judge_autowire.peer);
+    set("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE", config.evidence_judge_autowire.mode);
+    set("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER", config.evidence_judge_autowire.peer);
     if (config.evidence_judge_autowire.consensus_peers) {
       set(
-        "CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS",
+        "CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS",
         config.evidence_judge_autowire.consensus_peers.join(","),
       );
     }
     set(
-      "CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS",
+      "CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS",
       config.evidence_judge_autowire.max_items_per_pass,
     );
   }
   if (config.cache) {
     if (config.cache.disable_cache != null) {
-      set("CROSS_REVIEW_V2_DISABLE_CACHE", config.cache.disable_cache ? "true" : "false");
+      set("CROSS_REVIEW_DISABLE_CACHE", config.cache.disable_cache ? "true" : "false");
     }
-    set("CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION", config.cache.schema_version);
-    set("CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC", config.cache.ttl_anthropic);
-    set("CROSS_REVIEW_V2_CACHE_TTL_OPENAI", config.cache.ttl_openai);
+    set("CROSS_REVIEW_CACHE_SCHEMA_VERSION", config.cache.schema_version);
+    set("CROSS_REVIEW_CACHE_TTL_ANTHROPIC", config.cache.ttl_anthropic);
+    set("CROSS_REVIEW_CACHE_TTL_OPENAI", config.cache.ttl_openai);
     // v3.7.5 (A3): per-provider disable flags mapped to env vars.
     if (config.cache.disable_anthropic != null) {
       set(
-        "CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC",
+        "CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC",
         config.cache.disable_anthropic ? "true" : "false",
       );
     }
     if (config.cache.disable_openai != null) {
-      set("CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI", config.cache.disable_openai ? "true" : "false");
+      set("CROSS_REVIEW_DISABLE_CACHE_OPENAI", config.cache.disable_openai ? "true" : "false");
     }
     if (config.cache.disable_gemini != null) {
-      set("CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI", config.cache.disable_gemini ? "true" : "false");
+      set("CROSS_REVIEW_DISABLE_CACHE_GEMINI", config.cache.disable_gemini ? "true" : "false");
     }
     if (config.cache.disable_deepseek != null) {
-      set(
-        "CROSS_REVIEW_V2_DISABLE_CACHE_DEEPSEEK",
-        config.cache.disable_deepseek ? "true" : "false",
-      );
+      set("CROSS_REVIEW_DISABLE_CACHE_DEEPSEEK", config.cache.disable_deepseek ? "true" : "false");
     }
     if (config.cache.disable_grok != null) {
-      set("CROSS_REVIEW_V2_DISABLE_CACHE_GROK", config.cache.disable_grok ? "true" : "false");
+      set("CROSS_REVIEW_DISABLE_CACHE_GROK", config.cache.disable_grok ? "true" : "false");
     }
     if (config.cache.disable_perplexity != null) {
       set(
-        "CROSS_REVIEW_V2_DISABLE_CACHE_PERPLEXITY",
+        "CROSS_REVIEW_DISABLE_CACHE_PERPLEXITY",
         config.cache.disable_perplexity ? "true" : "false",
       );
     }
@@ -424,24 +421,24 @@ export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, st
     }
   }
   if (config.token_streaming) {
-    set("CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD", config.token_streaming.chars_threshold);
-    set("CROSS_REVIEW_V2_TOKEN_DELTA_MS_THRESHOLD", config.token_streaming.ms_threshold);
+    set("CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD", config.token_streaming.chars_threshold);
+    set("CROSS_REVIEW_TOKEN_DELTA_MS_THRESHOLD", config.token_streaming.ms_threshold);
     if (config.token_streaming.verbose != null) {
-      set("CROSS_REVIEW_V2_TOKEN_DELTA_VERBOSE", config.token_streaming.verbose ? "1" : "0");
+      set("CROSS_REVIEW_TOKEN_DELTA_VERBOSE", config.token_streaming.verbose ? "1" : "0");
     }
   }
 
   return out;
 }
 
-// Resolve the file path: CROSS_REVIEW_V2_CONFIG_FILE env wins; else
+// Resolve the file path: CROSS_REVIEW_CONFIG_FILE env wins; else
 // `${dataDir}/config.json`. Caller passes dataDir so this module does
 // not need its own copy of the data-dir resolution logic.
 //
 // v3.1.0 R1 fix (codex cross-review catch 2026-05-12): accept an
 // optional envValue helper so the path-lookup honors the v2.28.0
 // Windows registry fallback. Without this, an operator who stores
-// CROSS_REVIEW_V2_CONFIG_FILE in HKCU\Environment (instead of the MCP
+// CROSS_REVIEW_CONFIG_FILE in HKCU\Environment (instead of the MCP
 // host config) would see the override silently ignored. When the
 // helper is omitted (e.g., external smoke callers), fall back to
 // `process.env` directly to preserve backward compatibility.
@@ -450,8 +447,8 @@ export function resolveConfigFilePath(
   envValue?: (name: string) => string | undefined,
 ): string {
   const overridePath = envValue
-    ? envValue("CROSS_REVIEW_V2_CONFIG_FILE")
-    : process.env.CROSS_REVIEW_V2_CONFIG_FILE;
+    ? envValue("CROSS_REVIEW_CONFIG_FILE")
+    : process.env.CROSS_REVIEW_CONFIG_FILE;
   if (overridePath && overridePath.trim().length > 0) {
     return path.resolve(overridePath);
   }
@@ -487,7 +484,7 @@ export function applyFileConfigToEnv(
   envValue: (name: string) => string | undefined,
 ): ApplyFileConfigResult {
   // v3.1.0 R1 fix: thread envValue into resolveConfigFilePath so the
-  // CROSS_REVIEW_V2_CONFIG_FILE override respects v2.28.0 registry
+  // CROSS_REVIEW_CONFIG_FILE override respects v2.28.0 registry
   // fallback (operator-stored override path in HKCU\Environment works).
   const filePath = resolveConfigFilePath(dataDir, envValue);
   if (!fs.existsSync(filePath)) {

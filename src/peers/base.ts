@@ -31,14 +31,14 @@ export class StreamBufferOverflowError extends Error {
   }
 }
 
-// v2.4.0 cross-review-v2 R2 (codex): byte-budget pre-check BEFORE
+// v2.4.0 cross-review R2 (codex): byte-budget pre-check BEFORE
 // concatenation. Pre-R2 the helper computed `combined = buffer + delta`
 // first and only THEN tested the byte length, so a hostile peer could
 // allocate a multi-GB string before triggering the throw — the very OOM
 // we are trying to prevent. R2 measures the buffer + delta byte counts
 // separately (no allocation beyond the strings already in hand) and
 // throws BEFORE the concatenation is materialized.
-// v2.4.0 cross-review-v2 R3 (gemini): O(1) per-append byte accounting.
+// v2.4.0 cross-review R3 (gemini): O(1) per-append byte accounting.
 // R2 closed Codex's pre-allocation concern by measuring bytes BEFORE
 // concatenation, but Gemini caught the resulting O(N^2) regression —
 // `Buffer.byteLength(buffer, "utf8")` rescans the entire accumulated
@@ -102,7 +102,7 @@ export function appendStreamText(peer: string, buffer: string, delta: string): s
 // R1 catch). Total emitted chars are preserved; the difference is
 // event granularity, not content.
 //
-// Verbose escape hatch: `CROSS_REVIEW_V2_TOKEN_DELTA_VERBOSE=1` makes
+// Verbose escape hatch: `CROSS_REVIEW_TOKEN_DELTA_VERBOSE=1` makes
 // every chunk emit immediately (legacy v2.5.x behavior) for operators
 // who want chunk-level observability.
 export class TokenEventBuffer {
@@ -281,21 +281,21 @@ export abstract class BasePeerAdapter {
     // 4096 — session_doctor flagged this directly. A 16384 default cuts
     // delta-event volume ~16x vs the old 1024 default (~4x vs 4096)
     // while keeping streaming responsive. Operators who want
-    // fine-grained streaming lower it via CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD.
+    // fine-grained streaming lower it via CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD.
     const charsThreshold = Math.max(
       1,
       Number.parseInt(
-        process.env.CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD ??
-          process.env.CROSS_REVIEW_V2_TOKEN_DELTA_BYTES_THRESHOLD ??
+        process.env.CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD ??
+          process.env.CROSS_REVIEW_TOKEN_DELTA_BYTES_THRESHOLD ??
           "",
         10,
       ) || 16384,
     );
     const msThreshold = Math.max(
       1,
-      Number.parseInt(process.env.CROSS_REVIEW_V2_TOKEN_DELTA_MS_THRESHOLD ?? "", 10) || 250,
+      Number.parseInt(process.env.CROSS_REVIEW_TOKEN_DELTA_MS_THRESHOLD ?? "", 10) || 250,
     );
-    const verbose = process.env.CROSS_REVIEW_V2_TOKEN_DELTA_VERBOSE === "1";
+    const verbose = process.env.CROSS_REVIEW_TOKEN_DELTA_VERBOSE === "1";
     return new TokenEventBuffer(flushDelta, emitCompleted, charsThreshold, msThreshold, verbose);
   }
 
@@ -377,7 +377,7 @@ export abstract class BasePeerAdapter {
 
   protected systemPrompt(context: PeerCallContext): string {
     return [
-      "You are a peer reviewer in cross-review-v2.",
+      "You are a peer reviewer in cross-review.",
       "Your job is to review the caller's work rigorously and independently.",
       "Do not rubber-stamp. Do not invent evidence.",
       "Unanimity is required: READY only when no blocking issue remains.",

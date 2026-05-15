@@ -92,7 +92,7 @@ export interface RunUntilUnanimousInput {
   // caller supplies up-front. When present, the evidence_preflight check
   // treats the session as evidenced (it is the caller's authoritative
   // declaration that concrete evidence exists for the review). Pure
-  // textual — cross-review-v2 stays an API-only orchestrator and never
+  // textual — cross-review stays an API-only orchestrator and never
   // executes shell / reads the repo; evidence packaging is a caller-side
   // responsibility (see docs/evidence-preflight.md). Free-form string;
   // the caller is expected to embed file:line refs, diff hunks, command
@@ -634,7 +634,7 @@ export function detectMetaAuditFabrication(revisionText: string): MetaAuditDetec
 // v3.5.0 (CRV2-4, Codex operational report) — evidence preflight.
 //
 // A PURE TEXTUAL pre-check that runs BEFORE any paid peer call.
-// cross-review-v2 stays an API-only orchestrator: this function never
+// cross-review stays an API-only orchestrator: this function never
 // executes shell, never reads the repo, never runs `git diff`. It only
 // inspects text the caller already supplied (task + initial_draft +
 // the structured `evidence` field + already-attached evidence).
@@ -657,7 +657,7 @@ export function detectMetaAuditFabrication(revisionText: string): MetaAuditDetec
 // is...") does NOT trip — a design review legitimately has no diff.
 // A non-empty structured `evidence` field OR any attached evidence
 // makes the preflight pass unconditionally (caller's authoritative
-// declaration). Opt-out via CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off.
+// declaration). Opt-out via CROSS_REVIEW_EVIDENCE_PREFLIGHT=off.
 const COMPLETED_WORK_CLAIM_PATTERN =
   /\b\d+\s+(?:passed|failed)\b|\bgit\s+diff\b|\bgit\s+status\b|\bnpm\s+run\b|\bcargo\s+(?:test|build)\b|\bbuild\s+(?:passed|succeeded|clean|green)\b|\btests?\s+(?:pass|passed|green|all\s+green)\b|\bgit\s+diff\s+--check\b/i;
 const EVIDENCE_MARKER_PATTERN =
@@ -1099,7 +1099,7 @@ function budgetPreflightFailure(
 
 function financialControlsMissingMessage(missingVars: string[]): string {
   return [
-    "Financial cost controls are not fully configured, so cross-review-v2 will not run paid provider calls.",
+    "Financial cost controls are not fully configured, so cross-review will not run paid provider calls.",
     "Configure these variables in the MCP server configuration or Windows environment before retrying:",
     missingVars.join(", "),
   ].join(" ");
@@ -1148,11 +1148,11 @@ interface PeerCallOutcome {
 
 // v2.14.0 (operator directive 2026-05-04): per-peer enable/disable error.
 // Thrown when a caller passes an explicit `lead_peer` or `peers` entry
-// that references a peer disabled via `CROSS_REVIEW_V2_PEER_<NAME>=off`.
+// that references a peer disabled via `CROSS_REVIEW_PEER_<NAME>=off`.
 export class PeerDisabledError extends Error {
   constructor(peer: PeerId) {
     super(
-      `peer_disabled: ${peer} is disabled via CROSS_REVIEW_V2_PEER_${peer.toUpperCase()}=off; ` +
+      `peer_disabled: ${peer} is disabled via CROSS_REVIEW_PEER_${peer.toUpperCase()}=off; ` +
         `enable it or pick a different peer.`,
     );
     this.name = "PeerDisabledError";
@@ -1168,7 +1168,7 @@ export class InsufficientEnabledPeersError extends Error {
     super(
       `insufficient_enabled_peers: cross-review requires at least 2 enabled peers, ` +
         `but only ${enabled.length} ${enabled.length === 1 ? "is" : "are"} enabled (${enabled.join(", ") || "(none)"}). ` +
-        `Set at least 2 of CROSS_REVIEW_V2_PEER_{CODEX,CLAUDE,GEMINI,DEEPSEEK} to "on".`,
+        `Set at least 2 of CROSS_REVIEW_PEER_{CODEX,CLAUDE,GEMINI,DEEPSEEK} to "on".`,
     );
     this.name = "InsufficientEnabledPeersError";
   }
@@ -2570,7 +2570,7 @@ export class CrossReviewOrchestrator {
     // generous (6) so legitimate format hiccups recover automatically;
     // exceeding it indicates systemic issues that should fail visibly.
     //
-    // Concurrency note (cross-review-v2 R2 / codex): two ask_peers calls
+    // Concurrency note (cross-review R2 / codex): two ask_peers calls
     // on the SAME session cannot race the recovery counter because the
     // session's `markInFlight` (called via store.markRoundInFlight at
     // the start of every round) acquires `withSessionLock` and refuses
@@ -2968,7 +2968,7 @@ export class CrossReviewOrchestrator {
       const checklistAfter = this.store.read(session.session_id).evidence_checklist ?? [];
       const hasOpenItems = checklistAfter.some((item) => (item.status ?? "open") === "open");
       // v2.15.0 (item 1): consensus path takes precedence over single-peer
-      // when CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS lists
+      // when CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS lists
       // at least 2 enabled peers. Operator-flexible: keeps single-peer
       // backward-compatible while letting the operator opt into consensus
       // without code changes.
@@ -2977,7 +2977,7 @@ export class CrossReviewOrchestrator {
       // against `selectedPeers` so a peer NOT on the explicit reviewer
       // panel cannot enter the session via the autowire judge path.
       // Without this guard, a default-enabled judge (e.g. perplexity in
-      // CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS) ran on
+      // CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS) ran on
       // sessions whose `peers: [codex,gemini,deepseek,grok]` explicitly
       // excluded it (observed in session 73036fbb).
       const hadExplicitPeers = (input.peers?.length ?? 0) > 0;
@@ -3026,7 +3026,7 @@ export class CrossReviewOrchestrator {
           message:
             autowire.peer !== undefined && !judgeRespectsExplicitPeers(autowire.peer)
               ? `Autowire single-peer judge "${autowire.peer}" is NOT in this session's explicit peers list (selected=[${selectedPeers.join(",")}]); ${autowire.mode} pass skipped to honor caller intent (v3.2.0).`
-              : `Autowire enabled but neither CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER (got "${autowire.configured_peer_raw}") nor CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS (got "${autowire.configured_consensus_peers_raw}", needs >=2 enabled peers) resolved to a valid configuration; ${autowire.mode} pass skipped.`,
+              : `Autowire enabled but neither CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER (got "${autowire.configured_peer_raw}") nor CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS (got "${autowire.configured_consensus_peers_raw}", needs >=2 enabled peers) resolved to a valid configuration; ${autowire.mode} pass skipped.`,
           data: {
             mode: autowire.mode,
             configured_peer: autowire.configured_peer_raw,
@@ -3623,7 +3623,7 @@ export class CrossReviewOrchestrator {
       } else {
         // v3.7.0 (AUDIT-2, Codex super-audit 2026-05-14): the operator
         // default relator must respect peer_enabled. Pre-v3.7.0 this was
-        // hardcoded "codex" — so with CROSS_REVIEW_V2_PEER_CODEX=off an
+        // hardcoded "codex" — so with CROSS_REVIEW_PEER_CODEX=off an
         // operator-caller with no lead_peer still got codex as relator,
         // a disabled peer back in the loop. Prefer codex when enabled
         // (back-compat), else the first enabled session peer.
@@ -3732,7 +3732,7 @@ export class CrossReviewOrchestrator {
     // operational work but embeds no concrete evidence (and no structured
     // `evidence` field / attachments were supplied), fail locally with
     // `needs_evidence_preflight` instead of burning API across rounds.
-    // Opt-out via CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off.
+    // Opt-out via CROSS_REVIEW_EVIDENCE_PREFLIGHT=off.
     if (this.config.evidence_preflight_enabled) {
       const attachmentsPresent =
         this.store.readEvidenceAttachments(

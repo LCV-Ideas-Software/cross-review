@@ -7,11 +7,11 @@ import { PEERS } from "../src/core/types.js";
 import { resolveBestModels } from "../src/peers/model-selection.js";
 import { createAdapters } from "../src/peers/registry.js";
 
-process.env.CROSS_REVIEW_V2_STUB = "0";
-process.env.CROSS_REVIEW_V2_STREAM_TOKENS = "1";
-process.env.CROSS_REVIEW_V2_DATA_DIR =
-  process.env.CROSS_REVIEW_V2_DATA_DIR ||
-  path.join(os.tmpdir(), `cross-review-v2-api-streaming-smoke-${Date.now()}`);
+process.env.CROSS_REVIEW_STUB = "0";
+process.env.CROSS_REVIEW_STREAM_TOKENS = "1";
+process.env.CROSS_REVIEW_DATA_DIR =
+  process.env.CROSS_REVIEW_DATA_DIR ||
+  path.join(os.tmpdir(), `cross-review-api-streaming-smoke-${Date.now()}`);
 
 const config = loadConfig();
 const missing = PEERS.filter((peer) => !config.api_keys[peer]);
@@ -54,7 +54,7 @@ for (const peer of PEERS) {
   const result = await adapters[peer].call(prompt, {
     session_id: `api-streaming-smoke-${peer}`,
     round: 1,
-    task: "Verify real provider token streaming for cross-review-v2.",
+    task: "Verify real provider token streaming for cross-review.",
     stream: true,
     stream_tokens: true,
     emit(event) {

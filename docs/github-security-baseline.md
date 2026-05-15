@@ -21,7 +21,7 @@ Required repository settings after the remote is created:
 Package publishing is active after the repository is created and the `NPM_TOKEN` secret is
 configured. Pushes to `main` auto-create an organization-standard display tag such as `v02.01.00`
 from `package.json`; the tag then creates a normal GitHub Release and publishes
-`@lcv-ideas-software/cross-review-v2` to npmjs.com and GitHub Packages. The API-first package is
+`@lcv-ideas-software/cross-review` to npmjs.com and GitHub Packages. The API-first package is
 separate from the CLI package `@lcv-ideas-software/cross-review-v1`.
 
 CodeQL Advanced Setup is intentionally not committed. If Advanced Setup ever becomes necessary,

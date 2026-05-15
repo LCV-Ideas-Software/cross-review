@@ -111,7 +111,7 @@ function textResult(value: unknown, responseFormat = "json") {
 // — there was no `clientInfo` capture and no cross-check. An agent (e.g.
 // Codex CLI from the operator's terminal) could pass `caller="claude"`
 // while its MCP client identified itself as "codex", impersonating Claude
-// in tribunal sessions. Empirical evidence: cross-review-v2 session
+// in tribunal sessions. Empirical evidence: cross-review session
 // `0994cbaf-c270-4eaa-b42b-a0e638b9d1b6` (2026-05-05T05:30:10Z) was
 // created by Codex with caller=claude for exactly this purpose.
 //
@@ -187,7 +187,7 @@ export interface CallerIdentityResult {
 //      identity_verified=false, verification_method="none". Token check is
 //      skipped by design — operator is a non-PEER identity, the gate-setter
 //      themselves; AI agents cannot forge "I'm not an AI agent" because:
-//      (a) F1 cross-review-v2 R2 codex catch hardening: if the calling host
+//      (a) F1 cross-review R2 codex catch hardening: if the calling host
 //      carries CROSS_REVIEW_CALLER_TOKEN, it IS an agent host (the token
 //      bind is to a specific AI agent's identity). Declaring caller="operator"
 //      from such a host is identity forgery and throws. Only HOSTS WITHOUT
@@ -378,8 +378,8 @@ export function buildResponseNotices<
   if (triedPeers || triedLeadPeer) {
     notices.push(
       `peer_selection_lock: your ${triedPeers ? "`peers` panel" : "`lead_peer` pin"} was ignored — ` +
-        `cross-review-v2 always uses the full server-configured peer set (operator directive 2026-05-12: ` +
-        `"TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM"). Tune the panel via CROSS_REVIEW_V2_PEER_<NAME> env vars, not per-call.`,
+        `cross-review always uses the full server-configured peer set (operator directive 2026-05-12: ` +
+        `"TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM"). Tune the panel via CROSS_REVIEW_PEER_<NAME> env vars, not per-call.`,
     );
   }
   // B3 — relator-non-voting notice. When a lead_peer is set, spell out
@@ -529,7 +529,7 @@ function runtimeCapabilities(runtime: Runtime): RuntimeCapabilities {
     // `true` ONLY when the user has explicitly declared fallback models in
     // the central config. The default is NO fallback: a peer whose pinned
     // model is unavailable is retried on the SAME model, then skipped (the
-    // round converges on the remaining peers). cross-review-v2 never
+    // round converges on the remaining peers). cross-review never
     // hardcodes a model downgrade — fallback is a deliberate user opt-in.
     model_fallback: Object.values(runtime.config.fallback_models).some(
       (models) => models.length > 0,
@@ -578,17 +578,17 @@ export async function main(): Promise<void> {
   // distribute the per-agent secrets.
   initHostTokensRecord(runtime.config.data_dir);
   const tokensRecord = getHostTokensRecord();
-  if (tokensRecord && process.env.CROSS_REVIEW_V2_TEST_QUIET !== "1") {
+  if (tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review-v2] F1 caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute the per-agent secrets to each MCP host config as CROSS_REVIEW_CALLER_TOKEN to enable verification_method=token; v2.17.0 clientInfo gate remains active as fallback).\n`,
+      `[cross-review] F1 caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute the per-agent secrets to each MCP host config as CROSS_REVIEW_CALLER_TOKEN to enable verification_method=token; v2.17.0 clientInfo gate remains active as fallback).\n`,
     );
-  } else if (!tokensRecord && process.env.CROSS_REVIEW_V2_TEST_QUIET !== "1") {
+  } else if (!tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review-v2] F1 caller capability tokens unavailable (failed to load or generate host-tokens.json); the v2.17.0 clientInfo identity gate remains active. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions to enable token verification.\n`,
+      `[cross-review] F1 caller capability tokens unavailable (failed to load or generate host-tokens.json); the v2.17.0 clientInfo identity gate remains active. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions to enable token verification.\n`,
     );
   }
   const server = new McpServer({
-    name: "cross-review-v2",
+    name: "cross-review",
     version: VERSION,
   });
   // v3.7.5 (A2, logs+sessions study 2026-05-15): snapshot the enabled
@@ -618,11 +618,11 @@ export async function main(): Promise<void> {
     async ({ response_format }) =>
       textResult(
         {
-          name: "cross-review-v2",
+          name: "cross-review",
           publisher: "LCV Ideas & Software",
           version: VERSION,
           release_date: RELEASE_DATE,
-          sponsors_url: "https://cross-review-v2.lcv.dev",
+          sponsors_url: "https://cross-review.lcv.dev",
           transport: "stdio",
           api_only: true,
           cli_execution: false,
@@ -638,7 +638,7 @@ export async function main(): Promise<void> {
             // v3.7.0 (AUDIT-4, Codex super-audit 2026-05-14): readiness
             // is computed over the ENABLED peer subset, not the full
             // PEERS roster. Pre-v3.7.0 a missing rate card for a peer
-            // the operator had disabled (CROSS_REVIEW_V2_PEER_<NAME>=off)
+            // the operator had disabled (CROSS_REVIEW_PEER_<NAME>=off)
             // would falsely report paid_calls_ready=false even though
             // that peer is never called.
             const enabledPeers = PEERS.filter((peer) => runtime.config.peer_enabled[peer]);
@@ -660,7 +660,7 @@ export async function main(): Promise<void> {
           // which peer is rated, and whether a typo invalidated the config.
           // v2.15.1: surface `consensus_peers` and `configured_consensus_peers_raw`
           // so the multi-peer judge configuration (parsed from
-          // CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS) is visible
+          // CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS) is visible
           // here instead of silently invisible despite being honored by the
           // dispatcher. v2.15.0 added the parser but forgot the serialization.
           evidence_judge_autowire: {
@@ -702,7 +702,7 @@ export async function main(): Promise<void> {
     {
       title: "Runtime Capabilities",
       description:
-        "Return the stable cross-review-v2 runtime capability contract and active tool list.",
+        "Return the stable cross-review runtime capability contract and active tool list.",
       inputSchema: z.object({ response_format: ResponseFormatSchema }),
       annotations: {
         readOnlyHint: true,
@@ -714,7 +714,7 @@ export async function main(): Promise<void> {
     async ({ response_format }) =>
       textResult(
         {
-          name: "cross-review-v2",
+          name: "cross-review",
           version: VERSION,
           release_date: RELEASE_DATE,
           capabilities: runtimeCapabilities(runtime),
@@ -812,7 +812,7 @@ export async function main(): Promise<void> {
     {
       title: "Ask Peers",
       description:
-        "Run a real API review round against selected peers. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_V2_STUB=1.",
+        "Run a real API review round against selected peers. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -981,7 +981,7 @@ export async function main(): Promise<void> {
         // supplies up-front. When present (non-empty) it satisfies the
         // evidence preflight unconditionally — it is the caller's
         // authoritative declaration that concrete evidence exists for
-        // the review. cross-review-v2 stays API-only: it does not run
+        // the review. cross-review stays API-only: it does not run
         // git/shell to gather evidence; packaging is a caller-side
         // responsibility (see docs/evidence-preflight.md).
         evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
@@ -1054,7 +1054,7 @@ export async function main(): Promise<void> {
         // supplies up-front. When present (non-empty) it satisfies the
         // evidence preflight unconditionally — it is the caller's
         // authoritative declaration that concrete evidence exists for
-        // the review. cross-review-v2 stays API-only: it does not run
+        // the review. cross-review stays API-only: it does not run
         // git/shell to gather evidence; packaging is a caller-side
         // responsibility (see docs/evidence-preflight.md).
         evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
@@ -1475,7 +1475,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Pass",
       description:
-        "v2.9.0 LLM-based satisfied detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment (satisfied + confidence + rationale). The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal operator statuses (satisfied/deferred/rejected) and items already addressed by resurfacing-inference are NEVER touched. Items per pass are capped via CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS (default 8). Optional item_ids filter narrows the pass to specific items; omit for all-open. The judge_peer is the LLM that performs the judgment — choose any peer with a configured API key. v2.10.0: optional shadow_mode (default false) routes the pass through a non-mutating path that emits session.evidence_judge_pass.shadow_decision events without touching checklist state — operators use it to collect empirical judgment-quality data before relying on active mutation.",
+        "v2.9.0 LLM-based satisfied detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment (satisfied + confidence + rationale). The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal operator statuses (satisfied/deferred/rejected) and items already addressed by resurfacing-inference are NEVER touched. Items per pass are capped via CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS (default 8). Optional item_ids filter narrows the pass to specific items; omit for all-open. The judge_peer is the LLM that performs the judgment — choose any peer with a configured API key. v2.10.0: optional shadow_mode (default false) routes the pass through a non-mutating path that emits session.evidence_judge_pass.shadow_decision events without touching checklist state — operators use it to collect empirical judgment-quality data before relying on active mutation.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         judge_peer: PeerSchema,
@@ -1538,7 +1538,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Consensus Pass",
       description:
-        "v2.14.0 — multi-peer consensus judge pass. Fires `judgeEvidenceAsk` against ALL `judge_peers` in parallel for each open checklist item; promotes (active mode) ONLY when all peers return verified-satisfied with non-empty rationale and zero parser_warnings. Disagreement leaves the item open with `reason=consensus_disagreement` and `per_peer` details. Shadow mode emits `session.evidence_judge_pass.shadow_decision` events with `consensus_peers` so the precision report tool sees consensus runs in its corpus. Requires at least 2 judge_peers; single-peer callers should use `session_evidence_judge_pass`. All judge_peers must be enabled (CROSS_REVIEW_V2_PEER_<NAME>=on).",
+        "v2.14.0 — multi-peer consensus judge pass. Fires `judgeEvidenceAsk` against ALL `judge_peers` in parallel for each open checklist item; promotes (active mode) ONLY when all peers return verified-satisfied with non-empty rationale and zero parser_warnings. Disagreement leaves the item open with `reason=consensus_disagreement` and `per_peer` details. Shadow mode emits `session.evidence_judge_pass.shadow_decision` events with `consensus_peers` so the precision report tool sees consensus runs in its corpus. Requires at least 2 judge_peers; single-peer callers should use `session_evidence_judge_pass`. All judge_peers must be enabled (CROSS_REVIEW_PEER_<NAME>=on).",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         // v3.7.0 (AUDIT-3): .max(PEERS.length) — same stale-`.max(5)`
@@ -1641,7 +1641,7 @@ export async function main(): Promise<void> {
     {
       title: "Contest Verdict",
       description:
-        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. Per the cross-review-v2 tribunal-colegiado model: caller READY (acata) → session_finalize as usual; caller NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
+        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. Per the cross-review tribunal-colegiado model: caller READY (acata) → session_finalize as usual; caller NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(4_000),
@@ -1827,7 +1827,7 @@ export async function main(): Promise<void> {
   );
 
   await server.connect(new StdioServerTransport());
-  console.error("cross-review-v2 running on stdio");
+  console.error("cross-review running on stdio");
 
   // v2.27.1 (cold-start hardening): boot-time sweeps + notices are
   // deferred 30s instead of running on `setImmediate`. The Claude Code
@@ -1846,22 +1846,22 @@ export async function main(): Promise<void> {
     try {
       const tmpSweep = runtime.orchestrator.store.sweepOrphanTmpFiles();
       if (tmpSweep.scanned > 0) {
-        console.error("[cross-review-v2] startup tmp sweep:", JSON.stringify(tmpSweep));
+        console.error("[cross-review] startup tmp sweep:", JSON.stringify(tmpSweep));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[cross-review-v2] startup tmp sweep error: ${message}`);
+      console.error(`[cross-review] startup tmp sweep error: ${message}`);
     }
   }, STARTUP_SWEEP_DELAY_MS);
   setTimeout(() => {
     try {
       const inFlightSweep = runtime.orchestrator.store.clearStaleInFlight();
       if (inFlightSweep.scanned > 0) {
-        console.error("[cross-review-v2] startup in_flight sweep:", JSON.stringify(inFlightSweep));
+        console.error("[cross-review] startup in_flight sweep:", JSON.stringify(inFlightSweep));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[cross-review-v2] startup in_flight sweep error: ${message}`);
+      console.error(`[cross-review] startup in_flight sweep error: ${message}`);
     }
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.5.0: companion to clearStaleInFlight — abort sessions that the
@@ -1874,29 +1874,29 @@ export async function main(): Promise<void> {
       const abortSweep = runtime.orchestrator.store.abortStaleSessions();
       if (abortSweep.scanned > 0) {
         console.error(
-          "[cross-review-v2] startup stale-session abort sweep:",
+          "[cross-review] startup stale-session abort sweep:",
           JSON.stringify(abortSweep),
         );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[cross-review-v2] startup stale-session abort sweep error: ${message}`);
+      console.error(`[cross-review] startup stale-session abort sweep error: ${message}`);
     }
   }, STARTUP_SWEEP_DELAY_MS);
-  // v2.27.0: prune finalized sessions older than CROSS_REVIEW_V2_PRUNE_AFTER_DAYS
+  // v2.27.0: prune finalized sessions older than CROSS_REVIEW_PRUNE_AFTER_DAYS
   // (default 60). Empirically motivated by 534 sessions accumulated by
   // 2026-05-12 inflating sweep + list cost. Disable with PRUNE_AFTER_DAYS=0.
   setTimeout(() => {
     try {
-      const envDisable = (process.env.CROSS_REVIEW_V2_PRUNE_AFTER_DAYS ?? "").trim() === "0";
+      const envDisable = (process.env.CROSS_REVIEW_PRUNE_AFTER_DAYS ?? "").trim() === "0";
       if (envDisable) return;
       const pruneSweep = runtime.orchestrator.store.pruneOldSessions();
       if (pruneSweep.pruned > 0) {
-        console.error("[cross-review-v2] startup prune sweep:", JSON.stringify(pruneSweep));
+        console.error("[cross-review] startup prune sweep:", JSON.stringify(pruneSweep));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[cross-review-v2] startup prune sweep error: ${message}`);
+      console.error(`[cross-review] startup prune sweep error: ${message}`);
     }
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.10.0 / v2.12.0: surface judge auto-wire misconfiguration at boot.
@@ -1910,14 +1910,14 @@ export async function main(): Promise<void> {
     if (autowire.mode === "off" && autowire.configured_mode_raw === "") return;
     if (autowire.mode !== "off" && autowire.mode !== "shadow" && autowire.mode !== "active") {
       console.error(
-        `[cross-review-v2] notice: CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE="${autowire.configured_mode_raw}" is not recognized; valid values are "off", "shadow" and "active". Auto-wire will be skipped.`,
+        `[cross-review] notice: CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE="${autowire.configured_mode_raw}" is not recognized; valid values are "off", "shadow" and "active". Auto-wire will be skipped.`,
       );
       return;
     }
     if (autowire.mode === "off") return;
     if (!autowire.active) {
       console.error(
-        `[cross-review-v2] notice: CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE=${autowire.mode} is set but CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER ("${autowire.configured_peer_raw}") is missing or not one of codex|claude|gemini|deepseek. ${autowire.mode === "active" ? "Active" : "Shadow"} auto-wire will be skipped per round; configure the peer to enable it.`,
+        `[cross-review] notice: CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE=${autowire.mode} is set but CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER ("${autowire.configured_peer_raw}") is missing or not one of codex|claude|gemini|deepseek. ${autowire.mode === "active" ? "Active" : "Shadow"} auto-wire will be skipped per round; configure the peer to enable it.`,
       );
       return;
     }
@@ -1928,12 +1928,12 @@ export async function main(): Promise<void> {
       // before flipping. Surface the WARN every boot so an inadvertent
       // env carry-over from a test run is visible.
       console.error(
-        `[cross-review-v2] WARN: judge auto-wire active in ACTIVE mode via peer "${autowire.peer}" — verified-satisfied judgments WILL mutate evidence checklist state (markEvidenceItemAddressedByJudge). Run session_judgment_precision_report and confirm the judge's F1 is acceptable before relying on this in production. Set MODE=shadow to revert to non-mutating data collection.`,
+        `[cross-review] WARN: judge auto-wire active in ACTIVE mode via peer "${autowire.peer}" — verified-satisfied judgments WILL mutate evidence checklist state (markEvidenceItemAddressedByJudge). Run session_judgment_precision_report and confirm the judge's F1 is acceptable before relying on this in production. Set MODE=shadow to revert to non-mutating data collection.`,
       );
       return;
     }
     console.error(
-      `[cross-review-v2] notice: judge auto-wire active in SHADOW mode via peer "${autowire.peer}" (max_items_per_pass=${autowire.max_items_per_pass}). Every askPeers round will fire a non-mutating judge pass; events session.evidence_judge_pass.shadow_decision are emitted per item.`,
+      `[cross-review] notice: judge auto-wire active in SHADOW mode via peer "${autowire.peer}" (max_items_per_pass=${autowire.max_items_per_pass}). Every askPeers round will fire a non-mutating judge pass; events session.evidence_judge_pass.shadow_decision are emitted per item.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.15.0 (item 4A boot warning): when operator configured a
@@ -1951,7 +1951,7 @@ export async function main(): Promise<void> {
     if (!reasoningSetExplicitly) return;
     if (GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(grokModel)) return;
     console.error(
-      `[cross-review-v2] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs (only grok-4.20-multi-agent and grok-4.3 do). CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. xAI auto-applies reasoning internally for the Grok-4 lineup. Set CROSS_REVIEW_GROK_MODEL=grok-4.20-multi-agent (or grok-4.3) to enable explicit reasoning.effort control.`,
+      `[cross-review] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs (only grok-4.20-multi-agent and grok-4.3 do). CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. xAI auto-applies reasoning internally for the Grok-4 lineup. Set CROSS_REVIEW_GROK_MODEL=grok-4.20-multi-agent (or grok-4.3) to enable explicit reasoning.effort control.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
   // v3.0.0: Perplexity sixth peer — boot notice for reasoning_effort
@@ -1968,7 +1968,7 @@ export async function main(): Promise<void> {
     if (!reasoningSetExplicitly) return;
     if (PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(perplexityModel)) return;
     console.error(
-      `[cross-review-v2] notice: PerplexityAdapter — model="${perplexityModel}" does NOT accept reasoning_effort per Perplexity docs (only sonar-reasoning-pro and sonar-deep-research do). CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT="${process.env.CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Set CROSS_REVIEW_PERPLEXITY_MODEL=sonar-reasoning-pro (default) to enable explicit reasoning_effort control.`,
+      `[cross-review] notice: PerplexityAdapter — model="${perplexityModel}" does NOT accept reasoning_effort per Perplexity docs (only sonar-reasoning-pro and sonar-deep-research do). CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT="${process.env.CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Set CROSS_REVIEW_PERPLEXITY_MODEL=sonar-reasoning-pro (default) to enable explicit reasoning_effort control.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
 }
@@ -1996,9 +1996,9 @@ const PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new 
   "sonar-deep-research",
 ]);
 
-// v2.4.0 / cross-review-v2 R6 follow-up (CI failure 25199679588): guard
+// v2.4.0 / cross-review R6 follow-up (CI failure 25199679588): guard
 // main() so it only runs when this module is invoked as the entry point
-// (e.g. `bin/cross-review-v2` or `node dist/src/mcp/server.js`). Without
+// (e.g. `bin/cross-review` or `node dist/src/mcp/server.js`). Without
 // the guard, any module that imports a named export from here (the smoke
 // suite imports `SessionIdSchema` and `pruneCompletedJobs`) triggers a
 // full server boot at import time — and in CI that boot ran with the

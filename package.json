@@ -1,12 +1,12 @@
 {
-  "name": "@lcv-ideas-software/cross-review-v2",
-  "version": "3.7.5",
+  "name": "@lcv-ideas-software/cross-review",
+  "version": "4.0.0",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "main": "dist/src/mcp/server.js",
   "bin": {
-    "cross-review-v2": "dist/src/mcp/server.js",
-    "cross-review-v2-dashboard": "dist/src/dashboard/server.js"
+    "cross-review": "dist/src/mcp/server.js",
+    "cross-review-dashboard": "dist/src/dashboard/server.js"
   },
   "files": [
     "dist/",
@@ -66,12 +66,12 @@
   "author": "LCV Ideas & Software",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LCV-Ideas-Software/cross-review-v2.git"
+    "url": "git+https://github.com/LCV-Ideas-Software/cross-review.git"
   },
   "bugs": {
-    "url": "https://github.com/LCV-Ideas-Software/cross-review-v2/issues"
+    "url": "https://github.com/LCV-Ideas-Software/cross-review/issues"
   },
-  "homepage": "https://cross-review-v2.lcv.dev/",
+  "homepage": "https://cross-review.lcv.dev/",
   "keywords": [
     "mcp",
     "model-context-protocol",

@@ -1,6 +1,6 @@
 // v2.15.0 (item 3, operator directive 2026-05-04 — project_cross_review_v2_v215_backlog_candidates.md):
 // real-API smoke marker for "default model rejects parameter".
-// Opt-in: requires CROSS_REVIEW_V2_REAL_API_SMOKE=1 plus the relevant
+// Opt-in: requires CROSS_REVIEW_REAL_API_SMOKE=1 plus the relevant
 // provider API keys in env. Stubs are NOT a substitute here — the whole
 // point is to exercise live provider 4xx surfaces so the docs-hint path
 // (item 5) and the per-model allowlist gate (item 6) prove themselves
@@ -19,7 +19,7 @@
 //
 // This script never runs in CI by default. It exists to be triggered
 // after a v2.15.x ship + reload by the operator running:
-//   CROSS_REVIEW_V2_REAL_API_SMOKE=1 \
+//   CROSS_REVIEW_REAL_API_SMOKE=1 \
 //     CROSS_REVIEW_GROK_MODEL=grok-4-latest \
 //     npm run runtime-default-smoke
 import process from "node:process";
@@ -27,10 +27,10 @@ import { loadConfig } from "../src/core/config.js";
 import { GrokAdapter, modelAcceptsReasoningEffort } from "../src/peers/grok.js";
 import type { PeerCallContext, RuntimeEvent } from "../src/core/types.js";
 
-const ENABLED = process.env.CROSS_REVIEW_V2_REAL_API_SMOKE === "1";
+const ENABLED = process.env.CROSS_REVIEW_REAL_API_SMOKE === "1";
 if (!ENABLED) {
   console.log(
-    "[runtime-default-smoke] CROSS_REVIEW_V2_REAL_API_SMOKE!=1; this script is opt-in. Skipping.",
+    "[runtime-default-smoke] CROSS_REVIEW_REAL_API_SMOKE!=1; this script is opt-in. Skipping.",
   );
   process.exit(0);
 }

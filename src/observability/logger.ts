@@ -13,7 +13,7 @@ export class EventLog {
     this.file = path.join(
       config.data_dir,
       "logs",
-      `cross-review-v2-${stamp}-pid${process.pid}.ndjson`,
+      `cross-review-${stamp}-pid${process.pid}.ndjson`,
     );
     this.logger = pino({ level: config.log_level }, pino.destination(2));
   }

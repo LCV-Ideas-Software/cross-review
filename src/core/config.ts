@@ -19,7 +19,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "3.7.5";
+export const VERSION = "4.0.0";
 export const RELEASE_DATE = "2026-05-15";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -62,7 +62,7 @@ const PROJECT_ROOT =
 // process has its own).
 let _winRegistryEnvCache: Map<string, string> | null = null;
 
-// v3.7.0 (AUDIT-6, Codex super-audit 2026-05-14): cross-review-v2's
+// v3.7.0 (AUDIT-6, Codex super-audit 2026-05-14): cross-review's
 // "API-only" claim means it does NOT execute caller-supplied shell or
 // repo commands — it is not a CLI runner and never shells out on behalf
 // of a caller. It DOES make a small number of fixed, internal process
@@ -197,14 +197,14 @@ export function getLastFileConfigResult():
 }
 
 export function loadConfig(): AppConfig {
-  const configuredDataDir = envValue("CROSS_REVIEW_V2_DATA_DIR");
+  const configuredDataDir = envValue("CROSS_REVIEW_DATA_DIR");
   const dataDir = configuredDataDir
     ? path.resolve(expandHome(configuredDataDir))
     : path.join(PROJECT_ROOT, "data");
 
   // v3.1.0 central config file: hydrate `process.env` with values from
   // `${dataDir}/config.json` (or path overridden via
-  // CROSS_REVIEW_V2_CONFIG_FILE) BEFORE any of the per-field readers
+  // CROSS_REVIEW_CONFIG_FILE) BEFORE any of the per-field readers
   // below consult envValue(). The file's contribution is a default
   // layer: env (process.env + Windows registry) wins, file second,
   // hardcoded defaults last. See src/core/file-config.ts for the
@@ -214,19 +214,19 @@ export function loadConfig(): AppConfig {
   return {
     version: VERSION,
     data_dir: dataDir,
-    log_level: envValue("CROSS_REVIEW_V2_LOG_LEVEL") || "info",
-    stub: boolEnv("CROSS_REVIEW_V2_STUB", false),
-    dashboard_port: intEnv("CROSS_REVIEW_V2_DASHBOARD_PORT", 4588),
+    log_level: envValue("CROSS_REVIEW_LOG_LEVEL") || "info",
+    stub: boolEnv("CROSS_REVIEW_STUB", false),
+    dashboard_port: intEnv("CROSS_REVIEW_DASHBOARD_PORT", 4588),
     retry: {
-      max_attempts: intEnv("CROSS_REVIEW_V2_RETRY_ATTEMPTS", 3),
-      base_delay_ms: intEnv("CROSS_REVIEW_V2_RETRY_BASE_MS", 1000),
-      max_delay_ms: intEnv("CROSS_REVIEW_V2_RETRY_MAX_MS", 30000),
-      timeout_ms: intEnv("CROSS_REVIEW_V2_TIMEOUT_MS", 30 * 60 * 1000),
+      max_attempts: intEnv("CROSS_REVIEW_RETRY_ATTEMPTS", 3),
+      base_delay_ms: intEnv("CROSS_REVIEW_RETRY_BASE_MS", 1000),
+      max_delay_ms: intEnv("CROSS_REVIEW_RETRY_MAX_MS", 30000),
+      timeout_ms: intEnv("CROSS_REVIEW_TIMEOUT_MS", 30 * 60 * 1000),
     },
     budget: {
-      max_session_cost_usd: numberEnv("CROSS_REVIEW_V2_MAX_SESSION_COST_USD"),
-      until_stopped_max_cost_usd: numberEnv("CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD"),
-      preflight_max_round_cost_usd: numberEnv("CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD"),
+      max_session_cost_usd: numberEnv("CROSS_REVIEW_MAX_SESSION_COST_USD"),
+      until_stopped_max_cost_usd: numberEnv("CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD"),
+      preflight_max_round_cost_usd: numberEnv("CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD"),
       require_rates_for_budget: true,
       // v2.5.0: configurable fallback for run_until_unanimous when the
       // caller does not pass `max_rounds` and `until_stopped` is false.
@@ -234,7 +234,7 @@ export function loadConfig(): AppConfig {
       // (v3.7.0 / AUDIT-5: corrected stale "32" in this comment); this
       // controls the SERVER-side default (previously hardcoded to 8 in
       // orchestrator.ts). Values <=0 fall back to 8.
-      default_max_rounds: intEnv("CROSS_REVIEW_V2_DEFAULT_MAX_ROUNDS", 8),
+      default_max_rounds: intEnv("CROSS_REVIEW_DEFAULT_MAX_ROUNDS", 8),
       // v2.25.0 (circular mode): maximum number of full rotations
       // permitted in a `mode: "circular"` session before the runtime
       // aborts with `circular_max_rotations_exceeded`. A "rotation" is
@@ -245,15 +245,15 @@ export function loadConfig(): AppConfig {
       // that runaway revisions abort within reasonable budget.
       // Empirical anchor: maestro-app circular sessions historically
       // converged within 2 rotations; 3 gives one safety margin.
-      circular_max_rotations: intEnv("CROSS_REVIEW_V2_CIRCULAR_MAX_ROTATIONS", 3),
+      circular_max_rotations: intEnv("CROSS_REVIEW_CIRCULAR_MAX_ROTATIONS", 3),
     },
     prompt: {
-      max_task_chars: intEnv("CROSS_REVIEW_V2_MAX_TASK_CHARS", 8_000),
-      max_review_focus_chars: intEnv("CROSS_REVIEW_V2_MAX_REVIEW_FOCUS_CHARS", 2_000),
-      max_history_chars: intEnv("CROSS_REVIEW_V2_MAX_HISTORY_CHARS", 20_000),
-      max_draft_chars: intEnv("CROSS_REVIEW_V2_MAX_DRAFT_CHARS", 40_000),
-      max_prior_rounds: intEnv("CROSS_REVIEW_V2_MAX_PRIOR_ROUNDS", 5),
-      max_peer_requests: intEnv("CROSS_REVIEW_V2_MAX_PEER_REQUESTS", 8),
+      max_task_chars: intEnv("CROSS_REVIEW_MAX_TASK_CHARS", 8_000),
+      max_review_focus_chars: intEnv("CROSS_REVIEW_MAX_REVIEW_FOCUS_CHARS", 2_000),
+      max_history_chars: intEnv("CROSS_REVIEW_MAX_HISTORY_CHARS", 20_000),
+      max_draft_chars: intEnv("CROSS_REVIEW_MAX_DRAFT_CHARS", 40_000),
+      max_prior_rounds: intEnv("CROSS_REVIEW_MAX_PRIOR_ROUNDS", 5),
+      max_peer_requests: intEnv("CROSS_REVIEW_MAX_PEER_REQUESTS", 8),
       // v2.14.0 (path-A structural fix): see AppConfig type docs.
       // v2.26.1 (2026-05-12): default raised 80_000 → 200_000 after the
       // stepsecurity v0.2.0 ship empirically demonstrated that 80K is
@@ -265,20 +265,20 @@ export function loadConfig(): AppConfig {
       // `truncated to 33273 of 38412 bytes` while the file content
       // had legitimate 38KB). 200_000 default accommodates ~5 attachments
       // averaging ~30KB each before any per-file truncation. Operator
-      // can still tune via CROSS_REVIEW_V2_MAX_ATTACHED_EVIDENCE_CHARS.
-      max_attached_evidence_chars: intEnv("CROSS_REVIEW_V2_MAX_ATTACHED_EVIDENCE_CHARS", 200_000),
+      // can still tune via CROSS_REVIEW_MAX_ATTACHED_EVIDENCE_CHARS.
+      max_attached_evidence_chars: intEnv("CROSS_REVIEW_MAX_ATTACHED_EVIDENCE_CHARS", 200_000),
     },
-    max_output_tokens: intEnv("CROSS_REVIEW_V2_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
+    max_output_tokens: intEnv("CROSS_REVIEW_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
     // v3.5.0 (CRV2-4): evidence preflight gate. Default ON — the check
     // is conservative (only trips on a completed-work claim with zero
     // evidence markers) and saves a full multi-round paid cross-review
     // on under-evidenced submissions. Operators set
-    // CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off to disable.
-    evidence_preflight_enabled: boolEnv("CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT", true),
+    // CROSS_REVIEW_EVIDENCE_PREFLIGHT=off to disable.
+    evidence_preflight_enabled: boolEnv("CROSS_REVIEW_EVIDENCE_PREFLIGHT", true),
     streaming: {
-      events: boolEnv("CROSS_REVIEW_V2_STREAM_EVENTS", true),
-      tokens: boolEnv("CROSS_REVIEW_V2_STREAM_TOKENS", true),
-      include_text: boolEnv("CROSS_REVIEW_V2_STREAM_TEXT", false),
+      events: boolEnv("CROSS_REVIEW_STREAM_EVENTS", true),
+      tokens: boolEnv("CROSS_REVIEW_STREAM_TOKENS", true),
+      include_text: boolEnv("CROSS_REVIEW_STREAM_TEXT", false),
     },
     models: {
       codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.5",
@@ -287,7 +287,7 @@ export function loadConfig(): AppConfig {
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
       // v3.7.2 (AUDIT-3 + operator directive 2026-05-14): grok default
       // pinned to `grok-4-latest` — the operator's chosen "most advanced
-      // pro with reasoning" model for cross-review-v2, superseding the
+      // pro with reasoning" model for cross-review, superseding the
       // prior `grok-4.20-multi-agent` default. The operator may still
       // env-override via CROSS_REVIEW_GROK_MODEL to any xAI model
       // (`grok-4.20-multi-agent` for explicit `reasoning.effort` control,
@@ -367,7 +367,7 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
     searchContextSize = sizeRaw;
   } else if (sizeRaw !== "" && sizeRaw !== "low") {
     console.error(
-      `[cross-review-v2] notice: CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE="${sizeRaw}" not recognized; defaulting to "low". Recognized values: low, medium, high.`,
+      `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE="${sizeRaw}" not recognized; defaulting to "low". Recognized values: low, medium, high.`,
     );
   }
   return {
@@ -377,7 +377,7 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
 }
 
 // v2.21.0 (caching): config loader. Default ON; switch off via
-// CROSS_REVIEW_V2_DISABLE_CACHE=true (operator panic button when a
+// CROSS_REVIEW_DISABLE_CACHE=true (operator panic button when a
 // provider misbehaves or the operator wants strictly-fresh runs for
 // audit reproducibility). TTL options gated to the documented values
 // to prevent typos silently sending nonsense to providers — Anthropic
@@ -385,30 +385,30 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
 // per-call retention values; we still parse the env so future
 // migrations can flip the default without touching adapter code.
 function loadCacheConfig(): AppConfig["cache"] {
-  const enabled = !boolEnv("CROSS_REVIEW_V2_DISABLE_CACHE", false);
-  const schemaVersion = (envValue("CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION") ?? "v1").trim() || "v1";
-  const anthropicTtl = parseTtlEnv("CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC", "1h");
-  const openaiTtl = parseTtlEnv("CROSS_REVIEW_V2_CACHE_TTL_OPENAI", "1h");
+  const enabled = !boolEnv("CROSS_REVIEW_DISABLE_CACHE", false);
+  const schemaVersion = (envValue("CROSS_REVIEW_CACHE_SCHEMA_VERSION") ?? "v1").trim() || "v1";
+  const anthropicTtl = parseTtlEnv("CROSS_REVIEW_CACHE_TTL_ANTHROPIC", "1h");
+  const openaiTtl = parseTtlEnv("CROSS_REVIEW_CACHE_TTL_OPENAI", "1h");
   // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
   // disable. Default for Anthropic (claude) is `true` (cache off) based
   // on empirical $1.18 wasted to save $0.0035 over 244 sessions
   // (0.3% hit-rate). All other providers default `false` (cache on,
   // preserving v2.21.0 behavior). Operators may flip any per-provider
-  // flag via `CROSS_REVIEW_V2_DISABLE_CACHE_<PROVIDER>` (`true|false`).
+  // flag via `CROSS_REVIEW_DISABLE_CACHE_<PROVIDER>` (`true|false`).
   // Recognized truthy values match the parser used by peer_enabled:
   // on/true/1/yes/enabled (case-insensitive). Anything else is "off".
   // v3.7.5 (A3): env vars use PROVIDER names (ANTHROPIC/OPENAI/...) matching
-  // the v2.21.0 TTL convention (`CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC` +
-  // `CROSS_REVIEW_V2_CACHE_TTL_OPENAI`). Internal `disable_per_peer` is
+  // the v2.21.0 TTL convention (`CROSS_REVIEW_CACHE_TTL_ANTHROPIC` +
+  // `CROSS_REVIEW_CACHE_TTL_OPENAI`). Internal `disable_per_peer` is
   // keyed by PeerId (claude/codex/...). Mapping below is the only place
   // provider names cross with peer ids.
   const disablePerPeer: Record<PeerId, boolean> = {
-    codex: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI", false),
-    claude: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC", true),
-    gemini: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI", false),
-    deepseek: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_DEEPSEEK", false),
-    grok: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_GROK", false),
-    perplexity: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_PERPLEXITY", false),
+    codex: parseDisableCacheEnv("CROSS_REVIEW_DISABLE_CACHE_OPENAI", false),
+    claude: parseDisableCacheEnv("CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC", true),
+    gemini: parseDisableCacheEnv("CROSS_REVIEW_DISABLE_CACHE_GEMINI", false),
+    deepseek: parseDisableCacheEnv("CROSS_REVIEW_DISABLE_CACHE_DEEPSEEK", false),
+    grok: parseDisableCacheEnv("CROSS_REVIEW_DISABLE_CACHE_GROK", false),
+    perplexity: parseDisableCacheEnv("CROSS_REVIEW_DISABLE_CACHE_PERPLEXITY", false),
   };
   return {
     schema_version: schemaVersion,
@@ -430,7 +430,7 @@ function parseDisableCacheEnv(name: string, fallback: boolean): boolean {
   if (/^(on|true|1|yes|enabled)$/i.test(raw)) return true;
   if (/^(off|false|0|no|disabled)$/i.test(raw)) return false;
   console.error(
-    `[cross-review-v2] notice: ${name}="${raw}" is not recognized; defaulting to "${fallback ? "on" : "off"}". Recognized values: on/true/1/yes/enabled vs off/false/0/no/disabled.`,
+    `[cross-review] notice: ${name}="${raw}" is not recognized; defaulting to "${fallback ? "on" : "off"}". Recognized values: on/true/1/yes/enabled vs off/false/0/no/disabled.`,
   );
   return fallback;
 }
@@ -440,7 +440,7 @@ function parseTtlEnv(name: string, fallback: "5m" | "1h"): "5m" | "1h" {
   if (raw === "5m" || raw === "1h") return raw;
   if (raw !== "") {
     console.error(
-      `[cross-review-v2] notice: ${name}="${raw}" not recognized; defaulting to "${fallback}". Recognized values: 5m, 1h.`,
+      `[cross-review] notice: ${name}="${raw}" not recognized; defaulting to "${fallback}". Recognized values: 5m, 1h.`,
     );
   }
   return fallback;
@@ -458,7 +458,7 @@ function loadPeerEnabledConfig(): Record<PeerId, boolean> {
   const peers: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
   const result = {} as Record<PeerId, boolean>;
   for (const peer of peers) {
-    const envName = `CROSS_REVIEW_V2_PEER_${peer.toUpperCase()}`;
+    const envName = `CROSS_REVIEW_PEER_${peer.toUpperCase()}`;
     const raw = (envValue(envName) ?? "").trim().toLowerCase();
     if (raw === "") {
       result[peer] = true;
@@ -470,7 +470,7 @@ function loadPeerEnabledConfig(): Record<PeerId, boolean> {
       result[peer] = false;
     } else {
       console.error(
-        `[cross-review-v2] notice: ${envName}="${raw}" is not recognized; defaulting to "on". Recognized values: on/true/1/yes/enabled vs off/false/0/no/disabled.`,
+        `[cross-review] notice: ${envName}="${raw}" is not recognized; defaulting to "on". Recognized values: on/true/1/yes/enabled vs off/false/0/no/disabled.`,
       );
       result[peer] = true;
     }
@@ -484,12 +484,12 @@ function loadPeerEnabledConfig(): Record<PeerId, boolean> {
 // notice, `peer` is undefined when not in PEERS, `active` is true iff
 // the runtime will actually emit shadow_decision events.
 function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAutowireConfig {
-  const rawMode = (process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE ?? "")
+  const rawMode = (process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE ?? "")
     .trim()
     .toLowerCase();
-  const rawPeer = (process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_PEER ?? "").trim();
+  const rawPeer = (process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER ?? "").trim();
   const rawConsensusPeers = (
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS ?? ""
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS ?? ""
   ).trim();
   const peerKnown: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
   const peer = (peerKnown as readonly string[]).includes(rawPeer) ? (rawPeer as PeerId) : undefined;
@@ -528,7 +528,7 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
   // reduction, but the operator can always raise via env-var. This
   // is a *default* change, not a hard cap.
   const rawCap = Number.parseInt(
-    process.env.CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS ?? "4",
+    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS ?? "4",
     10,
   );
   const maxItemsPerPass = Number.isFinite(rawCap) && rawCap !== 0 ? rawCap : 4;
@@ -552,13 +552,13 @@ export function missingFinancialControlVars(
   const missing = new Set<string>();
 
   if (config.budget.max_session_cost_usd == null) {
-    missing.add("CROSS_REVIEW_V2_MAX_SESSION_COST_USD");
+    missing.add("CROSS_REVIEW_MAX_SESSION_COST_USD");
   }
   if (config.budget.preflight_max_round_cost_usd == null) {
-    missing.add("CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD");
+    missing.add("CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD");
   }
   if (options.untilStopped && config.budget.until_stopped_max_cost_usd == null) {
-    missing.add("CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD");
+    missing.add("CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD");
   }
 
   for (const peer of peers) {
@@ -678,7 +678,7 @@ function costRate(
     const parsed = Date.parse(trimmed);
     if (Number.isNaN(parsed)) {
       console.error(
-        `[cross-review-v2] notice: ${prefix}_PROMO_EXPIRES_AT_UTC="${trimmed}" is not a valid ISO 8601 timestamp; promo rates will be ignored.`,
+        `[cross-review] notice: ${prefix}_PROMO_EXPIRES_AT_UTC="${trimmed}" is not a valid ISO 8601 timestamp; promo rates will be ignored.`,
       );
     } else {
       rate.promo_expires_at = trimmed;

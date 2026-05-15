@@ -64,7 +64,7 @@ export function hashStablePrefix(stablePrefix: string): string {
  * Build the three-layer prompt parts. The ORDER of fields inside
  * stablePrefix is locked: any reordering changes hashes for every
  * caller, which is the whole point of cache_schema_version. If you
- * change the structure, bump CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION so
+ * change the structure, bump CROSS_REVIEW_CACHE_SCHEMA_VERSION so
  * existing caches drop.
  */
 export function buildPromptParts(input: PromptPartsInput): PromptParts {
@@ -142,9 +142,9 @@ export function assertHashInvariant(input1: PromptPartsInput, input2: PromptPart
  *
  * The `cacheSchemaVersion` is expected to already include the canonical
  * `v` prefix (e.g., "v1"). The function does NOT prepend another `v` —
- * cross-review-v2 R1 catch (codex + gemini, 2026-05-10): a pre-shipped
+ * cross-review R1 catch (codex + gemini, 2026-05-10): a pre-shipped
  * defect produced `:vv1` which violated the contract documented in
- * `docs/caching.md` (`cross-review-v2:<peer>:<caller>:v<N>`).
+ * `docs/caching.md` (`cross-review:<peer>:<caller>:v<N>`).
  */
 export function pairScopedCacheKey(
   peer: PeerId,
@@ -157,5 +157,5 @@ export function pairScopedCacheKey(
   const normalized = cacheSchemaVersion.startsWith("v")
     ? cacheSchemaVersion
     : `v${cacheSchemaVersion}`;
-  return `cross-review-v2:${peer}:${caller}:${normalized}`;
+  return `cross-review:${peer}:${caller}:${normalized}`;
 }

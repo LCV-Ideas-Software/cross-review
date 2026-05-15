@@ -1,6 +1,6 @@
 # Prompt Caching (v2.21.0+)
 
-`cross-review-v2` integrates with the prompt-caching surface of every supported provider. The runtime emits a uniform `provider.cache.usage` event and persists a per-session `cache_manifest.json` so dashboards, FinOps reports and post-mortem tooling can read cache telemetry without branching on provider-specific shapes.
+`cross-review` integrates with the prompt-caching surface of every supported provider. The runtime emits a uniform `provider.cache.usage` event and persists a per-session `cache_manifest.json` so dashboards, FinOps reports and post-mortem tooling can read cache telemetry without branching on provider-specific shapes.
 
 This document describes:
 
@@ -33,10 +33,10 @@ This document describes:
 Every cached call is bucketed by a **pair-scoped cache key**:
 
 ```
-cross-review-v2:<peer>:<caller>:v<cache_schema_version>
+cross-review:<peer>:<caller>:v<cache_schema_version>
 ```
 
-The pair scope means two different callers reviewing the same case still share cache hits within a peer; cache invalidation is bounded by the schema version. Bumping `CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION` (e.g. `v1` → `v2`) invalidates every previously cached entry, by design. Use this when prompt structure changes materially (new convergence rule, new system role line, new evidence index format).
+The pair scope means two different callers reviewing the same case still share cache hits within a peer; cache invalidation is bounded by the schema version. Bumping `CROSS_REVIEW_CACHE_SCHEMA_VERSION` (e.g. `v1` → `v2`) invalidates every previously cached entry, by design. Use this when prompt structure changes materially (new convergence rule, new system role line, new evidence index format).
 
 Internally, we also emit a `stablePrefixHash` (sha256 hex) computed over the LF-normalized stablePrefix. The hash is invariant across rounds for the same case — see `prompt-parts.ts` and the smoke marker `cache_hash_invariance_test`.
 
@@ -67,7 +67,7 @@ Adapters surface the read/write counts via `TokenUsage.cache_read_tokens` and `T
 ## Bypass / kill-switch
 
 ```
-CROSS_REVIEW_V2_DISABLE_CACHE=true
+CROSS_REVIEW_DISABLE_CACHE=true
 ```
 
 Disables prompt caching globally for the runtime. Adapters fall back to the pre-v2.21 behavior (no `prompt_cache_key`, no `cache_control` blocks, no `x-grok-conv-id` header). The cost layer continues to merge `cache_read_tokens` / `cache_write_tokens` if a provider returns them anyway, so audit reproducibility is preserved.
@@ -81,8 +81,8 @@ Use cases:
 ## TTL configuration
 
 ```
-CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC=5m|1h          # default 1h
-CROSS_REVIEW_V2_CACHE_TTL_OPENAI=5m|1h             # default 1h
+CROSS_REVIEW_CACHE_TTL_ANTHROPIC=5m|1h          # default 1h
+CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # default 1h
 ```
 
 - **Anthropic** accepts `5m` and `1h` per the SDK. Values other than `5m`/`1h` are ignored with a stderr notice and the default is used.
@@ -132,4 +132,4 @@ The smoke harness (`scripts/smoke.ts`) ships five anti-drift markers covering th
 - `cache_schema_version_in_prefix_test` — first line of `stablePrefix` matches `^cache_schema_version: v\d+$`
 - `cache_rates_json_loaded_test` — every provider has a rate card with a numeric `fresh_input_per_million_usd`
 - `cache_manifest_atomic_write_test` — sequential appends preserve every entry
-- `cache_disable_kill_switch_test` — `CROSS_REVIEW_V2_DISABLE_CACHE=true` flips `config.cache.enabled`
+- `cache_disable_kill_switch_test` — `CROSS_REVIEW_DISABLE_CACHE=true` flips `config.cache.enabled`

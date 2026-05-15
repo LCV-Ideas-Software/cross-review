@@ -10,7 +10,7 @@ embeds **zero concrete evidence** — and fails it locally with
 
 ## Scope boundary (important)
 
-cross-review-v2 is an **API-only orchestrator**. The preflight:
+cross-review is an **API-only orchestrator**. The preflight:
 
 - **does NOT** execute shell, run `git diff`, or read the repo;
 - **does NOT** package evidence for you;
@@ -69,7 +69,7 @@ without inflating `initial_draft`.
 
 ## Opt-out
 
-Set `CROSS_REVIEW_V2_EVIDENCE_PREFLIGHT=off` to disable the preflight
+Set `CROSS_REVIEW_EVIDENCE_PREFLIGHT=off` to disable the preflight
 entirely (default: `on`). Disabling is rarely needed — the trip
 condition is deliberately conservative — but the escape hatch exists
 for callers whose tasks legitimately make completed-work claims in

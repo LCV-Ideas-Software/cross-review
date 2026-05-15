@@ -860,7 +860,7 @@ export interface AppConfig {
   // v2.14.0 (operator directive 2026-05-04): per-peer enable/disable
   // surface so the operator can exclude empirically-weak peers per
   // workspace without editing code. Set via env vars
-  // `CROSS_REVIEW_V2_PEER_<NAME>=on|off` (default `on`). Minimum 2
+  // `CROSS_REVIEW_PEER_<NAME>=on|off` (default `on`). Minimum 2
   // peers enabled at boot — boot fails fast otherwise. Lottery and
   // dispatch filter `selectedPeers` to the enabled set; an explicit
   // `lead_peer` or `peers` referencing a disabled peer is hard-rejected
@@ -868,11 +868,11 @@ export interface AppConfig {
   peer_enabled: Record<PeerId, boolean>;
   // v2.21.0 (caching): cross-provider prompt caching. Default-on; the
   // operator can switch off globally via
-  // CROSS_REVIEW_V2_DISABLE_CACHE=true, override per-provider TTL via
-  // CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC=5m|1h /
-  // CROSS_REVIEW_V2_CACHE_TTL_OPENAI=5m|1h, and bump the schema version
+  // CROSS_REVIEW_DISABLE_CACHE=true, override per-provider TTL via
+  // CROSS_REVIEW_CACHE_TTL_ANTHROPIC=5m|1h /
+  // CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h, and bump the schema version
   // when materially changing prompt structure to invalidate stale
-  // caches via CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION. The schema_version
+  // caches via CROSS_REVIEW_CACHE_SCHEMA_VERSION. The schema_version
   // ALSO appears on the first line of `stablePrefix` so any structural
   // shift produces a different cache_key_hash by design.
   cache: {
@@ -891,7 +891,7 @@ export interface AppConfig {
     // turns off cache participation for one provider while leaving
     // others active. Default (this release): anthropic=true, all
     // others=false. Operators override per-provider via env vars
-    // `CROSS_REVIEW_V2_DISABLE_CACHE_<PROVIDER>` for fine-grained
+    // `CROSS_REVIEW_DISABLE_CACHE_<PROVIDER>` for fine-grained
     // control without touching the global kill-switch.
     disable_per_peer: Record<PeerId, boolean>;
   };
@@ -926,7 +926,7 @@ export interface EvidenceJudgeAutowireConfig {
   // peers), the autowire path dispatches to
   // runEvidenceChecklistJudgeConsensusPass instead of single-peer judge.
   // Promotes only when ALL peers return verified-satisfied. Set via env
-  // CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS=peer1,peer2,...
+  // CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS=peer1,peer2,...
   // (comma-separated). Empty list (or single-peer or invalid) → falls
   // back to the v2.12.0 single-peer autowire path.
   consensus_peers: PeerId[];

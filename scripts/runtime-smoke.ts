@@ -9,16 +9,15 @@ const transport = new StdioClientTransport({
   cwd: process.cwd(),
   env: {
     ...process.env,
-    CROSS_REVIEW_V2_STUB: process.env.CROSS_REVIEW_V2_STUB ?? "1",
+    CROSS_REVIEW_STUB: process.env.CROSS_REVIEW_STUB ?? "1",
     // v2.4.0 / audit closure (P1.1): runtime smoke is a legitimate stub
     // consumer; opt in to the double-confirmation gate.
-    CROSS_REVIEW_V2_STUB_CONFIRMED: process.env.CROSS_REVIEW_V2_STUB_CONFIRMED ?? "1",
-    CROSS_REVIEW_V2_MAX_SESSION_COST_USD:
-      process.env.CROSS_REVIEW_V2_MAX_SESSION_COST_USD ?? "1000",
-    CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD:
-      process.env.CROSS_REVIEW_V2_PREFLIGHT_MAX_ROUND_COST_USD ?? "1000",
-    CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD:
-      process.env.CROSS_REVIEW_V2_UNTIL_STOPPED_MAX_COST_USD ?? "1000",
+    CROSS_REVIEW_STUB_CONFIRMED: process.env.CROSS_REVIEW_STUB_CONFIRMED ?? "1",
+    CROSS_REVIEW_MAX_SESSION_COST_USD: process.env.CROSS_REVIEW_MAX_SESSION_COST_USD ?? "1000",
+    CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD:
+      process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD ?? "1000",
+    CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD:
+      process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD ?? "1000",
     CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION:
       process.env.CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION ?? "1000",
     CROSS_REVIEW_OPENAI_OUTPUT_USD_PER_MILLION:
@@ -69,7 +68,7 @@ const transport = new StdioClientTransport({
   },
 });
 
-const client = new Client({ name: "cross-review-v2-runtime-smoke", version: "0.0.0" });
+const client = new Client({ name: "cross-review-runtime-smoke", version: "0.0.0" });
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
   const result = await client.callTool({ name, arguments: args }, undefined, {

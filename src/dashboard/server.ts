@@ -55,7 +55,7 @@ function html(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cross Review v2</title>
+  <title>Cross Review</title>
   <style>
     :root { color-scheme: light; font-family: Inter, Segoe UI, Arial, sans-serif; color: #102033; background: #f6f8fb; }
     * { box-sizing: border-box; }
@@ -97,7 +97,7 @@ function html(): string {
   <main>
     <header>
       <div>
-        <h1>Cross Review v2</h1>
+        <h1>Cross Review</h1>
         <div class="muted">APIs oficiais, sessões duráveis, unanimidade obrigatória</div>
       </div>
       <div class="badge">v${VERSION}</div>
@@ -157,7 +157,7 @@ function html(): string {
     }
     function renderShadowJudgment(rollup) {
       if (!rollup || !rollup.decisions_total) {
-        return '<div class="muted">Nenhuma decisão shadow observada. Ative o judge shadow setando CROSS_REVIEW_V2_EVIDENCE_JUDGE_AUTOWIRE_MODE=shadow + _PEER=codex.</div>';
+        return '<div class="muted">Nenhuma decisão shadow observada. Ative o judge shadow setando CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE=shadow + _PEER=codex.</div>';
       }
       const peers = Object.values(rollup.by_judge_peer || {}).filter(Boolean).sort((a, b) => b.decisions_total - a.decisions_total);
       const head = '<thead><tr>' +
@@ -347,5 +347,5 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(config.dashboard_port, "127.0.0.1", () => {
-  console.log(`Cross Review v2 dashboard: http://127.0.0.1:${config.dashboard_port}`);
+  console.log(`Cross Review dashboard: http://127.0.0.1:${config.dashboard_port}`);
 });

@@ -1,6 +1,6 @@
 # Architecture
 
-This API-only `cross-review-v2` implementation is intentionally independent from the CLI-based `cross-review-v1` project.
+This API-only `cross-review` implementation is intentionally independent from the CLI-based `cross-review-v1` project.
 
 ## Runtime Layers
 
@@ -17,12 +17,12 @@ This API-only `cross-review-v2` implementation is intentionally independent from
 
 ## Real Execution Rule
 
-Runtime default is real API execution. Stubs are disabled unless `CROSS_REVIEW_V2_STUB=1`.
+Runtime default is real API execution. Stubs are disabled unless `CROSS_REVIEW_STUB=1`.
 
 ## Timeout Model
 
 Real API review rounds are intentionally long-running. The provider-side HTTP
-timeout is controlled by `CROSS_REVIEW_V2_TIMEOUT_MS` and defaults to 30
+timeout is controlled by `CROSS_REVIEW_TIMEOUT_MS` and defaults to 30
 minutes.
 
 MCP hosts also have their own client-to-server request timeout. For real peer
@@ -39,8 +39,8 @@ cancellation and forwards `AbortSignal` to provider client calls where supported
 
 ## Streaming Model
 
-`CROSS_REVIEW_V2_STREAM_EVENTS` controls normal workflow events and defaults to
-enabled. `CROSS_REVIEW_V2_STREAM_TOKENS` controls provider token-progress events
+`CROSS_REVIEW_STREAM_EVENTS` controls normal workflow events and defaults to
+enabled. `CROSS_REVIEW_STREAM_TOKENS` controls provider token-progress events
 and also defaults to enabled. `runtime_capabilities.token_streaming` reflects
 the effective token-streaming setting, not a compile-time constant.
 
@@ -56,7 +56,7 @@ text is accumulated and then parsed into the existing review or generation
 result.
 
 For safety, `peer.token.delta` events include character counts by default rather
-than provider text. `CROSS_REVIEW_V2_STREAM_TEXT=1` can include redacted text in
+than provider text. `CROSS_REVIEW_STREAM_TEXT=1` can include redacted text in
 trusted local diagnostics, but it is intentionally opt-in because providers may
 split sensitive strings across chunks. Raw thinking content is still not
 requested or persisted.
@@ -114,5 +114,5 @@ Raw chain-of-thought is not persisted. Session continuity is represented through
 
 ## Stable Rename
 
-Stable version `2.1.0` renamed the active product to `cross-review-v2`. The earlier development
+Stable version `2.1.0` renamed the active product to `cross-review`. The earlier development
 name remains only in historical changelog or memory notes.

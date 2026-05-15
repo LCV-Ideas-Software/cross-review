@@ -1,4 +1,4 @@
-// Module: cross-review-v2/src/core/caller-tokens.ts
+// Module: cross-review/src/core/caller-tokens.ts
 // Description: F1 caller capability tokens (v2.18.0). Generates and validates
 // per-host secret tokens that complement the v2.17.0 clientInfo identity gate.
 //

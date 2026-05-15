@@ -79,7 +79,7 @@ function buildSystemBlock(
   // `disable_per_peer.claude` is false. Default (this release):
   // claude=true → no cache_control emitted, no cache_creation_input
   // tokens billed. Operators override via
-  // `CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC=false` if traffic shape
+  // `CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC=false` if traffic shape
   // changes and the cache starts paying off.
   if (!config.cache.enabled || config.cache.disable_per_peer.claude) return systemText;
   return [

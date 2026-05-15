@@ -102,4 +102,4 @@ repair:
 
 The priority list is intentionally code-level configuration, not hidden behavior. Provider model catalogs and deprecation schedules change often, so this file and `src/peers/model-selection.ts` must be reviewed against official provider documentation whenever defaults change.
 
-The redacted real-API capability smoke for the current default models is recorded in `docs/reports/cross-review-v2-api-capability-smoke-2026-04-30.md`.
+The redacted real-API capability smoke for the current default models is recorded in `docs/reports/cross-review-api-capability-smoke-2026-04-30.md`.

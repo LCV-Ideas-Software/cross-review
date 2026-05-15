@@ -283,7 +283,7 @@ export class SessionStore {
     return meta;
   }
 
-  // v2.4.0 / cross-review-v2 R5 (codex blocker): refuse to overwrite an
+  // v2.4.0 / cross-review R5 (codex blocker): refuse to overwrite an
   // existing in_flight when starting a new round. Pre-R5 markInFlight
   // unconditionally clobbered `meta.in_flight`, so a second concurrent
   // ask_peers on the same session would silently steamroll the first
@@ -330,7 +330,7 @@ export class SessionStore {
     return readJson<SessionMeta>(this.metaPath(sessionId));
   }
 
-  // v2.4.0 / audit closure (P3.13) — refined after cross-review-v2 R2 (codex
+  // v2.4.0 / audit closure (P3.13) — refined after cross-review R2 (codex
   // caught a durability gap in the initial implementation).
   //
   // Pre-R2: the cache was incremented BEFORE appendFileSync. If the
@@ -421,7 +421,7 @@ export class SessionStore {
           if (!fs.existsSync(quarantine)) {
             fs.renameSync(file, quarantine);
             console.error(
-              `[cross-review-v2] quarantined corrupted meta.json at ${file} -> ${quarantine} (${message})`,
+              `[cross-review] quarantined corrupted meta.json at ${file} -> ${quarantine} (${message})`,
             );
           }
         } catch {
@@ -433,14 +433,14 @@ export class SessionStore {
   }
 
   // v2.27.0: prune finalized sessions older than `maxAgeDays` days. Default
-  // 60 days (configurable via CROSS_REVIEW_V2_PRUNE_AFTER_DAYS env var or
+  // 60 days (configurable via CROSS_REVIEW_PRUNE_AFTER_DAYS env var or
   // explicit arg). Only removes sessions whose outcome is terminal (converged
   // | aborted | max-rounds) AND whose updated_at is older than the cutoff.
   // In-flight or untyped-outcome sessions are never pruned. Idempotent +
   // best-effort. Empirically motivated by 534 sessions accumulated on disk
   // by 2026-05-12 inflating cold-start sweep cost.
   pruneOldSessions(maxAgeDays?: number): { scanned: number; pruned: number } {
-    const envDays = Number.parseFloat(process.env.CROSS_REVIEW_V2_PRUNE_AFTER_DAYS ?? "");
+    const envDays = Number.parseFloat(process.env.CROSS_REVIEW_PRUNE_AFTER_DAYS ?? "");
     const days =
       maxAgeDays != null && maxAgeDays > 0
         ? maxAgeDays
@@ -1537,7 +1537,7 @@ export class SessionStore {
     }
     if (eventsTotal > 0 && tokenDeltaEvents / eventsTotal > 0.5) {
       recommendations.push(
-        "Token delta events dominate this corpus; increase CROSS_REVIEW_V2_TOKEN_DELTA_CHARS_THRESHOLD or disable token streaming for low-noise audits.",
+        "Token delta events dominate this corpus; increase CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD or disable token streaming for low-noise audits.",
       );
     }
 
@@ -2091,11 +2091,11 @@ export class SessionStore {
   //     the session was never marked in-flight); a still-in-flight session
   //     is the inFlight sweep's job, not ours;
   //   - no active lock holder, OR the session is past the staleness
-  //     threshold (default 24h via CROSS_REVIEW_V2_STALE_HOURS).
+  //     threshold (default 24h via CROSS_REVIEW_STALE_HOURS).
   //
   // Idempotent + best-effort. Returns counts for telemetry.
   abortStaleSessions(staleHours?: number): { scanned: number; aborted: number } {
-    const envHours = Number.parseFloat(process.env.CROSS_REVIEW_V2_STALE_HOURS ?? "");
+    const envHours = Number.parseFloat(process.env.CROSS_REVIEW_STALE_HOURS ?? "");
     const hours =
       staleHours != null && staleHours > 0
         ? staleHours
