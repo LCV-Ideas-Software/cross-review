@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { redact } from "../security/redact.js";
+import { mergeCost, mergeUsage } from "./cost.js";
 import type {
   AppConfig,
   Confidence,
@@ -9,29 +11,27 @@ import type {
   EvidenceChecklistItem,
   EvidenceChecklistStatus,
   EvidenceStatusHistoryEntry,
-  GenerationResult,
   GenerationArtifact,
+  GenerationResult,
+  JudgmentPrecisionPeerStats,
+  JudgmentPrecisionReport,
   PeerFailure,
   PeerHealthSummary,
   PeerId,
   PeerProbeResult,
   PeerResult,
+  ReviewRound,
+  ReviewStatus,
   RuntimeEvent,
   RuntimeMetrics,
   SessionDoctorEntry,
   SessionDoctorReport,
   SessionEvent,
-  ReviewRound,
-  ReviewStatus,
   SessionMeta,
-  JudgmentPrecisionPeerStats,
-  JudgmentPrecisionReport,
   ShadowJudgmentPeerStats,
   ShadowJudgmentRollup,
 } from "./types.js";
 import { PEERS } from "./types.js";
-import { mergeCost, mergeUsage } from "./cost.js";
-import { redact } from "../security/redact.js";
 
 export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 

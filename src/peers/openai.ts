@@ -8,6 +8,8 @@
 // import inside `client()` so the openai module tree is not pulled at
 // server boot. Type-only import preserves all annotations.
 import type OpenAI from "openai";
+import { pairScopedCacheKey } from "../core/prompt-parts.js";
+import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -18,10 +20,8 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
-import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
-import { pairScopedCacheKey } from "../core/prompt-parts.js";
 import { withRetry } from "./retry.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 

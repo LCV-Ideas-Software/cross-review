@@ -1,9 +1,9 @@
-import path from "node:path";
-import os from "node:os";
 import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppConfig, PeerId } from "./types.js";
 import { applyFileConfigToEnv } from "./file-config.js";
+import type { AppConfig, PeerId } from "./types.js";
 
 // v2.4.0 / audit closure (P3.12): tilde expansion for env-provided paths.
 // `path.resolve` does NOT expand `~` to the user's home directory on any
@@ -19,7 +19,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.0.2";
+export const VERSION = "4.0.3";
 export const RELEASE_DATE = "2026-05-15";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {

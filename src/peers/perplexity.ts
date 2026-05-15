@@ -43,6 +43,7 @@
 // caller, lead_peer, or reviewer; the workspace HARD GATE
 // (caller != lead_peer != reviewer per session) applies uniformly.
 import type OpenAI from "openai";
+import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -53,7 +54,6 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
-import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor } from "./openai.js";
@@ -175,10 +175,6 @@ export function clampEffortForPerplexity(
       return "low";
     case "medium":
       return "medium";
-    case "high":
-    case "xhigh":
-    case "max":
-    case undefined:
     default:
       return "high";
   }

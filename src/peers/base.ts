@@ -1,3 +1,5 @@
+import { estimateCost } from "../core/cost.js";
+import { decisionQualityFromStatus, parsePeerStatus } from "../core/status.js";
 import type {
   AppConfig,
   Confidence,
@@ -8,8 +10,6 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
-import { estimateCost } from "../core/cost.js";
-import { decisionQualityFromStatus, parsePeerStatus } from "../core/status.js";
 import { redact } from "../security/redact.js";
 
 // v2.4.0 / audit closure (P2.9): defensive cap on accumulated streaming

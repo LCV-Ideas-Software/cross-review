@@ -1,6 +1,6 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.0.2",
+  "version": "4.0.3",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "main": "dist/src/mcp/server.js",
@@ -33,7 +33,10 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "format:public": "prettier --write \"**/index.html\"",
-    "format:public:check": "prettier --check \"**/index.html\""
+    "format:public:check": "prettier --check \"**/index.html\"",
+    "biome": "biome check src scripts",
+    "biome:write": "biome check --write src scripts",
+    "check": "npm run format:check && npm run lint && npm run biome && npm run typecheck"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
@@ -48,6 +51,7 @@
     "hono": ">=4.12.16"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.6.0",
     "eslint": "^10.4.0",

@@ -7,6 +7,53 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.03] — 2026-05-15
+
+**Patch — biome integration to satisfy the 4-gate quality directive
+(operator 2026-05-15: eslint + biome + prettier + cross-review).** The
+repo had eslint + prettier covering the static gates but lacked biome.
+This release adds biome at parity with the 8 other workspace apps that
+already use it (admin-app, astrologo-frontend, calculadora-app,
+mainsite-frontend, mainsite-worker, mtasts-motor, oraculo-financeiro,
+sponsor-motor).
+
+### Added
+
+- `@biomejs/biome` (^2.4.0) devDep + `biome.json` config matching the
+  prettier conventions already in use (lineWidth 100, indent space 2,
+  double quotes, trailing commas all, semicolons always). Linter
+  enabled with `recommended` rules.
+- `npm run biome` (check-only) + `npm run biome:write` (with --write
+  auto-fix) scripts scoped to `src/` and `scripts/`.
+- `npm run check` aggregate script that runs all 4 statics:
+  `format:check && lint && biome && typecheck`. Single-command gate
+  for local + CI use.
+
+### Updated
+
+- `.github/workflows/ci.yml` adds an explicit `Biome (lint + format)`
+  step between `Lint (eslint)` and `Typecheck` for granular per-gate
+  visibility in CI logs.
+- `.github/workflows/publish.yml` adds a `Pre-publish gate (format +
+lint + biome + typecheck)` step calling `npm run check` before the
+  existing `npm test` verify step. Defense-in-depth: the publish
+  runner re-verifies the 4 statics independent of the CI workflow.
+
+### Fixed (biome --write --unsafe applied)
+
+- `scripts/smoke.ts`: 5 `lint/style/useTemplate` (prefer template
+  literals) + 1 `lint/correctness/noEmptyCharacterClassInRegex`
+  (the regex `[^]*?` flagged as negated-empty class → replaced with
+  `[\s\S]*?` which is semantically identical and lint-clean).
+- `src/peers/perplexity.ts`: 4 `lint/complexity/noUselessSwitchCase`
+  (collapsed cases that fell through to the same return).
+- `src/core/caller-tokens.ts`: 1 `lint/complexity/useOptionalChain`.
+- `src/observability/logger.ts`: 1
+  `lint/correctness/noUnusedPrivateClassMembers`.
+- 15 files received import-reorder auto-fixes (mostly grouping
+  `import type` vs `import` and sort order). Zero behavioral
+  change — typecheck + smoke + npm test all green post-fix.
+
 ## [v04.00.02] — 2026-05-15
 
 **Patch — Codex second-pass audit close-out (6 findings).** v4.0.1 closed 8

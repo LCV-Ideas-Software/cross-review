@@ -29,8 +29,8 @@
 // caller alone.
 
 import crypto from "node:crypto";
-import { PEERS } from "./types.js";
 import type { PeerId } from "./types.js";
+import { PEERS } from "./types.js";
 
 export interface RelatorAssignment {
   caller: PeerId | "operator";

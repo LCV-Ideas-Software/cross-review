@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { RELEASE_DATE, VERSION, loadConfig, missingFinancialControlVars } from "../core/config.js";
+import { loadConfig, missingFinancialControlVars, RELEASE_DATE, VERSION } from "../core/config.js";
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
-import { PEERS } from "../core/types.js";
-import type { ConvergenceScope, PeerId, RuntimeCapabilities, RuntimeEvent } from "../core/types.js";
 import { sessionReportMarkdown } from "../core/reports.js";
+import type { ConvergenceScope, PeerId, RuntimeCapabilities, RuntimeEvent } from "../core/types.js";
+import { PEERS } from "../core/types.js";
 import { EventLog } from "../observability/logger.js";
 import { safeErrorMessage } from "../security/redact.js";
 
@@ -139,10 +139,10 @@ import {
   ensureHostTokens,
   generateHostTokens as f1GenerateHostTokens,
   getParentProcessSnapshot,
-  isHardEnforceMode,
-  verifyTokenForCaller,
   type HostTokensRecord,
+  isHardEnforceMode,
   type ParentProcessSnapshot,
+  verifyTokenForCaller,
 } from "../core/caller-tokens.js";
 
 let HOST_TOKENS_RECORD: HostTokensRecord | null = null;

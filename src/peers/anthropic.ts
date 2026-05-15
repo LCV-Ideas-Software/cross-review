@@ -19,6 +19,7 @@
 // import inside `client()` so the @anthropic-ai/sdk module tree is not
 // pulled at server boot. Type-only import preserves all annotations.
 import type Anthropic from "@anthropic-ai/sdk";
+import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -29,7 +30,6 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
-import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, STREAM_TEXT_MAX_BYTES, StreamBufferOverflowError } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";

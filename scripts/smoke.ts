@@ -16,6 +16,7 @@ import path from "node:path";
 function smokeTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-${label}-`));
 }
+
 import { loadConfig } from "../src/core/config.js";
 import {
   checkConvergence,
@@ -26,8 +27,9 @@ import {
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import { SWEEP_MIN_IDLE_MS } from "../src/core/session-store.js";
 import { parsePeerStatus } from "../src/core/status.js";
-import { PEERS } from "../src/core/types.js";
 import type { PeerId, PeerResult } from "../src/core/types.js";
+import { PEERS } from "../src/core/types.js";
+import type { JobStatus } from "../src/mcp/server.js";
 import {
   getCallerCandidatesFromClientInfo,
   lockCallerPeerSelection,
@@ -36,7 +38,6 @@ import {
   setHostTokensRecord,
   verifyCallerIdentity,
 } from "../src/mcp/server.js";
-import type { JobStatus } from "../src/mcp/server.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { StubAdapter } from "../src/peers/stub.js";
 import { redact } from "../src/security/redact.js";
@@ -1596,8 +1597,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // (c) does NOT scan the accumulated buffer per delta — the contract is
 // `append measures only delta`.
 {
-  const { StreamBuffer, StreamBufferOverflowError, STREAM_TEXT_MAX_BYTES } =
-    await import("../src/peers/base.js");
+  const { StreamBuffer, StreamBufferOverflowError, STREAM_TEXT_MAX_BYTES } = await import(
+    "../src/peers/base.js"
+  );
   const buffer = new StreamBuffer("smoke-peer");
   buffer.append("hello world");
   assert.equal(buffer.text(), "hello world");
@@ -3268,8 +3270,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // Chamada explícita com caller=claude e lead_peer=claude DEVE lançar
 // CallerCannotBeLeadPeerError. Sem fallback silencioso pra sorteio.
 {
-  const { assertLeadPeerNotCaller, CallerCannotBeLeadPeerError } =
-    await import("../src/core/relator-lottery.js");
+  const { assertLeadPeerNotCaller, CallerCannotBeLeadPeerError } = await import(
+    "../src/core/relator-lottery.js"
+  );
   let threw = false;
   try {
     assertLeadPeerNotCaller("claude", "claude");
@@ -3345,8 +3348,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // (não PEERS global). Sem isso, caller=claude com peers=["codex","gemini"]
 // poderia atribuir deepseek (não-participante) como lead_peer.
 {
-  const { assignRelator, resolveLeadPeer, LeadPeerNotInSessionError } =
-    await import("../src/core/relator-lottery.js");
+  const { assignRelator, resolveLeadPeer, LeadPeerNotInSessionError } = await import(
+    "../src/core/relator-lottery.js"
+  );
   // (1) Subset com 2 peers + caller=claude → assigned ∈ subset.
   for (let i = 0; i < 50; i++) {
     const a = assignRelator("claude", ["codex", "gemini"]);
@@ -4517,8 +4521,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // none/low/medium/high). Other Grok models (per xAI docs) reject the
 // param OR auto-apply reasoning internally, so we omit it.
 {
-  const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } =
-    await import("../src/peers/grok.js");
+  const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } = await import(
+    "../src/peers/grok.js"
+  );
   // Allowlist contract: grok-4.20-multi-agent + grok-4.3.
   assert.equal(modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.3"), true);
@@ -4750,8 +4755,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // Scenario B: single `<think>` block followed by JSON — strip block,
   // trim whitespace, return JSON.
-  const singleThink =
-    "<think>\nLet me reason about this carefully.\nThe evidence shows...\n</think>\n\n" + cleanJson;
+  const singleThink = `<think>\nLet me reason about this carefully.\nThe evidence shows...\n</think>\n\n${cleanJson}`;
   assert.equal(
     stripPerplexityThinkingBlock(singleThink),
     cleanJson,
@@ -4759,8 +4763,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // Scenario C: multiple `<think>` blocks (rare but legal) — every
   // occurrence must be removed.
-  const multipleThinks =
-    "<think>first thought</think>\nintermediate text\n<think>second thought</think>\n" + cleanJson;
+  const multipleThinks = `<think>first thought</think>\nintermediate text\n<think>second thought</think>\n${cleanJson}`;
   const strippedMultiple = stripPerplexityThinkingBlock(multipleThinks);
   assert.ok(!/<think/i.test(strippedMultiple), "multiple <think> blocks must all be stripped");
   assert.ok(
@@ -4770,8 +4773,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Scenario D: `<think>` block spanning multiple lines with arbitrary
   // whitespace and nested-looking content (no actual nesting since
   // Perplexity never emits nested reasoning blocks).
-  const multilineThink =
-    "<think>\n  Line 1\n    Line 2 with <b>html</b>\n  Line 3\n</think>\n" + cleanJson;
+  const multilineThink = `<think>\n  Line 1\n    Line 2 with <b>html</b>\n  Line 3\n</think>\n${cleanJson}`;
   assert.equal(
     stripPerplexityThinkingBlock(multilineThink),
     cleanJson,
@@ -4779,7 +4781,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // Scenario E: `<think>` with attribute-like content (`<think foo="bar">`)
   // — regex must allow attribute fragment before close `>`.
-  const attributedThink = '<think foo="bar">reasoning</think>\n' + cleanJson;
+  const attributedThink = `<think foo="bar">reasoning</think>\n${cleanJson}`;
   assert.equal(
     stripPerplexityThinkingBlock(attributedThink),
     cleanJson,
@@ -4787,7 +4789,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // Scenario F: empty `<think></think>` (degenerate case) — strip + trim
   // still yields the trailing JSON.
-  const emptyThink = "<think></think>\n" + cleanJson;
+  const emptyThink = `<think></think>\n${cleanJson}`;
   assert.equal(
     stripPerplexityThinkingBlock(emptyThink),
     cleanJson,
@@ -6154,8 +6156,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
   // (4) cache_manifest_atomic_write_test — write + multiple appends
   //     preserve every entry.
-  const { writeCacheManifest, appendCacheManifestEntry, readCacheManifest } =
-    await import("../src/core/cache-manifest.js");
+  const { writeCacheManifest, appendCacheManifestEntry, readCacheManifest } = await import(
+    "../src/core/cache-manifest.js"
+  );
   const manifestSession = "550e8400-e29b-41d4-a716-446655440099";
   const manifestData = {
     session_id: manifestSession,
@@ -7991,7 +7994,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     `v3.7.0 / AUDIT-3: expected >=5 .max(PEERS.length) sites (4 peers panels + judge_peers), found ${maxPeersLen.length}`,
   );
   assert.ok(
-    !/\.min\(1\)\s*\n?\s*[^]*?\.max\(5\)\s*\n?\s*\.default\(\[\.\.\.PEERS\]/.test(serverSrcA),
+    !/\.min\(1\)\s*\n?\s*[\s\S]*?\.max\(5\)\s*\n?\s*\.default\(\[\.\.\.PEERS\]/.test(serverSrcA),
     "v3.7.0 / AUDIT-3: the peers schema must NOT keep the stale `.max(5)` against a 6-element PEERS default",
   );
   assert.ok(

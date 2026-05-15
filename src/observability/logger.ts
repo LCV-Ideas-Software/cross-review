@@ -7,7 +7,7 @@ export class EventLog {
   private readonly file: string;
   private readonly logger;
 
-  constructor(private readonly config: AppConfig) {
+  constructor(readonly config: AppConfig) {
     fs.mkdirSync(path.join(config.data_dir, "logs"), { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     this.file = path.join(

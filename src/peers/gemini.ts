@@ -5,6 +5,7 @@
 // signature without re-importing the module per call. Type-only import
 // preserves all annotations.
 import type { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -15,7 +16,6 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
-import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";

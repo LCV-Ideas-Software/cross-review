@@ -24,8 +24,8 @@
 //     npm run runtime-default-smoke
 import process from "node:process";
 import { loadConfig } from "../src/core/config.js";
-import { GrokAdapter, modelAcceptsReasoningEffort } from "../src/peers/grok.js";
 import type { PeerCallContext, RuntimeEvent } from "../src/core/types.js";
+import { GrokAdapter, modelAcceptsReasoningEffort } from "../src/peers/grok.js";
 
 const ENABLED = process.env.CROSS_REVIEW_REAL_API_SMOKE === "1";
 if (!ENABLED) {

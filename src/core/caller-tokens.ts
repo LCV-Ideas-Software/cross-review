@@ -24,8 +24,8 @@ import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { PEERS } from "./types.js";
 import type { PeerId } from "./types.js";
+import { PEERS } from "./types.js";
 
 export const TOKEN_BYTES = 32;
 export const TOKEN_HEX_LENGTH = TOKEN_BYTES * 2;
@@ -216,7 +216,7 @@ export function verifyTokenForCaller(
 ): TokenVerification {
   const presented = getEnvToken();
   if (!presented) return { method: "absent", verified: false };
-  if (!tokensRecord || !tokensRecord.map) {
+  if (!tokensRecord?.map) {
     throw new Error(
       "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN is set but the host-tokens.json file could not be loaded; either remove the env var, regenerate the tokens file via the regenerate_caller_tokens tool, or repair the file (default path: <data_dir>/host-tokens.json; override via CROSS_REVIEW_TOKENS_FILE).",
     );

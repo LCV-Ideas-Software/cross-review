@@ -1,3 +1,15 @@
+import { classifyProviderError } from "../peers/errors.js";
+import { resolveBestModels } from "../peers/model-selection.js";
+import { createAdapters, selectAdapters } from "../peers/registry.js";
+import { redact } from "../security/redact.js";
+import { appendCacheManifestEntry } from "./cache-manifest.js";
+import { missingFinancialControlVars } from "./config.js";
+import { checkConvergence, isSkippableFailure } from "./convergence.js";
+import { estimateCacheSavings } from "./cost.js";
+import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
+import { sessionReportMarkdown } from "./reports.js";
+import { SessionStore } from "./session-store.js";
+import { decisionQualityFromStatus } from "./status.js";
 import type {
   AppConfig,
   Confidence,
@@ -19,18 +31,6 @@ import type {
   TokenUsage,
 } from "./types.js";
 import { PEERS } from "./types.js";
-import { checkConvergence, isSkippableFailure } from "./convergence.js";
-import { sessionReportMarkdown } from "./reports.js";
-import { SessionStore } from "./session-store.js";
-import { decisionQualityFromStatus } from "./status.js";
-import { missingFinancialControlVars } from "./config.js";
-import { classifyProviderError } from "../peers/errors.js";
-import { resolveBestModels } from "../peers/model-selection.js";
-import { createAdapters, selectAdapters } from "../peers/registry.js";
-import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
-import { redact } from "../security/redact.js";
-import { appendCacheManifestEntry } from "./cache-manifest.js";
-import { estimateCacheSavings } from "./cost.js";
 
 export interface AskPeersInput {
   session_id?: string;

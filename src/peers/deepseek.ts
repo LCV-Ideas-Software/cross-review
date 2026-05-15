@@ -4,6 +4,7 @@
 // once across all three adapters. Type-only import preserves the
 // `OpenAI.ChatCompletionCreateParams*` namespace types at compile time.
 import type OpenAI from "openai";
+import { statusInstruction } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -14,7 +15,6 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
-import { statusInstruction } from "../core/status.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor } from "./openai.js";
