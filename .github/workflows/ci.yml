@@ -38,10 +38,10 @@ jobs:
       - name: Smoke tests
         run: npm run smoke
         env:
-          CROSS_REVIEW_V2_STUB: "1"
+          CROSS_REVIEW_STUB: "1"
           # v2.4.0 / P1.1 fail-fast: stub activation requires explicit
           # confirmation. The smoke harness is a legitimate stub consumer.
-          CROSS_REVIEW_V2_STUB_CONFIRMED: "1"
+          CROSS_REVIEW_STUB_CONFIRMED: "1"
     timeout-minutes: 30
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

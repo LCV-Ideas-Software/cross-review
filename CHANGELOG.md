@@ -7,6 +7,65 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.01] — 2026-05-15
+
+**Patch — close-out of post-v4.0.0 audit (eight surfaces left stale by the
+rename bulk-replace).** Runtime semantics unchanged; release-metadata,
+workflow, and active-doc hygiene.
+
+### Fixed
+
+- **`package-lock.json`** regenerated. The v4.0.0 ship updated
+  `package.json` `name`+`version`+`bins` but did not run `npm install`, so
+  the lockfile still declared `@lcv-ideas-software/cross-review-v2@3.7.5`
+  with the old `cross-review-v2` / `cross-review-v2-dashboard` bins. After
+  `npm install`, lockfile reflects `@lcv-ideas-software/cross-review@4.0.1`
+  with the v4 bin names.
+- **`.github/workflows/ci.yml` + `publish.yml`** updated `CROSS_REVIEW_V2_STUB`
+  / `CROSS_REVIEW_V2_STUB_CONFIRMED` → `CROSS_REVIEW_STUB` /
+  `CROSS_REVIEW_STUB_CONFIRMED`. The runtime had already migrated to the
+  unprefixed names in v4.0.0; the workflow contracts now match.
+- **`.github/workflows/publish.yml`** release title `cross-review-v2 $TAG` →
+  `cross-review $TAG` so new GH Releases announce under the canonical
+  product name.
+- **`README.md`** clarified that the data-dir migration from
+  `${HOME}/.cross-review/data_v2/` to the new default
+  `${HOME}/.cross-review/data/` is MANUAL (operator copies the directory
+  contents OR repoints `CROSS_REVIEW_DATA_DIR` at the legacy path). v4.0.0
+  had described this as automatic-on-load preservation, which was inaccurate
+  — the runtime reads only `CROSS_REVIEW_DATA_DIR` and does not fall back to
+  the `_v2` suffix.
+- **`SECURITY.md`** active references (`cross-review-v2 is designed for...`,
+  `CROSS_REVIEW_V2_DATA_DIR` examples, `CROSS_REVIEW_V2_STUB` instructions)
+  now read `cross-review` / `CROSS_REVIEW_DATA_DIR` / `CROSS_REVIEW_STUB`.
+- **`NOTICE`** opens with `cross-review` instead of `cross-review-v2`.
+- **`CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `.ai/GEMINI.md`,
+  `.github/copilot-instructions.md`** stale `cross-review-v2` references
+  updated to `cross-review`.
+- **`docs/api-keys.md`** added `GROK_API_KEY` + `PERPLEXITY_API_KEY` and the
+  `CROSS_REVIEW_GROK_MODEL` / `CROSS_REVIEW_PERPLEXITY_MODEL` /
+  `CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT` /
+  `CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` overrides. Was pre-existing
+  gap from the pre-v3.0.0 quinteto-only era, carried into v4 unchanged.
+- **`docs/costs.md`** added Grok + Perplexity rate-card env vars
+  (`CROSS_REVIEW_GROK_INPUT_USD_PER_MILLION`,
+  `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_<LOW|MEDIUM|HIGH>_USD_PER_1000_REQUESTS`,
+  etc.). Same pre-existing gap.
+- **`docs/model-selection.md`** rewritten to reflect the no-fallback
+  pin-único policy in effect since v3.7.2: each peer pinned to ONE
+  canonical model (gpt-5.5 / claude-opus-4-7 / gemini-2.5-pro /
+  deepseek-v4-pro / grok-4-latest / sonar-reasoning-pro). The previous
+  document showed multi-model priority lists which had not matched the
+  code since v3.7.2.
+
+### Updated
+
+- Dependency bumps via `npm install` to current latest within semver
+  constraints: `@google/genai 1.52.0 → 2.3.0`, `eslint 10.3.0 → 10.4.0`,
+  `@anthropic-ai/sdk 0.95.0 → 0.96.0`, `@types/node 25.6.2 → 25.8.0`,
+  `openai 6.36.0 → 6.37.0`, `tsx 4.21.0 → 4.22.0`,
+  `typescript-eslint 8.59.2 → 8.59.3`. `npm audit` 0 vulnerabilities.
+
 ## [v04.00.00] — 2026-05-15
 
 **Major — project renamed to `cross-review`.** After the companion

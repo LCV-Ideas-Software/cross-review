@@ -1,6 +1,6 @@
 # Contributing
 
-This repository is maintained by LCV Ideas & Software. Contributions should preserve the security, automation, and release posture of cross-review-v2.
+This repository is maintained by LCV Ideas & Software. Contributions should preserve the security, automation, and release posture of cross-review.
 
 ## Baseline
 

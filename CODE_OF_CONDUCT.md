@@ -31,7 +31,7 @@ All reporters will have their identity kept confidential.
 
 ---
 
-## Notes specific to cross-review-v2
+## Notes specific to cross-review
 
 The cross-review protocol itself is designed around **structured disagreement**. Peers regularly respond with `NOT_READY` carrying technical objections; this is the intended behavior of the protocol and is NOT a code-of-conduct concern. The standard applies to personal conduct between contributors, not to the technical content of parecer/objections/findings exchanged by peers under the spec.
 

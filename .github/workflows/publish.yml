@@ -58,10 +58,10 @@ jobs:
       - name: Verify
         run: npm test
         env:
-          CROSS_REVIEW_V2_STUB: "1"
+          CROSS_REVIEW_STUB: "1"
           # v2.4.0 / P1.1 fail-fast: stub activation requires explicit
           # confirmation. The smoke harness is a legitimate stub consumer.
-          CROSS_REVIEW_V2_STUB_CONFIRMED: "1"
+          CROSS_REVIEW_STUB_CONFIRMED: "1"
       - name: Resolve release metadata
         id: meta
         shell: bash
@@ -308,7 +308,7 @@ jobs:
           fi
           gh release create "$TAG" artifacts/*.tgz \
             --repo "$GITHUB_REPOSITORY" \
-            --title "cross-review-v2 $TAG" \
+            --title "cross-review $TAG" \
             --notes "$NOTES" \
             --latest
     timeout-minutes: 60

@@ -17,54 +17,44 @@ The no-downgrade behavior is covered by `scripts/smoke.ts`: when a provider
 returns only a weak/deprecated candidate such as `claude-haiku-4-5`, selection
 stays on the documented advanced fallback and records `confidence=unknown`.
 
-## Current Priority Lists
+## Current Canonical Pins (no-fallback policy, operator directive 2026-05-14)
 
-OpenAI/Codex:
+Each peer is pinned to exactly ONE canonical model — the most advanced "pro
+with reasoning" model available from the provider. The runtime no longer
+chains a multi-model fallback list. If the pinned model is genuinely
+unavailable, the round retries on the same model or skips that peer
+(skip-gated quorum floor; see `src/core/convergence.ts`). The only escape
+hatch is an explicit operator override via `CROSS_REVIEW_<PROVIDER>_MODEL`
+env-var per host — a deliberate decision, never a silent downgrade.
 
-```text
-gpt-5.5 > gpt-5.4 > gpt-5.2 > gpt-5.1-codex-max > gpt-5.1-codex > gpt-5.1 > gpt-5-pro > gpt-5
-```
+| Peer             | Pin                   | Override env-var                |
+| ---------------- | --------------------- | ------------------------------- |
+| OpenAI/Codex     | `gpt-5.5`             | `CROSS_REVIEW_OPENAI_MODEL`     |
+| Anthropic/Claude | `claude-opus-4-7`     | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| Google/Gemini    | `gemini-2.5-pro`      | `CROSS_REVIEW_GEMINI_MODEL`     |
+| DeepSeek         | `deepseek-v4-pro`     | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
+| xAI/Grok         | `grok-4-latest`       | `CROSS_REVIEW_GROK_MODEL`       |
+| Perplexity       | `sonar-reasoning-pro` | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
-Anthropic/Claude:
+Haiku and other low-capacity Anthropic models are intentionally excluded —
+the cross-review role requires advanced reasoning depth.
 
-```text
-claude-opus-4-7 > claude-opus-4-6 > claude-sonnet-4-6
-```
+Operator preference 2026-05-07: `gemini-2.5-pro` is the runtime default
+because under Google One AI Ultra subscription it carries 1k requests/day vs
+`gemini-3.1-pro-preview`'s 250 requests/day. Workspace policy: only
+`gemini-*-pro` variants ≥ 2.5 are permitted — no `*-flash` variants and no
+models below 2.5.
 
-Haiku is intentionally excluded because the cross-review role requires advanced reasoning depth.
+`GROK_API_KEY` is the canonical auth variable for xAI. The runtime sends
+`reasoning.effort` only for models that explicitly accept it (e.g.
+`grok-4.20-multi-agent`); for automatic-reasoning models such as the pinned
+`grok-4-latest`, the adapter omits the field automatically.
 
-Google/Gemini:
-
-```text
-gemini-2.5-pro > gemini-3.1-pro-preview
-```
-
-Operator preference 2026-05-07: `gemini-2.5-pro` is the runtime default because under Google One AI Ultra subscription it carries 1k requests/day vs `gemini-3.1-pro-preview`'s 250 requests/day; `gemini-3.1-pro-preview` remains in the priority list as a fallback. Workspace policy (operator directive 2026-05-07): only `gemini-*-pro` variants ≥ 2.5 are permitted — no `*-flash` variants and no models below 2.5 (those are deprecated). `gemini-3-pro-preview` is intentionally excluded from the active fallback path because preview model deprecation is tracked through official Gemini release notes and this project avoids soon-to-deprecate intermediate previews when a newer advanced model is available.
-
-DeepSeek:
-
-```text
-deepseek-v4-pro > deepseek-v4-flash
-```
-
-`deepseek-chat` and `deepseek-reasoner` are not active fallbacks because DeepSeek has announced their deprecation for 2026-07-24. `deepseek-v4-pro` is the preferred thinking-capable model for this project.
-
-xAI/Grok:
-
-```text
-grok-4.20-multi-agent > grok-4-latest > grok-4.3 > grok-4.20-reasoning > grok-4.20 > grok-4-1-fast > grok-4 > grok-3-fast > grok-3
-```
-
-`GROK_API_KEY` is the canonical auth variable. The operator chooses the model
-with `CROSS_REVIEW_GROK_MODEL`. Per official xAI reasoning docs, only
-`grok-4.20-multi-agent` accepts an explicit `reasoning.effort` request body
-field, where the value selects agent count (`low`/`medium` = 4 agents,
-`high`/`xhigh` = 16 agents). Automatic-reasoning Grok models such as
-`grok-4-latest`, `grok-4.20`, and `grok-4.20-reasoning` must not receive that
-field; the adapter detects the configured model and omits it automatically.
-The xAI model catalog currently recommends `grok-4.3` for general Chat API
-usage; the multi-agent model remains first in this project because it is the
-only documented Grok model with explicit agent-count control.
+`PERPLEXITY_API_KEY` is the canonical auth variable for Perplexity Sonar.
+Sonar billing has a 3rd dimension: per-1000-requests fee that scales with
+`CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` (low/medium/high). When
+Perplexity is the relator (lottery), the adapter forces `disable_search=true`
+to skip search for the synthesis step.
 
 ## Thinking Configuration
 
