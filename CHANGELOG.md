@@ -7,6 +7,66 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.05] — 2026-05-15
+
+**Patch — hard-gate close-out for the Codex v4.0.4 audit.** This release
+closes the 6 residual findings left after v4.0.4 restored Prettier coverage.
+
+### Fixed
+
+- **AUDIT-1 (StepSecurity)** — existing actionable
+  `Source-Code-Overwritten` detections for generated `dist/*` publish
+  artifacts were suppressed through the existing narrow post-rename
+  StepSecurity rule: repo `cross-review`, workflow
+  `.github/workflows/publish.yml`, job `Pre-publish gate (test + metadata)`,
+  file path `*/dist/*`. The rule remains scoped to generated publish output
+  and does not hide source-tree overwrites outside `dist/`.
+- **AUDIT-2 (model-selection docs)** — `docs/model-selection.md` now uses
+  the post-v4 product name, removes misleading fallback wording from current
+  model behavior, scopes older provider-doc notes as historical, and links to
+  the real historical report
+  `docs/reports/cross-review-v2-api-capability-smoke-2026-04-30.md`.
+- **AUDIT-3 (no-fallback wording)** —
+  `src/peers/model-selection.ts` now describes failure paths as keeping the
+  configured model pin instead of using the old fallback phrase; the internal
+  selection parameter name was aligned to `configuredPin`.
+- **AUDIT-4 (agent rename history)** — `.github/copilot-instructions.md` and
+  `.ai/GEMINI.md` now preserve the historical package transition as
+  `@lcv-ideas-software/cross-review-v2` →
+  `@lcv-ideas-software/cross-review`, instead of the tautological
+  post-rename name-to-itself text.
+- **AUDIT-5 (tag hygiene)** — release verification now treats the remote
+  padded tag as authoritative and local clones should fetch tags before
+  using `git tag --points-at HEAD` as evidence.
+- **AUDIT-6 (artifact identity)** — new
+  `npm --registry=https://registry.npmjs.org run release:verify-registry`
+  validates npm registry `dist.shasum`, `dist.integrity`, and `dist.tarball`
+  via `scripts/verify-registry-dist.mjs`; the publish workflow runs it after
+  npmjs.com visibility succeeds so future audits do not confuse local
+  `npm --registry=https://registry.npmjs.org pack --dry-run` output with
+  published registry identity.
+- **GHA npm registry discipline** — every active GitHub Actions npm command
+  outside dependency installation now passes
+  `--registry=https://registry.npmjs.org`; GitHub Packages publish commands keep
+  that default registry flag and override only the package scope registry.
+- **Grok `-latest` model-match dot aliases** — `BasePeerAdapter.modelMatches()`
+  now treats `grok-4-latest` resolving provider-side to dot-release ids such as
+  `grok-4.3` as the same Grok 4 family, while still rejecting true cross-family
+  downgrades such as `grok-3-*`. This closes the live HARD GATE false positive
+  where Grok returned a READY verdict but the runtime rejected it as
+  `silent_model_downgrade`.
+
+### Tests
+
+- Added smoke markers for model-selection documentation/link hygiene,
+  no-fallback wording, agent-instruction rename history, and registry
+  artifact metadata verification.
+- Added `npm_registry_discipline_test` to keep active GHA npm commands and
+  nested package scripts on the explicit npmjs registry unless the command is
+  dependency installation/update.
+- Extended `model_match_latest_alias_test` to pin
+  `grok-4-latest` → `grok-4.3` alongside the existing dated-id alias case.
+
 ## [v04.00.04] — 2026-05-15
 
 **Patch — restore prettier coverage of `src/` and `scripts/` (close audit

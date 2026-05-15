@@ -56,9 +56,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Pre-publish gate (format + lint + biome + typecheck)
-        run: npm run check
+        run: npm --registry=https://registry.npmjs.org run check
       - name: Verify
-        run: npm test
+        run: npm --registry=https://registry.npmjs.org test
         env:
           CROSS_REVIEW_STUB: "1"
           # v2.4.0 / P1.1 fail-fast: stub activation requires explicit
@@ -124,10 +124,14 @@ jobs:
         run: |
           set -euo pipefail
           node --version
-          npm --version
+          npm --registry=https://registry.npmjs.org --version
           node <<'JS'
           const { execFileSync } = require('node:child_process');
-          const version = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+          const version = execFileSync(
+            'npm',
+            ['--registry=https://registry.npmjs.org', '--version'],
+            { encoding: 'utf8' },
+          ).trim();
           const [major, minor, patch] = version.split('.').map(Number);
           if (
             !Number.isFinite(major) ||
@@ -140,7 +144,7 @@ jobs:
       - name: Check npmjs.com package version
         id: npmjs-version
         run: |
-          if npm view "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+          if npm --registry=https://registry.npmjs.org view "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }}" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }} already exists on npmjs.com; skipping publish."
           else
@@ -149,7 +153,7 @@ jobs:
           fi
       - name: Publish (public, with provenance)
         if: steps.npmjs-version.outputs.exists != 'true'
-        run: npm publish --registry=https://registry.npmjs.org --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
+        run: npm --registry=https://registry.npmjs.org publish --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
       - name: Verify npmjs.com public visibility
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
@@ -175,6 +179,11 @@ jobs:
           done
           echo "::error::${PACKAGE_NAME}@${PACKAGE_VERSION} is not publicly visible on npmjs.com."
           exit 1
+      - name: Verify npmjs.com published artifact metadata
+        env:
+          PACKAGE_NAME: ${{ needs.gate.outputs.name }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+        run: npm --registry=https://registry.npmjs.org run release:verify-registry
     timeout-minutes: 60
   publish-gh-packages:
     name: Publish to GitHub Packages
@@ -212,7 +221,7 @@ jobs:
             echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}"
           } > "$npmrc"
           echo "NPM_CONFIG_USERCONFIG=$npmrc" >> "$GITHUB_ENV"
-          npm config get @lcv-ideas-software:registry
+          npm --registry=https://registry.npmjs.org config get @lcv-ideas-software:registry
       # The `--registry` flag only overrides the DEFAULT registry. This
       # package is SCOPED (@lcv-ideas-software/*) and the repo's project
       # `.npmrc` pins `@lcv-ideas-software:registry=https://registry.npmjs.org/`
@@ -223,7 +232,7 @@ jobs:
       - name: Check GitHub Packages version
         id: gh-packages-version
         run: |
-          if npm view "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }}" version --registry=https://npm.pkg.github.com --@lcv-ideas-software:registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+          if npm --registry=https://registry.npmjs.org view "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }}" version --@lcv-ideas-software:registry=https://npm.pkg.github.com >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }} already exists on GitHub Packages; skipping publish."
           else
@@ -234,7 +243,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish (public, with provenance)
         if: steps.gh-packages-version.outputs.exists != 'true'
-        run: npm publish --registry=https://npm.pkg.github.com --@lcv-ideas-software:registry=https://npm.pkg.github.com --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
+        run: npm --registry=https://registry.npmjs.org publish --@lcv-ideas-software:registry=https://npm.pkg.github.com --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 60
@@ -265,7 +274,7 @@ jobs:
       - name: Create artifact directory
         run: mkdir -p ./artifacts
       - name: Pack artifact
-        run: npm pack --registry=https://registry.npmjs.org/ --pack-destination ./artifacts
+        run: npm --registry=https://registry.npmjs.org pack --pack-destination ./artifacts
       - name: Extract release notes from CHANGELOG.md
         id: notes
         env:

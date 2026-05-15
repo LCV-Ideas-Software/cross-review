@@ -31,9 +31,9 @@ const DOCS = {
 // pronto. E sempre o modelo mais avançado, pro, com reasoning."
 // `selectFromCandidates` picks the first PRIORITY entry the provider's live
 // list contains; with a lone entry it either selects that canonical model
-// or falls through to the configured `fallback` (config.models[peer]) — it
-// can NEVER silently auto-select an off-policy model. The only escape hatch
-// is the explicit per-host env override (CROSS_REVIEW_<PROVIDER>_MODEL).
+// or keeps the configured model pin (config.models[peer]) — it can NEVER
+// silently auto-select an off-policy model. The only escape hatch is the
+// explicit per-host env override (CROSS_REVIEW_<PROVIDER>_MODEL).
 // Pre-v3.7.2 codex/claude/grok kept multi-entry same-provider chains and
 // gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
 const PRIORITY: Record<PeerId, string[]> = {
@@ -78,22 +78,22 @@ function modelId(value: string): string {
 export function selectFromCandidates(
   peer: PeerId,
   candidates: ModelCandidate[],
-  fallback: string,
+  configuredPin: string,
 ): ModelSelection {
   const available = new Set(candidates.map((candidate) => modelId(candidate.id)));
   const priority = PRIORITY[peer];
   const selected = priority.find((id) => available.has(id));
   return {
     peer,
-    selected: modelId(selected ?? fallback),
+    selected: modelId(selected ?? configuredPin),
     candidates,
     source_url: DOCS[peer],
     confidence: selected ? "verified" : candidates.length > 0 ? "unknown" : "inferred",
     reason: selected
       ? `Validated availability of the canonical pin in the provider's model API: ${priority.join(", ")}.`
       : candidates.length > 0
-        ? `Model API returned candidates, but the canonical pin (${priority.join(", ")}) was not among them; keeping the canonical pin ${fallback} so the run fails visibly instead of silently downgrading (no-fallback policy, operator directive 2026-05-14).`
-        : `Model API unavailable; keeping the canonical pin ${fallback} (no-fallback policy).`,
+        ? `Model API returned candidates, but the canonical pin (${priority.join(", ")}) was not among them; keeping the configured model pin ${configuredPin} so the run fails visibly instead of silently downgrading (no-fallback policy, operator directive 2026-05-14).`
+        : `Model API unavailable; keeping the configured model pin ${configuredPin} (no-fallback policy).`,
   };
 }
 
@@ -262,7 +262,7 @@ export async function resolveBestModel(config: AppConfig, peer: PeerId): Promise
       candidates: [],
       source_url: DOCS[peer],
       confidence: "unknown",
-      reason: `Failed to query the model API; using the current fallback. Error: ${message}`,
+      reason: `Failed to query the model API; keeping the configured model pin. Error: ${message}`,
     };
   }
 }

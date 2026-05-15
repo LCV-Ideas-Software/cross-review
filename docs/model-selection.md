@@ -2,7 +2,7 @@
 
 The server pins each peer to ONE canonical model per the no-downgrade policy
 (operator directive 2026-05-14). The runtime never silently chains a
-multi-model fallback. An explicit operator override via
+multi-model downgrade path. An explicit operator override via
 `CROSS_REVIEW_<PROVIDER>_MODEL` env-var is the only way to deviate from the
 canonical pin.
 
@@ -30,7 +30,7 @@ selection stays on the canonical pin and records `confidence=unknown`.
 
 Each peer is pinned to exactly ONE canonical model — the most advanced "pro
 with reasoning" model available from the provider. The runtime no longer
-chains a multi-model fallback list. If the pinned model is genuinely
+chains a multi-model downgrade list. If the pinned model is genuinely
 unavailable, the round retries on the same model or skips that peer
 (skip-gated quorum floor; see `src/core/convergence.ts`). The only escape
 hatch is an explicit operator override via `CROSS_REVIEW_<PROVIDER>_MODEL`
@@ -54,10 +54,10 @@ because under Google One AI Ultra subscription it carries 1k requests/day vs
 `gemini-*-pro` variants ≥ 2.5 are permitted — no `*-flash` variants and no
 models below 2.5.
 
-`GROK_API_KEY` is the canonical auth variable for xAI. The runtime sends
-`reasoning.effort` only for models that explicitly accept it (e.g.
-`grok-4.20-multi-agent`); for automatic-reasoning models such as the pinned
-`grok-4-latest`, the adapter omits the field automatically.
+`GROK_API_KEY` is the canonical auth variable for xAI. The pinned
+`grok-4-latest` model uses automatic reasoning in this runtime, so the
+adapter omits the explicit `reasoning.effort` field automatically unless a
+future operator-approved pin explicitly supports that parameter.
 
 `PERPLEXITY_API_KEY` is the canonical auth variable for Perplexity Sonar.
 Sonar billing has a 3rd dimension: per-1000-requests fee that scales with
@@ -67,38 +67,42 @@ to skip search for the synthesis step.
 
 ## Thinking Configuration
 
-Cross-review-v2 is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
+Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
 - OpenAI/Codex: Responses API with reasoning effort `xhigh` by default.
 - Anthropic/Claude: adaptive thinking with omitted thinking display plus `output_config.effort=xhigh` by default on Opus 4.7.
-- Google/Gemini: `thinkingConfig.thinkingLevel=HIGH` for Gemini 3.x and automatic thinking budget for Gemini 2.5 Pro fallback.
+- Google/Gemini: automatic thinking budget for the pinned Gemini 2.5 Pro model; Gemini 3.x thinking-level notes are historical and apply only to an explicit operator-approved override.
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default.
-- Grok: `reasoning.effort` is sent only for `grok-4.20-multi-agent`; all other
-  Grok reasoning models use xAI automatic reasoning without the explicit field.
+- Grok: the pinned `grok-4-latest` model uses xAI automatic reasoning without
+  the explicit `reasoning.effort` field.
 
-## Official Documentation Refresh — 2026-05-05
+## Historical Documentation Refresh — 2026-05-05
 
-Checked against primary provider documentation before the v2.16.0 protocol
-repair:
+This section is historical context for the v2.16.0 protocol repair. Do not
+read it as the current pin list; the authoritative current pins are listed
+above and enforced by `src/peers/model-selection.ts`.
 
 - OpenAI: GPT-5.5 is the current recommended frontier model for complex
   reasoning/coding, with Responses API reasoning effort values through `xhigh`
   and 1M context / 128K output.
 - Anthropic: Claude Opus 4.7 is the generally available complex-reasoning and
   agentic-coding default; current docs expose 1M context and adaptive thinking.
-- Google Gemini: Gemini 3.1 Pro Preview is the current advanced Gemini 3.1
-  option; Gemini 3 Pro Preview is deprecated/shut down and must stay out of
-  active fallbacks.
+- Google Gemini: Gemini 3.1 Pro Preview was the advanced Gemini 3.1 option at
+  the time; Gemini 3 Pro Preview was deprecated/shut down and must stay out of
+  current pins and downgrade chains.
 - DeepSeek: DeepSeek-V4 exposes `deepseek-v4-pro` and `deepseek-v4-flash`;
-  legacy `deepseek-chat` and `deepseek-reasoner` are scheduled for
-  discontinuation on 2026-07-24 and must stay out of priority fallbacks.
-- xAI Grok: the model catalog currently recommends `grok-4.3` for general Chat
-  API use, while reasoning docs identify `grok-4.20-multi-agent` as the only
-  explicit `reasoning.effort` model. Other Grok reasoning models reason
-  automatically and must not receive explicit effort.
+  legacy `deepseek-chat` and `deepseek-reasoner` were scheduled for
+  discontinuation on 2026-07-24 and must stay out of current pins and
+  downgrade chains.
+- xAI Grok: historical Grok notes covered explicit-effort models that predate
+  the current `grok-4-latest` pin. Current runtime behavior is defined above:
+  omit explicit `reasoning.effort` for `grok-4-latest`.
 
 ## Important
 
 The canonical pin per peer is intentionally code-level configuration, not hidden behavior. Provider model catalogs and deprecation schedules change often, so this file and `src/peers/model-selection.ts` must be reviewed against official provider documentation whenever a pin changes.
 
-The redacted real-API capability smoke for the current default models is recorded in `docs/reports/cross-review-api-capability-smoke-2026-04-30.md`.
+The redacted real-API capability smoke from the historical v2 line is recorded
+in `docs/reports/cross-review-v2-api-capability-smoke-2026-04-30.md`. The
+`cross-review-v2` filename is intentionally preserved as historical record; it
+does not override the post-v4 product name.

@@ -21,7 +21,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.00.04** (npm package `4.0.4`). See
+**Status.** Stable. Current release: **v04.00.05** (npm package `4.0.5`). See
 [CHANGELOG.md](./CHANGELOG.md) for the release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
@@ -36,6 +36,7 @@ The version history at a glance:
 
 | Release | Scope |
 |---|---|
+| **`v04.00.05`** | **Patch — hard-gate close-out for the Codex v4.0.4 audit.** Clears the 6 residual findings: StepSecurity `Source-Code-Overwritten` detections for generated `dist/*` publish artifacts are suppressed against the existing narrow post-rename rule; `docs/model-selection.md` now uses the post-v4 product name, removes misleading fallback wording, and links to the real historical v2 capability-smoke report; model-selection failure text now says it keeps the configured model pin instead of the old fallback phrase; Copilot/Gemini agent instructions preserve the `cross-review-v2` → `cross-review` rename history; local tag verification is expected to use fetched remote tags; the publish workflow now records npm registry `dist.shasum` / `dist.integrity` / `dist.tarball` metadata so audits do not confuse local `npm --registry=https://registry.npmjs.org pack --dry-run` output with the published artifact identity; and `grok-4-latest` model-match accepts provider-reported dot-release aliases such as `grok-4.3` without weakening true cross-family downgrade rejection. |
 | **`v04.00.04`** | **Patch — restore prettier coverage of `src/` and `scripts/` (close audit on v4.0.3 hard-gate gap).** v4.0.3 added biome but also moved `src/**/*.ts`, `src/**/*.js`, `scripts/**/*.ts`, `scripts/**/*.js` into `.prettierignore` to dodge a biome↔prettier disagreement on dynamic-import call-style. Net effect: prettier ran against zero JS/TS under `src/`/`scripts/`, silently turning one of the four hard-gate checks into a no-op there. v4.0.4 restores full coverage and resolves the disagreement at the source — the 7 `scripts/smoke.ts` dynamic-import sites that triggered the wrap conflict were rewritten from destructure-from-call form to a 2-statement form (`const mod = await import("..."); const { A, B, C } = mod;`). Functionally identical; static type inference preserved. Both formatters now check the full JS/TS surface and pass simultaneously. |
 | **`v04.00.00`** | **Major — project renamed to `cross-review`** (drops the `-v2` suffix after the companion `cross-review-v1` project was discontinued and archived 2026-05-15). Breaking: npm package `@lcv-ideas-software/cross-review-v2` → `@lcv-ideas-software/cross-review` (old name stays on npm at `3.7.5` for historical installs); binaries `cross-review-v2` / `cross-review-v2-dashboard` → `cross-review` / `cross-review-dashboard`; env-var prefix `CROSS_REVIEW_V2_*` → `CROSS_REVIEW_*` across all config knobs that previously carried the `V2` infix (e.g. `CROSS_REVIEW_DATA_DIR`, `CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC`); API-key env vars unchanged; per-host identity env vars (`CROSS_REVIEW_CALLER_TOKEN`, `CROSS_REVIEW_REQUIRE_TOKEN`) unchanged. GitHub repo URL: `LCV-Ideas-Software/cross-review-v2` → `LCV-Ideas-Software/cross-review` (auto-redirected). GitHub Pages: `cross-review-v2.lcv.dev` → `cross-review.lcv.dev`. MCP server key in host configs: operators who declared `cross-review-v2` rename to `cross-review`; after reload, MCP tool prefix becomes `mcp__cross-review__*`. Data dir migration is manual: operators copy `${HOME}/.cross-review/data_v2/*` into the new default `${HOME}/.cross-review/data/` (or set `CROSS_REVIEW_DATA_DIR` to the legacy path) — the v4.0.0 runtime reads only `CROSS_REVIEW_DATA_DIR` and does not fall back to the `_v2` suffix automatically. Preserved when copied: persisted session data, `config.json`, `host-tokens.json`, `cache_manifest.json`, archived/corrupt session dirs. Wire shape of all MCP tools, event types, convergence semantics is unchanged; all capabilities, peers, models, security defenses carry over from v3.7.5 verbatim. 504 source/script/doc text substitutions across 26 files. |
 | **`v03.07.05`** | **Patch — logs+sessions study 2026-05-15 close-out (4 surgical fixes from 244-session/429-round corpus).** **A1** — `session_doctor` classified cancelled sessions as `stale` (22 of 244 false positives); doctor now treats any terminal outcome (`aborted`/`converged`/`max-rounds`) as NOT-stale regardless of the persisted `convergence_health.state`. Source-layer state untouched (backward-compat with existing sessions). **A2** — `lockCallerPeerSelection` emitted false-positive `session.caller_peer_selection_ignored` events when callers passed a panel identical to the enabled set (13 of 106 recent events); the lock now accepts an optional `enabledPeers` snapshot in its context and short-circuits the emit when the caller-supplied list set-equals the enabled set (sorted comparison). **A3** — per-provider cache disable env vars (`CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC|OPENAI|GEMINI|DEEPSEEK|GROK|PERPLEXITY`; provider names match v2.21.0 `_CACHE_TTL_*` convention; same parsing as `peer_enabled`); Anthropic default flipped to disabled based on empirical 0.3% hit-rate ($1.18 wasted to save $0.0035 over 244 sessions). Global `CROSS_REVIEW_DISABLE_CACHE` kill-switch unchanged; per-provider is an additive layer. Anthropic adapter `buildSystemBlock` + short-prefix warning gated on the per-provider flag; central `config.json` `cache` block accepts the new disable keys. **B1** — `session_sweep` gains opt-in `prune_corrupt: boolean.default(false)` + `corrupt_min_age_days: number.int.default(30)` to clean `<data_dir>/corrupt_sessions/` (no prior automated cleanup; 1 stale entry from 2026-05-08 v2.25.1 redact bug still on disk at study time). New `store.pruneCorruptSessions(minAgeMs)` returns `{scanned, removed, kept}`. Response shape stays `SessionMeta[]` when `prune_corrupt: false` (default); wraps to `{ swept, pruned_corrupt }` when true. **Patch bump** (3.7.4 → 3.7.5). |
@@ -135,7 +136,7 @@ Build and run locally:
 
 ```bash
 npm install
-npm run build
+npm --registry=https://registry.npmjs.org run build
 node dist/src/mcp/server.js
 ```
 
@@ -143,7 +144,7 @@ For local smoke tests (no-cost):
 
 ```powershell
 $env:CROSS_REVIEW_STUB = "1"
-npm test
+npm --registry=https://registry.npmjs.org test
 ```
 
 ## Configuration

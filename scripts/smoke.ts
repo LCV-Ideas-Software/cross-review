@@ -878,13 +878,12 @@ assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_mo
 
 // v3.7.4 (operator-directed, session ecd03404): `model_match` must
 // recognize a `-latest` alias resolving to a concrete dated id. xAI
-// returns `grok-4-0709` for the pinned `grok-4-latest`; pre-v3.7.4
-// `modelMatches()` flagged that as `silent_model_downgrade` because
-// `grok-4-0709` does not start with the literal `grok-4-latest-`. That
-// forced `status` to null (base.ts:315) and rejected the peer, making
-// unanimity unreachable on any panel including grok. The fix strips the
-// `-latest` suffix to the family stem and matches the reported id
-// against it; a genuine cross-family downgrade is still flagged.
+// returns family ids for the pinned `grok-4-latest`; pre-v3.7.4
+// `modelMatches()` flagged `grok-4-0709` as `silent_model_downgrade`
+// because it does not start with the literal `grok-4-latest-`. v4.0.5
+// extends the same family-stem rule to dot-release ids observed in live
+// xAI responses (`grok-4.3`). These are alias resolution, not downgrade.
+// A genuine cross-family downgrade is still flagged.
 {
   const aliasStub = new StubAdapter(config, "grok", "grok-4-latest");
   process.env.CROSS_REVIEW_STUB_REPORTED_MODEL = "grok-4-0709";
@@ -904,6 +903,26 @@ assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_mo
     aliasResult.status,
     null,
     "v3.7.4 / model-match: a matched `-latest` alias must NOT force status to null (base.ts:315)",
+  );
+
+  const dotAliasStub = new StubAdapter(config, "grok", "grok-4-latest");
+  process.env.CROSS_REVIEW_STUB_REPORTED_MODEL = "grok-4.3";
+  const dotAliasResult = await dotAliasStub.call("model-match -latest dot alias probe", {
+    session_id: result.session.session_id,
+    round: 98,
+    task: "model-match -latest dot alias probe",
+    emit() {},
+  });
+  delete process.env.CROSS_REVIEW_STUB_REPORTED_MODEL;
+  assert.equal(
+    dotAliasResult.model_match,
+    true,
+    `v4.0.5 / model-match: a \`-latest\` alias resolving to a dot-release id (grok-4-latest → grok-4.3) MUST match — not trip silent_model_downgrade (got model_match=${dotAliasResult.model_match})`,
+  );
+  assert.notEqual(
+    dotAliasResult.status,
+    null,
+    "v4.0.5 / model-match: a matched `-latest` dot alias must NOT force status to null",
   );
 
   const downgradeAliasStub = new StubAdapter(config, "grok", "grok-4-latest");
@@ -927,8 +946,10 @@ assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_mo
   // Source pin: base.ts modelMatches must carry the `-latest` family-stem branch.
   const baseSrc = fs.readFileSync(path.resolve(process.cwd(), "src", "peers", "base.ts"), "utf8");
   assert.ok(
-    /endsWith\("-latest"\)/.test(baseSrc) && /familyStem/.test(baseSrc),
-    "v3.7.4 / model-match: base.ts modelMatches must handle the `-latest` alias via a family-stem match",
+    /endsWith\("-latest"\)/.test(baseSrc) &&
+      /reportedModel\.startsWith\(`\$\{familyStem\}-`\)/.test(baseSrc) &&
+      /reportedModel\.startsWith\(`\$\{familyStem\}\.`\)/.test(baseSrc),
+    "v4.0.5 / model-match: base.ts modelMatches must handle `-latest` aliases via hyphen and dot family-stem matches",
   );
   console.log("[smoke] model_match_latest_alias_test: PASS");
 }
@@ -8260,6 +8281,170 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     `v4.0.2 / AUDIT-1: package-lock.json .name must be "@lcv-ideas-software/cross-review"; got "${pl.name}".`,
   );
   console.log("[smoke] package_version_consistency_test: PASS");
+}
+
+// v4.0.5 (AUDIT-2..6, Codex hard-gate close-out 2026-05-15):
+// anti-drift checks for post-rename docs, no-fallback wording, registry
+// artifact verification and agent-instruction history.
+{
+  const docsPath = path.join(process.cwd(), "docs", "model-selection.md");
+  const docsSrc = fs.readFileSync(docsPath, "utf8");
+  const staleV2ThinkingPhrase = "Cross-review-" + "v2 is optimized";
+  const staleGeminiFallbackPhrase = "Gemini 2.5 Pro " + "fallback";
+  const missingCapabilityReport =
+    "docs/reports/cross-review" + "-api-capability-smoke-2026-04-30.md";
+  assert.ok(
+    docsSrc.includes("Cross-review is optimized for correctness over latency and cost."),
+    "v4.0.5 / AUDIT-2: docs/model-selection.md must use the post-v4 product name in the thinking section.",
+  );
+  assert.ok(
+    !docsSrc.includes(staleV2ThinkingPhrase),
+    "v4.0.5 / AUDIT-2: stale v2 product-name wording must not return.",
+  );
+  assert.ok(
+    !docsSrc.includes(staleGeminiFallbackPhrase),
+    "v4.0.5 / AUDIT-2: Gemini docs must not describe the pinned model as a fallback.",
+  );
+  assert.ok(
+    !docsSrc.includes(missingCapabilityReport),
+    "v4.0.5 / AUDIT-2: docs must not link to the missing post-rename capability-smoke filename.",
+  );
+  assert.ok(
+    docsSrc.includes("docs/reports/cross-review-v2-api-capability-smoke-2026-04-30.md"),
+    "v4.0.5 / AUDIT-2: docs must link to the existing historical v2 capability-smoke report.",
+  );
+  assert.ok(
+    fs.existsSync(
+      path.join(
+        process.cwd(),
+        "docs",
+        "reports",
+        "cross-review-v2-api-capability-smoke-2026-04-30.md",
+      ),
+    ),
+    "v4.0.5 / AUDIT-2: linked historical capability-smoke report must exist.",
+  );
+  console.log("[smoke] docs_model_selection_rename_and_link_test: PASS");
+}
+
+{
+  const modelSelectionSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "peers", "model-selection.ts"),
+    "utf8",
+  );
+  const staleFallbackReason = "using the current " + "fallback";
+  assert.ok(
+    !modelSelectionSrc.includes(staleFallbackReason),
+    "v4.0.5 / AUDIT-3: model-selection reason text must not claim fallback use.",
+  );
+  assert.ok(
+    modelSelectionSrc.includes("keeping the configured model pin"),
+    "v4.0.5 / AUDIT-3: model-selection failure paths must describe keeping the configured model pin.",
+  );
+  assert.ok(
+    modelSelectionSrc.includes("no-fallback policy"),
+    "v4.0.5 / AUDIT-3: no-fallback policy wording must remain visible in model selection.",
+  );
+  console.log("[smoke] model_selection_no_fallback_wording_test: PASS");
+}
+
+{
+  const instructionFiles = [
+    ["copilot", path.join(process.cwd(), ".github", "copilot-instructions.md")],
+    ["gemini", path.join(process.cwd(), ".ai", "GEMINI.md")],
+  ] as const;
+  for (const [label, filePath] of instructionFiles) {
+    if (!fs.existsSync(filePath)) continue;
+    const src = fs.readFileSync(filePath, "utf8");
+    assert.ok(
+      src.includes("renomeado de `@lcv-ideas-software/cross-review-v2` no rename total Phase 2"),
+      `v4.0.5 / AUDIT-4: ${label} agent instructions must preserve cross-review-v2 -> cross-review history.`,
+    );
+    assert.ok(
+      !src.includes("renomeado de `@lcv-ideas-software/cross-review` no rename total Phase 2"),
+      `v4.0.5 / AUDIT-4: ${label} agent instructions must not contain the tautological rename.`,
+    );
+  }
+  console.log("[smoke] agent_instruction_rename_history_test: PASS");
+}
+
+{
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+  const script = String(pkg.scripts?.["release:verify-registry"] ?? "");
+  assert.ok(
+    script.includes("verify-registry-dist.mjs"),
+    "v4.0.5 / AUDIT-6: package.json must expose release:verify-registry.",
+  );
+  const verifyScript = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "verify-registry-dist.mjs"),
+    "utf8",
+  );
+  for (const required of ["dist", "shasum", "integrity", "tarball"]) {
+    assert.ok(
+      verifyScript.includes(required),
+      `v4.0.5 / AUDIT-6: verify-registry-dist.mjs must validate npm registry dist.${required}.`,
+    );
+  }
+  const publishWorkflow = fs.readFileSync(
+    path.join(process.cwd(), ".github", "workflows", "publish.yml"),
+    "utf8",
+  );
+  assert.ok(
+    publishWorkflow.includes(
+      "npm --registry=https://registry.npmjs.org run release:verify-registry",
+    ),
+    "v4.0.5 / AUDIT-6: publish workflow must verify npm registry artifact metadata after publication.",
+  );
+  console.log("[smoke] registry_dist_metadata_verification_test: PASS");
+}
+
+{
+  const npmRegistryArg = "--registry=https://registry.npmjs.org";
+  const isAllowedNpmCommand = (command: string): boolean => {
+    const afterNpm = command.trim().replace(/^.*?\bnpm\s+/, "");
+    return /^(ci|install|update)\b/.test(afterNpm) || afterNpm.startsWith(npmRegistryArg);
+  };
+  const extractNpmShellCommand = (line: string): string | undefined => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return undefined;
+    if (trimmed.startsWith("run: npm ")) return trimmed.slice("run: ".length);
+    if (trimmed.startsWith("npm ")) return trimmed;
+    if (trimmed.startsWith("if npm ")) return trimmed.slice("if ".length);
+    return undefined;
+  };
+  for (const workflowPath of [
+    path.join(process.cwd(), ".github", "workflows", "ci.yml"),
+    path.join(process.cwd(), ".github", "workflows", "publish.yml"),
+  ]) {
+    const workflowSrc = fs.readFileSync(workflowPath, "utf8");
+    workflowSrc.split(/\r?\n/).forEach((line, index) => {
+      const command = extractNpmShellCommand(line);
+      if (!command) return;
+      assert.ok(
+        isAllowedNpmCommand(command),
+        `v4.0.5 / npm-registry: ${path.basename(workflowPath)}:${index + 1} must pass ${npmRegistryArg} unless it is dependency install/update.`,
+      );
+    });
+    assert.ok(
+      !workflowSrc.includes("execFileSync('npm', ['--version']"),
+      `v4.0.5 / npm-registry: ${path.basename(workflowPath)} npm subprocess checks must pass ${npmRegistryArg}.`,
+    );
+  }
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+  for (const [name, script] of Object.entries(pkg.scripts ?? {})) {
+    for (const part of script.split("&&")) {
+      const trimmed = part.trim();
+      if (!trimmed.startsWith("npm ")) continue;
+      assert.ok(
+        isAllowedNpmCommand(trimmed),
+        `v4.0.5 / npm-registry: package script ${name} must pass ${npmRegistryArg} unless it is dependency install/update.`,
+      );
+    }
+  }
+  console.log("[smoke] npm_registry_discipline_test: PASS");
 }
 
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and

@@ -1,6 +1,6 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.0.4",
+  "version": "4.0.5",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "main": "dist/src/mcp/server.js",
@@ -20,14 +20,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "node scripts/clean.mjs",
-    "prepack": "npm run clean && npm run build",
+    "prepack": "npm --registry=https://registry.npmjs.org run clean && npm --registry=https://registry.npmjs.org run build",
     "dev": "tsx src/mcp/server.ts",
     "dashboard": "tsx src/dashboard/server.ts",
     "smoke": "tsx scripts/smoke.ts",
-    "runtime-smoke": "npm run build && tsx scripts/runtime-smoke.ts",
+    "runtime-smoke": "npm --registry=https://registry.npmjs.org run build && tsx scripts/runtime-smoke.ts",
     "runtime-default-smoke": "tsx scripts/runtime-default-smoke.ts",
     "api-streaming-smoke": "tsx scripts/api-streaming-smoke.ts",
-    "test": "npm run build && npm run smoke && npm run runtime-smoke",
+    "release:verify-registry": "node scripts/verify-registry-dist.mjs",
+    "test": "npm --registry=https://registry.npmjs.org run build && npm --registry=https://registry.npmjs.org run smoke && npm --registry=https://registry.npmjs.org run runtime-smoke",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -36,7 +37,7 @@
     "format:public:check": "prettier --check \"**/index.html\"",
     "biome": "biome check src scripts",
     "biome:write": "biome check --write src scripts",
-    "check": "npm run format:check && npm run lint && npm run biome && npm run typecheck"
+    "check": "npm --registry=https://registry.npmjs.org run format:check && npm --registry=https://registry.npmjs.org run lint && npm --registry=https://registry.npmjs.org run biome && npm --registry=https://registry.npmjs.org run typecheck"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

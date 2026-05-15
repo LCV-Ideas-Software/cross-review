@@ -191,17 +191,22 @@ export abstract class BasePeerAdapter {
     if (reportedModel.startsWith(`${requestedModel}-`)) return true;
     // v3.7.4: a `-latest` alias resolves provider-side to a concrete
     // dated id that reports the model FAMILY, not the literal alias
-    // string — xAI returns `grok-4-0709` for the pinned `grok-4-latest`.
-    // That is the alias resolving, NOT a silent downgrade. Strip the
-    // `-latest` suffix to the family stem and match the reported id
-    // against the stem: `grok-4-latest` → stem `grok-4` → `grok-4-0709`
-    // matches. A genuine cross-family downgrade (e.g. `grok-3-*` for a
-    // `grok-4-latest` pin) does not start with the stem, so it is still
-    // flagged as `silent_model_downgrade` — the no-downgrade protection
-    // is preserved.
+    // string — xAI has reported `grok-4-0709` and `grok-4.3` for the
+    // pinned `grok-4-latest`. That is the alias resolving, NOT a silent
+    // downgrade. Strip the `-latest` suffix to the family stem and match
+    // the reported id against the stem: `grok-4-latest` → stem `grok-4`
+    // → `grok-4-0709` / `grok-4.3` matches. A genuine cross-family
+    // downgrade (e.g. `grok-3-*` for a `grok-4-latest` pin) does not
+    // start with the stem, so it is still flagged as
+    // `silent_model_downgrade` — the no-downgrade protection is
+    // preserved.
     if (requestedModel.endsWith("-latest")) {
       const familyStem = requestedModel.slice(0, -"-latest".length);
-      return reportedModel === familyStem || reportedModel.startsWith(`${familyStem}-`);
+      return (
+        reportedModel === familyStem ||
+        reportedModel.startsWith(`${familyStem}-`) ||
+        reportedModel.startsWith(`${familyStem}.`)
+      );
     }
     return false;
   }
