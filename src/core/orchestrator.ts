@@ -439,23 +439,35 @@ function detectLeadDrift(generationText: string): boolean {
 //       `147 passed` from task.md:19-20 into a revision that called
 //       the result "validated").
 //
-// Two-tier corpus addresses both:
+// v3.7.4 (Codex v3.7.3 parecer follow-up — operator-directed): a
+// THREE-tier corpus. The pre-v3.7.4 two-tier split lumped the prior
+// DRAFT in with the task NARRATIVE, then validated operational
+// assertions against PROVENANCE-GRADE only — so a relator that
+// faithfully PRESERVED operational evidence already embedded in the
+// artifact it was handed (the documented process REQUIRES callers to
+// embed the verbatim diff + raw gate output in `initial_draft`) was
+// wrongly flagged as fabricating (session 506f006a). The prior
+// artifact is split out as its own tier:
 //   - PROVENANCE-GRADE corpus = attached evidence content only
-//     (persisted via session_attach_evidence). The ONLY corpus an
-//     operational assertion may legitimately cite. NARRATIVE is not
-//     evidence — operator directive 2026-05-10: "Evidência operacional
-//     só pode vir de caller/tool output persistido."
-//   - NARRATIVE corpus = caller's task + prior round's draft. Used
-//     only to soften the hex-token check: IDs, file paths, and content
-//     hashes legitimately appear in narrative discussion and should
-//     not flip the detector when the relator re-uses them.
+//     (persisted via session_attach_evidence).
+//   - PRIOR-ARTIFACT corpus = the prior round's draft / the caller's
+//     `initial_draft` — the artifact the relator is revising. An
+//     operational assertion the relator PRESERVES from it is not
+//     fabrication; the relator invented nothing.
+//   - NARRATIVE corpus = the caller's task body ONLY (prose framing).
+//     A claim narrated only here, promoted by the relator into the
+//     artifact, is STILL flagged — a task-narrated claim is not
+//     evidence (eee886d3, operator directive 2026-05-10: "Evidência
+//     operacional só pode vir de caller/tool output persistido").
 //
 // Operational assertions (test counts, `cargo test`, `npm run *`,
 // `git diff --check passed`, `git rev-parse HEAD`, git index hashes)
-// are validated against PROVENANCE-GRADE only. Hex tokens (8+ chars)
-// are validated against the union of PROVENANCE-GRADE + NARRATIVE,
-// since SHAs/file paths/IDs can be referenced as identifiers without
-// being claimed as command-output evidence.
+// are validated against PROVENANCE-GRADE ∪ PRIOR-ARTIFACT — flagged
+// only when NET-NEW (the relator invented them), symmetric with the
+// hex-token check. Hex tokens (8+ chars) are validated against the
+// union of all three tiers, since SHAs/file paths/IDs can be
+// referenced as identifiers without being claimed as command-output
+// evidence.
 //
 // Threshold: 3+ net-new hex tokens (high bar — partial IDs and color
 // codes are ≤7 chars and below the FABRICATED_HEX_MIN_LEN cut) OR
@@ -486,16 +498,31 @@ export interface FabricationDetectionResult {
 export interface FabricationDetectionCorpus {
   /**
    * PROVENANCE-GRADE corpus. Raw command/tool output persisted via
-   * `session_attach_evidence`. The only corpus an operational
-   * assertion may legitimately cite.
+   * `session_attach_evidence`.
    */
   provenanceCorpus: string;
   /**
-   * NARRATIVE corpus. Caller's task body + prior round's draft.
-   * Combined with provenanceCorpus when validating hex tokens
-   * (SHAs/IDs/file paths can be referenced in narrative without
-   * claiming command-output provenance). Never used for assertion
-   * validation — narrative is not evidence.
+   * PRIOR-ARTIFACT corpus. The prior round's draft / the caller's
+   * `initial_draft` — i.e. the artifact the relator is revising.
+   * v3.7.4 (Codex v3.7.3 parecer follow-up): an operational assertion
+   * the relator PRESERVES from the artifact it was handed is NOT
+   * fabrication — the relator invented nothing. The documented process
+   * REQUIRES callers to embed the verbatim diff + raw gate output in
+   * `initial_draft`; punishing a relator for faithfully carrying that
+   * forward was a self-contradiction (session 506f006a). So the prior
+   * artifact, alongside attached evidence, is a legitimate provenance
+   * source for operational assertions.
+   */
+  priorDraftCorpus: string;
+  /**
+   * NARRATIVE corpus. The caller's task body ONLY (prose framing /
+   * instructions) — NOT the draft. An operational assertion that
+   * appears only here, promoted by the relator into the artifact, is
+   * still flagged: a claim narrated in the task body is not evidence
+   * (the eee886d3 case, operator directive 2026-05-10). Combined with
+   * the other two corpora ONLY for hex-token validation, since
+   * SHAs/IDs/file paths can be referenced as identifiers in narrative
+   * without being claimed as command-output evidence.
    */
   narrativeCorpus: string;
 }
@@ -504,7 +531,9 @@ export function detectFabricatedEvidence(
   revisionText: string,
   corpus: FabricationDetectionCorpus,
 ): FabricationDetectionResult {
-  const hexCorpus = `${corpus.provenanceCorpus}\n${corpus.narrativeCorpus}`;
+  // Hex tokens (SHAs/IDs/file paths) may legitimately be referenced
+  // from ANY tier — they are identifiers, not command-output claims.
+  const hexCorpus = `${corpus.provenanceCorpus}\n${corpus.priorDraftCorpus}\n${corpus.narrativeCorpus}`;
   const revisionHex = new Set(revisionText.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []);
   const corpusHex = new Set(hexCorpus.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []);
   const netNewHex: string[] = [];
@@ -512,6 +541,16 @@ export function detectFabricatedEvidence(
     if (tok.length < FABRICATED_HEX_MIN_LEN) continue;
     if (!corpusHex.has(tok)) netNewHex.push(tok);
   }
+  // v3.7.4: operational assertions are validated against PROVENANCE-GRADE
+  // evidence ∪ the PRIOR ARTIFACT the relator is revising. An assertion
+  // the relator PRESERVED from the artifact it was handed is not
+  // fabrication — only an assertion NET-NEW relative to
+  // {attached evidence ∪ prior artifact} was invented by the relator.
+  // The caller's task NARRATIVE is deliberately excluded: a claim
+  // narrated only in the task body, promoted by the relator into the
+  // artifact, is still flagged (eee886d3 — operator directive
+  // 2026-05-10: narrative is not evidence).
+  const assertionCorpus = `${corpus.provenanceCorpus}\n${corpus.priorDraftCorpus}`;
   const suspicious: Array<{ label: string; match: string }> = [];
   const seenAssertions = new Set<string>();
   for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
@@ -520,12 +559,7 @@ export function detectFabricatedEvidence(
       const key = `${label}:${m.toLowerCase()}`;
       if (seenAssertions.has(key)) continue;
       seenAssertions.add(key);
-      // Operational assertions are validated against PROVENANCE-GRADE
-      // corpus ONLY. The caller's narrative claim that a command
-      // produced specific output is NOT evidence until the raw output
-      // is attached via session_attach_evidence (operator directive
-      // 2026-05-10). This is the eee886d3 blocker fix from Codex R1.
-      if (!corpus.provenanceCorpus.includes(m)) {
+      if (!assertionCorpus.includes(m)) {
         suspicious.push({ label, match: m });
       }
     }
@@ -3287,7 +3321,12 @@ export class CrossReviewOrchestrator {
       if (!emptyText && !driftDetected) {
         fabricationResult = detectFabricatedEvidence(generation.text, {
           provenanceCorpus: attachedEvidence.map((a) => a.content).join("\n"),
-          narrativeCorpus: `${input.task}\n${draft as string}`,
+          // v3.7.4: the prior artifact (the draft the relator is
+          // revising) is its own corpus tier — assertions preserved
+          // from it are not fabrication. The task narrative stays
+          // separate (a task-narrated claim is still not evidence).
+          priorDraftCorpus: draft as string,
+          narrativeCorpus: input.task,
         });
       }
       const fabricationDetected = fabricationResult?.fabricated === true;
@@ -3980,17 +4019,18 @@ export class CrossReviewOrchestrator {
             session.session_id,
             this.config.prompt.max_attached_evidence_chars,
           );
-          // Two-tier corpus per Codex R1 blocker (HARD GATE session
-          // 91935993, v2.24.0). NARRATIVE (task + prior draft) is not
-          // evidence: an operational claim narrated in the task body
-          // must not satisfy provenance for a relator citing it as
-          // verified fact. Only attached evidence content is
-          // PROVENANCE-GRADE. Hex tokens still use the broader corpus
-          // since IDs/paths/SHAs are commonly referenced in narrative
-          // without being claimed as command-output evidence.
+          // Three-tier corpus (v2.24.0 two-tier per Codex R1 blocker
+          // session 91935993; split in v3.7.4 — Codex v3.7.3 parecer
+          // follow-up). An operational assertion the relator PRESERVED
+          // from the prior artifact (`priorDraftCorpus`) is not
+          // fabrication; one promoted from the task NARRATIVE, or
+          // invented outright, still trips. Hex tokens use the broader
+          // union since IDs/paths/SHAs are commonly referenced as
+          // identifiers without being claimed as command-output evidence.
           fabricationResult = detectFabricatedEvidence(generation.text, {
             provenanceCorpus: attachmentsForCheck.map((a) => a.content).join("\n"),
-            narrativeCorpus: `${input.task}\n${draft}`,
+            priorDraftCorpus: draft,
+            narrativeCorpus: input.task,
           });
           // v3.4.0: meta-audit detector. Sess 51973fac shipped a
           // checklist of `MISSING: diff hunk` placeholders instead of

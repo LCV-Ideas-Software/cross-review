@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { MCP_REQUEST_TIMEOUT_MS } from "../src/core/timeouts.js";
@@ -34,6 +35,37 @@ const transport = new StdioClientTransport({
       process.env.CROSS_REVIEW_DEEPSEEK_INPUT_USD_PER_MILLION ?? "1000",
     CROSS_REVIEW_DEEPSEEK_OUTPUT_USD_PER_MILLION:
       process.env.CROSS_REVIEW_DEEPSEEK_OUTPUT_USD_PER_MILLION ?? "1000",
+    // v3.7.4 (Codex v3.7.3 parecer AUDIT-1): the public MCP path strips a
+    // caller's `peers` list (v3.3.0 `lockCallerPeerSelection`), so every
+    // round here runs the full server-configured 6-peer panel — grok and
+    // perplexity included. Without their rate cards `missingFinancialControlVars`
+    // trips and the round finalizes `outcome=max-rounds` /
+    // `financial_controls_missing` instead of actually running. Inject all
+    // six peers' cost rates so the round genuinely converges and the
+    // outcome asserts below mean something.
+    CROSS_REVIEW_GROK_INPUT_USD_PER_MILLION:
+      process.env.CROSS_REVIEW_GROK_INPUT_USD_PER_MILLION ?? "1000",
+    CROSS_REVIEW_GROK_OUTPUT_USD_PER_MILLION:
+      process.env.CROSS_REVIEW_GROK_OUTPUT_USD_PER_MILLION ?? "1000",
+    CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION:
+      process.env.CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION ?? "1000",
+    CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION:
+      process.env.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION ?? "1000",
+    // Perplexity also bills a per-1000-requests search fee; when search is
+    // enabled `missingFinancialControlVars` requires the request fee for
+    // the configured `search_context_size`. This stub smoke does not
+    // exercise paid search, so disable it — and, belt-and-suspenders in
+    // case an inherited operator env re-enables it, inject the request fee
+    // for every search_context_size so the financial preflight passes
+    // regardless.
+    CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH:
+      process.env.CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH ?? "1",
+    CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS:
+      process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS ?? "0",
+    CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS:
+      process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS ?? "0",
+    CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS:
+      process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS ?? "0",
   },
 });
 
@@ -49,12 +81,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
   return JSON.parse(text);
 }
 
-async function pollUntilDone(sessionId: string): Promise<unknown> {
+type PollState = { outcome?: string; jobs?: Array<{ status: string }> };
+
+async function pollUntilDone(sessionId: string): Promise<PollState> {
   for (let attempt = 0; attempt < 20; attempt++) {
     const state = (await callTool("session_poll", {
       session_id: sessionId,
       response_format: "json",
-    })) as { jobs?: Array<{ status: string }> };
+    })) as PollState;
     if (
       state.jobs?.some(
         (job) =>
@@ -112,6 +146,28 @@ try {
   const cancelState = await pollUntilDone(cancelStart.session_id);
   const metrics = await callTool("session_metrics", { response_format: "json" });
   const recovery = await callTool("session_recover_interrupted", { response_format: "json" });
+  // v3.7.4 (Codex v3.7.3 parecer AUDIT-1): assert the durable terminal
+  // state of every async flow this smoke claims to exercise. Without these
+  // the harness printed `ok: true` even when a round was silently blocked
+  // by the financial preflight (`outcome=max-rounds`) instead of actually
+  // running. These asserts run BEFORE the `ok: true` print, so any flow
+  // that did not reach its intended terminal state fails the smoke loudly
+  // with a non-zero exit.
+  assert.equal(
+    roundState.outcome,
+    "converged",
+    `runtime-smoke: review round did not converge — outcome=${String(roundState.outcome)}`,
+  );
+  assert.equal(
+    unanimousState.outcome,
+    "converged",
+    `runtime-smoke: unanimity flow did not converge — outcome=${String(unanimousState.outcome)}`,
+  );
+  assert.equal(
+    cancelState.outcome,
+    "aborted",
+    `runtime-smoke: cancellation flow did not abort — outcome=${String(cancelState.outcome)}`,
+  );
   console.log(
     JSON.stringify(
       {

@@ -1,23 +1,36 @@
 import type { ConvergenceResult, PeerFailure, PeerId, PeerResult, ReviewStatus } from "./types.js";
 
 // v3.7.3 (operator no-fallback directive 2026-05-14): when a peer's pinned
-// model is genuinely unavailable — an infrastructure failure, retries
-// exhausted, and the user declared no fallback models — the round SKIPS
-// that peer and converges on the remaining peers, instead of letting the
-// failure block convergence. This is the operator's "pular aquele peer e
-// trabalhar apenas com os outros" path. A skipped peer is one whose
-// `failure_class` is in `SKIPPABLE_FAILURE_CLASSES` (classified at the
-// round loop in `orchestrator.ts`); everything else — a peer that DID
-// respond but badly (schema / unparseable / format-recovery-exhausted),
-// the no-fallback-directive's own `silent_model_downgrade`, or a
-// policy/budget/content stop — stays in `rejected` and blocks convergence
-// exactly as before.
+// model is genuinely unavailable, the round SKIPS that peer and converges
+// on the remaining peers, instead of letting the failure block
+// convergence. This is the operator's "pular aquele peer e trabalhar
+// apenas com os outros" path.
+//
+// v3.7.4 (Codex v3.7.3 parecer AUDIT-2): a peer reaches this skip through
+// EITHER of two paths, not just "the user declared no fallback model" —
+//   (a) the user declared NO fallback model for that peer, the pinned
+//       model hit an infrastructure failure, and retrying the SAME model
+//       was exhausted (`auth` / `rate_limit` / `provider_error` /
+//       `network` / `timeout`); or
+//   (b) the user DID declare a fallback model, it was tried, and the
+//       declared fallback chain was itself drained (`fallback_exhausted`).
+// Either way the peer's `failure_class` is in `SKIPPABLE_FAILURE_CLASSES`
+// (classified at the round loop in `orchestrator.ts`); everything else —
+// a peer that DID respond but badly (schema / unparseable /
+// format-recovery-exhausted), the no-fallback-directive's own
+// `silent_model_downgrade`, or a policy/budget/content stop — stays in
+// `rejected` and blocks convergence exactly as before.
 export const SKIP_QUORUM_FLOOR = 2;
 
 // v3.7.3: failure classes that mean "the peer's model was genuinely
-// UNAVAILABLE" — the call could not reach the provider or get a response
-// at all, retries are exhausted, and the user declared no fallback model.
-// These are SKIPPED (round continues on the remaining peers). Everything
+// UNAVAILABLE" — the call could not reach the provider or get a usable
+// response at all, and the peer has no further model left to fall back
+// to. v3.7.4 (Codex v3.7.3 parecer AUDIT-2): this state is reached two
+// ways — (a) NO fallback model was declared and retrying the SAME pinned
+// model was exhausted (`auth`, `rate_limit`, `provider_error`, `network`,
+// `timeout`); or (b) a fallback model WAS declared, tried, and the
+// declared chain was itself drained (`fallback_exhausted`). Either way
+// these are SKIPPED (round continues on the remaining peers). Everything
 // else stays in `rejected` and blocks convergence: a peer that DID respond
 // but badly (`schema`, `unparseable_after_recovery`,
 // `format_recovery_exhausted`, `stream_buffer_overflow`), the no-fallback

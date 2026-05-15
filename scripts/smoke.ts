@@ -746,6 +746,44 @@ assert.equal(
   console.log("[smoke] skip_peer_on_unavailability_test: PASS");
 }
 
+// v3.7.4 (Codex v3.7.3 parecer AUDIT-1): runtime-smoke.ts false-positive
+// hardening. The public MCP path strips a caller's `peers` list (v3.3.0
+// `lockCallerPeerSelection`), so every runtime-smoke round runs the full
+// server-configured 6-peer panel. runtime-smoke.ts MUST therefore inject
+// grok + perplexity cost rate cards (without them the round is silently
+// blocked by `missingFinancialControlVars` and finalizes
+// `outcome=max-rounds`) AND MUST assert each async flow's durable terminal
+// `outcome` (without the asserts the harness printed `ok: true` over a
+// blocked round). This source-pin fails `npm run smoke` if a future
+// refactor strips either the rate-card injection or the outcome asserts.
+{
+  const runtimeSmokeSrc = fs.readFileSync(new URL("./runtime-smoke.ts", import.meta.url), "utf8");
+  for (const envKey of [
+    "CROSS_REVIEW_GROK_INPUT_USD_PER_MILLION",
+    "CROSS_REVIEW_GROK_OUTPUT_USD_PER_MILLION",
+    "CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION",
+    "CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION",
+  ]) {
+    assert.ok(
+      runtimeSmokeSrc.includes(envKey),
+      `v3.7.4 / runtime-smoke: must inject ${envKey} so the full 6-peer panel has financial controls`,
+    );
+  }
+  assert.ok(
+    /assert\.equal\(\s*roundState\.outcome,\s*"converged"/.test(runtimeSmokeSrc),
+    'v3.7.4 / runtime-smoke: must assert roundState.outcome === "converged"',
+  );
+  assert.ok(
+    /assert\.equal\(\s*unanimousState\.outcome,\s*"converged"/.test(runtimeSmokeSrc),
+    'v3.7.4 / runtime-smoke: must assert unanimousState.outcome === "converged"',
+  );
+  assert.ok(
+    /assert\.equal\(\s*cancelState\.outcome,\s*"aborted"/.test(runtimeSmokeSrc),
+    'v3.7.4 / runtime-smoke: must assert cancelState.outcome === "aborted"',
+  );
+  console.log("[smoke] runtime_smoke_outcome_assert_test: PASS");
+}
+
 const probes = await orchestrator.probeAll();
 assert.equal(probes.length, PEERS.length);
 assert.equal(
@@ -836,6 +874,63 @@ delete process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL;
 assert.equal(mismatch.converged, false);
 assert.equal(mismatch.round.rejected.at(-1)?.failure_class, "silent_model_downgrade");
 assert.equal(mismatch.session.failed_attempts?.at(-1)?.failure_class, "silent_model_downgrade");
+
+// v3.7.4 (operator-directed, session ecd03404): `model_match` must
+// recognize a `-latest` alias resolving to a concrete dated id. xAI
+// returns `grok-4-0709` for the pinned `grok-4-latest`; pre-v3.7.4
+// `modelMatches()` flagged that as `silent_model_downgrade` because
+// `grok-4-0709` does not start with the literal `grok-4-latest-`. That
+// forced `status` to null (base.ts:315) and rejected the peer, making
+// unanimity unreachable on any panel including grok. The fix strips the
+// `-latest` suffix to the family stem and matches the reported id
+// against it; a genuine cross-family downgrade is still flagged.
+{
+  const aliasStub = new StubAdapter(config, "grok", "grok-4-latest");
+  process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL = "grok-4-0709";
+  const aliasResult = await aliasStub.call("model-match -latest alias probe", {
+    session_id: result.session.session_id,
+    round: 98,
+    task: "model-match -latest alias probe",
+    emit() {},
+  });
+  delete process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL;
+  assert.equal(
+    aliasResult.model_match,
+    true,
+    `v3.7.4 / model-match: a \`-latest\` alias resolving to a concrete dated id (grok-4-latest → grok-4-0709) MUST match — not trip silent_model_downgrade (got model_match=${aliasResult.model_match})`,
+  );
+  assert.notEqual(
+    aliasResult.status,
+    null,
+    "v3.7.4 / model-match: a matched `-latest` alias must NOT force status to null (base.ts:315)",
+  );
+
+  const downgradeAliasStub = new StubAdapter(config, "grok", "grok-4-latest");
+  process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL = "grok-3-fast";
+  const downgradeAliasResult = await downgradeAliasStub.call(
+    "model-match cross-family downgrade probe",
+    {
+      session_id: result.session.session_id,
+      round: 98,
+      task: "model-match cross-family downgrade probe",
+      emit() {},
+    },
+  );
+  delete process.env.CROSS_REVIEW_V2_STUB_REPORTED_MODEL;
+  assert.equal(
+    downgradeAliasResult.model_match,
+    false,
+    `v3.7.4 / model-match: a genuine cross-family downgrade (grok-4-latest → grok-3-fast) MUST still be flagged (got model_match=${downgradeAliasResult.model_match})`,
+  );
+
+  // Source pin: base.ts modelMatches must carry the `-latest` family-stem branch.
+  const baseSrc = fs.readFileSync(path.resolve(process.cwd(), "src", "peers", "base.ts"), "utf8");
+  assert.ok(
+    /endsWith\("-latest"\)/.test(baseSrc) && /familyStem/.test(baseSrc),
+    "v3.7.4 / model-match: base.ts modelMatches must handle the `-latest` alias via a family-stem match",
+  );
+  console.log("[smoke] model_match_latest_alias_test: PASS");
+}
 
 const focusSecret = ["sk", "test", "B".repeat(24)].join("-");
 const focusRedacted = await orchestrator.askPeers({
@@ -6255,22 +6350,44 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 //     emitted by buildRevisionPrompt(meta, draft, config, ..., "ship", ...).
 // (2) Helper detectFabricatedEvidence is exported with the expected
 //     return shape (fabricated/net_new_hex_*/suspicious_assertion_*).
+// v3.7.4 (Codex v3.7.3 parecer follow-up — operator-directed): the
+// v2.24.0 two-tier corpus lumped the prior DRAFT in with the task
+// NARRATIVE and validated operational assertions against
+// PROVENANCE-GRADE only — so a relator that faithfully PRESERVED
+// operational evidence already embedded in the artifact it was handed
+// (the documented process REQUIRES embedding the verbatim diff + raw
+// gate output in `initial_draft`) was wrongly flagged as fabricating
+// (session 506f006a). Fixed with a THREE-tier corpus:
+// provenanceCorpus (attached evidence) + priorDraftCorpus (the artifact
+// under revision) + narrativeCorpus (the caller's task body ONLY).
+// Operational assertions are NET-NEW vs {provenance ∪ priorDraft};
+// the task narrative is excluded so the eee886d3 protection holds.
+//
 // (3) Behavioral matrix:
 //     - clean revision (text purely synthesized from corpus tokens) →
 //       fabricated=false.
 //     - revision with ≥3 net-new hex tokens → fabricated=true.
 //     - revision with ≥2 suspicious assertion patterns absent from
-//       attached evidence → fabricated=true.
+//       attached evidence AND the prior artifact → fabricated=true.
 //     - revision quoting hex tokens verbatim from PROVENANCE-GRADE
 //       corpus → fabricated=false (provenance-correct).
-//     - eee886d3 pattern: caller's task narrates "cargo test 147 passed"
-//       and "npm run typecheck passed", attached evidence is empty,
-//       relator quotes those assertions as fact → fabricated=true.
-//       NARRATIVE corpus may NOT satisfy provenance for operational
-//       assertions (Codex R1 HARD GATE blocker fix).
+//     - eee886d3 pattern: caller's TASK narrates "cargo test 147 passed"
+//       and "npm run typecheck passed", attached evidence + prior draft
+//       are empty, relator quotes those assertions as fact →
+//       fabricated=true. NARRATIVE corpus may NOT satisfy provenance for
+//       operational assertions (Codex R1 HARD GATE blocker fix).
 //     - Hex token narrated in task (but no attached evidence) →
 //       fabricated=false. Hex tokens fall back to broader corpus
 //       since SHAs/IDs/paths legitimately appear in narrative.
+//     - v3.7.4: operational assertions PRESERVED verbatim from the
+//       prior draft (the artifact under revision) → fabricated=false.
+//       The relator invented nothing — it carried forward the diff +
+//       gate output the caller embedded in `initial_draft` (the
+//       session 506f006a false-positive).
+//     - v3.7.4: operational assertions NET-NEW vs {provenance ∪
+//       priorDraft} — invented by the relator even though a prior
+//       draft exists → fabricated=true. The fix narrows the corpus,
+//       it does not disable assertion detection.
 // (4) Source-level: orchestrator.ts emits `session.lead_fabrication_detected`
 //     event with `data.fabrication_signals.net_new_hex_count` +
 //     `data.fabrication_signals.suspicious_assertion_count`, and uses
@@ -6300,6 +6417,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // (2) Behavioral matrix on the exported detectFabricatedEvidence helper.
   const clean = detectFabricatedEvidence("Some analysis. The caller refactored module X.", {
     provenanceCorpus: "",
+    priorDraftCorpus: "",
     narrativeCorpus: "Some analysis. The caller refactored module X.",
   });
   assert.strictEqual(
@@ -6312,6 +6430,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "Verified at SHA e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0 with index a1b2c3d4e5f6 and vite hash 8f4a2b3c9e1d2f4a5b6c7d8e9f0a1b2c",
     {
       provenanceCorpus: "",
+      priorDraftCorpus: "",
       narrativeCorpus: "Original task with no hex tokens",
     },
   );
@@ -6324,6 +6443,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "Local validation: cargo test passed (147 passed, 0 failed). git diff --check passed.",
     {
       provenanceCorpus: "",
+      priorDraftCorpus: "",
       narrativeCorpus: "Original task with no operational assertions.",
     },
   );
@@ -6337,6 +6457,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     {
       provenanceCorpus:
         "Attached evidence: build artifact SHA e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0 from CI run.",
+      priorDraftCorpus: "",
       narrativeCorpus: "",
     },
   );
@@ -6358,6 +6479,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "Local validation summary: cargo test on the workspace shows 147 passed, 0 failed. npm run typecheck completes cleanly.",
     {
       provenanceCorpus: "",
+      priorDraftCorpus: "",
       narrativeCorpus:
         "## Task\nPlease review the v0.5.20 ship. Local checks done by caller:\n- npm run typecheck: passed.\n- cargo test --manifest-path src-tauri\\Cargo.toml: 147 passed, 0 failed.",
     },
@@ -6378,6 +6500,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "The branch HEAD is e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0 per the task description, and we built against index 8f4a2b3c9e1d2f4a5b6c7d8e and vite asset bundle hash a1b2c3d4e5f6c7b8.",
     {
       provenanceCorpus: "",
+      priorDraftCorpus: "",
       narrativeCorpus:
         "Caller note: HEAD = e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0. Vite index hash 8f4a2b3c9e1d2f4a5b6c7d8e and bundle a1b2c3d4e5f6c7b8 were observed.",
     },
@@ -6386,6 +6509,53 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     hexNarrativeOnly.fabricated,
     false,
     "v2.24.0 / fabrication_lock: hex tokens quoted from NARRATIVE corpus do NOT trip fabricated=true (IDs/paths fall back to broader corpus)",
+  );
+
+  // (2.7) v3.7.4 — the session 506f006a regression. The caller embeds
+  // the verbatim diff + raw gate output in `initial_draft` (the
+  // documented process). R1 does not converge (here a grok
+  // silent_model_downgrade blocked it), so the relator generates an R2
+  // revision that faithfully PRESERVES that embedded evidence. Pre-v3.7.4
+  // the assertion check ran against provenanceCorpus only, so every
+  // preserved `index <hash>..<hash>` / `npm run build` was flagged as
+  // fabricated → `lead_fabrication_repeated` abort despite the relator
+  // inventing nothing (net_new_hex_count was already 0). The three-tier
+  // corpus puts the prior artifact in `priorDraftCorpus`, so preserved
+  // operational assertions are NOT net-new → fabricated=false.
+  const preservedFromDraft = detectFabricatedEvidence(
+    "## Revised draft\nLocal gates: npm run build clean.\n## VERBATIM DIFF\nindex 2553dbd..e843e50 100644\nindex e5999a8..7e4a185 100644\ngit diff --check passed.",
+    {
+      provenanceCorpus: "",
+      priorDraftCorpus:
+        "## initial_draft (the artifact under revision)\nRAW GATE OUTPUT: npm run build clean.\nVERBATIM DIFF:\nindex 2553dbd..e843e50 100644\nindex e5999a8..7e4a185 100644\ngit diff --check passed",
+      narrativeCorpus: "## Task\nReview the v3.7.4 patch.",
+    },
+  );
+  assert.strictEqual(
+    preservedFromDraft.fabricated,
+    false,
+    `v3.7.4 / fabrication_lock: operational assertions PRESERVED verbatim from the prior draft MUST NOT trip fabricated=true — the relator invented nothing (got fabricated=${preservedFromDraft.fabricated}, suspicious_assertion_count=${preservedFromDraft.suspicious_assertion_count})`,
+  );
+
+  // (2.8) v3.7.4 — the fix narrows the corpus, it does NOT disable
+  // assertion detection. A relator that INVENTS operational assertions
+  // net-new vs {provenance ∪ priorDraft} — even when a prior draft
+  // exists — must still trip. This is the 09c21d7a protection: the
+  // prior draft here has zero operational claims; the relator made up
+  // `cargo test 147 passed` + `git diff --check passed`.
+  const netNewAssertionWithDraft = detectFabricatedEvidence(
+    "## Revised draft\nLocal validation: cargo test passed (147 passed, 0 failed). git diff --check passed.",
+    {
+      provenanceCorpus: "",
+      priorDraftCorpus:
+        "## initial_draft\nThe caller refactored module X. No build was run, no tests were claimed.",
+      narrativeCorpus: "## Task\nReview the refactor.",
+    },
+  );
+  assert.ok(
+    netNewAssertionWithDraft.fabricated === true &&
+      netNewAssertionWithDraft.suspicious_assertion_count >= 2,
+    `v3.7.4 / fabrication_lock: operational assertions NET-NEW vs {provenance ∪ priorDraft} — invented by the relator even though a prior draft exists — MUST still trip fabricated=true (got count=${netNewAssertionWithDraft.suspicious_assertion_count}, fabricated=${netNewAssertionWithDraft.fabricated})`,
   );
 
   // Source-level: threshold constants pinned at the documented values.

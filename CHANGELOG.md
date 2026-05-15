@@ -7,6 +7,108 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v03.07.04] — 2026-05-14
+
+Close-out of Codex's v3.7.3 parecer (APROVADO-COM-RESSALVAS) — two
+follow-up findings on the shipped v3.7.3 — plus two operator-directed
+root-cause fixes for cross-review-gate bugs that surfaced while running
+this very ship's HARD GATE: a `detectFabricatedEvidence` false positive
+and a `model_match` `-latest`-alias false positive. Test-harness fix +
+two detector/match logic fixes + comment precision; no public-surface or
+tool-schema change. **Patch bump.**
+
+### Fixed
+
+- **`model_match` false positive on `-latest` model aliases
+  (operator-directed; grok was dead-on-arrival in every cross-review-v2
+  session).** `BasePeerAdapter.modelMatches()` matched a reported model
+  against the requested model with `reported === requested` or
+  `reported.startsWith(`${requested}-`)`. That works for a base id
+  resolving to a dated id (`gpt-5.5` → `gpt-5.5-2026-04-23`) but FAILS
+  for a `-latest` alias: xAI returns the concrete dated id `grok-4-0709`
+  for the pinned alias `grok-4-latest`, and `grok-4-0709` does not start
+  with the literal `grok-4-latest-`. So every grok response was flagged
+  `model_match: false` → `base.ts` forced `status` to `null` →
+  `decision_quality: "failed"` → `silent_model_downgrade` rejection →
+  format-recovery skipped. grok could never return a usable verdict, so
+  no panel including grok could ever reach unanimity. Fix: `modelMatches`
+  now also recognizes a `-latest` alias — it strips the `-latest` suffix
+  to the family stem and matches the reported id against the stem
+  (`grok-4-latest` → stem `grok-4` → `grok-4-0709` matches). A genuine
+  cross-family downgrade (e.g. `grok-3-*` for a `grok-4-latest` pin) does
+  not start with the stem and is still flagged `silent_model_downgrade` —
+  the no-downgrade protection is preserved. New smoke marker
+  `model_match_latest_alias_test` (behavioral: alias→dated-id matches,
+  cross-family downgrade still flagged; + a base.ts source pin).
+- **`detectFabricatedEvidence` false positive on preserved evidence
+  (operator-directed, root cause of the recurring relator
+  `lead_fabrication_repeated` aborts).** The detector validated
+  operational assertions (`npm run build`, `index <hash>..<hash>`,
+  `cargo test`, …) against the `provenanceCorpus` (attached evidence)
+  ONLY — the prior draft was lumped into the `narrativeCorpus` and never
+  consulted for assertions. The documented process REQUIRES callers to
+  embed the verbatim diff + raw gate output in `initial_draft`; when R1
+  did not converge and a relator generated an R2 revision, the relator
+  faithfully PRESERVING that embedded evidence was flagged as
+  "fabricating" it — `net_new_hex_count` was already `0`, but the
+  asymmetric assertion check still tripped, aborting the session with
+  `lead_fabrication_repeated`. This was misread as "perplexity keeps
+  fabricating"; in fact it affected any relator and was a
+  self-contradiction in the detector. Fix: a **three-tier corpus** —
+  `FabricationDetectionCorpus` gains a `priorDraftCorpus` field (the
+  artifact the relator is revising); operational assertions are now
+  flagged only when **net-new** relative to `{provenanceCorpus ∪
+priorDraftCorpus}` (symmetric with the existing hex-token check). An
+  assertion the relator PRESERVED from the artifact it was handed is not
+  fabrication. The caller's task `narrativeCorpus` stays excluded from
+  assertion validation, so the v2.24.0 eee886d3 protection (a claim
+  narrated only in the task body, promoted into the artifact, still
+  trips) is preserved exactly. `detectFabricatedEvidence`'s signature is
+  unchanged; the `FabricationDetectionCorpus` interface gains one field.
+- **`scripts/runtime-smoke.ts` false positive (Codex v3.7.3 parecer
+  AUDIT-1, MEDIUM).** The runtime smoke injected cost rate cards for only
+  4 peers (codex / claude / gemini / deepseek). But the public MCP path
+  strips a caller's `peers` list (the v3.3.0 `lockCallerPeerSelection`
+  lock), so every round runs the full server-configured 6-peer panel —
+  grok and perplexity included. Without their rate cards
+  `missingFinancialControlVars` tripped and the round finalized
+  `outcome=max-rounds` / `financial_controls_missing` instead of actually
+  running — yet runtime-smoke unconditionally printed `ok: true` with no
+  assert on the round result. Fix: (a) inject grok + perplexity cost rate
+  cards (plus `CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH` and the per-size
+  request-fee defaults, so the financial preflight passes regardless of an
+  inherited operator env); (b) add explicit `assert` calls on the durable
+  terminal `outcome` of every async flow the smoke exercises — the review
+  round and the unanimity flow must reach `converged`, the cancellation
+  flow must reach `aborted` — placed before the `ok: true` print so a
+  non-converging round fails the smoke loudly with a non-zero exit.
+
+### Changed
+
+- **`src/core/convergence.ts` skip-peer comment precision (Codex v3.7.3
+  parecer AUDIT-2, LOW).** The top comment block and the
+  `SKIPPABLE_FAILURE_CLASSES` comment framed the skip as happening only
+  "when the user declared no fallback models" — but `fallback_exhausted`
+  is in the skippable set, and it arises precisely AFTER a user-declared
+  fallback chain was tried and drained. Both comment blocks now split the
+  skip into its two paths: (a) no fallback declared → retry-same-model
+  exhausted → skip; (b) a fallback model was declared, tried, and the
+  declared chain itself drained (`fallback_exhausted`) → also skip.
+  Comment-only — zero logic change.
+
+### Added
+
+- New smoke marker `runtime_smoke_outcome_assert_test` — a source pin that
+  fails `npm run smoke` if a future refactor strips the grok / perplexity
+  rate-card injection or any of the three terminal-`outcome` asserts from
+  `runtime-smoke.ts`.
+- `relator_evidence_provenance_lock_test` gains two cases for the
+  three-tier corpus: operational assertions PRESERVED verbatim from the
+  prior draft → `fabricated=false` (the session 506f006a regression), and
+  operational assertions NET-NEW vs `{provenance ∪ priorDraft}` even when
+  a prior draft exists → `fabricated=true` (the fix narrows the corpus, it
+  does not disable assertion detection — the 09c21d7a protection holds).
+
 ## [v03.07.03] — 2026-05-14
 
 Close-out of the operator's "sem fallback é sem fallback" directive
