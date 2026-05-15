@@ -178,6 +178,17 @@ const CacheSchema = z
     schema_version: z.string().optional(),
     ttl_anthropic: z.enum(["5m", "1h"]).optional(),
     ttl_openai: z.enum(["5m", "1h"]).optional(),
+    // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
+    // disable. Keys mirror the PROVIDER identifiers used by env vars
+    // (anthropic for the claude peer, openai for the codex peer).
+    // Absent key = adapter default (anthropic=true cache off;
+    // others=false cache on per v2.21.0).
+    disable_anthropic: z.boolean().optional(),
+    disable_openai: z.boolean().optional(),
+    disable_gemini: z.boolean().optional(),
+    disable_deepseek: z.boolean().optional(),
+    disable_grok: z.boolean().optional(),
+    disable_perplexity: z.boolean().optional(),
   })
   .strict()
   .optional();
@@ -374,6 +385,34 @@ export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, st
     set("CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION", config.cache.schema_version);
     set("CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC", config.cache.ttl_anthropic);
     set("CROSS_REVIEW_V2_CACHE_TTL_OPENAI", config.cache.ttl_openai);
+    // v3.7.5 (A3): per-provider disable flags mapped to env vars.
+    if (config.cache.disable_anthropic != null) {
+      set(
+        "CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC",
+        config.cache.disable_anthropic ? "true" : "false",
+      );
+    }
+    if (config.cache.disable_openai != null) {
+      set("CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI", config.cache.disable_openai ? "true" : "false");
+    }
+    if (config.cache.disable_gemini != null) {
+      set("CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI", config.cache.disable_gemini ? "true" : "false");
+    }
+    if (config.cache.disable_deepseek != null) {
+      set(
+        "CROSS_REVIEW_V2_DISABLE_CACHE_DEEPSEEK",
+        config.cache.disable_deepseek ? "true" : "false",
+      );
+    }
+    if (config.cache.disable_grok != null) {
+      set("CROSS_REVIEW_V2_DISABLE_CACHE_GROK", config.cache.disable_grok ? "true" : "false");
+    }
+    if (config.cache.disable_perplexity != null) {
+      set(
+        "CROSS_REVIEW_V2_DISABLE_CACHE_PERPLEXITY",
+        config.cache.disable_perplexity ? "true" : "false",
+      );
+    }
   }
   if (config.perplexity) {
     set("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE", config.perplexity.search_context_size);

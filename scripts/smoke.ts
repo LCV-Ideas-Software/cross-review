@@ -8007,6 +8007,222 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] audit_structural_pins_test: PASS");
 }
 
+// v3.7.5 anti-drift markers (logs+sessions study 2026-05-15 close-out).
+{
+  // A1 — doctor classification: terminal outcomes must never be pushed
+  // into staleSessions or blockedSessions regardless of the persisted
+  // convergence_health.state. Source pin against session-store.ts.
+  const storeSrcA1 = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "session-store.ts"),
+    "utf8",
+  );
+  assert.ok(
+    /const isTerminal = session\.outcome != null;[\s\S]*?if \(!isTerminal && session\.convergence_health\?\.state === "stale"\)[\s\S]*?if \(!isTerminal && session\.convergence_health\?\.state === "blocked"\)/m.test(
+      storeSrcA1,
+    ),
+    "v3.7.5 / A1: sessionDoctor must guard stale/blocked classification on `!isTerminal` (outcome != null) so cancelled/converged/max-rounds sessions are not flagged as needing attention.",
+  );
+  console.log("[smoke] doctor_terminal_outcome_classification_test: PASS");
+}
+
+{
+  // A2 — lockCallerPeerSelection panel-equality short-circuit. When the
+  // caller-supplied panel set-equals the enabled set, the lock must NOT
+  // emit `session.caller_peer_selection_ignored`. Source pin.
+  const serverSrcA2 = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  assert.ok(
+    /enabledPeers\?: readonly PeerId\[\];/.test(serverSrcA2),
+    "v3.7.5 / A2: lockCallerPeerSelection ctx must accept optional `enabledPeers` snapshot",
+  );
+  assert.ok(
+    /const callerPanelMatchesEnabled =[\s\S]*?ctx\.enabledPeers !== undefined &&[\s\S]*?callerSuppliedPeers !== undefined &&[\s\S]*?callerSuppliedPeers\.length === ctx\.enabledPeers\.length &&[\s\S]*?\[\.\.\.callerSuppliedPeers\]\.sort\(\)\.join\("\|"\) === \[\.\.\.ctx\.enabledPeers\]\.sort\(\)\.join\("\|"\)/m.test(
+      serverSrcA2,
+    ),
+    "v3.7.5 / A2: lock must compare caller-supplied panel against enabled set via sorted set-equality before deciding peerPanelOverridden",
+  );
+  assert.ok(
+    /const peerPanelOverridden =\s*!!callerSuppliedPeers && callerSuppliedPeers\.length > 0 && !callerPanelMatchesEnabled;/.test(
+      serverSrcA2,
+    ),
+    "v3.7.5 / A2: peerPanelOverridden must subtract callerPanelMatchesEnabled so the lock skips the emit when the panels match",
+  );
+  // All 4 lock call sites must pass enabledPeers.
+  const enabledPeersCallSites = (serverSrcA2.match(/enabledPeers: enabledPeersSnapshot/g) ?? [])
+    .length;
+  assert.equal(
+    enabledPeersCallSites,
+    4,
+    `v3.7.5 / A2: all 4 lockCallerPeerSelection call sites must thread enabledPeers (found ${enabledPeersCallSites})`,
+  );
+
+  // v3.7.5 / A2 — behavioral coverage. Exercise lockCallerPeerSelection
+  // through 5 input combinations addressing the codex R1 ask on
+  // duplicate/set-equality safety:
+  //  (a) enabledPeers undefined → backward-compat (any non-empty list
+  //      treated as override; v3.3.0..v3.7.4 behavior preserved)
+  //  (b) callerSupplied set-equal to enabledPeers → no emit, no strip
+  //  (c) callerSupplied has duplicates → length matches but sorted
+  //      joins differ → still override (no false-positive equivalence)
+  //  (d) callerSupplied is a strict subset → override
+  //  (e) callerSupplied is a strict superset → override
+  type LockEvent = { type: string; data?: { peer_panel_overridden?: boolean } };
+  const lockCallerPeerSelection = (await import("../src/mcp/server.js")).lockCallerPeerSelection;
+  const enabledSet: readonly PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok"];
+  const runLockCase = (
+    caller: PeerId | "operator",
+    panel: PeerId[],
+    passEnabledPeers: boolean,
+  ): { emits: LockEvent[] } => {
+    const emits: LockEvent[] = [];
+    lockCallerPeerSelection(
+      { caller, peers: panel },
+      {
+        site: "ask_peers" as const,
+        emit: (ev) => emits.push(ev as unknown as LockEvent),
+        ...(passEnabledPeers ? { enabledPeers: enabledSet } : {}),
+      },
+    );
+    return { emits };
+  };
+  // (a) backward-compat — no enabledPeers; any non-empty list overrides
+  assert.equal(
+    runLockCase("claude", ["codex", "claude", "gemini", "deepseek", "grok"], false).emits.length,
+    1,
+    "v3.7.5 / A2 (a): backward-compat (no enabledPeers in ctx) must still emit override",
+  );
+  // (b) set-equal (different order) — no emit
+  assert.equal(
+    runLockCase("claude", ["grok", "deepseek", "gemini", "claude", "codex"], true).emits.length,
+    0,
+    "v3.7.5 / A2 (b): set-equal panel must NOT emit override event",
+  );
+  // (c) duplicates — must NOT be considered equivalent to enabled
+  assert.equal(
+    runLockCase("claude", ["claude", "claude", "gemini", "deepseek", "grok"], true).emits.length,
+    1,
+    "v3.7.5 / A2 (c): duplicated peers (same length but different sorted join) must trigger override",
+  );
+  // (d) strict subset — different length
+  assert.equal(
+    runLockCase("claude", ["codex", "claude", "gemini"], true).emits.length,
+    1,
+    "v3.7.5 / A2 (d): strict subset must trigger override",
+  );
+  // (e) strict superset — different length
+  assert.equal(
+    runLockCase("claude", ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"], true)
+      .emits.length,
+    1,
+    "v3.7.5 / A2 (e): strict superset must trigger override",
+  );
+
+  console.log("[smoke] caller_peer_selection_lock_panel_equality_test: PASS");
+}
+
+{
+  // A3 — per-provider cache disable. Anthropic default off; the
+  // adapter gates `cache_control` on the per-provider flag; the config
+  // parser exposes 7 env vars; file-config schema accepts the new keys.
+  const configSrcA3 = fs.readFileSync(path.join(process.cwd(), "src", "core", "config.ts"), "utf8");
+  assert.ok(
+    /CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC[\s\S]*?true/m.test(configSrcA3),
+    "v3.7.5 / A3: ANTHROPIC default must be true (cache off) in loadCacheConfig",
+  );
+  for (const tag of ["OPENAI", "GEMINI", "DEEPSEEK", "GROK", "PERPLEXITY"]) {
+    assert.ok(
+      new RegExp(`CROSS_REVIEW_V2_DISABLE_CACHE_${tag}`).test(configSrcA3),
+      `v3.7.5 / A3: env var CROSS_REVIEW_V2_DISABLE_CACHE_${tag} must be wired in loadCacheConfig`,
+    );
+  }
+  const anthropicSrcA3 = fs.readFileSync(
+    path.join(process.cwd(), "src", "peers", "anthropic.ts"),
+    "utf8",
+  );
+  assert.ok(
+    /if \(!config\.cache\.enabled \|\| config\.cache\.disable_per_peer\.claude\) return systemText;/.test(
+      anthropicSrcA3,
+    ),
+    "v3.7.5 / A3: buildSystemBlock must gate cache_control on BOTH global enabled AND per_provider_disabled.claude",
+  );
+  const fileCfgSrcA3 = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "file-config.ts"),
+    "utf8",
+  );
+  for (const key of [
+    "disable_anthropic",
+    "disable_openai",
+    "disable_gemini",
+    "disable_deepseek",
+    "disable_grok",
+    "disable_perplexity",
+  ]) {
+    assert.ok(
+      new RegExp(`${key}: z\\.boolean\\(\\)\\.optional\\(\\)`).test(fileCfgSrcA3),
+      `v3.7.5 / A3: central config.json CacheSchema must accept "${key}"`,
+    );
+  }
+  // Behavioral: loadCacheConfig produces disable_per_peer with anthropic=true default.
+  const restore = {
+    a: process.env.CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC,
+    o: process.env.CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI,
+    g: process.env.CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI,
+  };
+  delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC;
+  delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI;
+  delete process.env.CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI;
+  const freshCfg = loadConfig();
+  assert.equal(
+    freshCfg.cache.disable_per_peer.claude,
+    true,
+    "v3.7.5 / A3: Anthropic default must be cache off (disable_per_peer.claude === true)",
+  );
+  assert.equal(
+    freshCfg.cache.disable_per_peer.codex,
+    false,
+    "v3.7.5 / A3: codex default must be cache on (disable_per_peer.codex === false)",
+  );
+  assert.equal(
+    freshCfg.cache.disable_per_peer.gemini,
+    false,
+    "v3.7.5 / A3: gemini default must be cache on (disable_per_peer.gemini === false)",
+  );
+  if (restore.a !== undefined) process.env.CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC = restore.a;
+  if (restore.o !== undefined) process.env.CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI = restore.o;
+  if (restore.g !== undefined) process.env.CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI = restore.g;
+  console.log("[smoke] per_provider_cache_disable_test: PASS");
+}
+
+{
+  // B1 — session_sweep prune_corrupt opt-in. MCP schema gains
+  // prune_corrupt + corrupt_min_age_days; store has pruneCorruptSessions.
+  const serverSrcB1 = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  assert.ok(
+    /prune_corrupt: z\.boolean\(\)\.default\(false\)/.test(serverSrcB1),
+    "v3.7.5 / B1: session_sweep must declare prune_corrupt as opt-in boolean default false",
+  );
+  assert.ok(
+    /corrupt_min_age_days: z\.number\(\)\.int\(\)\.min\(1\)\.max\(365\)\.default\(30\)/.test(
+      serverSrcB1,
+    ),
+    "v3.7.5 / B1: session_sweep must declare corrupt_min_age_days with sane bounds + default 30",
+  );
+  assert.ok(
+    /runtime\.orchestrator\.store\.pruneCorruptSessions\(/.test(serverSrcB1),
+    "v3.7.5 / B1: session_sweep handler must call store.pruneCorruptSessions when prune_corrupt is true",
+  );
+  const storeSrcB1 = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "session-store.ts"),
+    "utf8",
+  );
+  assert.ok(
+    /pruneCorruptSessions\(minAgeMs: number\): \{ scanned: number; removed: number; kept: number \}/.test(
+      storeSrcB1,
+    ),
+    "v3.7.5 / B1: store.pruneCorruptSessions must declare the {scanned, removed, kept} shape",
+  );
+  console.log("[smoke] session_sweep_prune_corrupt_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight

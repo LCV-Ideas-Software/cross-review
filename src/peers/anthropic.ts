@@ -73,7 +73,15 @@ function buildSystemBlock(
 ):
   | string
   | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl: "5m" | "1h" } }> {
-  if (!config.cache.enabled) return systemText;
+  // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
+  // gate. Anthropic adapter only emits `cache_control` when BOTH the
+  // global kill-switch is OFF AND this provider's
+  // `disable_per_peer.claude` is false. Default (this release):
+  // claude=true → no cache_control emitted, no cache_creation_input
+  // tokens billed. Operators override via
+  // `CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC=false` if traffic shape
+  // changes and the cache starts paying off.
+  if (!config.cache.enabled || config.cache.disable_per_peer.claude) return systemText;
   return [
     {
       type: "text" as const,
@@ -189,8 +197,11 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         });
         const systemText = this.systemPrompt(context);
         // v2.21.0: best-effort short-prefix warning — does NOT block.
+        // v3.7.5 (A3): gated on the per-provider flag too so we don't
+        // emit a warning about a cache that won't engage by design.
         if (
           this.config.cache.enabled &&
+          !this.config.cache.disable_per_peer.claude &&
           attempt === 1 &&
           systemText.length < ANTHROPIC_CACHE_MIN_CHARS
         ) {

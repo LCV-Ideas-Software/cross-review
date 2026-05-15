@@ -19,8 +19,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "3.7.4";
-export const RELEASE_DATE = "2026-05-14";
+export const VERSION = "3.7.5";
+export const RELEASE_DATE = "2026-05-15";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -389,6 +389,27 @@ function loadCacheConfig(): AppConfig["cache"] {
   const schemaVersion = (envValue("CROSS_REVIEW_V2_CACHE_SCHEMA_VERSION") ?? "v1").trim() || "v1";
   const anthropicTtl = parseTtlEnv("CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC", "1h");
   const openaiTtl = parseTtlEnv("CROSS_REVIEW_V2_CACHE_TTL_OPENAI", "1h");
+  // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
+  // disable. Default for Anthropic (claude) is `true` (cache off) based
+  // on empirical $1.18 wasted to save $0.0035 over 244 sessions
+  // (0.3% hit-rate). All other providers default `false` (cache on,
+  // preserving v2.21.0 behavior). Operators may flip any per-provider
+  // flag via `CROSS_REVIEW_V2_DISABLE_CACHE_<PROVIDER>` (`true|false`).
+  // Recognized truthy values match the parser used by peer_enabled:
+  // on/true/1/yes/enabled (case-insensitive). Anything else is "off".
+  // v3.7.5 (A3): env vars use PROVIDER names (ANTHROPIC/OPENAI/...) matching
+  // the v2.21.0 TTL convention (`CROSS_REVIEW_V2_CACHE_TTL_ANTHROPIC` +
+  // `CROSS_REVIEW_V2_CACHE_TTL_OPENAI`). Internal `disable_per_peer` is
+  // keyed by PeerId (claude/codex/...). Mapping below is the only place
+  // provider names cross with peer ids.
+  const disablePerPeer: Record<PeerId, boolean> = {
+    codex: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_OPENAI", false),
+    claude: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC", true),
+    gemini: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_GEMINI", false),
+    deepseek: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_DEEPSEEK", false),
+    grok: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_GROK", false),
+    perplexity: parseDisableCacheEnv("CROSS_REVIEW_V2_DISABLE_CACHE_PERPLEXITY", false),
+  };
   return {
     schema_version: schemaVersion,
     enabled,
@@ -396,7 +417,22 @@ function loadCacheConfig(): AppConfig["cache"] {
       anthropic: anthropicTtl,
       openai: openaiTtl,
     },
+    disable_per_peer: disablePerPeer,
   };
+}
+
+// v3.7.5 (A3): per-provider cache-disable env var parser. Same shape as
+// the peer_enabled parser but with a per-call default since Anthropic
+// defaults true and others default false.
+function parseDisableCacheEnv(name: string, fallback: boolean): boolean {
+  const raw = (envValue(name) ?? "").trim().toLowerCase();
+  if (raw === "") return fallback;
+  if (/^(on|true|1|yes|enabled)$/i.test(raw)) return true;
+  if (/^(off|false|0|no|disabled)$/i.test(raw)) return false;
+  console.error(
+    `[cross-review-v2] notice: ${name}="${raw}" is not recognized; defaulting to "${fallback ? "on" : "off"}". Recognized values: on/true/1/yes/enabled vs off/false/0/no/disabled.`,
+  );
+  return fallback;
 }
 
 function parseTtlEnv(name: string, fallback: "5m" | "1h"): "5m" | "1h" {

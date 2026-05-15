@@ -882,6 +882,18 @@ export interface AppConfig {
       anthropic: "5m" | "1h";
       openai: "5m" | "1h";
     };
+    // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
+    // disable. Empirical baseline over 244 sessions / 429 rounds:
+    // Anthropic explicit cache writes cost $1.18 to save $0.0035 in
+    // reads — net ~$1.16 of overhead with effectively 0.3% hit-rate.
+    // The `enabled` global flag stays the master switch (kill-switch
+    // remains operative); `disable_per_peer` is an additive layer that
+    // turns off cache participation for one provider while leaving
+    // others active. Default (this release): anthropic=true, all
+    // others=false. Operators override per-provider via env vars
+    // `CROSS_REVIEW_V2_DISABLE_CACHE_<PROVIDER>` for fine-grained
+    // control without touching the global kill-switch.
+    disable_per_peer: Record<PeerId, boolean>;
   };
   // v3.0.0 (Perplexity 6th peer): per-call knobs that are specific to
   // Perplexity Sonar API. `search_context_size` controls the breadth of

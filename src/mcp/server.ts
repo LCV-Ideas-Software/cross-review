@@ -293,6 +293,17 @@ export function lockCallerPeerSelection<
   ctx: {
     site: "ask_peers" | "session_start_round" | "run_until_unanimous" | "session_start_unanimous";
     emit: (event: RuntimeEvent) => void;
+    // v3.7.5 (A2, logs+sessions study 2026-05-15): the server-configured
+    // enabled set. Pre-v3.7.5 the lock fired its audit event every time
+    // `peers` was non-empty, including when the caller passed a list
+    // IDENTICAL to the enabled set (no actual override). 13 of 106
+    // recent audit events were such no-op overrides (caller=claude,
+    // ignored_peers = full 6-peer panel = enabled set). When this
+    // field is supplied the lock short-circuits the emit when the
+    // caller-supplied panel set-equals the enabled set; otherwise
+    // (legacy callers, undefined) behavior matches v3.3.0..v3.7.4
+    // exactly.
+    enabledPeers?: readonly PeerId[];
   },
 ): T {
   const caller: PeerId | "operator" = input.caller ?? "operator";
@@ -301,7 +312,18 @@ export function lockCallerPeerSelection<
   // tune via env vars, not via per-call overrides that callers can
   // exploit.
   const callerSuppliedPeers = Array.isArray(input.peers) ? [...input.peers] : undefined;
-  const peerPanelOverridden = !!callerSuppliedPeers && callerSuppliedPeers.length > 0;
+  // v3.7.5 (A2): treat caller-supplied panel as an OVERRIDE only when
+  // it differs from the enabled set. Sorted set-equality (case-sensitive
+  // since PeerId is a closed string union). Backward-compat: when
+  // `enabledPeers` is undefined (no caller passed it), the lock keeps
+  // the v3.3.0 behavior — any non-empty list is treated as an override.
+  const callerPanelMatchesEnabled =
+    ctx.enabledPeers !== undefined &&
+    callerSuppliedPeers !== undefined &&
+    callerSuppliedPeers.length === ctx.enabledPeers.length &&
+    [...callerSuppliedPeers].sort().join("|") === [...ctx.enabledPeers].sort().join("|");
+  const peerPanelOverridden =
+    !!callerSuppliedPeers && callerSuppliedPeers.length > 0 && !callerPanelMatchesEnabled;
   // lead_peer: locked for peer callers (forces lottery so callers cannot
   // pin a sympathetic relator). Operator caller may pin lead_peer for
   // legitimate testing.
@@ -569,6 +591,15 @@ export async function main(): Promise<void> {
     name: "cross-review-v2",
     version: VERSION,
   });
+  // v3.7.5 (A2, logs+sessions study 2026-05-15): snapshot the enabled
+  // peer set once at boot. Static after config load — `peer_enabled` is
+  // env-driven and the runtime does not mutate it. Each lock call
+  // passes this into ctx so the audit event only fires when the caller
+  // actually overrides the panel (not when the supplied list happens
+  // to equal the enabled set).
+  const enabledPeersSnapshot: readonly PeerId[] = PEERS.filter(
+    (peer) => runtime.config.peer_enabled[peer],
+  );
 
   server.registerTool(
     "server_info",
@@ -820,6 +851,7 @@ export async function main(): Promise<void> {
       const locked = lockCallerPeerSelection(input, {
         site: "ask_peers",
         emit: runtime.emit,
+        enabledPeers: enabledPeersSnapshot,
       });
       const askPeersOut = await runtime.orchestrator.askPeers(locked);
       // v3.6.0 (B3 + B4): surface relator-non-voting + peer-lock notices.
@@ -871,6 +903,7 @@ export async function main(): Promise<void> {
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_round",
         emit: runtime.emit,
+        enabledPeers: enabledPeersSnapshot,
       });
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
@@ -969,6 +1002,7 @@ export async function main(): Promise<void> {
       const locked = lockCallerPeerSelection(input, {
         site: "run_until_unanimous",
         emit: runtime.emit,
+        enabledPeers: enabledPeersSnapshot,
       });
       const runOut = await runtime.orchestrator.runUntilUnanimous(locked);
       // v3.6.0 (B3 + B4): surface relator-non-voting + peer-lock notices.
@@ -1040,6 +1074,7 @@ export async function main(): Promise<void> {
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_unanimous",
         emit: runtime.emit,
+        enabledPeers: enabledPeersSnapshot,
       });
       // v2.16.0: the durable session caller is always the petitioner,
       // never the relator. Older code used lead_peer as caller for some
@@ -1718,11 +1753,19 @@ export async function main(): Promise<void> {
     {
       title: "Sweep Idle Sessions",
       description:
-        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours.",
+        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory.",
       inputSchema: z.object({
         idle_minutes: z.number().min(1440).max(100_000).default(1440),
         outcome: z.enum(["aborted", "max-rounds"]).default("aborted"),
         reason: z.string().min(1).max(200).default("stale"),
+        // v3.7.5 (B1, logs+sessions study 2026-05-15): opt-in
+        // quarantine cleanup. Default false → behavior identical to
+        // v3.7.4 (returns the SessionMeta[] array). When true, the
+        // response wraps the array in `{ swept, pruned_corrupt }` and
+        // additionally removes corrupt_sessions/* entries older than
+        // `corrupt_min_age_days` (default 30 days).
+        prune_corrupt: z.boolean().default(false),
+        corrupt_min_age_days: z.number().int().min(1).max(365).default(30),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1732,11 +1775,32 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ idle_minutes, outcome, reason, response_format }) =>
-      textResult(
-        runtime.orchestrator.store.sweepIdle(idle_minutes * 60_000, outcome, reason),
+    async ({
+      idle_minutes,
+      outcome,
+      reason,
+      prune_corrupt,
+      corrupt_min_age_days,
+      response_format,
+    }) => {
+      const swept = runtime.orchestrator.store.sweepIdle(idle_minutes * 60_000, outcome, reason);
+      if (!prune_corrupt) {
+        return textResult(swept, response_format);
+      }
+      const pruneReport = runtime.orchestrator.store.pruneCorruptSessions(
+        corrupt_min_age_days * 24 * 60 * 60 * 1000,
+      );
+      return textResult(
+        {
+          swept,
+          pruned_corrupt: {
+            threshold_days: corrupt_min_age_days,
+            ...pruneReport,
+          },
+        },
         response_format,
-      ),
+      );
+    },
   );
 
   server.registerTool(

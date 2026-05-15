@@ -1454,9 +1454,23 @@ export class SessionStore {
         entry.chronic_blockers = chronicBlockers;
       }
 
+      // v3.7.5 (A1, logs+sessions study 2026-05-15): terminal outcomes
+      // are NEVER stale or blocked — they are DONE. Pre-v3.7.5 the
+      // doctor classified solely on `convergence_health.state` which
+      // markCancelled writes as "stale" on `outcome="aborted"`. Result:
+      // 22 cancelled sessions of 244 (9%) were flagged as needing
+      // attention when they were terminal. Likewise the v3.6.0 repair
+      // path was the symmetric symptom for `outcome="converged" +
+      // state="blocked"`. The classification fix keeps backward compat
+      // with the 244 existing sessions on disk (no migration) and only
+      // recognizes the truth at the consumer layer: if the session has
+      // a terminal outcome, do not flag it as stale or blocked.
+      const isTerminal = session.outcome != null;
       if (!session.outcome) pushLimited(openSessions, entry);
-      if (session.convergence_health?.state === "stale") pushLimited(staleSessions, entry);
-      if (session.convergence_health?.state === "blocked") pushLimited(blockedSessions, entry);
+      if (!isTerminal && session.convergence_health?.state === "stale")
+        pushLimited(staleSessions, entry);
+      if (!isTerminal && session.convergence_health?.state === "blocked")
+        pushLimited(blockedSessions, entry);
       if (session.outcome === "max-rounds") pushLimited(maxRoundsSessions, entry);
       if (petitioner && leadPeer && petitioner === leadPeer) pushLimited(selfLeadMetadata, entry);
       if (openEvidenceItems > 0) pushLimited(openEvidenceSessions, entry);
@@ -1908,6 +1922,55 @@ export class SessionStore {
   // directory. Walk every session dir at boot, drop files matching the
   // .tmp pattern whose holder pid is dead OR whose timestamp is older than
   // 1h. Idempotent + best-effort. Returns counts for telemetry.
+  // v3.7.5 (B1, logs+sessions study 2026-05-15): prune the
+  // `<data_dir>/corrupt_sessions/` quarantine directory. Created
+  // historically when meta.json corruption was severe enough to move
+  // the whole session dir (one such case from the 2026-05-08 v2.25.1
+  // redact escape-boundary bug remains on disk). Pre-v3.7.5 there was
+  // no automated cleanup — the entries accumulated forever even after
+  // root-cause fixes shipped. This method scans the directory and
+  // removes subdirectories whose mtime is older than `minAgeMs`,
+  // leaving fresher cases for forensic inspection. Read-only when the
+  // dir does not exist. Errors per-entry are swallowed and surface as
+  // `kept` so a single permission failure doesn't abort the sweep.
+  pruneCorruptSessions(minAgeMs: number): { scanned: number; removed: number; kept: number } {
+    const corruptDir = path.join(this.config.data_dir, "corrupt_sessions");
+    if (!fs.existsSync(corruptDir)) return { scanned: 0, removed: 0, kept: 0 };
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(corruptDir, { withFileTypes: true });
+    } catch {
+      return { scanned: 0, removed: 0, kept: 0 };
+    }
+    const cutoff = Date.now() - Math.max(0, minAgeMs);
+    let scanned = 0;
+    let removed = 0;
+    let kept = 0;
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      scanned += 1;
+      const entryPath = path.join(corruptDir, ent.name);
+      let mtimeMs: number;
+      try {
+        mtimeMs = fs.statSync(entryPath).mtimeMs;
+      } catch {
+        kept += 1;
+        continue;
+      }
+      if (mtimeMs > cutoff) {
+        kept += 1;
+        continue;
+      }
+      try {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        removed += 1;
+      } catch {
+        kept += 1;
+      }
+    }
+    return { scanned, removed, kept };
+  }
+
   sweepOrphanTmpFiles(): { scanned: number; removed: number } {
     let scanned = 0;
     let removed = 0;

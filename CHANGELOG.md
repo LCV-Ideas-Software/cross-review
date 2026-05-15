@@ -7,7 +7,87 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
-## [v03.07.04] — 2026-05-14
+## [v03.07.05] — 2026-05-15
+
+Close-out of the 244-session/429-round logs+sessions study completed
+2026-05-15 (delta vs the v3.6.0 study: +75 sessions, +105 rounds, +$8.92).
+Four surgical fixes from the study's actionable backlog (A1+A2+A3+B1
+from the categorized findings). No tool removal; one wire-shape change
+to `session_sweep` is opt-in (response stays array when `prune_corrupt`
+is omitted/false). **Patch bump (3.7.4 → 3.7.5).**
+
+### Fixed
+
+- **A1 — `session_doctor` classified cancelled sessions as `stale`
+  (22 of 244 false positives in the corpus; 9 of those from the
+  v3.7.4 ship day alone).** `markCancelled` legitimately writes
+  `convergence_health.state: "stale"` at the source layer (cancelled
+  with no rounds is structurally similar to abandoned), but the
+  doctor used that state as the sole input to its stale/blocked
+  bucket classification, surfacing terminal sessions as needing
+  attention. Fix at the doctor layer (preserves backward-compat with
+  the 244 existing sessions on disk — no migration): terminal
+  outcomes (`aborted`/`converged`/`max-rounds`) are now NEVER pushed
+  into `staleSessions` or `blockedSessions` regardless of the
+  persisted `convergence_health.state`. Open buckets and the
+  shadow-judgment aggregates are untouched; this is the symmetric
+  consumer-side complement to v3.6.0's `repair: true` mode for the
+  `converged`+`blocked` corruption.
+
+- **A2 — `lockCallerPeerSelection` emitted false-positive audit
+  events when the caller passed a panel identical to `peer_enabled`
+  (13 of 106 recent `session.caller_peer_selection_ignored` events;
+  the caller supplied the full 6-peer panel which equals the enabled
+  set, so no actual override occurred).** The lock now takes an
+  optional `enabledPeers` list in its context and short-circuits the
+  emit when the caller's panel set-equals the enabled set (sorted
+  comparison; `peers` field is still stripped from `sanitized`
+  either way, which is a no-op when the lists already match).
+  Backward-compatible: callers passing no `enabledPeers` keep the
+  v3.3.0 behavior exactly. The MCP boundary passes
+  `enabledPeersSnapshot` (computed once at boot from
+  `runtime.config.peer_enabled`) into all 4 lock call sites.
+
+### Added
+
+- **A3 — Per-provider cache disable env vars (6 new variables;
+  Anthropic default flipped to disabled given empirical hit-rate).**
+  Empirical baseline over 244 sessions / 429 rounds: Anthropic
+  `cache_creation_input_tokens` cost $1.18 to save $0.0035 in
+  `cache_read_input_tokens` (0.3% hit-rate; net $1.16 wasted). The
+  v2.21.0 global `CROSS_REVIEW_V2_DISABLE_CACHE` kill-switch is
+  preserved as the master gate; new per-provider flags are an
+  additive layer:
+  `CROSS_REVIEW_V2_DISABLE_CACHE_ANTHROPIC|OPENAI|GEMINI|DEEPSEEK|GROK|PERPLEXITY`,
+  same `on/true/1/yes/enabled` vs `off/false/0/no/disabled` parsing
+  as `peer_enabled`. Default this release: `ANTHROPIC=true` (cache
+  off), all others `false` (cache on; v2.21.0 behavior preserved).
+  Operators flip Anthropic back on via env if traffic shape changes
+  and the cache starts paying off. Anthropic adapter's
+  `buildSystemBlock` gates `cache_control` on the per-provider flag,
+  and the short-prefix warning is gated too. The central
+  `config.json` `cache` block also accepts
+  `disable_anthropic`/`disable_openai`/`disable_gemini`/`disable_deepseek`/
+  `disable_grok`/`disable_perplexity` keys (mapped to env vars by
+  `flattenFileConfigToEnv`). Env var names use PROVIDER identifiers
+  (ANTHROPIC/OPENAI/...) matching the v2.21.0 `_CACHE_TTL_*`
+  convention; internal `disable_per_peer` is keyed by PeerId
+  (claude/codex/...).
+
+- **B1 — `session_sweep` gains opt-in `prune_corrupt` to clean the
+  `<data_dir>/corrupt_sessions/` quarantine directory.** A meta.json
+  parse failure quarantines a session there; pre-v3.7.5 there was no
+  automated cleanup and entries piled up forever even after their
+  root-cause fix shipped (1 such entry from the 2026-05-08 v2.25.1
+  redact bug was still on disk at study time). New `session_sweep`
+  inputs: `prune_corrupt: boolean.default(false)` +
+  `corrupt_min_age_days: number.int.min(1).max(365).default(30)`.
+  New `store.pruneCorruptSessions(minAgeMs)` scans subdirs by mtime
+  and removes those older than the threshold, leaving fresher cases
+  for forensic inspection. When `prune_corrupt: false` the response
+  shape is unchanged (`SessionMeta[]`); when `prune_corrupt: true`
+  it wraps to `{ swept: SessionMeta[], pruned_corrupt: {
+threshold_days, scanned, removed, kept } }`.
 
 Close-out of Codex's v3.7.3 parecer (APROVADO-COM-RESSALVAS) — two
 follow-up findings on the shipped v3.7.3 — plus two operator-directed
