@@ -7,6 +7,31 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.07] — 2026-05-16
+
+**Patch — bounded npm registry fetch in the post-publish verifier.**
+Polishes the v4.0.6 verifier so a slow or unreachable npm registry
+surfaces as a deterministic abort instead of hanging the publish
+workflow until the job-level `timeout-minutes: 60` ceiling.
+
+### Fixed
+
+- **Registry verifier timeout** — `scripts/verify-registry-dist.mjs`
+  now passes `signal: AbortSignal.timeout(30_000)` to the
+  `https://registry.npmjs.org/<package>/<version>` `fetch` call. A
+  `TimeoutError` is mapped to an explicit
+  `"npm registry lookup for <spec> timed out after 30000 ms"` error;
+  other network failures are wrapped with the underlying message. No
+  change to the validated fields (`dist.shasum`, `dist.integrity`,
+  `dist.tarball`) or to the script's CLI/env contract.
+
+### Tests
+
+- Extended `registry_dist_metadata_verification_test` with the
+  `v4.0.7 / F2` invariant: the verifier source must contain both
+  `AbortSignal.timeout(` and the `FETCH_TIMEOUT_MS` constant, so a
+  future refactor cannot silently drop the explicit fetch bound.
+
 ## [v04.00.06] — 2026-05-16
 
 **Patch — Windows-safe npm registry artifact verifier.** This release closes

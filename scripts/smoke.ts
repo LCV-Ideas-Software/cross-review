@@ -8387,6 +8387,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     verifyScript.includes("https://registry.npmjs.org") && verifyScript.includes("fetch("),
     "v4.0.6 / F1: verify-registry-dist.mjs must query npm registry metadata directly.",
   );
+  assert.ok(
+    verifyScript.includes("AbortSignal.timeout(") && verifyScript.includes("FETCH_TIMEOUT_MS"),
+    "v4.0.7 / F2: verify-registry-dist.mjs must bound the npm registry fetch with an explicit AbortSignal.timeout so a slow registry surfaces as a deterministic abort instead of hanging the workflow.",
+  );
   for (const required of ["dist", "shasum", "integrity", "tarball"]) {
     assert.ok(
       verifyScript.includes(required),
