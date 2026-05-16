@@ -21,7 +21,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.00.07** (npm package `4.0.7`). See
+**Status.** Stable. Current release: **v04.00.08** (npm package `4.0.8`). See
 [CHANGELOG.md](./CHANGELOG.md) for the release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
@@ -36,6 +36,7 @@ The version history at a glance:
 
 | Release | Scope |
 |---|---|
+| **`v04.00.08`** | **Patch — eliminate the recurring `js/file-access-to-http` CodeQL false positive at the source.** `scripts/verify-registry-dist.mjs` no longer reads `package.json` from disk; package name and version come from `PACKAGE_NAME` / `PACKAGE_VERSION` env vars (with `npm_package_name` / `npm_package_version` auto-injected by npm as a transparent fallback when invoked via `npm run release:verify-registry`). Both inputs are required; missing values throw a clear error before any network call. Removing the `fs.readFileSync` → outbound-fetch flow stops future CodeQL analyses from re-filing the same alert on every release. |
 | **`v04.00.07`** | **Patch — bounded npm registry fetch in the post-publish verifier.** `scripts/verify-registry-dist.mjs` now passes `signal: AbortSignal.timeout(30_000)` to the `https://registry.npmjs.org/<package>/<version>` `fetch` call so a slow or unreachable registry surfaces as a deterministic abort instead of hanging the publish workflow until its 60-minute ceiling. Timeouts map to an explicit `"npm registry lookup for <spec> timed out after 30000 ms"` error; the validated fields (`dist.shasum`, `dist.integrity`, `dist.tarball`) and the script CLI/env contract are unchanged. |
 | **`v04.00.06`** | **Patch — Windows-safe registry verifier.** `scripts/verify-registry-dist.mjs` now queries `https://registry.npmjs.org` directly instead of spawning `npm.cmd`, closing the Windows Node hardening failure (`spawnSync npm.cmd EINVAL`) while preserving the post-publish validation of registry `dist.shasum`, `dist.integrity`, and `dist.tarball`. |
 | **`v04.00.05`** | **Patch — hard-gate close-out for the Codex v4.0.4 audit.** Clears the 6 residual findings: StepSecurity `Source-Code-Overwritten` detections for generated `dist/*` publish artifacts are suppressed against the existing narrow post-rename rule; `docs/model-selection.md` now uses the post-v4 product name, removes misleading fallback wording, and links to the real historical v2 capability-smoke report; model-selection failure text now says it keeps the configured model pin instead of the old fallback phrase; Copilot/Gemini agent instructions preserve the `cross-review-v2` → `cross-review` rename history; local tag verification is expected to use fetched remote tags; the publish workflow now records npm registry `dist.shasum` / `dist.integrity` / `dist.tarball` metadata so audits do not confuse local `npm --registry=https://registry.npmjs.org pack --dry-run` output with the published artifact identity; and `grok-4-latest` model-match accepts provider-reported dot-release aliases such as `grok-4.3` without weakening true cross-family downgrade rejection. |

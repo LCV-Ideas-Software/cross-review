@@ -1,19 +1,32 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
 const NPM_REGISTRY_URL = "https://registry.npmjs.org";
 const FETCH_TIMEOUT_MS = 30_000;
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
-const packageName = globalThis.process.env.PACKAGE_NAME || pkg.name;
-const packageVersion = globalThis.process.env.PACKAGE_VERSION || pkg.version;
+
+// v4.0.8: package name + version are mandatory inputs supplied by the
+// caller via PACKAGE_NAME and PACKAGE_VERSION env vars. This script no
+// longer touches the local filesystem — npm itself populates
+// `npm_package_name` and `npm_package_version` when invoked as
+// `npm run release:verify-registry`, and the publish workflow passes
+// the gate-resolved name/version explicitly. Eliminating the local
+// file-data flow into outbound fetch removes the recurring
+// `js/file-access-to-http` CodeQL false positive at the source.
+const packageName = globalThis.process.env.PACKAGE_NAME || globalThis.process.env.npm_package_name;
+const packageVersion =
+  globalThis.process.env.PACKAGE_VERSION || globalThis.process.env.npm_package_version;
+
+if (!packageName || typeof packageName !== "string") {
+  throw new Error(
+    "PACKAGE_NAME env var is required (or invoke via `npm run release:verify-registry` so npm injects npm_package_name).",
+  );
+}
+if (!packageVersion || typeof packageVersion !== "string") {
+  throw new Error(
+    "PACKAGE_VERSION env var is required (or invoke via `npm run release:verify-registry` so npm injects npm_package_version).",
+  );
+}
+
 const spec = `${packageName}@${packageVersion}`;
 
 function registryPackagePath(name) {
-  if (typeof name !== "string" || name.length === 0) {
-    throw new Error("PACKAGE_NAME must be a non-empty string");
-  }
   if (name.startsWith("@")) {
     return `@${encodeURIComponent(name.slice(1))}`;
   }

@@ -8391,6 +8391,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     verifyScript.includes("AbortSignal.timeout(") && verifyScript.includes("FETCH_TIMEOUT_MS"),
     "v4.0.7 / F2: verify-registry-dist.mjs must bound the npm registry fetch with an explicit AbortSignal.timeout so a slow registry surfaces as a deterministic abort instead of hanging the workflow.",
   );
+  assert.ok(
+    !verifyScript.includes("readFileSync") &&
+      !verifyScript.includes("readFile(") &&
+      verifyScript.includes("npm_package_name") &&
+      verifyScript.includes("npm_package_version"),
+    "v4.0.8 / F3: verify-registry-dist.mjs must not read package.json from disk; PACKAGE_NAME/PACKAGE_VERSION come from env (or npm-script-injected npm_package_name/version). Removing the file-data → fetch flow kills the recurring js/file-access-to-http CodeQL false positive at the source.",
+  );
   for (const required of ["dist", "shasum", "integrity", "tarball"]) {
     assert.ok(
       verifyScript.includes(required),

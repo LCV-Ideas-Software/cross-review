@@ -7,6 +7,37 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.08] — 2026-05-16
+
+**Patch — eliminate the `js/file-access-to-http` CodeQL false positive
+at the source.** Each prior release (v4.0.6, v4.0.7) re-triggered the
+same medium-severity CodeQL alert (`scripts/verify-registry-dist.mjs`,
+`fs.readFileSync(package.json)` → `fetch(<url with pkg.name/version>)`).
+Three dismissals were filed (alerts #20, #21) — each new release shifted
+the flagged line, so CodeQL filed a fresh alert. This release removes
+the file-data → outbound-fetch flow entirely so future analyses do not
+re-fire the rule.
+
+### Changed
+
+- **`scripts/verify-registry-dist.mjs`** no longer calls
+  `fs.readFileSync('package.json')`. The verifier now reads package name
+  and version from `PACKAGE_NAME` / `PACKAGE_VERSION` env vars exclusively,
+  with `npm_package_name` / `npm_package_version` (auto-injected by npm
+  when the script is invoked via `npm run release:verify-registry`) as
+  a transparent fallback. Both values are required; missing or non-string
+  values throw a clear error before any network call. The publish workflow
+  already passes both via job-level `env` (unchanged), so the registry
+  step continues to work end-to-end.
+
+### Tests
+
+- Added the `v4.0.8 / F3` invariant to
+  `registry_dist_metadata_verification_test`: the verifier source must
+  NOT contain `readFileSync` / `readFile(` AND must reference
+  `npm_package_name` / `npm_package_version`. Pins the no-file-read
+  contract so a future refactor cannot silently reintroduce the flow.
+
 ## [v04.00.07] — 2026-05-16
 
 **Patch — bounded npm registry fetch in the post-publish verifier.**
