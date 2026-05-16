@@ -8379,6 +8379,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     path.join(process.cwd(), "scripts", "verify-registry-dist.mjs"),
     "utf8",
   );
+  assert.ok(
+    !verifyScript.includes("node:child_process"),
+    "v4.0.6 / F1: verify-registry-dist.mjs must not spawn npm/npm.cmd; Windows Node hardening rejects npm.cmd spawn.",
+  );
+  assert.ok(
+    verifyScript.includes("https://registry.npmjs.org") && verifyScript.includes("fetch("),
+    "v4.0.6 / F1: verify-registry-dist.mjs must query npm registry metadata directly.",
+  );
   for (const required of ["dist", "shasum", "integrity", "tarball"]) {
     assert.ok(
       verifyScript.includes(required),

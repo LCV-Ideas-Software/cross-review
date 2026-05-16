@@ -7,6 +7,28 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.00.06] — 2026-05-16
+
+**Patch — Windows-safe npm registry artifact verifier.** This release closes
+the v4.0.5 audit's LOW Windows finding without changing the public MCP tool
+surface.
+
+### Fixed
+
+- **Registry verifier on Windows** —
+  `scripts/verify-registry-dist.mjs` no longer spawns `npm.cmd` through
+  `execFileSync`. Newer Node.js builds reject that batch-file spawn path with
+  `spawnSync npm.cmd EINVAL` on Windows after the CVE-2024-27980 hardening,
+  which broke local `npm --registry=https://registry.npmjs.org run
+release:verify-registry` for Windows operators. The verifier now fetches
+  `https://registry.npmjs.org/<package>/<version>` directly and validates
+  `dist.shasum`, `dist.integrity`, and `dist.tarball` from the registry JSON.
+
+### Tests
+
+- Extended `registry_dist_metadata_verification_test` to pin the no-spawn
+  invariant and require direct npm registry metadata lookup.
+
 ## [v04.00.05] — 2026-05-15
 
 **Patch — hard-gate close-out for the Codex v4.0.4 audit.** This release
