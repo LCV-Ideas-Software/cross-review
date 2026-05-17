@@ -193,7 +193,7 @@ const events: string[] = [];
 const holder: { orchestrator?: CrossReviewOrchestrator } = {};
 const orchestrator = new CrossReviewOrchestrator(config, (event) => {
   events.push(event.type);
-  holder.orchestrator?.store.appendEvent(event);
+  void holder.orchestrator?.store.appendEvent(event);
 });
 holder.orchestrator = orchestrator;
 
@@ -307,8 +307,13 @@ const overlappingPem = [
 ].join("\n");
 assert.equal(redact(`before ${overlappingPem} after`), "before [REDACTED] after");
 
+// v4.1.0 / F4 security hardening: pre-v4.1.0 LEAKED unterminated PRIVATE
+// KEY blocks (BEGIN without matching END — e.g. truncated logs). v4.1.0
+// redacts from `begin.index` to end-of-string for unterminated blocks.
+// Test was previously pinning the leak as expected behavior; updated to
+// pin the no-leak contract.
 const unterminatedPem = `${pemMarker("BEGIN", "EC PRIVATE KEY")}\nmissing end`;
-assert.equal(redact(unterminatedPem), unterminatedPem);
+assert.equal(redact(unterminatedPem), "[REDACTED]");
 
 const completeThenUnterminated = [
   pemBlock("RSA PRIVATE KEY", "first"),
@@ -318,25 +323,25 @@ const completeThenUnterminated = [
 ].join("\n");
 assert.equal(
   redact(completeThenUnterminated),
-  [
-    "[REDACTED]",
-    "preserve this middle text",
-    pemMarker("BEGIN", "RSA PRIVATE KEY"),
-    "missing end",
-  ].join("\n"),
+  ["[REDACTED]", "preserve this middle text", "[REDACTED]"].join("\n"),
 );
 
+// v4.1.0 / F4 security hardening: pre-v4.1.0 left these adversarial
+// inputs UNREDACTED (returning the original) because the unterminated-
+// BEGIN branch silently fell through. v4.1.0 redacts from the first
+// BEGIN marker to end-of-string. The performance budget (< 1 s for 2 000
+// nested begins) is preserved.
 const adversarialPem = `${pemMarker("BEGIN", "EC PRIVATE KEY")}\n${pemMarker(
   "BEGIN",
   "DSA PRIVATE KEY",
 ).repeat(2_000)}`;
 const adversarialStarted = Date.now();
-assert.equal(redact(adversarialPem), adversarialPem);
+assert.equal(redact(adversarialPem), "[REDACTED]");
 assert.equal(Date.now() - adversarialStarted < 1_000, true);
 
 const repeatedSameLabelStarted = Date.now();
 const repeatedSameLabel = pemMarker("BEGIN", "RSA PRIVATE KEY").repeat(2_000);
-assert.equal(redact(repeatedSameLabel), repeatedSameLabel);
+assert.equal(redact(repeatedSameLabel), "[REDACTED]");
 assert.equal(Date.now() - repeatedSameLabelStarted < 1_000, true);
 
 const constructedToken = ["sk", "test", "A".repeat(24)].join("-");
@@ -830,7 +835,7 @@ assert.ok(
 );
 assert.doesNotMatch(reviewPrompt, /\/focus\s+services\/billing/);
 
-const evidence = orchestrator.store.attachEvidence(result.session.session_id, {
+const evidence = await orchestrator.store.attachEvidence(result.session.session_id, {
   label: "smoke evidence",
   content: "smoke evidence body",
   content_type: "text/markdown",
@@ -841,22 +846,22 @@ assert.equal(
   true,
 );
 
-const escalated = orchestrator.store.escalateToOperator(result.session.session_id, {
+const escalated = await orchestrator.store.escalateToOperator(result.session.session_id, {
   reason: "smoke operator escalation",
   severity: "info",
 });
 assert.equal(escalated.operator_escalations?.at(-1)?.severity, "info");
 
-const fresh = orchestrator.store.init("fresh unfinished smoke session", "operator", probes);
+const fresh = await orchestrator.store.init("fresh unfinished smoke session", "operator", probes);
 assert.equal(SWEEP_MIN_IDLE_MS, 24 * 60 * 60 * 1000);
-assert.equal(orchestrator.store.sweepIdle(0, "aborted", "fresh_smoke_stale").length, 0);
+assert.equal((await orchestrator.store.sweepIdle(0, "aborted", "fresh_smoke_stale")).length, 0);
 assert.equal(orchestrator.store.read(fresh.session_id).outcome, undefined);
-const stale = orchestrator.store.init("old unfinished smoke session", "operator", probes);
+const stale = await orchestrator.store.init("old unfinished smoke session", "operator", probes);
 const staleMetaPath = orchestrator.store.metaPath(stale.session_id);
 const staleMeta = JSON.parse(fs.readFileSync(staleMetaPath, "utf8")) as { updated_at: string };
 staleMeta.updated_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
 fs.writeFileSync(staleMetaPath, `${JSON.stringify(staleMeta, null, 2)}\n`, "utf8");
-const swept = orchestrator.store.sweepIdle(0, "aborted", "smoke_stale");
+const swept = await orchestrator.store.sweepIdle(0, "aborted", "smoke_stale");
 assert.equal(
   swept.some((session) => session.session_id === stale.session_id),
   true,
@@ -1199,8 +1204,12 @@ assert.equal(untilStoppedDefaultBudget.session.outcome, "max-rounds");
 assert.equal(untilStoppedDefaultBudget.session.outcome_reason, "budget_exceeded");
 assert.equal(untilStoppedDefaultBudget.rounds, 1);
 
-const recoverySession = orchestrator.store.init("interrupted smoke session", "operator", probes);
-orchestrator.store.markInFlight(recoverySession.session_id, {
+const recoverySession = await orchestrator.store.init(
+  "interrupted smoke session",
+  "operator",
+  probes,
+);
+await orchestrator.store.markInFlight(recoverySession.session_id, {
   round: 1,
   peers: ["codex"],
   started_at: new Date().toISOString(),
@@ -1211,7 +1220,7 @@ orchestrator.store.markInFlight(recoverySession.session_id, {
     reviewer_peers: ["codex"],
   },
 });
-const recoveredInterrupted = orchestrator.store.recoverInterruptedSessions();
+const recoveredInterrupted = await orchestrator.store.recoverInterruptedSessions();
 assert.equal(
   recoveredInterrupted.some((session) => session.session_id === recoverySession.session_id),
   true,
@@ -1247,6 +1256,7 @@ assert.equal(preflightBlocked.converged, false);
 assert.equal(preflightBlocked.round.rejected.at(-1)?.failure_class, "budget_preflight");
 assert.equal(preflightBlocked.session.outcome_reason, "budget_preflight");
 
+await orchestrator.store.flushPendingEvents();
 const eventful = orchestrator.store.readEvents(formatRecovered.session.session_id);
 assert.equal(
   eventful.some((event) => event.type === "round.completed"),
@@ -1290,6 +1300,7 @@ assert.deepEqual(
   eventful.map((_, index) => index + 1),
 );
 
+await orchestrator.store.flushPendingEvents();
 const metrics = orchestrator.store.metrics();
 assert.equal(metrics.fallback_events, 1);
 assert.equal((metrics.peer_failures.cancelled ?? 0) >= 1, true);
@@ -1304,8 +1315,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     ...config,
     data_dir: smokeTmpDir("session-doctor"),
   });
-  const doctorSession = doctorStore.init("doctor self-lead legacy fixture", "claude", []);
-  doctorStore.markInFlight(doctorSession.session_id, {
+  const doctorSession = await doctorStore.init("doctor self-lead legacy fixture", "claude", []);
+  await doctorStore.markInFlight(doctorSession.session_id, {
     round: 1,
     peers: ["codex"],
     started_at: new Date().toISOString(),
@@ -1319,25 +1330,29 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       lead_peer: "claude",
     },
   });
-  doctorStore.appendEvent({
+  await doctorStore.appendEvent({
     type: "peer.token.delta",
     session_id: doctorSession.session_id,
     round: 1,
     peer: "codex",
     data: { chars: 12 },
   });
-  doctorStore.appendEvent({
+  await doctorStore.appendEvent({
     type: "peer.token.completed",
     session_id: doctorSession.session_id,
     round: 1,
     peer: "codex",
     data: { chars: 12 },
   });
-  const malformedSession = doctorStore.init("doctor malformed events fixture", "operator", []);
+  const malformedSession = await doctorStore.init(
+    "doctor malformed events fixture",
+    "operator",
+    [],
+  );
   fs.writeFileSync(doctorStore.eventsPath(malformedSession.session_id), "{bad-json\n", "utf8");
   // v2.22.0 (A.P2): self_lead_metadata is hidden by default. Pass
   // includeLegacy=true here to preserve the original behavior assertion.
-  const doctor = doctorStore.sessionDoctor(5, true);
+  const doctor = await doctorStore.sessionDoctor(5, true);
   assert.equal(doctor.totals.sessions, 2);
   assert.equal(doctor.totals.open, 2);
   assert.equal(doctor.totals.self_lead_metadata, 1);
@@ -1366,8 +1381,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     data_dir: smokeTmpDir("session-doctor-legacy"),
   });
   // Fixture: legacy self-lead session (caller==lead_peer)
-  const legacySession = filterStore.init("legacy self-lead fixture", "claude", []);
-  filterStore.markInFlight(legacySession.session_id, {
+  const legacySession = await filterStore.init("legacy self-lead fixture", "claude", []);
+  await filterStore.markInFlight(legacySession.session_id, {
     round: 1,
     peers: ["codex"],
     started_at: new Date().toISOString(),
@@ -1383,7 +1398,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
 
   // Default call: array hidden, totals visible, recommendation mentions include_legacy.
-  const defaultReport = filterStore.sessionDoctor(20);
+  const defaultReport = await filterStore.sessionDoctor(20);
   assert.equal(
     defaultReport.totals.self_lead_metadata,
     1,
@@ -1404,7 +1419,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
 
   // Explicit include_legacy=true: array populated.
-  const inclusiveReport = filterStore.sessionDoctor(20, true);
+  const inclusiveReport = await filterStore.sessionDoctor(20, true);
   assert.equal(
     inclusiveReport.totals.self_lead_metadata,
     1,
@@ -1429,7 +1444,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     ...config,
     data_dir: smokeTmpDir("session-doctor-drilldown"),
   });
-  const driveSession = drillStore.init("evidence drill-down fixture", "operator", []);
+  const driveSession = await drillStore.init("evidence drill-down fixture", "operator", []);
   // Fabricate evidence_checklist directly via meta path: 3 open items
   // (codex x1, gemini x2), one of them chronic (round_count=4).
   const metaPath = drillStore.metaPath(driveSession.session_id);
@@ -1472,7 +1487,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   ];
   fs.writeFileSync(metaPath, JSON.stringify(fabricatedMeta, null, 2));
 
-  const drillReport = drillStore.sessionDoctor(20);
+  const drillReport = await drillStore.sessionDoctor(20);
   const entry = drillReport.findings.open_evidence_sessions.find(
     (e) => e.session_id === driveSession.session_id,
   );
@@ -1504,7 +1519,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     data_dir: smokeTmpDir("budget-warning"),
     budget: { ...config.budget, max_session_cost_usd: 20 },
   });
-  const budgetSession = budgetStore.init("budget warning fixture", "operator", []);
+  const budgetSession = await budgetStore.init("budget warning fixture", "operator", []);
   // Verify init snapshotted the ceiling.
   const initial = budgetStore.read(budgetSession.session_id);
   assert.equal(initial.cost_ceiling_usd, 20, "cost_ceiling_usd must snapshot config at init");
@@ -1539,7 +1554,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const threshold = ceilingForCheck * 0.75;
   assert.equal(cumulative1 >= threshold, true, "fixture must cross 75% threshold");
   assert.equal(seededMeta.budget_warning_emitted, false, "warning must not have fired yet");
-  budgetStore.markBudgetWarningEmitted(budgetSession.session_id);
+  await budgetStore.markBudgetWarningEmitted(budgetSession.session_id);
   const afterFirst = budgetStore.read(budgetSession.session_id);
   assert.equal(
     afterFirst.budget_warning_emitted,
@@ -1576,7 +1591,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     data_dir: smokeTmpDir("budget-warning-no-ceiling"),
     budget: { ...config.budget, max_session_cost_usd: undefined },
   });
-  const noCeilingSession = noCeilingStore.init("no ceiling fixture", "operator", []);
+  const noCeilingSession = await noCeilingStore.init("no ceiling fixture", "operator", []);
   const noCeilingMeta = noCeilingStore.read(noCeilingSession.session_id);
   assert.equal(
     noCeilingMeta.cost_ceiling_usd,
@@ -1658,10 +1673,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const { SessionStore } = await import("../src/core/session-store.js");
   const fsModule = await import("node:fs");
   const seqStoreA = new SessionStore(config);
-  const seqMeta = seqStoreA.init("seq-durability-test", "operator", []);
+  const seqMeta = await seqStoreA.init("seq-durability-test", "operator", []);
   const seqId = seqMeta.session_id;
   // Emit a normal event.
-  seqStoreA.appendEvent({
+  await seqStoreA.appendEvent({
     type: "session.heartbeat",
     session_id: seqId,
     message: "first",
@@ -1676,7 +1691,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     interceptorFired = true;
     throw new Error("simulated EIO");
   }) as typeof fsModule.default.appendFileSync;
-  seqStoreA.appendEvent({
+  await seqStoreA.appendEvent({
     type: "session.heartbeat",
     session_id: seqId,
     message: "should-fail",
@@ -1684,7 +1699,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Restore fs and try again — the intended seq (2) must still be
   // available, not skipped to 3.
   fsModule.default.appendFileSync = realAppend;
-  seqStoreA.appendEvent({
+  await seqStoreA.appendEvent({
     type: "session.heartbeat",
     session_id: seqId,
     message: "after-recovery",
@@ -1699,7 +1714,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Restart simulation: fresh SessionStore reads from disk and the next
   // seq should be 3 (current line count + 1).
   const seqStoreB = new SessionStore(config);
-  seqStoreB.appendEvent({
+  await seqStoreB.appendEvent({
     type: "session.heartbeat",
     session_id: seqId,
     message: "after-restart",
@@ -1723,9 +1738,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const { SessionStore } = await import("../src/core/session-store.js");
   const flightStore = new SessionStore(config);
-  const flightMeta = flightStore.init("mark-in-flight-guard-test", "operator", []);
+  const flightMeta = await flightStore.init("mark-in-flight-guard-test", "operator", []);
   const flightId = flightMeta.session_id;
-  flightStore.markInFlight(flightId, {
+  await flightStore.markInFlight(flightId, {
     round: 1,
     peers: [...PEERS],
     started_at: new Date().toISOString(),
@@ -1738,7 +1753,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   let secondMarkRejected = false;
   try {
-    flightStore.markInFlight(flightId, {
+    await flightStore.markInFlight(flightId, {
       round: 2,
       peers: [...PEERS],
       started_at: new Date().toISOString(),
@@ -1848,13 +1863,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const { SessionStore } = await import("../src/core/session-store.js");
   const staleStore = new SessionStore(config);
-  const staleMeta = staleStore.init("stale-session-abort-test", "operator", []);
+  const staleMeta = await staleStore.init("stale-session-abort-test", "operator", []);
   const staleId = staleMeta.session_id;
   const staleMetaPath = staleStore.metaPath(staleId);
   const staleRaw = JSON.parse(fs.readFileSync(staleMetaPath, "utf8")) as Record<string, unknown>;
   staleRaw.updated_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
   fs.writeFileSync(staleMetaPath, JSON.stringify(staleRaw, null, 2), "utf8");
-  const sweep = staleStore.abortStaleSessions();
+  const sweep = await staleStore.abortStaleSessions();
   assert.ok(
     sweep.aborted >= 1,
     `abortStaleSessions must abort ≥1 stale session, got ${sweep.aborted}`,
@@ -1873,9 +1888,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const { SessionStore } = await import("../src/core/session-store.js");
   const inflightStore = new SessionStore(config);
-  const inflightMeta = inflightStore.init("stale-session-skip-test", "operator", []);
+  const inflightMeta = await inflightStore.init("stale-session-skip-test", "operator", []);
   const inflightId = inflightMeta.session_id;
-  inflightStore.markInFlight(inflightId, {
+  await inflightStore.markInFlight(inflightId, {
     round: 1,
     peers: [...PEERS],
     started_at: new Date().toISOString(),
@@ -1893,7 +1908,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   >;
   inflightRaw.updated_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
   fs.writeFileSync(inflightMetaPath, JSON.stringify(inflightRaw, null, 2), "utf8");
-  const sweep = inflightStore.abortStaleSessions();
+  const sweep = await inflightStore.abortStaleSessions();
   const after = inflightStore.read(inflightId);
   assert.equal(
     after.outcome,
@@ -2430,7 +2445,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     path.join(tpConfig.data_dir, "sessions", sessionId, "meta.json"),
     JSON.stringify(meta, null, 2),
   );
-  const ad = tpOrch.store.runEvidenceChecklistAddressDetection(sessionId, FIXTURE_ROUND);
+  const ad = await tpOrch.store.runEvidenceChecklistAddressDetection(sessionId, FIXTURE_ROUND);
   // (1) The open item with last_round===currentRound MUST NOT appear under
   //     peer_resurfaced_terminal. This is the regression the buggy
   //     truthy-OR predicate would have triggered.
@@ -2577,7 +2592,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   const item = opRound1.session.evidence_checklist?.[0];
   assert.ok(item, "R1 must produce a checklist item");
-  const result = opOrch.store.setEvidenceChecklistItemStatus(
+  const result = await opOrch.store.setEvidenceChecklistItemStatus(
     opRound1.session.session_id,
     item.id,
     "satisfied",
@@ -2609,7 +2624,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // type-system level: the mutator's signature excludes "addressed". We
   // assert that calling setEvidenceChecklistItemStatus with "deferred"
   // works as a different terminal transition.
-  const result2 = opOrch.store.setEvidenceChecklistItemStatus(
+  const result2 = await opOrch.store.setEvidenceChecklistItemStatus(
     opRound1.session.session_id,
     item.id,
     "deferred",
@@ -2653,6 +2668,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     caller: "operator",
     peers: ["codex"],
   });
+  await phOrch.store.flushPendingEvents();
   const metrics = phOrch.store.metrics();
   const perPeer = metrics.per_peer_health;
   assert.ok(perPeer, "metrics must include per_peer_health");
@@ -3599,7 +3615,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     // would leave the durable log empty.
     const holder: { orch?: CrossReviewOrchestrator } = {};
     const rollupOrch = new CrossReviewOrchestrator(cfg, (event) => {
-      holder.orch?.store.appendEvent(event);
+      void holder.orch?.store.appendEvent(event);
     });
     holder.orch = rollupOrch;
     const r1 = await rollupOrch.askPeers({
@@ -3615,6 +3631,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       caller: "operator",
       peers: ["claude"],
     });
+    // v4.1.0: emit pipeline uses `void store.appendEvent(...)` (fire-
+    // and-forget). Flush pending writes before reading the events file.
+    await rollupOrch.store.flushPendingEvents();
     const rollup = rollupOrch.store.aggregateShadowJudgments();
     assert.ok(
       rollup.decisions_total >= 1,
@@ -3631,7 +3650,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.ok((claudeStats.by_confidence.verified ?? 0) >= 1);
     assert.ok(claudeStats.first_seen_at && claudeStats.last_seen_at);
 
-    const metrics = rollupOrch.store.metrics();
+    const metrics = rollupOrch.store.metrics(); // already flushed above
     assert.ok(metrics.shadow_judgment, "metrics().shadow_judgment must be present");
     assert.equal(metrics.shadow_judgment.decisions_total, rollup.decisions_total);
     console.log("[smoke] metrics_shadow_judgment_rollup_test: PASS");
@@ -3665,7 +3684,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
-    holder.orch?.store.appendEvent(e);
+    void holder.orch?.store.appendEvent(e);
   });
   holder.orch = orch;
   // Drive runUntilUnanimous with FORCE_DRIFT (lead generation triggers
@@ -3717,7 +3736,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
-    holder.orch?.store.appendEvent(e);
+    void holder.orch?.store.appendEvent(e);
   });
   holder.orch = orch;
   const result = await orch.runUntilUnanimous({
@@ -3762,7 +3781,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
-    holder.orch?.store.appendEvent(e);
+    void holder.orch?.store.appendEvent(e);
   });
   holder.orch = orch;
   const result = await orch.runUntilUnanimous({
@@ -3806,7 +3825,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
-    holder.orch?.store.appendEvent(e);
+    void holder.orch?.store.appendEvent(e);
   });
   holder.orch = orch;
   await orch.runUntilUnanimous({
@@ -3846,7 +3865,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   };
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const aeOrch = new CrossReviewOrchestrator(cfg, (e) => {
-    holder.orch?.store.appendEvent(e);
+    void holder.orch?.store.appendEvent(e);
   });
   holder.orch = aeOrch;
   // Init session, attach 2 evidence files, run askPeers, read R1 prompt.
@@ -3865,12 +3884,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const sessionId = initial.session.session_id;
   // The first askPeers above completed R1 already without attachments
   // — that is the "before" baseline. Now attach files and run R2.
-  aeOrch.store.attachEvidence(sessionId, {
+  await aeOrch.store.attachEvidence(sessionId, {
     label: "gates-output",
     content: "EXIT 0 typecheck\nEXIT 0 lint\nEXIT 0 build\nEXIT 0 smoke 41/41 PASS\n",
     extension: "log",
   });
-  aeOrch.store.attachEvidence(sessionId, {
+  await aeOrch.store.attachEvidence(sessionId, {
     label: "diff-stat",
     content: " path/to/file.ts | +12/-3\n 1 file changed, 12 insertions, 3 deletions\n",
     extension: "txt",
@@ -3939,7 +3958,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const sessionId = initial.session.session_id;
   const big = "X".repeat(30_000);
   for (let i = 0; i < 4; i++) {
-    capOrch.store.attachEvidence(sessionId, {
+    await capOrch.store.attachEvidence(sessionId, {
       label: `att-${i}`,
       content: big,
       extension: "txt",
@@ -4123,7 +4142,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     };
     const holder: { orch?: CrossReviewOrchestrator } = {};
     const prOrch = new CrossReviewOrchestrator(cfg, (event) => {
-      holder.orch?.store.appendEvent(event);
+      void holder.orch?.store.appendEvent(event);
     });
     holder.orch = prOrch;
     // R1: produce a NEEDS_EVIDENCE ask. R2: ask resurfaces (so far ground
@@ -4158,6 +4177,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       caller: "operator",
       peers: ["claude"],
     });
+    await prOrch.store.flushPendingEvents();
     const report = prOrch.store.computeJudgmentPrecisionReport();
     assert.ok(report.decisions_total >= 1, `at least 1 decision recorded`);
     const claudeStats = report.by_judge_peer.claude;
@@ -4209,7 +4229,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     const holder: { orch?: CrossReviewOrchestrator } = {};
     const acOrch = new CrossReviewOrchestrator(cfg, (e) => {
       events.push(e.type);
-      holder.orch?.store.appendEvent(e);
+      void holder.orch?.store.appendEvent(e);
     });
     holder.orch = acOrch;
     // R1: produce a NEEDS_EVIDENCE ask via FORCE_NEEDS_EVIDENCE.
@@ -4280,9 +4300,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     peers: ["claude"],
   });
   const originalId = initial.session.session_id;
-  cvOrch.store.finalize(originalId, "max-rounds", "test_finalize");
+  await cvOrch.store.finalize(originalId, "max-rounds", "test_finalize");
   // Contest it.
-  const contestation = cvOrch.store.contestVerdict({
+  const contestation = await cvOrch.store.contestVerdict({
     session_id: originalId,
     reason: "Caller disagrees with the verdict; new evidence has surfaced.",
     new_task: "Contest test re-deliberation",
@@ -4312,7 +4332,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Double-contesting must throw.
   let threw: unknown = null;
   try {
-    cvOrch.store.contestVerdict({
+    await cvOrch.store.contestVerdict({
       session_id: originalId,
       reason: "Trying to contest twice",
       new_task: "Should not happen",
@@ -4336,7 +4356,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // but typically the session still has no outcome until finalize.)
   threw = null;
   try {
-    cvOrch.store.contestVerdict({
+    await cvOrch.store.contestVerdict({
       session_id: inFlight.session.session_id,
       reason: "in-flight should reject",
       new_task: "should not happen",
@@ -4866,8 +4886,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   };
   // Scenario A: finalize("converged") on a session whose latest round
   // did NOT converge MUST be rejected with a structured error code.
-  const sess = invariantStore.init("invariant-fixture", "operator", []);
-  invariantStore.appendRound(sess.session_id, {
+  const sess = await invariantStore.init("invariant-fixture", "operator", []);
+  await invariantStore.appendRound(sess.session_id, {
     caller_status: "READY",
     prompt_file: "round-1-prompt.md",
     peers: [],
@@ -4895,7 +4915,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   let rejected: Error | null = null;
   try {
-    invariantStore.finalize(sess.session_id, "converged", "unanimous_ready");
+    await invariantStore.finalize(sess.session_id, "converged", "unanimous_ready");
   } catch (err) {
     rejected = err as Error;
   }
@@ -4917,8 +4937,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
   // Scenario B: finalize("converged") on a session whose latest round
   // DID converge succeeds and leaves a consistent meta.
-  const sess2 = invariantStore.init("invariant-fixture-2", "operator", []);
-  invariantStore.appendRound(sess2.session_id, {
+  const sess2 = await invariantStore.init("invariant-fixture-2", "operator", []);
+  await invariantStore.appendRound(sess2.session_id, {
     caller_status: "READY",
     prompt_file: "round-1-prompt.md",
     peers: [],
@@ -4944,7 +4964,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     },
     started_at: new Date().toISOString(),
   });
-  const finalized = invariantStore.finalize(sess2.session_id, "converged", "unanimous_ready");
+  const finalized = await invariantStore.finalize(sess2.session_id, "converged", "unanimous_ready");
   assert.equal(finalized.outcome, "converged");
   assert.equal(finalized.convergence_health?.state, "converged");
 
@@ -4952,7 +4972,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // structured code.
   let appendRejected: Error | null = null;
   try {
-    invariantStore.appendRound(sess2.session_id, {
+    await invariantStore.appendRound(sess2.session_id, {
       caller_status: "READY",
       prompt_file: "round-2-prompt.md",
       peers: [],
@@ -6184,9 +6204,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     entries: [] as Array<unknown>,
   } as unknown as Parameters<typeof writeCacheManifest>[2];
   fs.mkdirSync(path.join(config.data_dir, "sessions", manifestSession), { recursive: true });
-  writeCacheManifest(config.data_dir, manifestSession, manifestData);
+  await writeCacheManifest(config.data_dir, manifestSession, manifestData);
   for (let i = 0; i < 5; i += 1) {
-    appendCacheManifestEntry(
+    await appendCacheManifestEntry(
       config.data_dir,
       manifestSession,
       {
@@ -6772,7 +6792,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   assert.ok(
     /setCircularState\(/.test(storeSrc) && /meta\.circular_state\s*=\s*state/.test(storeSrc),
-    "v2.25.0 / circular_mode: SessionStore.setCircularState() persists circular_state under session lock",
+    "v2.25.0 / circular_mode: await SessionStore.setCircularState() persists circular_state under session lock",
   );
 
   // (10) MCP tool schemas accept "circular".
@@ -7736,7 +7756,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
 
   // repair=false (default) — read-only, the contradiction is NOT touched.
-  const readOnly = repairStore.sessionDoctor(20, false, false);
+  const readOnly = await repairStore.sessionDoctor(20, false, false);
   assert.equal(
     readOnly.repaired,
     undefined,
@@ -7750,7 +7770,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
 
   // repair=true — the contradiction is recomputed from the latest round.
-  const repaired = repairStore.sessionDoctor(20, false, true);
+  const repaired = await repairStore.sessionDoctor(20, false, true);
   assert.ok(
     Array.isArray(repaired.repaired) && repaired.repaired.length === 1,
     `v3.6.0 / C: repair=true must report exactly 1 repaired session, got ${repaired.repaired?.length}`,
@@ -7769,7 +7789,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.6.0 / C: repaired health detail must record the repair provenance",
   );
   // Idempotent — a second repair pass finds nothing to fix.
-  const secondPass = repairStore.sessionDoctor(20, false, true);
+  const secondPass = await repairStore.sessionDoctor(20, false, true);
   assert.equal(
     secondPass.repaired?.length,
     0,
@@ -8398,6 +8418,144 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       verifyScript.includes("npm_package_version"),
     "v4.0.8 / F3: verify-registry-dist.mjs must not read package.json from disk; PACKAGE_NAME/PACKAGE_VERSION come from env (or npm-script-injected npm_package_name/version). Removing the file-data → fetch flow kills the recurring js/file-access-to-http CodeQL false positive at the source.",
   );
+
+  // v4.1.0 / F4: redactPrivateKeyBlocks must handle UNTERMINATED -----BEGIN
+  // PRIVATE KEY----- blocks by redacting from BEGIN to end-of-string. Pre-
+  // v4.1.0 leaked partial keys to events.ndjson when logs were truncated
+  // mid-key. Empirical regression test:
+  {
+    const { redact } = await import("../src/security/redact.js");
+    const truncatedKey = `error: -----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEF...[TRUNCATED`;
+    const redacted = redact(truncatedKey);
+    assert.ok(
+      redacted.includes("[REDACTED]"),
+      "v4.1.0 / F4: redact() must emit [REDACTED] for unterminated -----BEGIN PRIVATE KEY----- blocks.",
+    );
+    assert.ok(
+      !redacted.includes("MIIBVQIBADANBgkqhkiG9w0BAQEF"),
+      "v4.1.0 / F4: redact() must NOT leak the partial key body when the BEGIN marker has no matching END.",
+    );
+    assert.equal(
+      redact("just a normal log line"),
+      "just a normal log line",
+      "v4.1.0 / F4: redact() must be passthrough when no PRIVATE KEY markers are present.",
+    );
+    console.log("[smoke] redact_unterminated_private_key_test: PASS");
+  }
+
+  // v4.1.0 / F5: writeJson + cache-manifest writeJsonAtomic must be
+  // async AND no source file under src/ may contain the
+  // `while (Date.now() - start < wait)` CPU-burning busy-wait pattern.
+  // Pre-v4.1.0 this pattern blocked the event loop for up to 310 ms
+  // under Windows AV stress. Codex R1 NEEDS_EVIDENCE catch on session
+  // 059b0093 asked for repo-wide grep (the original pin only covered
+  // session-store.ts and missed cache-manifest.ts:47).
+  {
+    const storeSrc = fs.readFileSync(
+      path.join(process.cwd(), "src", "core", "session-store.ts"),
+      "utf8",
+    );
+    assert.ok(
+      /async\s+function\s+writeJson\b/.test(storeSrc),
+      "v4.1.0 / F5: writeJson must be declared `async function writeJson` in src/core/session-store.ts.",
+    );
+    assert.ok(
+      /new\s+Promise[\s\S]{0,80}?setTimeout/.test(storeSrc),
+      "v4.1.0 / F5: writeJson must use a Promise-based async delay (`new Promise(r => setTimeout(r, wait))`) for retry backoff so the event loop remains responsive.",
+    );
+    const cacheManifestSrc = fs.readFileSync(
+      path.join(process.cwd(), "src", "core", "cache-manifest.ts"),
+      "utf8",
+    );
+    assert.ok(
+      /async\s+function\s+writeJsonAtomic\b/.test(cacheManifestSrc),
+      "v4.1.0 / F5: writeJsonAtomic in cache-manifest.ts must be `async function writeJsonAtomic`.",
+    );
+    // Repo-wide invariant: scan every .ts under src/ for executable
+    // busy-wait patterns. Strip block comments so the pin only checks
+    // executable code (comments may reference the removed pattern).
+    function walkTs(dir: string, out: string[]): string[] {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walkTs(full, out);
+        } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+          out.push(full);
+        }
+      }
+      return out;
+    }
+    const tsFiles = walkTs(path.join(process.cwd(), "src"), []);
+    for (const file of tsFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      // Strip /* ... */ and // ... so the busy-wait grep doesn't trip
+      // on documentation. The lint runs on EXECUTABLE source only.
+      const stripped = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\n)\s*\/\/[^\n]*/g, "$1");
+      assert.ok(
+        !/while\s*\(\s*Date\.now\(\)\s*-\s*\w+\s*<\s*\w+\s*\)\s*\{[^}]*\}/.test(stripped),
+        `v4.1.0 / F5: ${path.relative(process.cwd(), file)} contains a synchronous busy-wait (\`while (Date.now() - start < wait) {}\`). Replace with \`await new Promise(r => setTimeout(r, wait))\`.`,
+      );
+      assert.ok(
+        !/Atomics\.wait\s*\(/.test(stripped),
+        `v4.1.0 / F5: ${path.relative(process.cwd(), file)} uses Atomics.wait — also a synchronous block. Replace with a Promise+setTimeout.`,
+      );
+    }
+    console.log("[smoke] writeJson_async_no_busy_wait_test: PASS");
+  }
+
+  // v4.1.0 / F6: withSessionLock in src/core/session-store.ts must use
+  // `proper-lockfile` (mkdir-atomic locking) instead of the pre-v4.1.0
+  // `fs.openSync(lockPath, "wx")` followed by separate writeFileSync. The
+  // pre-v4.1.0 pattern had a multi-process TOCTOU race: between open()
+  // (creates empty inode) and writeFileSync (populates content) another
+  // process could observe the empty lock, JSON-parse-fail, and rmSync the
+  // lock — letting both processes enter the critical section. proper-
+  // lockfile uses fs.mkdir which is atomic across NTFS and POSIX so the
+  // lock comes into existence as a directory in one syscall with no
+  // empty-window race. Additionally — Codex 059b0093 R1..R4 catches —
+  // v4.1.0 must NEVER auto-remove a pre-v4.1.0 legacy regular `.lock`
+  // file: under live cross-version v4.0/v4.1 operation, every
+  // auto-clean variant raced a concurrent v4.0.x process's own
+  // stale-removal-and-recreate path. v4.1.0 fails closed with a
+  // clear remediation error; operator manually cleans up at upgrade.
+  {
+    const storeSrc = fs.readFileSync(
+      path.join(process.cwd(), "src", "core", "session-store.ts"),
+      "utf8",
+    );
+    assert.ok(
+      /from\s+["']proper-lockfile["']/.test(storeSrc),
+      "v4.1.0 / F6: session-store.ts must import from 'proper-lockfile'.",
+    );
+    assert.ok(
+      /lockfile\.lock\(/.test(storeSrc),
+      "v4.1.0 / F6: withSessionLock must call lockfile.lock() to acquire the session lock.",
+    );
+    assert.ok(
+      !/fs\.openSync\([^,]+,\s*["']wx["']\)/.test(storeSrc),
+      "v4.1.0 / F6: session-store.ts must not contain the pre-v4.1.0 `fs.openSync(..., 'wx')` lock-acquire pattern that had the TOCTOU race.",
+    );
+    assert.ok(
+      /async\s+withSessionLock|withSessionLock[^(]*\([^)]*\)\s*:\s*Promise/.test(storeSrc),
+      "v4.1.0 / F6: withSessionLock must be declared async (returning Promise<T>).",
+    );
+    // Fail-closed migration policy: surface a remediation error
+    // instead of removing legacy regular `.lock` files. The string
+    // "detected a pre-v4.1.0 lock file" is the contract every caller
+    // sees; the F6 smoke pin asserts it remains pinned.
+    assert.ok(
+      /detected a pre-v4\.1\.0 lock file/.test(storeSrc),
+      "v4.1.0 / F6: session-store.ts must throw the fail-closed `detected a pre-v4.1.0 lock file` error when a legacy regular `.lock` file is observed (NO auto-removal under live cross-version operation).",
+    );
+    // Belt-and-suspenders: no rmSync(lockfilePath, ...) anywhere in
+    // withSessionLock — fail-closed implies the legacy file is
+    // NEVER deleted by v4.1.0.
+    assert.ok(
+      !/fs\.rmSync\(\s*lockfilePath\b/.test(storeSrc),
+      "v4.1.0 / F6: session-store.ts must NOT contain `fs.rmSync(lockfilePath, ...)` — v4.1.0 fails closed on legacy locks and never auto-removes them.",
+    );
+    console.log("[smoke] session_lock_proper_lockfile_test: PASS");
+  }
   for (const required of ["dist", "shasum", "integrity", "tarball"]) {
     assert.ok(
       verifyScript.includes(required),

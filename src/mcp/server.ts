@@ -415,7 +415,11 @@ function createRuntime() {
   const holder: { orchestrator?: CrossReviewOrchestrator } = {};
   const emit = (event: RuntimeEvent) => {
     eventLog.emit(event);
-    holder.orchestrator?.store.appendEvent(event);
+    // Fire-and-forget: appendEvent is async (v4.1.0 proper-lockfile lock)
+    // but the emit pipeline must stay sync — callers that need synchronous
+    // persistence guarantees should await appendEvent directly. Unhandled
+    // rejections are swallowed inside appendEvent.
+    void holder.orchestrator?.store.appendEvent(event);
   };
   const orchestrator = new CrossReviewOrchestrator(config, emit);
   holder.orchestrator = orchestrator;
@@ -479,29 +483,29 @@ function startJob(
   pruneCompletedJobs(runtime.jobs);
   runtime.controllers.set(job.job_id, controller);
   void run(controller.signal)
-    .then((result) => {
+    .then(async (result) => {
       job.status = controller.signal.aborted ? "cancelled" : "completed";
       job.completed_at = now();
       job.result_summary = summarizeJobResult(result);
       runtime.controllers.delete(job.job_id);
       if (controller.signal.aborted) {
         try {
-          runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+          await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
         } catch {
           // The job status remains visible even if a session write fails.
         }
       }
     })
-    .catch((error) => {
+    .catch(async (error) => {
       job.status = controller.signal.aborted ? "cancelled" : "failed";
       job.completed_at = now();
       job.error = safeErrorMessage(error);
       runtime.controllers.delete(job.job_id);
       try {
         if (controller.signal.aborted) {
-          runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+          await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
         } else {
-          runtime.orchestrator.store.escalateToOperator(sessionId, {
+          await runtime.orchestrator.store.escalateToOperator(sessionId, {
             reason: `Background job failed: ${job.error}`,
             severity: "critical",
           });
@@ -1133,12 +1137,12 @@ export async function main(): Promise<void> {
           job.status === "running" &&
           (!job_id || job.job_id === job_id),
       );
-      const meta = runtime.orchestrator.store.requestCancellation(session_id, reason, job_id);
+      const meta = await runtime.orchestrator.store.requestCancellation(session_id, reason, job_id);
       for (const job of jobs) {
         runtime.controllers.get(job.job_id)?.abort(reason);
       }
       if (!jobs.length) {
-        runtime.orchestrator.store.markCancelled(session_id, reason);
+        await runtime.orchestrator.store.markCancelled(session_id, reason);
       }
       return textResult(
         {
@@ -1174,7 +1178,7 @@ export async function main(): Promise<void> {
       );
       return textResult(
         {
-          recovered: runtime.orchestrator.store.recoverInterruptedSessions(active),
+          recovered: await runtime.orchestrator.store.recoverInterruptedSessions(active),
         },
         response_format,
       );
@@ -1304,7 +1308,11 @@ export async function main(): Promise<void> {
     },
     async ({ limit, include_legacy, repair, response_format }) =>
       textResult(
-        runtime.orchestrator.store.sessionDoctor(limit, include_legacy ?? false, repair ?? false),
+        await runtime.orchestrator.store.sessionDoctor(
+          limit,
+          include_legacy ?? false,
+          repair ?? false,
+        ),
         response_format,
       ),
   );
@@ -1426,7 +1434,7 @@ export async function main(): Promise<void> {
     },
     async ({ session_id, label, content, content_type, extension, response_format }) =>
       textResult(
-        runtime.orchestrator.store.attachEvidence(session_id, {
+        await runtime.orchestrator.store.attachEvidence(session_id, {
           label,
           content,
           content_type,
@@ -1462,10 +1470,15 @@ export async function main(): Promise<void> {
     },
     async ({ session_id, item_id, status, note, response_format }) =>
       textResult(
-        runtime.orchestrator.store.setEvidenceChecklistItemStatus(session_id, item_id, status, {
-          note,
-          by: "operator",
-        }),
+        await runtime.orchestrator.store.setEvidenceChecklistItemStatus(
+          session_id,
+          item_id,
+          status,
+          {
+            note,
+            by: "operator",
+          },
+        ),
         response_format,
       ),
   );
@@ -1665,7 +1678,7 @@ export async function main(): Promise<void> {
         verifyCallerIdentity(new_caller, server.server.getClientVersion());
       }
       return textResult(
-        runtime.orchestrator.store.contestVerdict({
+        await runtime.orchestrator.store.contestVerdict({
           session_id,
           reason,
           new_task,
@@ -1743,7 +1756,7 @@ export async function main(): Promise<void> {
     },
     async ({ session_id, reason, severity, response_format }) =>
       textResult(
-        runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
+        await runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
         response_format,
       ),
   );
@@ -1783,7 +1796,11 @@ export async function main(): Promise<void> {
       corrupt_min_age_days,
       response_format,
     }) => {
-      const swept = runtime.orchestrator.store.sweepIdle(idle_minutes * 60_000, outcome, reason);
+      const swept = await runtime.orchestrator.store.sweepIdle(
+        idle_minutes * 60_000,
+        outcome,
+        reason,
+      );
       if (!prune_corrupt) {
         return textResult(swept, response_format);
       }
@@ -1854,15 +1871,17 @@ export async function main(): Promise<void> {
     }
   }, STARTUP_SWEEP_DELAY_MS);
   setTimeout(() => {
-    try {
-      const inFlightSweep = runtime.orchestrator.store.clearStaleInFlight();
-      if (inFlightSweep.scanned > 0) {
-        console.error("[cross-review] startup in_flight sweep:", JSON.stringify(inFlightSweep));
+    void (async () => {
+      try {
+        const inFlightSweep = await runtime.orchestrator.store.clearStaleInFlight();
+        if (inFlightSweep.scanned > 0) {
+          console.error("[cross-review] startup in_flight sweep:", JSON.stringify(inFlightSweep));
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[cross-review] startup in_flight sweep error: ${message}`);
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[cross-review] startup in_flight sweep error: ${message}`);
-    }
+    })();
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.5.0: companion to clearStaleInFlight — abort sessions that the
   // caller never finalized. Runs AFTER the in_flight sweep (deferred via
@@ -1870,18 +1889,20 @@ export async function main(): Promise<void> {
   // so a session whose in_flight got cleared this same boot is
   // immediately eligible for staleness review.
   setTimeout(() => {
-    try {
-      const abortSweep = runtime.orchestrator.store.abortStaleSessions();
-      if (abortSweep.scanned > 0) {
-        console.error(
-          "[cross-review] startup stale-session abort sweep:",
-          JSON.stringify(abortSweep),
-        );
+    void (async () => {
+      try {
+        const abortSweep = await runtime.orchestrator.store.abortStaleSessions();
+        if (abortSweep.scanned > 0) {
+          console.error(
+            "[cross-review] startup stale-session abort sweep:",
+            JSON.stringify(abortSweep),
+          );
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[cross-review] startup stale-session abort sweep error: ${message}`);
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[cross-review] startup stale-session abort sweep error: ${message}`);
-    }
+    })();
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.27.0: prune finalized sessions older than CROSS_REVIEW_PRUNE_AFTER_DAYS
   // (default 60). Empirically motivated by 534 sessions accumulated by

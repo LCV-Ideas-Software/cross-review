@@ -1407,11 +1407,15 @@ export class CrossReviewOrchestrator {
         per_peer_verdict: perPeerVerdict,
       });
       if (unanimousVerifiedSatisfied && mode === "active") {
-        const result = this.store.markEvidenceItemAddressedByJudge(params.session_id, item.id, {
-          round: judgmentRound,
-          rationale: Object.values(rationales).join(" || "),
-          judge_peer: params.judge_peers[0],
-        });
+        const result = await this.store.markEvidenceItemAddressedByJudge(
+          params.session_id,
+          item.id,
+          {
+            round: judgmentRound,
+            rationale: Object.values(rationales).join(" || "),
+            judge_peer: params.judge_peers[0],
+          },
+        );
         if (result) {
           promoted.push({ item_id: item.id, rationales });
           this.emit({
@@ -1699,11 +1703,15 @@ export class CrossReviewOrchestrator {
               },
             });
           } else {
-            const result = this.store.markEvidenceItemAddressedByJudge(params.session_id, item.id, {
-              round: judgmentRound,
-              rationale: judgment.rationale,
-              judge_peer: params.judge_peer,
-            });
+            const result = await this.store.markEvidenceItemAddressedByJudge(
+              params.session_id,
+              item.id,
+              {
+                round: judgmentRound,
+                rationale: judgment.rationale,
+                judge_peer: params.judge_peer,
+              },
+            );
             if (result) {
               promoted.push({
                 item_id: item.id,
@@ -1845,7 +1853,7 @@ export class CrossReviewOrchestrator {
   ): Promise<SessionMeta> {
     const snapshot = await this.probeAll();
     const normalizedReviewFocus = normalizeReviewFocus(reviewFocus, this.config);
-    const meta = this.store.init(task, caller, snapshot, normalizedReviewFocus);
+    const meta = await this.store.init(task, caller, snapshot, normalizedReviewFocus);
     this.emit({
       type: "session.created",
       session_id: meta.session_id,
@@ -1866,12 +1874,12 @@ export class CrossReviewOrchestrator {
       .map((model) => createAdapters(this.config, { [adapter.id]: model })[adapter.id]);
   }
 
-  private recordFallback(
+  private async recordFallback(
     sessionId: string,
     adapter: PeerAdapter,
     fallback: PeerAdapter,
     reason: string,
-  ): FallbackEvent {
+  ): Promise<FallbackEvent> {
     const event: FallbackEvent = {
       peer: adapter.id,
       provider: adapter.provider,
@@ -1880,7 +1888,7 @@ export class CrossReviewOrchestrator {
       reason,
       ts: now(),
     };
-    this.store.appendFallbackEvent(sessionId, event);
+    await this.store.appendFallbackEvent(sessionId, event);
     this.emit({
       type: "peer.fallback.started",
       session_id: sessionId,
@@ -1895,7 +1903,11 @@ export class CrossReviewOrchestrator {
   // peer call surfaced cache telemetry, and append a row to the
   // session cache manifest. Best-effort; never throws — manifest
   // failures should not break the review loop.
-  private recordCacheTelemetry(sessionId: string, round: number, peerResult: PeerResult): void {
+  private async recordCacheTelemetry(
+    sessionId: string,
+    round: number,
+    peerResult: PeerResult,
+  ): Promise<void> {
     try {
       if (!this.config.cache.enabled) return;
       const usage = peerResult.usage;
@@ -1929,7 +1941,7 @@ export class CrossReviewOrchestrator {
           savings_unknown: savings.unknown,
         },
       });
-      appendCacheManifestEntry(
+      await appendCacheManifestEntry(
         this.config.data_dir,
         sessionId,
         {
@@ -1963,7 +1975,7 @@ export class CrossReviewOrchestrator {
   // session has no ceiling, when cumulative cost is below threshold, or
   // when the warning has already fired. Best-effort writeback — manifest
   // failures should not break the review loop.
-  private checkBudgetWarning(sessionId: string, round: number): void {
+  private async checkBudgetWarning(sessionId: string, round: number): Promise<void> {
     try {
       const meta = this.store.read(sessionId);
       const ceiling = meta.cost_ceiling_usd;
@@ -1975,7 +1987,7 @@ export class CrossReviewOrchestrator {
       // Persist the one-shot guard FIRST so an emit-throw cannot cause
       // re-emission on a retry; we accept "warning persisted but emit
       // observably failed" as the safer drift mode.
-      this.store.markBudgetWarningEmitted(sessionId);
+      await this.store.markBudgetWarningEmitted(sessionId);
       this.emit({
         type: "session.budget_warning",
         session_id: sessionId,
@@ -2027,7 +2039,7 @@ export class CrossReviewOrchestrator {
           let lastFallbackFailure: PeerFailure | undefined;
           for (const fallback of this.fallbackAdapters(adapter)) {
             fallbackWasTried = true;
-            const fallbackEvent = this.recordFallback(
+            const fallbackEvent = await this.recordFallback(
               context.session_id,
               adapter,
               fallback,
@@ -2336,7 +2348,7 @@ export class CrossReviewOrchestrator {
     const session = existingSession
       ? existingSession
       : missingFinancialVars.length
-        ? this.store.init(
+        ? await this.store.init(
             input.task,
             effectivePetitioner,
             [],
@@ -2399,7 +2411,7 @@ export class CrossReviewOrchestrator {
       input.review_focus,
     );
     const promptFile = this.store.savePrompt(session.session_id, roundNumber, prompt);
-    this.store.markInFlight(session.session_id, {
+    await this.store.markInFlight(session.session_id, {
       round: roundNumber,
       peers: selectedPeers,
       started_at: startedAt,
@@ -2420,10 +2432,10 @@ export class CrossReviewOrchestrator {
         budgetPreflightFailure(adapter.id, adapter.provider, adapter.model, message),
       );
       for (const failure of rejected) {
-        this.store.savePeerFailure(session.session_id, roundNumber, failure);
+        await this.store.savePeerFailure(session.session_id, roundNumber, failure);
       }
       const convergence = checkConvergence(selectedPeers, callerStatus, [], rejected);
-      const round = this.store.appendRound(session.session_id, {
+      const round = await this.store.appendRound(session.session_id, {
         caller_status: callerStatus,
         draft_file: draftFile,
         prompt_file: promptFile,
@@ -2433,7 +2445,7 @@ export class CrossReviewOrchestrator {
         convergence_scope: convergenceScope,
         started_at: startedAt,
       });
-      const updated = this.store.finalize(
+      const updated = await this.store.finalize(
         session.session_id,
         "max-rounds",
         "financial_controls_missing",
@@ -2475,10 +2487,10 @@ export class CrossReviewOrchestrator {
         budgetPreflightFailure(adapter.id, adapter.provider, adapter.model, message),
       );
       for (const failure of rejected) {
-        this.store.savePeerFailure(session.session_id, roundNumber, failure);
+        await this.store.savePeerFailure(session.session_id, roundNumber, failure);
       }
       const convergence = checkConvergence(selectedPeers, callerStatus, [], rejected);
-      const round = this.store.appendRound(session.session_id, {
+      const round = await this.store.appendRound(session.session_id, {
         caller_status: callerStatus,
         draft_file: draftFile,
         prompt_file: promptFile,
@@ -2488,7 +2500,11 @@ export class CrossReviewOrchestrator {
         convergence_scope: convergenceScope,
         started_at: startedAt,
       });
-      const updated = this.store.finalize(session.session_id, "max-rounds", "budget_preflight");
+      const updated = await this.store.finalize(
+        session.session_id,
+        "max-rounds",
+        "budget_preflight",
+      );
       this.emit({
         type: "round.blocked.budget_preflight",
         session_id: session.session_id,
@@ -2514,7 +2530,7 @@ export class CrossReviewOrchestrator {
           "Session cancellation was requested before this round started.",
         ),
       );
-      const round = this.store.appendRound(session.session_id, {
+      const round = await this.store.appendRound(session.session_id, {
         caller_status: callerStatus,
         draft_file: draftFile,
         prompt_file: promptFile,
@@ -2524,7 +2540,7 @@ export class CrossReviewOrchestrator {
         convergence_scope: convergenceScope,
         started_at: startedAt,
       });
-      const updated = this.store.markCancelled(session.session_id, "session_cancelled");
+      const updated = await this.store.markCancelled(session.session_id, "session_cancelled");
       return { session: updated, round, converged: false };
     }
 
@@ -2618,14 +2634,14 @@ export class CrossReviewOrchestrator {
               latency_ms: peerResult.latency_ms,
             };
             rejected.push(failure);
-            this.store.savePeerFailure(session.session_id, roundNumber, failure);
+            await this.store.savePeerFailure(session.session_id, roundNumber, failure);
             peers.push(peerResult);
-            this.store.savePeerResult(session.session_id, roundNumber, peerResult);
+            await this.store.savePeerResult(session.session_id, roundNumber, peerResult);
             continue;
           }
           recoveriesUsedThisCall += 1;
           const decisionRetry = !containsReviewDecisionLexeme(peerResult.text);
-          this.store.savePeerResult(
+          await this.store.savePeerResult(
             session.session_id,
             roundNumber,
             peerResult,
@@ -2710,7 +2726,7 @@ export class CrossReviewOrchestrator {
                 latency_ms: peerResult.latency_ms,
               };
               rejected.push(failure);
-              this.store.savePeerFailure(session.session_id, roundNumber, failure);
+              await this.store.savePeerFailure(session.session_id, roundNumber, failure);
               this.emit({
                 type: "peer.format_recovery.budget_blocked",
                 session_id: session.session_id,
@@ -2724,7 +2740,7 @@ export class CrossReviewOrchestrator {
                 },
               });
               peers.push(peerResult);
-              this.store.savePeerResult(session.session_id, roundNumber, peerResult);
+              await this.store.savePeerResult(session.session_id, roundNumber, peerResult);
               continue;
             }
             const recovered = await adapter.call(recoveryPrompt, {
@@ -2757,7 +2773,7 @@ export class CrossReviewOrchestrator {
             if (peerResult.status == null) {
               const failure = unparseableAfterRecoveryFailure(peerResult);
               rejected.push(failure);
-              this.store.savePeerFailure(session.session_id, roundNumber, failure);
+              await this.store.savePeerFailure(session.session_id, roundNumber, failure);
             }
           } catch (error) {
             const failure = classifyProviderError(
@@ -2769,19 +2785,19 @@ export class CrossReviewOrchestrator {
               Date.parse(startedAt),
             );
             rejected.push(failure);
-            this.store.savePeerFailure(session.session_id, roundNumber, failure);
+            await this.store.savePeerFailure(session.session_id, roundNumber, failure);
           }
         }
         peers.push(peerResult);
-        this.store.savePeerResult(session.session_id, roundNumber, peerResult);
+        await this.store.savePeerResult(session.session_id, roundNumber, peerResult);
         // v2.21.0 (caching): emit telemetry + persist manifest entry
         // when the peer call surfaced any cache activity. Best-effort —
         // failures here must not break the orchestrator critical path.
-        this.recordCacheTelemetry(session.session_id, roundNumber, peerResult);
+        await this.recordCacheTelemetry(session.session_id, roundNumber, peerResult);
         if (peerResult.model_match === false) {
           const failure = silentModelDowngradeFailure(peerResult);
           rejected.push(failure);
-          this.store.savePeerFailure(session.session_id, roundNumber, failure);
+          await this.store.savePeerFailure(session.session_id, roundNumber, failure);
         }
       } else if (item.failure) {
         const failure = item.failure;
@@ -2792,7 +2808,7 @@ export class CrossReviewOrchestrator {
         // badly, or a policy/budget/content stop, stays in `rejected`.
         if (isSkippableFailure(failure)) {
           skipped.push(failure);
-          this.store.savePeerFailure(session.session_id, roundNumber, failure);
+          await this.store.savePeerFailure(session.session_id, roundNumber, failure);
           this.emit({
             type: "session.peer_skipped_unavailable",
             session_id: session.session_id,
@@ -2810,7 +2826,7 @@ export class CrossReviewOrchestrator {
           });
         } else {
           rejected.push(failure);
-          this.store.savePeerFailure(session.session_id, roundNumber, failure);
+          await this.store.savePeerFailure(session.session_id, roundNumber, failure);
         }
       }
     }
@@ -2839,7 +2855,7 @@ export class CrossReviewOrchestrator {
       recovery_converged: isRecoveryRound && quorumConvergence.converged,
       quorum_peers: quorumPeers,
     };
-    const round = this.store.appendRound(session.session_id, {
+    const round = await this.store.appendRound(session.session_id, {
       caller_status: callerStatus,
       draft_file: draftFile,
       prompt_file: promptFile,
@@ -2859,7 +2875,7 @@ export class CrossReviewOrchestrator {
     // v2.22.0 (B.P3): emit `session.budget_warning` if cumulative cost
     // crossed 75% of the session ceiling on this round. One-shot;
     // subsequent rounds in the same session won't re-emit.
-    this.checkBudgetWarning(session.session_id, round.round);
+    await this.checkBudgetWarning(session.session_id, round.round);
     // v2.7.0 Evidence Broker: aggregate NEEDS_EVIDENCE asks from this
     // round into the session-level checklist. Each peer that returned
     // NEEDS_EVIDENCE with `caller_requests` contributes its asks; the
@@ -2875,7 +2891,7 @@ export class CrossReviewOrchestrator {
       }
     }
     if (evidenceAsks.length > 0) {
-      const checklist = this.store.appendEvidenceChecklistItems(
+      const checklist = await this.store.appendEvidenceChecklistItems(
         session.session_id,
         round.round,
         evidenceAsks,
@@ -2901,7 +2917,7 @@ export class CrossReviewOrchestrator {
     // to addressed. Skipping the call when evidenceAsks is empty would
     // miss exactly the case the inference is designed for.
     if ((this.store.read(session.session_id).evidence_checklist ?? []).length > 0) {
-      const addressDetection = this.store.runEvidenceChecklistAddressDetection(
+      const addressDetection = await this.store.runEvidenceChecklistAddressDetection(
         session.session_id,
         round.round,
       );
@@ -3078,7 +3094,7 @@ export class CrossReviewOrchestrator {
     let updated = this.store.read(session.session_id);
     if (convergence.converged) {
       this.store.saveFinal(session.session_id, input.draft);
-      updated = this.store.finalize(
+      updated = await this.store.finalize(
         session.session_id,
         "converged",
         convergence.recovery_converged ? "recovered_unanimity" : "unanimous_ready",
@@ -3139,7 +3155,7 @@ export class CrossReviewOrchestrator {
     // no-self-immediate-output invariant: between any peer's turn and
     // their next turn, at least one different peer must hold custody.
     if (sessionPeers.length < 2) {
-      this.store.finalize(session.session_id, "aborted", "circular_rotation_too_small");
+      await this.store.finalize(session.session_id, "aborted", "circular_rotation_too_small");
       this.emit({
         type: "session.circular_rotation_too_small",
         session_id: session.session_id,
@@ -3172,7 +3188,7 @@ export class CrossReviewOrchestrator {
     let lastRevisionRound: number | null = null;
     let cursor = 0;
 
-    this.store.setCircularState(session.session_id, {
+    await this.store.setCircularState(session.session_id, {
       rotation_order: rotationOrder,
       consecutive_no_change_count: 0,
       last_revision_round: null,
@@ -3196,7 +3212,7 @@ export class CrossReviewOrchestrator {
     // no-self-immediate-output across the initial-draft → round 1 hop.
     if (!draft) {
       if (this.isCancelled(session.session_id, input.signal)) {
-        this.store.markCancelled(session.session_id, "session_cancelled");
+        await this.store.markCancelled(session.session_id, "session_cancelled");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
@@ -3219,7 +3235,7 @@ export class CrossReviewOrchestrator {
           caller: callerForLottery,
         },
       );
-      this.store.saveGeneration(session.session_id, 0, initGeneration, "initial-draft");
+      await this.store.saveGeneration(session.session_id, 0, initGeneration, "initial-draft");
       if (detectLeadDrift(initGeneration.text) || initGeneration.text.trim() === "") {
         this.emit({
           type: "session.lead_drift_detected",
@@ -3234,7 +3250,7 @@ export class CrossReviewOrchestrator {
             first_chars: initGeneration.text.slice(0, 100),
           },
         });
-        this.store.finalize(session.session_id, "aborted", "lead_meta_review_drift");
+        await this.store.finalize(session.session_id, "aborted", "lead_meta_review_drift");
         return {
           session: this.store.read(session.session_id),
           final_text: undefined,
@@ -3259,7 +3275,7 @@ export class CrossReviewOrchestrator {
 
     for (let round = 1; round <= maxCircularRounds; round++) {
       if (this.isCancelled(session.session_id, input.signal)) {
-        this.store.markCancelled(session.session_id, "session_cancelled");
+        await this.store.markCancelled(session.session_id, "session_cancelled");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
@@ -3268,7 +3284,7 @@ export class CrossReviewOrchestrator {
         };
       }
       if (budgetExceeded(session, costLimit)) {
-        this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
+        await this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
         this.emit({
           type: "session.budget_exceeded",
           session_id: session.session_id,
@@ -3311,7 +3327,7 @@ export class CrossReviewOrchestrator {
         reasoning_effort_override: input.reasoning_effort_overrides?.[rotator],
         caller: callerForLottery,
       });
-      this.store.saveGeneration(session.session_id, round, generation, "rotation");
+      await this.store.saveGeneration(session.session_id, round, generation, "rotation");
 
       // Drift / empty / fabrication detection — identical contract to
       // ship mode's relator-revision branch. Two consecutive trips abort.
@@ -3375,7 +3391,7 @@ export class CrossReviewOrchestrator {
             : fabricationDetected
               ? "lead_fabrication_repeated"
               : "lead_meta_review_drift";
-          this.store.finalize(session.session_id, "aborted", finalizeReason);
+          await this.store.finalize(session.session_id, "aborted", finalizeReason);
           return {
             session: this.store.read(session.session_id),
             final_text: draft,
@@ -3465,7 +3481,7 @@ export class CrossReviewOrchestrator {
         lead_peer: rotator,
       };
 
-      this.store.appendRound(session.session_id, {
+      await this.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: promptFile,
         peers: [peerResult],
@@ -3474,7 +3490,7 @@ export class CrossReviewOrchestrator {
         convergence_scope: convergenceScope,
         started_at: startedAt,
       });
-      this.store.setCircularState(session.session_id, {
+      await this.store.setCircularState(session.session_id, {
         rotation_order: rotationOrder,
         consecutive_no_change_count: consecutiveNoChangeCount,
         last_revision_round: lastRevisionRound,
@@ -3510,7 +3526,11 @@ export class CrossReviewOrchestrator {
             last_revision_round: lastRevisionRound,
           },
         });
-        this.store.finalize(session.session_id, "converged", "circular_full_rotation_no_change");
+        await this.store.finalize(
+          session.session_id,
+          "converged",
+          "circular_full_rotation_no_change",
+        );
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
@@ -3523,7 +3543,7 @@ export class CrossReviewOrchestrator {
     }
 
     // Exhausted max rotations without convergence.
-    this.store.finalize(session.session_id, "max-rounds", "circular_max_rotations_exceeded");
+    await this.store.finalize(session.session_id, "max-rounds", "circular_max_rotations_exceeded");
     this.emit({
       type: "session.circular_max_rotations_exceeded",
       session_id: session.session_id,
@@ -3691,13 +3711,17 @@ export class CrossReviewOrchestrator {
     if (missingFinancialVars.length) {
       const blockedSession =
         existingSession ??
-        this.store.init(
+        (await this.store.init(
           input.task,
           callerForLottery,
           [],
           normalizeReviewFocus(input.review_focus, this.config),
-        );
-      this.store.finalize(blockedSession.session_id, "max-rounds", "financial_controls_missing");
+        ));
+      await this.store.finalize(
+        blockedSession.session_id,
+        "max-rounds",
+        "financial_controls_missing",
+      );
       this.emit({
         type: "session.blocked.financial_controls_missing",
         session_id: blockedSession.session_id,
@@ -3719,7 +3743,7 @@ export class CrossReviewOrchestrator {
 
     // v3.5.0 (CRV2-1 + CRV2-6): persist requested-vs-effective budget +
     // max_rounds traceability once, before any round runs.
-    this.store.setSessionTraceability(session.session_id, {
+    await this.store.setSessionTraceability(session.session_id, {
       requested_max_rounds: input.max_rounds ?? null,
       effective_max_rounds: input.until_stopped ? null : effectiveMaxRounds,
       requested_max_cost_usd: input.max_cost_usd ?? null,
@@ -3746,7 +3770,7 @@ export class CrossReviewOrchestrator {
         attachmentsPresent,
       });
       if (!preflight.pass) {
-        this.store.finalize(session.session_id, "aborted", "needs_evidence_preflight");
+        await this.store.finalize(session.session_id, "aborted", "needs_evidence_preflight");
         this.emit({
           type: "session.evidence_preflight_failed",
           session_id: session.session_id,
@@ -3771,7 +3795,7 @@ export class CrossReviewOrchestrator {
     if (this.config.budget.require_rates_for_budget && costLimit != null) {
       const missingRates = selectedPeers.filter((peer) => !this.config.cost_rates[peer]);
       if (missingRates.length) {
-        this.store.finalize(session.session_id, "max-rounds", "budget_requires_rates");
+        await this.store.finalize(session.session_id, "max-rounds", "budget_requires_rates");
         this.emit({
           type: "session.blocked.budget_requires_rates",
           session_id: session.session_id,
@@ -3811,7 +3835,7 @@ export class CrossReviewOrchestrator {
     let consecutiveLeadDrifts = 0;
     if (!draft) {
       if (this.isCancelled(session.session_id, input.signal)) {
-        this.store.markCancelled(session.session_id, "session_cancelled");
+        await this.store.markCancelled(session.session_id, "session_cancelled");
         return {
           session: this.store.read(session.session_id),
           converged: false,
@@ -3832,7 +3856,7 @@ export class CrossReviewOrchestrator {
           caller: callerForLottery,
         },
       );
-      this.store.saveGeneration(session.session_id, 0, generation, "initial-draft");
+      await this.store.saveGeneration(session.session_id, 0, generation, "initial-draft");
       // v2.13.0: drift detection on initial-draft path. There is no
       // prior draft to fall back to here, so a drifted initial generation
       // aborts immediately. Only fires in `ship` mode — in `review` mode
@@ -3850,7 +3874,7 @@ export class CrossReviewOrchestrator {
             first_chars: generation.text.slice(0, 100),
           },
         });
-        this.store.finalize(session.session_id, "aborted", "lead_meta_review_drift");
+        await this.store.finalize(session.session_id, "aborted", "lead_meta_review_drift");
         return {
           session: this.store.read(session.session_id),
           final_text: undefined,
@@ -3863,7 +3887,7 @@ export class CrossReviewOrchestrator {
 
     for (let round = 1; round <= effectiveMaxRounds; round++) {
       if (this.isCancelled(session.session_id, input.signal)) {
-        this.store.markCancelled(session.session_id, "session_cancelled");
+        await this.store.markCancelled(session.session_id, "session_cancelled");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
@@ -3895,7 +3919,7 @@ export class CrossReviewOrchestrator {
       }
 
       if (budgetExceeded(session, costLimit)) {
-        this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
+        await this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
@@ -3979,7 +4003,7 @@ export class CrossReviewOrchestrator {
             caller: callerForLottery,
           },
         );
-        this.store.saveGeneration(session.session_id, round, generation, "revision");
+        await this.store.saveGeneration(session.session_id, round, generation, "revision");
         // v2.23.0: empty-text degeneracy detection. Provider-side parser
         // diagnostics (e.g. Anthropic extended-thinking returning only
         // `thinking`/`redacted_thinking` blocks with no final `text` block,
@@ -4130,7 +4154,7 @@ export class CrossReviewOrchestrator {
             else if (fabricationDetected) finalizeReason = "lead_fabrication_repeated";
             else if (metaAuditDetected) finalizeReason = "lead_meta_audit_repeated";
             else finalizeReason = "lead_meta_review_drift";
-            this.store.finalize(session.session_id, "aborted", finalizeReason);
+            await this.store.finalize(session.session_id, "aborted", finalizeReason);
             return {
               session: this.store.read(session.session_id),
               final_text: draft,
@@ -4146,7 +4170,7 @@ export class CrossReviewOrchestrator {
       }
     }
 
-    this.store.finalize(session.session_id, "max-rounds", "max_rounds_without_unanimity");
+    await this.store.finalize(session.session_id, "max-rounds", "max_rounds_without_unanimity");
     return {
       session: this.store.read(session.session_id),
       final_text: draft,

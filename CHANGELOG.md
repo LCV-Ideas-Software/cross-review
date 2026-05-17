@@ -7,6 +7,182 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.01.00] — 2026-05-17
+
+**Minor — security hardening of session-store concurrency, write-path
+DoS surface, and credential redaction.** This release closes three
+high-impact findings from an in-depth security audit of the v4.0.8
+codebase. The public MCP tool surface is unchanged; the SessionStore
+class methods that mutate state become async (cascading `await` to
+~80 internal call sites). Operators consuming the public MCP tools
+see no API change.
+
+### Fixed
+
+- **F1 — Session-lock TOCTOU race (multi-process).** Pre-v4.1.0
+  acquired `<session_dir>/.lock` by creating the file empty and then
+  writing PID metadata in a separate syscall. Across multiple host
+  processes sharing the same `data_dir`, a second process could
+  observe the empty lock between the two syscalls, fail to JSON-parse
+  it, remove it, create its own, and enter the critical section in
+  parallel with the first holder — corrupting `meta.json`.
+  `withSessionLock` now uses `proper-lockfile`'s `fs.mkdir`-based
+  atomic locking (the lockfile path is a directory, not a regular
+  file). The lock comes into existence in a single syscall with no
+  empty-window race possible across NTFS and POSIX. Lock-holder
+  freshness is now signaled by mtime touched every 5 s and detected
+  as stale after 120 s (the prior PID-aliveness check had collision
+  risk after PID-recycling restart). `clearStaleInFlight` and
+  `abortStaleSessions` switched from the manual PID read to
+  `lockfile.check(...)`.
+- **F2 — `redactPrivateKeyBlocks` leaked unterminated PRIVATE KEY
+  payloads.** Pre-v4.1.0, when the input contained
+  `-----BEGIN PRIVATE KEY-----` without a matching
+  `-----END PRIVATE KEY-----` (e.g. a log truncated mid-key), the
+  function returned the original input unredacted — the partial key
+  reached events.ndjson + persistent logs. v4.1.0 redacts from the
+  first BEGIN marker to end-of-string when no matching END is found,
+  emitting a single `[REDACTED]` token for the unterminated tail.
+- **F3 — `writeJson` retry busy-wait blocked the Node.js event loop
+  for up to 310 ms under Windows AV stress.** Pre-v4.1.0 used
+  `while (Date.now() - start < wait) {}` between `renameSync`
+  retries, burning a single core at 100% and starving the event loop
+  (SSE token streams, MCP stdio reads, timers, other sessions) for
+  the cumulative wait. `writeJson` is now `async`; the backoff awaits
+  a Promise-based timer (`await new Promise(r => setTimeout(r, wait))`)
+  so the event loop processes other tasks during the wait. The same
+  CPU-burning busy-wait existed in `src/core/cache-manifest.ts`
+  `writeJsonAtomic` and is removed in the same release; the F5
+  anti-drift pin (below) now scans every `src/**/*.ts` to prevent
+  recurrence.
+
+### Changed (cascade)
+
+- `writeJson(file, data)` → `async writeJson(file, data): Promise<void>`.
+- `withSessionLock<T>(sessionId, fn): T` →
+  `async withSessionLock<T>(sessionId, fn: () => T | Promise<T>): Promise<T>`.
+- `private sleepSync` removed (no callers after the lock refactor).
+- `cache-manifest.ts` exports become async:
+  `appendCacheManifestEntry(...)` and `writeCacheManifest(...)` now
+  return `Promise<void>`. Orchestrator's `recordCacheTelemetry` is
+  now async + awaited in the post-peer call path.
+- The following SessionStore methods are now async (return
+  `Promise<T>`): `init`, `markInFlight`, `appendEvent`,
+  `saveGeneration`, `savePeerResult`, `savePeerFailure`, `appendRound`,
+  `markBudgetWarningEmitted`, `setCircularState`,
+  `setSessionTraceability`, `finalize`, `requestCancellation`,
+  `markCancelled`, `appendFallbackEvent`,
+  `appendEvidenceChecklistItems`,
+  `runEvidenceChecklistAddressDetection`,
+  `setEvidenceChecklistItemStatus`, `markEvidenceItemAddressedByJudge`,
+  `recoverInterruptedSessions`, `sessionDoctor`, `contestVerdict`,
+  `attachEvidence`, `escalateToOperator`, `sweepIdle`,
+  `clearStaleInFlight`, `abortStaleSessions`.
+- New `SessionStore.flushPendingEvents()` — awaits all in-flight
+  fire-and-forget `appendEvent` promises. Used by sweeps + tests
+  that read events.ndjson right after the emit pipeline persisted.
+- New runtime dep: `proper-lockfile` ^4.1.2 (3 transitive deps,
+  small surface, used by npm internally; MIT licensed).
+- New devDep: `@types/proper-lockfile` ^4.1.4.
+
+### Tests
+
+- `redact_unterminated_private_key_test` (v4.1.0 / F4): empirical
+  regression for the unterminated PRIVATE KEY redaction. Asserts
+  `[REDACTED]` emitted, partial key body absent, passthrough for
+  no-key inputs.
+- `writeJson_async_no_busy_wait_test` (v4.1.0 / F5): pins source
+  invariants on `src/core/session-store.ts` — `writeJson` must be
+  declared `async function writeJson`, must use a Promise-based
+  async delay — AND walks every `.ts` under `src/` asserting that
+  no executable code contains `while (Date.now() - start < wait) {}`
+  or `Atomics.wait(...)`. The pin's expanded scope was driven by the
+  R1 cross-review feedback (cache-manifest.ts had an identical
+  busy-wait that the original session-store-only grep missed).
+- `session_lock_proper_lockfile_test` (v4.1.0 / F6): pins
+  `from "proper-lockfile"` import, `lockfile.lock(` call,
+  `async withSessionLock`, the absence of the pre-v4.1.0
+  `fs.openSync(..., "wx")` lock-acquire pattern, AND the fail-closed
+  legacy-file policy — source must contain the `detected a
+pre-v4.1.0 lock file` remediation string and MUST NOT contain
+  `fs.rmSync(lockfilePath, ...)` (no auto-remove). The expanded
+  contract was driven by codex catches R1..R4.
+
+### Migration
+
+- Pre-v4.1.0 created `.lock` as a regular file containing
+  `{pid, ts}` JSON. v4.1.0's lock claims `.lock` as a directory, so a
+  leftover legacy regular file would block every subsequent lock
+  acquisition. **v4.1.0 NEVER auto-removes a legacy regular `.lock`
+  file.** A four-round cross-review (codex catches R1, R2, R3, R4)
+  demonstrated that every auto-clean strategy could split-brain
+  under live cross-version v4.0/v4.1 operation:
+  - R1: unconditional removal split-brained with a live legacy
+    holder.
+  - R2: removal when `pidAlive && legacyMtimeStale` failed because
+    legacy locks do not heartbeat (mtime frozen at acquisition; a
+    v4.0.x process inside a multi-minute peer call has BOTH a live
+    pid AND a >120 s old mtime).
+  - R3: fail-closed on `pidAlive` (regardless of mtime) still raced
+    two concurrent v4.1.0 migrators against a v4.0.x.
+  - R4: a v4.1↔v4.1 migration mutex still left the cross-version
+    race — v4.0.x's own stale-removal-and-recreate path does not
+    honor any v4.1 mutex, so v4.0.x could remove a stale `.lock` and
+    create its own live one between v4.1's inspect and v4.1's
+    path-based `rmSync`, and v4.1 would then delete v4.0.x's new
+    live lock = split-brain.
+
+  **v4.1.0 fails closed.** When `withSessionLock` observes a regular
+  file at the lock path, it throws a clear remediation error to the
+  caller: "cross-review v4.1.0 detected a pre-v4.1.0 lock file at
+  `<path>`. Live cross-version migration is not supported (would
+  split-brain with any concurrent v4.0.x process). To migrate
+  safely: (1) stop all cross-review processes / close all MCP hosts
+  that loaded the server, (2) remove the legacy lock file, (3)
+  restart."
+
+  **Operator remediation (one-time at v4.0.x → v4.1.0 upgrade):**
+  1. Close every MCP host running cross-review (Claude Code, Codex,
+     Gemini Code Assist, etc.).
+  2. Remove all legacy lock files. POSIX one-liner:
+     `find ~/.cross-review/data/sessions -name .lock -type f -delete`.
+     Windows PowerShell:
+     `Get-ChildItem -Path ~/.cross-review/data/sessions -Recurse -Filter .lock -File | Remove-Item`.
+  3. Restart the MCP hosts. They now spawn v4.1.0 cross-review which
+     manages locks as mkdir-atomic directories; the issue cannot
+     recur.
+
+  Trade-off: an extra one-time operator step at upgrade. The
+  alternative (best-effort auto-clean) was demonstrated unsafe
+  across four cross-review rounds. Operator burden of a single
+  `find` command is far less than the cost of any split-brain
+  corruption.
+
+- Public MCP tool surface (`session_init`, `ask_peers`,
+  `run_until_unanimous`, etc.) is unchanged — all the async cascade
+  is internal.
+
+### Empirical validation
+
+- `scripts/race-reproducer.mjs`: 4 procs × 5 rounds = 20/20 and
+  8 procs × 10 rounds = 80/80 persisted with no losses under
+  multi-process contention against the shared `data_dir`.
+- `scripts/race-legacy-holder.mjs`: five scenarios cover the legacy
+  matrix (live-pid+fresh-mtime, live-pid+stale-mtime, dead-pid,
+  empty-fresh-mtime, empty-stale-mtime). Every shape gets the
+  fail-closed remediation error; v4.1.0 never enters the CS, never
+  removes the legacy file, never mutates `meta.json`.
+- `scripts/race-migration-toctou.mjs`: 3-process race orchestrated
+  to V41_A → LEGACY → V41_B. V41_A sees the planted stale dead-pid
+  file → fail-closed. LEGACY (v4.0.x simulator) clears the stale
+  file via v4.0.x's own openSync(wx) loop, claims `.lock` with its
+  live pid, holds an 8 s synthetic CS. V41_B sees LEGACY's new live
+  file → fail-closed. At end-of-CS, LEGACY's lockfile is present and
+  its content still names LEGACY's pid (no v4.1.0 deleted/replaced
+  it) — empirically demonstrating that the fail-closed policy
+  prevents the codex R3+R4 inspect+remove TOCTOU under live
+  cross-version operation.
+
 ## [v04.00.08] — 2026-05-16
 
 **Patch — eliminate the `js/file-access-to-http` CodeQL false positive

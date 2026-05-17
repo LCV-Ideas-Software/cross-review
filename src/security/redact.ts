@@ -101,12 +101,24 @@ function redactPrivateKeyBlocks(value: string): string {
       }
     }
 
+    parts ??= [];
+    parts.push(value.slice(cursor, begin.index), "[REDACTED]");
+
     if (!close) {
+      // v4.1.0 hardening: an unterminated PRIVATE KEY block (BEGIN
+      // without a matching END — e.g. when a log/error message was
+      // truncated mid-key by an upstream buffer cap) must STILL be
+      // redacted from `begin.index` to the end of the input. The
+      // pre-v4.1.0 implementation `break`-ed without pushing the
+      // [REDACTED] token, then fell through to the `if (!parts) return
+      // value` branch and leaked the partial key in plaintext to
+      // events.ndjson / persistent logs. Marking the whole tail as
+      // redacted preserves the no-leak guarantee for partial-key
+      // payloads while still emitting a single [REDACTED] token.
+      cursor = value.length;
       break;
     }
 
-    parts ??= [];
-    parts.push(value.slice(cursor, begin.index), "[REDACTED]");
     cursor = close.index + close.marker.length;
   }
 

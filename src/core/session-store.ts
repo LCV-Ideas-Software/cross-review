@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import lockfile from "proper-lockfile";
 import { redact } from "../security/redact.js";
 import { mergeCost, mergeUsage } from "./cost.js";
 import type {
@@ -53,7 +54,7 @@ const ATOMIC_WRITE_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EEXIST"])
 const ATOMIC_WRITE_MAX_ATTEMPTS = 5;
 const TMP_NONCE_BYTES = 2;
 
-function writeJson(file: string, data: unknown): void {
+async function writeJson(file: string, data: unknown): Promise<void> {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const nonce = crypto.randomBytes(TMP_NONCE_BYTES).toString("hex");
   const tmp = `${file}.${process.pid}.${Date.now()}.${nonce}.tmp`;
@@ -67,11 +68,17 @@ function writeJson(file: string, data: unknown): void {
       lastErr = err;
       const code = (err as NodeJS.ErrnoException).code;
       if (!code || !ATOMIC_WRITE_RETRY_CODES.has(code)) break;
+      // v4.1.0 hardening: pre-v4.1.0 used `while (Date.now() - start <
+      // wait) {}` busy-wait which blocked the single Node.js event loop
+      // thread for up to 310 ms (10+20+40+80+160) under repeated
+      // Windows-AV-induced EPERM/EBUSY contention. The CPU-burning
+      // busy-wait starved SSE streaming + concurrent sessions + MCP
+      // stdio reads. Now the backoff awaits a Promise-based timer:
+      // event loop remains fully responsive between attempts.
       const wait = 10 * 2 ** attempt; // 10, 20, 40, 80, 160 ms
-      const start = Date.now();
-      while (Date.now() - start < wait) {
-        /* spin — sync write path, brief by design */
-      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, wait);
+      });
     }
   }
   // Terminal failure path: best-effort tmp cleanup so callers don't see
@@ -131,6 +138,16 @@ export class SessionStore {
   // monotonically thereafter. Restart re-initializes from disk, so seq
   // remains correct across process boundaries.
   private readonly seqCache = new Map<string, number>();
+  // v4.1.0: track in-flight fire-and-forget appendEvent promises so
+  // callers that need synchronous read-after-write semantics (smoke
+  // tests, post-round aggregation) can call `flushPendingEvents()` to
+  // wait for all pending event writes to settle before reading.
+  // appendEvent is async because withSessionLock is async (proper-
+  // lockfile); the emit pipeline must stay sync, so it uses
+  // `void store.appendEvent(event)` and the store remembers the
+  // promise here. Promises resolve/reject within appendEvent's own
+  // try/catch — flush() therefore always settles, never rejects.
+  private readonly pendingEventWrites = new Set<Promise<void>>();
 
   constructor(private readonly config: AppConfig) {
     fs.mkdirSync(this.sessionsDir(), { recursive: true });
@@ -179,11 +196,6 @@ export class SessionStore {
     }
   }
 
-  private sleepSync(ms: number): void {
-    const buffer = new SharedArrayBuffer(4);
-    Atomics.wait(new Int32Array(buffer), 0, 0, ms);
-  }
-
   private totalsFor(meta: SessionMeta): SessionMeta["totals"] {
     const peerResults = meta.rounds.flatMap((round) => round.peers);
     const generations = meta.generation_files ?? [];
@@ -199,49 +211,117 @@ export class SessionStore {
     };
   }
 
-  private withSessionLock<T>(sessionId: string, fn: () => T): T {
+  // v4.1.0 hardening: pre-v4.1.0 acquired the lock via an exclusive
+  // file-create syscall followed by a separate JSON metadata write,
+  // which had a multi-process TOCTOU race window. Process A's create
+  // returned an empty inode + fd; before A's metadata write executed,
+  // process B could observe the empty file, fail to JSON-parse it,
+  // remove the lock path, create its own valid lock, and enter the
+  // critical section. Process A would then write into the now-orphan
+  // inode via the still-open fd and ALSO enter the critical section,
+  // corrupting meta.json. proper-lockfile uses `fs.mkdir` (atomic
+  // across NTFS and POSIX) so the lock comes into existence as a
+  // directory in a single syscall — no empty-window race possible.
+  // The mkdir-based lock also fixes the lock-holder freshness signal:
+  // proper-lockfile's `update` interval touches the lockfile's mtime
+  // every 5 s, and any other process treats the lock as stale once the
+  // mtime is older than `stale` ms (120 s). This is more robust than
+  // the pre-v4.1.0 PID-aliveness check, which had collision risk after
+  // process restart.
+  private async withSessionLock<T>(sessionId: string, fn: () => T | Promise<T>): Promise<T> {
     const dir = this.sessionDir(sessionId);
-    const lockPath = path.join(dir, ".lock");
-    const timeoutAt = Date.now() + 30_000;
-    while (true) {
+    const target = this.metaPath(sessionId);
+    const lockfilePath = path.join(dir, ".lock");
+    fs.mkdirSync(dir, { recursive: true });
+    // proper-lockfile requires the target path to exist (it uses it for
+    // realpath resolution). Init creates the session dir then immediately
+    // calls withSessionLock-protected writes; pre-create an empty meta
+    // placeholder so the first init() can acquire the lock. Existing
+    // session reuses preserve their meta.
+    if (!fs.existsSync(target)) {
       try {
-        const fd = fs.openSync(lockPath, "wx");
-        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, acquired_at: now() }));
-        fs.closeSync(fd);
-        break;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        try {
-          const lock = readJson<{ pid?: number; acquired_at?: string }>(lockPath);
-          const age = lock.acquired_at ? Date.now() - Date.parse(lock.acquired_at) : Infinity;
-          if (!lock.pid || age > 120_000 || !this.processAlive(lock.pid)) {
-            fs.rmSync(lockPath, { force: true });
-            continue;
-          }
-        } catch {
-          fs.rmSync(lockPath, { force: true });
-          continue;
-        }
-        if (Date.now() >= timeoutAt) {
-          throw new Error(`timed out waiting for session lock: ${sessionId}`, { cause: error });
-        }
-        this.sleepSync(100);
+        fs.writeFileSync(target, "{}\n", { flag: "wx" });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        /* concurrent process created it; fine */
       }
     }
-
+    // Pre-v4.1.0 legacy `.lock` regular file detection — FAIL CLOSED.
+    //
+    // Pre-v4.1.0 created `.lock` as a regular file containing
+    // `{pid, ts}` JSON. proper-lockfile claims `.lock` as a DIRECTORY
+    // via mkdir, so a leftover regular file blocks every subsequent
+    // lockfile.lock() with EEXIST. The original v4.1.0 design tried
+    // to auto-clean stale legacy files. Codex (session 059b0093 R1
+    // through R4) progressively demonstrated that NO auto-clean is
+    // safe under live cross-version operation:
+    //
+    //   • R1: unconditional removal split-brained with a live legacy
+    //     holder.
+    //   • R2: removal-when-pid-alive-but-mtime-stale split-brained
+    //     because legacy locks do not heartbeat (mtime is frozen at
+    //     acquisition).
+    //   • R3: per-process atomic decisions still raced two v4.1
+    //     migrators.
+    //   • R4: serializing v4.1 migrators via a separate mutex still
+    //     left the cross-version race: v4.0.x's own stale-removal
+    //     path does not honor any v4.1 mutex, so a concurrent v4.0.x
+    //     could remove a stale `.lock` and create its own live one
+    //     between v4.1's read and v4.1's path-based rmSync —
+    //     v4.1 then deletes the new live legacy lock → split-brain.
+    //
+    // Resolution: v4.1.0 NEVER auto-removes a legacy regular `.lock`
+    // file. If one is observed, withSessionLock throws a clear
+    // remediation error to the caller, instructing the operator to
+    // stop all cross-review processes and remove the file manually.
+    // This is a ONE-TIME operator step at v4.0.x → v4.1.0 upgrade.
+    // After all hosts are on v4.1.0 the locks are mkdir-atomic and
+    // the issue cannot recur.
     try {
-      return fn();
+      const stat = fs.statSync(lockfilePath);
+      if (stat.isFile()) {
+        throw new Error(
+          `cross-review v4.1.0 detected a pre-v4.1.0 lock file at ${lockfilePath}. ` +
+            `Live cross-version migration is not supported (would split-brain with any ` +
+            `concurrent v4.0.x process). To migrate safely: (1) stop all cross-review ` +
+            `processes / close all MCP hosts that loaded the server, (2) remove the ` +
+            `legacy lock file, (3) restart. POSIX one-liner for full cleanup: ` +
+            `\`find ${this.config.data_dir}/sessions -name .lock -type f -delete\`. ` +
+            `See CHANGELOG v04.01.00 migration notes for the rationale.`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("detected a pre-v4.1.0 lock file")) {
+        throw err;
+      }
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        /* ignore other stat errors; lockfile.lock will surface them */
+      }
+    }
+    const release = await lockfile.lock(target, {
+      stale: 120_000,
+      update: 5_000,
+      retries: { retries: 30, factor: 1.5, minTimeout: 100, maxTimeout: 1_000 },
+      realpath: false,
+      lockfilePath,
+    });
+    try {
+      return await fn();
     } finally {
-      fs.rmSync(lockPath, { force: true });
+      try {
+        await release();
+      } catch {
+        /* lock was already released by stale-detection or sibling process */
+      }
     }
   }
 
-  init(
+  async init(
     task: string,
     caller: PeerId | "operator",
     snapshot: PeerProbeResult[],
     reviewFocus?: string,
-  ): SessionMeta {
+  ): Promise<SessionMeta> {
     const session_id = crypto.randomUUID();
     // v2.22.0 (B.P3): snapshot the cost ceiling at session_init time so
     // budget pressure analysis is decoupled from later env-var mutation.
@@ -271,7 +351,7 @@ export class SessionStore {
       budget_warning_emitted: false,
     };
     fs.mkdirSync(path.join(this.sessionDir(session_id), "agent-runs"), { recursive: true });
-    writeJson(this.metaPath(session_id), meta);
+    await writeJson(this.metaPath(session_id), meta);
     fs.writeFileSync(path.join(this.sessionDir(session_id), "task.md"), task, "utf8");
     if (reviewFocus) {
       fs.writeFileSync(
@@ -292,7 +372,7 @@ export class SessionStore {
   // R5 throws when in_flight is already populated; the boot-time
   // `clearStaleInFlight` sweep clears any orphan in_flight from a
   // crashed prior host so legitimate operators are not blocked.
-  markInFlight(
+  async markInFlight(
     sessionId: string,
     params: {
       round: number;
@@ -300,8 +380,8 @@ export class SessionStore {
       started_at: string;
       scope: ConvergenceScope;
     },
-  ): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       if (meta.in_flight) {
         throw new Error(
@@ -321,7 +401,7 @@ export class SessionStore {
         detail: `Round ${params.round} is running.`,
       };
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
@@ -365,25 +445,50 @@ export class SessionStore {
     this.seqCache.set(sessionId, committed);
   }
 
-  appendEvent(event: RuntimeEvent): void {
+  // v4.1.0: durable event persistence. withSessionLock became async
+  // with the proper-lockfile refactor; appendEvent awaits the lock so
+  // callers that read events after persisting get the expected
+  // synchronous-write semantics (e.g. the session_doctor sweep + smoke
+  // fixtures that read events.ndjson immediately after appendEvent).
+  // Fire-and-forget callers wrap with `void store.appendEvent(...)`.
+  async appendEvent(event: RuntimeEvent): Promise<void> {
     const sessionId = event.session_id;
     if (!sessionId) return;
-    try {
-      this.withSessionLock(sessionId, () => {
-        const file = this.eventsPath(sessionId);
-        const seq = this.peekNextSeq(sessionId, file);
-        fs.appendFileSync(
-          file,
-          `${JSON.stringify({ ...event, seq, ts: event.ts ?? now() })}\n`,
-          "utf8",
-        );
-        // Only commit the cache AFTER the durable append succeeded.
-        // If appendFileSync threw above, the cache still reflects the
-        // last persisted seq and the next call reuses this seq number.
-        this.commitSeq(sessionId, seq);
-      });
-    } catch {
-      // Event persistence must never break provider calls or MCP responses.
+    const write = (async () => {
+      try {
+        await this.withSessionLock(sessionId, () => {
+          const file = this.eventsPath(sessionId);
+          const seq = this.peekNextSeq(sessionId, file);
+          fs.appendFileSync(
+            file,
+            `${JSON.stringify({ ...event, seq, ts: event.ts ?? now() })}\n`,
+            "utf8",
+          );
+          // Only commit the cache AFTER the durable append succeeded.
+          // If appendFileSync threw above, the cache still reflects the
+          // last persisted seq and the next call reuses this seq number.
+          this.commitSeq(sessionId, seq);
+        });
+      } catch {
+        // Event persistence must never break provider calls or MCP responses.
+      }
+    })();
+    this.pendingEventWrites.add(write);
+    void write.finally(() => {
+      this.pendingEventWrites.delete(write);
+    });
+    return write;
+  }
+
+  // v4.1.0: wait for all in-flight fire-and-forget event writes to
+  // settle. Used by tests/sweeps that need synchronous read-after-write
+  // semantics for events.ndjson when the emit pipeline used
+  // `void store.appendEvent(...)`. Always resolves (never rejects);
+  // appendEvent swallows its own errors.
+  async flushPendingEvents(): Promise<void> {
+    while (this.pendingEventWrites.size > 0) {
+      const snapshot = Array.from(this.pendingEventWrites);
+      await Promise.allSettled(snapshot);
     }
   }
 
@@ -478,20 +583,20 @@ export class SessionStore {
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
-  saveGeneration(
+  async saveGeneration(
     sessionId: string,
     round: number,
     result: GenerationResult,
     label = "generation",
-  ): string {
+  ): Promise<string> {
     const file = path.join(
       this.sessionDir(sessionId),
       "agent-runs",
       `round-${round}-${result.peer}-${label}.json`,
     );
-    writeJson(file, { ...result, text: redact(result.text) });
+    await writeJson(file, { ...result, text: redact(result.text) });
     const relativePath = path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
-    this.withSessionLock(sessionId, () => {
+    await this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const artifact: GenerationArtifact = {
         ts: now(),
@@ -506,7 +611,7 @@ export class SessionStore {
       meta.generation_files = [...(meta.generation_files ?? []), artifact];
       meta.totals = this.totalsFor(meta);
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
     });
     return relativePath;
   }
@@ -523,27 +628,32 @@ export class SessionStore {
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
-  savePeerResult(sessionId: string, round: number, result: PeerResult, label = "response"): string {
+  async savePeerResult(
+    sessionId: string,
+    round: number,
+    result: PeerResult,
+    label = "response",
+  ): Promise<string> {
     const file = path.join(
       this.sessionDir(sessionId),
       "agent-runs",
       `round-${round}-${result.peer}-${label}.json`,
     );
-    writeJson(file, { ...result, text: redact(result.text) });
+    await writeJson(file, { ...result, text: redact(result.text) });
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
-  savePeerFailure(sessionId: string, round: number, failure: PeerFailure): string {
+  async savePeerFailure(sessionId: string, round: number, failure: PeerFailure): Promise<string> {
     const file = path.join(
       this.sessionDir(sessionId),
       "agent-runs",
       `round-${round}-${failure.peer}-failure.json`,
     );
-    writeJson(file, { ...failure, message: redact(failure.message) });
+    await writeJson(file, { ...failure, message: redact(failure.message) });
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
-  appendRound(
+  async appendRound(
     sessionId: string,
     params: {
       caller_status: ReviewStatus;
@@ -555,8 +665,8 @@ export class SessionStore {
       convergence_scope: ConvergenceScope;
       started_at: string;
     },
-  ): ReviewRound {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<ReviewRound> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       // v3.2.0 (Codex bug report 2026-05-12): refuse to append a round
       // to a finalized session. Otherwise the per-round
@@ -606,7 +716,7 @@ export class SessionStore {
       // diff-based drift if a peer's cost changed in a retry loop.
       const roundCost = params.peers.reduce((sum, peer) => sum + (peer.cost?.total_cost ?? 0), 0);
       meta.costs_per_round = [...(meta.costs_per_round ?? []), roundCost];
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return round;
     });
   }
@@ -614,12 +724,12 @@ export class SessionStore {
   // v2.22.0 (B.P3): one-shot guard for `session.budget_warning` emit
   // idempotency. Persisted in meta.json so the warning fires at most
   // once per session even across host restarts.
-  markBudgetWarningEmitted(sessionId: string): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  async markBudgetWarningEmitted(sessionId: string): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       meta.budget_warning_emitted = true;
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
@@ -628,15 +738,15 @@ export class SessionStore {
   // orchestrator's circular loop calls this every round so resumed
   // sessions can pick up the rotation cursor and consecutive-no-change
   // count from disk without re-deriving them by walking events.
-  setCircularState(
+  async setCircularState(
     sessionId: string,
     state: NonNullable<SessionMeta["circular_state"]>,
-  ): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       meta.circular_state = state;
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
@@ -650,7 +760,7 @@ export class SessionStore {
   // max_rounds the caller actually requested. This fills that gap with
   // pure-additive metadata; `cost_ceiling_usd` is kept in sync with
   // `effective_cost_ceiling_usd` for back-compat with v3.4.x readers.
-  setSessionTraceability(
+  async setSessionTraceability(
     sessionId: string,
     traceability: {
       requested_max_rounds: number | null;
@@ -659,8 +769,8 @@ export class SessionStore {
       effective_cost_ceiling_usd: number | null;
       cost_ceiling_source: "call_arg" | "env_default" | "config_default";
     },
-  ): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       meta.requested_max_rounds = traceability.requested_max_rounds;
       meta.effective_max_rounds = traceability.effective_max_rounds;
@@ -671,7 +781,7 @@ export class SessionStore {
       // only know `cost_ceiling_usd` still see the effective ceiling.
       meta.cost_ceiling_usd = traceability.effective_cost_ceiling_usd;
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
@@ -694,12 +804,12 @@ export class SessionStore {
     }
   }
 
-  finalize(
+  async finalize(
     sessionId: string,
     outcome: NonNullable<SessionMeta["outcome"]>,
     reason?: string,
-  ): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       // v3.2.0 (Codex bug report 2026-05-12): when the caller asserts
       // outcome="converged", the latest round (if any) MUST have
@@ -730,17 +840,17 @@ export class SessionStore {
         detail: reason ?? outcome,
       };
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
 
-  requestCancellation(
+  async requestCancellation(
     sessionId: string,
     reason = "operator_requested",
     jobId?: string,
-  ): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       meta.control = {
         status: "cancel_requested",
@@ -755,13 +865,13 @@ export class SessionStore {
         detail: `Cancellation requested: ${reason}`,
       };
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
 
-  markCancelled(sessionId: string, reason = "cancelled"): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  async markCancelled(sessionId: string, reason = "cancelled"): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       meta.outcome = "aborted";
       meta.outcome_reason = reason;
@@ -779,7 +889,7 @@ export class SessionStore {
         detail: reason,
       };
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
@@ -789,15 +899,15 @@ export class SessionStore {
     return meta.control?.status === "cancel_requested";
   }
 
-  appendFallbackEvent(
+  async appendFallbackEvent(
     sessionId: string,
     event: NonNullable<SessionMeta["fallback_events"]>[number],
-  ): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       meta.fallback_events = [...(meta.fallback_events ?? []), event];
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
@@ -808,13 +918,13 @@ export class SessionStore {
   // across rounds increments `round_count` instead of producing
   // duplicate entries. Returns the updated checklist (or empty array
   // if nothing was added/updated).
-  appendEvidenceChecklistItems(
+  async appendEvidenceChecklistItems(
     sessionId: string,
     round: number,
     incoming: Array<{ peer: PeerId; ask: string }>,
-  ): NonNullable<SessionMeta["evidence_checklist"]> {
+  ): Promise<NonNullable<SessionMeta["evidence_checklist"]>> {
     if (!incoming.length) return [];
-    return this.withSessionLock(sessionId, () => {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const existing = meta.evidence_checklist ?? [];
       const byId = new Map(existing.map((item) => [item.id, item]));
@@ -859,7 +969,7 @@ export class SessionStore {
       });
       meta.evidence_checklist = updated;
       meta.updated_at = ts;
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return updated;
     });
   }
@@ -888,10 +998,10 @@ export class SessionStore {
   // by the orchestrator via a separate event so operators see when peers
   // keep asking for items they explicitly closed; the status itself is
   // operator-owned.
-  runEvidenceChecklistAddressDetection(
+  async runEvidenceChecklistAddressDetection(
     sessionId: string,
     currentRound: number,
-  ): {
+  ): Promise<{
     // v3.5.0 (CRV2-2): renamed `addressed` → `not_resurfaced`. The
     // resurfacing-inference path no longer claims the evidence was
     // confirmed — it only records that the peer did not re-ask. See the
@@ -899,8 +1009,8 @@ export class SessionStore {
     not_resurfaced: EvidenceChecklistItem[];
     reopened: EvidenceChecklistItem[];
     peer_resurfaced_terminal: EvidenceChecklistItem[];
-  } {
-    return this.withSessionLock(sessionId, () => {
+  }> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const checklist = meta.evidence_checklist ?? [];
       if (!checklist.length) {
@@ -973,7 +1083,7 @@ export class SessionStore {
       if (notResurfaced.length || reopened.length) {
         meta.evidence_status_history = history;
         meta.updated_at = ts;
-        writeJson(this.metaPath(sessionId), meta);
+        await writeJson(this.metaPath(sessionId), meta);
       }
       return {
         not_resurfaced: notResurfaced,
@@ -993,13 +1103,13 @@ export class SessionStore {
   // "not_resurfaced" — both are runtime-managed (judge promotion and
   // resurfacing inference respectively). Returns the mutated item and the
   // appended history entry.
-  setEvidenceChecklistItemStatus(
+  async setEvidenceChecklistItemStatus(
     sessionId: string,
     itemId: string,
     status: Exclude<EvidenceChecklistStatus, "addressed" | "not_resurfaced">,
     options: { note?: string; by?: "operator" | "runtime" } = {},
-  ): { item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry } {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry }> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const checklist = meta.evidence_checklist ?? [];
       const item = checklist.find((entry) => entry.id === itemId);
@@ -1033,7 +1143,7 @@ export class SessionStore {
       meta.evidence_status_history = history;
       meta.evidence_checklist = checklist;
       meta.updated_at = ts;
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return { item, history_entry: entry };
     });
   }
@@ -1043,12 +1153,12 @@ export class SessionStore {
   // moves anything other than open. Atomic under the session lock.
   // Returns null when the item is not currently `open` (already
   // addressed, terminal, or missing) so the caller can skip emit.
-  markEvidenceItemAddressedByJudge(
+  async markEvidenceItemAddressedByJudge(
     sessionId: string,
     itemId: string,
     params: { round: number; rationale: string; judge_peer: PeerId },
-  ): { item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry } | null {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry } | null> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const checklist = meta.evidence_checklist ?? [];
       const item = checklist.find((entry) => entry.id === itemId);
@@ -1078,17 +1188,17 @@ export class SessionStore {
       meta.evidence_status_history = history;
       meta.evidence_checklist = checklist;
       meta.updated_at = ts;
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return { item, history_entry: entry };
     });
   }
 
-  recoverInterruptedSessions(activeSessionIds = new Set<string>()): SessionMeta[] {
+  async recoverInterruptedSessions(activeSessionIds = new Set<string>()): Promise<SessionMeta[]> {
     const recovered: SessionMeta[] = [];
     for (const session of this.list()) {
       if (session.outcome || activeSessionIds.has(session.session_id) || !session.in_flight)
         continue;
-      const updated = this.withSessionLock(session.session_id, () => {
+      const updated = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
         if (current.outcome || activeSessionIds.has(current.session_id) || !current.in_flight) {
           return current;
@@ -1106,7 +1216,7 @@ export class SessionStore {
           detail: `Recovered interrupted round ${round} after MCP restart. Start a new round to continue from saved session context.`,
         };
         current.updated_at = now();
-        writeJson(this.metaPath(current.session_id), current);
+        await writeJson(this.metaPath(current.session_id), current);
         return current;
       });
       recovered.push(updated);
@@ -1341,7 +1451,11 @@ export class SessionStore {
   // `item_types` (open items grouped by surfacing peer) and
   // `chronic_blockers` (item ids with `round_count >= 3`) so operators
   // can see which evidence asks are systemic vs cauda ruidosa.
-  sessionDoctor(limit = 20, includeLegacy = false, repair = false): SessionDoctorReport {
+  async sessionDoctor(
+    limit = 20,
+    includeLegacy = false,
+    repair = false,
+  ): Promise<SessionDoctorReport> {
     const cappedLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 20));
     // v3.6.0 (C): opt-in repair pass BEFORE the read-only audit. Fixes
     // the contradictory `outcome="converged" + health.state="blocked"`
@@ -1363,7 +1477,7 @@ export class SessionStore {
           // for manual operator inspection rather than guessing.
           if (latestConverged) {
             const fromState = session.convergence_health?.state;
-            const fixed = this.withSessionLock(session.session_id, () => {
+            const fixed = await this.withSessionLock(session.session_id, async () => {
               const meta = this.read(session.session_id);
               if (
                 meta.outcome === "converged" &&
@@ -1376,7 +1490,7 @@ export class SessionStore {
                   detail: `v3.6.0 doctor repair: recomputed health from latest round (was "blocked" with outcome="converged" — pre-v3.2.0 corruption artifact)`,
                 };
                 meta.updated_at = now();
-                writeJson(this.metaPath(session.session_id), meta);
+                await writeJson(this.metaPath(session.session_id), meta);
                 return true;
               }
               return false;
@@ -1788,13 +1902,13 @@ export class SessionStore {
   // original session is preserved (append-only); a new session opens
   // for re-deliberation with a fresh task + initial_draft and a
   // structural reference back to the contested session.
-  contestVerdict(params: {
+  async contestVerdict(params: {
     session_id: string;
     reason: string;
     new_task: string;
     new_initial_draft?: string;
     new_caller?: PeerId | "operator";
-  }): { contested_meta: SessionMeta; new_session_id: string } {
+  }): Promise<{ contested_meta: SessionMeta; new_session_id: string }> {
     const original = this.read(params.session_id);
     if (!original.outcome) {
       throw new Error(
@@ -1807,17 +1921,17 @@ export class SessionStore {
       );
     }
     const newCaller: PeerId | "operator" = params.new_caller ?? "operator";
-    const newSession = this.init(params.new_task, newCaller, [], undefined);
+    const newSession = await this.init(params.new_task, newCaller, [], undefined);
     // Cross-link new session → original.
-    this.withSessionLock(newSession.session_id, () => {
+    await this.withSessionLock(newSession.session_id, async () => {
       const m = this.read(newSession.session_id);
       m.contests_session_id = params.session_id;
       m.updated_at = now();
-      writeJson(this.metaPath(newSession.session_id), m);
+      await writeJson(this.metaPath(newSession.session_id), m);
       return m;
     });
     // Stamp original with contestation record.
-    const contestedMeta = this.withSessionLock(params.session_id, () => {
+    const contestedMeta = await this.withSessionLock(params.session_id, async () => {
       const m = this.read(params.session_id);
       m.contestation = {
         contested_at: now(),
@@ -1826,16 +1940,16 @@ export class SessionStore {
         new_session_id: newSession.session_id,
       };
       m.updated_at = now();
-      writeJson(this.metaPath(params.session_id), m);
+      await writeJson(this.metaPath(params.session_id), m);
       return m;
     });
     return { contested_meta: contestedMeta, new_session_id: newSession.session_id };
   }
 
-  attachEvidence(
+  async attachEvidence(
     sessionId: string,
     params: { label: string; content: string; content_type?: string; extension?: string },
-  ): { path: string; meta: SessionMeta } {
+  ): Promise<{ path: string; meta: SessionMeta }> {
     const extension = safeFilePart(params.extension ?? "txt").replace(/\./g, "") || "txt";
     const label = safeFilePart(params.label);
     const relativePath = `evidence/${timestampFilePart()}-${label}.${extension}`;
@@ -1843,7 +1957,7 @@ export class SessionStore {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, redact(params.content), "utf8");
 
-    const meta = this.withSessionLock(sessionId, () => {
+    const meta = await this.withSessionLock(sessionId, async () => {
       const current = this.read(sessionId);
       current.evidence_files = [
         ...(current.evidence_files ?? []),
@@ -1855,18 +1969,18 @@ export class SessionStore {
         },
       ];
       current.updated_at = now();
-      writeJson(this.metaPath(sessionId), current);
+      await writeJson(this.metaPath(sessionId), current);
       return current;
     });
 
     return { path: relativePath.replace(/\\/g, "/"), meta };
   }
 
-  escalateToOperator(
+  async escalateToOperator(
     sessionId: string,
     params: { reason: string; severity: "info" | "warning" | "critical" },
-  ): SessionMeta {
-    return this.withSessionLock(sessionId, () => {
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       meta.operator_escalations = [
         ...(meta.operator_escalations ?? []),
@@ -1878,16 +1992,16 @@ export class SessionStore {
         detail: `Operator escalation requested: ${params.reason}`,
       };
       meta.updated_at = now();
-      writeJson(this.metaPath(sessionId), meta);
+      await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
 
-  sweepIdle(
+  async sweepIdle(
     idleMs: number,
     outcome: "aborted" | "max-rounds" = "aborted",
     reason = "stale",
-  ): SessionMeta[] {
+  ): Promise<SessionMeta[]> {
     const effectiveIdleMs = Math.max(idleMs, SWEEP_MIN_IDLE_MS);
     const nowMs = Date.now();
     const swept: SessionMeta[] = [];
@@ -1896,7 +2010,7 @@ export class SessionStore {
       const updatedAt = Date.parse(session.updated_at);
       const idleFor = Number.isFinite(updatedAt) ? nowMs - updatedAt : Infinity;
       if (idleFor < effectiveIdleMs) continue;
-      const finalized = this.withSessionLock(session.session_id, () => {
+      const finalized = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
         current.outcome = outcome;
         current.outcome_reason = reason;
@@ -1908,7 +2022,7 @@ export class SessionStore {
           idle_ms: idleFor,
         };
         current.updated_at = now();
-        writeJson(this.metaPath(session.session_id), current);
+        await writeJson(this.metaPath(session.session_id), current);
         return current;
       });
       swept.push(finalized);
@@ -2025,7 +2139,7 @@ export class SessionStore {
   //   - in_flight.started_at is older than HEARTBEAT_STALE_AFTER_MS.
   // Sessions still actively running on a live PID are skipped. Idempotent
   // + best-effort. Returns counts for telemetry.
-  clearStaleInFlight(): { scanned: number; cleared: number } {
+  async clearStaleInFlight(): Promise<{ scanned: number; cleared: number }> {
     const HEARTBEAT_STALE_AFTER_MS = 30 * 60 * 1000; // 30 minutes
     let scanned = 0;
     let cleared = 0;
@@ -2034,31 +2148,37 @@ export class SessionStore {
       scanned += 1;
       const startedIso = session.in_flight.started_at;
       const startedAge = startedIso ? Date.now() - Date.parse(startedIso) : Infinity;
-      // Best-effort liveness probe via the active lock holder pid (if any).
-      let holderAlive = true;
-      const lockPath = path.join(this.sessionDir(session.session_id), ".lock");
-      if (fs.existsSync(lockPath)) {
-        try {
-          const lock = readJson<{ pid?: number }>(lockPath);
-          if (Number.isInteger(lock.pid)) {
-            holderAlive = this.processAlive(lock.pid as number);
-          }
-        } catch {
-          // malformed lock — assume dead so the lock sweep cleans it up.
-          holderAlive = false;
-        }
-      } else {
-        // No active lock — heartbeat staleness is the only signal.
-        holderAlive = !Number.isFinite(startedAge) ? false : startedAge <= HEARTBEAT_STALE_AFTER_MS;
+      // v4.1.0: lock-holder freshness is reported by proper-lockfile's
+      // mtime-based stale detection. lockfile.check returns true if the
+      // lock is actively held (mtime within `stale` ms), false otherwise.
+      // This replaces the pre-v4.1.0 PID-aliveness check, which had
+      // collision risk after PID-recycling restart.
+      let holderAlive: boolean;
+      try {
+        holderAlive = await lockfile.check(this.metaPath(session.session_id), {
+          stale: 120_000,
+          realpath: false,
+          lockfilePath: path.join(this.sessionDir(session.session_id), ".lock"),
+        });
+      } catch {
+        // metaPath missing or unreadable: treat as no active holder.
+        holderAlive = false;
+      }
+      // Fallback heartbeat staleness signal when no active lock and
+      // started_at indicates the in_flight marker itself is stale.
+      if (!holderAlive && Number.isFinite(startedAge) && startedAge <= HEARTBEAT_STALE_AFTER_MS) {
+        // No live holder but started_at is recent; do nothing yet (lock
+        // may have been released cleanly; let normal finalize handle it).
+        continue;
       }
       if (!holderAlive || startedAge > HEARTBEAT_STALE_AFTER_MS) {
         try {
-          this.withSessionLock(session.session_id, () => {
+          await this.withSessionLock(session.session_id, async () => {
             const current = this.read(session.session_id);
             if (!current.in_flight) return;
             delete current.in_flight;
             current.updated_at = now();
-            writeJson(this.metaPath(session.session_id), current);
+            await writeJson(this.metaPath(session.session_id), current);
             cleared += 1;
           });
         } catch {
@@ -2094,7 +2214,7 @@ export class SessionStore {
   //     threshold (default 24h via CROSS_REVIEW_STALE_HOURS).
   //
   // Idempotent + best-effort. Returns counts for telemetry.
-  abortStaleSessions(staleHours?: number): { scanned: number; aborted: number } {
+  async abortStaleSessions(staleHours?: number): Promise<{ scanned: number; aborted: number }> {
     const envHours = Number.parseFloat(process.env.CROSS_REVIEW_STALE_HOURS ?? "");
     const hours =
       staleHours != null && staleHours > 0
@@ -2113,23 +2233,25 @@ export class SessionStore {
       // (legitimate running session, must not be touched).
       if (session.in_flight) continue;
       scanned += 1;
-      // Live lock holder => assume still running, skip.
-      const lockPath = path.join(this.sessionDir(session.session_id), ".lock");
-      if (fs.existsSync(lockPath)) {
-        try {
-          const lock = readJson<{ pid?: number }>(lockPath);
-          if (Number.isInteger(lock.pid) && this.processAlive(lock.pid as number)) {
-            continue;
-          }
-        } catch {
-          /* malformed lock — fall through to staleness check */
-        }
+      // v4.1.0: lock-holder freshness via proper-lockfile mtime-based
+      // stale detection. lockfile.check returns true if a live holder
+      // is touching the lockfile mtime within `stale` ms.
+      let holderAlive: boolean;
+      try {
+        holderAlive = await lockfile.check(this.metaPath(session.session_id), {
+          stale: 120_000,
+          realpath: false,
+          lockfilePath: path.join(this.sessionDir(session.session_id), ".lock"),
+        });
+      } catch {
+        holderAlive = false;
       }
+      if (holderAlive) continue;
       const lastTouched = Date.parse(session.updated_at);
       if (!Number.isFinite(lastTouched)) continue;
       if (Date.now() - lastTouched < staleThresholdMs) continue;
       try {
-        this.finalize(session.session_id, "aborted", `stale_no_finalize_${hours}h`);
+        await this.finalize(session.session_id, "aborted", `stale_no_finalize_${hours}h`);
         aborted += 1;
       } catch {
         /* best-effort */

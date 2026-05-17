@@ -21,7 +21,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.00.08** (npm package `4.0.8`). See
+**Status.** Stable. Current release: **v04.01.00** (npm package `4.1.0`). See
 [CHANGELOG.md](./CHANGELOG.md) for the release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
@@ -36,6 +36,7 @@ The version history at a glance:
 
 | Release | Scope |
 |---|---|
+| **`v04.01.00`** | **Minor — security hardening of session-store concurrency, write-path DoS surface, and credential redaction.** Closes three high-impact findings from an in-depth security audit of v4.0.8: (F1) `withSessionLock` switched from `fs.openSync(.., "wx")` + separate write to `proper-lockfile`'s `fs.mkdir`-based atomic locking, eliminating the multi-process TOCTOU race window where two host processes sharing the same `data_dir` could both enter the critical section and corrupt `meta.json`. (F2) `redactPrivateKeyBlocks` now redacts unterminated `-----BEGIN PRIVATE KEY-----` blocks to end-of-string instead of returning the original input unredacted — pre-v4.1.0 leaked partial keys to events.ndjson when logs were truncated mid-key. (F3) `writeJson`'s `renameSync` retry no longer busy-waits with `while (Date.now() - start < wait)` (which blocked the event loop for up to 310 ms under Windows AV stress); it now awaits a Promise-based timer so the event loop remains responsive during backoff. The cascading internal refactor (~22 SessionStore methods became async, ~80 internal call sites added `await`) preserves the public MCP tool surface unchanged. New runtime dep: `proper-lockfile` ^4.1.2. |
 | **`v04.00.08`** | **Patch — eliminate the recurring `js/file-access-to-http` CodeQL false positive at the source.** `scripts/verify-registry-dist.mjs` no longer reads `package.json` from disk; package name and version come from `PACKAGE_NAME` / `PACKAGE_VERSION` env vars (with `npm_package_name` / `npm_package_version` auto-injected by npm as a transparent fallback when invoked via `npm run release:verify-registry`). Both inputs are required; missing values throw a clear error before any network call. Removing the `fs.readFileSync` → outbound-fetch flow stops future CodeQL analyses from re-filing the same alert on every release. |
 | **`v04.00.07`** | **Patch — bounded npm registry fetch in the post-publish verifier.** `scripts/verify-registry-dist.mjs` now passes `signal: AbortSignal.timeout(30_000)` to the `https://registry.npmjs.org/<package>/<version>` `fetch` call so a slow or unreachable registry surfaces as a deterministic abort instead of hanging the publish workflow until its 60-minute ceiling. Timeouts map to an explicit `"npm registry lookup for <spec> timed out after 30000 ms"` error; the validated fields (`dist.shasum`, `dist.integrity`, `dist.tarball`) and the script CLI/env contract are unchanged. |
 | **`v04.00.06`** | **Patch — Windows-safe registry verifier.** `scripts/verify-registry-dist.mjs` now queries `https://registry.npmjs.org` directly instead of spawning `npm.cmd`, closing the Windows Node hardening failure (`spawnSync npm.cmd EINVAL`) while preserving the post-publish validation of registry `dist.shasum`, `dist.integrity`, and `dist.tarball`. |

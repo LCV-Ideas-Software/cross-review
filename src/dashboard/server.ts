@@ -10,7 +10,11 @@ const eventLog = new EventLog(config);
 const holder: { orchestrator?: CrossReviewOrchestrator } = {};
 const orchestrator = new CrossReviewOrchestrator(config, (event) => {
   eventLog.emit(event);
-  holder.orchestrator?.store.appendEvent(event);
+  // Fire-and-forget: appendEvent is async (v4.1.0 proper-lockfile lock)
+  // but the emit pipeline must stay sync — callers that need synchronous
+  // persistence guarantees should await appendEvent directly. Unhandled
+  // rejections are swallowed inside appendEvent.
+  void holder.orchestrator?.store.appendEvent(event);
 });
 holder.orchestrator = orchestrator;
 

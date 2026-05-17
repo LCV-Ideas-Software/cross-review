@@ -28,7 +28,7 @@ function manifestPath(dataDir: string, sessionId: string): string {
   return path.resolve(dataDir, "sessions", sessionId, MANIFEST_FILENAME);
 }
 
-function writeJsonAtomic(file: string, data: unknown): void {
+async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const nonce = crypto.randomBytes(TMP_NONCE_BYTES).toString("hex");
   const tmp = `${file}.${process.pid}.${Date.now()}.${nonce}.tmp`;
@@ -42,11 +42,17 @@ function writeJsonAtomic(file: string, data: unknown): void {
       lastErr = err;
       const code = (err as NodeJS.ErrnoException).code;
       if (!code || !ATOMIC_WRITE_RETRY_CODES.has(code)) break;
+      // v4.1.0 hardening (Codex R1 catch on the broader F3 grep): this
+      // second atomic-write helper had the SAME CPU-burning busy-wait
+      // as session-store.ts writeJson (now fixed). The single Node
+      // event loop was being blocked for up to 310 ms (10+20+40+80+160)
+      // per cache_manifest append under Windows-AV-induced
+      // EPERM/EBUSY contention. Promise + setTimeout: event loop
+      // remains fully responsive.
       const wait = 10 * 2 ** attempt;
-      const start = Date.now();
-      while (Date.now() - start < wait) {
-        /* spin */
-      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, wait);
+      });
     }
   }
   try {
@@ -79,12 +85,12 @@ export function readCacheManifest(dataDir: string, sessionId: string): CacheMani
  * by tests; production callers should append entries via
  * appendCacheManifestEntry.
  */
-export function writeCacheManifest(
+export async function writeCacheManifest(
   dataDir: string,
   sessionId: string,
   manifest: CacheManifest,
-): void {
-  writeJsonAtomic(manifestPath(dataDir, sessionId), manifest);
+): Promise<void> {
+  await writeJsonAtomic(manifestPath(dataDir, sessionId), manifest);
 }
 
 /**
@@ -94,12 +100,12 @@ export function writeCacheManifest(
  * process; concurrent calls in the same process must be awaited in
  * order by the caller.
  */
-export function appendCacheManifestEntry(
+export async function appendCacheManifestEntry(
   dataDir: string,
   sessionId: string,
   entry: CacheManifestEntry,
   cacheSchemaVersion: string = CACHE_SCHEMA_VERSION_DEFAULT,
-): void {
+): Promise<void> {
   const file = manifestPath(dataDir, sessionId);
   const nowIso = new Date().toISOString();
   let current: CacheManifest;
@@ -137,5 +143,5 @@ export function appendCacheManifestEntry(
   }
   current.entries.push(entry);
   current.updated_at = nowIso;
-  writeJsonAtomic(file, current);
+  await writeJsonAtomic(file, current);
 }
