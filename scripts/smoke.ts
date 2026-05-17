@@ -8564,7 +8564,34 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       !/fs\.rmSync\(\s*lockfilePath\b/.test(storeSrc),
       "v4.1.0 / F6: session-store.ts must NOT contain `fs.rmSync(lockfilePath, ...)` — v4.1.0 fails closed on legacy locks and never auto-removes them.",
     );
+    assert.ok(
+      !/if\s*\(\s*!\s*fs\.existsSync\(\s*target\s*\)\s*\)\s*\{[\s\S]{0,300}fs\.writeFileSync\(\s*target/.test(
+        storeSrc,
+      ),
+      "v4.1.1 / CodeQL: meta placeholder creation must not use existsSync(target) before writeFileSync(target); rely on writeFileSync(..., { flag: 'wx' }) and EEXIST handling instead.",
+    );
     console.log("[smoke] session_lock_proper_lockfile_test: PASS");
+  }
+  {
+    const migrationRaceSrc = fs.readFileSync(
+      path.join(process.cwd(), "scripts", "race-migration-toctou.mjs"),
+      "utf8",
+    );
+    assert.ok(
+      /fs\.openSync\(\s*lockfilePath,\s*["']r["']\s*\)/.test(migrationRaceSrc),
+      "v4.1.1 / CodeQL: race-migration-toctou must open lockfilePath and snapshot through the file descriptor.",
+    );
+    assert.ok(
+      /fs\.fstatSync\(\s*endFd\s*\)/.test(migrationRaceSrc),
+      "v4.1.1 / CodeQL: race-migration-toctou must use fstatSync(endFd) rather than statSync(lockfilePath) before reading.",
+    );
+    assert.ok(
+      !/fs\.statSync\(\s*lockfilePath\s*\)[\s\S]{0,120}fs\.readFileSync\(\s*lockfilePath/.test(
+        migrationRaceSrc,
+      ),
+      "v4.1.1 / CodeQL: race-migration-toctou must not statSync(lockfilePath) then readFileSync(lockfilePath).",
+    );
+    console.log("[smoke] codeql_file_system_race_regression_test: PASS");
   }
   for (const required of ["dist", "shasum", "integrity", "tarball"]) {
     assert.ok(

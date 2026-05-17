@@ -7,6 +7,34 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.01.01] — 2026-05-17
+
+**Patch — release the hard-gate cleanup as a published package.** The previous
+hard-gate cleanup was synchronized without a package-version bump; this patch
+formalizes the change as npm package `4.1.1`, preserving the rule that every
+patch shipped to `main` receives a publishable SemVer increment.
+
+### Fixed
+
+- Removed the dead global ESLint waiver for
+  `@typescript-eslint/no-explicit-any`; strict enforcement already passes on the
+  current source tree.
+- Restored README coverage under Prettier by removing the README masks from
+  `.prettierignore` and formatting the file instead of hiding the drift.
+- Added smoke coverage that prevents future linter/formatter masking of
+  `README.md`, `src/**`, and `scripts/**`, and pins the TypeScript unused-var
+  rule as an error.
+- Made `runtime-smoke` polling terminal-outcome aware and increased the polling
+  deadline to 60 seconds so slow-but-converged stub sessions are not reported as
+  timeouts.
+- Replaced two CodeQL `js/file-system-race` patterns with atomic/file-descriptor
+  based flows: session metadata placeholder creation now relies directly on
+  `writeFileSync(..., { flag: "wx" })`, and the migration race harness snapshots
+  lock state through `openSync` + `fstatSync` on the opened descriptor.
+- Added a scoped StepSecurity suppression for generated `dist/**` artifacts in
+  the publish workflow's pre-publish build job, then resolved the existing
+  actionable generated-file detections.
+
 ## [v04.01.00] — 2026-05-17
 
 **Minor — security hardening of session-store concurrency, write-path

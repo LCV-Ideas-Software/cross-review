@@ -238,13 +238,11 @@ export class SessionStore {
     // calls withSessionLock-protected writes; pre-create an empty meta
     // placeholder so the first init() can acquire the lock. Existing
     // session reuses preserve their meta.
-    if (!fs.existsSync(target)) {
-      try {
-        fs.writeFileSync(target, "{}\n", { flag: "wx" });
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-        /* concurrent process created it; fine */
-      }
+    try {
+      fs.writeFileSync(target, "{}\n", { flag: "wx" });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      /* existing or concurrently-created meta; fine */
     }
     // Pre-v4.1.0 legacy `.lock` regular file detection — FAIL CLOSED.
     //

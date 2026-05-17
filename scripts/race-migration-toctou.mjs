@@ -89,11 +89,17 @@ if (process.env.PRPL_LEGACY_SIMULATOR === "1") {
   // migrator touched it during the CS.
   let endStat = null;
   let endContent = null;
+  let endFd = null;
   try {
-    endStat = fs.statSync(lockfilePath);
-    endContent = fs.readFileSync(lockfilePath, "utf8");
+    endFd = fs.openSync(lockfilePath, "r");
+    endStat = fs.fstatSync(endFd);
+    endContent = fs.readFileSync(endFd, "utf8");
   } catch {
     /* file gone — would be the bug */
+  } finally {
+    if (endFd !== null) {
+      fs.closeSync(endFd);
+    }
   }
   fs.writeFileSync(
     exitSignal,
