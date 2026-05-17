@@ -8690,6 +8690,105 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] hard_gate_no_linter_formatter_masking_test: PASS");
 }
 
+{
+  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  const sessionListBlock = serverSrc.match(
+    /"session_list"[\s\S]{0,2500}?async \(\{ limit, offset, outcome_filter, detail, response_format \}\)/,
+  );
+  assert.ok(
+    sessionListBlock,
+    "v4.2.0 / session_list: handler must expose bounded pagination inputs.",
+  );
+  assert.ok(
+    serverSrc.includes("const SESSION_LIST_DEFAULT_LIMIT = 25"),
+    "v4.2.0 / session_list: default limit must stay bounded for stdio transports.",
+  );
+  assert.ok(
+    serverSrc.includes("const SESSION_LIST_MAX_LIMIT = 100"),
+    "v4.2.0 / session_list: max limit must cap oversized pages.",
+  );
+  assert.ok(
+    serverSrc.includes("SessionListOutcomeFilterSchema"),
+    "v4.2.0 / session_list: outcome_filter schema must remain wired.",
+  );
+  assert.ok(
+    serverSrc.includes("summarizeSessionForList"),
+    "v4.2.0 / session_list: default list output must stay summary-based.",
+  );
+  assert.ok(
+    serverSrc.includes("pagination: {"),
+    "v4.2.0 / session_list: response must surface pagination metadata.",
+  );
+  const runtimeSmokeSrc = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "runtime-smoke.ts"),
+    "utf8",
+  );
+  assert.ok(
+    runtimeSmokeSrc.includes('callTool("session_list"'),
+    "v4.2.0 / session_list: runtime-smoke must exercise bounded session_list.",
+  );
+  console.log("[smoke] session_list_bounded_pagination_test: PASS");
+}
+
+{
+  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  const cancelJobBlock = serverSrc.match(
+    /"session_cancel_job"[\s\S]{0,2600}?server\.registerTool\(\s*"session_recover_interrupted"/,
+  );
+  assert.ok(
+    cancelJobBlock,
+    "v4.2.0 / session_cancel_job: smoke must find the cancel-job handler block.",
+  );
+  const cancelJobSrc = cancelJobBlock?.[0] ?? "";
+  assert.ok(
+    /if \(!jobs\.length\) \{[\s\S]{0,500}?requested:\s*false[\s\S]{0,500}?no_running_job_matched/.test(
+      cancelJobSrc,
+    ),
+    "v4.2.0 / session_cancel_job: no active job must return requested=false/no_running_job_matched.",
+  );
+  assert.ok(
+    !/if \(!jobs\.length\) \{[\s\S]{0,300}?markCancelled/.test(cancelJobSrc),
+    "v4.2.0 / session_cancel_job: no active job must not terminal-abort the whole session.",
+  );
+
+  const runtimeSmokeSrc = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "runtime-smoke.ts"),
+    "utf8",
+  );
+  assert.ok(
+    runtimeSmokeSrc.includes("runtime_smoke_no_active_job"),
+    "v4.2.0 / session_cancel_job: runtime-smoke must exercise the no-active-job path.",
+  );
+  assert.ok(
+    /assert\.equal\(\s*noJobCancelState\.outcome,\s*undefined/.test(runtimeSmokeSrc),
+    "v4.2.0 / session_cancel_job: runtime-smoke must assert no-job cancellation stays non-terminal.",
+  );
+  console.log("[smoke] session_cancel_job_no_active_job_test: PASS");
+}
+
+{
+  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  assert.ok(
+    serverSrc.includes("function sessionInitMarkdown"),
+    "v4.2.0 / session_init: markdown renderer must exist.",
+  );
+  assert.ok(
+    /response_format === "markdown"\s*\?\s*textResult\(sessionInitMarkdown\(meta\), "markdown"\)/.test(
+      serverSrc,
+    ),
+    'v4.2.0 / session_init: response_format="markdown" must not fall through to JSON.stringify.',
+  );
+  const runtimeSmokeSrc = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "runtime-smoke.ts"),
+    "utf8",
+  );
+  assert.ok(
+    runtimeSmokeSrc.includes('callToolText("session_init"'),
+    "v4.2.0 / session_init: runtime-smoke must exercise markdown session_init.",
+  );
+  console.log("[smoke] session_init_markdown_response_test: PASS");
+}
+
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
 // `peer.moderation_recovery.budget_blocked` is intentionally NOT
 // included. These two gates use the same arithmetic shape as preflight

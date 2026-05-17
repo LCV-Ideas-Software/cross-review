@@ -80,6 +80,15 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
   return JSON.parse(text);
 }
 
+async function callToolText(name: string, args: Record<string, unknown>): Promise<string> {
+  const result = await client.callTool({ name, arguments: args }, undefined, {
+    timeout: MCP_REQUEST_TIMEOUT_MS,
+    maxTotalTimeout: MCP_REQUEST_TIMEOUT_MS,
+  });
+  const content = (result as { content?: Array<{ type: string; text?: string }> }).content ?? [];
+  return content[0]?.type === "text" ? (content[0].text ?? "") : "";
+}
+
 type PollState = { outcome?: string; jobs?: Array<{ status: string }> };
 
 const POLL_INTERVAL_MS = 250;
@@ -115,6 +124,37 @@ try {
   await client.connect(transport);
   const serverInfo = await callTool("server_info", { response_format: "json" });
   const capabilities = await callTool("runtime_capabilities", { response_format: "json" });
+  const markdownInitText = await callToolText("session_init", {
+    task: "Runtime smoke: verify session_init markdown response.",
+    review_focus: "runtime/markdown-init",
+    response_format: "markdown",
+  });
+  const sessionListResult = (await callTool("session_list", {
+    limit: 2,
+    offset: 0,
+    outcome_filter: "all",
+    detail: "summary",
+    response_format: "json",
+  })) as {
+    sessions?: unknown[];
+    pagination?: { total?: number; returned?: number; limit?: number; has_more?: boolean };
+    detail?: string;
+    outcome_filter?: string;
+  };
+  const noJobSession = (await callTool("session_init", {
+    task: "Runtime smoke: verify no-job cancellation is non-terminal.",
+    review_focus: "runtime/cancel-no-job",
+    response_format: "json",
+  })) as { session_id: string };
+  const noJobCancelResult = (await callTool("session_cancel_job", {
+    session_id: noJobSession.session_id,
+    reason: "runtime_smoke_no_active_job",
+    response_format: "json",
+  })) as { requested: boolean; reason?: string; matched_jobs?: unknown[] };
+  const noJobCancelState = (await callTool("session_poll", {
+    session_id: noJobSession.session_id,
+    response_format: "json",
+  })) as PollState;
   const roundStart = (await callTool("session_start_round", {
     task: "Runtime smoke: verify async review round.",
     review_focus: "runtime/smoke",
@@ -162,6 +202,54 @@ try {
   // running. These asserts run BEFORE the `ok: true` print, so any flow
   // that did not reach its intended terminal state fails the smoke loudly
   // with a non-zero exit.
+  assert.match(
+    markdownInitText,
+    /^# cross-review session [0-9a-f-]+/m,
+    "runtime-smoke: session_init markdown response must start with a markdown heading",
+  );
+  assert.ok(
+    markdownInitText.includes("## Task"),
+    "runtime-smoke: session_init markdown response must include a Task section",
+  );
+  assert.equal(
+    markdownInitText.trimStart().startsWith("{"),
+    false,
+    "runtime-smoke: session_init markdown response must not be JSON serialization",
+  );
+  assert.equal(
+    sessionListResult.detail,
+    "summary",
+    "runtime-smoke: session_list must default/return summary detail for bounded list calls",
+  );
+  assert.equal(
+    sessionListResult.outcome_filter,
+    "all",
+    "runtime-smoke: session_list must echo the outcome_filter",
+  );
+  assert.equal(
+    sessionListResult.pagination?.limit,
+    2,
+    "runtime-smoke: session_list must honor the requested page limit",
+  );
+  assert.ok(
+    (sessionListResult.sessions?.length ?? 0) <= 2,
+    "runtime-smoke: session_list must not return more entries than the requested limit",
+  );
+  assert.equal(
+    noJobCancelResult.requested,
+    false,
+    "runtime-smoke: no-job cancellation must not claim a cancellation request was issued",
+  );
+  assert.equal(
+    noJobCancelResult.reason,
+    "no_running_job_matched",
+    "runtime-smoke: no-job cancellation must report no_running_job_matched",
+  );
+  assert.equal(
+    noJobCancelState.outcome,
+    undefined,
+    `runtime-smoke: no-job cancellation must not terminal-abort the session — outcome=${String(noJobCancelState.outcome)}`,
+  );
   assert.equal(
     roundState.outcome,
     "converged",
@@ -183,6 +271,11 @@ try {
         ok: true,
         serverInfo,
         capabilities,
+        markdownInitText,
+        sessionListResult,
+        no_job_cancel_session_id: noJobSession.session_id,
+        noJobCancelResult,
+        noJobCancelState,
         round_session_id: roundStart.session_id,
         roundState,
         events,

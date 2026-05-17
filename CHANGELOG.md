@@ -7,6 +7,30 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.02.00] — 2026-05-17
+
+**Minor — bounded MCP session listing and cancellation semantics cleanup.** This
+release addresses the operational findings reported against v4.1.1 while keeping
+the runtime API-only.
+
+### Changed
+
+- `session_list` is now paginated and summary-only by default
+  (`limit=25`, `max=100`, `offset=0`) and accepts `outcome_filter` plus
+  `detail`. This prevents large local histories from producing multi-megabyte
+  stdio payloads; callers that need a full session should use `session_read` or
+  request a bounded `detail="full"` page explicitly.
+
+### Fixed
+
+- `session_cancel_job` no longer terminal-aborts a session when no running job
+  matches the request. It now returns `requested=false` with
+  `reason="no_running_job_matched"` and leaves the session resumable.
+- `session_init` now honors `response_format="markdown"` instead of falling
+  through to JSON serialization.
+- Added smoke/runtime-smoke guards for bounded `session_list`, non-terminal
+  no-job cancellation, and the markdown `session_init` response path.
+
 ## [v04.01.01] — 2026-05-17
 
 **Patch — release the hard-gate cleanup as a published package.** The previous

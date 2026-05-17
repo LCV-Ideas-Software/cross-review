@@ -1,6 +1,6 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.1.1",
+  "version": "4.2.0",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "main": "dist/src/mcp/server.js",
@@ -43,7 +43,7 @@
     "@anthropic-ai/sdk": "^0.96.0",
     "@google/genai": "^2.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "openai": "^6.35.0",
+    "openai": "^6.38.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "zod": "^4.3.6"
@@ -59,7 +59,7 @@
     "@types/proper-lockfile": "^4.1.4",
     "eslint": "^10.4.0",
     "prettier": "^3.8.3",
-    "tsx": "^4.21.0",
+    "tsx": "^4.22.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.1"
   },

@@ -8,7 +8,13 @@ import { z } from "zod";
 import { loadConfig, missingFinancialControlVars, RELEASE_DATE, VERSION } from "../core/config.js";
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
 import { sessionReportMarkdown } from "../core/reports.js";
-import type { ConvergenceScope, PeerId, RuntimeCapabilities, RuntimeEvent } from "../core/types.js";
+import type {
+  ConvergenceScope,
+  PeerId,
+  RuntimeCapabilities,
+  RuntimeEvent,
+  SessionMeta,
+} from "../core/types.js";
 import { PEERS } from "../core/types.js";
 import { EventLog } from "../observability/logger.js";
 import { safeErrorMessage } from "../security/redact.js";
@@ -22,6 +28,12 @@ const PeerSchema = z.enum(PEERS);
 // produces a clean single `enum` in the wire JSON Schema.
 const CallerSchema = z.enum([...PEERS, "operator"] as const);
 const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
+const SessionListOutcomeFilterSchema = z
+  .enum(["all", "open", "converged", "aborted", "max-rounds"])
+  .default("all");
+const SessionListDetailSchema = z.enum(["summary", "full"]).default("summary");
+const SESSION_LIST_DEFAULT_LIMIT = 25;
+const SESSION_LIST_MAX_LIMIT = 100;
 // v2.15.0 (item 2): per-call reasoning_effort overrides. Optional partial
 // record keyed by peer id; missing keys fall back to the global config
 // default (CROSS_REVIEW_<PEER>_REASONING_EFFORT env var, ultimately
@@ -104,6 +116,89 @@ function textResult(value: unknown, responseFormat = "json") {
       ? value
       : JSON.stringify(value, null, 2);
   return { content: [{ type: "text" as const, text }] };
+}
+
+type SessionListOutcomeFilter = z.infer<typeof SessionListOutcomeFilterSchema>;
+type SessionListDetail = z.infer<typeof SessionListDetailSchema>;
+
+function textPreview(value: string, maxChars = 240): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxChars ? `${normalized.slice(0, maxChars - 3)}...` : normalized;
+}
+
+function matchesSessionListOutcome(meta: SessionMeta, outcomeFilter: SessionListOutcomeFilter) {
+  if (outcomeFilter === "all") return true;
+  if (outcomeFilter === "open") return !meta.outcome;
+  return meta.outcome === outcomeFilter;
+}
+
+function summarizeSessionForList(meta: SessionMeta) {
+  return {
+    session_id: meta.session_id,
+    version: meta.version,
+    created_at: meta.created_at,
+    updated_at: meta.updated_at,
+    caller: meta.caller,
+    outcome: meta.outcome ?? "open",
+    outcome_reason: meta.outcome_reason ?? null,
+    convergence_health: meta.convergence_health?.state ?? null,
+    control_status: meta.control?.status ?? null,
+    rounds: meta.rounds.length,
+    in_flight: Boolean(meta.in_flight),
+    open_evidence_items:
+      meta.evidence_checklist?.filter((item) => item.status === "open").length ?? 0,
+    lead_peer: meta.convergence_scope?.lead_peer ?? null,
+    voting_peers:
+      meta.convergence_scope?.voting_peers ?? meta.convergence_scope?.reviewer_peers ?? [],
+    review_focus: meta.review_focus ?? null,
+    task_preview: textPreview(meta.task),
+  };
+}
+
+function sessionListPayload(
+  metas: SessionMeta[],
+  limit: number,
+  offset: number,
+  outcomeFilter: SessionListOutcomeFilter,
+  detail: SessionListDetail,
+) {
+  const filtered = metas.filter((meta) => matchesSessionListOutcome(meta, outcomeFilter));
+  const page = filtered.slice(offset, offset + limit);
+  return {
+    sessions: detail === "full" ? page : page.map((meta) => summarizeSessionForList(meta)),
+    pagination: {
+      total: filtered.length,
+      returned: page.length,
+      offset,
+      limit,
+      has_more: offset + page.length < filtered.length,
+    },
+    outcome_filter: outcomeFilter,
+    detail,
+  };
+}
+
+function sessionInitMarkdown(meta: SessionMeta): string {
+  const availablePeers = meta.capability_snapshot
+    .filter((probe) => probe.available)
+    .map((probe) => probe.peer)
+    .join(", ");
+  return [
+    `# cross-review session ${meta.session_id}`,
+    "",
+    `- version: ${meta.version}`,
+    `- caller: ${meta.caller}`,
+    `- created_at: ${meta.created_at}`,
+    `- updated_at: ${meta.updated_at}`,
+    `- outcome: ${meta.outcome ?? "open"}`,
+    `- rounds: ${meta.rounds.length}`,
+    `- review_focus: ${meta.review_focus ?? "none"}`,
+    `- available_peers: ${availablePeers || "none"}`,
+    "",
+    "## Task",
+    "",
+    meta.task,
+  ].join("\n");
 }
 
 // v2.17.0 (operator directive 2026-05-05): identity forgery rejection.
@@ -768,10 +863,10 @@ export async function main(): Promise<void> {
     async ({ task, review_focus, caller, response_format }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       verifyCallerIdentity(caller, server.server.getClientVersion());
-      return textResult(
-        await runtime.orchestrator.initSession(task, caller, review_focus),
-        response_format,
-      );
+      const meta = await runtime.orchestrator.initSession(task, caller, review_focus);
+      return response_format === "markdown"
+        ? textResult(sessionInitMarkdown(meta), "markdown")
+        : textResult(meta, response_format);
     },
   );
 
@@ -779,8 +874,20 @@ export async function main(): Promise<void> {
     "session_list",
     {
       title: "List Sessions",
-      description: "List durable sessions saved under the local data directory.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }),
+      description:
+        "List durable sessions saved under the local data directory. The default response is paginated and summary-only to keep stdio transports bounded; use session_read for one full session or detail='full' for a bounded page of full metadata.",
+      inputSchema: z.object({
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(SESSION_LIST_MAX_LIMIT)
+          .default(SESSION_LIST_DEFAULT_LIMIT),
+        offset: z.number().int().min(0).default(0),
+        outcome_filter: SessionListOutcomeFilterSchema,
+        detail: SessionListDetailSchema,
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -788,7 +895,17 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ response_format }) => textResult(runtime.orchestrator.store.list(), response_format),
+    async ({ limit, offset, outcome_filter, detail, response_format }) =>
+      textResult(
+        sessionListPayload(
+          runtime.orchestrator.store.list(),
+          limit,
+          offset,
+          outcome_filter,
+          detail,
+        ),
+        response_format,
+      ),
   );
 
   server.registerTool(
@@ -1137,12 +1254,20 @@ export async function main(): Promise<void> {
           job.status === "running" &&
           (!job_id || job.job_id === job_id),
       );
+      if (!jobs.length) {
+        return textResult(
+          {
+            session_id,
+            requested: false,
+            reason: "no_running_job_matched",
+            matched_jobs: [],
+          },
+          response_format,
+        );
+      }
       const meta = await runtime.orchestrator.store.requestCancellation(session_id, reason, job_id);
       for (const job of jobs) {
         runtime.controllers.get(job.job_id)?.abort(reason);
-      }
-      if (!jobs.length) {
-        await runtime.orchestrator.store.markCancelled(session_id, reason);
       }
       return textResult(
         {
