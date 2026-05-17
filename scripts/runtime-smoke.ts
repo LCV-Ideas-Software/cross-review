@@ -82,12 +82,20 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 
 type PollState = { outcome?: string; jobs?: Array<{ status: string }> };
 
+const POLL_INTERVAL_MS = 250;
+const POLL_TIMEOUT_MS = 60_000;
+const TERMINAL_OUTCOMES = new Set(["converged", "aborted", "max-rounds"]);
+
 async function pollUntilDone(sessionId: string): Promise<PollState> {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
     const state = (await callTool("session_poll", {
       session_id: sessionId,
       response_format: "json",
     })) as PollState;
+    if (state.outcome && TERMINAL_OUTCOMES.has(state.outcome)) {
+      return state;
+    }
     if (
       state.jobs?.some(
         (job) =>
@@ -96,9 +104,11 @@ async function pollUntilDone(sessionId: string): Promise<PollState> {
     ) {
       return state;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
-  throw new Error(`Timed out polling runtime-smoke session ${sessionId}`);
+  throw new Error(
+    `Timed out polling runtime-smoke session ${sessionId} after ${POLL_TIMEOUT_MS} ms`,
+  );
 }
 
 try {

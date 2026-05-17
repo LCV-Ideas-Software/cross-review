@@ -787,6 +787,16 @@ assert.equal(
     /assert\.equal\(\s*cancelState\.outcome,\s*"aborted"/.test(runtimeSmokeSrc),
     'v3.7.4 / runtime-smoke: must assert cancelState.outcome === "aborted"',
   );
+  assert.ok(
+    /TERMINAL_OUTCOMES\s*=\s*new Set\(\["converged", "aborted", "max-rounds"\]\)/.test(
+      runtimeSmokeSrc,
+    ),
+    "runtime-smoke: pollUntilDone must return on terminal outcome even when job status lags.",
+  );
+  assert.ok(
+    /POLL_TIMEOUT_MS\s*=\s*60_000/.test(runtimeSmokeSrc),
+    "runtime-smoke: pollUntilDone must allow a 60s deadline so a slow-but-converged stub flow is not reported as timeout.",
+  );
   console.log("[smoke] runtime_smoke_outcome_assert_test: PASS");
 }
 
@@ -8622,6 +8632,35 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     }
   }
   console.log("[smoke] npm_registry_discipline_test: PASS");
+}
+
+{
+  const prettierIgnore = fs.readFileSync(path.join(process.cwd(), ".prettierignore"), "utf8");
+  const ignoredPatterns = prettierIgnore
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  for (const forbidden of ["README.md", "**/README.md", "src", "src/**", "scripts", "scripts/**"]) {
+    assert.ok(
+      !ignoredPatterns.includes(forbidden),
+      `hard-gate / no-mask: .prettierignore must not hide ${forbidden} from Prettier coverage.`,
+    );
+  }
+
+  const eslintConfig = fs.readFileSync(path.join(process.cwd(), "eslint.config.js"), "utf8");
+  assert.ok(
+    !/"@typescript-eslint\/no-explicit-any"\s*:\s*["']off["']/.test(eslintConfig),
+    "hard-gate / no-mask: eslint.config.js must not disable @typescript-eslint/no-explicit-any globally.",
+  );
+  assert.ok(
+    !/"@typescript-eslint\/no-unused-vars"\s*:\s*["']off["']/.test(eslintConfig),
+    "hard-gate / no-mask: eslint.config.js must not disable @typescript-eslint/no-unused-vars globally.",
+  );
+  assert.ok(
+    /"@typescript-eslint\/no-unused-vars"\s*:\s*\[\s*["']error["']/.test(eslintConfig),
+    "hard-gate / no-mask: @typescript-eslint/no-unused-vars must remain an error.",
+  );
+  console.log("[smoke] hard_gate_no_linter_formatter_masking_test: PASS");
 }
 
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and
