@@ -20,9 +20,10 @@ updates:
     registries:
       - stepsecurity-javascript
     schedule:
-      interval: "daily"
-      time: "03:00"
-      timezone: "America/Sao_Paulo"
+      interval: "weekly"
+      day: "thursday"
+      time: "01:00"
+      timezone: "America/Los_Angeles"
     open-pull-requests-limit: 10
     groups:
       production-dependencies:
@@ -45,9 +46,10 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "03:00"
-      timezone: "America/Sao_Paulo"
+      interval: "weekly"
+      day: "thursday"
+      time: "01:00"
+      timezone: "America/Los_Angeles"
     open-pull-requests-limit: 10
     labels:
       - dependencies
