@@ -211,12 +211,17 @@ these environment variables before running real sessions (example):
 - `session_sweep`
 - `session_finalize`
 
+## Links
+
+- Site: [https://cross-review.lcv.dev](https://cross-review.lcv.dev)
+- npmjs.com: [https://www.npmjs.com/package/@lcv-ideas-software/cross-review](https://www.npmjs.com/package/@lcv-ideas-software/cross-review)
+- GitHub: [https://github.com/LCV-Ideas-Software/cross-review](https://github.com/LCV-Ideas-Software/cross-review)
+- Sponsors: [https://github.com/sponsors/LCV-Ideas-Software](https://github.com/sponsors/LCV-Ideas-Software)
+
 ## License
 
-Apache License 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
-
-Copyright 2026 LCV Ideas & Software.
+Apache-2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
 
 ---
 
-<p align="center"><span style="font-size: 1.5em;"><strong>© LCV Ideas &amp; Software</strong></span><br><sub>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713&nbsp;&nbsp;- Pinheiros<br>São Paulo - SP<br>CEP 05.424-150<br>CNPJ: 66.584.678/0001-77<br>IM 05.424-150</sub></p>
+<p align="center"><span style="font-size: 1.5em;"><strong>© LCV Ideas &amp; Software</strong></span><br><sub>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713 - Pinheiros<br>São Paulo - SP<br>CEP 05.424-150<br>CNPJ: 66.584.678/0001-77<br>IM 05.424-150</sub></p>
