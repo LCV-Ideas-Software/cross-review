@@ -1,11 +1,11 @@
 # Code of Conduct
 
-This project adopts the **Contributor Covenant 2.1** as its community standard. The full canonical text is available at:
+This project adopts the **Contributor Covenant 3.0** as its community standard. The full canonical text is available at:
 
-- https://www.contributor-covenant.org/version/2/1/code_of_conduct/
-- Plain-text mirror: https://www.contributor-covenant.org/version/2/1/code_of_conduct.txt
+- https://www.contributor-covenant.org/version/3/0/code_of_conduct/
+- Plain-text mirror: https://www.contributor-covenant.org/version/3/0/code_of_conduct/code_of_conduct.md
 
-By participating in this project (contributing code, filing issues, opening pull requests, participating in discussions, or using the cross-review MCP tooling against shared artifacts), you agree to follow the Contributor Covenant 2.1 standard linked above.
+By participating in this project (contributing code, filing issues, opening pull requests, participating in discussions, or using the cross-review MCP tooling against shared artifacts), you agree to follow the Contributor Covenant 3.0 standard linked above.
 
 ---
 
@@ -23,9 +23,9 @@ This applies to:
 
 Reports of violations can be sent privately to:
 
-**alert@lcvmail.com**
+**lcv@lcv.dev**
 
-This is the same private channel used for security reports (see [SECURITY.md](./SECURITY.md)). Reports will be acknowledged within 48 hours and handled per the Contributor Covenant 2.1 enforcement ladder.
+This is the same private channel used for security reports (see [SECURITY.md](./SECURITY.md)). Reports will be acknowledged within 48 hours and handled per the Contributor Covenant 3.0 enforcement ladder.
 
 All reporters will have their identity kept confidential.
 

@@ -8,9 +8,12 @@
 > Gemini, DeepSeek, and Grok with unanimous convergence gates.
 
 [![status: stable](https://img.shields.io/badge/status-stable-brightgreen.svg)](#status)
+[![release](https://img.shields.io/github/v/release/LCV-Ideas-Software/cross-review?sort=semver)](https://github.com/LCV-Ideas-Software/cross-review/releases)
 [![npm](https://img.shields.io/npm/v/@lcv-ideas-software/cross-review.svg)](https://www.npmjs.com/package/@lcv-ideas-software/cross-review)
+[![CI](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/ci.yml/badge.svg)](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/codeql.yml/badge.svg)](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/codeql.yml)
+[![Publish](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/publish.yml/badge.svg)](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/publish.yml)
 [![runtime: API-only](https://img.shields.io/badge/runtime-API--only-blue.svg)](#what-it-does)
-[![security: CodeQL Default Setup](https://img.shields.io/badge/security-CodeQL%20Default%20Setup-informational.svg)](#security)
 [![license: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](./LICENSE)
 
 **Install.**
@@ -214,6 +217,17 @@ these environment variables before running real sessions (example):
 - `session_sweep`
 - `session_finalize`
 
+## Repository conventions
+
+- **License**: [Apache-2.0](./LICENSE). See [NOTICE](./NOTICE) and [THIRDPARTY](./THIRDPARTY.md).
+- **Security disclosure**: see [SECURITY.md](./SECURITY.md).
+- **Code of conduct**: see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+- **Changelog**: [CHANGELOG.md](./CHANGELOG.md).
+- **Contributing**: see [CONTRIBUTING.md](./CONTRIBUTING.md).
+- **Sponsorship**: see the repo's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor).
+- **Action pinning**: all GitHub Actions are pinned by full SHA per supply-chain hardening baseline.
+- **Code owners**: [.github/CODEOWNERS](.github/CODEOWNERS).
+
 ## Links
 
 - Site: [https://cross-review.lcv.dev](https://cross-review.lcv.dev)
@@ -223,7 +237,7 @@ these environment variables before running real sessions (example):
 
 ## License
 
-Apache-2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+Apache-2.0. See [LICENSE](./LICENSE), [NOTICE](./NOTICE), and [THIRDPARTY](./THIRDPARTY.md).
 
 ---
 
