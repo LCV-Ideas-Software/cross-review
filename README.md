@@ -215,7 +215,7 @@ these environment variables before running real sessions (example):
 
 Apache License 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
 
-Copyright 2026 Leonardo Cardozo Vargas.
+Copyright 2026 LCV Ideas & Software.
 
 ---
 
