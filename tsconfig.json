@@ -1,4 +1,5 @@
 {
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -13,6 +14,7 @@
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": ".",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo",
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "scripts/**/*.ts"],

@@ -33,7 +33,7 @@ The preflight trips **only** when **both** are true:
    `tests? pass/passed/green`, `git diff --check`.
 2. **Zero evidence markers** — the text contains none of: fenced code
    blocks (` ``` `), `@@ -`/`@@ +` diff hunks, 7+ hex-char hashes,
-   `file.ext:NN` line refs, `$ `/`> ` command-prompt lines.
+   `file.ext:NN` line refs, `$`/`>` command-prompt lines.
 
 Mere keyword presence does **not** trip it. "I plan to write a patch"
 or "here is the test plan" is a design review with legitimately no diff
