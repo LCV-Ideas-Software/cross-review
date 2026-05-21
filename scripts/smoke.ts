@@ -1290,7 +1290,7 @@ assert.ok(tokenDelta);
 assert.equal(typeof tokenDelta.data?.chars, "number");
 assert.equal(Object.hasOwn(tokenDelta.data ?? {}, "delta"), false);
 
-const directStreamEvents: Array<{ type: string; data?: Record<string, unknown> }> = [];
+const directStreamEvents: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
 const directStub = new StubAdapter(config, "codex");
 const directStubResult = await directStub.call("Verify direct streaming equivalence.", {
   session_id: result.session.session_id,
@@ -2748,7 +2748,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(judgeResult.judged_count, 1);
   assert.equal(judgeResult.promoted.length, 1);
   assert.equal(judgeResult.skipped.length, 0);
-  assert.equal(judgeResult.promoted[0].item_id, seededItem.id);
+  assert.equal(judgeResult.promoted[0]?.item_id, seededItem.id);
   // Verify durable promotion.
   const after = judgeOrch.store.read(sessionId);
   const promoted = after.evidence_checklist?.find((entry) => entry.id === seededItem.id);
@@ -2813,8 +2813,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   assert.equal(inferredResult.promoted.length, 0);
   assert.equal(inferredResult.skipped.length, 1);
-  assert.equal(inferredResult.skipped[0].reason, "satisfied_but_unverified");
-  assert.equal(inferredResult.skipped[0].confidence, "inferred");
+  assert.equal(inferredResult.skipped[0]?.reason, "satisfied_but_unverified");
+  assert.equal(inferredResult.skipped[0]?.confidence, "inferred");
   const afterInferred = skipOrch.store.read(sessionId);
   assert.equal(
     afterInferred.evidence_checklist?.find((entry) => entry.id === seedItemId)?.status ?? "open",
@@ -2829,7 +2829,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   assert.equal(unknownResult.promoted.length, 0);
   assert.equal(unknownResult.skipped.length, 1);
-  assert.equal(unknownResult.skipped[0].confidence, "unknown");
+  assert.equal(unknownResult.skipped[0]?.confidence, "unknown");
   const afterUnknown = skipOrch.store.read(sessionId);
   assert.equal(
     afterUnknown.evidence_checklist?.find((entry) => entry.id === seedItemId)?.status ?? "open",
@@ -2949,7 +2949,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Only the open candidate is judged; queue capped at 1.
   assert.equal(result.judged_count, 1, "only open items are queued");
   assert.equal(result.promoted.length, 1);
-  assert.equal(result.promoted[0].item_id, "1000000000000001");
+  assert.equal(result.promoted[0]?.item_id, "1000000000000001");
   // Verify all terminal items + the already-addressed item are unchanged.
   const after = tpOrch.store.read(sessionId);
   assert.equal(
@@ -3021,12 +3021,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(result.promoted.length, 0, "malformed response must not promote");
   assert.equal(result.skipped.length, 1, "malformed response must produce 1 skip");
   assert.equal(
-    result.skipped[0].reason,
+    result.skipped[0]?.reason,
     "judge_failed",
-    `expected reason=judge_failed, got ${result.skipped[0].reason}`,
+    `expected reason=judge_failed, got ${result.skipped[0]?.reason}`,
   );
   assert.ok(
-    (result.skipped[0].message ?? "").includes("judge_response_missing_json_object"),
+    (result.skipped[0]?.message ?? "").includes("judge_response_missing_json_object"),
     "skipped.message must include the parser warning",
   );
   // Item stays open on disk.
@@ -3218,10 +3218,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(result.mode, "shadow");
   assert.equal(result.promoted.length, 0, "shadow mode must NOT populate promoted[]");
   assert.equal(result.shadow_decisions.length, 1, "shadow mode must populate shadow_decisions[]");
-  assert.equal(result.shadow_decisions[0].item_id, seedItemId);
-  assert.equal(result.shadow_decisions[0].would_promote, true);
-  assert.equal(result.shadow_decisions[0].satisfied, true);
-  assert.equal(result.shadow_decisions[0].confidence, "verified");
+  assert.equal(result.shadow_decisions[0]?.item_id, seedItemId);
+  assert.equal(result.shadow_decisions[0]?.would_promote, true);
+  assert.equal(result.shadow_decisions[0]?.satisfied, true);
+  assert.equal(result.shadow_decisions[0]?.confidence, "verified");
   // No mutation on disk.
   const after = orch.store.read(sessionId);
   const persisted = after.evidence_checklist?.find((entry) => entry.id === seedItemId);
@@ -3305,7 +3305,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   for (const peer of ["codex", "gemini", "deepseek", "grok", "perplexity"]) {
     const c = counts[peer];
     assert.ok(
-      Math.abs(c - expected) <= tolerance,
+      Math.abs((c ?? 0) - expected) <= tolerance,
       `peer=${peer} count=${c} not within ±15% of ${expected} (range ${expected - tolerance}-${expected + tolerance}). Possible RNG bias.`,
     );
   }
@@ -3347,7 +3347,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // orchestrator emite session.relator_assigned com candidate_pool, assigned,
 // entropy_source preenchidos. Usa stub adapters pra não chamar provider real.
 {
-  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const cfg = {
     ...loadConfig(),
     data_dir: smokeTmpDir("relator-event"),
@@ -3375,7 +3375,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     1,
     `expected 1 session.relator_assigned event, got ${relatorEvents.length}`,
   );
-  const data = relatorEvents[0].data ?? {};
+  const data = relatorEvents[0]?.data ?? {};
   assert.equal(data.caller, "claude");
   assert.ok(Array.isArray(data.candidate_pool));
   // Test passes peers=[codex,gemini,deepseek] explicitly; caller=claude
@@ -3443,7 +3443,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // Caller no input.peers deve ser removido da lista de revisores antes do
 // lottery (auto-recusal por sessão; em outras sessões caller continua peer).
 {
-  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const cfg = {
     ...loadConfig(),
     data_dir: smokeTmpDir("auto-recusal"),
@@ -3465,7 +3465,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   const relatorEvents = events.filter((e) => e.type === "session.relator_assigned");
   assert.equal(relatorEvents.length, 1);
-  const data = relatorEvents[0].data ?? {};
+  const data = relatorEvents[0]?.data ?? {};
   const pool = data.candidate_pool as string[];
   assert.ok(!pool.includes("claude"), "auto-recusal: pool não pode conter claude");
   assert.equal(pool.length, 2, `pool deve ter 2 peers (codex+gemini), got ${pool.length}`);
@@ -3690,7 +3690,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       until_stopped_max_cost_usd: 10000,
     },
   };
-  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
@@ -3718,7 +3718,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     `at least one session.lead_drift_detected event must fire (got ${driftEvents.length})`,
   );
   assert.equal(
-    (driftEvents[0].data as { lead_peer?: string } | undefined)?.lead_peer,
+    (driftEvents[0]?.data as { lead_peer?: string } | undefined)?.lead_peer,
     "claude",
     "drift event must record lead_peer=claude",
   );
@@ -3742,7 +3742,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       until_stopped_max_cost_usd: 10000,
     },
   };
-  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
@@ -3762,7 +3762,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     driftEvents.length >= 1,
     `JSON-shape drift must be detected (got ${driftEvents.length} events)`,
   );
-  const firstChars = (driftEvents[0].data as { first_chars?: string } | undefined)?.first_chars;
+  const firstChars = (driftEvents[0]?.data as { first_chars?: string } | undefined)?.first_chars;
   assert.ok(
     firstChars?.startsWith('{"status":"NEEDS_EVIDENCE"'),
     `first_chars must show JSON shape (got ${firstChars?.slice(0, 40)})`,
@@ -3787,7 +3787,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       until_stopped_max_cost_usd: 10000,
     },
   };
-  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
@@ -3807,7 +3807,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     driftEvents.length >= 1,
     `markdown-fenced JSON drift must be detected (got ${driftEvents.length} events)`,
   );
-  const firstChars = (driftEvents[0].data as { first_chars?: string } | undefined)?.first_chars;
+  const firstChars = (driftEvents[0]?.data as { first_chars?: string } | undefined)?.first_chars;
   assert.ok(
     firstChars?.startsWith("```json"),
     `first_chars must show markdown fence (got ${firstChars?.slice(0, 40)})`,
@@ -3831,7 +3831,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       until_stopped_max_cost_usd: 10000,
     },
   };
-  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const holder: { orch?: CrossReviewOrchestrator } = {};
   const orch = new CrossReviewOrchestrator(cfg, (e) => {
     events.push({ type: e.type, data: e.data });
@@ -4421,12 +4421,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   });
   assert.equal(consensus.judged_count, 1, "exactly 1 item judged");
   assert.equal(consensus.promoted.length, 1, "1 item promoted via consensus");
-  assert.equal(consensus.promoted[0].item_id, seedItemId);
+  assert.equal(consensus.promoted[0]?.item_id, seedItemId);
   // All 3 peers must appear in rationales.
-  assert.ok(consensus.promoted[0].rationales.codex);
-  assert.ok(consensus.promoted[0].rationales.claude);
-  assert.ok(consensus.promoted[0].rationales.gemini);
-  assert.equal(consensus.consensus_decisions[0].unanimous_verified_satisfied, true);
+  assert.ok(consensus.promoted[0]?.rationales.codex);
+  assert.ok(consensus.promoted[0]?.rationales.claude);
+  assert.ok(consensus.promoted[0]?.rationales.gemini);
+  assert.equal(consensus.consensus_decisions[0]?.unanimous_verified_satisfied, true);
   // Disabled-peer rejection.
   const prevs: Partial<Record<string, string | undefined>> = {};
   for (const peer of ["GEMINI"]) {
@@ -5099,9 +5099,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // (orchestrator's own runUntilUnanimous → askPeers loop, smoke harness)
 // bypass the lock by construction (they don't traverse the MCP boundary).
 {
-  type CapturedEvent = { type: string; data?: Record<string, unknown> };
+  type CapturedEvent = { type: string; data?: Record<string, unknown> | undefined };
   const captured: CapturedEvent[] = [];
-  const captureEmit = (event: { type: string; data?: Record<string, unknown> }) => {
+  const captureEmit = (event: { type: string; data?: Record<string, unknown> | undefined }) => {
     if (event.type === "session.caller_peer_selection_ignored") {
       captured.push({ type: event.type, data: event.data });
     }
@@ -5870,7 +5870,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const pathModule = await import("node:path");
   const pkgRaw = fsModule.readFileSync(pathModule.resolve(process.cwd(), "package.json"), "utf8");
   const pkg = JSON.parse(pkgRaw) as {
-    overrides?: Record<string, string>;
+    overrides?: Record<string, string> | undefined;
   };
   const overrides = pkg.overrides;
   assert.ok(
@@ -8080,7 +8080,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // emit `session.caller_peer_selection_ignored`. Source pin.
   const serverSrcA2 = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
-    /enabledPeers\?: readonly PeerId\[\];/.test(serverSrcA2),
+    /enabledPeers\?: readonly PeerId\[\](?: \| undefined)?;/.test(serverSrcA2),
     "v3.7.5 / A2: lockCallerPeerSelection ctx must accept optional `enabledPeers` snapshot",
   );
   assert.ok(
@@ -8646,7 +8646,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   }
 
   const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as {
-    scripts?: Record<string, string>;
+    scripts?: Record<string, string> | undefined;
   };
   for (const [name, script] of Object.entries(pkg.scripts ?? {})) {
     for (const part of script.split("&&")) {
@@ -8822,7 +8822,7 @@ console.log(JSON.stringify(smokeResult, null, 2));
 if (process.env.CROSS_REVIEW_SMOKE_DUMP_HANDLES === "1") {
   const activeHandles = (
     process as typeof process & {
-      _getActiveHandles?: () => Array<{ constructor?: { name?: string } }>;
+      _getActiveHandles?: () => Array<{ constructor?: { name?: string } }> | undefined;
     }
   )._getActiveHandles?.();
   console.error(

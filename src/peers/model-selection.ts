@@ -253,7 +253,7 @@ export async function resolveBestModel(config: AppConfig, peer: PeerId): Promise
   }
   try {
     const candidates = await candidatesForPeer(config, peer);
-    return selectFromCandidates(peer, candidates, PRIORITY[peer][0]);
+    return selectFromCandidates(peer, candidates, PRIORITY[peer][0] ?? config.models[peer]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {

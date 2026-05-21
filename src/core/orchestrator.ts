@@ -33,22 +33,22 @@ import type {
 import { PEERS } from "./types.js";
 
 export interface AskPeersInput {
-  session_id?: string;
+  session_id?: string | undefined;
   task: string;
-  review_focus?: string;
+  review_focus?: string | undefined;
   draft: string;
   // Petitioner/impetrante that submitted the case. Internal callers such
   // as runUntilUnanimous use this to keep the original caller distinct
   // from the relator currently presenting a revised draft.
-  petitioner?: PeerId | "operator";
-  caller?: PeerId | "operator";
-  lead_peer?: PeerId;
-  caller_status?: ReviewStatus;
-  peers?: PeerId[];
-  signal?: AbortSignal;
+  petitioner?: PeerId | "operator" | undefined;
+  caller?: PeerId | "operator" | undefined;
+  lead_peer?: PeerId | undefined;
+  caller_status?: ReviewStatus | undefined;
+  peers?: PeerId[] | undefined;
+  signal?: AbortSignal | undefined;
   // v2.15.0 (item 2): per-call reasoning_effort overrides. See
   // RunUntilUnanimousInput for full rationale. Empty / unset => global default.
-  reasoning_effort_overrides?: Partial<Record<PeerId, ReasoningEffort>>;
+  reasoning_effort_overrides?: Partial<Record<PeerId, ReasoningEffort | undefined>> | undefined;
 }
 
 export interface AskPeersOutput {
@@ -58,28 +58,28 @@ export interface AskPeersOutput {
 }
 
 export interface RunUntilUnanimousInput {
-  session_id?: string;
+  session_id?: string | undefined;
   task: string;
-  review_focus?: string;
-  initial_draft?: string;
-  lead_peer?: PeerId;
-  peers?: PeerId[];
-  max_rounds?: number;
-  until_stopped?: boolean;
-  max_cost_usd?: number;
-  signal?: AbortSignal;
+  review_focus?: string | undefined;
+  initial_draft?: string | undefined;
+  lead_peer?: PeerId | undefined;
+  peers?: PeerId[] | undefined;
+  max_rounds?: number | undefined;
+  until_stopped?: boolean | undefined;
+  max_cost_usd?: number | undefined;
+  signal?: AbortSignal | undefined;
   // v2.15.0 (item 2): per-call reasoning_effort overrides. Operator uses
   // this to dial down expensive peers (especially Grok 16-agent xhigh)
   // for routine cross-reviews without editing 6 MCP configs. Falls back
   // to `config.reasoning_effort[peer_id]` when peer has no override here.
-  reasoning_effort_overrides?: Partial<Record<PeerId, ReasoningEffort>>;
+  reasoning_effort_overrides?: Partial<Record<PeerId, ReasoningEffort | undefined>> | undefined;
   // v2.11.0: caller identifies the petitioner (peer or operator) for the
   // relator-lottery + self-review prohibition. Defaults to "operator" when
   // omitted, which preserves v2.10.0 behavior (no exclusion). When caller
   // is one of the four peer ids, the orchestrator (a) rejects an explicit
   // lead_peer === caller and (b) runs the lottery to pick a non-caller
   // relator when lead_peer is omitted.
-  caller?: PeerId | "operator";
+  caller?: PeerId | "operator" | undefined;
   // v2.13.0: ship vs review intent. `ship` (default) means initial_draft
   // is the artifact under refinement — lead_peer produces a NEW REVISED
   // VERSION as prose, NOT a structured peer-review response. `review`
@@ -87,7 +87,7 @@ export interface RunUntilUnanimousInput {
   // responses. Disambiguates the v2.12 lead_peer meta-review drift bug
   // when the `task` field is phrased as a review act ("Review v..."),
   // which previously caused the lead to treat the call as meta-review.
-  mode?: import("./types.js").SessionMode;
+  mode?: import("./types.js").SessionMode | undefined;
   // v3.5.0 (CRV2-4, Codex operational report): structured evidence the
   // caller supplies up-front. When present, the evidence_preflight check
   // treats the session as evidenced (it is the caller's authoritative
@@ -98,12 +98,12 @@ export interface RunUntilUnanimousInput {
   // the caller is expected to embed file:line refs, diff hunks, command
   // output, hashes, etc. — the same provenance-grade material the R1
   // evidence-upfront contract already requires inside `initial_draft`.
-  evidence?: string;
+  evidence?: string | undefined;
 }
 
 export interface RunUntilUnanimousOutput {
   session: SessionMeta;
-  final_text?: string;
+  final_text?: string | undefined;
   converged: boolean;
   rounds: number;
 }
@@ -265,7 +265,7 @@ function attachedEvidenceBlock(
     content: string;
     bytes: number;
     truncated: boolean;
-    content_type?: string;
+    content_type?: string | undefined;
   }>,
 ): string[] {
   if (!attachments.length) return [];
@@ -336,7 +336,7 @@ function buildReviewPrompt(
     content: string;
     bytes: number;
     truncated: boolean;
-    content_type?: string;
+    content_type?: string | undefined;
   }>,
 ): string {
   return [
@@ -674,8 +674,8 @@ export interface EvidencePreflightResult {
 
 export function evidencePreflight(params: {
   task: string;
-  initialDraft?: string;
-  structuredEvidence?: string;
+  initialDraft?: string | undefined;
+  structuredEvidence?: string | undefined;
   attachmentsPresent: boolean;
 }): EvidencePreflightResult {
   const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
@@ -822,7 +822,7 @@ function buildRevisionPrompt(
     content: string;
     bytes: number;
     truncated: boolean;
-    content_type?: string;
+    content_type?: string | undefined;
   }>,
 ): string {
   const modeDirective: string[] =
@@ -1031,7 +1031,7 @@ function unparseableAfterRecoveryFailure(result: PeerResult): PeerFailure {
 function budgetLimit(
   config: AppConfig,
   inputLimit?: number,
-  options: { untilStopped?: boolean } = {},
+  options: { untilStopped?: boolean | undefined } = {},
 ): number | undefined {
   return (
     inputLimit ??
@@ -1142,8 +1142,8 @@ function cancellationFailure(
 
 interface PeerCallOutcome {
   adapter: PeerAdapter;
-  result?: PeerResult;
-  failure?: PeerFailure;
+  result?: PeerResult | undefined;
+  failure?: PeerFailure | undefined;
 }
 
 // v2.14.0 (operator directive 2026-05-04): per-peer enable/disable error.
@@ -1234,16 +1234,16 @@ export class CrossReviewOrchestrator {
     session_id: string;
     judge_peers: PeerId[];
     draft: string;
-    item_ids?: string[];
-    round?: number;
-    review_focus?: string;
-    mode?: "active" | "shadow";
+    item_ids?: string[] | undefined;
+    round?: number | undefined;
+    review_focus?: string | undefined;
+    mode?: "active" | "shadow" | undefined;
     // v2.18.4 / Codex audit 2026-05-07 P1.3: AbortSignal threading.
     // Pre-v2.18.4 the consensus judge call passed `signal: undefined`
     // hard-coded, so session_cancel_job could not interrupt mid-flight
     // judge calls and operators paid for full provider responses even
     // after cancel. Now the caller threads the round's signal here.
-    signal?: AbortSignal;
+    signal?: AbortSignal | undefined;
   }): Promise<{
     promoted: Array<{ item_id: string; rationales: Record<string, string> }>;
     skipped: Array<{
@@ -1257,11 +1257,11 @@ export class CrossReviewOrchestrator {
       per_peer: Record<
         string,
         {
-          satisfied?: boolean;
-          confidence?: Confidence;
-          rationale_empty?: boolean;
-          parser_warnings?: string[];
-          error?: string;
+          satisfied?: boolean | undefined;
+          confidence?: Confidence | undefined;
+          rationale_empty?: boolean | undefined;
+          parser_warnings?: string[] | undefined;
+          error?: string | undefined;
         }
       >;
     }>;
@@ -1308,11 +1308,11 @@ export class CrossReviewOrchestrator {
       per_peer: Record<
         string,
         {
-          satisfied?: boolean;
-          confidence?: Confidence;
-          rationale_empty?: boolean;
-          parser_warnings?: string[];
-          error?: string;
+          satisfied?: boolean | undefined;
+          confidence?: Confidence | undefined;
+          rationale_empty?: boolean | undefined;
+          parser_warnings?: string[] | undefined;
+          error?: string | undefined;
         }
       >;
     }> = [];
@@ -1362,11 +1362,11 @@ export class CrossReviewOrchestrator {
       const perPeerDetails: Record<
         string,
         {
-          satisfied?: boolean;
-          confidence?: Confidence;
-          rationale_empty?: boolean;
-          parser_warnings?: string[];
-          error?: string;
+          satisfied?: boolean | undefined;
+          confidence?: Confidence | undefined;
+          rationale_empty?: boolean | undefined;
+          parser_warnings?: string[] | undefined;
+          error?: string | undefined;
         }
       > = {};
       let unanimousVerifiedSatisfied = true;
@@ -1407,13 +1407,17 @@ export class CrossReviewOrchestrator {
         per_peer_verdict: perPeerVerdict,
       });
       if (unanimousVerifiedSatisfied && mode === "active") {
+        const primaryJudgePeer = params.judge_peers[0];
+        if (!primaryJudgePeer) {
+          throw new Error("evidence_judge_consensus_no_primary_judge");
+        }
         const result = await this.store.markEvidenceItemAddressedByJudge(
           params.session_id,
           item.id,
           {
             round: judgmentRound,
             rationale: Object.values(rationales).join(" || "),
-            judge_peer: params.judge_peers[0],
+            judge_peer: primaryJudgePeer,
           },
         );
         if (result) {
@@ -1506,9 +1510,9 @@ export class CrossReviewOrchestrator {
     session_id: string;
     judge_peer: PeerId;
     draft: string;
-    item_ids?: string[];
-    round?: number;
-    review_focus?: string;
+    item_ids?: string[] | undefined;
+    round?: number | undefined;
+    review_focus?: string | undefined;
     // v2.10.0: "active" preserves the v2.9.0 contract — promotes items
     // when the judge returns satisfied + verified. "shadow" routes the
     // same judgments through a non-mutating path that emits
@@ -1516,25 +1520,25 @@ export class CrossReviewOrchestrator {
     // `would_promote` flag. Operators use shadow to collect empirical
     // judgment-quality data BEFORE flipping to active. Defaults to
     // "active" so existing v2.9.0 callers behave identically.
-    mode?: "active" | "shadow";
+    mode?: "active" | "shadow" | undefined;
     // v2.18.4 / Codex audit 2026-05-07 P1.3: AbortSignal threading
     // (parity with consensus pass). Pre-v2.18.4 single-peer judge
     // built the context without a signal; session_cancel_job could not
     // interrupt judge mid-flight.
-    signal?: AbortSignal;
+    signal?: AbortSignal | undefined;
   }): Promise<{
     promoted: Array<{
       item_id: string;
       rationale: string;
-      usage?: TokenUsage;
-      cost?: CostEstimate;
+      usage?: TokenUsage | undefined;
+      cost?: CostEstimate | undefined;
     }>;
     skipped: Array<{
       item_id: string;
       reason: "not_open" | "satisfied_but_unverified" | "not_satisfied" | "judge_failed";
-      satisfied?: boolean;
-      confidence?: Confidence;
-      message?: string;
+      satisfied?: boolean | undefined;
+      confidence?: Confidence | undefined;
+      message?: string | undefined;
     }>;
     // v2.10.0: shadow-mode-only output. In active mode this array is
     // always empty. In shadow mode it carries one entry per judged item
@@ -1583,20 +1587,19 @@ export class CrossReviewOrchestrator {
     // round (e.g. operator-triggered judgment between rounds), derive
     // from the highest round on the session — that is the round whose
     // draft the judgment is being run against.
-    const judgmentRound =
-      params.round ?? (meta.rounds.length ? meta.rounds[meta.rounds.length - 1].round : 1);
+    const judgmentRound = params.round ?? meta.rounds[meta.rounds.length - 1]?.round ?? 1;
     const promoted: Array<{
       item_id: string;
       rationale: string;
-      usage?: TokenUsage;
-      cost?: CostEstimate;
+      usage?: TokenUsage | undefined;
+      cost?: CostEstimate | undefined;
     }> = [];
     const skipped: Array<{
       item_id: string;
       reason: "not_open" | "satisfied_but_unverified" | "not_satisfied" | "judge_failed";
-      satisfied?: boolean;
-      confidence?: Confidence;
-      message?: string;
+      satisfied?: boolean | undefined;
+      confidence?: Confidence | undefined;
+      message?: string | undefined;
     }> = [];
 
     this.emit({
@@ -3143,8 +3146,8 @@ export class CrossReviewOrchestrator {
     callerForLottery: PeerId | "operator";
     firstRotator: PeerId;
     input: RunUntilUnanimousInput;
-    costLimit?: number;
-    initialDraft?: string;
+    costLimit?: number | undefined;
+    initialDraft?: string | undefined;
   }): Promise<RunUntilUnanimousOutput> {
     const { adapters, sessionPeers, callerForLottery, firstRotator, input, costLimit } = params;
     let session = params.session;
@@ -3221,6 +3224,9 @@ export class CrossReviewOrchestrator {
         };
       }
       const initRotator = rotationOrder[cursor];
+      if (!initRotator) {
+        throw new Error("circular_rotation_cursor_out_of_bounds");
+      }
       const initGeneration = await adapters[initRotator].generate(
         buildInitialDraftPrompt(input.task, this.config, input.review_focus, sessionMode),
         {
@@ -3300,6 +3306,9 @@ export class CrossReviewOrchestrator {
       }
 
       const rotator = rotationOrder[cursor];
+      if (!rotator) {
+        throw new Error("circular_rotation_cursor_out_of_bounds");
+      }
       const startedAt = new Date().toISOString();
 
       const attachedEvidence = this.store.readEvidenceAttachments(

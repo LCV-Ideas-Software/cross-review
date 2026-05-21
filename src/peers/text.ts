@@ -15,7 +15,7 @@ export function compactJson(value: unknown): string {
 // ~$0.21 USD on that failure mode before max-rounds was hit.
 export interface AnthropicParseResult {
   text: string;
-  parser_warning?: string;
+  parser_warning?: string | undefined;
 }
 
 const ANTHROPIC_THINKING_BLOCK_TYPES = new Set(["thinking", "redacted_thinking"]);
@@ -52,8 +52,8 @@ export function textFromAnthropicContent(content: Array<{ type: string; text?: s
 }
 
 export function textFromOpenAIResponse(response: {
-  output_text?: string;
-  output?: unknown;
+  output_text?: string | undefined;
+  output?: unknown | undefined;
 }): string {
   if (typeof response.output_text === "string" && response.output_text.trim()) {
     return response.output_text.trim();

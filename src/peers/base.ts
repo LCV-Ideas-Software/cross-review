@@ -307,15 +307,15 @@ export abstract class BasePeerAdapter {
   protected resultFromText(params: {
     text: string;
     raw: unknown;
-    usage?: TokenUsage;
+    usage?: TokenUsage | undefined;
     started: number;
     attempts: number;
-    modelReported?: string;
+    modelReported?: string | undefined;
     // v2.23.0: provider-side parser diagnostics (e.g. Anthropic
     // thinking-only response with no final text block). Merged AFTER
     // status-parser warnings so the model-mismatch warning still
     // appears last.
-    extraParserWarnings?: string[];
+    extraParserWarnings?: string[] | undefined;
   }): PeerResult {
     const parsed = parsePeerStatus(params.text);
     const modelMatch = this.modelMatches(params.modelReported);
@@ -351,16 +351,16 @@ export abstract class BasePeerAdapter {
   protected generationFromText(params: {
     text: string;
     raw: unknown;
-    usage?: TokenUsage;
+    usage?: TokenUsage | undefined;
     started: number;
     attempts: number;
-    modelReported?: string;
+    modelReported?: string | undefined;
     // v2.23.0: provider-side parser diagnostics propagated to the
     // GenerationResult so the relator-revision path in the orchestrator
     // can detect provider degenerate outputs (e.g. Anthropic extended
     // thinking returning only thinking blocks with no text block) and
     // refuse to promote an empty `text` to next-round draft.
-    extraParserWarnings?: string[];
+    extraParserWarnings?: string[] | undefined;
   }): GenerationResult {
     const modelMatch = this.modelMatches(params.modelReported);
     const extra = params.extraParserWarnings ?? [];
@@ -453,9 +453,9 @@ export abstract class BasePeerAdapter {
         parserWarnings.push("judge_response_missing_json_object");
       } else {
         const payload = JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1)) as {
-          satisfied?: unknown;
-          confidence?: unknown;
-          rationale?: unknown;
+          satisfied?: unknown | undefined;
+          confidence?: unknown | undefined;
+          rationale?: unknown | undefined;
         };
         if (typeof payload.satisfied === "boolean") {
           satisfied = payload.satisfied;

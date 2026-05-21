@@ -70,9 +70,9 @@ export type DecisionQuality =
 
 export interface ModelCandidate {
   id: string;
-  display_name?: string;
+  display_name?: string | undefined;
   source: "api" | "documented-priority" | "env-override";
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export interface ModelSelection {
@@ -85,10 +85,10 @@ export interface ModelSelection {
 }
 
 export interface TokenUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  total_tokens?: number;
-  reasoning_tokens?: number;
+  input_tokens?: number | undefined;
+  output_tokens?: number | undefined;
+  total_tokens?: number | undefined;
+  reasoning_tokens?: number | undefined;
   // v2.21.0 (caching): canonical cross-provider cache telemetry. Adapters
   // populate these from provider-native fields (Anthropic
   // cache_creation_input_tokens / cache_read_input_tokens; OpenAI
@@ -97,10 +97,10 @@ export interface TokenUsage {
   // usageMetadata.cachedContentTokenCount; Grok mirrors OpenAI). The
   // shape is uniform so the cost layer + dashboard + manifest never
   // branch on provider.
-  cache_read_tokens?: number;
-  cache_write_tokens?: number;
-  cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported";
-  cache_key_hash?: string;
+  cache_read_tokens?: number | undefined;
+  cache_write_tokens?: number | undefined;
+  cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported" | undefined;
+  cache_key_hash?: string | undefined;
   // v3.0.0 (Perplexity 6th peer): Sonar API reports additional token
   // categories and a search-query count alongside prompt/completion.
   // `citation_tokens` is the number of tokens spent inlining the
@@ -110,8 +110,8 @@ export interface TokenUsage {
   // request — separately billed at search_queries_per_1000 for
   // sonar-deep-research. Both are absent for non-perplexity peers and
   // for non-deep-research perplexity models.
-  citation_tokens?: number;
-  num_search_queries?: number;
+  citation_tokens?: number | undefined;
+  num_search_queries?: number | undefined;
   // v3.0.0: Perplexity API also returns its OWN per-call cost
   // breakdown (`usage.cost.total_cost` etc.) in USD. We capture it
   // here for telemetry/reconciliation, but the config-driven cost
@@ -119,7 +119,7 @@ export interface TokenUsage {
   // budget decisions — operator-controlled rates take precedence over
   // provider-reported costs to keep the no-hardcoded-financials
   // contract intact.
-  provider_reported_total_cost_usd?: number;
+  provider_reported_total_cost_usd?: number | undefined;
   // v3.0.0 R1 fix (codex cross-review catch 2026-05-12): per-call
   // signal that a Perplexity Sonar call actually performed a web search
   // on the wire. The relator (generate) role forces disable_search:true
@@ -129,14 +129,14 @@ export interface TokenUsage {
   // active. Undefined (legacy/stub paths) → cost layer falls back to
   // the global config.perplexity.disable_search check. Set only by
   // PerplexityAdapter; ignored by all other peers' cost branches.
-  search_performed?: boolean;
+  search_performed?: boolean | undefined;
 }
 
 export interface CostEstimate {
   currency: "USD";
-  input_cost?: number;
-  output_cost?: number;
-  total_cost?: number;
+  input_cost?: number | undefined;
+  output_cost?: number | undefined;
+  total_cost?: number | undefined;
   estimated: boolean;
   // v2.5.0: "stub" tags zero-cost results emitted by the StubAdapter so
   // FinOps consumers can distinguish synthetic test runs from real spend.
@@ -147,20 +147,20 @@ export interface CostEstimate {
   // here. `cache_savings_unknown=true` when cache telemetry is present
   // but the rate card has no entry for the provider — operators see "we
   // got a cache hit but cannot price it" instead of a silent zero.
-  cache_savings_usd?: number;
-  cache_savings_unknown?: boolean;
+  cache_savings_usd?: number | undefined;
+  cache_savings_unknown?: boolean | undefined;
   // v2.26.0: itemized cache costs surfaced when env-configured cache rates are
   // present and the call exhibited cache_read or cache_write tokens. These
   // ADD to total_cost (separate from input_cost which represents fresh
   // non-cached input). Operators see the full-precision breakdown in
   // session reports + dashboards.
-  cache_read_cost?: number;
-  cache_write_cost?: number;
+  cache_read_cost?: number | undefined;
+  cache_write_cost?: number | undefined;
   // v2.26.0: pricing-tier breadcrumbs for FinOps audit. `tier_used` indicates
   // which rate variant was picked by selectRate() at estimation time.
   // Possible values: "base" | "extended" | "promo" | "promo_extended".
   // Absent when source is "stub" or "unknown-rate".
-  tier_used?: "base" | "extended" | "promo" | "promo_extended";
+  tier_used?: "base" | "extended" | "promo" | "promo_extended" | undefined;
   // v3.0.0 (Perplexity 6th peer): Perplexity-specific cost line items.
   // request_cost is the per-1000-request fee scaled by
   // search_context_size (low/medium/high). citation_tokens_cost,
@@ -170,10 +170,10 @@ export interface CostEstimate {
   // perplexity. All four ADD to total_cost (separate from input_cost
   // which represents fresh non-cached input tokens). Absent for all
   // non-perplexity peers.
-  request_cost?: number;
-  citation_tokens_cost?: number;
-  deep_research_reasoning_tokens_cost?: number;
-  search_queries_cost?: number;
+  request_cost?: number | undefined;
+  citation_tokens_cost?: number | undefined;
+  deep_research_reasoning_tokens_cost?: number | undefined;
+  search_queries_cost?: number | undefined;
 }
 
 // v2.21.0 (caching): per-session manifest of every cached call. Persisted
@@ -191,12 +191,12 @@ export interface CacheManifestEntry {
   model: string;
   cache_key_hash: string;
   cache_provider_mode: "auto" | "explicit" | "implicit" | "not_supported";
-  read_tokens?: number;
-  write_tokens?: number;
+  read_tokens?: number | undefined;
+  write_tokens?: number | undefined;
   hit: boolean;
   latency_ms: number;
-  estimated_savings_usd?: number;
-  savings_unknown?: boolean;
+  estimated_savings_usd?: number | undefined;
+  savings_unknown?: boolean | undefined;
 }
 
 export interface CacheManifest {
@@ -209,45 +209,45 @@ export interface CacheManifest {
 
 export interface PeerStructuredStatus {
   status: ReviewStatus;
-  summary?: string;
-  confidence?: Confidence;
-  evidence_sources?: string[];
-  caller_requests?: string[];
-  follow_ups?: string[];
+  summary?: string | undefined;
+  confidence?: Confidence | undefined;
+  evidence_sources?: string[] | undefined;
+  caller_requests?: string[] | undefined;
+  follow_ups?: string[] | undefined;
 }
 
 export interface PeerResult {
   peer: PeerId;
   provider: string;
   model: string;
-  model_reported?: string;
-  model_match?: boolean;
+  model_reported?: string | undefined;
+  model_match?: boolean | undefined;
   status: ReviewStatus | null;
   structured: PeerStructuredStatus | null;
   text: string;
   raw: unknown;
-  usage?: TokenUsage;
-  cost?: CostEstimate;
+  usage?: TokenUsage | undefined;
+  cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
   parser_warnings: string[];
   decision_quality: DecisionQuality;
-  fallback?: FallbackEvent;
+  fallback?: FallbackEvent | undefined;
 }
 
 export interface GenerationResult {
   peer: PeerId;
   provider: string;
   model: string;
-  model_reported?: string;
-  model_match?: boolean;
+  model_reported?: string | undefined;
+  model_match?: boolean | undefined;
   text: string;
   raw: unknown;
-  usage?: TokenUsage;
-  cost?: CostEstimate;
+  usage?: TokenUsage | undefined;
+  cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
-  fallback?: FallbackEvent;
+  fallback?: FallbackEvent | undefined;
   // v2.23.0: parser-side diagnostics produced by provider adapters when the
   // response payload was technically valid (tokens billed) but yielded a
   // text field that the orchestrator cannot use as next-round draft. The
@@ -256,7 +256,7 @@ export interface GenerationResult {
   // and no final text block — see "anthropic_thinking_only_no_text_block".
   // The relator-revision path in CrossReviewOrchestrator inspects this
   // field before promoting `generation.text` to the next-round draft.
-  parser_warnings?: string[];
+  parser_warnings?: string[] | undefined;
 }
 
 export interface FallbackEvent {
@@ -271,7 +271,7 @@ export interface FallbackEvent {
 export interface PeerFailure {
   peer: PeerId;
   provider: string;
-  model?: string;
+  model?: string | undefined;
   failure_class:
     | "auth"
     | "rate_limit"
@@ -291,9 +291,13 @@ export interface PeerFailure {
     | "unknown";
   message: string;
   retryable: boolean;
-  recovery_hint?: "wait_and_retry" | "reformulate_and_retry" | "consult_docs_then_revise";
-  reformulation_advice?: string;
-  retry_after_ms?: number;
+  recovery_hint?:
+    | "wait_and_retry"
+    | "reformulate_and_retry"
+    | "consult_docs_then_revise"
+    | undefined;
+  reformulation_advice?: string | undefined;
+  retry_after_ms?: number | undefined;
   attempts: number;
   latency_ms: number;
   // v2.15.0 (item 5): when a provider 4xx error message cites a named
@@ -304,10 +308,12 @@ export interface PeerFailure {
   // operators should consult the official docs FIRST and never amputate
   // a feature to silence a 400. The field is set by classifyProviderError
   // when the regex below matches and a docs URL is known for the peer.
-  docs_hint?: {
-    parameter: string;
-    docs_url?: string;
-  };
+  docs_hint?:
+    | {
+        parameter: string;
+        docs_url?: string | undefined;
+      }
+    | undefined;
 }
 
 export interface InFlightRound {
@@ -320,17 +326,17 @@ export interface InFlightRound {
 export interface ConvergenceScope {
   // Petitioner/impetrante: the caller that submitted the case. This is
   // the canonical actor for the self-review prohibition.
-  petitioner?: PeerId | "operator";
+  petitioner?: PeerId | "operator" | undefined;
   caller: PeerId | "operator";
   // Actor currently presenting the draft/status for this round. In
   // runUntilUnanimous this is usually the lead_peer; in direct ask_peers
   // it is normally the same as caller. Kept separate so persisted audit
   // state never has to pretend the relator is the petitioner.
-  acting_peer?: PeerId | "operator";
+  acting_peer?: PeerId | "operator" | undefined;
   caller_status: ReviewStatus;
   expected_peers: PeerId[];
   reviewer_peers: PeerId[];
-  lead_peer?: PeerId;
+  lead_peer?: PeerId | undefined;
   // v3.5.0 (CRV2-3-meta, Codex operational report): explicit relator
   // semantics. The lead_peer is the lottery-selected relator that
   // authors/revises the artifact under review; it is DELIBERATELY
@@ -343,31 +349,33 @@ export interface ConvergenceScope {
   // is a fixed constant. Populated only when `lead_peer` is set
   // (ship-mode relator lottery); absent on direct ask_peers / review /
   // circular sessions where there is no relator-vs-colegiado split.
-  lead_peer_role?: "relator_non_voting";
-  voting_peers?: PeerId[];
-  quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready";
-  anti_self_review_exclusion_reason?: "lead_peer_authored_or_revised_artifact_under_review";
+  lead_peer_role?: "relator_non_voting" | undefined;
+  voting_peers?: PeerId[] | undefined;
+  quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready" | undefined;
+  anti_self_review_exclusion_reason?:
+    | "lead_peer_authored_or_revised_artifact_under_review"
+    | undefined;
   // v3.7.3 (operator no-fallback directive 2026-05-14): reviewer peers
   // skipped this round because their pinned model was genuinely
   // unavailable (infra failure, retries exhausted, no user-declared
   // fallback). Surfaced in the durable record so the degraded panel is
   // auditable — the round converged on the non-skipped peers. Absent/empty
   // when no peer was skipped.
-  skipped_peers?: PeerId[];
+  skipped_peers?: PeerId[] | undefined;
 }
 
 export interface ConvergenceHealth {
   state: "idle" | "running" | "converged" | "blocked" | "stale";
   last_event_at: string;
   detail: string;
-  idle_ms?: number;
+  idle_ms?: number | undefined;
 }
 
 export interface EvidenceAttachment {
   ts: string;
   label: string;
   path: string;
-  content_type?: string;
+  content_type?: string | undefined;
 }
 
 // v2.7.0 Evidence Broker: when a peer returns NEEDS_EVIDENCE with
@@ -429,22 +437,22 @@ export interface EvidenceChecklistItem {
   last_seen_at: string;
   // v2.8.0 lifecycle status. Items without `status` are treated as
   // "open" for back-compat with sessions saved by v2.7.x.
-  status?: EvidenceChecklistStatus;
+  status?: EvidenceChecklistStatus | undefined;
   // v2.8.0: round in which the runtime auto-promoted the item to
   // "addressed". Cleared when the item reverts to "open".
-  addressed_at_round?: number;
+  addressed_at_round?: number | undefined;
   // v2.9.0: how the runtime promoted the item. "resurfacing" is the
   // v2.8.0 inference (peer did not bring the ask back); "judge" is the
   // v2.9.0 LLM judgment (judge peer ruled the new draft satisfies the
   // ask). Operator-set terminal statuses do not populate this field.
   // Cleared together with addressed_at_round on revert to "open".
-  address_method?: "resurfacing" | "judge";
+  address_method?: "resurfacing" | "judge" | undefined;
   // v2.9.0: brief verbatim rationale string returned by the judge peer
   // when address_method === "judge". Capped to keep the checklist
   // payload bounded; full rationale lives in the round's prompt/draft
   // artifacts and the evidence_status_history note. Undefined for
   // resurfacing-promoted items.
-  judge_rationale?: string;
+  judge_rationale?: string | undefined;
 }
 
 // v2.8.0: durable audit trail for every status transition on an
@@ -457,8 +465,8 @@ export interface EvidenceStatusHistoryEntry {
   from: EvidenceChecklistStatus;
   to: EvidenceChecklistStatus;
   by: "runtime" | "operator";
-  round?: number;
-  note?: string;
+  round?: number | undefined;
+  note?: string | undefined;
 }
 
 export interface GenerationArtifact {
@@ -467,9 +475,9 @@ export interface GenerationArtifact {
   label: string;
   peer: PeerId;
   path: string;
-  usage?: TokenUsage;
-  cost?: CostEstimate;
-  latency_ms?: number;
+  usage?: TokenUsage | undefined;
+  cost?: CostEstimate | undefined;
+  latency_ms?: number | undefined;
 }
 
 export interface OperatorEscalation {
@@ -480,9 +488,9 @@ export interface OperatorEscalation {
 
 export interface SessionControl {
   status: SessionControlStatus;
-  reason?: string;
-  job_id?: string;
-  requested_at?: string;
+  reason?: string | undefined;
+  job_id?: string | undefined;
+  requested_at?: string | undefined;
   updated_at: string;
 }
 
@@ -547,8 +555,8 @@ export interface EvidenceAskJudgment {
   // Token usage + cost (if rates are configured). Plumbed through the
   // same `mergeUsage`/`mergeCost` paths as `PeerResult` for FinOps
   // accounting.
-  usage?: TokenUsage;
-  cost?: CostEstimate;
+  usage?: TokenUsage | undefined;
+  cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
   // Parser warnings encountered while extracting structured fields from
@@ -561,9 +569,9 @@ export interface PeerCallContext {
   session_id: string;
   round: number;
   task: string;
-  signal?: AbortSignal;
-  stream?: boolean;
-  stream_tokens?: boolean;
+  signal?: AbortSignal | undefined;
+  stream?: boolean | undefined;
+  stream_tokens?: boolean | undefined;
   emit(event: RuntimeEvent): void;
   // v2.15.0 (item 2): per-call reasoning_effort override. When supplied,
   // the adapter reads this instead of `config.reasoning_effort[peer_id]`
@@ -574,12 +582,12 @@ export interface PeerCallContext {
   // the field; OpenAI/Anthropic/Gemini/DeepSeek treat it as
   // chain-of-thought depth, Grok treats it as agent count (semantic
   // divergence per peers/grok.ts header).
-  reasoning_effort_override?: ReasoningEffort;
+  reasoning_effort_override?: ReasoningEffort | undefined;
   // v2.21.0 (caching): caller identity plumbed to the adapter so
   // OpenAI/Grok adapters can build a pair-scoped prompt_cache_key
   // (peer:caller:vN). Defaults to "operator" when omitted by the
   // orchestrator (preserves pre-v2.21.0 caller-less calls).
-  caller?: PeerId | "operator";
+  caller?: PeerId | "operator" | undefined;
 }
 
 export interface PeerProbeResult {
@@ -589,19 +597,19 @@ export interface PeerProbeResult {
   available: boolean;
   auth_present: boolean;
   latency_ms: number;
-  model_selection?: ModelSelection;
-  message?: string;
+  model_selection?: ModelSelection | undefined;
+  message?: string | undefined;
 }
 
 export interface RuntimeEvent {
-  seq?: number;
+  seq?: number | undefined;
   type: string;
-  ts?: string;
-  session_id?: string;
-  round?: number;
-  peer?: PeerId;
-  message?: string;
-  data?: Record<string, unknown>;
+  ts?: string | undefined;
+  session_id?: string | undefined;
+  round?: number | undefined;
+  peer?: PeerId | undefined;
+  message?: string | undefined;
+  data?: Record<string, unknown> | undefined;
 }
 
 export interface SessionEvent extends RuntimeEvent {
@@ -614,24 +622,24 @@ export interface SessionMeta {
   created_at: string;
   updated_at: string;
   task: string;
-  review_focus?: string;
+  review_focus?: string | undefined;
   caller: PeerId | "operator";
-  outcome?: SessionOutcome;
-  outcome_reason?: string;
+  outcome?: SessionOutcome | undefined;
+  outcome_reason?: string | undefined;
   capability_snapshot: PeerProbeResult[];
-  in_flight?: InFlightRound;
-  convergence_scope?: ConvergenceScope;
-  convergence_health?: ConvergenceHealth;
-  failed_attempts?: Array<PeerFailure & { round: number }>;
-  evidence_files?: EvidenceAttachment[];
-  evidence_checklist?: EvidenceChecklistItem[];
+  in_flight?: InFlightRound | undefined;
+  convergence_scope?: ConvergenceScope | undefined;
+  convergence_health?: ConvergenceHealth | undefined;
+  failed_attempts?: Array<PeerFailure & { round: number }> | undefined;
+  evidence_files?: EvidenceAttachment[] | undefined;
+  evidence_checklist?: EvidenceChecklistItem[] | undefined;
   // v2.8.0: durable audit trail for every status transition on an
   // evidence checklist item (auto + operator). Newest entries appended.
-  evidence_status_history?: EvidenceStatusHistoryEntry[];
-  generation_files?: GenerationArtifact[];
-  operator_escalations?: OperatorEscalation[];
-  control?: SessionControl;
-  fallback_events?: FallbackEvent[];
+  evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;
+  generation_files?: GenerationArtifact[] | undefined;
+  operator_escalations?: OperatorEscalation[] | undefined;
+  control?: SessionControl | undefined;
+  fallback_events?: FallbackEvent[] | undefined;
   rounds: ReviewRound[];
   totals: {
     usage: TokenUsage;
@@ -651,7 +659,7 @@ export interface SessionMeta {
     original_outcome: SessionOutcome | null;
     new_session_id: string;
   };
-  contests_session_id?: string;
+  contests_session_id?: string | undefined;
   // v2.25.0 (circular mode): durable bookkeeping for the serial
   // deliberative loop. Populated only when the session was started
   // with `mode: "circular"`. `rotation_order` is the deterministic
@@ -679,9 +687,9 @@ export interface SessionMeta {
   // — the event fires once when cumulative cost crosses 75% of the
   // ceiling, never again. All three fields are optional for legacy
   // back-compat with sessions saved by v2.21.x and earlier.
-  cost_ceiling_usd?: number | null;
-  costs_per_round?: number[];
-  budget_warning_emitted?: boolean;
+  cost_ceiling_usd?: number | null | undefined;
+  costs_per_round?: number[] | undefined;
+  budget_warning_emitted?: boolean | undefined;
   // v3.5.0 (CRV2-6, Codex operational report): budget traceability.
   // `cost_ceiling_usd` above is kept for back-compat (it always equals
   // `effective_cost_ceiling_usd`). These three fields disambiguate where
@@ -690,25 +698,25 @@ export interface SessionMeta {
   // `effective_cost_ceiling_usd` is the value actually enforced, and
   // `cost_ceiling_source` records whether it came from the call arg, an
   // env default, or the config default. Optional for legacy back-compat.
-  requested_max_cost_usd?: number | null;
-  effective_cost_ceiling_usd?: number | null;
-  cost_ceiling_source?: "call_arg" | "env_default" | "config_default";
+  requested_max_cost_usd?: number | null | undefined;
+  effective_cost_ceiling_usd?: number | null | undefined;
+  cost_ceiling_source?: "call_arg" | "env_default" | "config_default" | undefined;
   // v3.5.0 (CRV2-1, Codex operational report): max_rounds traceability.
   // `requested_max_rounds` is the caller's per-call `max_rounds` arg
   // (null when defaulted), `effective_max_rounds` is the value the loop
   // actually used after config clamps. The `rounds` array length is
   // already the authoritative peer-review-round count; these two fields
   // only disambiguate the configured ceiling. Optional for back-compat.
-  requested_max_rounds?: number | null;
-  effective_max_rounds?: number | null;
+  requested_max_rounds?: number | null | undefined;
+  effective_max_rounds?: number | null | undefined;
 }
 
 export interface ReviewRound {
   round: number;
   started_at: string;
-  completed_at?: string;
+  completed_at?: string | undefined;
   caller_status: ReviewStatus;
-  draft_file?: string;
+  draft_file?: string | undefined;
   prompt_file: string;
   peers: PeerResult[];
   rejected: PeerFailure[];
@@ -718,10 +726,10 @@ export interface ReviewRound {
 export interface ConvergenceResult {
   converged: boolean;
   reason: string;
-  latest_round_converged?: boolean;
-  session_quorum_converged?: boolean;
-  recovery_converged?: boolean;
-  quorum_peers?: PeerId[];
+  latest_round_converged?: boolean | undefined;
+  session_quorum_converged?: boolean | undefined;
+  recovery_converged?: boolean | undefined;
+  quorum_peers?: PeerId[] | undefined;
   ready_peers: PeerId[];
   not_ready_peers: PeerId[];
   needs_evidence_peers: PeerId[];
@@ -750,9 +758,9 @@ export interface AppConfig {
     timeout_ms: number;
   };
   budget: {
-    max_session_cost_usd?: number;
-    until_stopped_max_cost_usd?: number;
-    preflight_max_round_cost_usd?: number;
+    max_session_cost_usd?: number | undefined;
+    until_stopped_max_cost_usd?: number | undefined;
+    preflight_max_round_cost_usd?: number | undefined;
     require_rates_for_budget: boolean;
     default_max_rounds: number;
     // v2.25.0 (circular mode): see AppConfig docs in config.ts. Used by
@@ -788,8 +796,8 @@ export interface AppConfig {
   };
   models: Record<PeerId, string>;
   fallback_models: Partial<Record<PeerId, string[]>>;
-  reasoning_effort: Partial<Record<PeerId, ReasoningEffort>>;
-  model_selection: Partial<Record<PeerId, ModelSelection>>;
+  reasoning_effort: Partial<Record<PeerId, ReasoningEffort | undefined>>;
+  model_selection: Partial<Record<PeerId, ModelSelection | undefined>>;
   api_keys: Record<PeerId, string | undefined>;
   // v2.26.0: cost_rates expanded to a complete pricing model — base + extended-tier
   // (e.g. Gemini >200K) + cache (read+write) + promo (limited-time discount that
@@ -800,56 +808,57 @@ export interface AppConfig {
   cost_rates: Partial<
     Record<
       PeerId,
-      {
-        input_per_million: number;
-        output_per_million: number;
-        // Extended-tier rates (used when total input tokens exceed
-        // threshold_tokens; e.g., Gemini ≤200K vs >200K).
-        input_extended_per_million?: number;
-        output_extended_per_million?: number;
-        // Cache rates (read = cache hit, write = cache creation).
-        // For Anthropic, cache_write reflects 1h TTL pricing per workspace
-        // policy (most common server-default); operators can set a lower
-        // value if they exclusively use 5m TTL.
-        cache_read_per_million?: number;
-        cache_write_per_million?: number;
-        cache_read_extended_per_million?: number;
-        cache_write_extended_per_million?: number;
-        // Promo rates (limited-time discounts; e.g., DeepSeek v4-pro 75% off
-        // until 2026-05-31). Selection requires promo_expires_at to be present
-        // AND today < promo_expires_at AND the corresponding promo field set.
-        promo_input_per_million?: number;
-        promo_output_per_million?: number;
-        promo_input_extended_per_million?: number;
-        promo_output_extended_per_million?: number;
-        promo_cache_read_per_million?: number;
-        promo_cache_write_per_million?: number;
-        promo_cache_read_extended_per_million?: number;
-        promo_cache_write_extended_per_million?: number;
-        promo_expires_at?: string; // ISO 8601 UTC timestamp
-        // Threshold for extended tier (in tokens). When total input >
-        // threshold, *_extended_per_million fields are used (when set). Null
-        // or undefined means no tier split for this provider.
-        threshold_tokens?: number;
-        // v3.0.0 (Perplexity 6th peer): Perplexity bills BOTH per-token
-        // AND per-request, where the request fee scales with
-        // `search_context_size` (low/medium/high). Other providers bill
-        // only per-token, so these fields are undefined for them.
-        // Operator configures via
-        // CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_<LOW|MEDIUM|HIGH>_USD_PER_1000_REQUESTS.
-        request_fee_low_per_1000?: number;
-        request_fee_medium_per_1000?: number;
-        request_fee_high_per_1000?: number;
-        // v3.0.0 (Perplexity Sonar Deep Research only): citation_tokens
-        // and search_queries are billed separately from
-        // input/output/reasoning. Other Sonar models (sonar / sonar-pro /
-        // sonar-reasoning-pro) leave these undefined. reasoning_tokens
-        // for Sonar Deep Research are also billed separately from output
-        // (other peers fold reasoning into output billing).
-        citation_tokens_per_million?: number;
-        deep_research_reasoning_tokens_per_million?: number;
-        search_queries_per_1000?: number;
-      }
+      | {
+          input_per_million: number;
+          output_per_million: number;
+          // Extended-tier rates (used when total input tokens exceed
+          // threshold_tokens; e.g., Gemini ≤200K vs >200K).
+          input_extended_per_million?: number | undefined;
+          output_extended_per_million?: number | undefined;
+          // Cache rates (read = cache hit, write = cache creation).
+          // For Anthropic, cache_write reflects 1h TTL pricing per workspace
+          // policy (most common server-default); operators can set a lower
+          // value if they exclusively use 5m TTL.
+          cache_read_per_million?: number | undefined;
+          cache_write_per_million?: number | undefined;
+          cache_read_extended_per_million?: number | undefined;
+          cache_write_extended_per_million?: number | undefined;
+          // Promo rates (limited-time discounts; e.g., DeepSeek v4-pro 75% off
+          // until 2026-05-31). Selection requires promo_expires_at to be present
+          // AND today < promo_expires_at AND the corresponding promo field set.
+          promo_input_per_million?: number | undefined;
+          promo_output_per_million?: number | undefined;
+          promo_input_extended_per_million?: number | undefined;
+          promo_output_extended_per_million?: number | undefined;
+          promo_cache_read_per_million?: number | undefined;
+          promo_cache_write_per_million?: number | undefined;
+          promo_cache_read_extended_per_million?: number | undefined;
+          promo_cache_write_extended_per_million?: number | undefined;
+          promo_expires_at?: string | undefined; // ISO 8601 UTC timestamp
+          // Threshold for extended tier (in tokens). When total input >
+          // threshold, *_extended_per_million fields are used (when set). Null
+          // or undefined means no tier split for this provider.
+          threshold_tokens?: number | undefined;
+          // v3.0.0 (Perplexity 6th peer): Perplexity bills BOTH per-token
+          // AND per-request, where the request fee scales with
+          // `search_context_size` (low/medium/high). Other providers bill
+          // only per-token, so these fields are undefined for them.
+          // Operator configures via
+          // CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_<LOW|MEDIUM|HIGH>_USD_PER_1000_REQUESTS.
+          request_fee_low_per_1000?: number | undefined;
+          request_fee_medium_per_1000?: number | undefined;
+          request_fee_high_per_1000?: number | undefined;
+          // v3.0.0 (Perplexity Sonar Deep Research only): citation_tokens
+          // and search_queries are billed separately from
+          // input/output/reasoning. Other Sonar models (sonar / sonar-pro /
+          // sonar-reasoning-pro) leave these undefined. reasoning_tokens
+          // for Sonar Deep Research are also billed separately from output
+          // (other peers fold reasoning into output billing).
+          citation_tokens_per_million?: number | undefined;
+          deep_research_reasoning_tokens_per_million?: number | undefined;
+          search_queries_per_1000?: number | undefined;
+        }
+      | undefined
     >
   >;
   // v2.12.0: judge auto-wire surfaced as first-class config so server_info,
@@ -1004,9 +1013,9 @@ export interface JudgmentPrecisionPeerStats {
 
 export interface JudgmentPrecisionReport {
   generated_at: string;
-  peer_filter?: PeerId;
-  since_filter?: string;
-  session_filter?: string;
+  peer_filter?: PeerId | undefined;
+  since_filter?: string | undefined;
+  session_filter?: string | undefined;
   decisions_total: number;
   decisions_with_ground_truth: number;
   decisions_skipped_no_ground_truth: number;
@@ -1030,7 +1039,7 @@ export interface ShadowJudgmentPeerStats {
 export interface RuntimeMetrics {
   generated_at: string;
   scope: "all" | "session";
-  session_id?: string;
+  session_id?: string | undefined;
   sessions: {
     total: number;
     converged: number;
@@ -1058,27 +1067,27 @@ export interface RuntimeMetrics {
 
 export interface SessionDoctorEntry {
   session_id: string;
-  version?: string;
-  caller?: PeerId | "operator";
-  petitioner?: PeerId | "operator";
-  lead_peer?: PeerId;
-  outcome?: SessionOutcome;
-  outcome_reason?: string;
-  health_state?: ConvergenceHealth["state"];
-  health_detail?: string;
+  version?: string | undefined;
+  caller?: PeerId | "operator" | undefined;
+  petitioner?: PeerId | "operator" | undefined;
+  lead_peer?: PeerId | undefined;
+  outcome?: SessionOutcome | undefined;
+  outcome_reason?: string | undefined;
+  health_state?: ConvergenceHealth["state"] | undefined;
+  health_detail?: string | undefined;
   rounds: number;
   updated_at: string;
-  open_evidence_items?: number;
-  grok_provider_errors?: number;
-  event_read_error?: string;
+  open_evidence_items?: number | undefined;
+  grok_provider_errors?: number | undefined;
+  event_read_error?: string | undefined;
   // v2.22.0 (B.P2): evidence checklist drill-down. Populated only on
   // entries where `open_evidence_items > 0` (i.e. those routed into
   // `findings.open_evidence_sessions`). `item_types` aggregates open
   // items by surfacing peer; `chronic_blockers` lists item ids with
   // `round_count >= 3`. Both are optional for back-compat with consumers
   // reading older snapshots.
-  item_types?: Partial<Record<PeerId, number>>;
-  chronic_blockers?: string[];
+  item_types?: Partial<Record<PeerId, number>> | undefined;
+  chronic_blockers?: string[] | undefined;
 }
 
 export interface SessionDoctorReport {

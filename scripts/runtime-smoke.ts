@@ -136,10 +136,15 @@ try {
     detail: "summary",
     response_format: "json",
   })) as {
-    sessions?: unknown[];
-    pagination?: { total?: number; returned?: number; limit?: number; has_more?: boolean };
-    detail?: string;
-    outcome_filter?: string;
+    sessions?: unknown[] | undefined;
+    pagination?: {
+      total?: number | undefined;
+      returned?: number;
+      limit?: number;
+      has_more?: boolean;
+    };
+    detail?: string | undefined;
+    outcome_filter?: string | undefined;
   };
   const noJobSession = (await callTool("session_init", {
     task: "Runtime smoke: verify no-job cancellation is non-terminal.",

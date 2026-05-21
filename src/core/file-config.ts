@@ -460,7 +460,7 @@ export interface ApplyFileConfigResult {
   path: string;
   fields_applied: number;
   fields_overridden_by_env: number;
-  parse_error?: string;
+  parse_error?: string | undefined;
 }
 
 // Public API used by `loadConfig()`. Reads the file (if present),

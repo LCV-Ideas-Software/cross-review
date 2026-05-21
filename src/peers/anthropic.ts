@@ -38,10 +38,10 @@ import { parseAnthropicContent, userPrompt } from "./text.js";
 type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 type AnthropicUsage = {
-  input_tokens?: number | null;
-  output_tokens?: number;
-  cache_creation_input_tokens?: number | null;
-  cache_read_input_tokens?: number | null;
+  input_tokens?: number | null | undefined;
+  output_tokens?: number | undefined;
+  cache_creation_input_tokens?: number | null | undefined;
+  cache_read_input_tokens?: number | null | undefined;
 };
 
 function usageFromAnthropic(usage: AnthropicUsage | null | undefined): TokenUsage | undefined {

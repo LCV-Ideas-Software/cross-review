@@ -317,24 +317,25 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     const sessionMatch = url.pathname.match(/^\/api\/sessions\/([a-f0-9-]{36})$/);
-    if (sessionMatch) {
-      sendJson(response, orchestrator.store.read(sessionMatch[1]));
+    const sessionMatchId = sessionMatch?.[1];
+    if (sessionMatchId) {
+      sendJson(response, orchestrator.store.read(sessionMatchId));
       return;
     }
     const eventsMatch = url.pathname.match(/^\/api\/sessions\/([a-f0-9-]{36})\/events$/);
-    if (eventsMatch) {
+    const eventsSessionId = eventsMatch?.[1];
+    if (eventsSessionId) {
       const since = Number(url.searchParams.get("since_seq") ?? 0);
-      sendJson(response, orchestrator.store.readEvents(eventsMatch[1], since));
+      sendJson(response, orchestrator.store.readEvents(eventsSessionId, since));
       return;
     }
     const reportMatch = url.pathname.match(/^\/api\/sessions\/([a-f0-9-]{36})\/report$/);
-    if (reportMatch) {
-      const session = orchestrator.store.read(reportMatch[1]);
-      const markdown = sessionReportMarkdown(
-        session,
-        orchestrator.store.readEvents(reportMatch[1]),
-      );
-      orchestrator.store.saveReport(reportMatch[1], markdown);
+    const reportSessionId = reportMatch?.[1];
+    if (reportSessionId) {
+      const sessionId = reportSessionId;
+      const session = orchestrator.store.read(sessionId);
+      const markdown = sessionReportMarkdown(session, orchestrator.store.readEvents(sessionId));
+      orchestrator.store.saveReport(sessionId, markdown);
       response.writeHead(200, {
         "content-type": "text/markdown; charset=utf-8",
         "cache-control": "no-store",

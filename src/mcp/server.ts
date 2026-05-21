@@ -378,10 +378,10 @@ export function verifyCallerIdentity(
 // can inspect who tried to game which peer in/out via `session_events`.
 export function lockCallerPeerSelection<
   T extends {
-    peers?: PeerId[];
-    lead_peer?: PeerId;
-    caller?: PeerId | "operator";
-    session_id?: string;
+    peers?: PeerId[] | undefined;
+    lead_peer?: PeerId | undefined;
+    caller?: PeerId | "operator" | undefined;
+    session_id?: string | undefined;
   },
 >(
   input: T,
@@ -398,7 +398,7 @@ export function lockCallerPeerSelection<
     // caller-supplied panel set-equals the enabled set; otherwise
     // (legacy callers, undefined) behavior matches v3.3.0..v3.7.4
     // exactly.
-    enabledPeers?: readonly PeerId[];
+    enabledPeers?: readonly PeerId[] | undefined;
   },
 ): T {
   const caller: PeerId | "operator" = input.caller ?? "operator";
@@ -462,8 +462,15 @@ export function lockCallerPeerSelection<
 // pre-lock input vs the orchestrator output. Bounded (max 2 entries),
 // only populated when applicable.
 export function buildResponseNotices<
-  T extends { peers?: PeerId[]; lead_peer?: PeerId; caller?: PeerId | "operator" },
->(originalInput: T, output: { session?: { convergence_scope?: ConvergenceScope } }): string[] {
+  T extends {
+    peers?: PeerId[] | undefined;
+    lead_peer?: PeerId | undefined;
+    caller?: PeerId | "operator" | undefined;
+  },
+>(
+  originalInput: T,
+  output: { session?: { convergence_scope?: ConvergenceScope | undefined } | undefined },
+): string[] {
   const notices: string[] = [];
   // B4 — peer-selection lock notice. If the caller supplied `peers` or
   // (as a peer caller) `lead_peer`, the v3.3.0 lock stripped it.
@@ -499,9 +506,9 @@ export type JobStatus = {
   session_id: string;
   status: "running" | "completed" | "failed" | "cancelled";
   started_at: string;
-  completed_at?: string;
-  error?: string;
-  result_summary?: Record<string, unknown>;
+  completed_at?: string | undefined;
+  error?: string | undefined;
+  result_summary?: Record<string, unknown> | undefined;
 };
 
 function createRuntime() {

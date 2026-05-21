@@ -97,10 +97,16 @@ export function assignRelator(
   }
   // crypto.randomInt(0, pool.length) is half-open: returns [0, pool.length).
   const index = crypto.randomInt(0, pool.length);
+  const assigned = pool[index];
+  if (!assigned) {
+    throw new Error(
+      `relator_assignment_index_out_of_bounds: index=${index} pool_size=${pool.length}`,
+    );
+  }
   return {
     caller,
     candidate_pool: pool,
-    assigned: pool[index],
+    assigned,
     entropy_source: "crypto.randomInt",
   };
 }

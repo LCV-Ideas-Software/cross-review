@@ -22,11 +22,11 @@ import { withRetry } from "./retry.js";
 import { userPrompt } from "./text.js";
 
 type ChatUsage = {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  total_tokens?: number;
+  prompt_tokens?: number | undefined;
+  completion_tokens?: number | undefined;
+  total_tokens?: number | undefined;
   completion_tokens_details?: {
-    reasoning_tokens?: number;
+    reasoning_tokens?: number | undefined;
   };
   // v2.21.0 (caching): DeepSeek surfaces cache telemetry on the
   // OpenAI-compatible Chat Completions response with two non-OpenAI
@@ -34,8 +34,8 @@ type ChatUsage = {
   // even though DeepSeek auto-caches without explicit write semantics —
   // this lets operators observe what fraction of input was eligible
   // for future cache hits.
-  prompt_cache_hit_tokens?: number;
-  prompt_cache_miss_tokens?: number;
+  prompt_cache_hit_tokens?: number | undefined;
+  prompt_cache_miss_tokens?: number | undefined;
 };
 
 type DeepSeekReasoningEffort = "high" | "max";
@@ -69,7 +69,7 @@ function usageFromChat(usage: ChatUsage | null | undefined): TokenUsage | undefi
 }
 
 function chatText(response: {
-  choices?: Array<{ message?: { content?: string | null } }>;
+  choices?: Array<{ message?: { content?: string | null } }> | undefined;
 }): string {
   return response.choices?.[0]?.message?.content?.trim() || JSON.stringify(response);
 }

@@ -41,29 +41,29 @@ import { withRetry } from "./retry.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 
 type GrokUsage = {
-  input_tokens?: number;
-  output_tokens?: number;
-  total_tokens?: number;
+  input_tokens?: number | undefined;
+  output_tokens?: number | undefined;
+  total_tokens?: number | undefined;
   output_tokens_details?: {
-    reasoning_tokens?: number;
+    reasoning_tokens?: number | undefined;
   };
   prompt_tokens_details?: {
-    cached_tokens?: number;
+    cached_tokens?: number | undefined;
   };
   input_tokens_details?: {
-    cached_tokens?: number;
+    cached_tokens?: number | undefined;
   };
 };
 
 type GrokStreamEvent = {
   type: string;
-  delta?: unknown;
+  delta?: unknown | undefined;
   response?: {
-    usage?: GrokUsage | null;
-    model?: string;
-    error?: { message?: string };
+    usage?: GrokUsage | null | undefined;
+    model?: string | undefined;
+    error?: { message?: string } | undefined;
   };
-  error?: { message?: string };
+  error?: { message?: string } | undefined;
 };
 
 const GROK_BASE_URL = "https://api.x.ai/v1";

@@ -28,31 +28,31 @@ import { textFromOpenAIResponse, userPrompt } from "./text.js";
 type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 type OpenAIUsage = {
-  input_tokens?: number;
-  output_tokens?: number;
-  total_tokens?: number;
+  input_tokens?: number | undefined;
+  output_tokens?: number | undefined;
+  total_tokens?: number | undefined;
   output_tokens_details?: {
-    reasoning_tokens?: number;
+    reasoning_tokens?: number | undefined;
   };
   prompt_tokens_details?: {
-    cached_tokens?: number;
+    cached_tokens?: number | undefined;
   };
   // OpenAI may return additional cache fields under input_tokens_details
   // depending on the API surface; tolerate both.
   input_tokens_details?: {
-    cached_tokens?: number;
+    cached_tokens?: number | undefined;
   };
 };
 
 type OpenAIStreamEvent = {
   type: string;
-  delta?: unknown;
+  delta?: unknown | undefined;
   response?: {
-    usage?: OpenAIUsage | null;
-    model?: string;
-    error?: { message?: string };
+    usage?: OpenAIUsage | null | undefined;
+    model?: string | undefined;
+    error?: { message?: string } | undefined;
   };
-  error?: { message?: string };
+  error?: { message?: string } | undefined;
 };
 
 function usageFromOpenAI(usage: OpenAIUsage | null | undefined): TokenUsage | undefined {

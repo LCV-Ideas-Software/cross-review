@@ -74,13 +74,12 @@ let _winRegistryEnvCache: Map<string, string> | null = null;
 function loadWindowsRegistryEnvCache(): Map<string, string> {
   if (_winRegistryEnvCache) return _winRegistryEnvCache;
   const cache = new Map<string, string>();
-  const roots = [
-    "HKCU\\Environment",
-    "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-  ];
   // HKCU wins over HKLM on collision (per Windows env-resolution order),
   // so populate HKLM first and overwrite with HKCU last.
-  for (const root of [roots[1], roots[0]]) {
+  for (const root of [
+    "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+    "HKCU\\Environment",
+  ] as const) {
     try {
       const output = execFileSync("reg", ["query", root], {
         encoding: "utf8",
@@ -547,7 +546,7 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
 export function missingFinancialControlVars(
   config: AppConfig,
   peers: PeerId[],
-  options: { untilStopped?: boolean } = {},
+  options: { untilStopped?: boolean | undefined } = {},
 ): string[] {
   const missing = new Set<string>();
 

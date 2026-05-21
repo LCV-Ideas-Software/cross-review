@@ -158,7 +158,7 @@ export function classifyProviderError(
   // explicit status code in the .message field, so we run the pattern
   // even when STATUS_4XX_RE doesn't match, but only set docs_hint when
   // both the regex matches AND the failure isn't already a known class.
-  let docsHint: { parameter: string; docs_url?: string } | undefined;
+  let docsHint: { parameter: string; docs_url?: string | undefined } | undefined;
   let docsAdvice: string | undefined;
   if (failureClass === "provider_error") {
     const prefixMatch = PARAM_REJECTION_PREFIX_RE.exec(message);
@@ -166,15 +166,17 @@ export function classifyProviderError(
     const paramMatch = prefixMatch ?? suffixMatch;
     if (paramMatch && (STATUS_4XX_RE.test(message) || /\bnot\s+supported\b/i.test(message))) {
       const parameter = paramMatch[1];
-      const providerKey = provider.toLowerCase();
-      const deepLink = PROVIDER_PARAM_DOCS[providerKey]?.[parameter];
-      const fallbackLink = PROVIDER_DOCS_URLS[providerKey];
-      const docsUrl = deepLink ?? fallbackLink;
-      docsHint = { parameter, docs_url: docsUrl };
-      docsAdvice =
-        `Provider rejected parameter "${parameter}". HARD RULE (workspace memory feedback_consult_docs_before_amputating): consult official docs FIRST` +
-        (docsUrl ? ` at ${docsUrl}` : "") +
-        ", do NOT amputate the field to silence the 400. Likely fix: gate the field on a model-capability allowlist (see peers/grok.ts GROK_REASONING_EFFORT_MODELS for precedent), or switch to a model that accepts it.";
+      if (parameter) {
+        const providerKey = provider.toLowerCase();
+        const deepLink = PROVIDER_PARAM_DOCS[providerKey]?.[parameter];
+        const fallbackLink = PROVIDER_DOCS_URLS[providerKey];
+        const docsUrl = deepLink ?? fallbackLink;
+        docsHint = { parameter, docs_url: docsUrl };
+        docsAdvice =
+          `Provider rejected parameter "${parameter}". HARD RULE (workspace memory feedback_consult_docs_before_amputating): consult official docs FIRST` +
+          (docsUrl ? ` at ${docsUrl}` : "") +
+          ", do NOT amputate the field to silence the 400. Likely fix: gate the field on a model-capability allowlist (see peers/grok.ts GROK_REASONING_EFFORT_MODELS for precedent), or switch to a model that accepts it.";
+      }
     }
   }
 

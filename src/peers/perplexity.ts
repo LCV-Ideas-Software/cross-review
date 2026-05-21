@@ -65,24 +65,24 @@ const PERPLEXITY_BASE_URL = "https://api.perplexity.ai";
 // Sonar API usage shape (extends OpenAI Chat usage with citation_tokens,
 // reasoning_tokens, num_search_queries, and a cost breakdown).
 type SonarCostBreakdown = {
-  input_tokens_cost?: number;
-  output_tokens_cost?: number;
-  reasoning_tokens_cost?: number;
-  request_cost?: number;
-  citation_tokens_cost?: number;
-  search_queries_cost?: number;
-  total_cost?: number;
+  input_tokens_cost?: number | undefined;
+  output_tokens_cost?: number | undefined;
+  reasoning_tokens_cost?: number | undefined;
+  request_cost?: number | undefined;
+  citation_tokens_cost?: number | undefined;
+  search_queries_cost?: number | undefined;
+  total_cost?: number | undefined;
 };
 
 type SonarUsage = {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  total_tokens?: number;
-  reasoning_tokens?: number;
-  citation_tokens?: number;
-  num_search_queries?: number;
-  search_context_size?: string;
-  cost?: SonarCostBreakdown;
+  prompt_tokens?: number | undefined;
+  completion_tokens?: number | undefined;
+  total_tokens?: number | undefined;
+  reasoning_tokens?: number | undefined;
+  citation_tokens?: number | undefined;
+  num_search_queries?: number | undefined;
+  search_context_size?: string | undefined;
+  cost?: SonarCostBreakdown | undefined;
 };
 
 function usageFromSonar(
@@ -149,7 +149,7 @@ export function stripPerplexityThinkingBlock(raw: string): string {
 }
 
 function sonarText(response: {
-  choices?: Array<{ message?: { content?: string | null } }>;
+  choices?: Array<{ message?: { content?: string | null } }> | undefined;
 }): string {
   const raw = response.choices?.[0]?.message?.content?.trim() || JSON.stringify(response);
   return stripPerplexityThinkingBlock(raw);
@@ -294,15 +294,15 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     // is single-token so token cost is negligible.
     try {
       const probeClient = await this.client();
-      await probeClient.chat.completions.create(
-        {
-          model: this.model,
-          messages: [{ role: "user", content: "probe" }],
-          max_tokens: 1,
-          disable_search: true,
-        } as PerplexityChatPayload,
-        { timeout: this.config.retry.timeout_ms },
-      );
+      const probePayload: PerplexityChatPayload = {
+        model: this.model,
+        messages: [{ role: "user", content: "probe" }],
+        max_tokens: 1,
+        disable_search: true,
+      };
+      await probeClient.chat.completions.create(probePayload, {
+        timeout: this.config.retry.timeout_ms,
+      });
       return {
         peer: this.id,
         provider: this.provider,
@@ -367,7 +367,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           response_format: {
             type: "json_schema",
             json_schema: { name: "cross_review_status", schema: statusJsonSchema },
-          } as OpenAI.ChatCompletionCreateParams["response_format"],
+          } as NonNullable<OpenAI.ChatCompletionCreateParams["response_format"]>,
           max_tokens: this.config.max_output_tokens,
         };
         if (this.shouldStreamTokens(context)) {

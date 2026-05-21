@@ -22,23 +22,23 @@ import { withRetry } from "./retry.js";
 import { userPrompt } from "./text.js";
 
 type GeminiUsage = {
-  promptTokenCount?: number;
-  candidatesTokenCount?: number;
-  totalTokenCount?: number;
-  thoughtsTokenCount?: number;
+  promptTokenCount?: number | undefined;
+  candidatesTokenCount?: number | undefined;
+  totalTokenCount?: number | undefined;
+  thoughtsTokenCount?: number | undefined;
   // v2.21.0 (caching): Gemini supports an IMPLICIT cache that is auto-
   // applied. We only consume telemetry — no payload changes. When the
   // service caches a prefix it reports `cachedContentTokenCount`; we
   // surface this as cache_read_tokens with mode="implicit". Explicit
   // `caches.create` is intentionally NOT enabled here (deferred to a
   // future ship) to avoid contention with `thinking` configurations.
-  cachedContentTokenCount?: number;
+  cachedContentTokenCount?: number | undefined;
 };
 
 type GeminiResponse = {
-  text?: string;
-  modelVersion?: string;
-  usageMetadata?: GeminiUsage;
+  text?: string | undefined;
+  modelVersion?: string | undefined;
+  usageMetadata?: GeminiUsage | undefined;
 };
 
 function usageFromGemini(usage: GeminiUsage | undefined): TokenUsage | undefined {
@@ -171,7 +171,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             responseJsonSchema: statusJsonSchema,
             maxOutputTokens: this.config.max_output_tokens,
             thinkingConfig: geminiThinkingConfig(this.model, reviewClient.ThinkingLevel),
-            abortSignal: context.signal,
+            ...(context.signal ? { abortSignal: context.signal } : {}),
           },
         };
         if (this.shouldStreamTokens(context)) {
@@ -234,7 +234,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           config: {
             maxOutputTokens: this.config.max_output_tokens,
             thinkingConfig: geminiThinkingConfig(this.model, generateClient.ThinkingLevel),
-            abortSignal: context.signal,
+            ...(context.signal ? { abortSignal: context.signal } : {}),
           },
         };
         if (this.shouldStreamTokens(context)) {

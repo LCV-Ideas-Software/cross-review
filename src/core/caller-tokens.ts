@@ -255,8 +255,9 @@ export function getParentProcessSnapshot(): ParentProcessSnapshot {
       const stdout = String(r.stdout || "").trim();
       if (stdout.startsWith('"')) {
         const m = stdout.match(/^"([^"]+)"/);
-        if (m && m[1].length > 0 && m[1].length < 128) {
-          snapshot.parent_exe_basename = m[1];
+        const parentExeBasename = m?.[1];
+        if (parentExeBasename && parentExeBasename.length < 128) {
+          snapshot.parent_exe_basename = parentExeBasename;
         }
       }
     } catch {

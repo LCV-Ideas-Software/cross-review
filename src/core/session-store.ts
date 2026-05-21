@@ -655,7 +655,7 @@ export class SessionStore {
     sessionId: string,
     params: {
       caller_status: ReviewStatus;
-      draft_file?: string;
+      draft_file?: string | undefined;
       prompt_file: string;
       peers: PeerResult[];
       rejected: PeerFailure[];
@@ -820,9 +820,9 @@ export class SessionStore {
       // upstream instead of corrupting the meta.
       if (outcome === "converged" && meta.rounds.length > 0) {
         const latest = meta.rounds[meta.rounds.length - 1];
-        if (latest.convergence?.converged !== true) {
+        if (!latest || latest.convergence?.converged !== true) {
           const err = new Error(
-            `session_finalize_outcome_mismatch: cannot finalize as "converged" — latest round (round=${latest.round}) has convergence.converged=${latest.convergence?.converged ?? "undefined"}, reason="${latest.convergence?.reason ?? "n/a"}"`,
+            `session_finalize_outcome_mismatch: cannot finalize as "converged" — latest round (round=${latest?.round ?? "undefined"}) has convergence.converged=${latest?.convergence?.converged ?? "undefined"}, reason="${latest?.convergence?.reason ?? "n/a"}"`,
           );
           (err as Error & { code?: string }).code = "session_finalize_outcome_mismatch";
           throw err;
@@ -1105,7 +1105,7 @@ export class SessionStore {
     sessionId: string,
     itemId: string,
     status: Exclude<EvidenceChecklistStatus, "addressed" | "not_resurfaced">,
-    options: { note?: string; by?: "operator" | "runtime" } = {},
+    options: { note?: string | undefined; by?: "operator" | "runtime" | undefined } = {},
   ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry }> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
@@ -1241,10 +1241,10 @@ export class SessionStore {
       for (const event of events) {
         if (event.type !== "session.evidence_judge_pass.shadow_decision") continue;
         const data = (event.data ?? {}) as {
-          judge_peer?: PeerId;
-          would_promote?: boolean;
-          satisfied?: boolean;
-          confidence?: "verified" | "inferred" | "unknown";
+          judge_peer?: PeerId | undefined;
+          would_promote?: boolean | undefined;
+          satisfied?: boolean | undefined;
+          confidence?: "verified" | "inferred" | "unknown" | undefined;
         };
         const judgePeer = data.judge_peer;
         if (!judgePeer || !peerKnown.includes(judgePeer)) continue;
@@ -1708,9 +1708,9 @@ export class SessionStore {
   // matching item in `meta.evidence_checklist` by id, and classifies
   // based on (would_promote x ask_resurfaced). Returns per-peer rollup.
   computeJudgmentPrecisionReport(opts?: {
-    peer?: PeerId;
-    since?: string;
-    session_id?: string;
+    peer?: PeerId | undefined;
+    since?: string | undefined;
+    session_id?: string | undefined;
   }): JudgmentPrecisionReport {
     const sessions = opts?.session_id ? [this.read(opts.session_id)] : this.list();
     const peerKnown: readonly PeerId[] = PEERS;
@@ -1748,10 +1748,10 @@ export class SessionStore {
       for (const event of events) {
         if (event.type !== "session.evidence_judge_pass.shadow_decision") continue;
         const data = (event.data ?? {}) as {
-          item_id?: string;
-          would_promote?: boolean;
-          confidence?: Confidence;
-          judge_peer?: PeerId;
+          item_id?: string | undefined;
+          would_promote?: boolean | undefined;
+          confidence?: Confidence | undefined;
+          judge_peer?: PeerId | undefined;
         };
         const judgePeer = data.judge_peer;
         if (!judgePeer || !peerKnown.includes(judgePeer)) continue;
@@ -1847,7 +1847,7 @@ export class SessionStore {
     content: string;
     bytes: number;
     truncated: boolean;
-    content_type?: string;
+    content_type?: string | undefined;
   }> {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
     const meta = this.read(sessionId);
@@ -1861,7 +1861,7 @@ export class SessionStore {
       content: string;
       bytes: number;
       truncated: boolean;
-      content_type?: string;
+      content_type?: string | undefined;
     }> = [];
     let used = 0;
     for (const file of files) {
@@ -1904,8 +1904,8 @@ export class SessionStore {
     session_id: string;
     reason: string;
     new_task: string;
-    new_initial_draft?: string;
-    new_caller?: PeerId | "operator";
+    new_initial_draft?: string | undefined;
+    new_caller?: PeerId | "operator" | undefined;
   }): Promise<{ contested_meta: SessionMeta; new_session_id: string }> {
     const original = this.read(params.session_id);
     if (!original.outcome) {
