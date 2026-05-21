@@ -7,6 +7,30 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.02.01] — 2026-05-21
+
+**Patch — publish the workspace hard-gate cleanup as a package release.** The
+previous `main` sync included runtime and smoke-test TypeScript strictness
+updates, dependency refreshes, and repo-local `tsconfig.base.json` hardening; this
+patch formalizes those source changes as npm package `4.2.1`.
+
+### Fixed
+
+- Removed the remaining Perplexity probe payload cast by typing the payload
+  object directly against the OpenAI-compatible request shape.
+- Updated strict optional/property handling across peer adapters, core
+  orchestration code, smoke tests, and runtime smoke tests so
+  `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` remain enabled.
+- Kept the smoke source pin for `enabledPeers` aligned with strict optional
+  property semantics without removing the paired behavioral assertion.
+
+### Changed
+
+- Refreshed package dependencies to the latest available versions at release
+  time and kept `package-lock.json` in sync.
+- Added a repo-local `tsconfig.base.json` so GitHub Actions and package
+  consumers do not depend on a parent workspace file.
+
 ## [v04.02.00] — 2026-05-17
 
 **Minor — bounded MCP session listing and cancellation semantics cleanup.** This
