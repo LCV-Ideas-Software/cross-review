@@ -55,14 +55,14 @@ revisão como um conjunto de ferramentas. Ele é distribuído como o pacote npm
 
 Os seis pares revisores (a "sexteto") são:
 
-| Par revisor | Provedor   | Acesso                                       |
-| ----------- | ---------- | -------------------------------------------- |
-| `codex`     | OpenAI     | biblioteca cliente OpenAI                    |
-| `claude`    | Anthropic  | biblioteca cliente Anthropic                 |
-| `gemini`    | Google     | biblioteca cliente Google Gen AI             |
-| `deepseek`  | DeepSeek   | API compatível com OpenAI                    |
-| `grok`      | xAI        | API compatível com OpenAI                    |
-| `perplexity`| Perplexity | API Sonar, compatível com OpenAI             |
+| Par revisor  | Provedor   | Acesso                           |
+| ------------ | ---------- | -------------------------------- |
+| `codex`      | OpenAI     | biblioteca cliente OpenAI        |
+| `claude`     | Anthropic  | biblioteca cliente Anthropic     |
+| `gemini`     | Google     | biblioteca cliente Google Gen AI |
+| `deepseek`   | DeepSeek   | API compatível com OpenAI        |
+| `grok`       | xAI        | API compatível com OpenAI        |
+| `perplexity` | Perplexity | API Sonar, compatível com OpenAI |
 
 As chamadas são **reais** por padrão — o servidor conversa com as APIs de
 verdade. Versões simuladas ("stubs") existem apenas para testes de fumaça e
@@ -509,15 +509,15 @@ diferente do canônico:
 
 ### Dependências de runtime
 
-| Pacote                       | Função                                         |
-| ---------------------------- | ---------------------------------------------- |
-| `@modelcontextprotocol/sdk`  | implementação do protocolo MCP                 |
-| `@anthropic-ai/sdk`          | cliente da API Anthropic (Claude)              |
-| `@google/genai`              | cliente da API Google Gen AI (Gemini)          |
-| `openai`                     | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
-| `zod`                        | validação de esquemas de entrada               |
-| `pino`                       | logs estruturados (NDJSON)                     |
-| `proper-lockfile`            | trava de arquivo para concorrência segura      |
+| Pacote                      | Função                                                     |
+| --------------------------- | ---------------------------------------------------------- |
+| `@modelcontextprotocol/sdk` | implementação do protocolo MCP                             |
+| `@anthropic-ai/sdk`         | cliente da API Anthropic (Claude)                          |
+| `@google/genai`             | cliente da API Google Gen AI (Gemini)                      |
+| `openai`                    | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
+| `zod`                       | validação de esquemas de entrada                           |
+| `pino`                      | logs estruturados (NDJSON)                                 |
+| `proper-lockfile`           | trava de arquivo para concorrência segura                  |
 
 ### Dependências de desenvolvimento
 
@@ -532,21 +532,21 @@ O histórico completo está em [CHANGELOG.md](../CHANGELOG.md). A exibição
 pública de versão segue o padrão `v00.00.00`; as versões do pacote npm seguem
 SemVer. Marcos principais:
 
-| Versão       | Marco                                                            |
-| ------------ | ---------------------------------------------------------------- |
-| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.           |
-| `v02.01.00`  | Primeira versão estável do `cross-review`.                       |
-| `v02.14.00`  | Grok entra no painel de revisão.                                 |
-| `v02.21.00`  | Cache de prompt entre provedores.                                |
-| `v02.24.00`  | Trava de proveniência de evidência.                              |
-| `v02.25.00`  | Terceiro modo de deliberação: `circular`.                        |
-| `v03.00.00`  | Perplexity entra como sexto par — o painel passa a sexteto.       |
-| `v03.01.00`  | Arquivo de configuração central (`config.json`).                 |
-| `v03.05.00`  | Pré-checagem de evidência antes de chamadas pagas.               |
-| `v04.00.00`  | Projeto renomeado de `cross-review-v2` para `cross-review`.       |
-| `v04.01.00`  | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais. |
-| `v04.02.00`  | Listagem de sessões paginada e semântica de cancelamento.        |
-| `v04.02.01`  | Versão atual (pacote npm `4.2.1`).                               |
+| Versão           | Marco                                                                                                            |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                               |
+| `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                       |
+| `v02.14.00`      | Grok entra no painel de revisão.                                                                                 |
+| `v02.21.00`      | Cache de prompt entre provedores.                                                                                |
+| `v02.24.00`      | Trava de proveniência de evidência.                                                                              |
+| `v02.25.00`      | Terceiro modo de deliberação: `circular`.                                                                        |
+| `v03.00.00`      | Perplexity entra como sexto par — o painel passa a sexteto.                                                      |
+| `v03.01.00`      | Arquivo de configuração central (`config.json`).                                                                 |
+| `v03.05.00`      | Pré-checagem de evidência antes de chamadas pagas.                                                               |
+| `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                      |
+| `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais. |
+| `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                        |
+| `v04.02.01`      | Versão atual (pacote npm `4.2.1`).                                                                               |
 
 > Nota sobre o nome: até a versão 3.7.5, o projeto foi publicado como
 > `@lcv-ideas-software/cross-review-v2`. A v4.0.0 é a primeira versão sob o
