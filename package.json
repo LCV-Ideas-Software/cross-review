@@ -91,6 +91,7 @@
     "deepseek",
     "grok",
     "xai",
+    "perplexity",
     "api"
   ]
 }

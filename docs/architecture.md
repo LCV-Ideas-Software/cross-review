@@ -109,6 +109,8 @@ The peer adapters use the strongest official reasoning controls available for ea
 - Anthropic uses adaptive thinking and omits raw thinking content from responses.
 - Gemini enables thinking configuration for Gemini 3.x and the Gemini 2.5 fallback.
 - DeepSeek enables Thinking Mode and follows the official multi-round guidance by resending the summarized session context in each stateless request.
+- Grok runs the pinned `grok-4-latest` model with xAI automatic reasoning (no explicit `reasoning.effort` field).
+- Perplexity runs the pinned `sonar-reasoning-pro` model with an explicit `reasoning_effort` (`minimal`/`low`/`medium`/`high`); the shared effort scale is clamped down into that range.
 
 Raw chain-of-thought is not persisted. Session continuity is represented through prompts, structured peer decisions, summaries and artifacts.
 

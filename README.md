@@ -5,7 +5,7 @@
 # cross-review
 
 > MCP server orchestrating API-first cross-review between Claude, ChatGPT Codex,
-> Gemini, DeepSeek, and Grok with unanimous convergence gates.
+> Gemini, DeepSeek, Grok, and Perplexity with unanimous convergence gates.
 
 [![status: stable](https://img.shields.io/badge/status-stable-brightgreen.svg)](#status)
 [![release](https://img.shields.io/github/v/release/LCV-Ideas-Software/cross-review?sort=semver)](https://github.com/LCV-Ideas-Software/cross-review/releases)
@@ -119,8 +119,8 @@ The version history at a glance:
 
 `cross-review` is the stable API-first implementation of the cross-review
 pattern. It orchestrates provider API clients (OpenAI/Codex, Anthropic/Claude,
-Google Gemini, DeepSeek, and xAI/Grok) and provides an MCP-compatible server
-surface.
+Google Gemini, DeepSeek, xAI/Grok, and Perplexity Sonar) and provides an
+MCP-compatible server surface.
 
 Runtime calls are real provider calls by default. Stubs exist only for smoke
 tests and CI when `CROSS_REVIEW_STUB=1`.
@@ -130,6 +130,7 @@ tests and CI when `CROSS_REVIEW_STUB=1`.
 - Google Gen AI client library for Gemini.
 - OpenAI-compatible DeepSeek API through the OpenAI client library.
 - OpenAI-compatible xAI Grok API through the OpenAI client library.
+- OpenAI-compatible Perplexity Sonar API through the OpenAI client library.
 
 ## Quick Start
 

@@ -13,13 +13,14 @@ This document describes:
 
 ## Per-provider behavior matrix
 
-| Peer (Provider)       | Cache mode | Threshold       | TTL surface                                    | Telemetry source                                                      |
-| --------------------- | ---------- | --------------- | ---------------------------------------------- | --------------------------------------------------------------------- |
-| `codex` (OpenAI)      | `auto`     | ~1k tokens      | `prompt_cache_retention` (`in_memory` / `24h`) | `usage.prompt_tokens_details.cached_tokens`                           |
-| `claude` (Anthropic)  | `explicit` | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)              | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
-| `gemini` (Google)     | `implicit` | service-managed | n/a                                            | `usageMetadata.cachedContentTokenCount`                               |
-| `deepseek` (DeepSeek) | `auto`     | service-managed | n/a                                            | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
-| `grok` (xAI)          | `auto`     | service-managed | mirrors OpenAI                                 | `usage.prompt_tokens_details.cached_tokens`                           |
+| Peer (Provider)           | Cache mode      | Threshold       | TTL surface                                    | Telemetry source                                                      |
+| ------------------------- | --------------- | --------------- | ---------------------------------------------- | --------------------------------------------------------------------- |
+| `codex` (OpenAI)          | `auto`          | ~1k tokens      | `prompt_cache_retention` (`in_memory` / `24h`) | `usage.prompt_tokens_details.cached_tokens`                           |
+| `claude` (Anthropic)      | `explicit`      | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)              | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
+| `gemini` (Google)         | `implicit`      | service-managed | n/a                                            | `usageMetadata.cachedContentTokenCount`                               |
+| `deepseek` (DeepSeek)     | `auto`          | service-managed | n/a                                            | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
+| `grok` (xAI)              | `auto`          | service-managed | mirrors OpenAI                                 | `usage.prompt_tokens_details.cached_tokens`                           |
+| `perplexity` (Perplexity) | `not_supported` | n/a             | n/a                                            | none — Sonar API exposes no prompt-cache surface                      |
 
 `mode` values follow the canonical `TokenUsage.cache_provider_mode` enum:
 

@@ -75,6 +75,10 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default.
 - Grok: the pinned `grok-4-latest` model uses xAI automatic reasoning without
   the explicit `reasoning.effort` field.
+- Perplexity: the pinned `sonar-reasoning-pro` model accepts an explicit
+  `reasoning_effort` enum (`minimal`/`low`/`medium`/`high`, `high` by default);
+  `clampEffortForPerplexity` narrows the shared effort scale into that range
+  (`none`/`minimal` → `minimal`; `xhigh`/`max` → `high`).
 
 ## Historical Documentation Refresh — 2026-05-05
 
