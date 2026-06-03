@@ -39,7 +39,7 @@ const DOCS = {
 const PRIORITY: Record<PeerId, string[]> = {
   codex: ["gpt-5.5"],
   claude: ["claude-opus-4-8"],
-  gemini: ["gemini-2.5-pro"],
+  gemini: ["gemini-3.1-pro-preview"],
   deepseek: ["deepseek-v4-pro"],
   // grok-4.3: concrete canonical pin for cross-review. xAI documents
   // `grok-4-latest` as an alias, but pinning the concrete id keeps

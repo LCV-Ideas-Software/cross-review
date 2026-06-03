@@ -41,10 +41,10 @@ O produto atual é estável. O runtime carregado nesta sessão reporta:
 | -------------------------- | ----------------------------------- |
 | Nome                       | `cross-review`                      |
 | Publicador                 | `LCV Ideas & Software`              |
-| Versão runtime             | `4.2.2`                             |
-| Release date runtime       | `2026-06-02`                        |
+| Versão runtime             | `4.2.3`                             |
+| Release date runtime       | `2026-06-03`                        |
 | Pacote npm                 | `@lcv-ideas-software/cross-review`  |
-| Versão npm publicada       | `4.2.2`                             |
+| Versão npm publicada       | `4.2.3`                             |
 | Transporte MCP             | `stdio`                             |
 | Execução CLI por peers     | desativada                          |
 | Modo padrão                | chamadas reais de API               |
@@ -196,14 +196,14 @@ aos peers por esses IDs.
 O projeto usa pinos canônicos para evitar downgrade silencioso. Os valores
 documentados no repositório atual são:
 
-| Peer         | Modelo padrão         | Override                        |
-| ------------ | --------------------- | ------------------------------- |
-| `codex`      | `gpt-5.5`             | `CROSS_REVIEW_OPENAI_MODEL`     |
-| `claude`     | `claude-opus-4-8`     | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
-| `gemini`     | `gemini-2.5-pro`      | `CROSS_REVIEW_GEMINI_MODEL`     |
-| `deepseek`   | `deepseek-v4-pro`     | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| `grok`       | `grok-4.3`            | `CROSS_REVIEW_GROK_MODEL`       |
-| `perplexity` | `sonar-reasoning-pro` | `CROSS_REVIEW_PERPLEXITY_MODEL` |
+| Peer         | Modelo padrão            | Override                        |
+| ------------ | ------------------------ | ------------------------------- |
+| `codex`      | `gpt-5.5`                | `CROSS_REVIEW_OPENAI_MODEL`     |
+| `claude`     | `claude-opus-4-8`        | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| `gemini`     | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
+| `deepseek`   | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
+| `grok`       | `grok-4.3`               | `CROSS_REVIEW_GROK_MODEL`       |
+| `perplexity` | `sonar-reasoning-pro`    | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Overrides devem ser decisão explícita do operador. A proposta do sistema é
 priorizar correção, rastreabilidade e profundidade de raciocínio, não custo ou
@@ -714,6 +714,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                       |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `v04.02.03`      | 2026-06-03    | Promove Gemini 3.1 Pro Preview como pin canônico e atualiza o rate card Gemini local.                                          |
 | `v04.02.02`      | 2026-06-02    | Atualiza pins Claude/Grok, corrige probe Perplexity e refresca rate cards conforme documentação oficial dos providers.         |
 | `v04.02.01`      | 2026-05-21    | Publica cleanup de hard-gate como pacote `4.2.1`, com ajustes de strict TypeScript, dependências e `tsconfig.base.json` local. |
 | `v04.02.00`      | 2026-05-17    | Lista de sessões paginada, cancelamento sem abortar sessão indevidamente e resposta Markdown de `session_init`.                |

@@ -19,8 +19,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.2.2";
-export const RELEASE_DATE = "2026-06-02";
+export const VERSION = "4.2.3";
+export const RELEASE_DATE = "2026-06-03";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -287,7 +287,7 @@ export function loadConfig(): AppConfig {
     models: {
       codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.5",
       claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-opus-4-8",
-      gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-2.5-pro",
+      gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
       // v4.2.2 (provider-doc refresh 2026-06-02): grok default pinned to
       // `grok-4.3`; xAI documents `grok-4-latest` as an alias, but using

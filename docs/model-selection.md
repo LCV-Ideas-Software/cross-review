@@ -36,23 +36,24 @@ unavailable, the round retries on the same model or skips that peer
 hatch is an explicit operator override via `CROSS_REVIEW_<PROVIDER>_MODEL`
 env-var per host — a deliberate decision, never a silent downgrade.
 
-| Peer             | Pin                   | Override env-var                |
-| ---------------- | --------------------- | ------------------------------- |
-| OpenAI/Codex     | `gpt-5.5`             | `CROSS_REVIEW_OPENAI_MODEL`     |
-| Anthropic/Claude | `claude-opus-4-8`     | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
-| Google/Gemini    | `gemini-2.5-pro`      | `CROSS_REVIEW_GEMINI_MODEL`     |
-| DeepSeek         | `deepseek-v4-pro`     | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| xAI/Grok         | `grok-4.3`            | `CROSS_REVIEW_GROK_MODEL`       |
-| Perplexity       | `sonar-reasoning-pro` | `CROSS_REVIEW_PERPLEXITY_MODEL` |
+| Peer             | Pin                      | Override env-var                |
+| ---------------- | ------------------------ | ------------------------------- |
+| OpenAI/Codex     | `gpt-5.5`                | `CROSS_REVIEW_OPENAI_MODEL`     |
+| Anthropic/Claude | `claude-opus-4-8`        | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| Google/Gemini    | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
+| DeepSeek         | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
+| xAI/Grok         | `grok-4.3`               | `CROSS_REVIEW_GROK_MODEL`       |
+| Perplexity       | `sonar-reasoning-pro`    | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
 
-Operator preference 2026-05-07: `gemini-2.5-pro` is the runtime default
-because under Google One AI Ultra subscription it carries 1k requests/day vs
-`gemini-3.1-pro-preview`'s 250 requests/day. Workspace policy: only
-`gemini-*-pro` variants ≥ 2.5 are permitted — no `*-flash` variants and no
-models below 2.5.
+Google's deprecation schedule lists `gemini-2.5-pro` for shutdown on
+2026-10-16 and recommends `gemini-3.1-pro-preview` as the replacement.
+Workspace policy remains: only `gemini-*-pro` variants >= 2.5 are permitted
+for this peer; no `*-flash` variants and no models below 2.5. Operators can
+still override the pin explicitly, but the default/canonical path follows the
+documented replacement.
 
 `GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.3`
 model accepts explicit `reasoning.effort` values through `high`; the adapter
@@ -71,7 +72,9 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
 
 - OpenAI/Codex: Responses API with reasoning effort `xhigh` by default.
 - Anthropic/Claude: adaptive thinking with omitted thinking display plus `output_config.effort=xhigh` by default on Opus 4.8.
-- Google/Gemini: automatic thinking budget for the pinned Gemini 2.5 Pro model; Gemini 3.x thinking-level notes are historical and apply only to an explicit operator-approved override.
+- Google/Gemini: high thinking level for the pinned Gemini 3.1 Pro Preview
+  model; the adapter keeps the Gemini 3 thinking path explicit because this
+  peer is used for complex reasoning and coding review.
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default.
 - Grok: the pinned `grok-4.3` model accepts explicit `reasoning.effort`;
   unsupported shared-scale values are clamped to the nearest supported value.
@@ -92,9 +95,9 @@ above and enforced by `src/peers/model-selection.ts`.
 - Anthropic: Claude Opus 4.8 supersedes Opus 4.7 as the current
   complex-reasoning and agentic-coding default; current docs retain the same
   regular price tier as 4.7.
-- Google Gemini: Gemini 3.1 Pro Preview was the advanced Gemini 3.1 option at
-  the time; Gemini 3 Pro Preview was deprecated/shut down and must stay out of
-  current pins and downgrade chains.
+- Google Gemini: Gemini 3.1 Pro Preview is the documented replacement for
+  Gemini 2.5 Pro. Gemini 3 Pro Preview was deprecated/shut down and must stay
+  out of current pins and downgrade chains.
 - DeepSeek: DeepSeek-V4 exposes `deepseek-v4-pro` and `deepseek-v4-flash`;
   legacy `deepseek-chat` and `deepseek-reasoner` were scheduled for
   discontinuation on 2026-07-24 and must stay out of current pins and

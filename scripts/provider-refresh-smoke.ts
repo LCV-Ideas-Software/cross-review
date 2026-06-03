@@ -59,6 +59,16 @@ const config = loadConfig();
 }
 
 {
+  const gemini = selectFromCandidates(
+    "gemini",
+    [{ id: "gemini-3.1-pro-preview", source: "api" }],
+    "gemini-3.1-pro-preview",
+  );
+  assert.equal(gemini.selected, "gemini-3.1-pro-preview");
+  assert.equal(gemini.confidence, "verified");
+}
+
+{
   const grok = selectFromCandidates("grok", [{ id: "grok-4.3", source: "api" }], "grok-4.3");
   assert.equal(grok.selected, "grok-4.3");
   assert.equal(grok.confidence, "verified");
@@ -70,8 +80,14 @@ const config = loadConfig();
   assert.ok(
     configSource.includes('claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-opus-4-8"'),
   );
+  assert.ok(
+    configSource.includes(
+      'gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview"',
+    ),
+  );
   assert.ok(configSource.includes('grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.3"'));
   assert.ok(modelSelectionSource.includes('claude: ["claude-opus-4-8"]'));
+  assert.ok(modelSelectionSource.includes('gemini: ["gemini-3.1-pro-preview"]'));
   assert.ok(modelSelectionSource.includes('grok: ["grok-4.3"]'));
 }
 

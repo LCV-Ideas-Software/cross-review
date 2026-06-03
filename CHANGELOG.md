@@ -7,6 +7,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.02.03] — 2026-06-03
+
+**Patch — Gemini replacement pin and rate-card refresh.** This release follows
+Google's deprecation schedule for Gemini 2.5 Pro by making Gemini 3.1 Pro Preview
+the active canonical Gemini pin.
+
+### Changed
+
+- Promoted the Google/Gemini canonical default from `gemini-2.5-pro` to
+  `gemini-3.1-pro-preview` after Google's deprecation schedule listed the
+  former for shutdown on 2026-10-16.
+- Updated the active local Gemini rate card from Gemini 2.5 Pro pricing to
+  Gemini 3.1 Pro Preview pricing, including the >200K extended tier and
+  cached-input rates.
+
 ## [v04.02.02] — 2026-06-02
 
 **Patch — provider-doc refresh and Perplexity probe repair.** This release

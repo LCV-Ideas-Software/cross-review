@@ -230,6 +230,7 @@ for (const { file, field } of adapterExpectations) {
 const modelSelectionSource = fs.readFileSync("src/peers/model-selection.ts", "utf8");
 for (const deprecatedOrWeakModel of [
   "claude-haiku-4-5",
+  "gemini-2.5-pro",
   "gemini-3-pro-preview",
   "deepseek-reasoner",
   "deepseek-chat",
@@ -245,7 +246,7 @@ for (const deprecatedOrWeakModel of [
 for (const canonicalPin of [
   "gpt-5.5",
   "claude-opus-4-8",
-  "gemini-2.5-pro",
+  "gemini-3.1-pro-preview",
   "deepseek-v4-pro",
   "grok-4.3",
   "sonar-reasoning-pro",
@@ -8190,7 +8191,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     new URL("../src/peers/model-selection.ts", import.meta.url),
     "utf8",
   );
-  for (const offPolicyModel of ["deepseek-v4-flash", "gemini-3.1-pro-preview"]) {
+  for (const offPolicyModel of ["deepseek-v4-flash", "gemini-2.5-pro"]) {
     assert.ok(
       !a3ModelSrc.includes(`"${offPolicyModel}"`),
       `v3.7.2 / AUDIT-3: ${offPolicyModel} must not appear in the PRIORITY lists`,
@@ -8199,7 +8200,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   for (const [peer, pin] of [
     ["codex", "gpt-5.5"],
     ["claude", "claude-opus-4-8"],
-    ["gemini", "gemini-2.5-pro"],
+    ["gemini", "gemini-3.1-pro-preview"],
     ["deepseek", "deepseek-v4-pro"],
     ["grok", "grok-4.3"],
     ["perplexity", "sonar-reasoning-pro"],
