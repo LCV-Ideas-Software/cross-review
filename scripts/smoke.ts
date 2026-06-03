@@ -244,10 +244,10 @@ for (const deprecatedOrWeakModel of [
 // "must remain" list is therefore exactly the 6 lone canonical pins.
 for (const canonicalPin of [
   "gpt-5.5",
-  "claude-opus-4-7",
+  "claude-opus-4-8",
   "gemini-2.5-pro",
   "deepseek-v4-pro",
-  "grok-4-latest",
+  "grok-4.3",
   "sonar-reasoning-pro",
 ]) {
   assert.ok(
@@ -259,9 +259,9 @@ for (const canonicalPin of [
 const noWeakDowngrade = selectFromCandidates(
   "claude",
   [{ id: "claude-haiku-4-5-20251001", source: "api" }],
-  "claude-opus-4-7",
+  "claude-opus-4-8",
 );
-assert.equal(noWeakDowngrade.selected, "claude-opus-4-7");
+assert.equal(noWeakDowngrade.selected, "claude-opus-4-8");
 assert.equal(noWeakDowngrade.confidence, "unknown");
 assert.match(noWeakDowngrade.reason, /silently downgrading/);
 
@@ -1848,6 +1848,54 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "statusInstruction must direct detail to evidence_sources (v2.5.0)",
   );
   console.log("[smoke] session_contract_directives_test: PASS");
+}
+
+// v4.2.2 — verified_requires_evidence_sources_test. Peer JSON may still
+// declare READY, but a `confidence:"verified"` verdict without concrete
+// evidence_sources must not be classified as a clean machine decision.
+{
+  const statusModule = await import("../src/core/status.js");
+  const parseStatusForTruth = statusModule.parsePeerStatus;
+  const statusInstruction = statusModule.statusInstruction;
+  const ungrounded = parseStatusForTruth(
+    JSON.stringify({
+      status: "READY",
+      summary: "Looks correct.",
+      confidence: "verified",
+      evidence_sources: [],
+      caller_requests: [],
+      follow_ups: [],
+    }),
+  );
+  assert.ok(
+    ungrounded.parser_warnings.includes("verified_without_evidence_sources"),
+    "v4.2.2 / truthfulness_guardrails: confidence=verified with empty evidence_sources must emit verified_without_evidence_sources",
+  );
+  assert.equal(
+    ungrounded.structured?.confidence,
+    "verified",
+    "v4.2.2 / truthfulness_guardrails: parser warning must not silently rewrite peer confidence",
+  );
+
+  const grounded = parseStatusForTruth(
+    JSON.stringify({
+      status: "READY",
+      summary: "Runtime claim matches the raw source.",
+      confidence: "verified",
+      evidence_sources: ['server_info: {"version":"4.2.1","release_date":"2026-05-21"}'],
+      caller_requests: [],
+      follow_ups: [],
+    }),
+  );
+  assert.ok(
+    !grounded.parser_warnings.includes("verified_without_evidence_sources"),
+    "v4.2.2 / truthfulness_guardrails: concrete evidence_sources must satisfy verified confidence",
+  );
+  assert.ok(
+    /confidence.*verified[\s\S]+evidence_sources/i.test(statusInstruction()),
+    "v4.2.2 / truthfulness_guardrails: statusInstruction must tie verified confidence to concrete evidence_sources",
+  );
+  console.log("[smoke] verified_requires_evidence_sources_test: PASS");
 }
 
 // v2.5.0: CROSS_REVIEW_DEFAULT_MAX_ROUNDS env override is honored.
@@ -4491,17 +4539,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "PEERS must have 6 entries (codex/claude/gemini/deepseek/grok/perplexity)",
   );
   const cfg = loadConfig();
-  // v3.7.2 (AUDIT-3 + operator directive 2026-05-14): default grok model
-  // is `grok-4-latest` — the operator's chosen canonical pin for
-  // cross-review, superseding the v2.14.1 `grok-4.20-multi-agent`
-  // default. `grok-4.20-multi-agent` remains a valid env-override
-  // (CROSS_REVIEW_GROK_MODEL) for explicit reasoning.effort control — the
-  // adapter still handles it; the modelAcceptsReasoningEffort /
-  // clampEffortForModel tests below continue to pin that capability.
+  // v4.2.2 provider-doc refresh: default grok model is the concrete
+  // `grok-4.3` pin. `grok-4-latest` remains a valid xAI alias and
+  // `grok-4.20-multi-agent` remains a valid env-override for explicit
+  // multi-agent reasoning behavior; the adapter tests below continue to
+  // pin those capabilities.
   assert.equal(
     cfg.models.grok,
-    "grok-4-latest",
-    "default grok model must be grok-4-latest (v3.7.2, operator directive)",
+    "grok-4.3",
+    "default grok model must be grok-4.3 (v4.2.2 provider-doc refresh)",
   );
   assert.ok("grok" in cfg.fallback_models, "fallback_models must have grok entry");
   assert.equal(cfg.peer_enabled.grok, true, "grok must be enabled by default");
@@ -6607,6 +6653,34 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     `v3.7.4 / fabrication_lock: operational assertions NET-NEW vs {provenance ∪ priorDraft} — invented by the relator even though a prior draft exists — MUST still trip fabricated=true (got count=${netNewAssertionWithDraft.suspicious_assertion_count}, fabricated=${netNewAssertionWithDraft.fabricated})`,
   );
 
+  const inventedWorkflowDispatch = detectFabricatedEvidence(
+    "Refazendo agora. Workflow launched in background. Task ID: wllbll9am. Run ID: wf_e7c69578-e23.",
+    {
+      provenanceCorpus: "",
+      priorDraftCorpus: "The user challenged the report and did not authorize a redo.",
+      narrativeCorpus: "Analyze why Claude lied about the prior v4.2.0 audit.",
+    },
+  );
+  assert.ok(
+    inventedWorkflowDispatch.fabricated === true &&
+      inventedWorkflowDispatch.suspicious_assertion_count >= 2,
+    `v4.2.2 / truthfulness_guardrails: invented workflow dispatch claims MUST trip fabricated=true (got count=${inventedWorkflowDispatch.suspicious_assertion_count}, fabricated=${inventedWorkflowDispatch.fabricated})`,
+  );
+
+  const genericConfirmation = detectFabricatedEvidence(
+    "The reviewer confirmed the model-selection rationale is clear.",
+    {
+      provenanceCorpus: "",
+      priorDraftCorpus: "",
+      narrativeCorpus: "",
+    },
+  );
+  assert.equal(
+    genericConfirmation.fabricated,
+    false,
+    "v4.2.2 / truthfulness_guardrails: generic 'confirmed' prose without a dispatch/authorization claim must not trip fabrication detection",
+  );
+
   // Source-level: threshold constants pinned at the documented values.
   assert.ok(
     /FABRICATED_NET_NEW_HEX_THRESHOLD\s*=\s*3/.test(orchSrc),
@@ -7432,6 +7506,128 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] evidence_preflight_test: PASS");
 }
 
+// v4.2.2 — truthfulness_preflight_test. Pins the guard added after the
+// Claude Code Opus 4.8 incident where a report asserted
+// "v4.2.0 current production" despite live server_info showing
+// v4.2.1. The old evidence preflight only checked completed-work
+// claims (tests/diff/build) and did not reject current-runtime
+// contradictions or unsupported historical timing narratives.
+{
+  const { truthfulnessPreflight } = await import("../src/core/orchestrator.js");
+
+  const runtimeFacts = {
+    runtime_version: "4.2.1",
+    release_date: "2026-05-21",
+    model_pins: {
+      claude: "claude-opus-4-8",
+      grok: "grok-4.3",
+    },
+  };
+
+  const contradictedByRuntime = truthfulnessPreflight({
+    task: "Audit all sessions generated with the current cross-review version.",
+    initialDraft:
+      'Live server_info: {"version":"4.2.1","release_date":"2026-05-21"}\nAudit report for cross-review v4.2.0 current production, released 2026-05-17.',
+    runtimeFacts,
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    contradictedByRuntime.pass,
+    false,
+    "v4.2.2 / truthfulness_preflight: current-runtime version claim contradicting runtime facts must trip even when server_info text is present",
+  );
+  assert.ok(
+    contradictedByRuntime.contradictions.some((item: string) => item.includes("4.2.0")),
+    "v4.2.2 / truthfulness_preflight: mismatch diagnostics must include the contradicted version token",
+  );
+
+  const backedByRuntime = truthfulnessPreflight({
+    task: "Audit all sessions generated with the current cross-review version.",
+    initialDraft:
+      'Live server_info: {"version":"4.2.1","release_date":"2026-05-21"}\nAudit report for cross-review v4.2.1 current production, released 2026-05-21.',
+    runtimeFacts,
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    backedByRuntime.pass,
+    true,
+    "v4.2.2 / truthfulness_preflight: current-runtime claim matching runtime facts must pass",
+  );
+
+  const unsupportedCurrentState = truthfulnessPreflight({
+    task: "Audit all sessions generated with the current cross-review version.",
+    initialDraft: "Audit report for cross-review v4.2.1 current production.",
+    runtimeFacts: {},
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    unsupportedCurrentState.pass,
+    false,
+    "v4.2.2 / truthfulness_preflight: current-runtime claim without runtime facts or source evidence must trip",
+  );
+
+  const historicalChangelog = truthfulnessPreflight({
+    task: "Review this changelog text.",
+    initialDraft: "v4.2.0 was released on 2026-05-17. v4.2.1 was released on 2026-05-21.",
+    runtimeFacts,
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    historicalChangelog.pass,
+    true,
+    "v4.2.2 / truthfulness_preflight: historical version text without current/timing claims must not trip",
+  );
+
+  const fabricatedTiming = truthfulnessPreflight({
+    task: "Explain why the report said v4.2.0.",
+    initialDraft:
+      "When the workflow began, cross-review was running v4.2.0. It was bumped to v4.2.1 between R1 and R3.",
+    runtimeFacts,
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    fabricatedTiming.pass,
+    false,
+    "v4.2.2 / truthfulness_preflight: historical runtime timing narrative without snapshot evidence must trip",
+  );
+
+  const withStructuredEvidence = truthfulnessPreflight({
+    task: "Explain why the report said v4.2.0.",
+    initialDraft:
+      "When the workflow began, cross-review was running v4.2.0. It was bumped to v4.2.1 between R1 and R3.",
+    runtimeFacts,
+    structuredEvidence:
+      "Historical runtime snapshot from events.ndjson: workflow_start server_info version=4.2.0; later reload server_info version=4.2.1.",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    withStructuredEvidence.pass,
+    true,
+    "v4.2.2 / truthfulness_preflight: structured evidence can satisfy historical timing claims",
+  );
+
+  const orchSrcTruth = fs.readFileSync(
+    new URL("../src/core/orchestrator.ts", import.meta.url),
+    "utf8",
+  );
+  const configSrcTruth = fs.readFileSync(new URL("../src/core/config.ts", import.meta.url), "utf8");
+  assert.ok(
+    /export function truthfulnessPreflight\b/.test(orchSrcTruth),
+    "v4.2.2 / truthfulness_preflight: truthfulnessPreflight must be exported",
+  );
+  assert.ok(
+    /truthfulness_preflight_enabled/.test(orchSrcTruth) &&
+      /askPeers[\s\S]+truthfulnessPreflight/.test(orchSrcTruth) &&
+      /runUntilUnanimous[\s\S]+truthfulnessPreflight/.test(orchSrcTruth),
+    "v4.2.2 / truthfulness_preflight: both askPeers and runUntilUnanimous must gate on config.truthfulness_preflight_enabled",
+  );
+  assert.ok(
+    /boolEnv\("CROSS_REVIEW_TRUTHFULNESS_PREFLIGHT", true\)/.test(configSrcTruth),
+    "v4.2.2 / truthfulness_preflight: CROSS_REVIEW_TRUTHFULNESS_PREFLIGHT env var must default ON",
+  );
+  console.log("[smoke] truthfulness_preflight_test: PASS");
+}
+
 // v3.5.0 (CRV2-1 + CRV2-6) — budget + max_rounds traceability.
 //
 // setSessionTraceability persists requested-vs-effective max_rounds and
@@ -8002,10 +8198,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   }
   for (const [peer, pin] of [
     ["codex", "gpt-5.5"],
-    ["claude", "claude-opus-4-7"],
+    ["claude", "claude-opus-4-8"],
     ["gemini", "gemini-2.5-pro"],
     ["deepseek", "deepseek-v4-pro"],
-    ["grok", "grok-4-latest"],
+    ["grok", "grok-4.3"],
     ["perplexity", "sonar-reasoning-pro"],
   ] as const) {
     assert.ok(

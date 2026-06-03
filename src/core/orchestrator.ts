@@ -3,7 +3,7 @@ import { resolveBestModels } from "../peers/model-selection.js";
 import { createAdapters, selectAdapters } from "../peers/registry.js";
 import { redact } from "../security/redact.js";
 import { appendCacheManifestEntry } from "./cache-manifest.js";
-import { missingFinancialControlVars } from "./config.js";
+import { missingFinancialControlVars, RELEASE_DATE } from "./config.js";
 import { checkConvergence, isSkippableFailure } from "./convergence.js";
 import { estimateCacheSavings } from "./cost.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
@@ -483,6 +483,27 @@ const FABRICATED_ASSERTION_PATTERNS: Array<{ pattern: RegExp; label: string }> =
   { pattern: /cargo\s+test\b/g, label: "cargo_test_assertion" },
   { pattern: /npm\s+run\s+(?:build|test|typecheck)\b/g, label: "npm_run_assertion" },
   { pattern: /index\s+[a-f0-9]{6,}\.{2}[a-f0-9]{6,}/g, label: "git_diff_index_hash" },
+  {
+    pattern:
+      /\b(?:workflow\s+(?:launched|started|dispatched|created)|(?:launched|started|dispatched)\s+(?:a\s+)?workflow)\b/gi,
+    label: "workflow_dispatch_claim",
+  },
+  { pattern: /\btask\s+id:\s*[\w-]+/gi, label: "task_id_claim" },
+  { pattern: /\brun\s+id:\s*[\w-]+/gi, label: "run_id_claim" },
+  {
+    pattern: /\bsession_start_(?:unanimous|round)\b|\bsession_finalize\b/gi,
+    label: "cross_review_mutation_claim",
+  },
+  {
+    pattern:
+      /\b(?:user|operator|caller)\s+(?:approved|authorized|asked\s+me\s+to\s+redo|said\s+proceed)\b/gi,
+    label: "explicit_user_authorization_claim",
+  },
+  {
+    pattern:
+      /\b(?:you|voce|você)\s+(?:approved|authorized|autorizou|pediu\s+(?:para\s+)?refazer|mandou\s+(?:eu\s+)?refazer)\b/gi,
+    label: "second_person_authorization_claim",
+  },
 ];
 const FABRICATED_NET_NEW_HEX_THRESHOLD = 3;
 const FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD = 2;
@@ -709,6 +730,141 @@ export function evidencePreflight(params: {
     evidence_marker_found: evidenceFound,
     structured_evidence_supplied: false,
     attachments_present: false,
+  };
+}
+
+export interface TruthfulnessRuntimeFacts {
+  runtime_version?: string | undefined;
+  release_date?: string | undefined;
+  model_pins?: Partial<Record<PeerId, string | undefined>> | undefined;
+}
+
+export interface TruthfulnessPreflightResult {
+  pass: boolean;
+  reason: string;
+  current_state_claim_matched: boolean;
+  historical_state_claim_matched: boolean;
+  contradictions: string[];
+  unsupported_claims: string[];
+  structured_evidence_supplied: boolean;
+  attachments_present: boolean;
+  source_marker_found: boolean;
+  runtime_facts_available: boolean;
+}
+
+const VERSION_TOKEN_PATTERN = /\bv?(\d+\.\d+\.\d+(?:[-._a-z0-9]+)?)\b/gi;
+const ISO_DATE_TOKEN_PATTERN = /\b20\d{2}-\d{2}-\d{2}\b/g;
+const CURRENT_STATE_CLAIM_PATTERN =
+  /\b(?:current|currently|actual|atual|runtime|production|prod|loaded|carregad[ao]s?|(?:is|are|est[aã]o?|esta|está)\s+(?:running|rodando))\b/i;
+const HISTORICAL_RUNTIME_TIMING_PATTERN =
+  /\b(?:when\s+(?:the\s+)?(?:workflow|run|audit|session)\s+began|at\s+(?:workflow|run|audit|session)\s+start|between\s+r\d+\s+and\s+r\d+|bump(?:ed)?|started\s+on|was\s+running|quando\s+(?:o\s+)?(?:workflow|run|auditoria|sess[aã]o)\s+come[cç]ou|no\s+in[ií]cio\s+(?:do|da)\s+(?:workflow|run|auditoria|sess[aã]o)|estava\s+rodando)\b/i;
+const TRUTHFULNESS_SOURCE_MARKER_PATTERN =
+  /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events|provider docs|provider api)\b|https?:\/\/|\b[\w./-]+\.\w+:\d+\b|```/i;
+
+function normalizeVersionToken(value: string): string {
+  return value.trim().replace(/^v/i, "").toLowerCase();
+}
+
+function uniqueMatches(pattern: RegExp, text: string): string[] {
+  const matches = text.match(pattern) ?? [];
+  return [...new Set(matches.map((match) => match.trim()).filter(Boolean))];
+}
+
+function splitTruthfulnessLines(text: string): string[] {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split(/\n|(?<=[.!?])\s+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function runtimeTruthFacts(config: AppConfig): TruthfulnessRuntimeFacts {
+  return {
+    runtime_version: config.version,
+    release_date: RELEASE_DATE,
+    model_pins: config.models,
+  };
+}
+
+export function truthfulnessPreflight(params: {
+  task: string;
+  initialDraft?: string | undefined;
+  structuredEvidence?: string | undefined;
+  attachmentsPresent: boolean;
+  runtimeFacts?: TruthfulnessRuntimeFacts | undefined;
+}): TruthfulnessPreflightResult {
+  const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
+  const corpus = `${params.task}\n${params.initialDraft ?? ""}`;
+  const lines = splitTruthfulnessLines(corpus);
+  const runtimeVersion = params.runtimeFacts?.runtime_version;
+  const releaseDate = params.runtimeFacts?.release_date;
+  const sourceMarkerFound =
+    TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(corpus) || structuredEvidenceSupplied;
+  const runtimeFactsAvailable = Boolean(runtimeVersion || releaseDate);
+  const contradictions: string[] = [];
+  const unsupportedClaims: string[] = [];
+  let currentStateClaimMatched = false;
+  let historicalStateClaimMatched = false;
+
+  for (const line of lines) {
+    const versions = uniqueMatches(VERSION_TOKEN_PATTERN, line);
+    const dates = uniqueMatches(ISO_DATE_TOKEN_PATTERN, line);
+    if (!versions.length && !dates.length) continue;
+
+    if (CURRENT_STATE_CLAIM_PATTERN.test(line)) {
+      currentStateClaimMatched = true;
+      if (runtimeVersion) {
+        const expected = normalizeVersionToken(runtimeVersion);
+        for (const version of versions) {
+          if (normalizeVersionToken(version) !== expected) {
+            contradictions.push(
+              `current-state version claim ${version} contradicts runtime_version ${runtimeVersion}`,
+            );
+          }
+        }
+      }
+      if (releaseDate) {
+        for (const date of dates) {
+          if (date !== releaseDate) {
+            contradictions.push(
+              `current-state release_date claim ${date} contradicts runtime release_date ${releaseDate}`,
+            );
+          }
+        }
+      }
+      if (!runtimeFactsAvailable && !sourceMarkerFound && !params.attachmentsPresent) {
+        unsupportedClaims.push(
+          `current-state claim lacks runtime facts or source marker: ${line.slice(0, 240)}`,
+        );
+      }
+    }
+
+    if (HISTORICAL_RUNTIME_TIMING_PATTERN.test(line)) {
+      historicalStateClaimMatched = true;
+      if (!structuredEvidenceSupplied && !params.attachmentsPresent) {
+        unsupportedClaims.push(
+          `historical runtime timing claim lacks snapshot evidence: ${line.slice(0, 240)}`,
+        );
+      }
+    }
+  }
+
+  const pass = contradictions.length === 0 && unsupportedClaims.length === 0;
+  return {
+    pass,
+    reason: pass
+      ? currentStateClaimMatched || historicalStateClaimMatched
+        ? "high-risk runtime truthfulness claims are consistent with runtime facts or backed by evidence"
+        : "no high-risk runtime truthfulness claim detected"
+      : [...contradictions, ...unsupportedClaims].join("; "),
+    current_state_claim_matched: currentStateClaimMatched,
+    historical_state_claim_matched: historicalStateClaimMatched,
+    contradictions,
+    unsupported_claims: unsupportedClaims,
+    structured_evidence_supplied: structuredEvidenceSupplied,
+    attachments_present: params.attachmentsPresent,
+    source_marker_found: sourceMarkerFound,
+    runtime_facts_available: runtimeFactsAvailable,
   };
 }
 
@@ -1090,6 +1246,24 @@ function budgetPreflightFailure(
     provider,
     model,
     failure_class: "budget_preflight",
+    message,
+    retryable: false,
+    attempts: 0,
+    latency_ms: 0,
+  };
+}
+
+function truthfulnessPreflightFailure(
+  peer: PeerId,
+  provider: string,
+  model: string,
+  message: string,
+): PeerFailure {
+  return {
+    peer,
+    provider,
+    model,
+    failure_class: "truthfulness_preflight",
     message,
     retryable: false,
     attempts: 0,
@@ -2400,6 +2574,61 @@ export class CrossReviewOrchestrator {
       session.session_id,
       this.config.prompt.max_attached_evidence_chars,
     );
+    if (this.config.truthfulness_preflight_enabled) {
+      const truthfulness = truthfulnessPreflight({
+        task: input.task,
+        initialDraft: input.draft,
+        attachmentsPresent: attachments.length > 0,
+        runtimeFacts: runtimeTruthFacts(this.config),
+      });
+      if (!truthfulness.pass) {
+        const message = `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`;
+        const promptFile = this.store.savePrompt(
+          session.session_id,
+          roundNumber,
+          `# Cross Review - Truthfulness Preflight Block\n\n${message}`,
+        );
+        const rejected = selectAdapters(adapters, selectedPeers).map((adapter) =>
+          truthfulnessPreflightFailure(adapter.id, adapter.provider, adapter.model, message),
+        );
+        for (const failure of rejected) {
+          await this.store.savePeerFailure(session.session_id, roundNumber, failure);
+        }
+        const convergence = checkConvergence(selectedPeers, callerStatus, [], rejected);
+        const round = await this.store.appendRound(session.session_id, {
+          caller_status: callerStatus,
+          draft_file: draftFile,
+          prompt_file: promptFile,
+          peers: [],
+          rejected,
+          convergence,
+          convergence_scope: convergenceScope,
+          started_at: startedAt,
+        });
+        const updated = await this.store.finalize(
+          session.session_id,
+          "aborted",
+          "needs_truthfulness_preflight",
+        );
+        this.emit({
+          type: "session.truthfulness_preflight_failed",
+          session_id: session.session_id,
+          round: roundNumber,
+          message,
+          data: {
+            reason: truthfulness.reason,
+            current_state_claim_matched: truthfulness.current_state_claim_matched,
+            historical_state_claim_matched: truthfulness.historical_state_claim_matched,
+            contradictions: truthfulness.contradictions,
+            unsupported_claims: truthfulness.unsupported_claims,
+            source_marker_found: truthfulness.source_marker_found,
+            runtime_facts_available: truthfulness.runtime_facts_available,
+            attachments_present: truthfulness.attachments_present,
+          },
+        });
+        return { session: updated, round, converged: false };
+      }
+    }
     const prompt = buildReviewPrompt(
       session,
       input.draft,
@@ -3759,6 +3988,46 @@ export class CrossReviewOrchestrator {
       effective_cost_ceiling_usd: costLimit ?? null,
       cost_ceiling_source: input.max_cost_usd != null ? "call_arg" : "config_default",
     });
+
+    if (this.config.truthfulness_preflight_enabled) {
+      const attachmentsPresent =
+        this.store.readEvidenceAttachments(
+          session.session_id,
+          this.config.prompt.max_attached_evidence_chars,
+        ).length > 0;
+      const truthfulness = truthfulnessPreflight({
+        task: input.task,
+        initialDraft: draft,
+        structuredEvidence: input.evidence,
+        attachmentsPresent,
+        runtimeFacts: runtimeTruthFacts(this.config),
+      });
+      if (!truthfulness.pass) {
+        await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
+        this.emit({
+          type: "session.truthfulness_preflight_failed",
+          session_id: session.session_id,
+          message: `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`,
+          data: {
+            reason: truthfulness.reason,
+            current_state_claim_matched: truthfulness.current_state_claim_matched,
+            historical_state_claim_matched: truthfulness.historical_state_claim_matched,
+            contradictions: truthfulness.contradictions,
+            unsupported_claims: truthfulness.unsupported_claims,
+            structured_evidence_supplied: truthfulness.structured_evidence_supplied,
+            source_marker_found: truthfulness.source_marker_found,
+            runtime_facts_available: truthfulness.runtime_facts_available,
+            attachments_present: truthfulness.attachments_present,
+          },
+        });
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: false,
+          rounds: 0,
+        };
+      }
+    }
 
     // v3.5.0 (CRV2-4): evidence preflight. Pure textual pre-check — runs
     // BEFORE any paid peer call. When the task/draft claims completed

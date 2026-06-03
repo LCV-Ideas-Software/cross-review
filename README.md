@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.02.01** (npm package `4.2.1`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.02.02** (npm package `4.2.2`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.02.02`**      | Patch — provider-doc refresh, Perplexity probe repair, current model pins, and rate-card guidance.                                                                                                                 |
 | **`v04.02.01`**      | Patch — publish the workspace hard-gate cleanup as a package release.                                                                                                                                              |
 | **`v04.02.00`**      | Minor — bounded MCP session listing and cancellation semantics cleanup.                                                                                                                                            |
 | **`v04.01.01`**      | Patch — release the hard-gate cleanup as a published package.                                                                                                                                                      |
@@ -172,11 +173,12 @@ variables. Example overrides (PowerShell):
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
 ```
 
-For Grok, `GROK_API_KEY` is canonical. `grok-4-latest`, `grok-4.3`,
-`grok-4.20`, and `grok-4.20-reasoning` use xAI automatic reasoning without an explicit
-`reasoning.effort` field. `grok-4.20-multi-agent` accepts explicit
-`reasoning.effort`; `low`/`medium` select 4 agents and `high`/`xhigh` select
-16 agents.
+For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.3`, which
+accepts explicit `reasoning.effort` through `high`; the adapter clamps the
+shared effort scale before sending it. `grok-4-latest`, `grok-4.20`, and
+`grok-4.20-reasoning` use xAI automatic reasoning in this runtime.
+`grok-4.20-multi-agent` remains available as an explicit override for the
+multi-agent variant.
 
 Financial and budget controls are required for paid provider calls. Configure
 these environment variables before running real sessions (example):

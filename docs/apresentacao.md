@@ -280,10 +280,10 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 | Par          | Modelo canônico       |
 | ------------ | --------------------- |
 | OpenAI/Codex | `gpt-5.5`             |
-| Anthropic    | `claude-opus-4-7`     |
+| Anthropic    | `claude-opus-4-8`     |
 | Google       | `gemini-2.5-pro`      |
 | DeepSeek     | `deepseek-v4-pro`     |
-| xAI/Grok     | `grok-4-latest`       |
+| xAI/Grok     | `grok-4.3`            |
 | Perplexity   | `sonar-reasoning-pro` |
 
 Como o `cross-review` é orientado à correção, os adaptadores pedem
@@ -546,7 +546,7 @@ SemVer. Marcos principais:
 | `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                      |
 | `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais. |
 | `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                        |
-| `v04.02.01`      | Versão atual (pacote npm `4.2.1`).                                                                               |
+| `v04.02.02`      | Versão atual (pacote npm `4.2.2`), com refresh de providers, pins e rate cards.                                  |
 
 > Nota sobre o nome: até a versão 3.7.5, o projeto foi publicado como
 > `@lcv-ideas-software/cross-review-v2`. A v4.0.0 é a primeira versão sob o

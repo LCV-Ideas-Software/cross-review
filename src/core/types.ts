@@ -2,9 +2,9 @@
 // quarteto, making it a quinteto. Per `project_cross_review_v2_grok_integration_pending.md`,
 // xAI's Grok uses the OpenAI Responses API surface at base URL
 // `https://api.x.ai/v1`. Auth is via GROK_API_KEY. Operators may choose
-// `grok-4-latest` / `grok-4.3` (xAI automatic reasoning, no
-// reasoning.effort body field) or `grok-4.20-multi-agent` (explicit
-// reasoning.effort supported).
+// `grok-4.3` (explicit reasoning.effort supported), `grok-4-latest`
+// / `grok-4.20` aliases (xAI automatic reasoning in this runtime), or
+// `grok-4.20-multi-agent` (explicit multi-agent reasoning effort).
 // Adapter at `peers/grok.ts` inherits the same Responses API code path
 // the OpenAI adapter uses.
 //
@@ -284,6 +284,7 @@ export interface PeerFailure {
     | "unparseable_after_recovery"
     | "budget_exceeded"
     | "budget_preflight"
+    | "truthfulness_preflight"
     | "cancelled"
     | "fallback_exhausted"
     | "format_recovery_exhausted"
@@ -789,6 +790,12 @@ export interface AppConfig {
   // pure-textual evidence preflight before any paid peer call and fails
   // under-evidenced submissions locally with `needs_evidence_preflight`.
   evidence_preflight_enabled: boolean;
+  // v4.2.2: when true (default), ask_peers and run_until_unanimous run a
+  // pure-textual truthfulness preflight before paid peer calls. The guard
+  // blocks high-risk current-runtime/model/version claims that contradict
+  // runtime facts or lack source evidence, plus unsupported historical
+  // runtime-timing narratives.
+  truthfulness_preflight_enabled: boolean;
   streaming: {
     events: boolean;
     tokens: boolean;

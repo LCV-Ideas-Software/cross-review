@@ -63,9 +63,9 @@ const GATEWAY_5XX_RE =
 // detect 4xx errors that cite a named provider parameter so the operator
 // (and the agent reading the failure) gets a docs URL pointer FIRST,
 // before considering the amputation reflex (rip the offending field out
-// to silence the 400). The xAI grok-4-latest case is the canonical
-// example: `reasoning.effort` is rejected on non-multi-agent models;
-// the docs page lists exactly which models accept it. Surfacing the
+// to silence the 400). The xAI model-specific reasoning case is the
+// canonical example: `reasoning.effort` is rejected on models outside
+// the adapter allowlist; the docs page lists exactly which models accept it. Surfacing the
 // docs URL on the failure object makes the resolution path obvious and
 // pushes the agent toward the correct fix (allowlist gate or model
 // switch) rather than removing the feature.

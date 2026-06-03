@@ -41,10 +41,10 @@ O produto atual é estável. O runtime carregado nesta sessão reporta:
 | -------------------------- | ----------------------------------- |
 | Nome                       | `cross-review`                      |
 | Publicador                 | `LCV Ideas & Software`              |
-| Versão runtime             | `4.2.1`                             |
-| Release date runtime       | `2026-05-21`                        |
+| Versão runtime             | `4.2.2`                             |
+| Release date runtime       | `2026-06-02`                        |
 | Pacote npm                 | `@lcv-ideas-software/cross-review`  |
-| Versão npm publicada       | `4.2.1`                             |
+| Versão npm publicada       | `4.2.2`                             |
 | Transporte MCP             | `stdio`                             |
 | Execução CLI por peers     | desativada                          |
 | Modo padrão                | chamadas reais de API               |
@@ -199,10 +199,10 @@ documentados no repositório atual são:
 | Peer         | Modelo padrão         | Override                        |
 | ------------ | --------------------- | ------------------------------- |
 | `codex`      | `gpt-5.5`             | `CROSS_REVIEW_OPENAI_MODEL`     |
-| `claude`     | `claude-opus-4-7`     | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| `claude`     | `claude-opus-4-8`     | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | `gemini`     | `gemini-2.5-pro`      | `CROSS_REVIEW_GEMINI_MODEL`     |
 | `deepseek`   | `deepseek-v4-pro`     | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| `grok`       | `grok-4-latest`       | `CROSS_REVIEW_GROK_MODEL`       |
+| `grok`       | `grok-4.3`            | `CROSS_REVIEW_GROK_MODEL`       |
 | `perplexity` | `sonar-reasoning-pro` | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Overrides devem ser decisão explícita do operador. A proposta do sistema é
@@ -714,6 +714,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                       |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `v04.02.02`      | 2026-06-02    | Atualiza pins Claude/Grok, corrige probe Perplexity e refresca rate cards conforme documentação oficial dos providers.         |
 | `v04.02.01`      | 2026-05-21    | Publica cleanup de hard-gate como pacote `4.2.1`, com ajustes de strict TypeScript, dependências e `tsconfig.base.json` local. |
 | `v04.02.00`      | 2026-05-17    | Lista de sessões paginada, cancelamento sem abortar sessão indevidamente e resposta Markdown de `session_init`.                |
 | `v04.01.00`      | 2026-05-17    | Hardening de concorrência do session-store, redaction de chaves privadas truncadas e remoção de busy-wait.                     |

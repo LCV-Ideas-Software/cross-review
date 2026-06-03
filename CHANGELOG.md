@@ -7,6 +7,33 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.02.02] — 2026-06-02
+
+**Patch — provider-doc refresh and Perplexity probe repair.** This release
+updates the maintained provider pins and rate-card guidance after a
+cross-review audit of the current v4.2.1 session corpus.
+
+### Fixed
+
+- Raised the Perplexity `sonar-reasoning-pro` health probe to `max_tokens=16`,
+  matching the provider's current minimum and preventing false unavailable
+  capability snapshots while still keeping `disable_search=true`.
+- Added `provider-refresh-smoke` coverage for the Perplexity probe minimum and
+  for the current Claude/Grok canonical model pins.
+
+### Changed
+
+- Promoted the Anthropic canonical/default model from `claude-opus-4-7` to
+  `claude-opus-4-8`.
+- Promoted the Grok canonical/default model from the alias `grok-4-latest` to
+  the concrete `grok-4.3` pin while keeping alias behavior documented.
+- Refreshed provider rate-card documentation for GPT-5.5, Claude Opus 4.8,
+  Gemini 2.5 Pro, DeepSeek V4 Pro, Grok 4.3, and Perplexity Sonar Reasoning
+  Pro.
+- Updated the active local runtime config at
+  `C:\Users\leona\.cross-review\data\config.json` with current cached-input,
+  extended-tier, and DeepSeek base rates.
+
 ## [v04.02.01] — 2026-05-21
 
 **Patch — publish the workspace hard-gate cleanup as a package release.** The

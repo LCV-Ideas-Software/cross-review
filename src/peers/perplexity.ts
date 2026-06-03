@@ -290,14 +290,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     }
     // Perplexity does not document a public `models.list` endpoint via
     // the OpenAI-SDK base path. Probe with a minimal `disable_search`
-    // call to avoid burning a request fee on the health check; payload
-    // is single-token so token cost is negligible.
+    // call to avoid burning a request fee on the health check; Sonar
+    // reasoning models reject values below 16 even for probes.
     try {
       const probeClient = await this.client();
       const probePayload: PerplexityChatPayload = {
         model: this.model,
         messages: [{ role: "user", content: "probe" }],
-        max_tokens: 1,
+        max_tokens: 16,
         disable_search: true,
       };
       await probeClient.chat.completions.create(probePayload, {

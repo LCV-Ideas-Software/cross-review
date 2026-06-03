@@ -38,15 +38,13 @@ const DOCS = {
 // gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
 const PRIORITY: Record<PeerId, string[]> = {
   codex: ["gpt-5.5"],
-  claude: ["claude-opus-4-7"],
+  claude: ["claude-opus-4-8"],
   gemini: ["gemini-2.5-pro"],
   deepseek: ["deepseek-v4-pro"],
-  // grok-4-latest: operator-chosen canonical pin for cross-review
-  // (directive 2026-05-14, superseding the prior grok-4.20-multi-agent
-  // pin). It does automatic reasoning and must omit the explicit
-  // `reasoning.effort` field — the adapter handles that via
-  // `modelAcceptsReasoningEffort`.
-  grok: ["grok-4-latest"],
+  // grok-4.3: concrete canonical pin for cross-review. xAI documents
+  // `grok-4-latest` as an alias, but pinning the concrete id keeps
+  // model-selection confidence verified when the runtime uses grok-4.3.
+  grok: ["grok-4.3"],
   perplexity: ["sonar-reasoning-pro"],
 };
 

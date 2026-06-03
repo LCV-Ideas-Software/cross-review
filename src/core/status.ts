@@ -78,6 +78,8 @@ export function statusInstruction(): string {
     "You must end with one machine-readable JSON object that matches this shape:",
     JSON.stringify(statusJsonSchema),
     "Do not invent evidence. If evidence is missing, use NEEDS_EVIDENCE.",
+    '`confidence:"verified"` is allowed ONLY when `evidence_sources` contains concrete source citations or quotes. Empty or generic `evidence_sources` means the decision is not verified; use `confidence:"inferred"` or NEEDS_EVIDENCE instead.',
+    "For current runtime/version/model/pricing claims, task framing is not evidence. Cite raw `server_info`, `runtime_capabilities`, `probe_peers`, `capability_snapshot`, provider docs/API output, or attached evidence.",
     "READY means you have no remaining blocking objection.",
     "NOT_READY means concrete corrections remain.",
     "NEEDS_EVIDENCE means you require specific external evidence before deciding.",
@@ -186,6 +188,21 @@ function extractJsonKeyStatus(candidate: string): ReviewStatus | null {
   return match ? (match[1] as ReviewStatus) : null;
 }
 
+const CONCRETE_EVIDENCE_SOURCE_PATTERN =
+  /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events)\b|https?:\/\/|```|@@\s*[-+]|\b[\w./-]+\.\w+:\d+\b|\{[\s\S]{0,400}"(?:version|release_date|model|status|peer)"\s*:/i;
+
+function appendTruthfulnessStatusWarnings(
+  structured: PeerStructuredStatus,
+  warnings: string[],
+): void {
+  if (structured.confidence !== "verified") return;
+  const evidenceSources = structured.evidence_sources ?? [];
+  const hasConcreteEvidence = evidenceSources.some((source) =>
+    CONCRETE_EVIDENCE_SOURCE_PATTERN.test(source),
+  );
+  if (!hasConcreteEvidence) warnings.push("verified_without_evidence_sources");
+}
+
 export function parsePeerStatus(text: string): {
   status: ReviewStatus | null;
   structured: PeerStructuredStatus | null;
@@ -237,6 +254,7 @@ export function parsePeerStatus(text: string): {
       if (parsed.success) {
         if (candidate.source === "fenced_json") warnings.push("status_json_extracted_from_fence");
         if (candidate.source === "status_tag") warnings.push("status_json_extracted_from_tag");
+        appendTruthfulnessStatusWarnings(parsed.data, warnings);
         return {
           status: parsed.data.status,
           structured: parsed.data,
@@ -251,6 +269,7 @@ export function parsePeerStatus(text: string): {
           recoveryWarnings.push("status_json_extracted_from_fence");
         if (candidate.source === "status_tag")
           recoveryWarnings.push("status_json_extracted_from_tag");
+        appendTruthfulnessStatusWarnings(normalized, recoveryWarnings);
         recoveryWarnings.push("status_json_recovered_after_schema_warning");
         return {
           status: normalized.status,

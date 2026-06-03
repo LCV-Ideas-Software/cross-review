@@ -39,10 +39,10 @@ env-var per host — a deliberate decision, never a silent downgrade.
 | Peer             | Pin                   | Override env-var                |
 | ---------------- | --------------------- | ------------------------------- |
 | OpenAI/Codex     | `gpt-5.5`             | `CROSS_REVIEW_OPENAI_MODEL`     |
-| Anthropic/Claude | `claude-opus-4-7`     | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| Anthropic/Claude | `claude-opus-4-8`     | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | Google/Gemini    | `gemini-2.5-pro`      | `CROSS_REVIEW_GEMINI_MODEL`     |
 | DeepSeek         | `deepseek-v4-pro`     | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| xAI/Grok         | `grok-4-latest`       | `CROSS_REVIEW_GROK_MODEL`       |
+| xAI/Grok         | `grok-4.3`            | `CROSS_REVIEW_GROK_MODEL`       |
 | Perplexity       | `sonar-reasoning-pro` | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Haiku and other low-capacity Anthropic models are intentionally excluded —
@@ -54,10 +54,10 @@ because under Google One AI Ultra subscription it carries 1k requests/day vs
 `gemini-*-pro` variants ≥ 2.5 are permitted — no `*-flash` variants and no
 models below 2.5.
 
-`GROK_API_KEY` is the canonical auth variable for xAI. The pinned
-`grok-4-latest` model uses automatic reasoning in this runtime, so the
-adapter omits the explicit `reasoning.effort` field automatically unless a
-future operator-approved pin explicitly supports that parameter.
+`GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.3`
+model accepts explicit `reasoning.effort` values through `high`; the adapter
+clamps the shared effort scale so unsupported `xhigh`/`max` requests do not
+reach the wire.
 
 `PERPLEXITY_API_KEY` is the canonical auth variable for Perplexity Sonar.
 Sonar billing has a 3rd dimension: per-1000-requests fee that scales with
@@ -70,11 +70,11 @@ to skip search for the synthesis step.
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
 - OpenAI/Codex: Responses API with reasoning effort `xhigh` by default.
-- Anthropic/Claude: adaptive thinking with omitted thinking display plus `output_config.effort=xhigh` by default on Opus 4.7.
+- Anthropic/Claude: adaptive thinking with omitted thinking display plus `output_config.effort=xhigh` by default on Opus 4.8.
 - Google/Gemini: automatic thinking budget for the pinned Gemini 2.5 Pro model; Gemini 3.x thinking-level notes are historical and apply only to an explicit operator-approved override.
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default.
-- Grok: the pinned `grok-4-latest` model uses xAI automatic reasoning without
-  the explicit `reasoning.effort` field.
+- Grok: the pinned `grok-4.3` model accepts explicit `reasoning.effort`;
+  unsupported shared-scale values are clamped to the nearest supported value.
 - Perplexity: the pinned `sonar-reasoning-pro` model accepts an explicit
   `reasoning_effort` enum (`minimal`/`low`/`medium`/`high`, `high` by default);
   `clampEffortForPerplexity` narrows the shared effort scale into that range
@@ -89,8 +89,9 @@ above and enforced by `src/peers/model-selection.ts`.
 - OpenAI: GPT-5.5 is the current recommended frontier model for complex
   reasoning/coding, with Responses API reasoning effort values through `xhigh`
   and 1M context / 128K output.
-- Anthropic: Claude Opus 4.7 is the generally available complex-reasoning and
-  agentic-coding default; current docs expose 1M context and adaptive thinking.
+- Anthropic: Claude Opus 4.8 supersedes Opus 4.7 as the current
+  complex-reasoning and agentic-coding default; current docs retain the same
+  regular price tier as 4.7.
 - Google Gemini: Gemini 3.1 Pro Preview was the advanced Gemini 3.1 option at
   the time; Gemini 3 Pro Preview was deprecated/shut down and must stay out of
   current pins and downgrade chains.
@@ -98,9 +99,9 @@ above and enforced by `src/peers/model-selection.ts`.
   legacy `deepseek-chat` and `deepseek-reasoner` were scheduled for
   discontinuation on 2026-07-24 and must stay out of current pins and
   downgrade chains.
-- xAI Grok: historical Grok notes covered explicit-effort models that predate
-  the current `grok-4-latest` pin. Current runtime behavior is defined above:
-  omit explicit `reasoning.effort` for `grok-4-latest`.
+- xAI Grok: historical Grok notes covered aliases and explicit-effort models
+  that predate the current concrete `grok-4.3` pin. Current runtime behavior
+  is defined above: send clamped explicit `reasoning.effort` for `grok-4.3`.
 
 ## Important
 

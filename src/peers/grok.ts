@@ -11,7 +11,8 @@
 //   - operator chooses the model through CROSS_REVIEW_GROK_MODEL:
 //       * grok-4-latest / grok-4.20 / grok-4.20-reasoning:
 //         xAI automatic reasoning; omit reasoning.effort
-//       * grok-4.20-multi-agent: explicit reasoning.effort supported
+//       * grok-4.3: explicit reasoning.effort supported through high
+//       * grok-4.20-multi-agent: explicit multi-agent reasoning effort
 //   - OpenAI client constructed with `baseURL: "https://api.x.ai/v1"`
 //
 // Copied from openai.ts rather than refactored into a shared base
@@ -148,11 +149,11 @@ export function clampEffortForModel(
 }
 
 // v2.15.0/v2.16.0: per-model reasoning capability detection. Per
-// official xAI docs at https://docs.x.ai/developers/model-capabilities/text/reasoning, only
-// `grok-4.20-multi-agent` accepts the `reasoning.effort` body field.
-// Other Grok models (including `grok-4-latest`, `grok-4.20`, and
-// `grok-4.20-reasoning`) have automatic reasoning by design, so the
-// field is unnecessary and omitted.
+// official xAI docs, `grok-4.3` and `grok-4.20-multi-agent` accept the
+// `reasoning.effort` body field. Other Grok models (including
+// `grok-4-latest`, `grok-4.20`, and `grok-4.20-reasoning`) have automatic
+// reasoning by design in this runtime, so the field is unnecessary and
+// omitted.
 //
 // Pre-v2.15 the GrokAdapter unconditionally included
 // `reasoning: { effort }` in every body, locking the operator to

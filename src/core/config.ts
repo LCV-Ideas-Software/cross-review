@@ -19,8 +19,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.2.1";
-export const RELEASE_DATE = "2026-05-21";
+export const VERSION = "4.2.2";
+export const RELEASE_DATE = "2026-06-02";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -274,6 +274,11 @@ export function loadConfig(): AppConfig {
     // on under-evidenced submissions. Operators set
     // CROSS_REVIEW_EVIDENCE_PREFLIGHT=off to disable.
     evidence_preflight_enabled: boolEnv("CROSS_REVIEW_EVIDENCE_PREFLIGHT", true),
+    // v4.2.2: truthfulness preflight gate. Default ON — catches
+    // current-runtime/version/model claims that contradict the runtime's
+    // own facts before any paid peer calls. Operators set
+    // CROSS_REVIEW_TRUTHFULNESS_PREFLIGHT=off to disable.
+    truthfulness_preflight_enabled: boolEnv("CROSS_REVIEW_TRUTHFULNESS_PREFLIGHT", true),
     streaming: {
       events: boolEnv("CROSS_REVIEW_STREAM_EVENTS", true),
       tokens: boolEnv("CROSS_REVIEW_STREAM_TOKENS", true),
@@ -281,18 +286,14 @@ export function loadConfig(): AppConfig {
     },
     models: {
       codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.5",
-      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-opus-4-7",
+      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-opus-4-8",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-2.5-pro",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
-      // v3.7.2 (AUDIT-3 + operator directive 2026-05-14): grok default
-      // pinned to `grok-4-latest` — the operator's chosen "most advanced
-      // pro with reasoning" model for cross-review, superseding the
-      // prior `grok-4.20-multi-agent` default. The operator may still
-      // env-override via CROSS_REVIEW_GROK_MODEL to any xAI model
-      // (`grok-4.20-multi-agent` for explicit `reasoning.effort` control,
-      // `grok-4.3` / `grok-4.20-reasoning` etc.); the adapter detects the
-      // chosen model before deciding whether to send the reasoning field.
-      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4-latest",
+      // v4.2.2 (provider-doc refresh 2026-06-02): grok default pinned to
+      // `grok-4.3`; xAI documents `grok-4-latest` as an alias, but using
+      // the concrete id keeps capability snapshots from looking like
+      // non-canonical overrides.
+      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.3",
       // v3.0.0 (operator directive 2026-05-12): Perplexity default
       // `sonar-reasoning-pro` — reasoning + grounding + chain-of-thought,
       // best fit for cross-review where the peer must reason about the
