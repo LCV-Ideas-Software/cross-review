@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.03.00** (npm package `4.3.0`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.03.01** (npm package `4.3.1`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.03.01`**      | Patch — tighten skip-peer classification so non-retryable provider errors block, while Anthropic overload events remain retryable and better surfaced in skip diagnostics.                                         |
 | **`v04.03.00`**      | Minor — P1/P2/P3 follow-up with unresolved-evidence close-out visibility, an offline fixture eval harness, and a read-only peer reliability report.                                                                |
 | **`v04.02.05`**      | Patch — harden session auditability with terminal events, cost split reporting, `not_resurfaced` visibility, and relator provenance checks for session IDs/GitHub URLs.                                            |
 | **`v04.02.04`**      | Patch — harden truthfulness preflight auditability, add a read-only preflight retest tool, and reduce false parser warnings for attached/log evidence.                                                             |

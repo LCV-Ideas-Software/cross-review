@@ -38,6 +38,7 @@ import {
   setHostTokensRecord,
   verifyCallerIdentity,
 } from "../src/mcp/server.js";
+import { classifyProviderError } from "../src/peers/errors.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { StubAdapter } from "../src/peers/stub.js";
 import { redact } from "../src/security/redact.js";
@@ -617,13 +618,14 @@ assert.equal(
   const fakeFailure = (
     peer: PeerResult["peer"],
     failureClass: import("../src/core/types.js").PeerFailure["failure_class"],
+    retryable = true,
   ): import("../src/core/types.js").PeerFailure => ({
     peer,
     provider: "stub",
     model: "stub",
     failure_class: failureClass,
     message: `stub ${failureClass}`,
-    retryable: true,
+    retryable,
     attempts: 3,
     latency_ms: 0,
   });
@@ -643,12 +645,33 @@ assert.equal(
       true,
       `v3.7.3 / skip-peer: ${fc} must be skippable (infra unavailability)`,
     );
-    assert.equal(
-      SKIPPABLE_FAILURE_CLASSES.has(fc),
-      true,
-      `v3.7.3 / skip-peer: ${fc} must be in SKIPPABLE_FAILURE_CLASSES`,
-    );
   }
+  assert.equal(
+    SKIPPABLE_FAILURE_CLASSES.has("provider_error"),
+    true,
+    "v3.7.3 / skip-peer: provider_error remains a known skip candidate when retryable",
+  );
+  assert.equal(
+    isSkippableFailure(fakeFailure("grok", "provider_error", false)),
+    false,
+    "v4.3.1 / skip-peer: non-retryable provider_error (e.g. provider 400 payload/schema rejection) must block instead of being skipped",
+  );
+  const anthropicOverloaded = classifyProviderError(
+    "claude",
+    "anthropic",
+    "claude-opus-4-8",
+    new Error(
+      '{"type":"error","error":{"details":null,"type":"overloaded_error","message":"Overloaded"},"request_id":"req_fixture"}',
+    ),
+    1,
+    Date.now(),
+  );
+  assert.equal(anthropicOverloaded.failure_class, "provider_error");
+  assert.equal(
+    anthropicOverloaded.retryable,
+    true,
+    "v4.3.1 / provider-errors: Anthropic overloaded_error without HTTP status text must still be retryable",
+  );
   for (const fc of [
     "schema",
     "unparseable_after_recovery",

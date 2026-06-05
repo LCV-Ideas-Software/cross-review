@@ -3105,14 +3105,19 @@ export class CrossReviewOrchestrator {
             session_id: session.session_id,
             round: roundNumber,
             peer: failure.peer,
-            message: `Peer ${failure.peer} skipped this round — model ${
-              failure.model ?? "(pinned)"
-            } unavailable (${failure.failure_class}); the round continues with the remaining peers.`,
+            message: `Peer ${failure.peer} skipped this round after ${
+              failure.attempts
+            } failed attempt(s) on model ${failure.model ?? "(pinned)"} (${
+              failure.failure_class
+            }); the round continues with the remaining peers.`,
             data: {
               peer: failure.peer,
               failure_class: failure.failure_class,
               model: failure.model,
               attempts: failure.attempts,
+              retryable: failure.retryable,
+              recovery_hint: failure.recovery_hint,
+              message: failure.message.slice(0, 1000),
             },
           });
         } else {

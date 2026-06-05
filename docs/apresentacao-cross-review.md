@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ----------------------------------- |
 | Nome                       | `cross-review`                      |
 | Publicador                 | `LCV Ideas & Software`              |
-| Versão runtime             | `4.3.0`                             |
+| Versão runtime             | `4.3.1`                             |
 | Release date runtime       | `2026-06-05`                        |
 | Pacote npm                 | `@lcv-ideas-software/cross-review`  |
-| Versão npm publicada       | `4.3.0`                             |
+| Versão npm publicada       | `4.3.1`                             |
 | Transporte MCP             | `stdio`                             |
 | Execução CLI por peers     | desativada                          |
 | Modo padrão                | chamadas reais de API               |
@@ -716,6 +716,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                         |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.03.01`      | 2026-06-05    | Restringe skip por `provider_error` a falhas retryable e melhora diagnóstico de overload do Anthropic.                           |
 | `v04.03.00`      | 2026-06-05    | Adiciona disposition de evidência pendente, eval offline por fixtures e relatório agregado de confiabilidade por peer.           |
 | `v04.02.05`      | 2026-06-05    | Endurece auditoria de sessões com eventos terminais, split de custo, visibilidade de `not_resurfaced` e proveniência do relator. |
 | `v04.02.04`      | 2026-06-05    | Torna o truthfulness preflight mais auditável, adiciona reteste local e reduz falsos warnings de evidência anexada/logs.         |

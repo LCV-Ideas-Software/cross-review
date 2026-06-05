@@ -136,6 +136,7 @@ export function classifyProviderError(
   const timeout = /\b(?:timeout|aborted|aborterror)\b/i.test(message);
   const network = /\b(?:econnreset|enotfound|etimedout|network|fetch failed)\b/i.test(message);
   const gateway5xx = GATEWAY_5XX_RE.test(message);
+  const providerOverloaded = /\b(?:overloaded_error|overloaded)\b/i.test(message);
 
   const failureClass = auth
     ? "auth"
@@ -186,14 +187,18 @@ export function classifyProviderError(
     model,
     failure_class: failureClass,
     message,
-    retryable: !cancelled && !auth && (rateLimited || timeout || network || gateway5xx),
-    recovery_hint: rateLimited
-      ? "wait_and_retry"
-      : moderation
-        ? "reformulate_and_retry"
-        : docsHint
-          ? "consult_docs_then_revise"
-          : undefined,
+    retryable:
+      !cancelled &&
+      !auth &&
+      (rateLimited || timeout || network || gateway5xx || providerOverloaded),
+    recovery_hint:
+      rateLimited || providerOverloaded
+        ? "wait_and_retry"
+        : moderation
+          ? "reformulate_and_retry"
+          : docsHint
+            ? "consult_docs_then_revise"
+            : undefined,
     reformulation_advice: moderation
       ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent."
       : docsAdvice,

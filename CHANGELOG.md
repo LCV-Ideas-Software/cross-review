@@ -7,6 +7,24 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.01] — 2026-06-05
+
+**Patch — provider skip classification hotfix.** This release follows up on a
+real hard-gate incident where Claude/Anthropic was skipped after provider
+overload. The immediate provider cause was Anthropic `overloaded_error`; the
+runtime issue was that any `provider_error`, including non-retryable provider
+400-style failures, could be treated as skippable.
+
+### Changed
+
+- `provider_error` is now skippable only when classified as retryable, so
+  non-retryable provider payload/schema rejections block convergence instead of
+  being silently removed from the panel.
+- Anthropic `overloaded_error` without preserved HTTP status text is now treated
+  as retryable, matching HTTP 529 overload behavior.
+- `session.peer_skipped_unavailable` events now include retryability, recovery
+  hint, and a redacted provider error preview in event data.
+
 ## [v04.03.00] — 2026-06-05
 
 **Minor — P1/P2/P3 audit follow-up.** This release closes the first concrete

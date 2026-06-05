@@ -98,6 +98,11 @@ Decision quality is tracked per peer:
 `silent_model_downgrade` and other rejected peer failures always block
 unanimity until resolved.
 
+Skip-peer convergence is reserved for genuine provider/model unavailability.
+Retryable provider overloads can be skipped after retries are exhausted, but
+non-retryable provider errors, such as payload or schema rejections, remain
+blocking failures.
+
 ## Moderation-Safe Prompting
 
 Prior peer history is summarized from structured fields instead of replaying

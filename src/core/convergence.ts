@@ -10,7 +10,7 @@ import type { ConvergenceResult, PeerFailure, PeerId, PeerResult, ReviewStatus }
 // EITHER of two paths, not just "the user declared no fallback model" —
 //   (a) the user declared NO fallback model for that peer, the pinned
 //       model hit an infrastructure failure, and retrying the SAME model
-//       was exhausted (`auth` / `rate_limit` / `provider_error` /
+//       was exhausted (`auth` / `rate_limit` / retryable `provider_error` /
 //       `network` / `timeout`); or
 //   (b) the user DID declare a fallback model, it was tried, and the
 //       declared fallback chain was itself drained (`fallback_exhausted`).
@@ -27,8 +27,8 @@ export const SKIP_QUORUM_FLOOR = 2;
 // response at all, and the peer has no further model left to fall back
 // to. v3.7.4 (Codex v3.7.3 parecer AUDIT-2): this state is reached two
 // ways — (a) NO fallback model was declared and retrying the SAME pinned
-// model was exhausted (`auth`, `rate_limit`, `provider_error`, `network`,
-// `timeout`); or (b) a fallback model WAS declared, tried, and the
+// model was exhausted (`auth`, `rate_limit`, retryable `provider_error`,
+// `network`, `timeout`); or (b) a fallback model WAS declared, tried, and the
 // declared chain was itself drained (`fallback_exhausted`). Either way
 // these are SKIPPED (round continues on the remaining peers). Everything
 // else stays in `rejected` and blocks convergence: a peer that DID respond
@@ -50,6 +50,7 @@ export const SKIPPABLE_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_class"]
 ]);
 
 export function isSkippableFailure(failure: PeerFailure): boolean {
+  if (failure.failure_class === "provider_error") return failure.retryable;
   return SKIPPABLE_FAILURE_CLASSES.has(failure.failure_class);
 }
 
