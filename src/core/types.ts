@@ -974,6 +974,38 @@ export interface PeerHealthSummary {
   failures_by_class: Partial<Record<PeerFailure["failure_class"], number>>;
 }
 
+export interface PeerReliabilityStats {
+  peer: PeerId;
+  sessions_seen: number;
+  results_total: number;
+  ready: number;
+  not_ready: number;
+  needs_evidence: number;
+  unresolved_status: number;
+  parser_warnings_total: number;
+  parser_warnings_by_type: Partial<Record<string, number>>;
+  decision_quality: Partial<Record<DecisionQuality, number>>;
+  rejected_total: number;
+  provider_errors: number;
+  failures_by_class: Partial<Record<PeerFailure["failure_class"], number>>;
+  open_asks: number;
+  not_resurfaced_asks: number;
+  addressed_asks: number;
+  satisfied_asks: number;
+  deferred_asks: number;
+  rejected_asks: number;
+  fabrication_events: number;
+  avg_latency_ms: number | null;
+  total_cost_usd: number | null;
+}
+
+export interface PeerReliabilityReport {
+  generated_at: string;
+  scope: "all" | "session";
+  session_id?: string | undefined;
+  by_peer: Partial<Record<PeerId, PeerReliabilityStats>>;
+}
+
 // v2.12.0: rollup of `session.evidence_judge_pass.shadow_decision` events
 // across sessions. Operator observability: how many decisions has the
 // shadow pass produced, what is the would_promote rate per judge_peer,

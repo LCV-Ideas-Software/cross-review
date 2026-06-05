@@ -1753,6 +1753,233 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] terminal_cost_evidence_audit_test: PASS");
 }
 
+// v4.3.0 / P1: unanimous READY with unresolved evidence must not look like a
+// plain unanimous_ready close-out. `not_resurfaced` is inference-only: it may
+// allow convergence, but the final metadata/report must keep that disposition
+// visible for operators.
+{
+  const { sessionReportMarkdown } = await import("../src/core/reports.js");
+  const unresolvedEvents: string[] = [];
+  const unresolvedConfig = {
+    ...loadConfig(),
+    data_dir: smokeTmpDir("unresolved-evidence-finalize"),
+    budget: {
+      ...loadConfig().budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+    evidence_judge_autowire: {
+      ...loadConfig().evidence_judge_autowire,
+      mode: "off",
+      active: false,
+    },
+  };
+  const unresolvedOrch = new CrossReviewOrchestrator(unresolvedConfig, (event) =>
+    unresolvedEvents.push(event.type),
+  );
+  const unresolvedR1 = await unresolvedOrch.askPeers({
+    task: "P1 unresolved evidence finalization guard fixture.",
+    draft: "FORCE_NEEDS_EVIDENCE",
+    caller: "operator",
+    peers: ["claude"],
+  });
+  const unresolvedR2 = await unresolvedOrch.askPeers({
+    session_id: unresolvedR1.session.session_id,
+    task: "P1 unresolved evidence finalization guard fixture.",
+    draft: "Clean revised draft, no test marker present.",
+    caller: "operator",
+    peers: ["claude"],
+  });
+  assert.equal(unresolvedR2.converged, true);
+  assert.equal(unresolvedR2.session.outcome, "converged");
+  assert.equal(
+    unresolvedR2.session.outcome_reason,
+    "unanimous_ready_with_unresolved_evidence",
+    "v4.3.0 / P1: convergence with not_resurfaced evidence must not finalize as plain unanimous_ready",
+  );
+  assert.ok(
+    unresolvedEvents.includes("session.evidence_checklist_unresolved_on_finalize"),
+    "v4.3.0 / P1: unresolved evidence close-out must emit an audit event",
+  );
+  const unresolvedReport = sessionReportMarkdown(
+    unresolvedOrch.store.read(unresolvedR2.session.session_id),
+    unresolvedOrch.store.readEvents(unresolvedR2.session.session_id),
+  );
+  assert.ok(
+    unresolvedReport.includes("## Unresolved Evidence Disposition"),
+    "v4.3.0 / P1: session_report must include unresolved-evidence disposition table",
+  );
+  assert.ok(
+    unresolvedReport.includes("not_resurfaced"),
+    "v4.3.0 / P1: session_report must name not_resurfaced unresolved items",
+  );
+  console.log("[smoke] unresolved_evidence_finalization_guard_test: PASS");
+}
+
+// v4.3.0 / P3: read-only peer reliability telemetry. This is deliberately
+// observational; it must not change peer selection or mutate sessions.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const reliabilityStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("peer-reliability"),
+  });
+  const reliabilitySession = await reliabilityStore.init(
+    "peer reliability report fixture",
+    "operator",
+    [],
+  );
+  const reliabilityMeta = reliabilityStore.read(reliabilitySession.session_id);
+  const ts = new Date().toISOString();
+  reliabilityMeta.rounds = [
+    {
+      round: 1,
+      started_at: ts,
+      completed_at: ts,
+      caller_status: "READY",
+      prompt_file: "agent-runs/round-1-prompt.md",
+      peers: [
+        {
+          peer: "claude",
+          provider: "anthropic",
+          model: "claude-opus-4-8",
+          status: "NEEDS_EVIDENCE",
+          structured: {
+            status: "NEEDS_EVIDENCE",
+            summary: "needs log",
+            confidence: "verified",
+            evidence_sources: ["src/core/session-store.ts:1"],
+            caller_requests: ["attach raw npm test output"],
+            follow_ups: [],
+          },
+          text: "{}",
+          raw: { fixture: true },
+          decision_quality: "clean",
+          parser_warnings: [],
+          attempts: 1,
+          latency_ms: 50,
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          cost: { currency: "USD", estimated: false, source: "configured-rate", total_cost: 1 },
+        },
+        {
+          peer: "grok",
+          provider: "xai",
+          model: "grok-4.3",
+          status: "READY",
+          structured: {
+            status: "READY",
+            summary: "ready",
+            confidence: "verified",
+            evidence_sources: ["server_info: version 4.2.5"],
+            caller_requests: [],
+            follow_ups: [],
+          },
+          text: "{}",
+          raw: { fixture: true },
+          decision_quality: "format_warning",
+          parser_warnings: ["verified_without_concrete_evidence_sources"],
+          attempts: 1,
+          latency_ms: 100,
+          usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 },
+          cost: { currency: "USD", estimated: false, source: "configured-rate", total_cost: 2 },
+        },
+      ],
+      rejected: [
+        {
+          peer: "perplexity",
+          provider: "perplexity",
+          model: "sonar-reasoning-pro",
+          failure_class: "provider_error",
+          message: "fixture provider error",
+          retryable: false,
+          attempts: 1,
+          latency_ms: 0,
+        },
+      ],
+      convergence: {
+        converged: false,
+        reason: "fixture",
+        ready_peers: ["grok"],
+        not_ready_peers: [],
+        needs_evidence_peers: ["claude"],
+        rejected_peers: ["perplexity"],
+        skipped_peers: [],
+        decision_quality: {
+          codex: "clean",
+          claude: "clean",
+          gemini: "clean",
+          deepseek: "clean",
+          grok: "format_warning",
+          perplexity: "failed",
+        },
+        blocking_details: ["claude:NEEDS_EVIDENCE", "perplexity:provider_error"],
+      },
+    },
+  ];
+  reliabilityMeta.evidence_checklist = [
+    {
+      id: "rel-1",
+      peer: "claude",
+      first_round: 1,
+      last_round: 1,
+      round_count: 1,
+      ask: "attach raw npm test output",
+      first_seen_at: ts,
+      last_seen_at: ts,
+      status: "not_resurfaced",
+      addressed_at_round: 2,
+      address_method: "resurfacing",
+    },
+  ];
+  fs.writeFileSync(
+    reliabilityStore.metaPath(reliabilitySession.session_id),
+    JSON.stringify(reliabilityMeta),
+  );
+  await reliabilityStore.appendEvent({
+    ts,
+    type: "session.lead_meta_audit_fabrication_detected",
+    session_id: reliabilitySession.session_id,
+    message: "fixture fabrication event",
+    data: { peer: "grok" },
+  });
+  const reliability = reliabilityStore.peerReliabilityReport();
+  assert.equal(reliability.scope, "all");
+  assert.equal(reliability.by_peer.claude?.needs_evidence, 1);
+  assert.equal(reliability.by_peer.claude?.not_resurfaced_asks, 1);
+  assert.equal(reliability.by_peer.grok?.ready, 1);
+  assert.equal(reliability.by_peer.grok?.parser_warnings_total, 1);
+  assert.equal(reliability.by_peer.grok?.fabrication_events, 1);
+  assert.equal(reliability.by_peer.perplexity?.provider_errors, 1);
+  console.log("[smoke] peer_reliability_report_test: PASS");
+}
+
+// v4.3.0 / P2: offline declarative eval harness. This pins the existence of a
+// no-provider-call fixture runner so regressions found in real sessions can be
+// replayed without growing the ad hoc smoke body indefinitely.
+{
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+  assert.equal(
+    pkg.scripts?.["eval:fixtures"],
+    "tsx scripts/eval-fixtures.ts",
+    "v4.3.0 / P2: package.json must expose the offline fixture eval runner",
+  );
+  const evalHarness = fs.readFileSync("scripts/eval-fixtures.ts", "utf8");
+  assert.ok(
+    /truthfulnessCases/.test(evalHarness) &&
+      /parserCases/.test(evalHarness) &&
+      /reportCases/.test(evalHarness),
+    "v4.3.0 / P2: eval-fixtures must use declarative truthfulness/parser/report case tables",
+  );
+  assert.ok(
+    !/askPeers\(|runUntilUnanimous\(|session_start_round/.test(evalHarness),
+    "v4.3.0 / P2: eval-fixtures must stay offline and avoid provider-review entry points",
+  );
+  console.log("[smoke] offline_fixture_eval_contract_test: PASS");
+}
+
 // v2.22.0 (B.P3): session.budget_warning event emit + idempotency. The
 // orchestrator emits a one-shot warning when cumulative cost crosses
 // 75% of cost_ceiling_usd; the budget_warning_emitted flag persists

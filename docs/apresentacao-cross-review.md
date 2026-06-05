@@ -9,10 +9,10 @@ Este documento apresenta o `cross-review` para dois públicos:
 - profissionais de TI e desenvolvimento que precisam instalar, configurar,
   operar, auditar ou integrar o servidor MCP.
 
-As informações abaixo foram conferidas no repositório local, no pacote npm
-publicado e no runtime MCP carregado nesta sessão. Onde houver diferença entre
-documentação histórica e estado atual, o estado atual do runtime e do
-`package.json` prevalece.
+As informações abaixo acompanham a release do repositório. Em uma sessão MCP já
+carregada, consulte `server_info` para confirmar a versão runtime efetivamente
+ativa; após atualização global por npm, o host MCP ainda precisa ser
+recarregado para refletir a nova versão.
 
 ## Resumo executivo
 
@@ -35,16 +35,16 @@ Na prática, ele funciona como uma banca técnica automatizada:
 5. os resultados ficam persistidos em sessões duráveis, logs, eventos e
    relatórios.
 
-O produto atual é estável. O runtime carregado nesta sessão reporta:
+O produto atual é estável. A release de referência reporta:
 
 | Campo                      | Valor atual                         |
 | -------------------------- | ----------------------------------- |
 | Nome                       | `cross-review`                      |
 | Publicador                 | `LCV Ideas & Software`              |
-| Versão runtime             | `4.2.5`                             |
+| Versão runtime             | `4.3.0`                             |
 | Release date runtime       | `2026-06-05`                        |
 | Pacote npm                 | `@lcv-ideas-software/cross-review`  |
-| Versão npm publicada       | `4.2.5`                             |
+| Versão npm publicada       | `4.3.0`                             |
 | Transporte MCP             | `stdio`                             |
 | Execução CLI por peers     | desativada                          |
 | Modo padrão                | chamadas reais de API               |
@@ -211,7 +211,7 @@ latência mínimos.
 
 ## Ferramentas MCP
 
-O runtime carregado expõe as seguintes ferramentas:
+A superfície MCP da release expõe as seguintes ferramentas:
 
 | Ferramenta                              | Uso principal                                                                        |
 | --------------------------------------- | ------------------------------------------------------------------------------------ |
@@ -232,6 +232,7 @@ O runtime carregado expõe as seguintes ferramentas:
 | `session_metrics`                       | Retorna métricas agregadas ou de uma sessão.                                         |
 | `session_doctor`                        | Audita sessões abertas, travadas ou historicamente inconsistentes.                   |
 | `session_report`                        | Gera relatório Markdown de uma sessão.                                               |
+| `session_peer_reliability_report`       | Agrega sinais de confiabilidade por peer sem alterar seleção ou estado de sessão.    |
 | `session_check_convergence`             | Retorna estado de convergência durável sem chamar provedores.                        |
 | `session_truthfulness_preflight_check`  | Reexecuta localmente o truthfulness preflight de uma sessão sem chamar provedores.   |
 | `session_attach_evidence`               | Anexa evidência textual à sessão.                                                    |
@@ -715,6 +716,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                         |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.03.00`      | 2026-06-05    | Adiciona disposition de evidência pendente, eval offline por fixtures e relatório agregado de confiabilidade por peer.           |
 | `v04.02.05`      | 2026-06-05    | Endurece auditoria de sessões com eventos terminais, split de custo, visibilidade de `not_resurfaced` e proveniência do relator. |
 | `v04.02.04`      | 2026-06-05    | Torna o truthfulness preflight mais auditável, adiciona reteste local e reduz falsos warnings de evidência anexada/logs.         |
 | `v04.02.03`      | 2026-06-03    | Promove Gemini 3.1 Pro Preview como pin canônico e atualiza o rate card Gemini local.                                            |

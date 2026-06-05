@@ -660,6 +660,7 @@ const TOOL_NAMES = [
   "session_poll",
   "session_events",
   "session_metrics",
+  "session_peer_reliability_report",
   "session_doctor",
   "session_report",
   "session_check_convergence",
@@ -1408,6 +1409,27 @@ export async function main(): Promise<void> {
     },
     async ({ session_id, response_format }) =>
       textResult(runtime.orchestrator.store.metrics(session_id), response_format),
+  );
+
+  server.registerTool(
+    "session_peer_reliability_report",
+    {
+      title: "Peer Reliability Report",
+      description:
+        "Read-only per-peer reliability telemetry: READY/NEEDS_EVIDENCE/NOT_READY counts, parser warnings, provider errors, unresolved evidence asks, fabrication events, latency and cost. Observational only; does not change peer selection or mutate sessions.",
+      inputSchema: z.object({
+        session_id: SessionIdSchema.optional(),
+        response_format: ResponseFormatSchema,
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ session_id, response_format }) =>
+      textResult(runtime.orchestrator.store.peerReliabilityReport(session_id), response_format),
   );
 
   server.registerTool(

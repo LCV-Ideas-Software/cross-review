@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.02.05** (npm package `4.2.5`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.03.00** (npm package `4.3.0`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.03.00`**      | Minor — P1/P2/P3 follow-up with unresolved-evidence close-out visibility, an offline fixture eval harness, and a read-only peer reliability report.                                                                |
 | **`v04.02.05`**      | Patch — harden session auditability with terminal events, cost split reporting, `not_resurfaced` visibility, and relator provenance checks for session IDs/GitHub URLs.                                            |
 | **`v04.02.04`**      | Patch — harden truthfulness preflight auditability, add a read-only preflight retest tool, and reduce false parser warnings for attached/log evidence.                                                             |
 | **`v04.02.03`**      | Patch — promote the Gemini canonical default to `gemini-3.1-pro-preview` and refresh the active local Gemini rate card.                                                                                            |
@@ -211,6 +212,7 @@ these environment variables before running real sessions (example):
 - `session_metrics`
 - `session_doctor`
 - `session_report`
+- `session_peer_reliability_report`
 - `session_check_convergence`
 - `session_truthfulness_preflight_check`
 - `session_attach_evidence`
@@ -228,7 +230,12 @@ these environment variables before running real sessions (example):
 lack terminal events, and reports peer-call cost separately from generation
 artifact cost. `session_report` uses the same split and calls out
 `not_resurfaced` evidence checklist items as inference-only, not proof that the
-requested evidence was satisfied.
+requested evidence was satisfied. If a session otherwise reaches unanimity with
+open or `not_resurfaced` checklist items, finalization records an
+`*_with_unresolved_evidence` outcome reason and emits a durable unresolved
+evidence event. `session_peer_reliability_report` is read-only and aggregates
+per-peer parser warnings, evidence ask status, provider failures, cost and
+latency.
 
 ## Repository conventions
 

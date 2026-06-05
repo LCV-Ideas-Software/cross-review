@@ -332,9 +332,9 @@ sessão. Os modos de cache observados são: `auto` (OpenAI, DeepSeek, Grok),
 cuja API Sonar não expõe superfície de cache). O cache pode ser desativado
 globalmente com `CROSS_REVIEW_DISABLE_CACHE=true`.
 
-### 4.8. As 29 ferramentas MCP
+### 4.8. As 30 ferramentas MCP
 
-O servidor expõe 29 ferramentas. Agrupadas por finalidade:
+O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 
 **Descoberta e diagnóstico**
 
@@ -366,6 +366,8 @@ O servidor expõe 29 ferramentas. Agrupadas por finalidade:
 - `session_metrics` — métricas da sessão.
 - `session_doctor` — diagnóstico e modo de reparo opcional.
 - `session_report` — gera/lê o relatório da sessão.
+- `session_peer_reliability_report` — relatório agregado e somente leitura por
+  peer.
 - `session_check_convergence` — verifica a convergência.
 - `session_truthfulness_preflight_check` — reexecuta a pré-checagem de
   veracidade de uma sessão sem chamar provedores.
@@ -541,24 +543,25 @@ O histórico completo está em [CHANGELOG.md](../CHANGELOG.md). A exibição
 pública de versão segue o padrão `v00.00.00`; as versões do pacote npm seguem
 SemVer. Marcos principais:
 
-| Versão           | Marco                                                                                                             |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                                |
-| `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                        |
-| `v02.14.00`      | Grok entra no painel de revisão.                                                                                  |
-| `v02.21.00`      | Cache de prompt entre provedores.                                                                                 |
-| `v02.24.00`      | Trava de proveniência de evidência.                                                                               |
-| `v02.25.00`      | Terceiro modo de deliberação: `circular`.                                                                         |
-| `v03.00.00`      | Perplexity entra como sexto par — o painel passa a sexteto.                                                       |
-| `v03.01.00`      | Arquivo de configuração central (`config.json`).                                                                  |
-| `v03.05.00`      | Pré-checagem de evidência antes de chamadas pagas.                                                                |
-| `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                       |
-| `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais.  |
-| `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                         |
-| `v04.02.02`      | Refresh de providers, pins e rate cards.                                                                          |
-| `v04.02.03`      | Pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                                                         |
-| `v04.02.04`      | Truthfulness preflight mais auditável e ferramenta de reteste local.                                              |
-| `v04.02.05`      | Versão atual (pacote npm `4.2.5`), com auditoria de sessões, split de custo e proveniência do relator reforçados. |
+| Versão           | Marco                                                                                                            |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                               |
+| `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                       |
+| `v02.14.00`      | Grok entra no painel de revisão.                                                                                 |
+| `v02.21.00`      | Cache de prompt entre provedores.                                                                                |
+| `v02.24.00`      | Trava de proveniência de evidência.                                                                              |
+| `v02.25.00`      | Terceiro modo de deliberação: `circular`.                                                                        |
+| `v03.00.00`      | Perplexity entra como sexto par — o painel passa a sexteto.                                                      |
+| `v03.01.00`      | Arquivo de configuração central (`config.json`).                                                                 |
+| `v03.05.00`      | Pré-checagem de evidência antes de chamadas pagas.                                                               |
+| `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                      |
+| `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais. |
+| `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                        |
+| `v04.02.02`      | Refresh de providers, pins e rate cards.                                                                         |
+| `v04.02.03`      | Pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                                                        |
+| `v04.02.04`      | Truthfulness preflight mais auditável e ferramenta de reteste local.                                             |
+| `v04.02.05`      | Auditoria de sessões, split de custo e proveniência do relator reforçados.                                       |
+| `v04.03.00`      | Versão atual (pacote npm `4.3.0`), com disposition de evidência pendente, eval offline e relatório por peer.     |
 
 > Nota sobre o nome: até a versão 3.7.5, o projeto foi publicado como
 > `@lcv-ideas-software/cross-review-v2`. A v4.0.0 é a primeira versão sob o

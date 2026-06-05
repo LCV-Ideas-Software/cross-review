@@ -1,6 +1,6 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.2.5",
+  "version": "4.3.0",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "main": "dist/src/mcp/server.js",
@@ -24,6 +24,7 @@
     "dev": "tsx src/mcp/server.ts",
     "dashboard": "tsx src/dashboard/server.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "eval:fixtures": "tsx scripts/eval-fixtures.ts",
     "provider-refresh-smoke": "tsx scripts/provider-refresh-smoke.ts",
     "runtime-smoke": "npm --registry=https://registry.npmjs.org run build && tsx scripts/runtime-smoke.ts",
     "runtime-default-smoke": "tsx scripts/runtime-default-smoke.ts",

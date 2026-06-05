@@ -70,6 +70,11 @@ session cost.
 
 Evidence checklist state is also surfaced in reports. `not_resurfaced` means an
 ask was not repeated in a later round; it is not a verified satisfaction signal.
+If the ready/unanimity gate is otherwise satisfied while checklist items remain
+`open` or `not_resurfaced`, the session can still converge, but the outcome
+reason is suffixed with `_with_unresolved_evidence`, a
+`session.evidence_checklist_unresolved_on_finalize` event is written, and the
+report includes an unresolved-evidence disposition section.
 
 For safety, `peer.token.delta` events include character counts by default rather
 than provider text. `CROSS_REVIEW_STREAM_TEXT=1` can include redacted text in

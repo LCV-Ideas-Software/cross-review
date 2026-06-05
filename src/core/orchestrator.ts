@@ -7,7 +7,7 @@ import { missingFinancialControlVars, RELEASE_DATE } from "./config.js";
 import { checkConvergence, isSkippableFailure } from "./convergence.js";
 import { estimateCacheSavings } from "./cost.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
-import { sessionReportMarkdown } from "./reports.js";
+import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
 import { SessionStore } from "./session-store.js";
 import { decisionQualityFromStatus } from "./status.js";
 import type {
@@ -3385,11 +3385,35 @@ export class CrossReviewOrchestrator {
     let updated = this.store.read(session.session_id);
     if (convergence.converged) {
       this.store.saveFinal(session.session_id, input.draft);
-      updated = await this.store.finalize(
-        session.session_id,
-        "converged",
-        convergence.recovery_converged ? "recovered_unanimity" : "unanimous_ready",
-      );
+      const unresolvedEvidence = unresolvedEvidenceItems(updated);
+      const baseReason = convergence.recovery_converged ? "recovered_unanimity" : "unanimous_ready";
+      const outcomeReason =
+        unresolvedEvidence.length > 0 ? `${baseReason}_with_unresolved_evidence` : baseReason;
+      if (unresolvedEvidence.length > 0) {
+        this.emit({
+          type: "session.evidence_checklist_unresolved_on_finalize",
+          session_id: session.session_id,
+          round: round.round,
+          message: `${unresolvedEvidence.length} unresolved evidence item(s) remain at convergence; finalizing with explicit unresolved-evidence reason.`,
+          data: {
+            outcome_reason: outcomeReason,
+            unresolved_count: unresolvedEvidence.length,
+            open_count: unresolvedEvidence.filter((item) => (item.status ?? "open") === "open")
+              .length,
+            not_resurfaced_count: unresolvedEvidence.filter(
+              (item) => item.status === "not_resurfaced",
+            ).length,
+            items: unresolvedEvidence.slice(0, 20).map((item) => ({
+              id: item.id,
+              peer: item.peer,
+              status: item.status ?? "open",
+              ask: item.ask,
+              round_count: item.round_count,
+            })),
+          },
+        });
+      }
+      updated = await this.store.finalize(session.session_id, "converged", outcomeReason);
     }
     this.store.saveReport(
       session.session_id,

@@ -1,4 +1,4 @@
-import type { SessionEvent, SessionMeta } from "./types.js";
+import type { EvidenceChecklistItem, SessionEvent, SessionMeta } from "./types.js";
 
 function valueOrDash(value: unknown): string {
   if (value == null || value === "") return "-";
@@ -95,6 +95,37 @@ function evidenceChecklistLines(session: SessionMeta): string[] {
   return lines;
 }
 
+export function unresolvedEvidenceItems(session: SessionMeta): EvidenceChecklistItem[] {
+  return (session.evidence_checklist ?? []).filter((item) => {
+    const status = item.status ?? "open";
+    return status === "open" || status === "not_resurfaced";
+  });
+}
+
+function unresolvedEvidenceDispositionLines(session: SessionMeta): string[] {
+  const unresolved = unresolvedEvidenceItems(session);
+  if (!unresolved.length) return [];
+
+  const lines = [
+    "## Unresolved Evidence Disposition",
+    "",
+    "- These items are not terminally satisfied, deferred, or rejected.",
+    "- `open` still requires a concrete response; `not_resurfaced` only means the peer did not repeat the ask in a later round.",
+    "- To close them explicitly, attach the requested evidence or use `session_evidence_checklist_update` with `satisfied`, `deferred`, or `rejected`.",
+    "",
+  ];
+  for (const item of unresolved.slice(0, 20)) {
+    const status = item.status ?? "open";
+    const chronic = item.round_count >= 3 ? " chronic" : "";
+    lines.push(`- ${status}${chronic} ${item.peer}/${item.id}: ${item.ask}`);
+  }
+  if (unresolved.length > 20) {
+    lines.push(`- ... ${unresolved.length - 20} additional unresolved item(s) omitted.`);
+  }
+  lines.push("");
+  return lines;
+}
+
 export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent[] = []): string {
   const latestRound = session.rounds.at(-1);
   const lines = [
@@ -138,6 +169,7 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
   ];
 
   lines.push(...evidenceChecklistLines(session));
+  lines.push(...unresolvedEvidenceDispositionLines(session));
 
   if (session.generation_files?.length) {
     lines.push("## Generations", "");

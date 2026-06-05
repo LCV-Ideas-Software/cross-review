@@ -20,6 +20,8 @@ import type {
   PeerHealthSummary,
   PeerId,
   PeerProbeResult,
+  PeerReliabilityReport,
+  PeerReliabilityStats,
   PeerResult,
   ReviewRound,
   ReviewStatus,
@@ -1535,6 +1537,149 @@ export class SessionStore {
       per_peer_health: perPeerHealth,
       // v2.12.0: shadow_decision rollup. See aggregateShadowJudgments().
       shadow_judgment: this.aggregateShadowJudgments(sessionId),
+    };
+  }
+
+  peerReliabilityReport(sessionId?: string): PeerReliabilityReport {
+    const sessions = sessionId ? [this.read(sessionId)] : this.list();
+    type ReliabilityAccumulator = Omit<
+      PeerReliabilityStats,
+      "sessions_seen" | "avg_latency_ms" | "total_cost_usd"
+    > & {
+      session_ids: Set<string>;
+      latency_sum: number;
+      latency_count: number;
+      cost_sum: number;
+      cost_count: number;
+    };
+    const peerSet = new Set<PeerId>(PEERS);
+    const byPeer: Partial<Record<PeerId, ReliabilityAccumulator>> = {};
+    const acc = (peer: PeerId): ReliabilityAccumulator => {
+      let entry = byPeer[peer];
+      if (!entry) {
+        entry = {
+          peer,
+          session_ids: new Set<string>(),
+          results_total: 0,
+          ready: 0,
+          not_ready: 0,
+          needs_evidence: 0,
+          unresolved_status: 0,
+          parser_warnings_total: 0,
+          parser_warnings_by_type: {},
+          decision_quality: {},
+          rejected_total: 0,
+          provider_errors: 0,
+          failures_by_class: {},
+          open_asks: 0,
+          not_resurfaced_asks: 0,
+          addressed_asks: 0,
+          satisfied_asks: 0,
+          deferred_asks: 0,
+          rejected_asks: 0,
+          fabrication_events: 0,
+          latency_sum: 0,
+          latency_count: 0,
+          cost_sum: 0,
+          cost_count: 0,
+        };
+        byPeer[peer] = entry;
+      }
+      return entry;
+    };
+
+    for (const session of sessions) {
+      for (const round of session.rounds) {
+        for (const peerResult of round.peers) {
+          const entry = acc(peerResult.peer);
+          entry.session_ids.add(session.session_id);
+          entry.results_total += 1;
+          if (peerResult.status === "READY") entry.ready += 1;
+          else if (peerResult.status === "NOT_READY") entry.not_ready += 1;
+          else if (peerResult.status === "NEEDS_EVIDENCE") entry.needs_evidence += 1;
+          else entry.unresolved_status += 1;
+          const quality = peerResult.decision_quality ?? "failed";
+          entry.decision_quality[quality] = (entry.decision_quality[quality] ?? 0) + 1;
+          for (const warning of peerResult.parser_warnings) {
+            entry.parser_warnings_total += 1;
+            entry.parser_warnings_by_type[warning] =
+              (entry.parser_warnings_by_type[warning] ?? 0) + 1;
+          }
+          if (Number.isFinite(peerResult.latency_ms)) {
+            entry.latency_sum += peerResult.latency_ms;
+            entry.latency_count += 1;
+          }
+          if (
+            peerResult.cost?.total_cost != null &&
+            Number.isFinite(peerResult.cost.total_cost) &&
+            peerResult.cost.source !== "stub"
+          ) {
+            entry.cost_sum += peerResult.cost.total_cost;
+            entry.cost_count += 1;
+          }
+        }
+        for (const failure of round.rejected) {
+          const entry = acc(failure.peer);
+          entry.session_ids.add(session.session_id);
+          entry.rejected_total += 1;
+          if (failure.failure_class === "provider_error") entry.provider_errors += 1;
+          entry.failures_by_class[failure.failure_class] =
+            (entry.failures_by_class[failure.failure_class] ?? 0) + 1;
+        }
+      }
+      for (const item of session.evidence_checklist ?? []) {
+        const entry = acc(item.peer);
+        entry.session_ids.add(session.session_id);
+        const status = item.status ?? "open";
+        if (status === "open") entry.open_asks += 1;
+        else if (status === "not_resurfaced") entry.not_resurfaced_asks += 1;
+        else if (status === "addressed") entry.addressed_asks += 1;
+        else if (status === "satisfied") entry.satisfied_asks += 1;
+        else if (status === "deferred") entry.deferred_asks += 1;
+        else if (status === "rejected") entry.rejected_asks += 1;
+      }
+      for (const event of this.readEvents(session.session_id)) {
+        if (!event.type.includes("fabrication")) continue;
+        const dataPeer = (event.data?.peer ?? event.peer) as PeerId | undefined;
+        if (!dataPeer || !peerSet.has(dataPeer)) continue;
+        const entry = acc(dataPeer);
+        entry.session_ids.add(session.session_id);
+        entry.fabrication_events += 1;
+      }
+    }
+
+    const reportByPeer: PeerReliabilityReport["by_peer"] = {};
+    for (const [peer, entry] of Object.entries(byPeer) as Array<[PeerId, ReliabilityAccumulator]>) {
+      reportByPeer[peer] = {
+        peer,
+        sessions_seen: entry.session_ids.size,
+        results_total: entry.results_total,
+        ready: entry.ready,
+        not_ready: entry.not_ready,
+        needs_evidence: entry.needs_evidence,
+        unresolved_status: entry.unresolved_status,
+        parser_warnings_total: entry.parser_warnings_total,
+        parser_warnings_by_type: entry.parser_warnings_by_type,
+        decision_quality: entry.decision_quality,
+        rejected_total: entry.rejected_total,
+        provider_errors: entry.provider_errors,
+        failures_by_class: entry.failures_by_class,
+        open_asks: entry.open_asks,
+        not_resurfaced_asks: entry.not_resurfaced_asks,
+        addressed_asks: entry.addressed_asks,
+        satisfied_asks: entry.satisfied_asks,
+        deferred_asks: entry.deferred_asks,
+        rejected_asks: entry.rejected_asks,
+        fabrication_events: entry.fabrication_events,
+        avg_latency_ms: entry.latency_count > 0 ? entry.latency_sum / entry.latency_count : null,
+        total_cost_usd: entry.cost_count > 0 ? entry.cost_sum : null,
+      };
+    }
+    return {
+      generated_at: now(),
+      scope: sessionId ? "session" : "all",
+      session_id: sessionId,
+      by_peer: reportByPeer,
     };
   }
 

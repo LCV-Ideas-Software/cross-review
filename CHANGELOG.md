@@ -7,6 +7,36 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.00] — 2026-06-05
+
+**Minor — P1/P2/P3 audit follow-up.** This release closes the first concrete
+items from the post-v4.2.5 runtime/session audit: unresolved evidence is harder
+to miss at finalization time, fixture-level regressions can be evaluated
+offline, and operators get a read-only peer reliability report without changing
+peer selection.
+
+### Added
+
+- Added `session_peer_reliability_report`, a read-only MCP tool that aggregates
+  per-peer parser warnings, decision quality, rejected/provider failures,
+  evidence checklist dispositions, fabrication-related events, latency and
+  cost.
+- Added `npm run eval:fixtures`, an offline fixture harness for truthfulness
+  preflight, parser diagnostics and report rendering contracts. It does not
+  start provider sessions or call reviewers.
+- `session_report` now includes an **Unresolved Evidence Disposition** section
+  when checklist items remain `open` or `not_resurfaced`.
+
+### Changed
+
+- Automatic convergence with unresolved checklist items now finalizes with
+  `unanimous_ready_with_unresolved_evidence` or
+  `recovered_unanimity_with_unresolved_evidence` instead of a plain success
+  reason.
+- Finalization now emits `session.evidence_checklist_unresolved_on_finalize`
+  with unresolved counts and item summaries when a session closes while
+  evidence asks are still open or only inferred as not resurfaced.
+
 ## [v04.02.05] — 2026-06-05
 
 **Patch — session audit hardening.** This release closes follow-ups from the
