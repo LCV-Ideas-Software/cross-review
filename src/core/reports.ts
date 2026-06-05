@@ -5,9 +5,94 @@ function valueOrDash(value: unknown): string {
   return String(value);
 }
 
-function costText(session: SessionMeta): string {
-  const total = session.totals.cost.total_cost;
-  return total == null ? "unknown" : `$${total.toFixed(6)} ${session.totals.cost.currency}`;
+function moneyText(value: number | null | undefined, currency = "USD"): string {
+  return value == null ? "unknown" : `$${value.toFixed(6)} ${currency}`;
+}
+
+function moneyAmountText(value: number): string {
+  return `$${value.toFixed(6)}`;
+}
+
+export function sessionCostBreakdown(session: SessionMeta): {
+  currency: string;
+  total: number | null;
+  peer_total: number | null;
+  generation_total: number | null;
+} {
+  const currency = session.totals.cost.currency ?? "USD";
+  let peerTotal = 0;
+  let peerSeen = false;
+  for (const round of session.rounds) {
+    for (const peer of round.peers) {
+      const value = peer.cost?.total_cost;
+      if (value == null || !Number.isFinite(value)) continue;
+      peerSeen = true;
+      peerTotal += value;
+    }
+  }
+
+  let generationTotal = 0;
+  let generationSeen = false;
+  for (const generation of session.generation_files ?? []) {
+    const value = generation.cost?.total_cost;
+    if (value == null || !Number.isFinite(value)) continue;
+    generationSeen = true;
+    generationTotal += value;
+  }
+
+  const total = session.totals.cost.total_cost ?? null;
+  return {
+    currency,
+    total,
+    peer_total: peerSeen ? peerTotal : null,
+    generation_total: generationSeen ? generationTotal : null,
+  };
+}
+
+function costSummaryLines(session: SessionMeta): string[] {
+  const breakdown = sessionCostBreakdown(session);
+  const lines = [
+    `- Cost: ${moneyText(breakdown.total, breakdown.currency)}`,
+    `- Peer call cost: ${moneyText(breakdown.peer_total, breakdown.currency)}`,
+    `- Generation cost: ${moneyText(breakdown.generation_total, breakdown.currency)}`,
+  ];
+  if (
+    breakdown.total != null &&
+    breakdown.peer_total != null &&
+    breakdown.generation_total != null
+  ) {
+    lines.push(
+      `- Cost reconciliation: ${moneyText(breakdown.total, breakdown.currency)} = ${moneyAmountText(
+        breakdown.peer_total,
+      )} peer + ${moneyAmountText(breakdown.generation_total)} generation`,
+    );
+  }
+  return lines;
+}
+
+function evidenceChecklistLines(session: SessionMeta): string[] {
+  const checklist = session.evidence_checklist ?? [];
+  if (!checklist.length) return [];
+  const counts = new Map<string, number>();
+  for (const item of checklist) {
+    const status = item.status ?? "open";
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  const lines = ["## Evidence Checklist", ""];
+  for (const [status, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    lines.push(`- ${status}: ${count}`);
+  }
+  const notResurfaced = checklist.filter((item) => item.status === "not_resurfaced");
+  if (notResurfaced.length) {
+    lines.push(
+      "- not_resurfaced means the ask was not repeated; it is not proof that evidence was satisfied.",
+    );
+    for (const item of notResurfaced.slice(0, 10)) {
+      lines.push(`  - ${item.peer}/${item.id}: ${item.ask}`);
+    }
+  }
+  lines.push("");
+  return lines;
 }
 
 export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent[] = []): string {
@@ -27,7 +112,7 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
       session.convergence_health?.detail,
     )}`,
     `- Rounds: ${session.rounds.length}`,
-    `- Cost: ${costText(session)}`,
+    ...costSummaryLines(session),
     `- Total tokens: ${valueOrDash(session.totals.usage.total_tokens)}`,
     "",
     "## Task",
@@ -51,6 +136,8 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
     "## Peer Decisions",
     "",
   ];
+
+  lines.push(...evidenceChecklistLines(session));
 
   if (session.generation_files?.length) {
     lines.push("## Generations", "");

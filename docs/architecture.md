@@ -11,7 +11,7 @@ This API-only `cross-review` implementation is intentionally independent from th
 5. Session store: writes durable JSON and Markdown artifacts under `data/sessions`.
 6. Session events: writes durable `events.ndjson` streams per session for long-running work.
 7. Token streaming: writes count-based `peer.token.delta` and `peer.token.completed` events when provider streaming is enabled.
-8. Reports: writes `session-report.md` with convergence, failures, decision quality, costs and recent events.
+8. Reports: writes `session-report.md` with convergence, failures, decision quality, peer-vs-generation cost split, evidence checklist status and recent events.
 9. Observability: writes one NDJSON log per process under `data/logs`.
 10. Dashboard: local read-only HTTP UI for sessions, events, reports, probes and metrics.
 
@@ -54,6 +54,22 @@ When token streaming is active, adapters use provider-native streaming APIs:
 The streaming path is not a separate fake progress channel. The same streamed
 text is accumulated and then parsed into the existing review or generation
 result.
+
+## Terminal Events and Audit Reports
+
+Session outcome changes are persisted in `meta.json` and mirrored into
+`events.ndjson` as terminal events. Normal finalization writes
+`session.finalized`; cooperative cancellation writes `session.cancelled`.
+`session_doctor` flags legacy or corrupted sessions where terminal outcome
+metadata exists without the expected terminal event.
+
+Cost reporting distinguishes reviewer peer calls from relator/lead generation
+artifacts. `session_report` and `session_doctor` expose the split so historical
+audits can reconcile total cost without confusing peer-only totals with all-in
+session cost.
+
+Evidence checklist state is also surfaced in reports. `not_resurfaced` means an
+ask was not repeated in a later round; it is not a verified satisfaction signal.
 
 For safety, `peer.token.delta` events include character counts by default rather
 than provider text. `CROSS_REVIEW_STREAM_TEXT=1` can include redacted text in

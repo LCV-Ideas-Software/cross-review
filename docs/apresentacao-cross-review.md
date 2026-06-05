@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-05-22.
+Data de referência desta apresentação: 2026-06-05.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -41,10 +41,10 @@ O produto atual é estável. O runtime carregado nesta sessão reporta:
 | -------------------------- | ----------------------------------- |
 | Nome                       | `cross-review`                      |
 | Publicador                 | `LCV Ideas & Software`              |
-| Versão runtime             | `4.2.4`                             |
+| Versão runtime             | `4.2.5`                             |
 | Release date runtime       | `2026-06-05`                        |
 | Pacote npm                 | `@lcv-ideas-software/cross-review`  |
-| Versão npm publicada       | `4.2.4`                             |
+| Versão npm publicada       | `4.2.5`                             |
 | Transporte MCP             | `stdio`                             |
 | Execução CLI por peers     | desativada                          |
 | Modo padrão                | chamadas reais de API               |
@@ -713,30 +713,31 @@ publica com provenance quando aplicável.
 
 ## Changelog breve
 
-| Versão           | Data          | Destaque                                                                                                                       |
-| ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `v04.02.04`      | 2026-06-05    | Torna o truthfulness preflight mais auditável, adiciona reteste local e reduz falsos warnings de evidência anexada/logs.       |
-| `v04.02.03`      | 2026-06-03    | Promove Gemini 3.1 Pro Preview como pin canônico e atualiza o rate card Gemini local.                                          |
-| `v04.02.02`      | 2026-06-02    | Atualiza pins Claude/Grok, corrige probe Perplexity e refresca rate cards conforme documentação oficial dos providers.         |
-| `v04.02.01`      | 2026-05-21    | Publica cleanup de hard-gate como pacote `4.2.1`, com ajustes de strict TypeScript, dependências e `tsconfig.base.json` local. |
-| `v04.02.00`      | 2026-05-17    | Lista de sessões paginada, cancelamento sem abortar sessão indevidamente e resposta Markdown de `session_init`.                |
-| `v04.01.00`      | 2026-05-17    | Hardening de concorrência do session-store, redaction de chaves privadas truncadas e remoção de busy-wait.                     |
-| `v04.00.00`      | 2026-05-15    | Renomeia o projeto para `cross-review`; o antigo `cross-review-v2` vira histórico.                                             |
-| `v03.07.x`       | 2026-05-14/15 | Série de auditorias operacionais, logs/sessions study, política sem fallback silencioso e correções de runtime.                |
-| `v03.03.00`      | 2026-05-12    | Trava seleção de peers pelo caller; todos os peers configurados participam conforme diretiva do operador.                      |
-| `v03.01.00`      | 2026-05-12    | Introduz `config.json` central para reduzir centenas de variáveis duplicadas em hosts MCP.                                     |
-| `v03.00.00`      | 2026-05-12    | Perplexity entra como sexto peer.                                                                                              |
-| `v02.28.00`      | 2026-05-12    | Cache de lookup de variáveis do registro do Windows para reduzir cold start.                                                   |
-| `v02.25.00`      | 2026-05-10    | Adiciona modo deliberativo `circular`.                                                                                         |
-| `v02.21.00`      | 2026-05-09    | Prompt caching cross-provider.                                                                                                 |
-| `v02.18.00`      | 2026-05-05    | Caller capability tokens.                                                                                                      |
-| `v02.17.00`      | 2026-05-05    | Rejeição de identity forgery como hard gate.                                                                                   |
-| `v02.11.00`      | 2026-05-04    | Relator lottery e auto-wire shadow.                                                                                            |
-| `v02.08.00`      | 2026-05-03    | Health por peer e ciclo do Evidence Broker.                                                                                    |
-| `v02.03.00`      | 2026-05-01    | `review_focus` provider-neutral.                                                                                               |
-| `v02.02.00`      | 2026-04-30    | Streaming de tokens dos provedores.                                                                                            |
-| `v02.01.00`      | 2026-04-30    | Primeira release estável.                                                                                                      |
-| `v2.0.0-alpha.0` | 2026-04       | Implementação inicial API/SDK-only do servidor MCP.                                                                            |
+| Versão           | Data          | Destaque                                                                                                                         |
+| ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.02.05`      | 2026-06-05    | Endurece auditoria de sessões com eventos terminais, split de custo, visibilidade de `not_resurfaced` e proveniência do relator. |
+| `v04.02.04`      | 2026-06-05    | Torna o truthfulness preflight mais auditável, adiciona reteste local e reduz falsos warnings de evidência anexada/logs.         |
+| `v04.02.03`      | 2026-06-03    | Promove Gemini 3.1 Pro Preview como pin canônico e atualiza o rate card Gemini local.                                            |
+| `v04.02.02`      | 2026-06-02    | Atualiza pins Claude/Grok, corrige probe Perplexity e refresca rate cards conforme documentação oficial dos providers.           |
+| `v04.02.01`      | 2026-05-21    | Publica cleanup de hard-gate como pacote `4.2.1`, com ajustes de strict TypeScript, dependências e `tsconfig.base.json` local.   |
+| `v04.02.00`      | 2026-05-17    | Lista de sessões paginada, cancelamento sem abortar sessão indevidamente e resposta Markdown de `session_init`.                  |
+| `v04.01.00`      | 2026-05-17    | Hardening de concorrência do session-store, redaction de chaves privadas truncadas e remoção de busy-wait.                       |
+| `v04.00.00`      | 2026-05-15    | Renomeia o projeto para `cross-review`; o antigo `cross-review-v2` vira histórico.                                               |
+| `v03.07.x`       | 2026-05-14/15 | Série de auditorias operacionais, logs/sessions study, política sem fallback silencioso e correções de runtime.                  |
+| `v03.03.00`      | 2026-05-12    | Trava seleção de peers pelo caller; todos os peers configurados participam conforme diretiva do operador.                        |
+| `v03.01.00`      | 2026-05-12    | Introduz `config.json` central para reduzir centenas de variáveis duplicadas em hosts MCP.                                       |
+| `v03.00.00`      | 2026-05-12    | Perplexity entra como sexto peer.                                                                                                |
+| `v02.28.00`      | 2026-05-12    | Cache de lookup de variáveis do registro do Windows para reduzir cold start.                                                     |
+| `v02.25.00`      | 2026-05-10    | Adiciona modo deliberativo `circular`.                                                                                           |
+| `v02.21.00`      | 2026-05-09    | Prompt caching cross-provider.                                                                                                   |
+| `v02.18.00`      | 2026-05-05    | Caller capability tokens.                                                                                                        |
+| `v02.17.00`      | 2026-05-05    | Rejeição de identity forgery como hard gate.                                                                                     |
+| `v02.11.00`      | 2026-05-04    | Relator lottery e auto-wire shadow.                                                                                              |
+| `v02.08.00`      | 2026-05-03    | Health por peer e ciclo do Evidence Broker.                                                                                      |
+| `v02.03.00`      | 2026-05-01    | `review_focus` provider-neutral.                                                                                                 |
+| `v02.02.00`      | 2026-04-30    | Streaming de tokens dos provedores.                                                                                              |
+| `v02.01.00`      | 2026-04-30    | Primeira release estável.                                                                                                        |
+| `v2.0.0-alpha.0` | 2026-04       | Implementação inicial API/SDK-only do servidor MCP.                                                                              |
 
 ## Checklist operacional recomendado
 

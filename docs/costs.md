@@ -14,6 +14,12 @@ The server records token usage returned by providers. Paid review/generation too
 
 `CROSS_REVIEW_MAX_OUTPUT_TOKENS` controls the maximum output budget requested from all providers. The default is `20000`; raise or lower it in the MCP host configuration according to the desired quality/cost tradeoff. Invalid, zero or negative values fall back to the default.
 
+`session_report` and `session_doctor` distinguish total session cost from the
+reviewer peer-call subtotal and the relator/lead generation subtotal. Historical
+audits should compare like with like: summing `rounds[].peers[].cost.total_cost`
+is peer-only, while `meta.totals.cost.total_cost` also includes generation
+artifacts when present.
+
 ## Required Financial Configuration
 
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.

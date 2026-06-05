@@ -1519,6 +1519,240 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] evidence_checklist_drilldown_test: PASS");
 }
 
+// v4.2.5 — terminal events, cost split and not_resurfaced audit visibility.
+// The 2026-06-05 disk audit found sessions whose meta.json had a terminal
+// outcome without a matching terminal event, cost reports that blurred peer
+// calls with lead-generation artifacts, and converged sessions with
+// not_resurfaced checklist items that were too easy to misread as satisfied.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const { sessionReportMarkdown } = await import("../src/core/reports.js");
+
+  const auditStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("terminal-cost-evidence-audit"),
+  });
+
+  const finalizedSession = await auditStore.init("terminal event fixture", "operator", []);
+  await auditStore.finalize(finalizedSession.session_id, "aborted", "smoke_terminal_abort");
+  const finalizedEvents = auditStore.readEvents(finalizedSession.session_id);
+  assert.ok(
+    finalizedEvents.some(
+      (event) =>
+        event.type === "session.finalized" &&
+        event.data?.outcome === "aborted" &&
+        event.data?.reason === "smoke_terminal_abort",
+    ),
+    "v4.2.5 / terminal_events: finalize() must persist a session.finalized event",
+  );
+
+  const cancelledSession = await auditStore.init(
+    "cancelled terminal event fixture",
+    "operator",
+    [],
+  );
+  await auditStore.markCancelled(cancelledSession.session_id, "session_cancelled");
+  const cancelledEvents = auditStore.readEvents(cancelledSession.session_id);
+  assert.ok(
+    cancelledEvents.some(
+      (event) => event.type === "session.cancelled" && event.data?.reason === "session_cancelled",
+    ),
+    "v4.2.5 / terminal_events: markCancelled() must persist a session.cancelled event",
+  );
+
+  const sweptSession = await auditStore.init("idle sweep terminal event fixture", "operator", []);
+  const sweptMeta = auditStore.read(sweptSession.session_id);
+  sweptMeta.updated_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+  fs.writeFileSync(auditStore.metaPath(sweptSession.session_id), JSON.stringify(sweptMeta));
+  const swept = await auditStore.sweepIdle(0, "aborted", "smoke_idle_sweep");
+  assert.equal(
+    swept.some((session) => session.session_id === sweptSession.session_id),
+    true,
+    "v4.2.5 / terminal_events: sweepIdle() must finalize stale sessions",
+  );
+  const sweptEvents = auditStore.readEvents(sweptSession.session_id);
+  assert.ok(
+    sweptEvents.some(
+      (event) =>
+        event.type === "session.finalized" &&
+        event.data?.outcome === "aborted" &&
+        event.data?.reason === "smoke_idle_sweep" &&
+        typeof event.data?.idle_ms === "number",
+    ),
+    "v4.2.5 / terminal_events: sweepIdle() must persist a session.finalized event",
+  );
+
+  const reportSession = await auditStore.init("cost split report fixture", "operator", []);
+  const reportMeta = auditStore.read(reportSession.session_id);
+  const nowIso = new Date().toISOString();
+  reportMeta.rounds = [
+    {
+      round: 1,
+      started_at: nowIso,
+      completed_at: nowIso,
+      caller_status: "READY",
+      prompt_file: "agent-runs/round-1-prompt.md",
+      peers: [
+        {
+          peer: "codex",
+          provider: "openai",
+          model: "gpt-5",
+          status: "READY",
+          structured: { status: "READY", summary: "ready", confidence: "verified" },
+          text: '{"status":"READY","summary":"ready","confidence":"verified"}',
+          raw: { fixture: true },
+          decision_quality: "clean",
+          parser_warnings: [],
+          attempts: 1,
+          latency_ms: 10,
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          cost: {
+            currency: "USD",
+            estimated: false,
+            source: "configured-rate",
+            total_cost: 14.652426,
+          },
+        },
+      ],
+      rejected: [],
+      convergence: {
+        converged: true,
+        reason: "unanimous",
+        ready_peers: ["codex"],
+        not_ready_peers: [],
+        needs_evidence_peers: [],
+        rejected_peers: [],
+        skipped_peers: [],
+        decision_quality: {
+          codex: "clean",
+          claude: "clean",
+          gemini: "clean",
+          deepseek: "clean",
+          grok: "clean",
+          perplexity: "clean",
+        },
+        blocking_details: [],
+      },
+    },
+  ];
+  reportMeta.generation_files = [
+    {
+      round: 0,
+      peer: "gemini",
+      label: "initial_draft",
+      path: "agent-runs/round-0-initial-draft.md",
+      ts: nowIso,
+      usage: { input_tokens: 6, output_tokens: 4, total_tokens: 10 },
+      cost: {
+        currency: "USD",
+        estimated: false,
+        source: "configured-rate",
+        total_cost: 1.876718,
+      },
+    },
+  ];
+  reportMeta.totals.cost = {
+    currency: "USD",
+    estimated: false,
+    source: "configured-rate",
+    total_cost: 16.529144,
+  };
+  fs.writeFileSync(auditStore.metaPath(reportSession.session_id), JSON.stringify(reportMeta));
+  const reportMarkdown = sessionReportMarkdown(auditStore.read(reportSession.session_id), []);
+  assert.ok(
+    reportMarkdown.includes("- Peer call cost: $14.652426 USD"),
+    "v4.2.5 / cost_split: session report must show peer-call cost separately",
+  );
+  assert.ok(
+    reportMarkdown.includes("- Generation cost: $1.876718 USD"),
+    "v4.2.5 / cost_split: session report must show lead-generation cost separately",
+  );
+  assert.ok(
+    reportMarkdown.includes("$16.529144 USD = $14.652426 peer + $1.876718 generation"),
+    "v4.2.5 / cost_split: session report must explicitly reconcile total = peer + generation",
+  );
+
+  const notResurfacedSession = await auditStore.init(
+    "not resurfaced visibility fixture",
+    "operator",
+    [],
+  );
+  const notResurfacedMeta = auditStore.read(notResurfacedSession.session_id);
+  notResurfacedMeta.evidence_checklist = [
+    {
+      id: "nr-1",
+      peer: "deepseek",
+      first_round: 1,
+      last_round: 1,
+      round_count: 1,
+      ask: "attach raw npm ci output",
+      first_seen_at: nowIso,
+      last_seen_at: nowIso,
+      status: "not_resurfaced",
+      addressed_at_round: 2,
+      address_method: "resurfacing",
+    },
+  ];
+  fs.writeFileSync(
+    auditStore.metaPath(notResurfacedSession.session_id),
+    JSON.stringify(notResurfacedMeta),
+  );
+
+  const legacyGapSession = await auditStore.init(
+    "legacy terminal event gap fixture",
+    "operator",
+    [],
+  );
+  const legacyGapMeta = auditStore.read(legacyGapSession.session_id);
+  legacyGapMeta.outcome = "aborted";
+  legacyGapMeta.outcome_reason = "legacy_without_terminal_event";
+  legacyGapMeta.updated_at = nowIso;
+  legacyGapMeta.convergence_health = {
+    state: "stale",
+    last_event_at: nowIso,
+    detail: "legacy_without_terminal_event",
+  };
+  fs.writeFileSync(auditStore.metaPath(legacyGapSession.session_id), JSON.stringify(legacyGapMeta));
+
+  const notResurfacedDoctor = await auditStore.sessionDoctor(20);
+  assert.equal(
+    notResurfacedDoctor.totals.not_resurfaced_evidence_sessions,
+    1,
+    "v4.2.5 / not_resurfaced: session_doctor totals must count not_resurfaced sessions separately",
+  );
+  assert.equal(
+    notResurfacedDoctor.findings.not_resurfaced_evidence_sessions[0]?.session_id,
+    notResurfacedSession.session_id,
+    "v4.2.5 / not_resurfaced: session_doctor must enumerate not_resurfaced sessions",
+  );
+  assert.equal(
+    notResurfacedDoctor.totals.terminal_event_missing_sessions,
+    1,
+    "v4.2.5 / terminal_event_missing: session_doctor totals must count legacy terminal-event gaps",
+  );
+  assert.equal(
+    notResurfacedDoctor.findings.terminal_event_missing_sessions[0]?.session_id,
+    legacyGapSession.session_id,
+    "v4.2.5 / terminal_event_missing: session_doctor must enumerate legacy terminal-event gaps",
+  );
+  assert.equal(
+    notResurfacedDoctor.findings.terminal_event_missing_sessions[0]?.terminal_event_expected,
+    "session.finalized",
+    "v4.2.5 / terminal_event_missing: session_doctor must report the expected terminal event",
+  );
+  const notResurfacedReport = sessionReportMarkdown(
+    auditStore.read(notResurfacedSession.session_id),
+    [],
+  );
+  assert.ok(
+    notResurfacedReport.includes(
+      "not_resurfaced means the ask was not repeated; it is not proof that evidence was satisfied.",
+    ),
+    "v4.2.5 / not_resurfaced: session report must state the not_resurfaced semantics",
+  );
+  console.log("[smoke] terminal_cost_evidence_audit_test: PASS");
+}
+
 // v2.22.0 (B.P3): session.budget_warning event emit + idempotency. The
 // orchestrator emits a one-shot warning when cumulative cost crosses
 // 75% of cost_ceiling_usd; the budget_warning_emitted flag persists
@@ -6698,6 +6932,23 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     genericConfirmation.fabricated,
     false,
     "v4.2.2 / truthfulness_guardrails: generic 'confirmed' prose without a dispatch/authorization claim must not trip fabrication detection",
+  );
+
+  const fabricatedReviewReferences = detectFabricatedEvidence(
+    [
+      "R2 evidence confirms sessions 604dcecc-df8d-483c-b598-733b8cbb64b0 and 37929ed7-3b71-454c-8231-5e1657ad17af.",
+      "The external comparison used https://github.com/qhjqhj00/GossipCat and https://github.com/alibaba/mira.",
+    ].join("\n"),
+    {
+      provenanceCorpus: "",
+      priorDraftCorpus: "The prior artifact did not contain session IDs or GitHub repository URLs.",
+      narrativeCorpus: "Audit cross-review improvements.",
+    },
+  );
+  assert.ok(
+    fabricatedReviewReferences.fabricated === true &&
+      fabricatedReviewReferences.suspicious_assertion_count >= 2,
+    `v4.2.5 / fabrication_lock: net-new session IDs and GitHub URLs in relator text must trip fabricated=true (got count=${fabricatedReviewReferences.suspicious_assertion_count}, fabricated=${fabricatedReviewReferences.fabricated})`,
   );
 
   // Source-level: threshold constants pinned at the documented values.

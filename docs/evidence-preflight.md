@@ -102,8 +102,9 @@ When it trips, the session is finalized with
 - `issue_classes` — one or more of `runtime_contradiction`,
   `unsupported_current_state_claim`, `unsupported_historical_claim`, or
   `fabrication_pattern`;
-- `attachments_present` and `structured_evidence_supplied`, so the operator can
-  see whether attached evidence was visible to the runtime;
+- `attachments_present`, `structured_evidence_supplied`,
+  `source_marker_found`, and `runtime_facts_available`, so the operator can see
+  whether evidence and live runtime facts were visible to the local gate;
 - `contradictions` and `unsupported_claims` with the concrete text that blocked
   the session.
 

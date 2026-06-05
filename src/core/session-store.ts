@@ -40,6 +40,47 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function isStubSession(session: SessionMeta): boolean {
+  const peerCosts = session.rounds.flatMap((round) => round.peers.map((peer) => peer.cost));
+  const generationCosts = (session.generation_files ?? []).map((generation) => generation.cost);
+  const costs = [...peerCosts, ...generationCosts].filter(Boolean);
+  if (costs.length > 0) return costs.every((cost) => cost?.source === "stub");
+  return session.capability_snapshot.some(
+    (probe) => probe.provider.startsWith("stub-") || probe.model.startsWith("stub-"),
+  );
+}
+
+function sessionPeerCostTotal(session: SessionMeta): number | null {
+  let total = 0;
+  let seen = false;
+  for (const round of session.rounds) {
+    for (const peer of round.peers) {
+      const value = peer.cost?.total_cost;
+      if (value == null || !Number.isFinite(value)) continue;
+      seen = true;
+      total += value;
+    }
+  }
+  return seen ? total : null;
+}
+
+function sessionGenerationCostTotal(session: SessionMeta): number | null {
+  let total = 0;
+  let seen = false;
+  for (const generation of session.generation_files ?? []) {
+    const value = generation.cost?.total_cost;
+    if (value == null || !Number.isFinite(value)) continue;
+    seen = true;
+    total += value;
+  }
+  return seen ? total : null;
+}
+
+function addNullableCost(a: number | null, b: number | null): number | null {
+  if (a == null && b == null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
+
 // v2.4.0 / audit closure (P1.3): atomicWriteFile retry on Windows.
 // `fs.renameSync` in Win32 fails with EPERM/EACCES/EBUSY when the
 // destination is briefly held by another handle (AV scan, indexing,
@@ -453,6 +494,20 @@ export class SessionStore {
     this.seqCache.set(sessionId, committed);
   }
 
+  private appendEventRecord(event: RuntimeEvent): void {
+    const sessionId = event.session_id;
+    if (!sessionId) return;
+    const file = this.eventsPath(sessionId);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const seq = this.peekNextSeq(sessionId, file);
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({ ...event, seq, ts: event.ts ?? now() })}\n`,
+      "utf8",
+    );
+    this.commitSeq(sessionId, seq);
+  }
+
   // v4.1.0: durable event persistence. withSessionLock became async
   // with the proper-lockfile refactor; appendEvent awaits the lock so
   // callers that read events after persisting get the expected
@@ -465,17 +520,11 @@ export class SessionStore {
     const write = (async () => {
       try {
         await this.withSessionLock(sessionId, () => {
-          const file = this.eventsPath(sessionId);
-          const seq = this.peekNextSeq(sessionId, file);
-          fs.appendFileSync(
-            file,
-            `${JSON.stringify({ ...event, seq, ts: event.ts ?? now() })}\n`,
-            "utf8",
-          );
           // Only commit the cache AFTER the durable append succeeded.
-          // If appendFileSync threw above, the cache still reflects the
-          // last persisted seq and the next call reuses this seq number.
-          this.commitSeq(sessionId, seq);
+          // If appendFileSync threw inside appendEventRecord, the cache
+          // still reflects the last persisted seq and the next call
+          // reuses this seq number.
+          this.appendEventRecord(event);
         });
       } catch {
         // Event persistence must never break provider calls or MCP responses.
@@ -865,14 +914,26 @@ export class SessionStore {
       meta.outcome = outcome;
       if (reason) meta.outcome_reason = reason;
       delete meta.in_flight;
+      const ts = now();
       meta.convergence_health = {
         state:
           outcome === "converged" ? "converged" : outcome === "max-rounds" ? "blocked" : "stale",
-        last_event_at: now(),
+        last_event_at: ts,
         detail: reason ?? outcome,
       };
-      meta.updated_at = now();
+      meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
+      try {
+        this.appendEventRecord({
+          type: "session.finalized",
+          session_id: sessionId,
+          ts,
+          message: `Session finalized as ${outcome}${reason ? `: ${reason}` : ""}`,
+          data: { outcome, reason: reason ?? null },
+        });
+      } catch {
+        /* event persistence is best-effort; session_doctor will flag gaps */
+      }
       return meta;
     });
   }
@@ -905,6 +966,7 @@ export class SessionStore {
   async markCancelled(sessionId: string, reason = "cancelled"): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      const ts = now();
       meta.outcome = "aborted";
       meta.outcome_reason = reason;
       delete meta.in_flight;
@@ -913,15 +975,26 @@ export class SessionStore {
         reason,
         job_id: meta.control?.job_id,
         requested_at: meta.control?.requested_at,
-        updated_at: now(),
+        updated_at: ts,
       };
       meta.convergence_health = {
         state: "stale",
-        last_event_at: now(),
+        last_event_at: ts,
         detail: reason,
       };
-      meta.updated_at = now();
+      meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
+      try {
+        this.appendEventRecord({
+          type: "session.cancelled",
+          session_id: sessionId,
+          ts,
+          message: `Session cancelled: ${reason}`,
+          data: { outcome: "aborted", reason },
+        });
+      } catch {
+        /* event persistence is best-effort; session_doctor will flag gaps */
+      }
       return meta;
     });
   }
@@ -1547,11 +1620,19 @@ export class SessionStore {
     const maxRoundsSessions: SessionDoctorEntry[] = [];
     const selfLeadMetadata: SessionDoctorEntry[] = [];
     const openEvidenceSessions: SessionDoctorEntry[] = [];
+    const notResurfacedEvidenceSessions: SessionDoctorEntry[] = [];
     const grokProviderErrorSessions: SessionDoctorEntry[] = [];
     const eventReadErrorSessions: SessionDoctorEntry[] = [];
+    const terminalEventMissingSessions: SessionDoctorEntry[] = [];
     let eventsTotal = 0;
     let tokenDeltaEvents = 0;
     let tokenCompletedEvents = 0;
+    let realSessions = 0;
+    let stubSessions = 0;
+    let peerCallCostUsd: number | null = null;
+    let generationCostUsd: number | null = null;
+    let totalCostUsd: number | null = null;
+    let terminalEventMissingCount = 0;
 
     const pushLimited = (target: SessionDoctorEntry[], entry: SessionDoctorEntry): void => {
       if (target.length < cappedLimit) target.push(entry);
@@ -1566,9 +1647,20 @@ export class SessionStore {
         (item) => (item.status ?? "open") === "open",
       );
       const openEvidenceItems = openEvidenceItemsList.length;
+      const notResurfacedEvidenceItems = evidenceList.filter(
+        (item) => item.status === "not_resurfaced",
+      ).length;
       const grokProviderErrors = (session.failed_attempts ?? []).filter(
         (failure) => failure.peer === "grok" && failure.failure_class === "provider_error",
       ).length;
+      if (isStubSession(session)) stubSessions += 1;
+      else realSessions += 1;
+      peerCallCostUsd = addNullableCost(peerCallCostUsd, sessionPeerCostTotal(session));
+      generationCostUsd = addNullableCost(generationCostUsd, sessionGenerationCostTotal(session));
+      const sessionTotalCost = session.totals.cost.total_cost;
+      if (sessionTotalCost != null && Number.isFinite(sessionTotalCost)) {
+        totalCostUsd = addNullableCost(totalCostUsd, sessionTotalCost);
+      }
       const entry: SessionDoctorEntry = {
         session_id: session.session_id,
         version: session.version,
@@ -1582,6 +1674,9 @@ export class SessionStore {
         rounds: session.rounds.length,
         updated_at: session.updated_at,
         ...(openEvidenceItems > 0 ? { open_evidence_items: openEvidenceItems } : {}),
+        ...(notResurfacedEvidenceItems > 0
+          ? { not_resurfaced_evidence_items: notResurfacedEvidenceItems }
+          : {}),
         ...(grokProviderErrors > 0 ? { grok_provider_errors: grokProviderErrors } : {}),
       };
 
@@ -1620,6 +1715,7 @@ export class SessionStore {
       if (session.outcome === "max-rounds") pushLimited(maxRoundsSessions, entry);
       if (petitioner && leadPeer && petitioner === leadPeer) pushLimited(selfLeadMetadata, entry);
       if (openEvidenceItems > 0) pushLimited(openEvidenceSessions, entry);
+      if (notResurfacedEvidenceItems > 0) pushLimited(notResurfacedEvidenceSessions, entry);
       if (grokProviderErrors > 0) pushLimited(grokProviderErrorSessions, entry);
 
       let sessionEvents: SessionEvent[] = [];
@@ -1628,6 +1724,22 @@ export class SessionStore {
       } catch (error) {
         entry.event_read_error = redact(error instanceof Error ? error.message : String(error));
         pushLimited(eventReadErrorSessions, entry);
+      }
+
+      if (session.outcome) {
+        const expectedTerminalEvent: "session.finalized" | "session.cancelled" =
+          session.control?.status === "cancelled" || session.outcome_reason === "session_cancelled"
+            ? "session.cancelled"
+            : "session.finalized";
+        const hasExpectedTerminalEvent = sessionEvents.some(
+          (event) => event.type === expectedTerminalEvent,
+        );
+        if (!hasExpectedTerminalEvent) {
+          terminalEventMissingCount += 1;
+          entry.terminal_event_missing = true;
+          entry.terminal_event_expected = expectedTerminalEvent;
+          pushLimited(terminalEventMissingSessions, entry);
+        }
       }
 
       for (const event of sessionEvents) {
@@ -1671,6 +1783,11 @@ export class SessionStore {
         "Address or explicitly terminal-mark open evidence checklist items before expecting convergence.",
       );
     }
+    if (notResurfacedEvidenceSessions.length > 0) {
+      recommendations.push(
+        "`not_resurfaced` evidence items are inference-only; review them separately from satisfied/deferred/rejected items.",
+      );
+    }
     if (grokProviderErrorSessions.length > 0) {
       recommendations.push(
         "Run a Grok-specific smoke/probe for sessions with grok provider errors before relying on Grok in release gates.",
@@ -1686,6 +1803,11 @@ export class SessionStore {
         "Token delta events dominate this corpus; increase CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD or disable token streaming for low-noise audits.",
       );
     }
+    if (terminalEventMissingCount > 0) {
+      recommendations.push(
+        "Terminal outcome metadata exists without matching terminal events; treat as legacy/event-gap evidence and inspect before relying on event-only analytics.",
+      );
+    }
 
     return {
       generated_at: now(),
@@ -1693,14 +1815,22 @@ export class SessionStore {
       limit: cappedLimit,
       totals: {
         sessions: sessions.length,
+        real_sessions: realSessions,
+        stub_sessions: stubSessions,
         open: sessions.filter((session) => !session.outcome).length,
-        stale: sessions.filter((session) => session.convergence_health?.state === "stale").length,
-        blocked: sessions.filter((session) => session.convergence_health?.state === "blocked")
-          .length,
+        stale: sessions.filter(
+          (session) => !session.outcome && session.convergence_health?.state === "stale",
+        ).length,
+        blocked: sessions.filter(
+          (session) => !session.outcome && session.convergence_health?.state === "blocked",
+        ).length,
         max_rounds: sessions.filter((session) => session.outcome === "max-rounds").length,
         self_lead_metadata: selfLeadCount,
         open_evidence_sessions: sessions.filter((session) =>
           (session.evidence_checklist ?? []).some((item) => (item.status ?? "open") === "open"),
+        ).length,
+        not_resurfaced_evidence_sessions: sessions.filter((session) =>
+          (session.evidence_checklist ?? []).some((item) => item.status === "not_resurfaced"),
         ).length,
         grok_provider_error_sessions: sessions.filter((session) =>
           (session.failed_attempts ?? []).some(
@@ -1708,6 +1838,12 @@ export class SessionStore {
           ),
         ).length,
         event_read_error_sessions: eventReadErrorSessions.length,
+        terminal_event_missing_sessions: terminalEventMissingCount,
+      },
+      cost_breakdown: {
+        total_cost_usd: totalCostUsd,
+        peer_call_cost_usd: peerCallCostUsd,
+        generation_cost_usd: generationCostUsd,
       },
       findings: {
         open_sessions: openSessions,
@@ -1719,8 +1855,10 @@ export class SessionStore {
         // in `totals.self_lead_metadata`.
         self_lead_metadata: includeLegacy ? selfLeadMetadata : [],
         open_evidence_sessions: openEvidenceSessions,
+        not_resurfaced_evidence_sessions: notResurfacedEvidenceSessions,
         grok_provider_error_sessions: grokProviderErrorSessions,
         event_read_error_sessions: eventReadErrorSessions,
+        terminal_event_missing_sessions: terminalEventMissingSessions,
       },
       event_noise: {
         events_total: eventsTotal,
@@ -2044,17 +2182,29 @@ export class SessionStore {
       if (idleFor < effectiveIdleMs) continue;
       const finalized = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
+        const ts = now();
         current.outcome = outcome;
         current.outcome_reason = reason;
         delete current.in_flight;
         current.convergence_health = {
           state: "stale",
-          last_event_at: now(),
+          last_event_at: ts,
           detail: reason,
           idle_ms: idleFor,
         };
-        current.updated_at = now();
+        current.updated_at = ts;
         await writeJson(this.metaPath(session.session_id), current);
+        try {
+          this.appendEventRecord({
+            type: "session.finalized",
+            session_id: session.session_id,
+            ts,
+            message: `Session finalized as ${outcome}${reason ? `: ${reason}` : ""}`,
+            data: { outcome, reason, idle_ms: idleFor },
+          });
+        } catch {
+          /* event persistence is best-effort; session_doctor will flag gaps */
+        }
         return current;
       });
       swept.push(finalized);

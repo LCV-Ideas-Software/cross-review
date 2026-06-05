@@ -484,6 +484,14 @@ const FABRICATED_ASSERTION_PATTERNS: Array<{ pattern: RegExp; label: string }> =
   { pattern: /npm\s+run\s+(?:build|test|typecheck)\b/g, label: "npm_run_assertion" },
   { pattern: /index\s+[a-f0-9]{6,}\.{2}[a-f0-9]{6,}/g, label: "git_diff_index_hash" },
   {
+    pattern: /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    label: "session_id_reference",
+  },
+  {
+    pattern: /https:\/\/github\.com\/[^\s)\]}>"']+/gi,
+    label: "github_url_reference",
+  },
+  {
     pattern:
       /\b(?:workflow\s+(?:launched|started|dispatched|created)|(?:launched|started|dispatched)\s+(?:a\s+)?workflow)\b/gi,
     label: "workflow_dispatch_claim",
@@ -885,7 +893,9 @@ export function truthfulnessPreflight(params: {
   const detail = [...contradictions, ...unsupportedClaims].join("; ");
   const evidenceState =
     `attachments_present=${params.attachmentsPresent}; ` +
-    `structured_evidence_supplied=${structuredEvidenceSupplied}`;
+    `structured_evidence_supplied=${structuredEvidenceSupplied}; ` +
+    `source_marker_found=${sourceMarkerFound}; ` +
+    `runtime_facts_available=${runtimeFactsAvailable}`;
   const remediation =
     "attach raw snapshot evidence with session_attach_evidence or pass a structured evidence field, then retry the truthfulness preflight";
   return {
@@ -931,7 +941,7 @@ function leadShipModeDirective(): string[] {
     // relator is free to synthesize ANALYSIS (interpretation, design
     // rationale, prose) but MUST refuse to invent operational facts.
     "## Evidence Provenance Lock (HARD)",
-    "Operational evidence — git SHAs, content hashes, build outputs, test counts (e.g. `147 passed`), diff hunks, `git diff --check passed` style assertions, vite asset filenames with hex suffixes, `cargo test`/`npm run build`/`npm run typecheck` result lines, `git rev-parse HEAD` output, timestamps, file paths — has a PROVENANCE level. Two levels exist:",
+    "Operational evidence — git SHAs, content hashes, build outputs, test counts (e.g. `147 passed`), diff hunks, `git diff --check passed` style assertions, vite asset filenames with hex suffixes, `cargo test`/`npm run build`/`npm run typecheck` result lines, `git rev-parse HEAD` output, session IDs, GitHub URLs, timestamps, file paths — has a PROVENANCE level. Two levels exist:",
     "  - PROVENANCE-GRADE: raw command/tool output persisted via `session_attach_evidence` (visible to you below as `## Attached Evidence`), or a verbatim file slice with explicit path:line refs.",
     "  - NARRATIVE: the caller's natural-language summary in the task or in a prior draft (e.g. `I ran cargo test, 147 passed`).",
     "NARRATIVE is NOT evidence. The caller's claim that a command produced a specific result is unverified until the raw output is attached. You MUST NOT quote NARRATIVE operational claims as if they were verified evidence. You MAY summarize that the caller claims X; you MUST NOT assert that X happened.",

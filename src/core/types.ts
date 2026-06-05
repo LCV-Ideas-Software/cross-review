@@ -1086,8 +1086,11 @@ export interface SessionDoctorEntry {
   rounds: number;
   updated_at: string;
   open_evidence_items?: number | undefined;
+  not_resurfaced_evidence_items?: number | undefined;
   grok_provider_errors?: number | undefined;
   event_read_error?: string | undefined;
+  terminal_event_missing?: boolean | undefined;
+  terminal_event_expected?: "session.finalized" | "session.cancelled" | undefined;
   // v2.22.0 (B.P2): evidence checklist drill-down. Populated only on
   // entries where `open_evidence_items > 0` (i.e. those routed into
   // `findings.open_evidence_sessions`). `item_types` aggregates open
@@ -1104,14 +1107,23 @@ export interface SessionDoctorReport {
   limit: number;
   totals: {
     sessions: number;
+    real_sessions: number;
+    stub_sessions: number;
     open: number;
     stale: number;
     blocked: number;
     max_rounds: number;
     self_lead_metadata: number;
     open_evidence_sessions: number;
+    not_resurfaced_evidence_sessions: number;
     grok_provider_error_sessions: number;
     event_read_error_sessions: number;
+    terminal_event_missing_sessions: number;
+  };
+  cost_breakdown: {
+    total_cost_usd: number | null;
+    peer_call_cost_usd: number | null;
+    generation_cost_usd: number | null;
   };
   findings: {
     open_sessions: SessionDoctorEntry[];
@@ -1120,8 +1132,10 @@ export interface SessionDoctorReport {
     max_rounds_sessions: SessionDoctorEntry[];
     self_lead_metadata: SessionDoctorEntry[];
     open_evidence_sessions: SessionDoctorEntry[];
+    not_resurfaced_evidence_sessions: SessionDoctorEntry[];
     grok_provider_error_sessions: SessionDoctorEntry[];
     event_read_error_sessions: SessionDoctorEntry[];
+    terminal_event_missing_sessions: SessionDoctorEntry[];
   };
   event_noise: {
     events_total: number;

@@ -7,6 +7,36 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.02.05] — 2026-06-05
+
+**Patch — session audit hardening.** This release closes follow-ups from the
+2026-06-05 GitHub/tooling and on-disk session audit: terminal events are now
+durably recorded at the store boundary, cost reporting separates peer calls from
+lead-generation artifacts, and evidence/checklist diagnostics make
+`not_resurfaced` and relator provenance risks harder to misread.
+
+### Added
+
+- `SessionStore.finalize`, `markCancelled`, and idle sweeps now persist
+  terminal events (`session.finalized` / `session.cancelled`) alongside
+  `meta.json` outcome changes.
+- `session_doctor` now reports real-vs-stub session counts, aggregate cost
+  breakdown (`total_cost_usd`, `peer_call_cost_usd`, `generation_cost_usd`),
+  sessions missing terminal events, and sessions carrying
+  `not_resurfaced` evidence checklist items.
+- `session_report` now shows total cost as peer-call cost plus generation cost
+  and includes an Evidence Checklist section explaining that
+  `not_resurfaced` is inference-only, not proof of satisfaction.
+
+### Changed
+
+- Truthfulness preflight failure reasons now include `source_marker_found` and
+  `runtime_facts_available` in addition to attachment/structured-evidence
+  visibility.
+- The relator evidence-provenance detector now treats net-new session UUIDs and
+  GitHub URLs as provenance-bound operational references, preventing final text
+  from introducing unverified session/repository evidence.
+
 ## [v04.02.04] — 2026-06-05
 
 **Patch — truthfulness preflight auditability.** This release tightens the
