@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { loadConfig, missingFinancialControlVars, RELEASE_DATE, VERSION } from "../core/config.js";
-import { CrossReviewOrchestrator } from "../core/orchestrator.js";
+import { CrossReviewOrchestrator, truthfulnessPreflight } from "../core/orchestrator.js";
 import { sessionReportMarkdown } from "../core/reports.js";
 import type {
   ConvergenceScope,
@@ -663,6 +663,7 @@ const TOOL_NAMES = [
   "session_doctor",
   "session_report",
   "session_check_convergence",
+  "session_truthfulness_preflight_check",
   "session_attach_evidence",
   "session_evidence_checklist_update",
   "session_evidence_judge_pass",
@@ -1537,6 +1538,76 @@ export async function main(): Promise<void> {
           convergence_scope: session.convergence_scope,
           in_flight: session.in_flight,
           failed_attempts: session.failed_attempts ?? [],
+        },
+        response_format,
+      );
+    },
+  );
+
+  server.registerTool(
+    "session_truthfulness_preflight_check",
+    {
+      title: "Check Truthfulness Preflight",
+      description:
+        "Re-run the local truthfulness preflight for a saved session without calling providers. Useful after attaching evidence to confirm whether a prior truthfulness_preflight abort is now supported.",
+      inputSchema: z.object({
+        session_id: SessionIdSchema,
+        task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
+        draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
+        evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        response_format: ResponseFormatSchema,
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ session_id, task, draft, evidence, response_format }) => {
+      const session = runtime.orchestrator.store.read(session_id);
+      const latestDraftPath = session.rounds.at(-1)?.draft_file;
+      let effectiveDraft = draft;
+      if (!effectiveDraft && latestDraftPath) {
+        effectiveDraft = runtime.orchestrator.store.readTextArtifact(
+          session_id,
+          latestDraftPath,
+          SCHEMA_DRAFT_MAX_CHARS,
+        );
+      }
+      const attachments = runtime.orchestrator.store.readEvidenceAttachments(
+        session_id,
+        runtime.config.prompt.max_attached_evidence_chars,
+      );
+      const result = truthfulnessPreflight({
+        task: task ?? session.task,
+        initialDraft: effectiveDraft,
+        structuredEvidence: evidence,
+        attachmentsPresent: attachments.length > 0,
+        runtimeFacts: {
+          runtime_version: runtime.config.version,
+          release_date: RELEASE_DATE,
+          model_pins: runtime.config.models,
+        },
+      });
+      return textResult(
+        {
+          session_id: session.session_id,
+          used_task_source: task ? "input" : "session",
+          used_draft_source: draft ? "input" : latestDraftPath ? latestDraftPath : null,
+          pass: result.pass,
+          reason: result.reason,
+          issue_classes: result.issue_classes,
+          current_state_claim_matched: result.current_state_claim_matched,
+          historical_state_claim_matched: result.historical_state_claim_matched,
+          contradictions: result.contradictions,
+          unsupported_claims: result.unsupported_claims,
+          structured_evidence_supplied: result.structured_evidence_supplied,
+          attachments_present: result.attachments_present,
+          attached_evidence_count: attachments.length,
+          evidence_files: session.evidence_files ?? [],
+          source_marker_found: result.source_marker_found,
+          runtime_facts_available: result.runtime_facts_available,
         },
         response_format,
       );

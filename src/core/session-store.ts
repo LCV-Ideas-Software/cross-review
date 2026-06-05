@@ -408,6 +408,16 @@ export class SessionStore {
     return readJson<SessionMeta>(this.metaPath(sessionId));
   }
 
+  readTextArtifact(sessionId: string, relativePath: string, maxChars: number): string {
+    const sessionDir = this.sessionDir(sessionId);
+    const absolutePath = path.resolve(sessionDir, relativePath);
+    if (!this.isPathContained(sessionDir, absolutePath)) {
+      throw new Error(`artifact path escapes session directory: ${relativePath}`);
+    }
+    const raw = fs.readFileSync(absolutePath, "utf8");
+    return raw.length > maxChars ? raw.slice(0, maxChars) : raw;
+  }
+
   // v2.4.0 / audit closure (P3.13) — refined after cross-review R2 (codex
   // caught a durability gap in the initial implementation).
   //
@@ -716,6 +726,30 @@ export class SessionStore {
       meta.costs_per_round = [...(meta.costs_per_round ?? []), roundCost];
       await writeJson(this.metaPath(sessionId), meta);
       return round;
+    });
+  }
+
+  async recordPreflightFailure(
+    sessionId: string,
+    failures: PeerFailure[],
+    round = 0,
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      meta.failed_attempts = [
+        ...(meta.failed_attempts ?? []),
+        ...failures.map((failure) => ({ ...failure, round })),
+      ];
+      meta.convergence_health = {
+        state: "blocked",
+        last_event_at: now(),
+        detail:
+          failures[0]?.message ??
+          "truthfulness_preflight blocked the session before a provider round started.",
+      };
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
     });
   }
 

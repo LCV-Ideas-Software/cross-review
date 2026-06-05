@@ -41,10 +41,10 @@ O produto atual é estável. O runtime carregado nesta sessão reporta:
 | -------------------------- | ----------------------------------- |
 | Nome                       | `cross-review`                      |
 | Publicador                 | `LCV Ideas & Software`              |
-| Versão runtime             | `4.2.3`                             |
-| Release date runtime       | `2026-06-03`                        |
+| Versão runtime             | `4.2.4`                             |
+| Release date runtime       | `2026-06-05`                        |
 | Pacote npm                 | `@lcv-ideas-software/cross-review`  |
-| Versão npm publicada       | `4.2.3`                             |
+| Versão npm publicada       | `4.2.4`                             |
 | Transporte MCP             | `stdio`                             |
 | Execução CLI por peers     | desativada                          |
 | Modo padrão                | chamadas reais de API               |
@@ -233,6 +233,7 @@ O runtime carregado expõe as seguintes ferramentas:
 | `session_doctor`                        | Audita sessões abertas, travadas ou historicamente inconsistentes.                   |
 | `session_report`                        | Gera relatório Markdown de uma sessão.                                               |
 | `session_check_convergence`             | Retorna estado de convergência durável sem chamar provedores.                        |
+| `session_truthfulness_preflight_check`  | Reexecuta localmente o truthfulness preflight de uma sessão sem chamar provedores.   |
 | `session_attach_evidence`               | Anexa evidência textual à sessão.                                                    |
 | `session_evidence_checklist_update`     | Atualiza status de itens de evidência.                                               |
 | `session_evidence_judge_pass`           | Usa um peer como juiz de evidência em modo controlado.                               |
@@ -714,6 +715,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                       |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `v04.02.04`      | 2026-06-05    | Torna o truthfulness preflight mais auditável, adiciona reteste local e reduz falsos warnings de evidência anexada/logs.       |
 | `v04.02.03`      | 2026-06-03    | Promove Gemini 3.1 Pro Preview como pin canônico e atualiza o rate card Gemini local.                                          |
 | `v04.02.02`      | 2026-06-02    | Atualiza pins Claude/Grok, corrige probe Perplexity e refresca rate cards conforme documentação oficial dos providers.         |
 | `v04.02.01`      | 2026-05-21    | Publica cleanup de hard-gate como pacote `4.2.1`, com ajustes de strict TypeScript, dependências e `tsconfig.base.json` local. |

@@ -189,18 +189,24 @@ function extractJsonKeyStatus(candidate: string): ReviewStatus | null {
 }
 
 const CONCRETE_EVIDENCE_SOURCE_PATTERN =
-  /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events)\b|https?:\/\/|```|@@\s*[-+]|\b[\w./-]+\.\w+:\d+\b|\{[\s\S]{0,400}"(?:version|release_date|model|status|peer)"\s*:/i;
+  /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events)\b|https?:\/\/|```|@@\s*[-+]|\b[\w./-]+\.\w+:\d+\b|\bevidence[\\/][\w./-]+\b|\bAttachment:\s*\S|\bL\d{2,}\b|\bEXIT_CODE=\d+\b|\b(?:npm|pnpm|yarn|node|git|gh)\s+\S|\bTest Files\s+\d+\s+passed\b|\bTests?\s+\d+\s+(?:passed|failed)\b|\{[\s\S]{0,400}"(?:version|release_date|model|status|peer)"\s*:/i;
 
 function appendTruthfulnessStatusWarnings(
   structured: PeerStructuredStatus,
   warnings: string[],
 ): void {
   if (structured.confidence !== "verified") return;
-  const evidenceSources = structured.evidence_sources ?? [];
+  const evidenceSources = (structured.evidence_sources ?? [])
+    .map((source) => source.trim())
+    .filter(Boolean);
+  if (!evidenceSources.length) {
+    warnings.push("verified_without_evidence_sources");
+    return;
+  }
   const hasConcreteEvidence = evidenceSources.some((source) =>
     CONCRETE_EVIDENCE_SOURCE_PATTERN.test(source),
   );
-  if (!hasConcreteEvidence) warnings.push("verified_without_evidence_sources");
+  if (!hasConcreteEvidence) warnings.push("verified_without_concrete_evidence_sources");
 }
 
 export function parsePeerStatus(text: string): {

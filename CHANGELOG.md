@@ -7,6 +7,33 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.02.04] — 2026-06-05
+
+**Patch — truthfulness preflight auditability.** This release tightens the
+guardrails added after the v4.2.x session audit so unsupported runtime/history
+claims fail with clearer classes and can be retested after evidence is attached.
+
+### Added
+
+- Added `session_truthfulness_preflight_check`, a read-only MCP tool that
+  re-runs the local truthfulness preflight for an existing session without
+  calling providers.
+- Added `issue_classes` to truthfulness preflight results and abort events for
+  `runtime_contradiction`, `unsupported_current_state_claim`,
+  `unsupported_historical_claim`, and `fabrication_pattern`.
+- Added durable `failed_attempts` metadata for `run_until_unanimous` preflight
+  aborts that happen before a peer-review round is appended.
+
+### Changed
+
+- Re-runs truthfulness preflight on lead-generated initial drafts and revisions
+  before dispatching reviewer peer calls, blocking unsupported generated
+  runtime claims before they propagate through the panel.
+- Parser diagnostics now distinguish empty verified `evidence_sources` from
+  non-empty but generic evidence sources, and recognize attached-evidence
+  labels, `evidence/` paths, log lines, line labels, and command/test-output
+  citations as concrete evidence markers.
+
 ## [v04.02.03] — 2026-06-03
 
 **Patch — Gemini replacement pin and rate-card refresh.** This release follows

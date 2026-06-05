@@ -742,6 +742,7 @@ export interface TruthfulnessRuntimeFacts {
 export interface TruthfulnessPreflightResult {
   pass: boolean;
   reason: string;
+  issue_classes: TruthfulnessIssueClass[];
   current_state_claim_matched: boolean;
   historical_state_claim_matched: boolean;
   contradictions: string[];
@@ -752,6 +753,12 @@ export interface TruthfulnessPreflightResult {
   runtime_facts_available: boolean;
 }
 
+export type TruthfulnessIssueClass =
+  | "runtime_contradiction"
+  | "unsupported_current_state_claim"
+  | "unsupported_historical_claim"
+  | "fabrication_pattern";
+
 const VERSION_TOKEN_PATTERN = /\bv?(\d+\.\d+\.\d+(?:[-._a-z0-9]+)?)\b/gi;
 const ISO_DATE_TOKEN_PATTERN = /\b20\d{2}-\d{2}-\d{2}\b/g;
 const CURRENT_STATE_CLAIM_PATTERN =
@@ -759,7 +766,16 @@ const CURRENT_STATE_CLAIM_PATTERN =
 const HISTORICAL_RUNTIME_TIMING_PATTERN =
   /\b(?:when\s+(?:the\s+)?(?:workflow|run|audit|session)\s+began|at\s+(?:workflow|run|audit|session)\s+start|between\s+r\d+\s+and\s+r\d+|bump(?:ed)?|started\s+on|was\s+running|quando\s+(?:o\s+)?(?:workflow|run|auditoria|sess[aã]o)\s+come[cç]ou|no\s+in[ií]cio\s+(?:do|da)\s+(?:workflow|run|auditoria|sess[aã]o)|estava\s+rodando)\b/i;
 const TRUTHFULNESS_SOURCE_MARKER_PATTERN =
-  /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events|provider docs|provider api)\b|https?:\/\/|\b[\w./-]+\.\w+:\d+\b|```/i;
+  /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events|provider docs|provider api)\b|https?:\/\/|\b[\w./-]+\.\w+:\d+\b|\bevidence[\\/][\w./-]+\b|\bAttachment:\s*\S|\bL\d{2,}\b|```/i;
+const FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN =
+  /\b(?:triggered|dispatched|started|ran|launched|executei|rodei|disparei)\s+(?:the\s+|o\s+|a\s+)?(?:workflow|dispatch|deployment|deploy|ci|github actions?|pipeline)\b|\boperator authorization\b|\bautorizad[ao]\s+pelo\s+operador\b|\bconfirmed\s+(?:the\s+)?(?:remote\s+)?deployment\s+(?:succeeded|success)\b|\bconfirmei\s+(?:que\s+)?(?:o\s+)?deploy\b/i;
+
+function addIssueClass(
+  issueClasses: TruthfulnessIssueClass[],
+  issueClass: TruthfulnessIssueClass,
+): void {
+  if (!issueClasses.includes(issueClass)) issueClasses.push(issueClass);
+}
 
 function normalizeVersionToken(value: string): string {
   return value.trim().replace(/^v/i, "").toLowerCase();
@@ -803,10 +819,22 @@ export function truthfulnessPreflight(params: {
   const runtimeFactsAvailable = Boolean(runtimeVersion || releaseDate);
   const contradictions: string[] = [];
   const unsupportedClaims: string[] = [];
+  const issueClasses: TruthfulnessIssueClass[] = [];
   let currentStateClaimMatched = false;
   let historicalStateClaimMatched = false;
 
   for (const line of lines) {
+    if (
+      FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line) &&
+      !structuredEvidenceSupplied &&
+      !params.attachmentsPresent &&
+      !TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(line)
+    ) {
+      addIssueClass(issueClasses, "fabrication_pattern");
+      unsupportedClaims.push(
+        `fabrication-prone operational claim lacks provenance evidence: ${line.slice(0, 240)}`,
+      );
+    }
     const versions = uniqueMatches(VERSION_TOKEN_PATTERN, line);
     const dates = uniqueMatches(ISO_DATE_TOKEN_PATTERN, line);
     if (!versions.length && !dates.length) continue;
@@ -817,6 +845,7 @@ export function truthfulnessPreflight(params: {
         const expected = normalizeVersionToken(runtimeVersion);
         for (const version of versions) {
           if (normalizeVersionToken(version) !== expected) {
+            addIssueClass(issueClasses, "runtime_contradiction");
             contradictions.push(
               `current-state version claim ${version} contradicts runtime_version ${runtimeVersion}`,
             );
@@ -826,6 +855,7 @@ export function truthfulnessPreflight(params: {
       if (releaseDate) {
         for (const date of dates) {
           if (date !== releaseDate) {
+            addIssueClass(issueClasses, "runtime_contradiction");
             contradictions.push(
               `current-state release_date claim ${date} contradicts runtime release_date ${releaseDate}`,
             );
@@ -833,6 +863,7 @@ export function truthfulnessPreflight(params: {
         }
       }
       if (!runtimeFactsAvailable && !sourceMarkerFound && !params.attachmentsPresent) {
+        addIssueClass(issueClasses, "unsupported_current_state_claim");
         unsupportedClaims.push(
           `current-state claim lacks runtime facts or source marker: ${line.slice(0, 240)}`,
         );
@@ -842,6 +873,7 @@ export function truthfulnessPreflight(params: {
     if (HISTORICAL_RUNTIME_TIMING_PATTERN.test(line)) {
       historicalStateClaimMatched = true;
       if (!structuredEvidenceSupplied && !params.attachmentsPresent) {
+        addIssueClass(issueClasses, "unsupported_historical_claim");
         unsupportedClaims.push(
           `historical runtime timing claim lacks snapshot evidence: ${line.slice(0, 240)}`,
         );
@@ -850,13 +882,20 @@ export function truthfulnessPreflight(params: {
   }
 
   const pass = contradictions.length === 0 && unsupportedClaims.length === 0;
+  const detail = [...contradictions, ...unsupportedClaims].join("; ");
+  const evidenceState =
+    `attachments_present=${params.attachmentsPresent}; ` +
+    `structured_evidence_supplied=${structuredEvidenceSupplied}`;
+  const remediation =
+    "attach raw snapshot evidence with session_attach_evidence or pass a structured evidence field, then retry the truthfulness preflight";
   return {
     pass,
     reason: pass
       ? currentStateClaimMatched || historicalStateClaimMatched
         ? "high-risk runtime truthfulness claims are consistent with runtime facts or backed by evidence"
         : "no high-risk runtime truthfulness claim detected"
-      : [...contradictions, ...unsupportedClaims].join("; "),
+      : `${detail}. ${evidenceState}. Remediation: ${remediation}.`,
+    issue_classes: issueClasses,
     current_state_claim_matched: currentStateClaimMatched,
     historical_state_claim_matched: historicalStateClaimMatched,
     contradictions,
@@ -1258,6 +1297,7 @@ function truthfulnessPreflightFailure(
   provider: string,
   model: string,
   message: string,
+  issueClasses: TruthfulnessIssueClass[] = [],
 ): PeerFailure {
   return {
     peer,
@@ -1268,6 +1308,7 @@ function truthfulnessPreflightFailure(
     retryable: false,
     attempts: 0,
     latency_ms: 0,
+    preflight_issue_classes: issueClasses,
   };
 }
 
@@ -2589,7 +2630,13 @@ export class CrossReviewOrchestrator {
           `# Cross Review - Truthfulness Preflight Block\n\n${message}`,
         );
         const rejected = selectAdapters(adapters, selectedPeers).map((adapter) =>
-          truthfulnessPreflightFailure(adapter.id, adapter.provider, adapter.model, message),
+          truthfulnessPreflightFailure(
+            adapter.id,
+            adapter.provider,
+            adapter.model,
+            message,
+            truthfulness.issue_classes,
+          ),
         );
         for (const failure of rejected) {
           await this.store.savePeerFailure(session.session_id, roundNumber, failure);
@@ -2621,6 +2668,8 @@ export class CrossReviewOrchestrator {
             historical_state_claim_matched: truthfulness.historical_state_claim_matched,
             contradictions: truthfulness.contradictions,
             unsupported_claims: truthfulness.unsupported_claims,
+            issue_classes: truthfulness.issue_classes,
+            structured_evidence_supplied: truthfulness.structured_evidence_supplied,
             source_marker_found: truthfulness.source_marker_found,
             runtime_facts_available: truthfulness.runtime_facts_available,
             attachments_present: truthfulness.attachments_present,
@@ -4003,17 +4052,35 @@ export class CrossReviewOrchestrator {
         runtimeFacts: runtimeTruthFacts(this.config),
       });
       if (!truthfulness.pass) {
+        const message = `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`;
+        const rejected = selectAdapters(
+          adapters,
+          reviewerPeers.length ? reviewerPeers : selectedPeers,
+        ).map((adapter) =>
+          truthfulnessPreflightFailure(
+            adapter.id,
+            adapter.provider,
+            adapter.model,
+            message,
+            truthfulness.issue_classes,
+          ),
+        );
+        for (const failure of rejected) {
+          await this.store.savePeerFailure(session.session_id, 0, failure);
+        }
+        await this.store.recordPreflightFailure(session.session_id, rejected);
         await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
         this.emit({
           type: "session.truthfulness_preflight_failed",
           session_id: session.session_id,
-          message: `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`,
+          message,
           data: {
             reason: truthfulness.reason,
             current_state_claim_matched: truthfulness.current_state_claim_matched,
             historical_state_claim_matched: truthfulness.historical_state_claim_matched,
             contradictions: truthfulness.contradictions,
             unsupported_claims: truthfulness.unsupported_claims,
+            issue_classes: truthfulness.issue_classes,
             structured_evidence_supplied: truthfulness.structured_evidence_supplied,
             source_marker_found: truthfulness.source_marker_found,
             runtime_facts_available: truthfulness.runtime_facts_available,
@@ -4135,6 +4202,67 @@ export class CrossReviewOrchestrator {
         },
       );
       await this.store.saveGeneration(session.session_id, 0, generation, "initial-draft");
+      if (this.config.truthfulness_preflight_enabled) {
+        const attachmentsPresent =
+          this.store.readEvidenceAttachments(
+            session.session_id,
+            this.config.prompt.max_attached_evidence_chars,
+          ).length > 0;
+        const truthfulness = truthfulnessPreflight({
+          task: input.task,
+          initialDraft: generation.text,
+          structuredEvidence: input.evidence,
+          attachmentsPresent,
+          runtimeFacts: runtimeTruthFacts(this.config),
+        });
+        if (!truthfulness.pass) {
+          const message = `Truthfulness preflight failed on lead-generated initial draft before reviewer peer calls: ${truthfulness.reason}`;
+          const rejected = selectAdapters(
+            adapters,
+            reviewerPeers.length ? reviewerPeers : selectedPeers,
+          ).map((adapter) =>
+            truthfulnessPreflightFailure(
+              adapter.id,
+              adapter.provider,
+              adapter.model,
+              message,
+              truthfulness.issue_classes,
+            ),
+          );
+          for (const failure of rejected) {
+            await this.store.savePeerFailure(session.session_id, 0, failure);
+          }
+          await this.store.recordPreflightFailure(session.session_id, rejected);
+          await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
+          this.emit({
+            type: "session.truthfulness_preflight_failed",
+            session_id: session.session_id,
+            round: 0,
+            peer: leadPeer,
+            message,
+            data: {
+              reason: truthfulness.reason,
+              current_state_claim_matched: truthfulness.current_state_claim_matched,
+              historical_state_claim_matched: truthfulness.historical_state_claim_matched,
+              contradictions: truthfulness.contradictions,
+              unsupported_claims: truthfulness.unsupported_claims,
+              issue_classes: truthfulness.issue_classes,
+              structured_evidence_supplied: truthfulness.structured_evidence_supplied,
+              source_marker_found: truthfulness.source_marker_found,
+              runtime_facts_available: truthfulness.runtime_facts_available,
+              attachments_present: truthfulness.attachments_present,
+              lead_peer: leadPeer,
+              round_kind: "initial-draft",
+            },
+          });
+          return {
+            session: this.store.read(session.session_id),
+            final_text: undefined,
+            converged: false,
+            rounds: 0,
+          };
+        }
+      }
       // v2.13.0: drift detection on initial-draft path. There is no
       // prior draft to fall back to here, so a drifted initial generation
       // aborts immediately. Only fires in `ship` mode — in `review` mode
@@ -4282,6 +4410,71 @@ export class CrossReviewOrchestrator {
           },
         );
         await this.store.saveGeneration(session.session_id, round, generation, "revision");
+        if (this.config.truthfulness_preflight_enabled) {
+          const attachmentsPresent =
+            this.store.readEvidenceAttachments(
+              session.session_id,
+              this.config.prompt.max_attached_evidence_chars,
+            ).length > 0;
+          const truthfulness = truthfulnessPreflight({
+            task: input.task,
+            initialDraft: generation.text,
+            structuredEvidence: input.evidence,
+            attachmentsPresent,
+            runtimeFacts: runtimeTruthFacts(this.config),
+          });
+          if (!truthfulness.pass) {
+            const message = `Truthfulness preflight failed on lead-generated revision before reviewer peer calls: ${truthfulness.reason}`;
+            const rejected = selectAdapters(
+              adapters,
+              reviewerPeers.length ? reviewerPeers : selectedPeers,
+            ).map((adapter) =>
+              truthfulnessPreflightFailure(
+                adapter.id,
+                adapter.provider,
+                adapter.model,
+                message,
+                truthfulness.issue_classes,
+              ),
+            );
+            for (const failure of rejected) {
+              await this.store.savePeerFailure(session.session_id, round + 1, failure);
+            }
+            await this.store.recordPreflightFailure(session.session_id, rejected, round + 1);
+            await this.store.finalize(
+              session.session_id,
+              "aborted",
+              "needs_truthfulness_preflight",
+            );
+            this.emit({
+              type: "session.truthfulness_preflight_failed",
+              session_id: session.session_id,
+              round: round + 1,
+              peer: leadPeer,
+              message,
+              data: {
+                reason: truthfulness.reason,
+                current_state_claim_matched: truthfulness.current_state_claim_matched,
+                historical_state_claim_matched: truthfulness.historical_state_claim_matched,
+                contradictions: truthfulness.contradictions,
+                unsupported_claims: truthfulness.unsupported_claims,
+                issue_classes: truthfulness.issue_classes,
+                structured_evidence_supplied: truthfulness.structured_evidence_supplied,
+                source_marker_found: truthfulness.source_marker_found,
+                runtime_facts_available: truthfulness.runtime_facts_available,
+                attachments_present: truthfulness.attachments_present,
+                lead_peer: leadPeer,
+                round_kind: "revision",
+              },
+            });
+            return {
+              session: this.store.read(session.session_id),
+              final_text: draft,
+              converged: false,
+              rounds: round,
+            };
+          }
+        }
         // v2.23.0: empty-text degeneracy detection. Provider-side parser
         // diagnostics (e.g. Anthropic extended-thinking returning only
         // `thinking`/`redacted_thinking` blocks with no final `text` block,

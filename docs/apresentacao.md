@@ -172,6 +172,13 @@ linha). Nesse caso, a sessão é encerrada localmente com
 é deliberadamente conservadora: um plano de trabalho legítimo, sem diff,
 passa normalmente.
 
+Há também uma **pré-checagem de veracidade operacional** para alegações de
+runtime, versão, data, histórico de sessão, workflow, deploy ou autorização.
+Quando uma dessas alegações contradiz o runtime carregado ou aparece sem fonte
+verificável, a sessão é bloqueada com `needs_truthfulness_preflight`; desde
+`v04.02.04`, o operador pode anexar evidência e reexecutar essa checagem local
+com `session_truthfulness_preflight_check`, sem chamar provedores.
+
 ---
 
 ## 3. Características
@@ -325,9 +332,9 @@ sessão. Os modos de cache observados são: `auto` (OpenAI, DeepSeek, Grok),
 cuja API Sonar não expõe superfície de cache). O cache pode ser desativado
 globalmente com `CROSS_REVIEW_DISABLE_CACHE=true`.
 
-### 4.8. As 28 ferramentas MCP
+### 4.8. As 29 ferramentas MCP
 
-O servidor expõe 28 ferramentas. Agrupadas por finalidade:
+O servidor expõe 29 ferramentas. Agrupadas por finalidade:
 
 **Descoberta e diagnóstico**
 
@@ -360,6 +367,8 @@ O servidor expõe 28 ferramentas. Agrupadas por finalidade:
 - `session_doctor` — diagnóstico e modo de reparo opcional.
 - `session_report` — gera/lê o relatório da sessão.
 - `session_check_convergence` — verifica a convergência.
+- `session_truthfulness_preflight_check` — reexecuta a pré-checagem de
+  veracidade de uma sessão sem chamar provedores.
 
 **Evidência**
 
@@ -547,7 +556,8 @@ SemVer. Marcos principais:
 | `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais. |
 | `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                        |
 | `v04.02.02`      | Refresh de providers, pins e rate cards.                                                                         |
-| `v04.02.03`      | Versão atual (pacote npm `4.2.3`), com pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                 |
+| `v04.02.03`      | Pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                                                        |
+| `v04.02.04`      | Versão atual (pacote npm `4.2.4`), com truthfulness preflight mais auditável e ferramenta de reteste local.      |
 
 > Nota sobre o nome: até a versão 3.7.5, o projeto foi publicado como
 > `@lcv-ideas-software/cross-review-v2`. A v4.0.0 é a primeira versão sob o

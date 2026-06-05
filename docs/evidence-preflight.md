@@ -1,4 +1,4 @@
-# Evidence Preflight (v3.5.0)
+# Evidence and Truthfulness Preflight
 
 `run_until_unanimous` and `session_start_unanimous` run a **pure textual
 evidence preflight** before any paid peer call. It catches the
@@ -86,3 +86,35 @@ prose without inline markers.
 
 Re-submit with evidence embedded inline, with the `evidence` field
 populated, or with evidence attached via `session_attach_evidence`.
+
+## Truthfulness preflight (v4.2.x)
+
+`run_until_unanimous`, `session_start_unanimous`, and `ask_peers` also run a
+local truthfulness preflight for high-risk runtime claims. It looks for current
+runtime/version/date claims, historical runtime timing claims, and
+fabrication-prone workflow/deployment/authorization claims before paid reviewer
+calls.
+
+When it trips, the session is finalized with
+`reason = "needs_truthfulness_preflight"` and the event
+`session.truthfulness_preflight_failed` includes:
+
+- `issue_classes` — one or more of `runtime_contradiction`,
+  `unsupported_current_state_claim`, `unsupported_historical_claim`, or
+  `fabrication_pattern`;
+- `attachments_present` and `structured_evidence_supplied`, so the operator can
+  see whether attached evidence was visible to the runtime;
+- `contradictions` and `unsupported_claims` with the concrete text that blocked
+  the session.
+
+From v4.2.4, preflight aborts that happen before a peer round is appended are
+also visible in `meta.failed_attempts` with `failure_class =
+"truthfulness_preflight"` and `attempts = 0`.
+
+## Retesting after evidence
+
+After attaching evidence with `session_attach_evidence`, call
+`session_truthfulness_preflight_check` to re-run the local truthfulness preflight
+without provider calls. The tool uses the session task plus either the supplied
+`draft` argument or the latest persisted draft, and returns the same
+`issue_classes`, evidence visibility flags, and unsupported-claim diagnostics.

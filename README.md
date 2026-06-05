@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.02.03** (npm package `4.2.3`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.02.04** (npm package `4.2.4`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.02.04`**      | Patch — harden truthfulness preflight auditability, add a read-only preflight retest tool, and reduce false parser warnings for attached/log evidence.                                                             |
 | **`v04.02.03`**      | Patch — promote the Gemini canonical default to `gemini-3.1-pro-preview` and refresh the active local Gemini rate card.                                                                                            |
 | **`v04.02.02`**      | Patch — provider-doc refresh, Perplexity probe repair, current model pins, and rate-card guidance.                                                                                                                 |
 | **`v04.02.01`**      | Patch — publish the workspace hard-gate cleanup as a package release.                                                                                                                                              |
@@ -210,6 +211,7 @@ these environment variables before running real sessions (example):
 - `session_doctor`
 - `session_report`
 - `session_check_convergence`
+- `session_truthfulness_preflight_check`
 - `session_attach_evidence`
 - `session_evidence_checklist_update`
 - `session_evidence_judge_pass`

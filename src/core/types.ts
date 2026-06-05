@@ -301,6 +301,7 @@ export interface PeerFailure {
   retry_after_ms?: number | undefined;
   attempts: number;
   latency_ms: number;
+  preflight_issue_classes?: string[] | undefined;
   // v2.15.0 (item 5): when a provider 4xx error message cites a named
   // parameter (e.g. "Argument not supported on this model: reasoning.effort"),
   // the classifier surfaces a `consult_docs_then_revise` hint pointing
