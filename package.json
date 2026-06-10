@@ -42,7 +42,7 @@
     "check": "npm --registry=https://registry.npmjs.org run format:check && npm --registry=https://registry.npmjs.org run lint && npm --registry=https://registry.npmjs.org run biome && npm --registry=https://registry.npmjs.org run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.102.0",
+    "@anthropic-ai/sdk": "^0.104.1",
     "@google/genai": "^2.5.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "openai": "^6.38.0",
