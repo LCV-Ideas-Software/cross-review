@@ -50,6 +50,30 @@ function extractRetryAfterMs(error: unknown): number | undefined {
   return undefined;
 }
 
+function numericStatus(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string" && /^\d{3}$/.test(value.trim())) return Number(value.trim());
+  return undefined;
+}
+
+function extractHttpStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const errorObj = error as Record<string, unknown>;
+  for (const key of ["status", "statusCode", "code"]) {
+    const status = numericStatus(errorObj[key]);
+    if (status !== undefined) return status;
+  }
+  const response = errorObj.response;
+  if (response && typeof response === "object") {
+    const responseObj = response as Record<string, unknown>;
+    for (const key of ["status", "statusCode", "code"]) {
+      const status = numericStatus(responseObj[key]);
+      if (status !== undefined) return status;
+    }
+  }
+  return undefined;
+}
+
 // v2.4.0 / audit closure (P4.17): treat upstream gateway errors (502 Bad
 // Gateway, 503 Service Unavailable, 504 Gateway Timeout) as retryable.
 // Pre-v2.4.0 these collapsed into the generic `provider_error` class and
@@ -115,7 +139,9 @@ export function classifyProviderError(
   started: number,
 ): PeerFailure {
   const message = safeErrorMessage(error);
+  const httpStatus = extractHttpStatus(error);
   const contextual429 =
+    httpStatus === 429 ||
     /\b(?:http|status|statuscode|code|error)\s*[:=]?\s*["'(]?\s*429\b/i.test(message) ||
     /\b429\s+(?:too many requests|rate[-_\s]?limit|quota|retry-after)\b/i.test(message);
   const rateLimited =
@@ -124,6 +150,8 @@ export function classifyProviderError(
       message,
     );
   const auth =
+    httpStatus === 401 ||
+    httpStatus === 403 ||
     /\b(?:401|403|unauthorized|forbidden|invalid api key|missing api key|expired api key|authentication failed|authentication required)\b/i.test(
       message,
     );
@@ -135,7 +163,9 @@ export function classifyProviderError(
     );
   const timeout = /\b(?:timeout|aborted|aborterror)\b/i.test(message);
   const network = /\b(?:econnreset|enotfound|etimedout|network|fetch failed)\b/i.test(message);
-  const gateway5xx = GATEWAY_5XX_RE.test(message);
+  const gateway5xx =
+    (httpStatus !== undefined && httpStatus >= 500 && httpStatus <= 599) ||
+    GATEWAY_5XX_RE.test(message);
   const providerOverloaded = /\b(?:overloaded_error|overloaded)\b/i.test(message);
 
   const failureClass = auth
@@ -165,7 +195,11 @@ export function classifyProviderError(
     const prefixMatch = PARAM_REJECTION_PREFIX_RE.exec(message);
     const suffixMatch = prefixMatch ? null : PARAM_REJECTION_SUFFIX_RE.exec(message);
     const paramMatch = prefixMatch ?? suffixMatch;
-    if (paramMatch && (STATUS_4XX_RE.test(message) || /\bnot\s+supported\b/i.test(message))) {
+    const structured4xx = httpStatus !== undefined && httpStatus >= 400 && httpStatus <= 499;
+    if (
+      paramMatch &&
+      (structured4xx || STATUS_4XX_RE.test(message) || /\bnot\s+supported\b/i.test(message))
+    ) {
       const parameter = paramMatch[1];
       if (parameter) {
         const providerKey = provider.toLowerCase();

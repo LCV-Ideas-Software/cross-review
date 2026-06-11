@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.03.02** (npm package `4.3.2`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.03.03** (npm package `4.3.3`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.03.03`**      | Patch — add forensic diagnostics for append/event and identity failures, flush pending events on shutdown signals, retry structured provider 5xx errors, and refresh official AI provider SDKs.                    |
 | **`v04.03.02`**      | Patch — harden persistence redaction, finalized-session mutation guards, side-effect identity gates, caller-token rotation output, and Windows registry config fallback.                                           |
 | **`v04.03.01`**      | Patch — tighten skip-peer classification so non-retryable provider errors block, while Anthropic overload events remain retryable and better surfaced in skip diagnostics.                                         |
 | **`v04.03.00`**      | Minor — P1/P2/P3 follow-up with unresolved-evidence close-out visibility, an offline fixture eval harness, and a read-only peer reliability report.                                                                |

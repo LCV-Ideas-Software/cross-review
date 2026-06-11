@@ -7,6 +7,38 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.03] — 2026-06-11
+
+**Patch — runtime observability and provider SDK refresh.** This release closes
+the next low-blast-radius items from the v4.3.1/v4.3.2 audit follow-up: silent
+event persistence failures, missing identity-forgery forensic events,
+shutdown-time event flush, and structured 5xx retry classification.
+
+### Fixed
+
+- `appendEvent()` now emits a structured, redacted stderr diagnostic when durable
+  event persistence fails, while preserving the non-throwing MCP/provider call
+  path.
+- Identity-forgery rejections now emit `session.identity_forgery_blocked`
+  runtime events before rethrowing, giving operators a forensic trail for failed
+  caller identity checks.
+- The MCP server now flushes pending event writes on `SIGTERM` and `SIGINT`
+  with a bounded timeout.
+- Provider errors with structured HTTP status fields such as `status: 500` are
+  now classified as retryable 5xx failures even when the SDK error message does
+  not include the numeric status text. Structured `401`/`403` and `429` are also
+  recognized directly.
+
+### Changed
+
+- Refreshed official provider SDKs: `openai` `^6.42.0`,
+  `@anthropic-ai/sdk` `^0.104.1`, and `@google/genai` `^2.8.0`.
+- Evaluated newly surfaced SDK capabilities for future use: OpenAI moderation
+  fields on Responses/Chat Completions, Anthropic Managed Agents/client
+  middleware and streaming fixes, and Google GenAI caches/MCP tool interop/
+  Interactions API. No new provider feature is enabled by default in this patch;
+  the current runtime behavior remains intentionally stable.
+
 ## [v04.03.02] — 2026-06-11
 
 **Patch — persistence and identity hardening.** This release closes the

@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ---------------------------------- |
 | Nome                       | `cross-review`                     |
 | Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.3.2`                            |
+| Versão runtime             | `4.3.3`                            |
 | Release date runtime       | `2026-06-11`                       |
 | Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.3.2`                            |
+| Versão npm publicada       | `4.3.3`                            |
 | Transporte MCP             | `stdio`                            |
 | Execução CLI por peers     | desativada                         |
 | Modo padrão                | chamadas reais de API              |
@@ -466,10 +466,10 @@ Dependências diretas de runtime declaradas no `package.json` atual:
 
 | Pacote                      | Versão declarada | Uso                               |
 | --------------------------- | ---------------- | --------------------------------- |
-| `@anthropic-ai/sdk`         | `^0.97.1`        | Cliente Anthropic/Claude.         |
-| `@google/genai`             | `^2.5.0`         | Cliente Google Gemini.            |
+| `@anthropic-ai/sdk`         | `^0.104.1`       | Cliente Anthropic/Claude.         |
+| `@google/genai`             | `^2.8.0`         | Cliente Google Gemini.            |
 | `@modelcontextprotocol/sdk` | `^1.29.0`        | Implementação MCP.                |
-| `openai`                    | `^6.38.0`        | OpenAI e APIs compatíveis.        |
+| `openai`                    | `^6.42.0`        | OpenAI e APIs compatíveis.        |
 | `pino`                      | `^10.3.1`        | Logging estruturado.              |
 | `proper-lockfile`           | `^4.1.2`         | Locking de sessão multi-processo. |
 | `zod`                       | `^4.4.3`         | Validação de schemas.             |
@@ -716,6 +716,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                         |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.03.03`      | 2026-06-11    | Adiciona diagnósticos forenses para append/identity, flush em sinais, retry de 5xx estruturado e refresh de SDKs oficiais.       |
 | `v04.03.02`      | 2026-06-11    | Endurece redaction de persistência, guards de sessão finalizada, identity gates e rotação de tokens sem plaintext no payload.    |
 | `v04.03.01`      | 2026-06-05    | Restringe skip por `provider_error` a falhas retryable e melhora diagnóstico de overload do Anthropic.                           |
 | `v04.03.00`      | 2026-06-05    | Adiciona disposition de evidência pendente, eval offline por fixtures e relatório agregado de confiabilidade por peer.           |

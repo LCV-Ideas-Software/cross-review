@@ -727,6 +727,22 @@ assert.equal(
     true,
     "v4.3.1 / provider-errors: Anthropic overloaded_error without HTTP status text must still be retryable",
   );
+  const structured500 = new Error("Internal Server Error") as Error & { status?: number };
+  structured500.status = 500;
+  const openAiStructured500 = classifyProviderError(
+    "codex",
+    "openai",
+    "gpt-5",
+    structured500,
+    1,
+    Date.now(),
+  );
+  assert.equal(openAiStructured500.failure_class, "provider_error");
+  assert.equal(
+    openAiStructured500.retryable,
+    true,
+    "v4.3.3 / provider-errors: structured 5xx status without numeric message text must be retryable",
+  );
   for (const fc of [
     "schema",
     "unparseable_after_recovery",
@@ -2336,9 +2352,34 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     session_id: seqId,
     message: "should-fail",
   });
+  const realConsoleError = console.error;
+  const appendEventErrors: string[] = [];
+  console.error = ((...args: unknown[]) => {
+    appendEventErrors.push(args.map(String).join(" "));
+  }) as typeof console.error;
+  fsModule.default.appendFileSync = ((..._args: unknown[]) => {
+    throw new Error("simulated EACCES with sk-test-APPENDFAILSECRETAAAAAA");
+  }) as typeof fsModule.default.appendFileSync;
+  try {
+    await seqStoreA.appendEvent({
+      type: "session.heartbeat",
+      session_id: seqId,
+      message: "should-log-failure",
+    });
+  } finally {
+    fsModule.default.appendFileSync = realAppend;
+    console.error = realConsoleError;
+  }
+  assert.ok(
+    appendEventErrors.some((line) => /append_event_persist_failed/.test(line)),
+    "v4.3.3 / observability: appendEvent persistence failures must emit a structured stderr diagnostic.",
+  );
+  assert.ok(
+    appendEventErrors.every((line) => !/APPENDFAILSECRET/.test(line)),
+    "v4.3.3 / observability: appendEvent persistence failure diagnostics must be redacted.",
+  );
   // Restore fs and try again — the intended seq (2) must still be
   // available, not skipped to 3.
-  fsModule.default.appendFileSync = realAppend;
   await seqStoreA.appendEvent({
     type: "session.heartbeat",
     session_id: seqId,
@@ -6299,6 +6340,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.match(forgeryMessage, /codex/);
   assert.match(forgeryMessage, /claude/);
 
+  const serverSrcIdentity = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  assert.ok(
+    /identity_forgery_blocked/.test(serverSrcIdentity) &&
+      /session\.identity_forgery_blocked/.test(serverSrcIdentity),
+    "v4.3.3 / identity: identity forgery throws must emit a forensic RuntimeEvent.",
+  );
+
   // (3) Legitimate override (unknown clientInfo).
   const override = verifyCallerIdentity("claude", { name: "headless-orchestrator-v9" });
   assert.equal(override.identity_verified, false);
@@ -9772,6 +9823,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v4.3.2 / caller_tokens: tool description must not instruct hosts to expose copied plaintext tokens via MCP response.",
   );
   console.log("[smoke] regenerate_caller_tokens_no_plaintext_response_test: PASS");
+}
+
+{
+  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  assert.ok(
+    /process\.on\("SIGTERM"/.test(serverSrc) && /process\.on\("SIGINT"/.test(serverSrc),
+    "v4.3.3 / shutdown: server main must install SIGTERM and SIGINT handlers.",
+  );
+  assert.ok(
+    /flushPendingEvents\(\)/.test(serverSrc) && /setTimeout\(/.test(serverSrc),
+    "v4.3.3 / shutdown: signal handlers must flush pending events with a bounded timeout.",
+  );
+  console.log("[smoke] signal_flush_handlers_test: PASS");
 }
 
 {

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import lockfile from "proper-lockfile";
-import { redact, redactJsonValue } from "../security/redact.js";
+import { redact, redactJsonValue, safeErrorMessage } from "../security/redact.js";
 import { mergeCost, mergeUsage } from "./cost.js";
 import type {
   AppConfig,
@@ -535,8 +535,16 @@ export class SessionStore {
           // reuses this seq number.
           this.appendEventRecord(event);
         });
-      } catch {
+      } catch (error) {
         // Event persistence must never break provider calls or MCP responses.
+        console.error(
+          JSON.stringify({
+            type: "append_event_persist_failed",
+            session_id: event.session_id,
+            event_type: event.type,
+            message: safeErrorMessage(error),
+          }),
+        );
       }
     })();
     this.pendingEventWrites.add(write);
@@ -913,7 +921,7 @@ export class SessionStore {
       // upstream instead of corrupting the meta.
       if (outcome === "converged" && meta.rounds.length > 0) {
         const latest = meta.rounds[meta.rounds.length - 1];
-        if (!latest || latest.convergence?.converged !== true) {
+        if (latest?.convergence?.converged !== true) {
           const err = new Error(
             `session_finalize_outcome_mismatch: cannot finalize as "converged" — latest round (round=${latest?.round ?? "undefined"}) has convergence.converged=${latest?.convergence?.converged ?? "undefined"}, reason="${latest?.convergence?.reason ?? "n/a"}"`,
           );

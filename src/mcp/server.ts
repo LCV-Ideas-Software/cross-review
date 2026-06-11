@@ -541,6 +541,48 @@ function createRuntime() {
 
 type Runtime = ReturnType<typeof createRuntime>;
 
+function recordIdentityForgeryBlocked(
+  runtime: Runtime,
+  site: string,
+  caller: PeerId | "operator",
+  clientInfo: ClientInfo,
+  error: unknown,
+  session_id?: string,
+): void {
+  runtime.emit({
+    type: "session.identity_forgery_blocked",
+    session_id,
+    message: "identity_forgery_blocked: caller identity verification failed.",
+    data: {
+      site,
+      caller,
+      client_info_name: clientInfo?.name ?? null,
+      error: safeErrorMessage(error),
+      identity_metadata: getParentProcessSnapshot(),
+    },
+  });
+}
+
+function installSignalFlushHandlers(runtime: Runtime): void {
+  let shuttingDown = false;
+  const flushAndExit = (signal: "SIGTERM" | "SIGINT") => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const flush = runtime.orchestrator.store.flushPendingEvents();
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+    void Promise.race([flush, timeout])
+      .catch((error) => {
+        console.error(`[cross-review] ${signal} flush error: ${safeErrorMessage(error)}`);
+      })
+      .finally(() => {
+        console.error(`[cross-review] ${signal} received; pending event flush attempted.`);
+        process.exit(0);
+      });
+  };
+  process.on("SIGTERM", () => flushAndExit("SIGTERM"));
+  process.on("SIGINT", () => flushAndExit("SIGINT"));
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -871,7 +913,18 @@ export async function main(): Promise<void> {
     },
     async ({ task, review_focus, caller, response_format }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyCallerIdentity(caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "session_init",
+          caller,
+          server.server.getClientVersion(),
+          error,
+        );
+        throw error;
+      }
       const meta = await runtime.orchestrator.initSession(task, caller, review_focus);
       return response_format === "markdown"
         ? textResult(sessionInitMarkdown(meta), "markdown")
@@ -973,7 +1026,19 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "ask_peers",
+          input.caller,
+          server.server.getClientVersion(),
+          error,
+          input.session_id,
+        );
+        throw error;
+      }
       // v3.3.0: caller peer-selection lock — silently strips
       // caller-supplied `peers` (and, for peer callers, `lead_peer`) and
       // emits an audit event for the operator. See lockCallerPeerSelection
@@ -1028,7 +1093,19 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "session_start_round",
+          input.caller,
+          server.server.getClientVersion(),
+          error,
+          input.session_id,
+        );
+        throw error;
+      }
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_round",
@@ -1126,7 +1203,18 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "run_until_unanimous",
+          input.caller,
+          server.server.getClientVersion(),
+          error,
+        );
+        throw error;
+      }
       // v3.3.0: caller peer-selection lock — peers panel always full
       // enabled set; lead_peer ignored for peer callers (forced lottery).
       const locked = lockCallerPeerSelection(input, {
@@ -1199,7 +1287,18 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(input.caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "session_start_unanimous",
+          input.caller,
+          server.server.getClientVersion(),
+          error,
+        );
+        throw error;
+      }
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_unanimous",
@@ -1258,7 +1357,19 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, job_id, reason, caller, response_format }) => {
-      verifyCallerIdentity(caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "session_cancel_job",
+          caller,
+          server.server.getClientVersion(),
+          error,
+          session_id,
+        );
+        throw error;
+      }
       const jobs = [...runtime.jobs.values()].filter(
         (job) =>
           job.session_id === session_id &&
@@ -1907,12 +2018,36 @@ export async function main(): Promise<void> {
       new_caller,
       response_format,
     }) => {
-      verifyCallerIdentity(caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "contest_verdict",
+          caller,
+          server.server.getClientVersion(),
+          error,
+          session_id,
+        );
+        throw error;
+      }
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       // Skip when new_caller is undefined (orchestrator falls back to a
       // sensible default); otherwise verify like the other handlers.
       if (new_caller !== undefined) {
-        verifyCallerIdentity(new_caller, server.server.getClientVersion());
+        try {
+          verifyCallerIdentity(new_caller, server.server.getClientVersion());
+        } catch (error) {
+          recordIdentityForgeryBlocked(
+            runtime,
+            "contest_verdict.new_caller",
+            new_caller,
+            server.server.getClientVersion(),
+            error,
+            session_id,
+          );
+          throw error;
+        }
       }
       return textResult(
         await runtime.orchestrator.store.contestVerdict({
@@ -1945,7 +2080,18 @@ export async function main(): Promise<void> {
       },
     },
     async ({ caller, response_format }) => {
-      verifyCallerIdentity(caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "regenerate_caller_tokens",
+          caller,
+          server.server.getClientVersion(),
+          error,
+        );
+        throw error;
+      }
       const generated = f1GenerateHostTokens(runtime.config.data_dir, {
         overwrite: true,
       });
@@ -2003,7 +2149,19 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, reason, severity, caller, response_format }) => {
-      verifyCallerIdentity(caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "escalate_to_operator",
+          caller,
+          server.server.getClientVersion(),
+          error,
+          session_id,
+        );
+        throw error;
+      }
       return textResult(
         await runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
         response_format,
@@ -2091,7 +2249,19 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, outcome, reason, caller, response_format }) => {
-      verifyCallerIdentity(caller, server.server.getClientVersion());
+      try {
+        verifyCallerIdentity(caller, server.server.getClientVersion());
+      } catch (error) {
+        recordIdentityForgeryBlocked(
+          runtime,
+          "session_finalize",
+          caller,
+          server.server.getClientVersion(),
+          error,
+          session_id,
+        );
+        throw error;
+      }
       return textResult(
         await runtime.orchestrator.store.finalize(session_id, outcome, reason),
         response_format,
@@ -2100,6 +2270,7 @@ export async function main(): Promise<void> {
   );
 
   await server.connect(new StdioServerTransport());
+  installSignalFlushHandlers(runtime);
   console.error("cross-review running on stdio");
 
   // v2.27.1 (cold-start hardening): boot-time sweeps + notices are
