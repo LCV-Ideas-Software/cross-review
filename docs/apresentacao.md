@@ -543,30 +543,31 @@ O histórico completo está em [CHANGELOG.md](../CHANGELOG.md). A exibição
 pública de versão segue o padrão `v00.00.00`; as versões do pacote npm seguem
 SemVer. Marcos principais:
 
-| Versão           | Marco                                                                                                                                         |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                                                            |
-| `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                                                    |
-| `v02.14.00`      | Grok entra no painel de revisão.                                                                                                              |
-| `v02.21.00`      | Cache de prompt entre provedores.                                                                                                             |
-| `v02.24.00`      | Trava de proveniência de evidência.                                                                                                           |
-| `v02.25.00`      | Terceiro modo de deliberação: `circular`.                                                                                                     |
-| `v03.00.00`      | Perplexity entra como sexto par — o painel passa a sexteto.                                                                                   |
-| `v03.01.00`      | Arquivo de configuração central (`config.json`).                                                                                              |
-| `v03.05.00`      | Pré-checagem de evidência antes de chamadas pagas.                                                                                            |
-| `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                                                   |
-| `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais.                              |
-| `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                                                     |
-| `v04.02.02`      | Refresh de providers, pins e rate cards.                                                                                                      |
-| `v04.02.03`      | Pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                                                                                     |
-| `v04.02.04`      | Truthfulness preflight mais auditável e ferramenta de reteste local.                                                                          |
-| `v04.02.05`      | Auditoria de sessões, split de custo e proveniência do relator reforçados.                                                                    |
-| `v04.03.00`      | Disposition de evidência pendente, eval offline e relatório por peer.                                                                         |
-| `v04.03.01`      | Classificação mais estrita de skips por erro de provider.                                                                                     |
-| `v04.03.02`      | Redaction de persistência, guards de sessão finalizada e identity gates.                                                                      |
-| `v04.03.03`      | Diagnósticos forenses, flush em sinais, retry 5xx e SDKs oficiais atuais.                                                                     |
-| `v04.03.04`      | Sequência de eventos cross-process, detector anti-fabricação, fallback Gemini e retry streaming reforçados.                                   |
-| `v04.03.05`      | Versão atual (pacote npm `4.3.5`), com filtro de `<think>` em eventos streaming da Perplexity, config path `~` e smokes/dashboard reforçados. |
+| Versão           | Marco                                                                                                                               |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                                                  |
+| `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                                          |
+| `v02.14.00`      | Grok entra no painel de revisão.                                                                                                    |
+| `v02.21.00`      | Cache de prompt entre provedores.                                                                                                   |
+| `v02.24.00`      | Trava de proveniência de evidência.                                                                                                 |
+| `v02.25.00`      | Terceiro modo de deliberação: `circular`.                                                                                           |
+| `v03.00.00`      | Perplexity entra como sexto par — o painel passa a sexteto.                                                                         |
+| `v03.01.00`      | Arquivo de configuração central (`config.json`).                                                                                    |
+| `v03.05.00`      | Pré-checagem de evidência antes de chamadas pagas.                                                                                  |
+| `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                                         |
+| `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais.                    |
+| `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                                           |
+| `v04.02.02`      | Refresh de providers, pins e rate cards.                                                                                            |
+| `v04.02.03`      | Pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                                                                           |
+| `v04.02.04`      | Truthfulness preflight mais auditável e ferramenta de reteste local.                                                                |
+| `v04.02.05`      | Auditoria de sessões, split de custo e proveniência do relator reforçados.                                                          |
+| `v04.03.00`      | Disposition de evidência pendente, eval offline e relatório por peer.                                                               |
+| `v04.03.01`      | Classificação mais estrita de skips por erro de provider.                                                                           |
+| `v04.03.02`      | Redaction de persistência, guards de sessão finalizada e identity gates.                                                            |
+| `v04.03.03`      | Diagnósticos forenses, flush em sinais, retry 5xx e SDKs oficiais atuais.                                                           |
+| `v04.03.04`      | Sequência de eventos cross-process, detector anti-fabricação, fallback Gemini e retry streaming reforçados.                         |
+| `v04.03.05`      | Filtro de `<think>` em eventos streaming da Perplexity, config path `~` e smokes/dashboard reforçados.                              |
+| `v04.03.06`      | Versão atual (pacote npm `4.3.6`), com `runtime-smoke` isolado em data dir temporário para não contaminar o corpus real de sessões. |
 
 > Nota sobre o nome: até a versão 3.7.5, o projeto foi publicado como
 > `@lcv-ideas-software/cross-review-v2`. A v4.0.0 é a primeira versão sob o

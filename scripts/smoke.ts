@@ -638,6 +638,26 @@ assert.match(
 const runtimeSmokeSource = fs.readFileSync("scripts/runtime-smoke.ts", "utf8");
 assert.match(
   runtimeSmokeSource,
+  /CROSS_REVIEW_RUNTIME_SMOKE_DATA_DIR/,
+  "v4.3.6 / runtime-smoke: data-dir isolation must have an explicit operator override var, not inherit CROSS_REVIEW_DATA_DIR implicitly",
+);
+assert.match(
+  runtimeSmokeSource,
+  /fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\),\s*["']cross-review-runtime-smoke-["']\)\)/,
+  "v4.3.6 / runtime-smoke: default data dir must use a temp directory instead of the real user data dir",
+);
+assert.match(
+  runtimeSmokeSource,
+  /CROSS_REVIEW_DATA_DIR:\s*runtimeSmokeDataDir/,
+  "v4.3.6 / runtime-smoke: spawned MCP server must receive the isolated runtime smoke data dir",
+);
+assert.match(
+  runtimeSmokeSource,
+  /\.\.\.process\.env,[\s\S]*CROSS_REVIEW_DATA_DIR:\s*runtimeSmokeDataDir/,
+  "v4.3.6 / runtime-smoke: isolated data dir must be assigned after ...process.env so inherited real data dirs cannot override it",
+);
+assert.match(
+  runtimeSmokeSource,
   /let\s+lastState:\s*PollState\s*\|\s*undefined/,
   "v4.3.5 / runtime-smoke: pollUntilDone must remember the last poll state before timeout",
 );

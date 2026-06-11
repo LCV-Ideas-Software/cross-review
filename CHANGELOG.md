@@ -7,6 +7,23 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.06] — 2026-06-11
+
+**Patch — runtime smoke isolation.** This release closes a focused
+smoke/test-debt item from the operational robustness plan without changing
+cross-review decision semantics.
+
+### Fixed
+
+- `runtime-smoke` now runs its child MCP server against a temporary
+  `CROSS_REVIEW_DATA_DIR` by default instead of inheriting the operator's real
+  data directory. This prevents smoke runs from leaving open test sessions in
+  the production session corpus.
+- Added a source-pinned smoke guard that fails if `runtime-smoke` stops creating
+  an isolated temp data directory or stops passing it to the spawned MCP server.
+  Operators that need a fixed harness directory can opt in explicitly through
+  `CROSS_REVIEW_RUNTIME_SMOKE_DATA_DIR`.
+
 ## [v04.03.05] — 2026-06-11
 
 **Patch — low-risk audit follow-up.** This release closes a focused set of

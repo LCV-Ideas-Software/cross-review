@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ---------------------------------- |
 | Nome                       | `cross-review`                     |
 | Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.3.5`                            |
+| Versão runtime             | `4.3.6`                            |
 | Release date runtime       | `2026-06-11`                       |
 | Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.3.5`                            |
+| Versão npm publicada       | `4.3.6`                            |
 | Transporte MCP             | `stdio`                            |
 | Execução CLI por peers     | desativada                         |
 | Modo padrão                | chamadas reais de API              |
@@ -716,6 +716,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                         |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.03.06`      | 2026-06-11    | Isola `runtime-smoke` em data dir temporário para não gravar sessões de harness no corpus real do operador.                      |
 | `v04.03.05`      | 2026-06-11    | Filtra `<think>` em eventos streaming da Perplexity, expande `~` no config central e reforça dashboard/smokes.                   |
 | `v04.03.04`      | 2026-06-11    | Endurece sequência de eventos cross-process, detector anti-fabricação, fallback Gemini sem texto e retry de erro streaming.      |
 | `v04.03.03`      | 2026-06-11    | Adiciona diagnósticos forenses para append/identity, flush em sinais, retry de 5xx estruturado e refresh de SDKs oficiais.       |

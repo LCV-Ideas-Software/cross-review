@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { MCP_REQUEST_TIMEOUT_MS } from "../src/core/timeouts.js";
+
+const runtimeSmokeDataDir =
+  process.env.CROSS_REVIEW_RUNTIME_SMOKE_DATA_DIR ??
+  fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-runtime-smoke-"));
 
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -9,6 +16,7 @@ const transport = new StdioClientTransport({
   cwd: process.cwd(),
   env: {
     ...process.env,
+    CROSS_REVIEW_DATA_DIR: runtimeSmokeDataDir,
     CROSS_REVIEW_STUB: process.env.CROSS_REVIEW_STUB ?? "1",
     // v2.4.0 / audit closure (P1.1): runtime smoke is a legitimate stub
     // consumer; opt in to the double-confirmation gate.
@@ -268,6 +276,7 @@ try {
     JSON.stringify(
       {
         ok: true,
+        runtime_smoke_data_dir: runtimeSmokeDataDir,
         serverInfo,
         capabilities,
         markdownInitText,
