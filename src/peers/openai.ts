@@ -50,10 +50,43 @@ type OpenAIStreamEvent = {
   response?: {
     usage?: OpenAIUsage | null | undefined;
     model?: string | undefined;
-    error?: { message?: string } | undefined;
+    error?: OpenAIStreamError | null | undefined;
   };
-  error?: { message?: string } | undefined;
+  error?: OpenAIStreamError | null | undefined;
 };
+
+type OpenAIStreamError = {
+  message?: string | undefined;
+  code?: string | null | undefined;
+  type?: string | undefined;
+  param?: string | null | undefined;
+  status?: number | undefined;
+  statusCode?: number | undefined;
+};
+
+export type StreamingFailureError = Error & {
+  code?: string | null | undefined;
+  type?: string | undefined;
+  param?: string | null | undefined;
+  status?: number | undefined;
+  statusCode?: number | undefined;
+  response?: { error?: OpenAIStreamError | null | undefined } | undefined;
+};
+
+export function streamingFailureErrorFromEvent(
+  event: Pick<OpenAIStreamEvent, "type" | "response" | "error">,
+  fallbackMessage: string,
+): StreamingFailureError {
+  const payload = event.type === "response.failed" ? event.response?.error : event.error;
+  const error = new Error(payload?.message ?? fallbackMessage) as StreamingFailureError;
+  if (payload?.code !== undefined) error.code = payload.code;
+  if (payload?.type !== undefined) error.type = payload.type;
+  if (payload?.param !== undefined) error.param = payload.param;
+  if (payload?.status !== undefined) error.status = payload.status;
+  if (payload?.statusCode !== undefined) error.statusCode = payload.statusCode;
+  error.response = { error: payload };
+  return error;
+}
 
 function usageFromOpenAI(usage: OpenAIUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
@@ -244,11 +277,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
               usage = usageFromOpenAI(event.response?.usage);
               modelReported = event.response?.model;
             } else if (event.type === "response.failed" || event.type === "response.error") {
-              const message =
-                event.type === "response.failed"
-                  ? event.response?.error?.message
-                  : event.error?.message;
-              throw new Error(message ?? "OpenAI streaming response failed.");
+              throw streamingFailureErrorFromEvent(event, "OpenAI streaming response failed.");
             }
           }
           const text = stream_buffer.text();
@@ -345,11 +374,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
               usage = usageFromOpenAI(event.response?.usage);
               modelReported = event.response?.model;
             } else if (event.type === "response.failed" || event.type === "response.error") {
-              const message =
-                event.type === "response.failed"
-                  ? event.response?.error?.message
-                  : event.error?.message;
-              throw new Error(message ?? "OpenAI streaming response failed.");
+              throw streamingFailureErrorFromEvent(event, "OpenAI streaming response failed.");
             }
           }
           const text = stream_buffer.text();

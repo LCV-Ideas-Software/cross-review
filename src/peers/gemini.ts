@@ -41,6 +41,20 @@ type GeminiResponse = {
   usageMetadata?: GeminiUsage | undefined;
 };
 
+export const GEMINI_RESPONSE_MISSING_TEXT_WARNING = "gemini_response_missing_text";
+
+export function geminiTextWithWarning(
+  response: ({ text?: string | undefined } & Record<string, unknown>) | undefined,
+): {
+  text: string;
+  parser_warnings: string[];
+} {
+  if (response?.text !== undefined) {
+    return { text: response.text, parser_warnings: [] };
+  }
+  return { text: "", parser_warnings: [GEMINI_RESPONSE_MISSING_TEXT_WARNING] };
+}
+
 function usageFromGemini(usage: GeminiUsage | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
   const cached = usage.cachedContentTokenCount ?? 0;
@@ -191,23 +205,27 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           }
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
+          const normalized = text ? { text, parser_warnings: [] } : geminiTextWithWarning(last);
           return this.resultFromText({
-            text: text || (last?.text ?? JSON.stringify(last ?? {})),
+            text: normalized.text,
             raw: { streamed: true, provider: this.provider, model: last?.modelVersion },
             usage: usageFromGemini(last?.usageMetadata),
             started,
             attempts: attempt,
             modelReported: last?.modelVersion,
+            extraParserWarnings: normalized.parser_warnings,
           });
         }
         const response = (await reviewClient.ai.models.generateContent(params)) as GeminiResponse;
+        const normalized = geminiTextWithWarning(response);
         return this.resultFromText({
-          text: response.text ?? JSON.stringify(response),
+          text: normalized.text,
           raw: response,
           usage: usageFromGemini(response.usageMetadata),
           started,
           attempts: attempt,
           modelReported: response.modelVersion,
+          extraParserWarnings: normalized.parser_warnings,
         });
       },
       (error, attempt) =>
@@ -254,23 +272,27 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           }
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
+          const normalized = text ? { text, parser_warnings: [] } : geminiTextWithWarning(last);
           return this.generationFromText({
-            text: text || (last?.text ?? JSON.stringify(last ?? {})),
+            text: normalized.text,
             raw: { streamed: true, provider: this.provider, model: last?.modelVersion },
             usage: usageFromGemini(last?.usageMetadata),
             started,
             attempts: attempt,
             modelReported: last?.modelVersion,
+            extraParserWarnings: normalized.parser_warnings,
           });
         }
         const response = (await generateClient.ai.models.generateContent(params)) as GeminiResponse;
+        const normalized = geminiTextWithWarning(response);
         return this.generationFromText({
-          text: response.text ?? JSON.stringify(response),
+          text: normalized.text,
           raw: response,
           usage: usageFromGemini(response.usageMetadata),
           started,
           attempts: attempt,
           modelReported: response.modelVersion,
+          extraParserWarnings: normalized.parser_warnings,
         });
       },
       (error, attempt) =>

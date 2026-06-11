@@ -74,6 +74,37 @@ function extractHttpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
+function collectStringField(values: string[], value: unknown): void {
+  if (typeof value === "string" && value.trim()) values.push(value.trim().toLowerCase());
+}
+
+function extractProviderErrorSignals(error: unknown): string {
+  if (!error || typeof error !== "object") return "";
+  const values: string[] = [];
+  const errorObj = error as Record<string, unknown>;
+  collectStringField(values, errorObj.code);
+  collectStringField(values, errorObj.type);
+  const nestedError = errorObj.error;
+  if (nestedError && typeof nestedError === "object") {
+    const nested = nestedError as Record<string, unknown>;
+    collectStringField(values, nested.code);
+    collectStringField(values, nested.type);
+  }
+  const response = errorObj.response;
+  if (response && typeof response === "object") {
+    const responseObj = response as Record<string, unknown>;
+    collectStringField(values, responseObj.code);
+    collectStringField(values, responseObj.type);
+    const responseError = responseObj.error;
+    if (responseError && typeof responseError === "object") {
+      const nested = responseError as Record<string, unknown>;
+      collectStringField(values, nested.code);
+      collectStringField(values, nested.type);
+    }
+  }
+  return values.join(" ");
+}
+
 // v2.4.0 / audit closure (P4.17): treat upstream gateway errors (502 Bad
 // Gateway, 503 Service Unavailable, 504 Gateway Timeout) as retryable.
 // Pre-v2.4.0 these collapsed into the generic `provider_error` class and
@@ -140,8 +171,12 @@ export function classifyProviderError(
 ): PeerFailure {
   const message = safeErrorMessage(error);
   const httpStatus = extractHttpStatus(error);
+  const providerSignals = extractProviderErrorSignals(error);
   const contextual429 =
     httpStatus === 429 ||
+    /\b(?:rate_limit|rate_limit_exceeded|too_many_requests|quota_exceeded)\b/i.test(
+      providerSignals,
+    ) ||
     /\b(?:http|status|statuscode|code|error)\s*[:=]?\s*["'(]?\s*429\b/i.test(message) ||
     /\b429\s+(?:too many requests|rate[-_\s]?limit|quota|retry-after)\b/i.test(message);
   const rateLimited =
@@ -158,15 +193,23 @@ export function classifyProviderError(
   const cancelled =
     /\b(?:aborterror|operation was aborted|call cancelled|session_cancelled)\b/i.test(message);
   const moderation =
+    /\b(?:invalid_prompt|content_policy_violation|policy_violation)\b/i.test(providerSignals) ||
     /\b(?:invalid_prompt|prompt[_\s-]?flagged|moderation|moderated|safety policy|safety system|usage policy|responsibleaipolicyviolation|content[_\s-]?filter|blocked by policy|policy violation|could not be processed|input was rejected)\b/i.test(
       message,
     );
-  const timeout = /\b(?:timeout|aborted|aborterror)\b/i.test(message);
+  const timeout =
+    /\b(?:timeout|vector_store_timeout)\b/i.test(providerSignals) ||
+    /\b(?:timeout|aborted|aborterror)\b/i.test(message);
   const network = /\b(?:econnreset|enotfound|etimedout|network|fetch failed)\b/i.test(message);
   const gateway5xx =
     (httpStatus !== undefined && httpStatus >= 500 && httpStatus <= 599) ||
+    /\b(?:server_error|internal_server_error|service_unavailable|gateway_timeout|bad_gateway|upstream_error)\b/i.test(
+      providerSignals,
+    ) ||
     GATEWAY_5XX_RE.test(message);
-  const providerOverloaded = /\b(?:overloaded_error|overloaded)\b/i.test(message);
+  const providerOverloaded =
+    /\b(?:overloaded_error|overloaded)\b/i.test(providerSignals) ||
+    /\b(?:overloaded_error|overloaded)\b/i.test(message);
 
   const failureClass = auth
     ? "auth"

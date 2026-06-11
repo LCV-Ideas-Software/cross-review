@@ -37,7 +37,7 @@ import type {
 } from "../core/types.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
-import { loadOpenAICtor } from "./openai.js";
+import { loadOpenAICtor, streamingFailureErrorFromEvent } from "./openai.js";
 import { withRetry } from "./retry.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 
@@ -62,9 +62,25 @@ type GrokStreamEvent = {
   response?: {
     usage?: GrokUsage | null | undefined;
     model?: string | undefined;
-    error?: { message?: string } | undefined;
+    error?:
+      | {
+          message?: string | undefined;
+          code?: string | null | undefined;
+          type?: string | undefined;
+          param?: string | null | undefined;
+        }
+      | null
+      | undefined;
   };
-  error?: { message?: string } | undefined;
+  error?:
+    | {
+        message?: string | undefined;
+        code?: string | null | undefined;
+        type?: string | undefined;
+        param?: string | null | undefined;
+      }
+    | null
+    | undefined;
 };
 
 const GROK_BASE_URL = "https://api.x.ai/v1";
@@ -341,11 +357,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               usage = usageFromGrok(event.response?.usage);
               modelReported = event.response?.model;
             } else if (event.type === "response.failed" || event.type === "response.error") {
-              const message =
-                event.type === "response.failed"
-                  ? event.response?.error?.message
-                  : event.error?.message;
-              throw new Error(message ?? "Grok streaming response failed.");
+              throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
             }
           }
           const text = stream_buffer.text();
@@ -447,11 +459,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               usage = usageFromGrok(event.response?.usage);
               modelReported = event.response?.model;
             } else if (event.type === "response.failed" || event.type === "response.error") {
-              const message =
-                event.type === "response.failed"
-                  ? event.response?.error?.message
-                  : event.error?.message;
-              throw new Error(message ?? "Grok streaming response failed.");
+              throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
             }
           }
           const text = stream_buffer.text();

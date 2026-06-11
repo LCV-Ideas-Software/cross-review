@@ -7,6 +7,38 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.04] — 2026-06-11
+
+**Patch — follow-up runtime robustness.** This release closes the next
+low-blast-radius items from the v4.3.1/v4.3.2 audit follow-up: cross-process
+event sequence safety, exact-match fabrication detection, Gemini missing-text
+handling, and streaming provider error classification.
+
+### Fixed
+
+- Event sequence assignment now reconciles the in-memory sequence cache with
+  the durable `events.ndjson` line count under the session lock before each
+  append. A resident process no longer reuses a stale sequence number after
+  another process/store instance writes to the same session.
+- The fabrication detector now compares normalized assertion keys instead of
+  raw substring inclusion, so an invented count such as `5 passed` is not
+  accepted merely because evidence contains `15 passed`.
+- Gemini review/generation responses with missing `response.text` no longer
+  stringify the SDK envelope as peer text. They return empty text with a
+  `gemini_response_missing_text` parser warning for both streaming and
+  non-streaming paths.
+- OpenAI and Grok streaming failures now preserve structured `code`, `type`,
+  `param` and status fields from `response.failed` / `response.error` events.
+  The provider classifier now treats structured codes such as `server_error`
+  and `rate_limit_exceeded` as retryable even when the message lacks numeric
+  HTTP status text.
+
+### Changed
+
+- Verified official SDK dependencies against the public npm registry. Current
+  pins are already latest: `openai` `^6.42.0`, `@anthropic-ai/sdk` `^0.104.1`,
+  `@google/genai` `^2.8.0`, and `@modelcontextprotocol/sdk` `^1.29.0`.
+
 ## [v04.03.03] — 2026-06-11
 
 **Patch — runtime observability and provider SDK refresh.** This release closes

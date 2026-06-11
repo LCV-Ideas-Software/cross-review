@@ -40,6 +40,7 @@ import {
 } from "../src/mcp/server.js";
 import { EventLog } from "../src/observability/logger.js";
 import { classifyProviderError } from "../src/peers/errors.js";
+import { geminiTextWithWarning } from "../src/peers/gemini.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { StubAdapter } from "../src/peers/stub.js";
 import { redact, redactJsonValue } from "../src/security/redact.js";
@@ -154,6 +155,28 @@ assert.equal(
 assert.equal(SessionIdSchema.safeParse("550e8400-e29b-41d4-a716-446655440000").success, true);
 assert.equal(SessionIdSchema.safeParse("550e8400-e29b-11d4-a716-446655440000").success, false);
 assert.equal(SessionIdSchema.safeParse("00000000-0000-0000-0000-000000000000").success, false);
+
+const geminiText = geminiTextWithWarning({
+  text: "READY",
+  modelVersion: "gemini-test",
+});
+assert.equal(geminiText.text, "READY");
+assert.deepEqual(geminiText.parser_warnings, []);
+const geminiMissingText = geminiTextWithWarning({
+  modelVersion: "gemini-test",
+  usageMetadata: { totalTokenCount: 12 },
+});
+assert.equal(
+  geminiMissingText.text,
+  "",
+  "v4.3.4 / Gemini: missing response.text must not stringify the SDK envelope as peer text",
+);
+assert.deepEqual(geminiMissingText.parser_warnings, ["gemini_response_missing_text"]);
+assert.doesNotMatch(JSON.stringify(geminiMissingText), /modelVersion|usageMetadata/);
+const geminiUndefinedText = geminiTextWithWarning(undefined);
+assert.equal(geminiUndefinedText.text, "");
+assert.deepEqual(geminiUndefinedText.parser_warnings, ["gemini_response_missing_text"]);
+console.log("[smoke] gemini_missing_text_warning_test: PASS");
 
 const completedJobBase = {
   kind: "ask_peers",
@@ -743,6 +766,52 @@ assert.equal(
     true,
     "v4.3.3 / provider-errors: structured 5xx status without numeric message text must be retryable",
   );
+  const { streamingFailureErrorFromEvent } = await import("../src/peers/openai.js");
+  const openAiStreamServerError = streamingFailureErrorFromEvent(
+    {
+      type: "response.failed",
+      response: {
+        error: { code: "server_error", message: "stream failed before final response" },
+      },
+    },
+    "OpenAI streaming response failed.",
+  );
+  assert.equal(
+    openAiStreamServerError.code,
+    "server_error",
+    "v4.3.4 / provider-errors: streaming response.failed must preserve provider error code",
+  );
+  const openAiStreamServerFailure = classifyProviderError(
+    "codex",
+    "openai",
+    "gpt-5",
+    openAiStreamServerError,
+    1,
+    Date.now(),
+  );
+  assert.equal(openAiStreamServerFailure.failure_class, "provider_error");
+  assert.equal(
+    openAiStreamServerFailure.retryable,
+    true,
+    "v4.3.4 / provider-errors: OpenAI streaming server_error code without 5xx text must be retryable",
+  );
+  const openAiStreamRateLimitError = streamingFailureErrorFromEvent(
+    {
+      type: "response.error",
+      error: { code: "rate_limit_exceeded", message: "stream rejected" },
+    },
+    "OpenAI streaming response failed.",
+  );
+  const openAiStreamRateLimitFailure = classifyProviderError(
+    "codex",
+    "openai",
+    "gpt-5",
+    openAiStreamRateLimitError,
+    1,
+    Date.now(),
+  );
+  assert.equal(openAiStreamRateLimitFailure.failure_class, "rate_limit");
+  assert.equal(openAiStreamRateLimitFailure.retryable, true);
   for (const fc of [
     "schema",
     "unparseable_after_recovery",
@@ -2410,6 +2479,40 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Sanity: interceptor was actually invoked.
   assert.equal(interceptorFired, true, "fs.appendFileSync interceptor must have fired");
   console.log("[smoke] seq_cache_append_failure_restart_test: PASS");
+}
+
+// v4.3.4 / T2#1: seq cache must not become stale when another
+// resident process/store instance appends events for the same session.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const staleStoreA = new SessionStore(config);
+  const staleMeta = await staleStoreA.init("seq-cross-process-stale-cache-test", "operator", []);
+  const staleId = staleMeta.session_id;
+  await staleStoreA.appendEvent({
+    type: "session.heartbeat",
+    session_id: staleId,
+    message: "from-store-a-1",
+  });
+
+  const staleStoreB = new SessionStore(config);
+  await staleStoreB.appendEvent({
+    type: "session.heartbeat",
+    session_id: staleId,
+    message: "from-store-b-2",
+  });
+
+  await staleStoreA.appendEvent({
+    type: "session.heartbeat",
+    session_id: staleId,
+    message: "from-store-a-3",
+  });
+
+  assert.deepEqual(
+    staleStoreA.readEvents(staleId).map((event) => event.seq),
+    [1, 2, 3],
+    "v4.3.4 / seq-cache: a resident store must observe durable seqs written by another process before appending.",
+  );
+  console.log("[smoke] seq_cache_cross_process_stale_cache_test: PASS");
 }
 
 // v2.4.0 / cross-review R5 (codex blocker): markInFlight refuses to
@@ -7361,6 +7464,23 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     netNewAssertionWithDraft.fabricated === true &&
       netNewAssertionWithDraft.suspicious_assertion_count >= 2,
     `v3.7.4 / fabrication_lock: operational assertions NET-NEW vs {provenance ∪ priorDraft} — invented by the relator even though a prior draft exists — MUST still trip fabricated=true (got count=${netNewAssertionWithDraft.suspicious_assertion_count}, fabricated=${netNewAssertionWithDraft.fabricated})`,
+  );
+
+  const substringCountFalseNegative = detectFabricatedEvidence(
+    "Local validation: npm test completed with 5 passed, 0 failed. git diff --check passed.",
+    {
+      provenanceCorpus:
+        "Attached evidence says npm test completed with 15 passed, 0 failed. git diff --check passed.",
+      priorDraftCorpus: "",
+      narrativeCorpus: "",
+    },
+  );
+  assert.ok(
+    substringCountFalseNegative.suspicious_assertion_count >= 1 &&
+      substringCountFalseNegative.suspicious_assertion_sample.some(
+        (sample) => sample.match === "5 passed, 0 failed",
+      ),
+    `v4.3.4 / fabrication_lock: an invented count such as "5 passed" MUST NOT be satisfied by substring inside evidence for "15 passed" (got count=${substringCountFalseNegative.suspicious_assertion_count}, fabricated=${substringCountFalseNegative.fabricated})`,
   );
 
   const inventedWorkflowDispatch = detectFabricatedEvidence(

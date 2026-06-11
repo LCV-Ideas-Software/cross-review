@@ -516,6 +516,19 @@ const FABRICATED_ASSERTION_PATTERNS: Array<{ pattern: RegExp; label: string }> =
 const FABRICATED_NET_NEW_HEX_THRESHOLD = 3;
 const FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD = 2;
 
+function fabricatedAssertionKey(label: string, match: string): string {
+  return `${label}:${match.toLowerCase()}`;
+}
+
+function collectFabricatedAssertionKeys(text: string): Set<string> {
+  const keys = new Set<string>();
+  for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
+    const matches = text.match(pattern) ?? [];
+    for (const match of matches) keys.add(fabricatedAssertionKey(label, match));
+  }
+  return keys;
+}
+
 export interface FabricationDetectionResult {
   fabricated: boolean;
   net_new_hex_count: number;
@@ -580,15 +593,16 @@ export function detectFabricatedEvidence(
   // artifact, is still flagged (eee886d3 — operator directive
   // 2026-05-10: narrative is not evidence).
   const assertionCorpus = `${corpus.provenanceCorpus}\n${corpus.priorDraftCorpus}`;
+  const assertionCorpusKeys = collectFabricatedAssertionKeys(assertionCorpus);
   const suspicious: Array<{ label: string; match: string }> = [];
   const seenAssertions = new Set<string>();
   for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
     const matches = revisionText.match(pattern) ?? [];
     for (const m of matches) {
-      const key = `${label}:${m.toLowerCase()}`;
+      const key = fabricatedAssertionKey(label, m);
       if (seenAssertions.has(key)) continue;
       seenAssertions.add(key);
-      if (!assertionCorpus.includes(m)) {
+      if (!assertionCorpusKeys.has(key)) {
         suspicious.push({ label, match: m });
       }
     }

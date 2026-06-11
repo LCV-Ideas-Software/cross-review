@@ -486,17 +486,16 @@ export class SessionStore {
   // line count of the existing file as a reasonable approximation of
   // the durable max-seq.
   private peekNextSeq(sessionId: string, file: string): number {
-    let cached = this.seqCache.get(sessionId);
-    if (cached === undefined) {
-      try {
-        cached = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).length;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        cached = 0;
-      }
-      this.seqCache.set(sessionId, cached);
+    let durable = 0;
+    try {
+      durable = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).length;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    return cached + 1;
+    const cached = this.seqCache.get(sessionId) ?? 0;
+    const baseline = Math.max(cached, durable);
+    this.seqCache.set(sessionId, baseline);
+    return baseline + 1;
   }
 
   private commitSeq(sessionId: string, committed: number): void {
