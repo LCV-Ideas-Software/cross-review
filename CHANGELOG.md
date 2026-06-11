@@ -7,6 +7,26 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.05] — 2026-06-11
+
+**Patch — low-risk audit follow-up.** This release closes a focused set of
+remaining low-severity audit items without changing the cross-review decision
+semantics.
+
+### Fixed
+
+- Perplexity streaming token events now filter Sonar `<think>` reasoning blocks
+  incrementally before `peer.token.delta` emission, including partial opening
+  tags split across chunks when `CROSS_REVIEW_STREAM_TEXT=1` is enabled.
+- `CROSS_REVIEW_CONFIG_FILE` now expands `~`, `~/...` and `~\...` to the
+  current user's home directory before resolving the central config path.
+- Dashboard server-rendered runtime paths are HTML-escaped before insertion into
+  the initial page markup.
+- `runtime-smoke` timeout errors now include the last observed poll state.
+- Real API streaming smoke uses `fs.mkdtempSync()` for its default data
+  directory, and the race reproducer embeds child-process path literals with
+  `JSON.stringify()` instead of ad hoc backslash escaping.
+
 ## [v04.03.04] — 2026-06-11
 
 **Patch — follow-up runtime robustness.** This release closes the next

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/core/config.js";
@@ -11,7 +12,7 @@ process.env.CROSS_REVIEW_STUB = "0";
 process.env.CROSS_REVIEW_STREAM_TOKENS = "1";
 process.env.CROSS_REVIEW_DATA_DIR =
   process.env.CROSS_REVIEW_DATA_DIR ||
-  path.join(os.tmpdir(), `cross-review-api-streaming-smoke-${Date.now()}`);
+  fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-api-streaming-smoke-"));
 
 const config = loadConfig();
 const missing = PEERS.filter((peer) => !config.api_keys[peer]);

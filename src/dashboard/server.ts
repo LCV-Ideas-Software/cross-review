@@ -53,6 +53,23 @@ function notFound(response: http.ServerResponse): void {
   response.end("Not found");
 }
 
+function escapeHtmlServer(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
 function html(): string {
   return `<!doctype html>
 <html lang="pt-BR">
@@ -123,8 +140,8 @@ function html(): string {
       <div id="shadow-judgment-body" class="muted">Carregando...</div>
     </section>
     <section class="grid" style="margin-top:14px">
-      <article class="card"><strong>Dados</strong><p class="muted">${config.data_dir}</p></article>
-      <article class="card"><strong>Logs</strong><p class="muted">${eventLog.path()}</p></article>
+      <article class="card"><strong>Dados</strong><p class="muted">${escapeHtmlServer(config.data_dir)}</p></article>
+      <article class="card"><strong>Logs</strong><p class="muted">${escapeHtmlServer(eventLog.path())}</p></article>
     </section>
     <div class="toolbar">
       <input id="filter" placeholder="Filtrar por sessão, estado ou texto..." />

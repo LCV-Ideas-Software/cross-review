@@ -54,7 +54,7 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
-import { BasePeerAdapter, StreamBuffer } from "./base.js";
+import { BasePeerAdapter, StreamBuffer, type TokenEventBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor } from "./openai.js";
 import { withRetry } from "./retry.js";
@@ -143,9 +143,47 @@ function usageFromSonar(
 // never legitimately include the literal substring "<think>" inside
 // the structured payload, so this is safe.
 const PERPLEXITY_THINKING_BLOCK = /<think\b[^>]*>[\s\S]*?<\/think>/gi;
+const PERPLEXITY_OPEN_THINKING_BLOCK = /<think\b[^>]*>[\s\S]*$/i;
+const PERPLEXITY_PARTIAL_THINKING_TAG = /<t(?:h(?:i(?:n(?:k(?:\b[^>]*)?)?)?)?)?$/i;
+type TokenEventSink = {
+  append(delta: string): void;
+  complete(chars: number): void;
+};
 
 export function stripPerplexityThinkingBlock(raw: string): string {
   return raw.replace(PERPLEXITY_THINKING_BLOCK, "").trim();
+}
+
+export function stripPerplexityThinkingForTokenEvents(raw: string): string {
+  return raw
+    .replace(PERPLEXITY_THINKING_BLOCK, "")
+    .replace(PERPLEXITY_OPEN_THINKING_BLOCK, "")
+    .replace(PERPLEXITY_PARTIAL_THINKING_TAG, "");
+}
+
+function createPerplexityTokenEventBuffer(tokenStream: TokenEventBuffer): TokenEventSink {
+  let raw = "";
+  let emitted = "";
+  return {
+    append(delta: string): void {
+      raw += delta;
+      const visible = stripPerplexityThinkingForTokenEvents(raw);
+      if (!visible.startsWith(emitted)) {
+        emitted = visible;
+        return;
+      }
+      const next = visible.slice(emitted.length);
+      emitted = visible;
+      tokenStream.append(next);
+    },
+    complete(chars: number): void {
+      const visible = stripPerplexityThinkingForTokenEvents(raw);
+      if (visible.startsWith(emitted)) {
+        tokenStream.append(visible.slice(emitted.length));
+      }
+      tokenStream.complete(chars);
+    },
+  };
 }
 
 function sonarText(response: {
@@ -387,6 +425,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             "review",
             "chat.completion.chunk.delta",
           );
+          const perplexityTokenStream = createPerplexityTokenEventBuffer(tokenStream);
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
@@ -399,7 +438,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             for (const choice of chunk.choices ?? []) {
               const delta = choice.delta?.content ?? "";
               stream_buffer.append(delta);
-              tokenStream.append(delta);
+              perplexityTokenStream.append(delta);
             }
           }
           // v3.4.0 Fix #1: apply stripPerplexityThinkingBlock to the
@@ -414,7 +453,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           // e23d6920. Perplexity ready_rate was 0.28125 vs ~1.0 for
           // other peers; this restores parity at the streaming path.
           const text = stripPerplexityThinkingBlock(stream_buffer.text());
-          tokenStream.complete(text.length);
+          perplexityTokenStream.complete(text.length);
           return this.resultFromText({
             text,
             raw: { streamed: true, provider: this.provider, chunks, model: modelReported },
@@ -493,6 +532,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             "generation",
             "chat.completion.chunk.delta",
           );
+          const perplexityTokenStream = createPerplexityTokenEventBuffer(tokenStream);
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
@@ -505,7 +545,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             for (const choice of chunk.choices ?? []) {
               const delta = choice.delta?.content ?? "";
               stream_buffer.append(delta);
-              tokenStream.append(delta);
+              perplexityTokenStream.append(delta);
             }
           }
           // v3.4.0 Fix #1: streaming-path strip parity for generation
@@ -516,7 +556,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           // the think reasoning itself. Strip at the streaming boundary
           // so the relator artifact is clean before persistence.
           const text = stripPerplexityThinkingBlock(stream_buffer.text());
-          tokenStream.complete(text.length);
+          perplexityTokenStream.complete(text.length);
           return this.generationFromText({
             text,
             raw: { streamed: true, provider: this.provider, chunks, model: modelReported },

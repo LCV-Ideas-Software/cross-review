@@ -38,6 +38,7 @@
 // CROSS_REVIEW_CONFIG_FILE env var. Absence is non-fatal (boot
 // proceeds with env+defaults exactly like pre-v3.1.0).
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 
@@ -450,9 +451,22 @@ export function resolveConfigFilePath(
     ? envValue("CROSS_REVIEW_CONFIG_FILE")
     : process.env.CROSS_REVIEW_CONFIG_FILE;
   if (overridePath && overridePath.trim().length > 0) {
-    return path.resolve(overridePath);
+    return expandUserPath(overridePath);
   }
   return path.join(dataDir, "config.json");
+}
+
+export function expandUserPath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (trimmed === "~") return os.homedir();
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+    const segments = trimmed
+      .slice(2)
+      .split(/[\\/]+/)
+      .filter(Boolean);
+    return path.join(os.homedir(), ...segments);
+  }
+  return path.resolve(trimmed);
 }
 
 export interface ApplyFileConfigResult {

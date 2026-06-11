@@ -80,7 +80,7 @@ for (let p = 0; p < PROCS; p++) {
     [
       "--input-type=module",
       "-e",
-      `process.env.PRPL_WORKER='1';process.env.PRPL_SESSION_ID='${meta.session_id}';process.env.PRPL_DATA_DIR='${dataDir.replace(/\\/g, "\\\\")}';process.env.PRPL_ROUNDS_PER_PROC='${ROUNDS}';await import(${JSON.stringify(pathToFileURL(__filename).href)});`,
+      `process.env.PRPL_WORKER='1';process.env.PRPL_SESSION_ID=${JSON.stringify(meta.session_id)};process.env.PRPL_DATA_DIR=${JSON.stringify(dataDir)};process.env.PRPL_ROUNDS_PER_PROC=${JSON.stringify(String(ROUNDS))};await import(${JSON.stringify(pathToFileURL(__filename).href)});`,
     ],
     { cwd: root, stdio: "inherit" },
   );

@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.03.04** (npm package `4.3.4`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.03.05** (npm package `4.3.5`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.03.05`**      | Patch — filter Perplexity streaming `<think>` token events, expand `~` in central config paths, escape dashboard runtime paths, and harden smoke scripts.                                                          |
 | **`v04.03.04`**      | Patch — harden cross-process event sequencing, exact-match fabrication checks, Gemini missing-text handling, and streaming provider error retry classification.                                                    |
 | **`v04.03.03`**      | Patch — add forensic diagnostics for append/event and identity failures, flush pending events on shutdown signals, retry structured provider 5xx errors, and refresh official AI provider SDKs.                    |
 | **`v04.03.02`**      | Patch — harden persistence redaction, finalized-session mutation guards, side-effect identity gates, caller-token rotation output, and Windows registry config fallback.                                           |

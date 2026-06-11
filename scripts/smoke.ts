@@ -619,6 +619,52 @@ const dashboardSource = fs.readFileSync(
 assert.match(dashboardSource, /console\.error\("dashboard_request_failed"\)/);
 assert.doesNotMatch(dashboardSource, /console\.error\(`dashboard_request_failed/);
 assert.doesNotMatch(dashboardSource, /safeErrorMessage\(error\)/);
+assert.match(
+  dashboardSource,
+  /function\s+escapeHtmlServer\(/,
+  "v4.3.5 / dashboard: server-rendered config/log paths must use a server-side HTML escape helper",
+);
+assert.match(
+  dashboardSource,
+  /\$\{escapeHtmlServer\(config\.data_dir\)\}/,
+  "v4.3.5 / dashboard: config.data_dir interpolation must be escaped before initial HTML render",
+);
+assert.match(
+  dashboardSource,
+  /\$\{escapeHtmlServer\(eventLog\.path\(\)\)\}/,
+  "v4.3.5 / dashboard: eventLog.path() interpolation must be escaped before initial HTML render",
+);
+
+const runtimeSmokeSource = fs.readFileSync("scripts/runtime-smoke.ts", "utf8");
+assert.match(
+  runtimeSmokeSource,
+  /let\s+lastState:\s*PollState\s*\|\s*undefined/,
+  "v4.3.5 / runtime-smoke: pollUntilDone must remember the last poll state before timeout",
+);
+assert.match(
+  runtimeSmokeSource,
+  /JSON\.stringify\(lastState/,
+  "v4.3.5 / runtime-smoke: timeout errors must include the last poll state for diagnosis",
+);
+
+const apiStreamingSmokeSource = fs.readFileSync("scripts/api-streaming-smoke.ts", "utf8");
+assert.match(
+  apiStreamingSmokeSource,
+  /fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\),\s*["']cross-review-api-streaming-smoke-["']\)\)/,
+  "v4.3.5 / api-streaming-smoke: default data dir must use mkdtempSync instead of Date.now()",
+);
+
+const raceReproducerSource = fs.readFileSync("scripts/race-reproducer.mjs", "utf8");
+assert.match(
+  raceReproducerSource,
+  /JSON\.stringify\(dataDir\)/,
+  "v4.3.5 / race-reproducer: child inline code must embed dataDir with JSON.stringify",
+);
+assert.doesNotMatch(
+  raceReproducerSource,
+  /dataDir\.replace\(/,
+  "v4.3.5 / race-reproducer: child inline code must not use ad hoc backslash escaping",
+);
 
 const overlongReady = parsePeerStatus(
   JSON.stringify({
@@ -5630,7 +5676,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // substantively valid READY. Strip every `<think>` block (greedy,
 // multi-line, multi-occurrence) before downstream extraction.
 {
-  const { stripPerplexityThinkingBlock } = await import("../src/peers/perplexity.js");
+  const perplexityModule = await import("../src/peers/perplexity.js");
+  const stripPerplexityThinkingBlock = perplexityModule.stripPerplexityThinkingBlock;
+  const stripPerplexityThinkingForTokenEvents =
+    perplexityModule.stripPerplexityThinkingForTokenEvents;
   // Scenario A: clean JSON payload — must be returned unchanged.
   const cleanJson = '{"status":"READY","notes":"All checks pass."}';
   assert.equal(
@@ -5688,6 +5737,21 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     stripPerplexityThinkingBlock(onlyThink),
     "",
     "only-<think> input must produce empty trimmed output (downstream parser handles recovery)",
+  );
+  assert.equal(
+    stripPerplexityThinkingForTokenEvents("visible <thi"),
+    "visible ",
+    "token event filter must hold back partial <think> opening tags across chunk boundaries",
+  );
+  assert.equal(
+    stripPerplexityThinkingForTokenEvents("<think>private reasoning"),
+    "",
+    "token event filter must not emit an open reasoning block before its closing tag arrives",
+  );
+  assert.equal(
+    stripPerplexityThinkingForTokenEvents(`<think>private reasoning</think>\n${cleanJson}`),
+    `\n${cleanJson}`,
+    "token event filter must remove complete reasoning blocks while preserving visible payload text",
   );
   // Scenario H: source-level pins — sonarText() must call the strip
   // helper, and the helper must be exported.
@@ -6063,7 +6127,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const tmpModule = await import("node:fs");
   const tmpFs = tmpModule.default;
   const fileConfigMod = await import("../src/core/file-config.js");
-  const { applyFileConfigToEnv, resolveConfigFilePath, flattenFileConfigToEnvMap } = fileConfigMod;
+  const { applyFileConfigToEnv, resolveConfigFilePath, flattenFileConfigToEnvMap, expandUserPath } =
+    fileConfigMod;
   const tmpDir = smokeTmpDir("central-config-file");
   // Always start with a clean process.env baseline for the keys we
   // exercise; the smoke harness presets several env vars at the top of
@@ -6206,6 +6271,22 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       resolveConfigFilePath(tmpDir, envValueWithRegistry),
       path.resolve(registryOnlyPath),
       "v3.1.0 R1 fix: resolveConfigFilePath must honor envValue() for registry fallback",
+    );
+    const homeConfigPath = path.join(os.homedir(), ".cross-review", "config.json");
+    assert.equal(
+      expandUserPath("~/.cross-review/config.json"),
+      homeConfigPath,
+      "v4.3.5 / config path: CROSS_REVIEW_CONFIG_FILE must expand ~/ to the current user's home directory",
+    );
+    assert.equal(
+      expandUserPath("~\\.cross-review\\config.json"),
+      homeConfigPath,
+      "v4.3.5 / config path: CROSS_REVIEW_CONFIG_FILE must expand ~\\ to the current user's home directory",
+    );
+    assert.equal(
+      expandUserPath("~operator/config.json"),
+      path.resolve("~operator/config.json"),
+      "v4.3.5 / config path: ~user shorthand is intentionally not expanded cross-platform",
     );
     delete process.env.CROSS_REVIEW_OPENAI_MODEL;
     {
@@ -8026,6 +8107,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(
     !/const\s+text\s*=\s*stream_buffer\.text\(\)\s*;/.test(perplexitySrc),
     "v3.4.0 / perplexity_streaming_strip_parity: src/peers/perplexity.ts must NOT contain bare `const text = stream_buffer.text();` — that pattern is the pre-v3.4.0 bypass and would cause unparseable_after_recovery failures",
+  );
+  assert.ok(
+    /createPerplexityTokenEventBuffer/.test(perplexitySrc),
+    "v4.3.5 / perplexity_token_delta_think_strip: Perplexity must use a provider-specific token event buffer that filters <think> before emitting token.delta text",
+  );
+  assert.ok(
+    !/tokenStream\.append\(delta\)/.test(perplexitySrc),
+    "v4.3.5 / perplexity_token_delta_think_strip: streaming branches must not append raw Sonar deltas directly to token events",
   );
   // Dist parity.
   const perplexityDistPath = new URL("../dist/src/peers/perplexity.js", import.meta.url);

@@ -97,26 +97,20 @@ const TERMINAL_OUTCOMES = new Set(["converged", "aborted", "max-rounds"]);
 
 async function pollUntilDone(sessionId: string): Promise<PollState> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let lastState: PollState | undefined;
   while (Date.now() < deadline) {
     const state = (await callTool("session_poll", {
       session_id: sessionId,
       response_format: "json",
     })) as PollState;
+    lastState = state;
     if (state.outcome && TERMINAL_OUTCOMES.has(state.outcome)) {
-      return state;
-    }
-    if (
-      state.jobs?.some(
-        (job) =>
-          job.status === "completed" || job.status === "failed" || job.status === "cancelled",
-      )
-    ) {
       return state;
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
   throw new Error(
-    `Timed out polling runtime-smoke session ${sessionId} after ${POLL_TIMEOUT_MS} ms`,
+    `Timed out polling runtime-smoke session ${sessionId} after ${POLL_TIMEOUT_MS} ms; last_state=${JSON.stringify(lastState)}`,
   );
 }
 
