@@ -7,6 +7,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.08] — 2026-06-11
+
+**Patch — focused evidence preflight smoke.** This release continues the
+smoke/test-debt cleanup from the operational robustness plan without changing
+cross-review runtime behavior.
+
+### Changed
+
+- Moved the `evidence_preflight` behavioral matrix into
+  `scripts/evidence-preflight-smoke.ts` and added an
+  `evidence-preflight-smoke` npm script.
+- `npm test` now runs the focused evidence-preflight smoke before the broader
+  smoke suite, reducing the amount of behavior coverage embedded in
+  `scripts/smoke.ts`.
+
 ## [v04.03.07] — 2026-06-11
 
 **Patch — evidence artifact preflight.** This release closes the next focused

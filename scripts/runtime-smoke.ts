@@ -126,6 +126,19 @@ try {
   await client.connect(transport);
   const serverInfo = await callTool("server_info", { response_format: "json" });
   const capabilities = await callTool("runtime_capabilities", { response_format: "json" });
+  const packageVersion = (
+    JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }
+  ).version;
+  assert.equal(
+    (serverInfo as { version?: string }).version,
+    packageVersion,
+    "runtime-smoke: server_info.version must match package.json version",
+  );
+  assert.equal(
+    (capabilities as { version?: string }).version,
+    packageVersion,
+    "runtime-smoke: runtime_capabilities.version must match package.json version",
+  );
   const markdownInitText = await callToolText("session_init", {
     task: "Runtime smoke: verify session_init markdown response.",
     review_focus: "runtime/markdown-init",

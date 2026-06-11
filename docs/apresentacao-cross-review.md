@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ---------------------------------- |
 | Nome                       | `cross-review`                     |
 | Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.3.7`                            |
+| Versão runtime             | `4.3.8`                            |
 | Release date runtime       | `2026-06-11`                       |
 | Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.3.7`                            |
+| Versão npm publicada       | `4.3.8`                            |
 | Transporte MCP             | `stdio`                            |
 | Execução CLI por peers     | desativada                         |
 | Modo padrão                | chamadas reais de API              |
@@ -494,9 +494,10 @@ Dependências diretas de desenvolvimento:
 ## Scripts do projeto
 
 Os scripts principais são `build`, `dev`, `dashboard`, `smoke`,
-`runtime-smoke`, `api-streaming-smoke`, `test`, `lint`, `format:check`,
-`typecheck`, `biome` e `check`. O script `check` reúne formatação, lint, Biome e
-typecheck; `test` executa build, smoke e runtime smoke.
+`evidence-preflight-smoke`, `runtime-smoke`, `api-streaming-smoke`, `test`,
+`lint`, `format:check`, `typecheck`, `biome` e `check`. O script `check` reúne
+formatação, lint, Biome e typecheck; `test` executa build, smokes focados, smoke
+geral e runtime smoke.
 
 ## Persistência e observabilidade
 
@@ -716,6 +717,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                         |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.03.08`      | 2026-06-11    | Move a matriz comportamental de `evidence_preflight` para smoke dedicado, reduzindo acoplamento no smoke geral.                  |
 | `v04.03.07`      | 2026-06-11    | Bloqueia antes de chamadas pagas quando o texto referencia artefato externo de evidência/log que não foi anexado à sessão.       |
 | `v04.03.06`      | 2026-06-11    | Isola `runtime-smoke` em data dir temporário para não gravar sessões de harness no corpus real do operador.                      |
 | `v04.03.05`      | 2026-06-11    | Filtra `<think>` em eventos streaming da Perplexity, expande `~` no config central e reforça dashboard/smokes.                   |

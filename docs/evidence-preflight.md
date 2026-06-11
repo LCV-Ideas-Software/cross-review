@@ -129,6 +129,17 @@ also visible in `meta.failed_attempts` with `failure_class =
 
 ## Retesting after evidence
 
+The behavioral matrix for this guard lives in
+`scripts/evidence-preflight-smoke.ts` and runs through:
+
+```bash
+npm run evidence-preflight-smoke
+```
+
+`npm test` runs that focused smoke before the broader `scripts/smoke.ts` suite
+so evidence-preflight behavior can be validated without searching the monolithic
+smoke harness.
+
 After attaching evidence with `session_attach_evidence`, call
 `session_truthfulness_preflight_check` to re-run the local truthfulness preflight
 without provider calls. The tool uses the session task plus either the supplied

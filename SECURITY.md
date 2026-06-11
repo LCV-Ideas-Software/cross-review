@@ -2,7 +2,9 @@
 
 ## Supported status
 
-Latest supported release: v04.03.07 for npm package 4.3.7. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.03.08 for npm package 4.3.8. The current main branch is also supported for security fixes until the next release is published.
+
+v04.03.08 changes only the local smoke-test organization; it does not change the runtime security model, token handling, redaction policy, or provider-call behavior.
 
 ## Reporting a vulnerability
 
