@@ -7,6 +7,33 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.02] — 2026-06-11
+
+**Patch — persistence and identity hardening.** This release closes the
+highest-risk items from the v4.3.1 hard-gate audit: unredacted session/log
+persistence, finalized-session mutation races, plaintext caller-token rotation
+responses, and Windows-registry config bypasses.
+
+### Security
+
+- `task.md`, `review-focus.md`, `events.ndjson`, process log NDJSON and pino
+  stderr payloads now pass through `redact()` before persistence.
+- `regenerate_caller_tokens` no longer returns plaintext tokens in the MCP
+  response. It returns token fingerprints and instructs the operator to read
+  `host-tokens.json` locally when redistributing secrets.
+- Side-effect MCP tools now expose a `caller` field and verify identity before
+  mutating state: `session_cancel_job`, `contest_verdict`,
+  `regenerate_caller_tokens`, `escalate_to_operator` and `session_finalize`.
+
+### Fixed
+
+- `markInFlight`, `recordPreflightFailure` and `sweepIdle` now respect terminal
+  session outcomes inside the session lock, preventing stale snapshots from
+  clobbering finalized sessions.
+- Evidence judge autowire env vars now resolve through `envValue()`, preserving
+  the Windows registry fallback for mode, peer, consensus peers and max items.
+- Public docs no longer publish a machine-specific data directory path.
+
 ## [v04.03.01] — 2026-06-05
 
 **Patch — provider skip classification hotfix.** This release follows up on a
@@ -151,7 +178,7 @@ cross-review audit of the current v4.2.1 session corpus.
   Gemini 2.5 Pro, DeepSeek V4 Pro, Grok 4.3, and Perplexity Sonar Reasoning
   Pro.
 - Updated the active local runtime config at
-  `C:\Users\leona\.cross-review\data\config.json` with current cached-input,
+  `<data_dir>\config.json` with current cached-input,
   extended-tier, and DeepSeek base rates.
 
 ## [v04.02.01] — 2026-05-21

@@ -38,10 +38,11 @@ import {
   setHostTokensRecord,
   verifyCallerIdentity,
 } from "../src/mcp/server.js";
+import { EventLog } from "../src/observability/logger.js";
 import { classifyProviderError } from "../src/peers/errors.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { StubAdapter } from "../src/peers/stub.js";
-import { redact } from "../src/security/redact.js";
+import { redact, redactJsonValue } from "../src/security/redact.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 // v2.4.0 / audit closure (P1.1): stub activation requires explicit
@@ -50,7 +51,7 @@ process.env.CROSS_REVIEW_STUB = "1";
 process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
 // v2.5.0: smoke MUST run in isolation. Pre-v2.5.0 we honored an operator-
 // provided CROSS_REVIEW_DATA_DIR (`||` fallback), but if that env points
-// at the live MCP runtime dir (e.g. `C:\Users\leona\.cross-review\data`),
+// at the live MCP runtime dir (for example `%USERPROFILE%\.cross-review\data`),
 // every smoke run pollutes the operator's session history AND inherits
 // arbitrary stale sessions from earlier real runs that can break
 // deterministic assertions (e.g. `sweepIdle` returning a non-zero count
@@ -197,6 +198,52 @@ const orchestrator = new CrossReviewOrchestrator(config, (event) => {
   void holder.orchestrator?.store.appendEvent(event);
 });
 holder.orchestrator = orchestrator;
+
+const persistenceSecret = ["sk", "test", "PERSISTENCE".padEnd(24, "A")].join("-");
+const persistenceSession = await orchestrator.store.init(
+  `task contains ${persistenceSecret}`,
+  "operator",
+  [],
+  `focus contains ${persistenceSecret}`,
+);
+const persistenceSessionDir = path.join(config.data_dir, "sessions", persistenceSession.session_id);
+for (const artifact of ["meta.json", "task.md", "review-focus.md"]) {
+  const artifactText = fs.readFileSync(path.join(persistenceSessionDir, artifact), "utf8");
+  assert.doesNotMatch(
+    artifactText,
+    new RegExp(persistenceSecret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    `v4.3.2 / redaction: ${artifact} must not persist raw secret material`,
+  );
+}
+await orchestrator.store.appendEvent({
+  type: "smoke.secret_event",
+  session_id: persistenceSession.session_id,
+  message: `event message ${persistenceSecret}`,
+  data: { secret: persistenceSecret },
+});
+const persistedEventText = fs.readFileSync(
+  path.join(persistenceSessionDir, "events.ndjson"),
+  "utf8",
+);
+assert.doesNotMatch(
+  persistedEventText,
+  new RegExp(persistenceSecret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  "v4.3.2 / redaction: events.ndjson must not persist raw secret material",
+);
+const eventLog = new EventLog(config);
+eventLog.emit({
+  type: "smoke.secret_log",
+  session_id: persistenceSession.session_id,
+  message: `log message ${persistenceSecret}`,
+  data: { secret: persistenceSecret },
+});
+const logText = fs.readFileSync(eventLog.path(), "utf8");
+assert.doesNotMatch(
+  logText,
+  new RegExp(persistenceSecret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  "v4.3.2 / redaction: logs/*.ndjson must not persist raw secret material",
+);
+console.log("[smoke] persistence_redaction_boundary_test: PASS");
 
 const adapterExpectations: Array<{ file: string; field: string }> = [
   { file: "src/peers/openai.ts", field: "max_output_tokens: this.config.max_output_tokens" },
@@ -348,6 +395,14 @@ assert.equal(Date.now() - repeatedSameLabelStarted < 1_000, true);
 
 const constructedToken = ["sk", "test", "A".repeat(24)].join("-");
 assert.equal(redact(`token ${constructedToken}`), "token [REDACTED]");
+const redactedJsonValue = redactJsonValue({
+  message: `${pemMarker("BEGIN", "EC PRIVATE KEY")}\nmissing end`,
+  nested: { token: constructedToken },
+});
+const redactedJsonText = JSON.stringify(redactedJsonValue);
+assert.equal(redactedJsonValue.message, "[REDACTED]");
+assert.doesNotMatch(redactedJsonText, /BEGIN EC PRIVATE KEY|missing end|sk-test/);
+JSON.parse(redactedJsonText);
 
 // v2.18.4 / Codex audit 2026-05-07 P1.2: xAI API key prefix `xai-`
 // added to redaction patterns. Verify the new pattern fires on a
@@ -902,6 +957,96 @@ assert.equal(
 );
 assert.equal(orchestrator.store.read(stale.session_id).outcome, "aborted");
 assert.equal(orchestrator.store.read(fresh.session_id).outcome, undefined);
+
+const finalizedGuardSession = await orchestrator.store.init(
+  "finalized mutation guard smoke session",
+  "operator",
+  probes,
+);
+await orchestrator.store.finalize(finalizedGuardSession.session_id, "aborted", "guard_baseline");
+await assert.rejects(
+  () =>
+    orchestrator.store.markInFlight(finalizedGuardSession.session_id, {
+      round: 1,
+      peers: ["codex"],
+      started_at: new Date().toISOString(),
+      scope: {
+        caller: "operator",
+        caller_status: "READY",
+        expected_peers: ["codex"],
+        reviewer_peers: ["codex"],
+      },
+    }),
+  /session_already_finalized/,
+  "v4.3.2 / outcome_guard: markInFlight must reject finalized sessions",
+);
+const preflightGuardBefore = orchestrator.store.read(finalizedGuardSession.session_id);
+await orchestrator.store.recordPreflightFailure(finalizedGuardSession.session_id, [
+  {
+    peer: "codex",
+    provider: "openai",
+    model: "gpt-5.5",
+    failure_class: "truthfulness_preflight",
+    message: "should not mutate finalized session",
+    retryable: false,
+    attempts: 1,
+    latency_ms: 0,
+  },
+]);
+const preflightGuardAfter = orchestrator.store.read(finalizedGuardSession.session_id);
+assert.equal(
+  preflightGuardAfter.outcome,
+  preflightGuardBefore.outcome,
+  "v4.3.2 / outcome_guard: recordPreflightFailure must preserve finalized outcome",
+);
+assert.deepEqual(
+  preflightGuardAfter.failed_attempts,
+  preflightGuardBefore.failed_attempts,
+  "v4.3.2 / outcome_guard: recordPreflightFailure must not append failures after finalization",
+);
+
+const finalizedSweepSession = await orchestrator.store.init(
+  "finalized sweep stale snapshot smoke session",
+  "operator",
+  probes,
+);
+await orchestrator.store.finalize(
+  finalizedSweepSession.session_id,
+  "aborted",
+  "sweep_guard_baseline",
+);
+const finalizedSweepMeta = orchestrator.store.read(finalizedSweepSession.session_id);
+const staleSweepSnapshot = {
+  ...finalizedSweepMeta,
+  updated_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+};
+delete staleSweepSnapshot.outcome;
+delete staleSweepSnapshot.outcome_reason;
+const storeWithPatchedList = orchestrator.store as typeof orchestrator.store & {
+  list: () => (typeof staleSweepSnapshot)[];
+};
+const originalList = storeWithPatchedList.list.bind(orchestrator.store);
+storeWithPatchedList.list = () => [staleSweepSnapshot];
+try {
+  const staleSnapshotSweep = await orchestrator.store.sweepIdle(
+    0,
+    "max-rounds",
+    "stale_snapshot_should_not_clobber",
+  );
+  assert.equal(
+    staleSnapshotSweep.length,
+    0,
+    "v4.3.2 / outcome_guard: sweepIdle must skip sessions finalized after stale list snapshot",
+  );
+  assert.equal(
+    orchestrator.store.read(finalizedSweepSession.session_id).outcome,
+    "aborted",
+    "v4.3.2 / outcome_guard: sweepIdle must not clobber a finalized outcome",
+  );
+} finally {
+  storeWithPatchedList.list = originalList;
+}
+console.log("[smoke] finalized_session_mutation_guard_test: PASS");
 
 process.env.CROSS_REVIEW_STUB_REPORTED_MODEL = "stub-downgraded";
 const mismatch = await orchestrator.askPeers({
@@ -5947,6 +6092,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       /LAST_FILE_CONFIG_RESULT\s*=\s*applyFileConfigToEnv\(dataDir,\s*envValue\)/.test(configSrc),
       "v3.1.0: loadConfig() must invoke applyFileConfigToEnv(dataDir, envValue) and capture the result",
     );
+    assert.ok(
+      /envValue\("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE"\)/.test(configSrc) &&
+        /envValue\("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER"\)/.test(configSrc) &&
+        /envValue\("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS"\)/.test(configSrc) &&
+        /envValue\("CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS"\)/.test(configSrc),
+      "v4.3.2 / config: evidence judge autowire vars must go through envValue() so Windows registry fallback works.",
+    );
+    assert.ok(
+      !/process\.env\.CROSS_REVIEW_EVIDENCE_JUDGE_(?:AUTOWIRE|MAX_ITEMS)/.test(configSrc),
+      "v4.3.2 / config: evidence judge autowire must not bypass envValue() with process.env direct reads.",
+    );
     // v3.1.0 R1 fix (codex catch): resolveConfigFilePath signature must
     // accept an optional envValue helper so the path-lookup honors the
     // v2.28.0 Windows registry fallback when called from applyFileConfigToEnv.
@@ -6505,8 +6661,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // (1) Source-level: env-var default fallback is "4" (string for parseInt).
   assert.ok(
-    /process\.env\.CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS\s*\?\?\s*"4"/.test(configSrc),
-    'v2.18.5 / P1.4: env-var default fallback in config.ts is `?? "4"` (post-v2.18.4 cap reduction)',
+    /envValue\("CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS"\)\s*\?\?\s*"4"/.test(configSrc),
+    'v2.18.5 / P1.4 + v4.3.2 registry fallback: envValue default fallback in config.ts is `?? "4"` (post-v2.18.4 cap reduction)',
   );
   // (2) Source-level: numeric fallback after Number.parseInt is also 4.
   assert.ok(
@@ -9569,6 +9725,53 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v4.2.0 / session_cancel_job: runtime-smoke must assert no-job cancellation stays non-terminal.",
   );
   console.log("[smoke] session_cancel_job_no_active_job_test: PASS");
+}
+
+{
+  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  for (const toolName of [
+    "session_cancel_job",
+    "contest_verdict",
+    "regenerate_caller_tokens",
+    "escalate_to_operator",
+    "session_finalize",
+  ]) {
+    const toolStart = serverSrc.indexOf(`server.registerTool(\n    "${toolName}"`);
+    const nextToolStart = serverSrc.indexOf("server.registerTool", toolStart + toolName.length + 2);
+    const handlerBlock =
+      toolStart >= 0
+        ? serverSrc.slice(toolStart, nextToolStart >= 0 ? nextToolStart : serverSrc.length)
+        : undefined;
+    assert.ok(handlerBlock, `v4.3.2 / identity: smoke must find ${toolName} handler block.`);
+    assert.ok(
+      /caller:\s*CallerSchema\.default\("operator"\)/.test(handlerBlock ?? ""),
+      `v4.3.2 / identity: ${toolName} must expose caller with operator default.`,
+    );
+    assert.ok(
+      /verifyCallerIdentity\(\s*caller,\s*server\.server\.getClientVersion\(\)\s*\)/.test(
+        handlerBlock ?? "",
+      ),
+      `v4.3.2 / identity: ${toolName} must verify caller identity before side effects.`,
+    );
+  }
+  console.log("[smoke] side_effect_tool_identity_gate_test: PASS");
+}
+
+{
+  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  assert.ok(
+    !/tokens:\s*generated\.map/.test(serverSrc),
+    "v4.3.2 / caller_tokens: regenerate_caller_tokens must not return plaintext generated.map in the MCP response.",
+  );
+  assert.ok(
+    /token_fingerprints/.test(serverSrc),
+    "v4.3.2 / caller_tokens: regenerate_caller_tokens response must expose token fingerprints instead of secrets.",
+  );
+  assert.ok(
+    !/Returns the new map so the operator can copy/.test(serverSrc),
+    "v4.3.2 / caller_tokens: tool description must not instruct hosts to expose copied plaintext tokens via MCP response.",
+  );
+  console.log("[smoke] regenerate_caller_tokens_no_plaintext_response_test: PASS");
 }
 
 {

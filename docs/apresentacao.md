@@ -562,7 +562,8 @@ SemVer. Marcos principais:
 | `v04.02.04`      | Truthfulness preflight mais auditável e ferramenta de reteste local.                                             |
 | `v04.02.05`      | Auditoria de sessões, split de custo e proveniência do relator reforçados.                                       |
 | `v04.03.00`      | Disposition de evidência pendente, eval offline e relatório por peer.                                            |
-| `v04.03.01`      | Versão atual (pacote npm `4.3.1`), com classificação mais estrita de skips por erro de provider.                 |
+| `v04.03.01`      | Classificação mais estrita de skips por erro de provider.                                                        |
+| `v04.03.02`      | Versão atual (pacote npm `4.3.2`), com redaction de persistência, guards de sessão finalizada e identity gates.  |
 
 > Nota sobre o nome: até a versão 3.7.5, o projeto foi publicado como
 > `@lcv-ideas-software/cross-review-v2`. A v4.0.0 é a primeira versão sob o

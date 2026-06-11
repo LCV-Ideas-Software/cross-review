@@ -1247,6 +1247,7 @@ export async function main(): Promise<void> {
         session_id: SessionIdSchema,
         job_id: SessionIdSchema.optional(),
         reason: z.string().min(1).max(300).default("operator_requested"),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1256,7 +1257,8 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, job_id, reason, response_format }) => {
+    async ({ session_id, job_id, reason, caller, response_format }) => {
+      verifyCallerIdentity(caller, server.server.getClientVersion());
       const jobs = [...runtime.jobs.values()].filter(
         (job) =>
           job.session_id === session_id &&
@@ -1885,6 +1887,7 @@ export async function main(): Promise<void> {
         reason: z.string().min(1).max(4_000),
         new_task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         new_initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        caller: CallerSchema.default("operator"),
         new_caller: CallerSchema.optional(),
         response_format: ResponseFormatSchema,
       }),
@@ -1895,7 +1898,16 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, reason, new_task, new_initial_draft, new_caller, response_format }) => {
+    async ({
+      session_id,
+      reason,
+      new_task,
+      new_initial_draft,
+      caller,
+      new_caller,
+      response_format,
+    }) => {
+      verifyCallerIdentity(caller, server.server.getClientVersion());
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       // Skip when new_caller is undefined (orchestrator falls back to a
       // sensible default); otherwise verify like the other handlers.
@@ -1920,8 +1932,11 @@ export async function main(): Promise<void> {
     {
       title: "Regenerate Caller Tokens (F1)",
       description:
-        "v2.18.0 / F1 (caller capability tokens). Rotate the per-host secret tokens used by the F1 identity gate. OVERWRITES the existing host-tokens.json file (default location: <data_dir>/host-tokens.json; override via CROSS_REVIEW_TOKENS_FILE env var) with freshly generated 256-bit hex secrets — one per agent (codex, claude, gemini, deepseek, grok). Returns the new map so the operator can copy each per-agent secret into the corresponding MCP host config as CROSS_REVIEW_CALLER_TOKEN. AFTER calling this tool, every MCP host carrying a stale token will start being rejected with identity_forgery_blocked: token does not match any known agent. The operator MUST redistribute the secrets and reload the affected hosts. Use cases: (a) initial deployment after first-boot generation; (b) suspected token leak; (c) periodic rotation. The tool has no input parameters and no auth gate — local filesystem access already implies the ability to read or rewrite host-tokens.json directly, so the MCP surface adds no new exposure.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }),
+        "v2.18.0 / F1 (caller capability tokens). Rotate the per-host secret tokens used by the F1 identity gate. OVERWRITES the existing host-tokens.json file (default location: <data_dir>/host-tokens.json; override via CROSS_REVIEW_TOKENS_FILE env var) with freshly generated 256-bit hex secrets — one per agent (codex, claude, gemini, deepseek, grok, perplexity). The MCP response returns only token fingerprints, never plaintext secrets; read the local host-tokens.json file directly when redistributing CROSS_REVIEW_CALLER_TOKEN values. AFTER calling this tool, every MCP host carrying a stale token will start being rejected with identity_forgery_blocked: token does not match any known agent. The operator MUST redistribute the secrets and reload the affected hosts. Use cases: (a) initial deployment after first-boot generation; (b) suspected token leak; (c) periodic rotation.",
+      inputSchema: z.object({
+        caller: CallerSchema.default("operator"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1929,7 +1944,8 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ response_format }) => {
+    async ({ caller, response_format }) => {
+      verifyCallerIdentity(caller, server.server.getClientVersion());
       const generated = f1GenerateHostTokens(runtime.config.data_dir, {
         overwrite: true,
       });
@@ -1943,14 +1959,20 @@ export async function main(): Promise<void> {
         map: generated.map,
         generated_at: generated.generated_at,
       });
+      const token_fingerprints = Object.fromEntries(
+        Object.entries(generated.map).map(([agent, token]) => [
+          agent,
+          crypto.createHash("sha256").update(token).digest("hex").slice(0, 16),
+        ]),
+      );
       return textResult(
         {
           ok: true,
           file_path: generated.filePath,
           generated_at: generated.generated_at,
-          tokens: generated.map,
+          token_fingerprints,
           next_steps: [
-            "Copy each per-agent secret into the corresponding MCP host config as CROSS_REVIEW_CALLER_TOKEN.",
+            "Read the local host-tokens.json file directly and copy each per-agent secret into the corresponding MCP host config as CROSS_REVIEW_CALLER_TOKEN.",
             "Reload the affected MCP hosts so the new env value is picked up.",
             "Stale tokens will start being rejected with identity_forgery_blocked: token does not match any known agent.",
           ],
@@ -1970,6 +1992,7 @@ export async function main(): Promise<void> {
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(1000),
         severity: z.enum(["info", "warning", "critical"]).default("warning"),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1979,11 +2002,13 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, reason, severity, response_format }) =>
-      textResult(
+    async ({ session_id, reason, severity, caller, response_format }) => {
+      verifyCallerIdentity(caller, server.server.getClientVersion());
+      return textResult(
         await runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
         response_format,
-      ),
+      );
+    },
   );
 
   server.registerTool(
@@ -2055,6 +2080,7 @@ export async function main(): Promise<void> {
         session_id: SessionIdSchema,
         outcome: z.enum(["converged", "aborted", "max-rounds"]),
         reason: z.string().max(200).optional(),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2064,8 +2090,13 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, outcome, reason, response_format }) =>
-      textResult(runtime.orchestrator.store.finalize(session_id, outcome, reason), response_format),
+    async ({ session_id, outcome, reason, caller, response_format }) => {
+      verifyCallerIdentity(caller, server.server.getClientVersion());
+      return textResult(
+        await runtime.orchestrator.store.finalize(session_id, outcome, reason),
+        response_format,
+      );
+    },
   );
 
   await server.connect(new StdioServerTransport());

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pino from "pino";
 import type { AppConfig, RuntimeEvent } from "../core/types.js";
+import { redact, redactJsonValue } from "../security/redact.js";
 
 export class EventLog {
   private readonly file: string;
@@ -20,8 +21,10 @@ export class EventLog {
 
   emit(event: RuntimeEvent): void {
     const payload = { ts: new Date().toISOString(), ...event };
-    fs.appendFileSync(this.file, `${JSON.stringify(payload)}\n`, "utf8");
-    this.logger.info(payload, event.message ?? event.type);
+    const redactedPayload = redactJsonValue(payload);
+    const redactedPayloadText = JSON.stringify(redactedPayload);
+    fs.appendFileSync(this.file, `${redactedPayloadText}\n`, "utf8");
+    this.logger.info(redactedPayload, redact(event.message ?? event.type));
   }
 
   path(): string {

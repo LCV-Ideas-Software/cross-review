@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Latest supported release: v04.02.00 for npm package 4.2.0. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.03.02 for npm package 4.3.2. The current main branch is also supported for security fixes until the next release is published.
 
 ## Reporting a vulnerability
 

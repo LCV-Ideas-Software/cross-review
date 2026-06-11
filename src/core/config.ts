@@ -19,8 +19,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.3.1";
-export const RELEASE_DATE = "2026-06-05";
+export const VERSION = "4.3.2";
+export const RELEASE_DATE = "2026-06-11";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -484,12 +484,12 @@ function loadPeerEnabledConfig(): Record<PeerId, boolean> {
 // notice, `peer` is undefined when not in PEERS, `active` is true iff
 // the runtime will actually emit shadow_decision events.
 function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAutowireConfig {
-  const rawMode = (process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE ?? "")
+  const rawMode = (envValue("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE") ?? "")
     .trim()
     .toLowerCase();
-  const rawPeer = (process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER ?? "").trim();
+  const rawPeer = (envValue("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER") ?? "").trim();
   const rawConsensusPeers = (
-    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS ?? ""
+    envValue("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS") ?? ""
   ).trim();
   const peerKnown: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
   const peer = (peerKnown as readonly string[]).includes(rawPeer) ? (rawPeer as PeerId) : undefined;
@@ -528,7 +528,7 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
   // reduction, but the operator can always raise via env-var. This
   // is a *default* change, not a hard cap.
   const rawCap = Number.parseInt(
-    process.env.CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS ?? "4",
+    envValue("CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS") ?? "4",
     10,
   );
   const maxItemsPerPass = Number.isFinite(rawCap) && rawCap !== 0 ? rawCap : 4;

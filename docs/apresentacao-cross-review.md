@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-06-05.
+Data de referência desta apresentação: 2026-06-11.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -37,18 +37,18 @@ Na prática, ele funciona como uma banca técnica automatizada:
 
 O produto atual é estável. A release de referência reporta:
 
-| Campo                      | Valor atual                         |
-| -------------------------- | ----------------------------------- |
-| Nome                       | `cross-review`                      |
-| Publicador                 | `LCV Ideas & Software`              |
-| Versão runtime             | `4.3.1`                             |
-| Release date runtime       | `2026-06-05`                        |
-| Pacote npm                 | `@lcv-ideas-software/cross-review`  |
-| Versão npm publicada       | `4.3.1`                             |
-| Transporte MCP             | `stdio`                             |
-| Execução CLI por peers     | desativada                          |
-| Modo padrão                | chamadas reais de API               |
-| Diretório de dados runtime | `C:\Users\leona\.cross-review\data` |
+| Campo                      | Valor atual                        |
+| -------------------------- | ---------------------------------- |
+| Nome                       | `cross-review`                     |
+| Publicador                 | `LCV Ideas & Software`             |
+| Versão runtime             | `4.3.2`                            |
+| Release date runtime       | `2026-06-11`                       |
+| Pacote npm                 | `@lcv-ideas-software/cross-review` |
+| Versão npm publicada       | `4.3.2`                            |
+| Transporte MCP             | `stdio`                            |
+| Execução CLI por peers     | desativada                         |
+| Modo padrão                | chamadas reais de API              |
+| Diretório de dados runtime | `<data_dir>`                       |
 
 ## Explicação para não especialistas
 
@@ -500,11 +500,11 @@ typecheck; `test` executa build, smoke e runtime smoke.
 
 ## Persistência e observabilidade
 
-O runtime grava estado fora do repositório, no `data_dir` configurado. Nesta
-máquina, o runtime carregado reportou:
+O runtime grava estado fora do repositório, no `data_dir` configurado. Em uma
+instalação real, `server_info` reporta o caminho efetivo:
 
 ```text
-C:\Users\leona\.cross-review\data
+<data_dir>
 ```
 
 Esse diretório contém sessões, eventos, logs, tokens locais de host e relatórios.
@@ -716,6 +716,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                         |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.03.02`      | 2026-06-11    | Endurece redaction de persistência, guards de sessão finalizada, identity gates e rotação de tokens sem plaintext no payload.    |
 | `v04.03.01`      | 2026-06-05    | Restringe skip por `provider_error` a falhas retryable e melhora diagnóstico de overload do Anthropic.                           |
 | `v04.03.00`      | 2026-06-05    | Adiciona disposition de evidência pendente, eval offline por fixtures e relatório agregado de confiabilidade por peer.           |
 | `v04.02.05`      | 2026-06-05    | Endurece auditoria de sessões com eventos terminais, split de custo, visibilidade de `not_resurfaced` e proveniência do relator. |

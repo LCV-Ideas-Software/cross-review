@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import lockfile from "proper-lockfile";
-import { redact } from "../security/redact.js";
+import { redact, redactJsonValue } from "../security/redact.js";
 import { mergeCost, mergeUsage } from "./cost.js";
 import type {
   AppConfig,
@@ -101,7 +101,7 @@ async function writeJson(file: string, data: unknown): Promise<void> {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const nonce = crypto.randomBytes(TMP_NONCE_BYTES).toString("hex");
   const tmp = `${file}.${process.pid}.${Date.now()}.${nonce}.tmp`;
-  fs.writeFileSync(tmp, redact(`${JSON.stringify(data, null, 2)}\n`), "utf8");
+  fs.writeFileSync(tmp, `${JSON.stringify(redactJsonValue(data), null, 2)}\n`, "utf8");
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < ATOMIC_WRITE_MAX_ATTEMPTS; attempt += 1) {
     try {
@@ -393,11 +393,11 @@ export class SessionStore {
     };
     fs.mkdirSync(path.join(this.sessionDir(session_id), "agent-runs"), { recursive: true });
     await writeJson(this.metaPath(session_id), meta);
-    fs.writeFileSync(path.join(this.sessionDir(session_id), "task.md"), task, "utf8");
+    fs.writeFileSync(path.join(this.sessionDir(session_id), "task.md"), redact(task), "utf8");
     if (reviewFocus) {
       fs.writeFileSync(
         path.join(this.sessionDir(session_id), "review-focus.md"),
-        reviewFocus,
+        redact(reviewFocus),
         "utf8",
       );
     }
@@ -424,6 +424,13 @@ export class SessionStore {
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const err = new Error(
+          `session_already_finalized: session ${sessionId} is finalized with outcome="${meta.outcome}"; cannot mark a round in flight`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
       if (meta.in_flight) {
         throw new Error(
           `session ${sessionId} already has an in-flight round (round=${meta.in_flight.round}, started_at=${meta.in_flight.started_at}); refusing to start a concurrent round. Wait for the round to complete, cancel it via session_cancel_job, or recover it via session_recover_interrupted.`,
@@ -504,7 +511,7 @@ export class SessionStore {
     const seq = this.peekNextSeq(sessionId, file);
     fs.appendFileSync(
       file,
-      `${JSON.stringify({ ...event, seq, ts: event.ts ?? now() })}\n`,
+      `${JSON.stringify(redactJsonValue({ ...event, seq, ts: event.ts ?? now() }))}\n`,
       "utf8",
     );
     this.commitSeq(sessionId, seq);
@@ -787,6 +794,7 @@ export class SessionStore {
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome) return meta;
       meta.failed_attempts = [
         ...(meta.failed_attempts ?? []),
         ...failures.map((failure) => ({ ...failure, round })),
@@ -2327,6 +2335,7 @@ export class SessionStore {
       if (idleFor < effectiveIdleMs) continue;
       const finalized = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
+        if (current.outcome) return undefined;
         const ts = now();
         current.outcome = outcome;
         current.outcome_reason = reason;
@@ -2352,7 +2361,7 @@ export class SessionStore {
         }
         return current;
       });
-      swept.push(finalized);
+      if (finalized) swept.push(finalized);
     }
     return swept;
   }
