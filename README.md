@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.03.06** (npm package `4.3.6`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.03.07** (npm package `4.3.7`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.03.07`**      | Patch — evidence preflight now blocks paid review when the submission references an external evidence/log artifact that was not attached to the session.                                                           |
 | **`v04.03.06`**      | Patch — isolate `runtime-smoke` in a temporary data directory so harness runs do not write open sessions into the operator's real runtime corpus.                                                                  |
 | **`v04.03.05`**      | Patch — filter Perplexity streaming `<think>` token events, expand `~` in central config paths, escape dashboard runtime paths, and harden smoke scripts.                                                          |
 | **`v04.03.04`**      | Patch — harden cross-process event sequencing, exact-match fabrication checks, Gemini missing-text handling, and streaming provider error retry classification.                                                    |

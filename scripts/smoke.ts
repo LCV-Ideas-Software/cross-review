@@ -8421,6 +8421,41 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   assert.equal(withAttachments.attachments_present, true);
 
+  // (e2) attached evidence is not a blank cheque: if the review text
+  //     explicitly points to another evidence artifact that is not attached,
+  //     the preflight must block before paid calls.
+  const unattachedEvidenceReference = evidencePreflight({
+    task: "Review this release audit. npm run smoke passed.",
+    initialDraft:
+      "The summary is attached, but the literal disk grep proof is in wmx4fm04e.output.",
+    structuredEvidence:
+      "Attached release-candidate-evidence-pack.txt summarizes the run; T3 literal evidence deferred to wmx4fm04e.output.",
+    attachmentsPresent: true,
+    attachedEvidenceRefs: ["release-candidate-evidence-pack.txt"],
+  });
+  assert.equal(
+    unattachedEvidenceReference.pass,
+    false,
+    "v4.3.7 / evidence_preflight: referenced external evidence artifacts must be attached",
+  );
+  assert.deepEqual(unattachedEvidenceReference.unattached_evidence_references, [
+    "wmx4fm04e.output",
+  ]);
+
+  const attachedEvidenceReference = evidencePreflight({
+    task: "Review this release audit. npm run smoke passed.",
+    initialDraft: "The summary and literal disk grep proof are attached.",
+    structuredEvidence:
+      "Attached release-candidate-evidence-pack.txt summarizes the run; T3 literal evidence is in wmx4fm04e.output.",
+    attachmentsPresent: true,
+    attachedEvidenceRefs: ["release-candidate-evidence-pack.txt", "wmx4fm04e.output"],
+  });
+  assert.equal(
+    attachedEvidenceReference.pass,
+    true,
+    "v4.3.7 / evidence_preflight: referenced evidence artifacts present in attachments must pass",
+  );
+
   // (f) benign task with no completed-work claim → PASS (nothing to preflight).
   const benign = evidencePreflight({
     task: "Review this CHANGELOG wording for clarity.",

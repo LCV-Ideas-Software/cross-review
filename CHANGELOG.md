@@ -7,6 +7,26 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.07] — 2026-06-11
+
+**Patch — evidence artifact preflight.** This release closes the next focused
+item from the operational robustness plan: prevent a report from claiming that
+literal proof lives in a separate evidence/log artifact while sending peers only
+a summary.
+
+### Fixed
+
+- Evidence preflight now scans `task`, `initial_draft`, and structured
+  `evidence` text for explicit references to external evidence/log artifacts
+  such as `.output`, `.log`, `.txt`, `.json`, and `.ndjson` in evidence-context
+  lines.
+- When such an artifact is referenced but does not match an attached evidence
+  label, relative path, or basename, the session aborts locally with
+  `needs_evidence_preflight` before paid peer calls.
+- The `session.evidence_preflight_failed` event now includes
+  `unattached_evidence_references` so callers can attach the missing files and
+  resubmit deliberately.
+
 ## [v04.03.06] — 2026-06-11
 
 **Patch — runtime smoke isolation.** This release closes a focused

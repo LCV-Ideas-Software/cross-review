@@ -39,9 +39,17 @@ Mere keyword presence does **not** trip it. "I plan to write a patch"
 or "here is the test plan" is a design review with legitimately no diff
 — it passes.
 
-A non-empty `evidence` field **or** any attached evidence makes the
-preflight pass unconditionally — that is the caller's authoritative
+A non-empty `evidence` field **or** any attached evidence satisfies the
+baseline evidence-presence check — that is the caller's authoritative
 declaration that concrete evidence exists.
+
+From v4.3.7 onward, that declaration is no longer a blank cheque for
+references to separate artifacts. If `task`, `initial_draft`, or the
+structured `evidence` text explicitly points to an external evidence/log
+artifact such as `wmx4fm04e.output`, `release-evidence.txt`, `events.ndjson`,
+or `audit.log`, that artifact name must match an attached evidence label,
+relative path, or basename. Otherwise the preflight aborts locally with
+`unattached_evidence_references`.
 
 ## Minimum evidence format
 
@@ -63,9 +71,14 @@ it is obviously absent.
 ## The `evidence` field
 
 Both `run_until_unanimous` and `session_start_unanimous` accept an
-optional `evidence: string`. When non-empty it satisfies the preflight
-unconditionally. Use it to attach the caller-packaged evidence bundle
+optional `evidence: string`. When non-empty it satisfies the baseline
+evidence-presence check. Use it to include the caller-packaged evidence bundle
 without inflating `initial_draft`.
+
+If the bundle says that proof lives in another file, attach that file with
+`session_attach_evidence` before starting the paid round. The preflight compares
+the referenced artifact names against the attached evidence labels, relative
+paths, and basenames; it does not read arbitrary filesystem paths.
 
 ## Opt-out
 
@@ -81,11 +94,13 @@ prose without inline markers.
 "needs_evidence_preflight"`;
 - event emitted: `session.evidence_preflight_failed` with
   `completed_work_claim_matched`, `evidence_marker_found`,
-  `structured_evidence_supplied`, `attachments_present`;
+  `structured_evidence_supplied`, `attachments_present`, and
+  `unattached_evidence_references`;
 - **zero paid peer calls** were made.
 
 Re-submit with evidence embedded inline, with the `evidence` field
-populated, or with evidence attached via `session_attach_evidence`.
+populated, or with every referenced external evidence artifact attached via
+`session_attach_evidence`.
 
 ## Truthfulness preflight (v4.2.x)
 

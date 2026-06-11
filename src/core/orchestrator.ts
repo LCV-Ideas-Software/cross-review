@@ -705,6 +705,44 @@ const COMPLETED_WORK_CLAIM_PATTERN =
   /\b\d+\s+(?:passed|failed)\b|\bgit\s+diff\b|\bgit\s+status\b|\bnpm\s+run\b|\bcargo\s+(?:test|build)\b|\bbuild\s+(?:passed|succeeded|clean|green)\b|\btests?\s+(?:pass|passed|green|all\s+green)\b|\bgit\s+diff\s+--check\b/i;
 const EVIDENCE_MARKER_PATTERN =
   /```|@@\s*[-+]|\b[a-f0-9]{7,}\b|\b[\w./-]+\.\w+:\d+\b|(?:^|\n)\s*[$>]\s+\S/;
+const EXTERNAL_EVIDENCE_CONTEXT_PATTERN =
+  /\b(?:evidence|attachment|attached|anex(?:o|os|a|as|ad[ao]s?)|artifact|artefato|proof|prova|raw|literal|verbatim|source[- ]of[- ]truth|log)\b/i;
+const EXTERNAL_EVIDENCE_ARTIFACT_PATTERN =
+  /(?:^|[\s`'"([{])([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:output|log|txt|json|ndjson))(?:\b|[\s`'")}\]])/gi;
+
+function evidenceRefAliases(value: string): string[] {
+  const normalized = value
+    .trim()
+    .replace(/^[`'"]+|[`'".,;:)\]}]+$/g, "")
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  if (!normalized) return [];
+  const parts = normalized.split("/").filter(Boolean);
+  const basename = parts.at(-1);
+  return basename && basename !== normalized ? [normalized, basename] : [normalized];
+}
+
+function findUnattachedEvidenceReferences(text: string, attachedEvidenceRefs: string[]): string[] {
+  const attached = new Set(attachedEvidenceRefs.flatMap(evidenceRefAliases));
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  for (const line of lines) {
+    if (!EXTERNAL_EVIDENCE_CONTEXT_PATTERN.test(line)) continue;
+    EXTERNAL_EVIDENCE_ARTIFACT_PATTERN.lastIndex = 0;
+    for (const match of line.matchAll(EXTERNAL_EVIDENCE_ARTIFACT_PATTERN)) {
+      const rawRef = match[1];
+      if (!rawRef) continue;
+      const aliases = evidenceRefAliases(rawRef);
+      const canonical = aliases[0];
+      if (!canonical || seen.has(canonical)) continue;
+      if (aliases.some((alias) => attached.has(alias))) continue;
+      seen.add(canonical);
+      missing.push(rawRef.replace(/\\/g, "/"));
+    }
+  }
+  return missing;
+}
 
 export interface EvidencePreflightResult {
   pass: boolean;
@@ -713,6 +751,7 @@ export interface EvidencePreflightResult {
   evidence_marker_found: boolean;
   structured_evidence_supplied: boolean;
   attachments_present: boolean;
+  unattached_evidence_references: string[];
 }
 
 export function evidencePreflight(params: {
@@ -720,10 +759,30 @@ export function evidencePreflight(params: {
   initialDraft?: string | undefined;
   structuredEvidence?: string | undefined;
   attachmentsPresent: boolean;
+  attachedEvidenceRefs?: string[] | undefined;
 }): EvidencePreflightResult {
   const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
-  // A structured `evidence` field or any attached evidence is the
-  // caller's authoritative declaration that concrete evidence exists.
+  const corpus = `${params.task}\n${params.initialDraft ?? ""}\n${params.structuredEvidence ?? ""}`;
+  const unattachedEvidenceReferences = findUnattachedEvidenceReferences(
+    corpus,
+    params.attachedEvidenceRefs ?? [],
+  );
+  if (unattachedEvidenceReferences.length > 0) {
+    return {
+      pass: false,
+      reason: `text references evidence artifact(s) that are not attached to this session: ${unattachedEvidenceReferences.join(
+        ", ",
+      )}; attach the referenced files with session_attach_evidence before submitting`,
+      completed_work_claim_matched: COMPLETED_WORK_CLAIM_PATTERN.test(corpus),
+      evidence_marker_found: EVIDENCE_MARKER_PATTERN.test(corpus),
+      structured_evidence_supplied: structuredEvidenceSupplied,
+      attachments_present: params.attachmentsPresent,
+      unattached_evidence_references: unattachedEvidenceReferences,
+    };
+  }
+  // A structured `evidence` field or any attached evidence is the caller's
+  // authoritative declaration that concrete evidence exists, after named
+  // external evidence artifacts have been matched to session attachments.
   if (structuredEvidenceSupplied || params.attachmentsPresent) {
     return {
       pass: true,
@@ -734,9 +793,9 @@ export function evidencePreflight(params: {
       evidence_marker_found: false,
       structured_evidence_supplied: structuredEvidenceSupplied,
       attachments_present: params.attachmentsPresent,
+      unattached_evidence_references: [],
     };
   }
-  const corpus = `${params.task}\n${params.initialDraft ?? ""}`;
   const claimMatched = COMPLETED_WORK_CLAIM_PATTERN.test(corpus);
   const evidenceFound = EVIDENCE_MARKER_PATTERN.test(corpus);
   // Trip ONLY on completed-work-claim WITHOUT any evidence marker.
@@ -752,6 +811,7 @@ export function evidencePreflight(params: {
     evidence_marker_found: evidenceFound,
     structured_evidence_supplied: false,
     attachments_present: false,
+    unattached_evidence_references: [],
   };
 }
 
@@ -4156,16 +4216,19 @@ export class CrossReviewOrchestrator {
     // `needs_evidence_preflight` instead of burning API across rounds.
     // Opt-out via CROSS_REVIEW_EVIDENCE_PREFLIGHT=off.
     if (this.config.evidence_preflight_enabled) {
-      const attachmentsPresent =
-        this.store.readEvidenceAttachments(
-          session.session_id,
-          this.config.prompt.max_attached_evidence_chars,
-        ).length > 0;
+      const attachments = this.store.readEvidenceAttachments(
+        session.session_id,
+        this.config.prompt.max_attached_evidence_chars,
+      );
       const preflight = evidencePreflight({
         task: input.task,
         initialDraft: draft,
         structuredEvidence: input.evidence,
-        attachmentsPresent,
+        attachmentsPresent: attachments.length > 0,
+        attachedEvidenceRefs: attachments.flatMap((attachment) => [
+          attachment.label,
+          attachment.relative_path,
+        ]),
       });
       if (!preflight.pass) {
         await this.store.finalize(session.session_id, "aborted", "needs_evidence_preflight");
@@ -4179,6 +4242,7 @@ export class CrossReviewOrchestrator {
             evidence_marker_found: preflight.evidence_marker_found,
             structured_evidence_supplied: preflight.structured_evidence_supplied,
             attachments_present: preflight.attachments_present,
+            unattached_evidence_references: preflight.unattached_evidence_references,
           },
         });
         return {
