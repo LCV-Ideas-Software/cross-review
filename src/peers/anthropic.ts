@@ -30,6 +30,7 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
+import { redact } from "../security/redact.js";
 import { BasePeerAdapter, STREAM_TEXT_MAX_BYTES, StreamBufferOverflowError } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";
@@ -43,6 +44,36 @@ type AnthropicUsage = {
   cache_creation_input_tokens?: number | null | undefined;
   cache_read_input_tokens?: number | null | undefined;
 };
+
+type AnthropicStopDetails = {
+  type?: string | null | undefined;
+  category?: string | null | undefined;
+  explanation?: string | null | undefined;
+};
+
+type AnthropicMessageLike = {
+  content: Array<{ type: string; text?: string }>;
+  model?: string | undefined;
+  stop_reason?: string | null | undefined;
+  stop_details?: AnthropicStopDetails | null | undefined;
+  usage?: AnthropicUsage | null | undefined;
+};
+
+class AnthropicRefusalError extends Error {
+  readonly code = "anthropic_refusal";
+  readonly stop_reason = "refusal";
+
+  constructor(
+    readonly model: string,
+    readonly stop_details: AnthropicStopDetails | null | undefined,
+    readonly usage: AnthropicUsage | null | undefined,
+    readonly billed: boolean,
+  ) {
+    const category = stop_details?.category ? ` category=${stop_details.category}` : "";
+    super(`Claude Fable 5 refusal from ${model}${category}.`);
+    this.name = "AnthropicRefusalError";
+  }
+}
 
 function usageFromAnthropic(usage: AnthropicUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
@@ -136,6 +167,42 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY was not found in environment variables.");
     const Ctor = await loadAnthropicCtor();
     return new Ctor({ apiKey, timeout: this.config.retry.timeout_ms });
+  }
+
+  private throwIfRefusal(
+    message: AnthropicMessageLike,
+    context: PeerCallContext,
+    phase: "review" | "generation",
+  ): void {
+    if (message.stop_reason !== "refusal") return;
+    const usage = message.usage ?? undefined;
+    const billed = (usage?.output_tokens ?? 0) > 0;
+    const model = message.model ?? this.model;
+    const details = message.stop_details ?? undefined;
+    context.emit({
+      type: "provider.refusal",
+      session_id: context.session_id,
+      round: context.round,
+      peer: this.id,
+      message: `Anthropic returned stop_reason=refusal for ${model}.`,
+      data: {
+        provider: this.provider,
+        configured_model: this.model,
+        model,
+        phase,
+        stop_reason: "refusal",
+        stop_details_type: details?.type ?? null,
+        category: details?.category ?? null,
+        explanation:
+          typeof details?.explanation === "string"
+            ? redact(details.explanation).slice(0, 500)
+            : null,
+        billed,
+        input_tokens: usage?.input_tokens ?? null,
+        output_tokens: usage?.output_tokens ?? null,
+      },
+    });
+    throw new AnthropicRefusalError(model, details, usage, billed);
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -259,6 +326,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             tokenStream.append(delta);
           });
           const message = await stream.finalMessage();
+          this.throwIfRefusal(message, context, "review");
           const parsed = parseAnthropicContent(message.content);
           tokenStream.complete(parsed.text.length);
           return this.resultFromText({
@@ -273,6 +341,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         }
         const reviewClient = await this.client();
         const message = await reviewClient.messages.create(body, { signal: context.signal });
+        this.throwIfRefusal(message, context, "review");
         const parsed = parseAnthropicContent(message.content);
         return this.resultFromText({
           text: parsed.text,
@@ -331,6 +400,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             tokenStream.append(delta);
           });
           const message = await stream.finalMessage();
+          this.throwIfRefusal(message, context, "generation");
           const parsed = parseAnthropicContent(message.content);
           tokenStream.complete(parsed.text.length);
           return this.generationFromText({
@@ -345,6 +415,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         }
         const generateClient = await this.client();
         const message = await generateClient.messages.create(body, { signal: context.signal });
+        this.throwIfRefusal(message, context, "generation");
         const parsed = parseAnthropicContent(message.content);
         return this.generationFromText({
           text: parsed.text,

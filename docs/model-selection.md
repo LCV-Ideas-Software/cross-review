@@ -14,11 +14,12 @@ canonical pin.
 3. Exclude known non-thinking, low-capacity or deprecated models — they
    never become the canonical pin.
 4. Compare returned model IDs against the canonical pin documented below.
-5. If the canonical pin is in the API response, select it; if the canonical
-   pin is NOT in the response, KEEP the canonical pin anyway (no silent
-   downgrade) so any provider availability problem surfaces visibly in
-   probes and review rounds instead of mutating into a weaker model behind
-   the operator's back.
+5. If an explicit supported operator-selected pin is configured and appears in
+   the provider response, select that pin. Otherwise, if the canonical pin is
+   in the API response, select it. If the configured pin is NOT in the response,
+   KEEP the configured pin anyway (no silent downgrade) so any provider
+   availability problem surfaces visibly in probes and review rounds instead
+   of mutating into a weaker model behind the operator's back.
 6. Persist the selected model, candidate list, source URL, confidence and
    reason in the session snapshot.
 
@@ -47,6 +48,17 @@ env-var per host — a deliberate decision, never a silent downgrade.
 
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
+
+Claude Fable 5 (`claude-fable-5`) is a supported Anthropic production-model
+override for the `claude` peer. It is intentionally not the default canonical
+pin because it has different cost, refusal and data-retention posture from
+Claude Opus 4.8. When `CROSS_REVIEW_ANTHROPIC_MODEL=claude-fable-5` is set and
+the Anthropic Models API lists Fable, model selection records
+`confidence=verified`; when Fable is absent, the runtime keeps the explicit
+Fable pin and surfaces the provider failure rather than falling back to Opus.
+Fable refusals are successful API responses with `stop_reason="refusal"` and
+are recorded as non-skippable `provider_refusal` failures unless the operator
+configured an explicit Anthropic fallback model chain.
 
 Google's deprecation schedule lists `gemini-2.5-pro` for shutdown on
 2026-10-16 and recommends `gemini-3.1-pro-preview` as the replacement.
@@ -77,7 +89,9 @@ explicitly want a minimal `disable_search` round-trip.
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
 - OpenAI/Codex: Responses API with reasoning effort `xhigh` by default.
-- Anthropic/Claude: adaptive thinking with omitted thinking display plus `output_config.effort=xhigh` by default on Opus 4.8.
+- Anthropic/Claude: adaptive thinking with omitted thinking display plus
+  `output_config.effort=xhigh` by default on Opus 4.8 and the supported Fable 5
+  override.
 - Google/Gemini: high thinking level for the pinned Gemini 3.1 Pro Preview
   model; the adapter keeps the Gemini 3 thinking path explicit because this
   peer is used for complex reasoning and coding review.

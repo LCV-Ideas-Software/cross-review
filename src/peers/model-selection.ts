@@ -48,6 +48,23 @@ const PRIORITY: Record<PeerId, string[]> = {
   perplexity: ["sonar-reasoning-pro"],
 };
 
+const SUPPORTED_MODEL_OVERRIDES: Partial<Record<PeerId, string[]>> = {
+  // Claude Fable 5 is a fully supported operator-selected Anthropic peer
+  // model. It is not the default pin because Fable-specific refusals need
+  // explicit operator cost/privacy posture, but it must not be reported as
+  // an unknown/off-policy override when selected deliberately.
+  claude: ["claude-fable-5"],
+};
+
+function supportedModels(peer: PeerId): string[] {
+  return [...PRIORITY[peer], ...(SUPPORTED_MODEL_OVERRIDES[peer] ?? [])];
+}
+
+function isSupportedModel(peer: PeerId, model: string): boolean {
+  const normalized = modelId(model);
+  return supportedModels(peer).some((candidate) => modelId(candidate) === normalized);
+}
+
 function envOverrideName(peer: PeerId): string {
   switch (peer) {
     case "codex":
@@ -80,7 +97,33 @@ export function selectFromCandidates(
 ): ModelSelection {
   const available = new Set(candidates.map((candidate) => modelId(candidate.id)));
   const priority = PRIORITY[peer];
+  const configured = modelId(configuredPin);
+  const configuredIsCanonical = priority.some((id) => modelId(id) === configured);
   const selected = priority.find((id) => available.has(id));
+  const configuredSupported = isSupportedModel(peer, configuredPin);
+  const configuredVerified = configuredSupported && available.has(configured);
+  if (configuredVerified) {
+    return {
+      peer,
+      selected: configured,
+      candidates,
+      source_url: DOCS[peer],
+      confidence: "verified",
+      reason: configuredIsCanonical
+        ? `Validated availability of the canonical pin in the provider's model API: ${priority.join(", ")}.`
+        : `Validated availability of supported operator-selected model ${configuredPin} in the provider's model API.`,
+    };
+  }
+  if (!configuredIsCanonical && candidates.length > 0) {
+    return {
+      peer,
+      selected: configured,
+      candidates,
+      source_url: DOCS[peer],
+      confidence: "unknown",
+      reason: `Model API returned candidates, but the supported operator-selected model ${configuredPin} was not among them; keeping that configured model pin so the run fails visibly instead of silently downgrading to the canonical pin (${priority.join(", ")}).`,
+    };
+  }
   return {
     peer,
     selected: modelId(selected ?? configuredPin),
@@ -104,7 +147,7 @@ function overrideSelection(peer: PeerId, value: string): ModelSelection {
   // legitimately pin a model outside the maintained list — but the
   // `confidence: "inferred"` plus the explicit notice in the reason
   // string make the deviation observable.
-  const known = PRIORITY[peer].includes(value);
+  const known = isSupportedModel(peer, value);
   return {
     peer,
     selected: value,
@@ -112,8 +155,8 @@ function overrideSelection(peer: PeerId, value: string): ModelSelection {
     source_url: DOCS[peer],
     confidence: known ? "verified" : "inferred",
     reason: known
-      ? `${envOverrideName(peer)} is set to the canonical pin; the explicit override is acknowledged but matches the canonical pin exactly.`
-      : `${envOverrideName(peer)}='${value}' is set and differs from the canonical pin (${PRIORITY[peer].join(", ")}); honoring the operator override (the only legitimate non-canonical path) but flagging confidence=inferred so any provider 404 surfaces here.`,
+      ? `${envOverrideName(peer)} is set to a supported model (${value}); the explicit override is acknowledged as first-class for this peer.`
+      : `${envOverrideName(peer)}='${value}' is set and differs from the supported model set (${supportedModels(peer).join(", ")}); honoring the operator override (the only legitimate non-canonical path) but flagging confidence=inferred so any provider 404 surfaces here.`,
   };
 }
 
@@ -252,7 +295,7 @@ export async function resolveBestModel(config: AppConfig, peer: PeerId): Promise
   }
   try {
     const candidates = await candidatesForPeer(config, peer);
-    return selectFromCandidates(peer, candidates, PRIORITY[peer][0] ?? config.models[peer]);
+    return selectFromCandidates(peer, candidates, config.models[peer] ?? PRIORITY[peer][0]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {

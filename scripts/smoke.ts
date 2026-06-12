@@ -900,6 +900,7 @@ assert.equal(
     "format_recovery_exhausted",
     "silent_model_downgrade",
     "prompt_flagged_by_moderation",
+    "provider_refusal",
     "budget_exceeded",
     "budget_preflight",
     "cancelled",
@@ -9363,6 +9364,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(
     changelogSrc.includes(`## [${displayVersion}] — ${RELEASE_DATE}`),
     `v4.4.0 / release_metadata: CHANGELOG.md must contain heading "## [${displayVersion}] — ${RELEASE_DATE}".`,
+  );
+  const securitySrc = fs.readFileSync(path.join(process.cwd(), "SECURITY.md"), "utf8");
+  assert.ok(
+    securitySrc.includes(`Latest supported release: ${displayVersion} for npm package ${pjVer}.`),
+    `v4.4.2 / release_metadata: SECURITY.md must name the current release "${displayVersion}" and npm package "${pjVer}".`,
   );
   console.log("[smoke] package_version_consistency_test: PASS");
 }

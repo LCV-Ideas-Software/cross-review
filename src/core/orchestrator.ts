@@ -2352,7 +2352,8 @@ export class CrossReviewOrchestrator {
         started,
       );
       if (failure.failure_class !== "prompt_flagged_by_moderation") {
-        if (failure.retryable) {
+        const fallbackEligible = failure.retryable || failure.failure_class === "provider_refusal";
+        if (fallbackEligible) {
           let fallbackWasTried = false;
           let lastFallbackFailure: PeerFailure | undefined;
           for (const fallback of this.fallbackAdapters(adapter)) {

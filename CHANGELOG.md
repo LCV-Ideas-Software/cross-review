@@ -7,6 +7,41 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.02] — 2026-06-12
+
+**Patch — Claude Fable 5 operational support as an explicit Anthropic model
+option.** Fable 5 is now a first-class supported `claude` peer override
+without changing the default canonical pin from Claude Opus 4.8.
+
+### Fixed
+
+- Anthropic model selection now honors `claude-fable-5` when the operator pins
+  it explicitly, even when the provider model API also lists the canonical
+  `claude-opus-4-8` model. If the operator-selected Fable pin is absent from
+  the API response, selection keeps Fable with `confidence=unknown` so the
+  failure is visible instead of silently downgrading to Opus.
+- `resolveBestModel()` now validates the configured runtime model pin rather
+  than always passing the canonical default into live model selection, so
+  central `config.json` model overrides are treated consistently with env-var
+  overrides.
+- Anthropic responses with `stop_reason: "refusal"` are now classified as a
+  dedicated non-skippable `provider_refusal` failure class. The adapter emits a
+  structured `provider.refusal` event, records billed/unbilled status from
+  usage, discards incomplete refusal output, and only attempts fallback models
+  when the operator configured them explicitly.
+
+### Changed
+
+- Provider refresh smoke coverage now pins Claude Fable 5 selection,
+  refusal-event emission and `provider_refusal` classification.
+- Release metadata smoke coverage now also checks `SECURITY.md`, preventing the
+  supported-release policy file from drifting behind package releases again.
+- Provider refresh smoke coverage now verifies that classified retry metadata
+  attached by `withRetry()` is consumed by provider error classification.
+- Documentation now describes Fable 5 as an opt-in production Claude model,
+  including model ID, cost-rate values, refusal semantics, and Anthropic's
+  30-day/no-ZDR retention posture for that model family.
+
 ## [v04.04.01] — 2026-06-12
 
 **Patch — complete residual audit sweep after v4.4.0.** This release closes

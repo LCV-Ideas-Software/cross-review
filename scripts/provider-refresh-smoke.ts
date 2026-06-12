@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
+import type { PeerFailure, RuntimeEvent } from "../src/core/types.js";
+import { AnthropicAdapter } from "../src/peers/anthropic.js";
+import { classifyProviderError } from "../src/peers/errors.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { PerplexityAdapter } from "../src/peers/perplexity.js";
 
@@ -118,6 +121,151 @@ const config = loadConfig();
   );
   assert.equal(claude.selected, "claude-opus-4-8");
   assert.equal(claude.confidence, "verified");
+}
+
+{
+  const fable = selectFromCandidates(
+    "claude",
+    [
+      { id: "claude-opus-4-8", source: "api" },
+      { id: "claude-fable-5", source: "api" },
+    ],
+    "claude-fable-5",
+  );
+  assert.equal(fable.selected, "claude-fable-5");
+  assert.equal(
+    fable.confidence,
+    "verified",
+    "Claude Fable 5 must remain selected when the operator pinned it and the provider API lists both Fable and the canonical Opus pin.",
+  );
+}
+
+{
+  const unavailableFable = selectFromCandidates(
+    "claude",
+    [{ id: "claude-opus-4-8", source: "api" }],
+    "claude-fable-5",
+  );
+  assert.equal(unavailableFable.selected, "claude-fable-5");
+  assert.equal(
+    unavailableFable.confidence,
+    "unknown",
+    "A missing operator-selected Fable pin must fail visibly instead of silently downgrading to Opus.",
+  );
+}
+
+{
+  const refusal = Object.assign(new Error("Claude Fable 5 refused the request."), {
+    code: "anthropic_refusal",
+    stop_reason: "refusal",
+    stop_details: { type: "refusal", category: "cyber", explanation: "fixture" },
+    billed: false,
+  });
+  const failure = classifyProviderError(
+    "claude",
+    "anthropic",
+    "claude-fable-5",
+    refusal,
+    1,
+    Date.now(),
+  );
+  assert.equal(failure.failure_class, "provider_refusal");
+  assert.equal(failure.retryable, false);
+  assert.equal(failure.recovery_hint, "reformulate_and_retry");
+}
+
+{
+  const attachedFailure: PeerFailure = {
+    peer: "claude",
+    provider: "anthropic",
+    model: "claude-fable-5",
+    failure_class: "timeout",
+    message: "Preserved retry metadata from the retry layer.",
+    retryable: true,
+    attempts: 3,
+    latency_ms: 1234,
+  };
+  const error = new Error("Raw provider message without timeout signal.");
+  Object.defineProperty(error, "peerFailure", {
+    value: attachedFailure,
+    enumerable: false,
+    configurable: true,
+  });
+  const failure = classifyProviderError(
+    "claude",
+    "anthropic",
+    "claude-fable-5",
+    error,
+    1,
+    Date.now(),
+  );
+  assert.equal(
+    failure,
+    attachedFailure,
+    "Provider error classification must preserve PeerFailure metadata attached by retry exhaustion.",
+  );
+}
+
+{
+  const adapter = new AnthropicAdapter({
+    ...config,
+    models: { ...config.models, claude: "claude-fable-5" },
+    cost_rates: {
+      ...config.cost_rates,
+      claude: {
+        input_per_million: 10,
+        output_per_million: 50,
+        cache_read_per_million: 1,
+        cache_write_per_million: 20,
+      },
+    },
+  });
+  (
+    adapter as unknown as {
+      client: () => Promise<{
+        messages: {
+          create: () => Promise<{
+            content: unknown[];
+            model: string;
+            stop_reason: string;
+            stop_details: { type: string; category: string; explanation: string };
+            usage: { input_tokens: number; output_tokens: number };
+          }>;
+        };
+      }>;
+    }
+  ).client = async () => ({
+    messages: {
+      create: async () => ({
+        content: [],
+        model: "claude-fable-5",
+        stop_reason: "refusal",
+        stop_details: { type: "refusal", category: "cyber", explanation: "fixture" },
+        usage: { input_tokens: 412, output_tokens: 0 },
+      }),
+    },
+  });
+  const events: RuntimeEvent[] = [];
+  await assert.rejects(
+    () =>
+      adapter.call("Review this fixture.", {
+        session_id: "550e8400-e29b-41d4-a716-446655440000",
+        round: 1,
+        task: "provider refresh smoke",
+        emit: (event) => events.push(event),
+      }),
+    /Claude Fable 5 refusal/,
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "provider.refusal" &&
+        event.peer === "claude" &&
+        event.data?.model === "claude-fable-5" &&
+        event.data?.billed === false,
+    ),
+    "Anthropic Fable refusal must emit a structured provider.refusal event with billed=false.",
+  );
 }
 
 {

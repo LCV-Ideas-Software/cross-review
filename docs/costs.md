@@ -31,16 +31,23 @@ artifacts when present.
 
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
-Current reference values verified on 2026-06-03 for the maintained model pins:
+Current reference values verified on 2026-06-12 for the maintained model pins
+and the supported Claude Fable 5 override:
 
 | Provider/model                   | Input   | Output | Cached input / cache hit | Extended tier                                                      |
 | -------------------------------- | ------- | ------ | ------------------------ | ------------------------------------------------------------------ |
 | OpenAI `gpt-5.5`                 | `5`     | `30`   | `0.5`                    | `>272000` input tokens: input `10`, output `45`                    |
 | Anthropic `claude-opus-4-8`      | `5`     | `25`   | `0.5`                    | none                                                               |
+| Anthropic `claude-fable-5`       | `10`    | `50`   | `1`                      | none                                                               |
 | Gemini `gemini-3.1-pro-preview`  | `2`     | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4` |
 | DeepSeek `deepseek-v4-pro`       | `0.435` | `0.87` | `0.003625`               | none                                                               |
 | xAI `grok-4.3`                   | `1.25`  | `2.5`  | `0.2`                    | none                                                               |
 | Perplexity `sonar-reasoning-pro` | `2`     | `8`    | n/a                      | request fee: low `6`, medium `10`, high `14` per 1000 requests     |
+
+Anthropic cache-write rates are separate from cache-hit rates. For
+`claude-fable-5`, configure `CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION`
+as `20` when using the workspace's default Anthropic `1h` cache TTL, or `12.5`
+if you deliberately switch Anthropic cache TTL to `5m`.
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_MAX_SESSION_COST_USD", "20", "User")

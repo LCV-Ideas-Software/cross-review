@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.04.01** (npm package `4.4.1`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.04.02** (npm package `4.4.2`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                   |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.04.02`**      | Patch — support Claude Fable 5 as an explicit Anthropic production-model option, including verified model selection, refusal handling, refusal events, docs and cost guidance.                                                                                          |
 | **`v04.04.01`**      | Patch — complete residual audit sweep: full mutating-tool identity gate, evidence attachment cache/safety, async EventLog flush, Perplexity auth-only probe mode, cache-cost correctness, dashboard report method split, and dedicated source-contract smoke isolation. |
 | **`v04.04.00`**      | Minor — consolidated audit close-out: log-level validation, realpath containment, initial-draft fabrication guard, Perplexity probe minimization, identity audit events, derived tool list, docs and metadata guards.                                                   |
 | **`v04.03.09`**      | Patch — move `truthfulness_preflight` coverage into a focused smoke script and tighten evidence-artifact matching for path-qualified refs and `.md/.diff/.patch/.csv` files.                                                                                            |
@@ -186,9 +187,16 @@ variables. Example overrides (PowerShell):
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.5", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-opus-4-8", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "xhigh", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.20-multi-agent", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
 ```
+
+Claude Fable 5 is supported as an explicit Anthropic model override:
+`CROSS_REVIEW_ANTHROPIC_MODEL=claude-fable-5`. It is not the default pin; when
+selected, configure the Anthropic rate card for Fable 5 and expect
+`provider_refusal` failures when the API returns `stop_reason="refusal"`.
 
 For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.3`, which
 accepts explicit `reasoning.effort` through `high`; the adapter clamps the

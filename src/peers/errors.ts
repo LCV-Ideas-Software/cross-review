@@ -84,22 +84,38 @@ function extractProviderErrorSignals(error: unknown): string {
   const errorObj = error as Record<string, unknown>;
   collectStringField(values, errorObj.code);
   collectStringField(values, errorObj.type);
+  collectStringField(values, errorObj.stop_reason);
   const nestedError = errorObj.error;
   if (nestedError && typeof nestedError === "object") {
     const nested = nestedError as Record<string, unknown>;
     collectStringField(values, nested.code);
     collectStringField(values, nested.type);
+    collectStringField(values, nested.stop_reason);
+  }
+  const stopDetails = errorObj.stop_details;
+  if (stopDetails && typeof stopDetails === "object") {
+    const nested = stopDetails as Record<string, unknown>;
+    collectStringField(values, nested.type);
+    collectStringField(values, nested.category);
   }
   const response = errorObj.response;
   if (response && typeof response === "object") {
     const responseObj = response as Record<string, unknown>;
     collectStringField(values, responseObj.code);
     collectStringField(values, responseObj.type);
+    collectStringField(values, responseObj.stop_reason);
     const responseError = responseObj.error;
     if (responseError && typeof responseError === "object") {
       const nested = responseError as Record<string, unknown>;
       collectStringField(values, nested.code);
       collectStringField(values, nested.type);
+      collectStringField(values, nested.stop_reason);
+    }
+    const responseStopDetails = responseObj.stop_details;
+    if (responseStopDetails && typeof responseStopDetails === "object") {
+      const nested = responseStopDetails as Record<string, unknown>;
+      collectStringField(values, nested.type);
+      collectStringField(values, nested.category);
     }
   }
   return values.join(" ");
@@ -169,6 +185,17 @@ export function classifyProviderError(
   attempts: number,
   started: number,
 ): PeerFailure {
+  const attachedFailure =
+    error && typeof error === "object"
+      ? (error as { peerFailure?: PeerFailure | undefined }).peerFailure
+      : undefined;
+  if (
+    attachedFailure &&
+    attachedFailure.peer === peer &&
+    typeof attachedFailure.failure_class === "string"
+  ) {
+    return attachedFailure;
+  }
   const message = safeErrorMessage(error);
   const httpStatus = extractHttpStatus(error);
   const providerSignals = extractProviderErrorSignals(error);
@@ -192,6 +219,11 @@ export function classifyProviderError(
     );
   const cancelled =
     /\b(?:aborterror|operation was aborted|call cancelled|session_cancelled)\b/i.test(message);
+  const providerRefusal =
+    provider.toLowerCase() === "anthropic" &&
+    (/\banthropic_refusal\b|\brefusal\b/i.test(providerSignals) ||
+      /\bstop_reason\b[^a-z0-9_]+refusal\b/i.test(message) ||
+      /\bclaude fable 5 refusal\b/i.test(message));
   const moderation =
     /\b(?:invalid_prompt|content_policy_violation|policy_violation)\b/i.test(providerSignals) ||
     /\b(?:invalid_prompt|prompt[_\s-]?flagged|moderation|moderated|safety policy|safety system|usage policy|responsibleaipolicyviolation|content[_\s-]?filter|blocked by policy|policy violation|could not be processed|input was rejected)\b/i.test(
@@ -215,15 +247,17 @@ export function classifyProviderError(
     ? "auth"
     : cancelled
       ? "cancelled"
-      : moderation
-        ? "prompt_flagged_by_moderation"
-        : rateLimited
-          ? "rate_limit"
-          : timeout
-            ? "timeout"
-            : network
-              ? "network"
-              : "provider_error";
+      : providerRefusal
+        ? "provider_refusal"
+        : moderation
+          ? "prompt_flagged_by_moderation"
+          : rateLimited
+            ? "rate_limit"
+            : timeout
+              ? "timeout"
+              : network
+                ? "network"
+                : "provider_error";
 
   // v2.15.0 (item 5): docs hint for 4xx parameter rejections. Only
   // applies when the failure class is `provider_error` (avoid stomping
@@ -267,18 +301,21 @@ export function classifyProviderError(
     retryable:
       !cancelled &&
       !auth &&
+      !providerRefusal &&
       (rateLimited || timeout || network || gateway5xx || providerOverloaded),
-    recovery_hint:
-      rateLimited || providerOverloaded
+    recovery_hint: providerRefusal
+      ? "reformulate_and_retry"
+      : rateLimited || providerOverloaded
         ? "wait_and_retry"
         : moderation
           ? "reformulate_and_retry"
           : docsHint
             ? "consult_docs_then_revise"
             : undefined,
-    reformulation_advice: moderation
-      ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent."
-      : docsAdvice,
+    reformulation_advice:
+      moderation || providerRefusal
+        ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent. If Claude Fable 5 is the selected model, a deliberate Anthropic fallback model may also be configured explicitly; do not silently downgrade."
+        : docsAdvice,
     retry_after_ms: extractRetryAfterMs(error),
     attempts,
     latency_ms: Date.now() - started,

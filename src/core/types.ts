@@ -275,6 +275,7 @@ export interface PeerFailure {
     | "auth"
     | "rate_limit"
     | "prompt_flagged_by_moderation"
+    | "provider_refusal"
     | "silent_model_downgrade"
     | "provider_error"
     | "network"

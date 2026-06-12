@@ -2,11 +2,13 @@
 
 ## Supported status
 
-Latest supported release: v04.03.09 for npm package 4.3.9. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.04.02 for npm package 4.4.2. The current main branch is also supported for security fixes until the next release is published.
 
-v04.03.09 tightens local evidence-artifact preflight matching and reorganizes
-truthfulness-preflight smoke coverage. It does not change token handling,
-redaction policy, provider adapters, or the broader runtime security model.
+v04.04.02 adds explicit Claude Fable 5 support for the Anthropic peer. Fable 5
+is opt-in, records Anthropic classifier refusals as `provider_refusal`, and the
+documentation calls out Anthropic's 30-day/no-zero-data-retention posture for
+that model. It does not weaken token handling, redaction policy, caller
+identity gates, or secret sourcing.
 
 ## Reporting a vulnerability
 

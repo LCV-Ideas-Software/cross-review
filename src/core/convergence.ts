@@ -17,7 +17,8 @@ import type { ConvergenceResult, PeerFailure, PeerId, PeerResult, ReviewStatus }
 // Either way the peer's `failure_class` is in `SKIPPABLE_FAILURE_CLASSES`
 // (classified at the round loop in `orchestrator.ts`); everything else —
 // a peer that DID respond but badly (schema / unparseable /
-// format-recovery-exhausted), the no-fallback-directive's own
+// format-recovery-exhausted), a provider refusal returned as a successful
+// response (`provider_refusal`), the no-fallback-directive's own
 // `silent_model_downgrade`, or a policy/budget/content stop — stays in
 // `rejected` and blocks convergence exactly as before.
 export const SKIP_QUORUM_FLOOR = 2;
@@ -36,9 +37,9 @@ export const SKIP_QUORUM_FLOOR = 2;
 // `format_recovery_exhausted`, `stream_buffer_overflow`), the no-fallback
 // directive's own `silent_model_downgrade` (a peer that answered on the
 // WRONG model — must never be silently tolerated), a content stop
-// (`prompt_flagged_by_moderation`), a budget stop (`budget_exceeded`,
-// `budget_preflight`), an operator `cancelled`, or `unknown` (conservative
-// — never skip on an unclassified failure). The round loop in
+// (`prompt_flagged_by_moderation`, `provider_refusal`), a budget stop
+// (`budget_exceeded`, `budget_preflight`), an operator `cancelled`, or
+// `unknown` (conservative — never skip on an unclassified failure). The round loop in
 // `orchestrator.ts` classifies each `PeerFailure` against this set.
 export const SKIPPABLE_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_class"]> = new Set([
   "auth",

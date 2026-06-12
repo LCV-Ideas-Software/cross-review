@@ -33,6 +33,23 @@ Use overrides only when you intentionally want to pin a model rather than use au
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE", "low", "User")
 ```
 
+To opt into Claude Fable 5 for the `claude` peer, replace the Anthropic model
+override with:
+
+```powershell
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION", "10", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION", "50", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION", "1", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION", "20", "User")
+```
+
+Fable 5 is generally available on the Claude API, but it can return successful
+responses with `stop_reason="refusal"`. The runtime records those as
+`provider_refusal` unless you configure an explicit Anthropic fallback chain.
+Anthropic also documents Fable 5 as a 30-day-retention model with no zero data
+retention option, so enable it only when that data posture is acceptable.
+
 ## Safety
 
 - Do not create `.env` files containing real secrets.

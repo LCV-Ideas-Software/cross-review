@@ -97,8 +97,8 @@ Decision quality is tracked per peer:
 - `failed`: provider or model-selection failure blocked the peer.
 
 `unparseable_after_recovery`, `prompt_flagged_by_moderation`,
-`silent_model_downgrade` and other rejected peer failures always block
-unanimity until resolved.
+`provider_refusal`, `silent_model_downgrade` and other rejected peer failures
+always block unanimity until resolved.
 
 Skip-peer convergence is reserved for genuine provider/model unavailability.
 Retryable provider overloads can be skipped after retries are exhausted, but
@@ -118,6 +118,13 @@ sanitized review prompt. This retry does not bypass provider policy: if the
 compact context is insufficient, the peer must return `NEEDS_EVIDENCE` or the
 session remains blocked for operator action.
 
+Claude Fable 5 refusals are different from transport errors: Anthropic returns
+HTTP 200 with `stop_reason="refusal"` and optional `stop_details`. The
+Anthropic adapter treats this as a non-skippable `provider_refusal`, emits a
+structured `provider.refusal` event, discards incomplete refusal output, and
+only tries another Claude model when the operator configured an explicit
+fallback chain.
+
 ## Model Discovery
 
 Provider model APIs are queried at probe/session initialization:
@@ -134,7 +141,10 @@ The selected model and selection evidence are persisted in the session capabilit
 The peer adapters use the strongest official reasoning controls available for each provider because cross-review is correctness-oriented:
 
 - OpenAI runs through the Responses API with high reasoning effort.
-- Anthropic uses adaptive thinking and omits raw thinking content from responses.
+- Anthropic uses adaptive thinking and omits raw thinking content from
+  responses. Claude Fable 5 is supported as an explicit `claude` model
+  override, not as the default pin, because it has distinct refusal,
+  cost-rate and 30-day/no-ZDR data-retention semantics.
 - Gemini enables thinking configuration for the pinned Gemini 3.x model.
 - DeepSeek enables Thinking Mode and follows the official multi-round guidance by resending the summarized session context in each stateless request.
 - Grok runs the pinned `grok-4.3` model with explicit `reasoning.effort` clamped to xAI's supported values.

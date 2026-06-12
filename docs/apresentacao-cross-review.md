@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ---------------------------------- |
 | Nome                       | `cross-review`                     |
 | Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.4.1`                            |
+| Versão runtime             | `4.4.2`                            |
 | Release date runtime       | `2026-06-12`                       |
 | Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.4.1`                            |
+| Versão npm publicada       | `4.4.2`                            |
 | Transporte MCP             | `stdio`                            |
 | Execução CLI por peers     | desativada                         |
 | Modo padrão                | chamadas reais de API              |
@@ -208,6 +208,13 @@ documentados no repositório atual são:
 Overrides devem ser decisão explícita do operador. A proposta do sistema é
 priorizar correção, rastreabilidade e profundidade de raciocínio, não custo ou
 latência mínimos.
+
+`claude-fable-5` é uma opção Anthropic totalmente suportada para o peer
+`claude` quando configurada explicitamente por
+`CROSS_REVIEW_ANTHROPIC_MODEL`. Ela não substitui o pin padrão
+`claude-opus-4-8`; ao usar Fable 5, configure também o rate card Anthropic
+correspondente e trate recusas `stop_reason="refusal"` como
+`provider_refusal`.
 
 ## Ferramentas MCP
 
@@ -717,6 +724,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.04.02`      | 2026-06-12    | Suporta Claude Fable 5 como opção Anthropic explícita: seleção verificada, classificação `provider_refusal`, evento `provider.refusal`, docs de custo e postura de retenção.           |
 | `v04.04.01`      | 2026-06-12    | Fecha a varredura residual: identity gate completo, cache/attachments, EventLog async, probe Perplexity auth-only, correções de custo/cache e smoke dedicado para contratos de source. |
 | `v04.04.00`      | 2026-06-12    | Consolida o close-out da auditoria: `log_level`, containment realpath, guard inicial anti-fabricação, identity audit, probe Perplexity e docs.                                         |
 | `v04.03.09`      | 2026-06-11    | Move `truthfulness_preflight` para smoke dedicado e endurece o match de artefatos externos de evidência.                                                                               |

@@ -294,6 +294,12 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 | xAI/Grok     | `grok-4.3`               |
 | Perplexity   | `sonar-reasoning-pro`    |
 
+`claude-fable-5` é suportado como opção Anthropic explícita para o par
+`claude`. Ele não substitui o pin padrão `claude-opus-4-8`; quando o operador
+o seleciona, a seleção de modelo o reconhece como suportado, refusals
+`stop_reason="refusal"` bloqueiam a unanimidade como `provider_refusal`, e o
+rate card Anthropic deve ser ajustado para os preços de Fable 5.
+
 Como o `cross-review` é orientado à correção, os adaptadores pedem
 explicitamente o maior nível de raciocínio que cada API oficial oferece. O
 conteúdo bruto de "pensamento" (chain-of-thought) **não é solicitado nem
@@ -572,6 +578,7 @@ SemVer. Marcos principais:
 | `v04.03.07`      | Preflight de evidência bloqueia referências a artefatos externos de prova/log não anexados à sessão.                                                                                    |
 | `v04.03.08`      | Smoke focado para a matriz comportamental de `evidence_preflight`.                                                                                                                      |
 | `v04.03.09`      | Smoke focado para `truthfulness_preflight` e match mais estrito de evidências.                                                                                                          |
+| `v04.04.02`      | Suporte operacional ao Claude Fable 5 como opção Anthropic explícita, com seleção verificada, refusal handling e docs de custo/retenção.                                                |
 | `v04.04.01`      | Varredura residual completa: identity gate em toda superfície mutável, cache/anexos, EventLog async, probe Perplexity auth-only, custo/cache e smoke dedicado para contratos de source. |
 | `v04.04.00`      | Release consolidada de auditoria: `log_level`, containment realpath, guard inicial anti-fabricação, identity audit, probe Perplexity e docs.                                            |
 
