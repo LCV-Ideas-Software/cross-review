@@ -578,6 +578,7 @@ SemVer. Marcos principais:
 | `v04.03.07`      | Preflight de evidência bloqueia referências a artefatos externos de prova/log não anexados à sessão.                                                                                    |
 | `v04.03.08`      | Smoke focado para a matriz comportamental de `evidence_preflight`.                                                                                                                      |
 | `v04.03.09`      | Smoke focado para `truthfulness_preflight` e match mais estrito de evidências.                                                                                                          |
+| `v04.04.05`      | Fecha os 7 resíduos verificados da auditoria: realpath fail-closed em evidências, tipagem de `shadow_decision`, data derivada do CHANGELOG, comentário JWT e budget T2#10 bloqueado.    |
 | `v04.04.04`      | Rate cards por modelo no `config.json`, com seleção automática entre preços de Claude Opus 4.8 e Claude Fable 5 conforme o modelo configurado.                                          |
 | `v04.04.03`      | Reduz o débito T2#10 movendo contrato estático de SDK lazy imports para o smoke dedicado de source contracts.                                                                           |
 | `v04.04.02`      | Suporte operacional ao Claude Fable 5 como opção Anthropic explícita, com seleção verificada, refusal handling e docs de custo/retenção.                                                |

@@ -635,6 +635,13 @@ export interface RuntimeEventDataByType {
     lead_peer_overridden: boolean;
     ignored_lead_peer?: PeerId | undefined;
   };
+  "session.evidence_judge_pass.shadow_decision": {
+    item_id?: string | undefined;
+    judge_peer?: PeerId | undefined;
+    would_promote?: boolean | undefined;
+    satisfied?: boolean | undefined;
+    confidence?: Confidence | undefined;
+  };
   "provider.cache.usage": {
     peer: PeerId;
     cache_read_tokens: number;

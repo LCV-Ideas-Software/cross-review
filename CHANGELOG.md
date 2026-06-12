@@ -7,6 +7,36 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.05] — 2026-06-12
+
+**Patch — close the seven verified residual audit items.** This release
+finishes the v4.4.x tail by correcting the remaining verified process,
+typing, containment, retry, metadata and source-contract findings without
+creating a manual release tag.
+
+### Fixed
+
+- `readEvidenceAttachments()` now fails closed when contained realpath
+  resolution itself raises non-`ENOENT` filesystem errors such as
+  `EACCES`, `EPERM` or `ELOOP`, so preflight paths do not abort on
+  unreadable evidence metadata.
+- `session.evidence_judge_pass.shadow_decision` is now part of
+  `RuntimeEventDataByType`, and the session-store rollups consume it through
+  the central typed event-data map instead of local inline casts.
+- `RELEASE_DATE` is now derived from the matching CHANGELOG release heading
+  for `VERSION`, removing the separate hand-maintained date constant.
+- The JWT redaction comment no longer claims capture groups for the
+  non-capturing JWT token pattern.
+- The T2#10 source-contract budget now uses the consistent multiline
+  `smoke.ts` metric that Claude and Codex reconciled, and locks the current
+  smoke-main count at `129` to prevent new broad smoke source-regex pins.
+
+### Verified
+
+- The v4.4.2+ release metadata gate still checks `SECURITY.md`, and the
+  retry loop still attaches classified peer failures that provider error
+  classification consumes.
+
 ## [v04.04.04] — 2026-06-12
 
 **Patch — model-aware Anthropic rate cards in central config.** The central

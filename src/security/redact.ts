@@ -134,10 +134,10 @@ export function redact(value: string): string {
     // the key name is preserved; the standalone-token patterns do not
     // capture and we replace the whole match. We dispatch on the regex
     // shape (`re.source.includes("(")`) but the safer signal is the
-    // number of groups we declared — both env-style and JWT use groups,
-    // but only the env-style declares two ((key)(value)). For the JWT
-    // pattern we still replace the whole match because there is no key
-    // half to preserve.
+    // number of groups we declared: only the env-style assignment pattern
+    // declares two groups ((key)(value)). Standalone token patterns,
+    // including JWT-shaped tokens, replace the whole match because there
+    // is no key half to preserve.
     output = output.replace(re, (...args) => {
       const groups = args.slice(1, -2).filter((g) => typeof g === "string");
       if (groups.length >= 2) {

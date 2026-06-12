@@ -1,9 +1,18 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyFileConfigToEnv } from "./file-config.js";
 import { type AppConfig, PEERS, type PeerId } from "./types.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const RUNTIME_ROOT = path.resolve(__dirname, "..", "..");
+const PROJECT_ROOT =
+  path.basename(RUNTIME_ROOT).toLowerCase() === "dist"
+    ? path.resolve(RUNTIME_ROOT, "..")
+    : RUNTIME_ROOT;
 
 // v2.4.0 / audit closure (P3.12): tilde expansion for env-provided paths.
 // `path.resolve` does NOT expand `~` to the user's home directory on any
@@ -19,8 +28,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.4.4";
-export const RELEASE_DATE = "2026-06-12";
+export const VERSION = "4.4.5";
+export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -40,13 +49,21 @@ const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   perplexity: "CROSS_REVIEW_PERPLEXITY",
 };
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const RUNTIME_ROOT = path.resolve(__dirname, "..", "..");
-const PROJECT_ROOT =
-  path.basename(RUNTIME_ROOT).toLowerCase() === "dist"
-    ? path.resolve(RUNTIME_ROOT, "..")
-    : RUNTIME_ROOT;
+function releaseDateFromChangelog(version: string): string {
+  const displayVersion = `v${version
+    .split(".")
+    .map((part) => part.padStart(2, "0"))
+    .join(".")}`;
+  const displayPattern = displayVersion.replaceAll(".", "\\.");
+  const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
+  const match = changelog.match(
+    new RegExp(`^## \\[${displayPattern}\\] — (\\d{4}-\\d{2}-\\d{2})$`, "m"),
+  );
+  if (!match?.[1]) {
+    throw new Error(`CHANGELOG.md missing release heading for ${displayVersion}`);
+  }
+  return match[1];
+}
 
 // v2.28.0 (cold-start hardening Part 3): single bulk read of the Windows
 // registry environment scopes at first miss, then pure Map lookups. The

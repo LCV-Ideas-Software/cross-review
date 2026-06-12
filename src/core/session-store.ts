@@ -6,7 +6,6 @@ import { redact, redactJsonValue, safeErrorMessage } from "../security/redact.js
 import { mergeCost, mergeUsage } from "./cost.js";
 import type {
   AppConfig,
-  Confidence,
   ConvergenceResult,
   ConvergenceScope,
   EvidenceChecklistItem,
@@ -26,6 +25,7 @@ import type {
   ReviewRound,
   ReviewStatus,
   RuntimeEvent,
+  RuntimeEventData,
   RuntimeMetrics,
   SessionDoctorEntry,
   SessionDoctorReport,
@@ -81,6 +81,13 @@ function sessionGenerationCostTotal(session: SessionMeta): number | null {
 function addNullableCost(a: number | null, b: number | null): number | null {
   if (a == null && b == null) return null;
   return (a ?? 0) + (b ?? 0);
+}
+
+function shadowDecisionData(
+  event: SessionEvent,
+): RuntimeEventData<"session.evidence_judge_pass.shadow_decision"> | undefined {
+  if (event.type !== "session.evidence_judge_pass.shadow_decision") return undefined;
+  return event.data as RuntimeEventData<"session.evidence_judge_pass.shadow_decision"> | undefined;
 }
 
 // v2.4.0 / audit closure (P1.3): atomicWriteFile retry on Windows.
@@ -250,6 +257,14 @@ export class SessionStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolvedCandidate;
       throw error;
+    }
+  }
+
+  private safeResolveContainedExistingPath(parent: string, candidate: string): string | undefined {
+    try {
+      return this.resolveContainedExistingPath(parent, candidate);
+    } catch {
+      return undefined;
     }
   }
 
@@ -1386,13 +1401,8 @@ export class SessionStore {
     for (const session of sessions) {
       const events = this.readEvents(session.session_id);
       for (const event of events) {
-        if (event.type !== "session.evidence_judge_pass.shadow_decision") continue;
-        const data = (event.data ?? {}) as {
-          judge_peer?: PeerId | undefined;
-          would_promote?: boolean | undefined;
-          satisfied?: boolean | undefined;
-          confidence?: "verified" | "inferred" | "unknown" | undefined;
-        };
+        const data = shadowDecisionData(event);
+        if (!data) continue;
         const judgePeer = data.judge_peer;
         if (!judgePeer || !peerKnown.includes(judgePeer)) continue;
         let entry = byPeer[judgePeer];
@@ -2103,13 +2113,8 @@ export class SessionStore {
       for (const item of checklist) itemById.set(item.id, item);
       const maxRound = session.rounds.length;
       for (const event of events) {
-        if (event.type !== "session.evidence_judge_pass.shadow_decision") continue;
-        const data = (event.data ?? {}) as {
-          item_id?: string | undefined;
-          would_promote?: boolean | undefined;
-          confidence?: Confidence | undefined;
-          judge_peer?: PeerId | undefined;
-        };
+        const data = shadowDecisionData(event);
+        if (!data) continue;
         const judgePeer = data.judge_peer;
         if (!judgePeer || !peerKnown.includes(judgePeer)) continue;
         if (opts?.peer && judgePeer !== opts.peer) continue;
@@ -2231,7 +2236,7 @@ export class SessionStore {
     }> = [];
     let used = 0;
     for (const file of files) {
-      const absolutePath = this.resolveContainedExistingPath(sessionDir, file.path);
+      const absolutePath = this.safeResolveContainedExistingPath(sessionDir, file.path);
       if (!absolutePath) continue;
       let raw: string;
       try {

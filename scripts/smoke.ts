@@ -1751,6 +1751,47 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     0,
     "v4.4.0 / containment: readEvidenceAttachments must skip symlink/junction escapes",
   );
+  const blockedPath = path.join(
+    containmentStore.sessionDir(containmentSession.session_id),
+    "evidence",
+    "realpath-blocked.txt",
+  );
+  fs.mkdirSync(path.dirname(blockedPath), { recursive: true });
+  fs.writeFileSync(blockedPath, "blocked evidence", "utf8");
+  meta.evidence_files = [
+    {
+      ts: new Date().toISOString(),
+      label: "blocked realpath",
+      path: "evidence/realpath-blocked.txt",
+      content_type: "text/plain",
+    },
+  ];
+  fs.writeFileSync(containmentStore.metaPath(containmentSession.session_id), JSON.stringify(meta));
+  const originalRealpathSync = fs.realpathSync;
+  try {
+    const mockedRealpathSync = Object.assign(
+      (candidate: fs.PathLike, options?: fs.EncodingOption | fs.BufferEncodingOption) => {
+        if (String(candidate).endsWith("realpath-blocked.txt")) {
+          const error = new Error("simulated access denied") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          throw error;
+        }
+        return originalRealpathSync(candidate, options as never) as never;
+      },
+      { native: originalRealpathSync.native },
+    ) as typeof fs.realpathSync;
+    fs.realpathSync = mockedRealpathSync;
+    assert.doesNotThrow(
+      () => containmentStore.readEvidenceAttachments(containmentSession.session_id, 1001),
+      "v4.4.5 / containment: readEvidenceAttachments must fail closed on realpath EACCES/EPERM/ELOOP",
+    );
+    assert.equal(
+      containmentStore.readEvidenceAttachments(containmentSession.session_id, 1001).length,
+      0,
+    );
+  } finally {
+    fs.realpathSync = originalRealpathSync;
+  }
   console.log("[smoke] artifact_realpath_containment_test: PASS");
 }
 
@@ -8992,7 +9033,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     ["perplexity", "sonar-reasoning-pro"],
   ] as const) {
     assert.ok(
-      new RegExp(`${peer}: \\["${pin}"\\]`).test(a3ModelSrc),
+      a3ModelSrc.includes(`${peer}: ["${pin}"]`),
       `v3.7.2 / AUDIT-3: ${peer} PRIORITY must be the lone canonical pin ["${pin}"] (no fallback)`,
     );
   }
