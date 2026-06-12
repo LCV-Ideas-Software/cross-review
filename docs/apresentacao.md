@@ -371,7 +371,9 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_poll` — sonda o estado de uma sessão.
 - `session_events` — lê o fluxo de eventos.
 - `session_metrics` — métricas da sessão.
-- `session_doctor` — diagnóstico e modo de reparo opcional.
+- `session_doctor` — diagnóstico e modo de reparo opcional; histórico terminal
+  fica nos totais por padrão e pode ser enumerado com
+  `include_terminal_findings=true`.
 - `session_report` — gera/lê o relatório da sessão.
 - `session_peer_reliability_report` — relatório agregado e somente leitura por
   peer.
@@ -578,6 +580,7 @@ SemVer. Marcos principais:
 | `v04.03.07`      | Preflight de evidência bloqueia referências a artefatos externos de prova/log não anexados à sessão.                                                                                    |
 | `v04.03.08`      | Smoke focado para a matriz comportamental de `evidence_preflight`.                                                                                                                      |
 | `v04.03.09`      | Smoke focado para `truthfulness_preflight` e match mais estrito de evidências.                                                                                                          |
+| `v04.04.06`      | Fecha a cauda restante da revalidação Claude: leituras de evidência no orquestrador falham fechado, `session_doctor` separa histórico terminal de achados e T2#10 cai para 160 pins.    |
 | `v04.04.05`      | Fecha os 7 resíduos verificados da auditoria: realpath fail-closed em evidências, tipagem de `shadow_decision`, data derivada do CHANGELOG, comentário JWT e budget T2#10 bloqueado.    |
 | `v04.04.04`      | Rate cards por modelo no `config.json`, com seleção automática entre preços de Claude Opus 4.8 e Claude Fable 5 conforme o modelo configurado.                                          |
 | `v04.04.03`      | Reduz o débito T2#10 movendo contrato estático de SDK lazy imports para o smoke dedicado de source contracts.                                                                           |

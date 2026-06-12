@@ -1792,6 +1792,38 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   } finally {
     fs.realpathSync = originalRealpathSync;
   }
+  const failClosedOrch = new CrossReviewOrchestrator({
+    ...config,
+    data_dir: smokeTmpDir("orchestrator-evidence-fail-closed"),
+  });
+  const failClosedSession = await failClosedOrch.store.init(
+    "orchestrator attachment failure fixture",
+    "operator",
+    [],
+  );
+  const originalReadEvidenceAttachments = failClosedOrch.store.readEvidenceAttachments.bind(
+    failClosedOrch.store,
+  );
+  try {
+    failClosedOrch.store.readEvidenceAttachments = (() => {
+      const error = new Error("simulated attachment read failure") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      throw error;
+    }) as typeof failClosedOrch.store.readEvidenceAttachments;
+    await assert.doesNotReject(
+      () =>
+        failClosedOrch.askPeers({
+          session_id: failClosedSession.session_id,
+          task: "Neutral review fixture.",
+          draft: "No operational completion claim here.",
+          caller: "operator",
+          caller_status: "READY",
+        }),
+      "v4.4.6 / containment: orchestrator preflight paths must fail closed when attached-evidence reads throw",
+    );
+  } finally {
+    failClosedOrch.store.readEvidenceAttachments = originalReadEvidenceAttachments;
+  }
   console.log("[smoke] artifact_realpath_containment_test: PASS");
 }
 
@@ -2112,6 +2144,46 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     JSON.stringify(notResurfacedMeta),
   );
 
+  const terminalNotResurfacedSession = await auditStore.init(
+    "terminal not resurfaced historical fixture",
+    "operator",
+    [],
+  );
+  const terminalNotResurfacedMeta = auditStore.read(terminalNotResurfacedSession.session_id);
+  terminalNotResurfacedMeta.outcome = "max-rounds";
+  terminalNotResurfacedMeta.outcome_reason = "max_rounds_without_unanimity";
+  terminalNotResurfacedMeta.updated_at = nowIso;
+  terminalNotResurfacedMeta.convergence_health = {
+    state: "blocked",
+    last_event_at: nowIso,
+    detail: "max_rounds_without_unanimity",
+  };
+  terminalNotResurfacedMeta.evidence_checklist = [
+    {
+      id: "nr-terminal-1",
+      peer: "codex",
+      first_round: 1,
+      last_round: 1,
+      round_count: 1,
+      ask: "terminal historical evidence item",
+      first_seen_at: nowIso,
+      last_seen_at: nowIso,
+      status: "not_resurfaced",
+      addressed_at_round: 2,
+      address_method: "resurfacing",
+    },
+  ];
+  fs.writeFileSync(
+    auditStore.metaPath(terminalNotResurfacedSession.session_id),
+    JSON.stringify(terminalNotResurfacedMeta),
+  );
+  await auditStore.appendEvent({
+    type: "session.finalized",
+    session_id: terminalNotResurfacedSession.session_id,
+    message: "terminal max-rounds fixture finalized",
+    data: { outcome: "max-rounds", reason: "max_rounds_without_unanimity" },
+  });
+
   const legacyGapSession = await auditStore.init(
     "legacy terminal event gap fixture",
     "operator",
@@ -2131,13 +2203,43 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const notResurfacedDoctor = await auditStore.sessionDoctor(20);
   assert.equal(
     notResurfacedDoctor.totals.not_resurfaced_evidence_sessions,
-    1,
+    2,
     "v4.2.5 / not_resurfaced: session_doctor totals must count not_resurfaced sessions separately",
   );
   assert.equal(
     notResurfacedDoctor.findings.not_resurfaced_evidence_sessions[0]?.session_id,
     notResurfacedSession.session_id,
-    "v4.2.5 / not_resurfaced: session_doctor must enumerate not_resurfaced sessions",
+    "v4.2.5 / not_resurfaced: session_doctor must enumerate active not_resurfaced sessions",
+  );
+  assert.equal(
+    notResurfacedDoctor.findings.not_resurfaced_evidence_sessions.some(
+      (entry) => entry.session_id === terminalNotResurfacedSession.session_id,
+    ),
+    false,
+    "v4.4.6 / session_doctor: terminal not_resurfaced sessions must stay in totals but not default operational findings",
+  );
+  assert.equal(
+    notResurfacedDoctor.totals.max_rounds,
+    1,
+    "v4.4.6 / session_doctor: max-rounds terminal sessions must stay counted in totals",
+  );
+  assert.equal(
+    notResurfacedDoctor.findings.max_rounds_sessions.length,
+    0,
+    "v4.4.6 / session_doctor: max-rounds terminal history must not be a default operational finding",
+  );
+  const terminalFindingsDoctor = await auditStore.sessionDoctor(20, false, false, true);
+  assert.equal(
+    terminalFindingsDoctor.findings.max_rounds_sessions[0]?.session_id,
+    terminalNotResurfacedSession.session_id,
+    "v4.4.6 / session_doctor: include_terminal_findings must opt into terminal max-rounds enumeration",
+  );
+  assert.equal(
+    terminalFindingsDoctor.findings.not_resurfaced_evidence_sessions.some(
+      (entry) => entry.session_id === terminalNotResurfacedSession.session_id,
+    ),
+    true,
+    "v4.4.6 / session_doctor: include_terminal_findings must opt into terminal not_resurfaced enumeration",
   );
   assert.equal(
     notResurfacedDoctor.totals.terminal_event_missing_sessions,
@@ -8605,39 +8707,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.5.0 / relator_metadata: lead_peer must NOT appear in voting_peers (anti-self-review)",
   );
   console.log("[smoke] relator_non_voting_metadata_test: PASS");
-}
-
-// v3.5.0 (CRV2-2) — not_resurfaced status anti-drift source pins.
-// Behavioral coverage lives in evidence_checklist_address_detection_test
-// (updated in-place); these pins lock the type + the runtime path so a
-// future refactor cannot silently revert to the false-`addressed` bug.
-{
-  const typesSrcNr = fs.readFileSync(new URL("../src/core/types.ts", import.meta.url), "utf8");
-  const storeSrcNr = fs.readFileSync(
-    new URL("../src/core/session-store.ts", import.meta.url),
-    "utf8",
-  );
-  assert.ok(
-    /\|\s*"not_resurfaced"/.test(typesSrcNr),
-    "v3.5.0 / not_resurfaced: EvidenceChecklistStatus union must include not_resurfaced",
-  );
-  assert.ok(
-    /item\.status = "not_resurfaced"/.test(storeSrcNr),
-    "v3.5.0 / not_resurfaced: the resurfacing-inference path must set status=not_resurfaced (NOT addressed)",
-  );
-  assert.ok(
-    !/item\.status = "addressed";[\s\S]{0,400}?address_method = "resurfacing"/.test(storeSrcNr),
-    "v3.5.0 / not_resurfaced: the resurfacing path must NOT set status=addressed anymore",
-  );
-  assert.ok(
-    /\(status === "not_resurfaced" \|\| status === "addressed"\)/.test(storeSrcNr),
-    "v3.5.0 / not_resurfaced: the reopen branch must catch BOTH not_resurfaced and addressed",
-  );
-  assert.ok(
-    /Exclude<EvidenceChecklistStatus, "addressed" \| "not_resurfaced">/.test(storeSrcNr),
-    "v3.5.0 / not_resurfaced: operator mutator must exclude both runtime-managed statuses",
-  );
-  console.log("[smoke] not_resurfaced_status_test: PASS");
 }
 
 // v3.6.0 (B2) — token-delta default threshold raised 1024 -> 16384.

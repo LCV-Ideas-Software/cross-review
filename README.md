@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.04.05** (npm package `4.4.5`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.04.06** (npm package `4.4.6`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.04.06`**      | Patch — close the remaining Claude re-validation tail: orchestrator attached-evidence reads now fail closed, session_doctor defaults to action-oriented findings, and T2#10 source-regex debt drops to a locked total of 160.                                               |
 | **`v04.04.05`**      | Patch — close the seven verified residual audit items: evidence fail-closed realpath handling, typed shadow-decision runtime events, derived release date, redaction-comment correction, retry/security gate verification, and a locked T2#10 smoke source-contract budget. |
 | **`v04.04.04`**      | Patch — central config can now carry model-specific rate cards, so Claude Opus 4.8 and Claude Fable 5 pricing are both stored and the active Anthropic rates follow the configured Claude model automatically.                                                              |
 | **`v04.04.03`**      | Patch — continue the T2#10 smoke-debt reduction by moving the lazy provider SDK import source contract into the dedicated source-contract smoke, preserving coverage while reducing broad smoke regex pins.                                                                 |
@@ -255,10 +256,13 @@ these environment variables before running real sessions (example):
 
 `session_doctor` separates real and stub sessions, flags terminal outcomes that
 lack terminal events, and reports peer-call cost separately from generation
-artifact cost. `session_report` uses the same split and calls out
-`not_resurfaced` evidence checklist items as inference-only, not proof that the
-requested evidence was satisfied. If a session otherwise reaches unanimity with
-open or `not_resurfaced` checklist items, finalization records an
+artifact cost. Terminal `max-rounds` and terminal `not_resurfaced` history stay
+in totals but are omitted from default operational findings; pass
+`include_terminal_findings=true` to enumerate that historical inventory.
+`session_report` uses the same cost split and calls out `not_resurfaced`
+evidence checklist items as inference-only, not proof that the requested
+evidence was satisfied. If a session otherwise reaches unanimity with open or
+`not_resurfaced` checklist items, finalization records an
 `*_with_unresolved_evidence` outcome reason and emits a durable unresolved
 evidence event. `session_peer_reliability_report` is read-only and aggregates
 per-peer parser warnings, evidence ask status, provider failures, cost and

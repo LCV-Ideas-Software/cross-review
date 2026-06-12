@@ -78,6 +78,11 @@ reason is suffixed with `_with_unresolved_evidence`, a
 `session.evidence_checklist_unresolved_on_finalize` event is written, and the
 report includes an unresolved-evidence disposition section.
 
+`session_doctor` keeps terminal `max-rounds` and terminal `not_resurfaced`
+history in aggregate totals while omitting that terminal inventory from default
+operational findings. Use `include_terminal_findings=true` when a historical
+cleanup/audit needs the per-session list.
+
 For safety, `peer.token.delta` events include character counts by default rather
 than provider text. `CROSS_REVIEW_STREAM_TEXT=1` can include redacted text in
 trusted local diagnostics, but it is intentionally opt-in because providers may

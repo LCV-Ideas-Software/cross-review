@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Latest supported release: v04.04.05 for npm package 4.4.5. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.04.06 for npm package 4.4.6. The current main branch is also supported for security fixes until the next release is published.
 
-v04.04.05 closes the verified residual audit tail. It hardens evidence
-attachment fail-closed behavior for filesystem access errors, keeps the
-release metadata gate covering this file, and does not change secret sourcing
-or caller-token handling.
+v04.04.06 keeps the verified residual audit tail closed. It makes
+orchestrator evidence attachment reads fail closed, keeps session-doctor
+findings action-oriented by default, and does not change secret sourcing or
+caller-token handling.
 
 ## Reporting a vulnerability
 

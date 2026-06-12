@@ -1753,6 +1753,7 @@ export class SessionStore {
     limit = 20,
     includeLegacy = false,
     repair = false,
+    includeTerminalFindings = false,
   ): Promise<SessionDoctorReport> {
     const cappedLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 20));
     // v3.6.0 (C): opt-in repair pass BEFORE the read-only audit. Fixes
@@ -1907,10 +1908,12 @@ export class SessionStore {
         pushLimited(staleSessions, entry);
       if (!isTerminal && session.convergence_health?.state === "blocked")
         pushLimited(blockedSessions, entry);
-      if (session.outcome === "max-rounds") pushLimited(maxRoundsSessions, entry);
+      if (session.outcome === "max-rounds" && includeTerminalFindings)
+        pushLimited(maxRoundsSessions, entry);
       if (petitioner && leadPeer && petitioner === leadPeer) pushLimited(selfLeadMetadata, entry);
       if (openEvidenceItems > 0) pushLimited(openEvidenceSessions, entry);
-      if (notResurfacedEvidenceItems > 0) pushLimited(notResurfacedEvidenceSessions, entry);
+      if (notResurfacedEvidenceItems > 0 && (!isTerminal || includeTerminalFindings))
+        pushLimited(notResurfacedEvidenceSessions, entry);
       if (grokProviderErrors > 0) pushLimited(grokProviderErrorSessions, entry);
 
       let sessionEvents: SessionEvent[] = [];

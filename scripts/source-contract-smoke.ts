@@ -113,7 +113,8 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.2.0 / session_cancel_job: runtime-smoke must exercise the no-active-job path.",
   );
   assert.ok(
-    /assert\.equal\(\s*noJobCancelState\.outcome,\s*undefined/.test(runtimeSmokeSrc),
+    runtimeSmokeSrc.includes("noJobCancelState.outcome") &&
+      runtimeSmokeSrc.includes("no-job cancellation must not terminal-abort"),
     "v4.2.0 / session_cancel_job: runtime-smoke must assert no-job cancellation stays non-terminal.",
   );
   console.log("[source-contract-smoke] session_cancel_job_no_active_job_test: PASS");
@@ -180,7 +181,7 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.3.2 / caller_tokens: regenerate_caller_tokens must not return plaintext generated.map in the MCP response.",
   );
   assert.ok(
-    /token_fingerprints/.test(serverSrc),
+    serverSrc.includes("token_fingerprints"),
     "v4.3.2 / caller_tokens: regenerate_caller_tokens response must expose token fingerprints instead of secrets.",
   );
   assert.ok(
@@ -193,13 +194,13 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 {
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
-    /process\.on\("SIGTERM"/.test(serverSrc) && /process\.on\("SIGINT"/.test(serverSrc),
+    serverSrc.includes('process.on("SIGTERM"') && serverSrc.includes('process.on("SIGINT"'),
     "v4.3.3 / shutdown: server main must install SIGTERM and SIGINT handlers.",
   );
   assert.ok(
-    /flushPendingEvents\(\)/.test(serverSrc) &&
-      /eventLog\.flush\(\)/.test(serverSrc) &&
-      /setTimeout\(/.test(serverSrc),
+    serverSrc.includes("flushPendingEvents()") &&
+      serverSrc.includes("eventLog.flush()") &&
+      serverSrc.includes("setTimeout("),
     "v4.3.3 / shutdown: signal handlers must flush pending store/log events with a bounded timeout.",
   );
   console.log("[source-contract-smoke] signal_flush_handlers_test: PASS");
@@ -248,20 +249,24 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.4.1 / evidence: readEvidenceAttachments should cache reads and fail closed to no attachments.",
   );
   assert.ok(
-    sourceMatches(storeSrc, /safeResolveContainedExistingPath/) &&
-      sourceMatches(
-        storeSrc,
-        /const absolutePath = this\.safeResolveContainedExistingPath\(sessionDir, file\.path\)/,
+    storeSrc.includes("safeResolveContainedExistingPath") &&
+      storeSrc.includes(
+        "const absolutePath = this.safeResolveContainedExistingPath(sessionDir, file.path)",
       ),
     "v4.4.5 / evidence: readEvidenceAttachments must use a non-throwing contained realpath resolver.",
   );
   assert.ok(
+    orchSrc.includes("private safeReadEvidenceAttachments") &&
+      (orchSrc.match(/this\.store\.readEvidenceAttachments\(/g) ?? []).length === 1,
+    "v4.4.6 / evidence: orchestrator preflight paths must route attached-evidence reads through a fail-closed helper.",
+  );
+  assert.ok(
     sourceOmits(configSrc, /export const RELEASE_DATE\s*=\s*["']/) &&
-      sourceMatches(configSrc, /releaseDateFromChangelog/),
+      configSrc.includes("releaseDateFromChangelog"),
     "v4.4.5 / release_metadata: RELEASE_DATE must be derived from CHANGELOG metadata, not hand-maintained as a string literal.",
   );
   assert.ok(
-    sourceMatches(typesSrc, /"session\.evidence_judge_pass\.shadow_decision":/) &&
+    typesSrc.includes('"session.evidence_judge_pass.shadow_decision":') &&
       sourceOmits(storeSrc, /event\.data \?\? \{\}\) as \{[\s\S]{0,220}judge_peer/),
     "v4.4.5 / runtime-events: shadow_decision data must be typed in RuntimeEventDataByType, not recovered through local casts.",
   );
@@ -281,7 +286,7 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.4.1 / cleanup: shadowing in prior-round summaries and evidence checklist should stay removed.",
   );
   assert.ok(
-    /must be a non-negative number; ignoring this value/.test(configSrc) &&
+    configSrc.includes("must be a non-negative number; ignoring this value") &&
       /Number\.isFinite\(rawCap\)\s*&&\s*rawCap\s*>\s*0/.test(configSrc) &&
       !/Default 3 maps to 12 rounds/.test(configSrc),
     "v4.4.1 / config: numeric env parsing and circular rotation docs should reject stale negative/stale-count behavior.",
@@ -293,8 +298,8 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.4.1 / file-config: evidence judge peer fields must be roster enums, not arbitrary strings.",
   );
   assert.ok(
-    /SESSION_ID_PATTERN/.test(cacheManifestSrc) &&
-      /invalid session_id for cache manifest/.test(cacheManifestSrc) &&
+    cacheManifestSrc.includes("SESSION_ID_PATTERN") &&
+      cacheManifestSrc.includes("invalid session_id for cache manifest") &&
       /flag:\s*"wx"/.test(cacheManifestSrc),
     "v4.4.1 / cache-manifest: manifest paths should validate UUIDs and tmp writes should use wx.",
   );
@@ -305,10 +310,10 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.4.1 / peer-lock: no-op full-panel peer inputs should not emit notices, and empty arrays should reach the lock.",
   );
   assert.ok(
-    sourceMatches(retrySrc, /function attachPeerFailure/) &&
-      sourceMatches(retrySrc, /peerFailure/) &&
-      sourceMatches(errorsSrc, /peerFailure\?: PeerFailure/) &&
-      sourceMatches(errorsSrc, /return attachedFailure/),
+    retrySrc.includes("function attachPeerFailure") &&
+      retrySrc.includes("peerFailure") &&
+      errorsSrc.includes("peerFailure?: PeerFailure") &&
+      errorsSrc.includes("return attachedFailure"),
     "v4.4.1 / retry: exhausted retries should preserve and consume the classified PeerFailure metadata.",
   );
   assert.ok(
@@ -317,7 +322,7 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   );
   assert.ok(
     /probe_mode:\s*"auth_only" \| "live"/.test(typesSrc) &&
-      /CROSS_REVIEW_PERPLEXITY_PROBE_MODE/.test(configSrc) &&
+      configSrc.includes("CROSS_REVIEW_PERPLEXITY_PROBE_MODE") &&
       /probe_mode === "auth_only"/.test(perplexitySrc),
     "v4.4.1 / perplexity: probe defaults must avoid tokenized Sonar calls.",
   );
@@ -327,9 +332,11 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.4.1 / dashboard: GET report route should not persist files; only POST may save.",
   );
   assert.ok(
-    /export interface RuntimeEventDataByType/.test(typesSrc) &&
-      /export type RuntimeEventData</.test(typesSrc) &&
-      /export interface RuntimeEvent<T extends RuntimeEventType = RuntimeEventType>/.test(typesSrc),
+    typesSrc.includes("export interface RuntimeEventDataByType") &&
+      typesSrc.includes("export type RuntimeEventData<") &&
+      typesSrc.includes(
+        "export interface RuntimeEvent<T extends RuntimeEventType = RuntimeEventType>",
+      ),
     "v4.4.1 / runtime-events: RuntimeEvent data should have a typed event-data map.",
   );
   console.log("[source-contract-smoke] v4_4_1_total_sweep_guard_test: PASS");
@@ -461,11 +468,11 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     `T2#10 / source-contract split: scripts/smoke.ts has ${sourceStylePins} source-style regex pins; keep new static contracts in scripts/source-contract-smoke.ts.`,
   );
   assert.ok(
-    sourceContractStylePins <= 45,
+    sourceContractStylePins <= 31,
     `T2#10 / source-contract split: scripts/source-contract-smoke.ts has ${sourceContractStylePins} source-style regex pins; keep the contract file below the corrected baseline.`,
   );
   assert.ok(
-    totalSourceStylePins <= 174,
+    totalSourceStylePins <= 160,
     `T2#10 / source-contract split: combined smoke source-style regex pins are ${totalSourceStylePins}; keep the total below the corrected v4.4.4 baseline.`,
   );
   console.log("[source-contract-smoke] smoke_source_contract_budget_test: PASS");

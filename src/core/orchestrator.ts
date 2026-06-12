@@ -1511,6 +1511,26 @@ export class CrossReviewOrchestrator {
     }
   }
 
+  private safeReadEvidenceAttachments(
+    sessionId: string,
+  ): ReturnType<SessionStore["readEvidenceAttachments"]> {
+    try {
+      return this.store.readEvidenceAttachments(
+        sessionId,
+        this.config.prompt.max_attached_evidence_chars,
+      );
+    } catch (error) {
+      this.emit({
+        type: "session.attached_evidence_read_failed",
+        session_id: sessionId,
+        message: `Attached evidence read failed; continuing without attached evidence: ${redact(
+          error instanceof Error ? error.message : String(error),
+        )}`,
+      });
+      return [];
+    }
+  }
+
   async probeAll(): Promise<PeerProbeResult[]> {
     await resolveBestModels(this.config);
     const adapters = createAdapters(this.config);
@@ -2712,10 +2732,7 @@ export class CrossReviewOrchestrator {
     // once per round and inline into the review prompt so peers see the
     // full literal content (gates output, diff hunks, log files) without
     // the caller having to paste 200KB+ into the MCP `draft` channel.
-    const attachments = this.store.readEvidenceAttachments(
-      session.session_id,
-      this.config.prompt.max_attached_evidence_chars,
-    );
+    const attachments = this.safeReadEvidenceAttachments(session.session_id);
     if (this.config.truthfulness_preflight_enabled) {
       const truthfulness = truthfulnessPreflight({
         task: input.task,
@@ -3722,10 +3739,7 @@ export class CrossReviewOrchestrator {
       }
       const startedAt = new Date().toISOString();
 
-      const attachedEvidence = this.store.readEvidenceAttachments(
-        session.session_id,
-        this.config.prompt.max_attached_evidence_chars,
-      );
+      const attachedEvidence = this.safeReadEvidenceAttachments(session.session_id);
       const prompt = buildRevisionPrompt(
         session,
         draft as string,
@@ -4176,11 +4190,7 @@ export class CrossReviewOrchestrator {
     });
 
     if (this.config.truthfulness_preflight_enabled) {
-      const attachmentsPresent =
-        this.store.readEvidenceAttachments(
-          session.session_id,
-          this.config.prompt.max_attached_evidence_chars,
-        ).length > 0;
+      const attachmentsPresent = this.safeReadEvidenceAttachments(session.session_id).length > 0;
       const truthfulness = truthfulnessPreflight({
         task: input.task,
         initialDraft: draft,
@@ -4240,10 +4250,7 @@ export class CrossReviewOrchestrator {
     // `needs_evidence_preflight` instead of burning API across rounds.
     // Opt-out via CROSS_REVIEW_EVIDENCE_PREFLIGHT=off.
     if (this.config.evidence_preflight_enabled) {
-      const attachments = this.store.readEvidenceAttachments(
-        session.session_id,
-        this.config.prompt.max_attached_evidence_chars,
-      );
+      const attachments = this.safeReadEvidenceAttachments(session.session_id);
       const preflight = evidencePreflight({
         task: input.task,
         initialDraft: draft,
@@ -4346,11 +4353,7 @@ export class CrossReviewOrchestrator {
       let initialAttachments: ReturnType<SessionStore["readEvidenceAttachments"]> | undefined;
       if (this.config.truthfulness_preflight_enabled) {
         initialAttachments =
-          initialAttachments ??
-          this.store.readEvidenceAttachments(
-            session.session_id,
-            this.config.prompt.max_attached_evidence_chars,
-          );
+          initialAttachments ?? this.safeReadEvidenceAttachments(session.session_id);
         const attachmentsPresent = initialAttachments.length > 0;
         const truthfulness = truthfulnessPreflight({
           task: input.task,
@@ -4416,11 +4419,7 @@ export class CrossReviewOrchestrator {
       let initialMetaAuditResult: MetaAuditDetectionResult | null = null;
       if (sessionMode === "ship" && !initialEmptyText && !initialDriftDetected) {
         initialAttachments =
-          initialAttachments ??
-          this.store.readEvidenceAttachments(
-            session.session_id,
-            this.config.prompt.max_attached_evidence_chars,
-          );
+          initialAttachments ?? this.safeReadEvidenceAttachments(session.session_id);
         initialFabricationResult = detectFabricatedEvidence(generation.text, {
           provenanceCorpus: initialAttachments.map((a) => a.content).join("\n"),
           priorDraftCorpus: "",
@@ -4599,10 +4598,7 @@ export class CrossReviewOrchestrator {
             input.review_focus,
             sessionMode,
             // v2.14.0 (path-A): same attachment resolution as askPeers.
-            this.store.readEvidenceAttachments(
-              session.session_id,
-              this.config.prompt.max_attached_evidence_chars,
-            ),
+            this.safeReadEvidenceAttachments(session.session_id),
           ),
           {
             session_id: session.session_id,
@@ -4619,10 +4615,7 @@ export class CrossReviewOrchestrator {
         await this.store.saveGeneration(session.session_id, round, generation, "revision");
         if (this.config.truthfulness_preflight_enabled) {
           const attachmentsPresent =
-            this.store.readEvidenceAttachments(
-              session.session_id,
-              this.config.prompt.max_attached_evidence_chars,
-            ).length > 0;
+            this.safeReadEvidenceAttachments(session.session_id).length > 0;
           const truthfulness = truthfulnessPreflight({
             task: input.task,
             initialDraft: generation.text,
@@ -4717,10 +4710,7 @@ export class CrossReviewOrchestrator {
         let fabricationResult: FabricationDetectionResult | null = null;
         let metaAuditResult: MetaAuditDetectionResult | null = null;
         if (sessionMode === "ship" && !emptyText && !driftDetected) {
-          const attachmentsForCheck = this.store.readEvidenceAttachments(
-            session.session_id,
-            this.config.prompt.max_attached_evidence_chars,
-          );
+          const attachmentsForCheck = this.safeReadEvidenceAttachments(session.session_id);
           // Three-tier corpus (v2.24.0 two-tier per Codex R1 blocker
           // session 91935993; split in v3.7.4 — Codex v3.7.3 parecer
           // follow-up). An operational assertion the relator PRESERVED

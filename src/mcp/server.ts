@@ -1540,7 +1540,7 @@ export async function main(): Promise<void> {
     {
       title: "Session Doctor",
       description:
-        'Operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Read-only by default (does not modify sessions). Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible). v3.6.0: pass repair=true (opt-in) to recompute convergence_health for sessions stuck in the contradictory outcome="converged"+health="blocked" state left by pre-v3.2.0 corruption — only that specific contradiction is touched, only when explicitly requested; the `repaired` array lists what was fixed.',
+        'Operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Read-only by default (does not modify sessions). Terminal max-rounds and terminal not_resurfaced history stay in totals but are not default operational findings; pass include_terminal_findings=true to enumerate that historical inventory. Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible). v3.6.0: pass repair=true (opt-in) to recompute convergence_health for sessions stuck in the contradictory outcome="converged"+health="blocked" state left by pre-v3.2.0 corruption — only that specific contradiction is touched, only when explicitly requested; the `repaired` array lists what was fixed.',
       inputSchema: z.object({
         limit: z.number().int().min(1).max(100).default(20),
         // v2.22.0 (A.P2): opt-in enumeration of legacy self_lead_metadata
@@ -1553,6 +1553,10 @@ export async function main(): Promise<void> {
         // corruption artifact) has convergence_health recomputed from the
         // latest round; the `repaired` array reports what changed.
         repair: z.boolean().optional(),
+        // v4.4.6: opt-in enumeration of terminal max-rounds and
+        // terminal not_resurfaced historical inventory. Defaults false
+        // so findings stay action-oriented while totals remain complete.
+        include_terminal_findings: z.boolean().optional(),
         caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
@@ -1565,13 +1569,21 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ limit, include_legacy, repair, caller, response_format }) => {
+    async ({
+      limit,
+      include_legacy,
+      repair,
+      include_terminal_findings,
+      caller,
+      response_format,
+    }) => {
       verifyToolCallerIdentity(runtime, "session_doctor", caller, server.server.getClientVersion());
       return textResult(
         await runtime.orchestrator.store.sessionDoctor(
           limit,
           include_legacy ?? false,
           repair ?? false,
+          include_terminal_findings ?? false,
         ),
         response_format,
       );

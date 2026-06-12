@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ---------------------------------- |
 | Nome                       | `cross-review`                     |
 | Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.4.5`                            |
+| Versão runtime             | `4.4.6`                            |
 | Release date runtime       | `2026-06-12`                       |
 | Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.4.5`                            |
+| Versão npm publicada       | `4.4.6`                            |
 | Transporte MCP             | `stdio`                            |
 | Execução CLI por peers     | desativada                         |
 | Modo padrão                | chamadas reais de API              |
@@ -220,38 +220,38 @@ correspondente e trate recusas `stop_reason="refusal"` como
 
 A superfície MCP da release expõe as seguintes ferramentas:
 
-| Ferramenta                              | Uso principal                                                                        |
-| --------------------------------------- | ------------------------------------------------------------------------------------ |
-| `server_info`                           | Inspeciona versão, diretório de dados, capacidades, budget, peers e segurança ativa. |
-| `runtime_capabilities`                  | Retorna contrato de capacidades e lista de ferramentas.                              |
-| `probe_peers`                           | Consulta provedores para verificar reachability e modelos disponíveis.               |
-| `session_init`                          | Cria uma sessão durável sem chamar reviewers.                                        |
-| `session_list`                          | Lista sessões de forma paginada e resumida.                                          |
-| `session_read`                          | Lê o `meta.json` completo de uma sessão.                                             |
-| `ask_peers`                             | Executa uma rodada real de revisão.                                                  |
-| `session_start_round`                   | Inicia rodada em background e devolve `session_id`/`job_id`.                         |
-| `run_until_unanimous`                   | Gera/revisa até unanimidade, limite de rodadas ou bloqueio.                          |
-| `session_start_unanimous`               | Versão background do fluxo até unanimidade.                                          |
-| `session_cancel_job`                    | Solicita cancelamento cooperativo de job em execução.                                |
-| `session_recover_interrupted`           | Recupera sessões interrompidas.                                                      |
-| `session_poll`                          | Consulta progresso de job em background.                                             |
-| `session_events`                        | Lê eventos duráveis da sessão.                                                       |
-| `session_metrics`                       | Retorna métricas agregadas ou de uma sessão.                                         |
-| `session_doctor`                        | Audita sessões abertas, travadas ou historicamente inconsistentes.                   |
-| `session_report`                        | Gera relatório Markdown de uma sessão.                                               |
-| `session_peer_reliability_report`       | Agrega sinais de confiabilidade por peer sem alterar seleção ou estado de sessão.    |
-| `session_check_convergence`             | Retorna estado de convergência durável sem chamar provedores.                        |
-| `session_truthfulness_preflight_check`  | Reexecuta localmente o truthfulness preflight de uma sessão sem chamar provedores.   |
-| `session_attach_evidence`               | Anexa evidência textual à sessão.                                                    |
-| `session_evidence_checklist_update`     | Atualiza status de itens de evidência.                                               |
-| `session_evidence_judge_pass`           | Usa um peer como juiz de evidência em modo controlado.                               |
-| `session_evidence_judge_consensus_pass` | Juízo de evidência por consenso entre peers.                                         |
-| `session_judgment_precision_report`     | Mede precisão/recall/F1 dos julgamentos shadow.                                      |
-| `contest_verdict`                       | Contesta verdict final e abre novo ciclo com cadeia de custódia.                     |
-| `escalate_to_operator`                  | Registra necessidade de julgamento humano.                                           |
-| `regenerate_caller_tokens`              | Rotaciona tokens locais de identidade por host.                                      |
-| `session_sweep`                         | Finaliza sessões inativas e limpa históricos conforme política.                      |
-| `session_finalize`                      | Marca sessão como `converged`, `aborted` ou `max-rounds`.                            |
+| Ferramenta                              | Uso principal                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `server_info`                           | Inspeciona versão, diretório de dados, capacidades, budget, peers e segurança ativa.              |
+| `runtime_capabilities`                  | Retorna contrato de capacidades e lista de ferramentas.                                           |
+| `probe_peers`                           | Consulta provedores para verificar reachability e modelos disponíveis.                            |
+| `session_init`                          | Cria uma sessão durável sem chamar reviewers.                                                     |
+| `session_list`                          | Lista sessões de forma paginada e resumida.                                                       |
+| `session_read`                          | Lê o `meta.json` completo de uma sessão.                                                          |
+| `ask_peers`                             | Executa uma rodada real de revisão.                                                               |
+| `session_start_round`                   | Inicia rodada em background e devolve `session_id`/`job_id`.                                      |
+| `run_until_unanimous`                   | Gera/revisa até unanimidade, limite de rodadas ou bloqueio.                                       |
+| `session_start_unanimous`               | Versão background do fluxo até unanimidade.                                                       |
+| `session_cancel_job`                    | Solicita cancelamento cooperativo de job em execução.                                             |
+| `session_recover_interrupted`           | Recupera sessões interrompidas.                                                                   |
+| `session_poll`                          | Consulta progresso de job em background.                                                          |
+| `session_events`                        | Lê eventos duráveis da sessão.                                                                    |
+| `session_metrics`                       | Retorna métricas agregadas ou de uma sessão.                                                      |
+| `session_doctor`                        | Audita sessões abertas, travadas ou inconsistentes; histórico terminal fica em totals por padrão. |
+| `session_report`                        | Gera relatório Markdown de uma sessão.                                                            |
+| `session_peer_reliability_report`       | Agrega sinais de confiabilidade por peer sem alterar seleção ou estado de sessão.                 |
+| `session_check_convergence`             | Retorna estado de convergência durável sem chamar provedores.                                     |
+| `session_truthfulness_preflight_check`  | Reexecuta localmente o truthfulness preflight de uma sessão sem chamar provedores.                |
+| `session_attach_evidence`               | Anexa evidência textual à sessão.                                                                 |
+| `session_evidence_checklist_update`     | Atualiza status de itens de evidência.                                                            |
+| `session_evidence_judge_pass`           | Usa um peer como juiz de evidência em modo controlado.                                            |
+| `session_evidence_judge_consensus_pass` | Juízo de evidência por consenso entre peers.                                                      |
+| `session_judgment_precision_report`     | Mede precisão/recall/F1 dos julgamentos shadow.                                                   |
+| `contest_verdict`                       | Contesta verdict final e abre novo ciclo com cadeia de custódia.                                  |
+| `escalate_to_operator`                  | Registra necessidade de julgamento humano.                                                        |
+| `regenerate_caller_tokens`              | Rotaciona tokens locais de identidade por host.                                                   |
+| `session_sweep`                         | Finaliza sessões inativas e limpa históricos conforme política.                                   |
+| `session_finalize`                      | Marca sessão como `converged`, `aborted` ou `max-rounds`.                                         |
 
 ## Modos de trabalho
 
@@ -724,6 +724,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.04.06`      | 2026-06-12    | Fecha a cauda restante da revalidação Claude: leituras de evidência no orquestrador falham fechado, `session_doctor` separa histórico terminal de achados e T2#10 cai para 160 pins.   |
 | `v04.04.05`      | 2026-06-12    | Fecha os 7 resíduos verificados da auditoria: realpath fail-closed em evidências, tipagem de `shadow_decision`, data derivada do CHANGELOG, comentário JWT e budget T2#10 bloqueado.   |
 | `v04.04.04`      | 2026-06-12    | Adiciona rate cards por modelo no `config.json`, permitindo guardar preços de Claude Opus 4.8 e Claude Fable 5 e selecionar automaticamente pelo modelo configurado.                   |
 | `v04.04.03`      | 2026-06-12    | Reduz o débito T2#10 movendo o contrato lazy provider SDK imports para `source-contract-smoke`, preservando cobertura e criando folga no budget do smoke geral.                        |

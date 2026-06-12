@@ -7,6 +7,32 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.06] — 2026-06-12
+
+**Patch — close the remaining Claude re-validation tail and clean
+session-doctor findings.** This release addresses the two residual items left
+after v4.4.5 without rewriting historical session truth.
+
+### Fixed
+
+- `CrossReviewOrchestrator` now routes attached-evidence reads through a
+  single fail-closed helper. If evidence metadata or filesystem access raises
+  while a preflight path is preparing prompts, the run emits
+  `session.attached_evidence_read_failed` and continues without attached
+  evidence instead of aborting the orchestration.
+- `session_doctor` now keeps terminal `max-rounds` and terminal
+  `not_resurfaced` history in `totals` but removes that historical inventory
+  from default operational `findings`. Pass `include_terminal_findings=true`
+  to enumerate terminal history explicitly.
+- The T2#10 source-regex debt was reduced again: the consistent multiline
+  count is now `smoke=129`, `source-contract=31`, total `160`, and the
+  source-contract gate locks that lower budget.
+
+### Changed
+
+- Several literal source-contract checks now use direct `includes()` checks
+  instead of regexes where regex matching was unnecessary.
+
 ## [v04.04.05] — 2026-06-12
 
 **Patch — close the seven verified residual audit items.** This release
