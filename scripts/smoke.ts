@@ -6459,6 +6459,62 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION, "2");
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION, "8");
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS, "6");
+    const claudeModelRatesConfig = {
+      models: { claude: "claude-fable-5" },
+      cost_rates: {
+        claude: {
+          input_per_million: 5,
+          output_per_million: 25,
+          cache_read_per_million: 0.5,
+          cache_write_per_million: 10,
+        },
+      },
+      model_cost_rates: {
+        claude: {
+          "claude-opus-4-8": {
+            input_per_million: 5,
+            output_per_million: 25,
+            cache_read_per_million: 0.5,
+            cache_write_per_million: 10,
+          },
+          "claude-fable-5": {
+            input_per_million: 10,
+            output_per_million: 50,
+            cache_read_per_million: 1,
+            cache_write_per_million: 20,
+          },
+        },
+      },
+    };
+    const claudeModelFlat = flattenFileConfigToEnvMap(claudeModelRatesConfig);
+    assert.equal(
+      claudeModelFlat.CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION,
+      "10",
+      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 input pricing when models.claude=claude-fable-5",
+    );
+    assert.equal(
+      claudeModelFlat.CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION,
+      "50",
+      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 output pricing when models.claude=claude-fable-5",
+    );
+    assert.equal(
+      claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION,
+      "1",
+      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 cache-read pricing when models.claude=claude-fable-5",
+    );
+    assert.equal(
+      claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION,
+      "20",
+      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 1h cache-write pricing when models.claude=claude-fable-5",
+    );
+    const claudeOverrideFlat = flattenFileConfigToEnvMap(claudeModelRatesConfig, (name: string) =>
+      name === "CROSS_REVIEW_ANTHROPIC_MODEL" ? "claude-opus-4-8" : undefined,
+    );
+    assert.equal(
+      claudeOverrideFlat.CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION,
+      "5",
+      "v4.4.4 / central config: model_cost_rates must follow the env/registry model override before file models.claude",
+    );
     console.log("[smoke] central_config_file_load_test: PASS");
   } finally {
     for (const k of KEYS_UNDER_TEST) {

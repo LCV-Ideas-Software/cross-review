@@ -61,7 +61,7 @@ The cost layer (`src/core/cost.ts`) extends `CostEstimate` with two cache-relate
 - `cache_savings_usd?: number` — populated when the rate card knows how to price the savings
 - `cache_savings_unknown?: boolean` — set when cache telemetry was present but no rate card matched
 
-Rate cards live in `config.cost_rates`, loaded from environment variables or the central config file. Cache read/write rates use the same per-provider prefix as input/output, for example `CROSS_REVIEW_<PROVIDER>_CACHE_READ_USD_PER_MILLION` and `CROSS_REVIEW_<PROVIDER>_CACHE_WRITE_USD_PER_MILLION`. The rate card delta is computed from the configured rates: `(fresh_input_per_million - cached_input_per_million) × cache_read_tokens / 1e6`.
+Rate cards live in `config.cost_rates`, loaded from environment variables or the central config file. Central config can also define `model_cost_rates` so a peer with multiple priced model families, such as Claude Opus 4.8 and Claude Fable 5, automatically flattens the rate card for the configured model. Cache read/write rates use the same per-provider prefix as input/output, for example `CROSS_REVIEW_<PROVIDER>_CACHE_READ_USD_PER_MILLION` and `CROSS_REVIEW_<PROVIDER>_CACHE_WRITE_USD_PER_MILLION`. The rate card delta is computed from the configured rates: `(fresh_input_per_million - cached_input_per_million) × cache_read_tokens / 1e6`.
 
 Adapters surface provider-reported cache counts via `TokenUsage.cache_read_tokens`
 and, only when the provider exposes a creation/miss counter,

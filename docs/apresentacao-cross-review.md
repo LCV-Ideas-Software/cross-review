@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ---------------------------------- |
 | Nome                       | `cross-review`                     |
 | Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.4.3`                            |
+| Versão runtime             | `4.4.4`                            |
 | Release date runtime       | `2026-06-12`                       |
 | Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.4.3`                            |
+| Versão npm publicada       | `4.4.4`                            |
 | Transporte MCP             | `stdio`                            |
 | Execução CLI por peers     | desativada                         |
 | Modo padrão                | chamadas reais de API              |
@@ -724,6 +724,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.04.04`      | 2026-06-12    | Adiciona rate cards por modelo no `config.json`, permitindo guardar preços de Claude Opus 4.8 e Claude Fable 5 e selecionar automaticamente pelo modelo configurado.                   |
 | `v04.04.03`      | 2026-06-12    | Reduz o débito T2#10 movendo o contrato lazy provider SDK imports para `source-contract-smoke`, preservando cobertura e criando folga no budget do smoke geral.                        |
 | `v04.04.02`      | 2026-06-12    | Suporta Claude Fable 5 como opção Anthropic explícita: seleção verificada, classificação `provider_refusal`, evento `provider.refusal`, docs de custo e postura de retenção.           |
 | `v04.04.01`      | 2026-06-12    | Fecha a varredura residual: identity gate completo, cache/attachments, EventLog async, probe Perplexity auth-only, correções de custo/cache e smoke dedicado para contratos de source. |

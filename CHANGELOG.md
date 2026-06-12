@@ -7,6 +7,27 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.04] — 2026-06-12
+
+**Patch — model-aware Anthropic rate cards in central config.** The central
+`config.json` can now store both Claude Opus 4.8 and Claude Fable 5 prices and
+the runtime flattens the correct Anthropic rate card according to the
+configured Claude model.
+
+### Added
+
+- `model_cost_rates` in central config. It is keyed by peer and then by model
+  or model-family ID, for example
+  `model_cost_rates.claude["claude-fable-5"]`.
+
+### Changed
+
+- File-config flattening now applies model-specific rates after generic
+  `cost_rates`, so `models.claude=claude-fable-5` automatically uses Fable 5
+  input/output/cache pricing while `claude-opus-4-8` uses Opus pricing.
+- Explicit env/registry model overrides still win over the model value in the
+  central file before the model-specific rate card is selected.
+
 ## [v04.04.03] — 2026-06-12
 
 **Patch — source-contract smoke split follow-up for T2#10 test-debt.** This

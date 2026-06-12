@@ -44,6 +44,11 @@ override with:
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION", "20", "User")
 ```
 
+When using the central `config.json`, prefer storing both Claude families under
+`model_cost_rates.claude` instead of changing the Anthropic rate env vars by
+hand. The runtime chooses the active rate card from the configured Claude
+model, after honoring any explicit env/registry model override.
+
 Fable 5 is generally available on the Claude API, but it can return successful
 responses with `stop_reason="refusal"`. The runtime records those as
 `provider_refusal` unless you configure an explicit Anthropic fallback chain.

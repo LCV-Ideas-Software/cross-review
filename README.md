@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.04.03** (npm package `4.4.3`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.04.04** (npm package `4.4.4`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                   |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.04.04`**      | Patch — central config can now carry model-specific rate cards, so Claude Opus 4.8 and Claude Fable 5 pricing are both stored and the active Anthropic rates follow the configured Claude model automatically.                                                          |
 | **`v04.04.03`**      | Patch — continue the T2#10 smoke-debt reduction by moving the lazy provider SDK import source contract into the dedicated source-contract smoke, preserving coverage while reducing broad smoke regex pins.                                                             |
 | **`v04.04.02`**      | Patch — support Claude Fable 5 as an explicit Anthropic production-model option, including verified model selection, refusal handling, refusal events, docs and cost guidance.                                                                                          |
 | **`v04.04.01`**      | Patch — complete residual audit sweep: full mutating-tool identity gate, evidence attachment cache/safety, async EventLog flush, Perplexity auth-only probe mode, cache-cost correctness, dashboard report method split, and dedicated source-contract smoke isolation. |
@@ -196,8 +197,11 @@ variables. Example overrides (PowerShell):
 
 Claude Fable 5 is supported as an explicit Anthropic model override:
 `CROSS_REVIEW_ANTHROPIC_MODEL=claude-fable-5`. It is not the default pin; when
-selected, configure the Anthropic rate card for Fable 5 and expect
-`provider_refusal` failures when the API returns `stop_reason="refusal"`.
+selected, the runtime validates that pin and expects `provider_refusal`
+failures when the API returns `stop_reason="refusal"`. Central `config.json`
+files can store both Claude Opus 4.8 and Fable 5 rate cards under
+`model_cost_rates.claude`; the runtime chooses the active Anthropic rate card
+from the configured Claude model.
 
 For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.3`, which
 accepts explicit `reasoning.effort` through `high`; the adapter clamps the

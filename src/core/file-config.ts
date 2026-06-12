@@ -120,6 +120,11 @@ const PerPeerCostRatesSchema = z
   .strict()
   .optional();
 
+const PerPeerModelCostRatesSchema = z
+  .object(perPeerOptionalShape(z.record(z.string(), CostRateEntrySchema)))
+  .strict()
+  .optional();
+
 const EvidenceJudgeAutowireSchema = z
   .object({
     mode: z.enum(["off", "shadow", "active"]).optional(),
@@ -211,6 +216,7 @@ export const FileConfigSchema = z
     reasoning_effort: PerPeerReasoningSchema,
     peer_enabled: PerPeerBoolSchema,
     cost_rates: PerPeerCostRatesSchema,
+    model_cost_rates: PerPeerModelCostRatesSchema,
     budget: BudgetSchema,
     retry: RetrySchema,
     evidence_judge_autowire: EvidenceJudgeAutowireSchema,
@@ -258,11 +264,47 @@ const COST_RATE_FIELD_TO_ENV_SUFFIX: Record<string, string> = {
   search_queries_per_1000: "SEARCH_QUERIES_USD_PER_1000_REQUESTS",
 };
 
+function flattenCostRate(
+  out: Record<string, string>,
+  prefix: string,
+  rate: Record<string, unknown>,
+): void {
+  for (const [field, value] of Object.entries(rate)) {
+    if (value == null) continue;
+    const suffix = COST_RATE_FIELD_TO_ENV_SUFFIX[field];
+    if (!suffix) continue;
+    out[`${prefix}_${suffix}`] = String(value);
+  }
+}
+
+function normalizeModelId(model: string): string {
+  return model.trim().replace(/^models\//i, "");
+}
+
+function selectConfiguredModelRate(
+  ratesByModel: Record<string, Record<string, unknown>>,
+  configuredModel: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!configuredModel) return undefined;
+  const normalized = normalizeModelId(configuredModel);
+  if (ratesByModel[normalized]) return ratesByModel[normalized];
+  for (const [modelFamily, rate] of Object.entries(ratesByModel)) {
+    const normalizedFamily = normalizeModelId(modelFamily);
+    if (normalized === normalizedFamily || normalized.startsWith(`${normalizedFamily}-`)) {
+      return rate;
+    }
+  }
+  return undefined;
+}
+
 // Flatten the structured FileConfig into a flat map of env-var-name →
 // string-value. The existing loadConfig() pipeline reads from
 // process.env, so the file's contribution is to seed those env vars
 // when they aren't already explicitly set.
-export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, string> {
+export function flattenFileConfigToEnvMap(
+  config: FileConfig,
+  envValue?: (name: string) => string | undefined,
+): Record<string, string> {
   const out: Record<string, string> = {};
   const set = (name: string, value: unknown) => {
     if (value == null) return;
@@ -312,12 +354,20 @@ export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, st
     ][]) {
       if (!rate) continue;
       const prefix = PEER_TO_ENV_PREFIX[peer];
-      for (const [field, value] of Object.entries(rate)) {
-        if (value == null) continue;
-        const suffix = COST_RATE_FIELD_TO_ENV_SUFFIX[field];
-        if (!suffix) continue;
-        set(`${prefix}_${suffix}`, value);
-      }
+      flattenCostRate(out, prefix, rate);
+    }
+  }
+  if (config.model_cost_rates) {
+    for (const [peer, ratesByModel] of Object.entries(config.model_cost_rates) as [
+      PeerId,
+      Record<string, Record<string, unknown>> | undefined,
+    ][]) {
+      if (!ratesByModel) continue;
+      const prefix = PEER_TO_ENV_PREFIX[peer];
+      const configuredModel = envValue?.(`${prefix}_MODEL`) ?? config.models?.[peer];
+      const modelRate = selectConfiguredModelRate(ratesByModel, configuredModel);
+      if (!modelRate) continue;
+      flattenCostRate(out, prefix, modelRate);
     }
   }
 
@@ -508,7 +558,7 @@ export function applyFileConfigToEnv(
       parse_error: `schema_validation_failed: ${validated.error.message}`,
     };
   }
-  const envMap = flattenFileConfigToEnvMap(validated.data);
+  const envMap = flattenFileConfigToEnvMap(validated.data, envValue);
   let applied = 0;
   let overridden = 0;
   for (const [name, value] of Object.entries(envMap)) {

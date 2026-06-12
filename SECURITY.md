@@ -2,11 +2,11 @@
 
 ## Supported status
 
-Latest supported release: v04.04.03 for npm package 4.4.3. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.04.04 for npm package 4.4.4. The current main branch is also supported for security fixes until the next release is published.
 
-v04.04.03 is a test-harness maintenance release for source-contract smoke
-isolation. It does not change runtime security, token handling, redaction
-policy, caller identity gates, provider adapters, or secret sourcing.
+v04.04.04 adds model-aware Anthropic rate-card selection for central
+configuration. It does not change token handling, redaction policy, caller
+identity gates, provider adapters, or secret sourcing.
 
 ## Reporting a vulnerability
 

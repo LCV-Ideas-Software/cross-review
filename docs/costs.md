@@ -49,6 +49,38 @@ Anthropic cache-write rates are separate from cache-hit rates. For
 as `20` when using the workspace's default Anthropic `1h` cache TTL, or `12.5`
 if you deliberately switch Anthropic cache TTL to `5m`.
 
+Central `config.json` supports model-aware rate cards through
+`model_cost_rates`. This is the preferred shape when a peer can switch between
+models with different prices, such as Claude Opus 4.8 and Claude Fable 5:
+
+```json
+{
+  "models": {
+    "claude": "claude-fable-5"
+  },
+  "model_cost_rates": {
+    "claude": {
+      "claude-opus-4-8": {
+        "input_per_million": 5,
+        "output_per_million": 25,
+        "cache_read_per_million": 0.5,
+        "cache_write_per_million": 10
+      },
+      "claude-fable-5": {
+        "input_per_million": 10,
+        "output_per_million": 50,
+        "cache_read_per_million": 1,
+        "cache_write_per_million": 20
+      }
+    }
+  }
+}
+```
+
+If both `cost_rates.claude` and `model_cost_rates.claude` are present, the
+model-specific entry for the configured Claude model wins. Process env and
+Windows registry rate variables still have higher precedence than the file.
+
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_MAX_SESSION_COST_USD", "20", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD", "20", "User")
