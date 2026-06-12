@@ -42,6 +42,19 @@ const storeModuleUrl = pathToFileURL(
   path.join(cwd, "dist", "src", "core", "session-store.js"),
 ).href;
 
+const SIGNAL_WAIT_TIMEOUT_MS = 15_000;
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForFile(filePath, label, timeoutMs = SIGNAL_WAIT_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(filePath)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for ${label}: ${filePath}`);
+    }
+    await delay(30);
+  }
+}
+
 if (process.env.PRPL_LEGACY_SIMULATOR === "1") {
   const lockfilePath = process.env.PRPL_LOCKFILE_PATH;
   const startSignal = process.env.PRPL_START_SIGNAL;
@@ -50,19 +63,23 @@ if (process.env.PRPL_LEGACY_SIMULATOR === "1") {
   const exitSignal = `${startSignal}.legacy-exit`;
   // LEGACY waits for V41_A to finish (so V41_A sees the planted
   // stale file). Then LEGACY does v4.0.x's stale-removal-and-reclaim.
-  while (!fs.existsSync(v41aDoneSignal)) {
-    await new Promise((r) => setTimeout(r, 30));
-  }
+  await waitForFile(v41aDoneSignal, "v41a completion signal");
   // v4.0.x-style acquire: fs.openSync wx then write {pid, ts}. If the
   // path is currently a stale dead-pid file v4.0.x would have its own
   // stale-removal logic; here we simulate the post-removal state by
   // looping until openSync wx succeeds (i.e. file is gone).
   let fd = null;
+  const lockOpenDeadline = Date.now() + SIGNAL_WAIT_TIMEOUT_MS;
   while (fd === null) {
     try {
       fd = fs.openSync(lockfilePath, "wx");
     } catch (err) {
       if (err.code === "EEXIST") {
+        if (Date.now() >= lockOpenDeadline) {
+          throw new Error(`timed out waiting to acquire legacy lock: ${lockfilePath}`, {
+            cause: err,
+          });
+        }
         // Pre-v4.1.0 would stale-detect + remove + retry. To exercise
         // that path safely from the simulator, unlink first then
         // openSync — but a real v4.0.x would only do this if the
@@ -73,7 +90,7 @@ if (process.env.PRPL_LEGACY_SIMULATOR === "1") {
         } catch {
           /* race with v4.1 — fine */
         }
-        await new Promise((r) => setTimeout(r, 30));
+        await delay(30);
         continue;
       }
       throw err;
@@ -84,7 +101,7 @@ if (process.env.PRPL_LEGACY_SIMULATOR === "1") {
   fs.writeFileSync(enteredSignal, "");
   // Hold inside CS for 8 s — long enough for both v4.1 migrators to
   // attempt and observe the live legacy file.
-  await new Promise((r) => setTimeout(r, 8000));
+  await delay(8000);
   // Snapshot file state at end-of-CS so the parent can verify no v4.1
   // migrator touched it during the CS.
   let endStat = null;
@@ -130,13 +147,9 @@ if (process.env.PRPL_V41_MIGRATOR === "1") {
   const v41aDoneSignal = `${startSignal}.v41a-done`;
   const role = process.env.PRPL_V41_ROLE; // "A" or "B"
   const enteredSignal = `${startSignal}.legacy-entered`;
-  while (!fs.existsSync(startSignal)) {
-    await new Promise((r) => setTimeout(r, 30));
-  }
+  await waitForFile(startSignal, "start signal");
   if (role === "B") {
-    while (!fs.existsSync(enteredSignal)) {
-      await new Promise((r) => setTimeout(r, 30));
-    }
+    await waitForFile(enteredSignal, "legacy entered signal");
   }
   const { SessionStore } = await import(storeModuleUrl);
   const cfg = { data_dir: dataDir, version: "4.1.0-mig", budget: { max_session_cost_usd: 10 } };
@@ -250,7 +263,7 @@ let v41b_stdout = "";
 v41b.stdout.on("data", (d) => (v41b_stdout += d.toString()));
 v41b.stderr.on("data", () => {});
 
-await new Promise((r) => setTimeout(r, 200));
+await delay(200);
 fs.writeFileSync(startSignal, "");
 
 const codes = await Promise.all(

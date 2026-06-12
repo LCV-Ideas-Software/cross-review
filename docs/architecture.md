@@ -8,16 +8,18 @@ This API-only `cross-review` implementation is intentionally independent from th
 2. Orchestrator: creates sessions, runs reviews, checks unanimity and asks the lead peer to revise.
 3. Peer adapters: call official provider APIs and client libraries.
 4. Model selection: queries model APIs and chooses the highest-capability documented model available to the key.
-5. Session store: writes durable JSON and Markdown artifacts under `data/sessions`.
+5. Session store: writes durable JSON and Markdown artifacts under `<data_dir>/sessions`.
 6. Session events: writes durable `events.ndjson` streams per session for long-running work.
 7. Token streaming: writes count-based `peer.token.delta` and `peer.token.completed` events when provider streaming is enabled.
 8. Reports: writes `session-report.md` with convergence, failures, decision quality, peer-vs-generation cost split, evidence checklist status and recent events.
-9. Observability: writes one NDJSON log per process under `data/logs`.
+9. Observability: writes one NDJSON log per process under `<data_dir>/logs`.
 10. Dashboard: local read-only HTTP UI for sessions, events, reports, probes and metrics.
 
 ## Real Execution Rule
 
-Runtime default is real API execution. Stubs are disabled unless `CROSS_REVIEW_STUB=1`.
+Runtime default is real API execution. Stubs are disabled unless
+`CROSS_REVIEW_STUB=1` is paired with explicit confirmation
+(`CROSS_REVIEW_STUB_CONFIRMED=1` or `NODE_ENV=test`).
 
 ## Timeout Model
 
@@ -133,7 +135,7 @@ The peer adapters use the strongest official reasoning controls available for ea
 
 - OpenAI runs through the Responses API with high reasoning effort.
 - Anthropic uses adaptive thinking and omits raw thinking content from responses.
-- Gemini enables thinking configuration for Gemini 3.x and the Gemini 2.5 fallback.
+- Gemini enables thinking configuration for the pinned Gemini 3.x model.
 - DeepSeek enables Thinking Mode and follows the official multi-round guidance by resending the summarized session context in each stateless request.
 - Grok runs the pinned `grok-4.3` model with explicit `reasoning.effort` clamped to xAI's supported values.
 - Perplexity runs the pinned `sonar-reasoning-pro` model with an explicit `reasoning_effort` (`minimal`/`low`/`medium`/`high`); the shared effort scale is clamped down into that range.

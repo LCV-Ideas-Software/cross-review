@@ -13,14 +13,14 @@ This document describes:
 
 ## Per-provider behavior matrix
 
-| Peer (Provider)           | Cache mode      | Threshold       | TTL surface                                    | Telemetry source                                                      |
-| ------------------------- | --------------- | --------------- | ---------------------------------------------- | --------------------------------------------------------------------- |
-| `codex` (OpenAI)          | `auto`          | ~1k tokens      | `prompt_cache_retention` (`in_memory` / `24h`) | `usage.prompt_tokens_details.cached_tokens`                           |
-| `claude` (Anthropic)      | `explicit`      | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)              | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
-| `gemini` (Google)         | `implicit`      | service-managed | n/a                                            | `usageMetadata.cachedContentTokenCount`                               |
-| `deepseek` (DeepSeek)     | `auto`          | service-managed | n/a                                            | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
-| `grok` (xAI)              | `auto`          | service-managed | mirrors OpenAI                                 | `usage.prompt_tokens_details.cached_tokens`                           |
-| `perplexity` (Perplexity) | `not_supported` | n/a             | n/a                                            | none — Sonar API exposes no prompt-cache surface                      |
+| Peer (Provider)           | Cache mode      | Default participation | Threshold       | TTL surface                                    | Telemetry source                                                      |
+| ------------------------- | --------------- | --------------------- | --------------- | ---------------------------------------------- | --------------------------------------------------------------------- |
+| `codex` (OpenAI)          | `auto`          | on                    | ~1k tokens      | `prompt_cache_retention` (`in_memory` / `24h`) | `usage.prompt_tokens_details.cached_tokens`                           |
+| `claude` (Anthropic)      | `explicit`      | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)              | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
+| `gemini` (Google)         | `implicit`      | on                    | service-managed | n/a                                            | `usageMetadata.cachedContentTokenCount`                               |
+| `deepseek` (DeepSeek)     | `auto`          | on                    | service-managed | n/a                                            | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
+| `grok` (xAI)              | `auto`          | on                    | service-managed | mirrors OpenAI                                 | `usage.prompt_tokens_details.cached_tokens`                           |
+| `perplexity` (Perplexity) | `not_supported` | off by capability     | n/a             | n/a                                            | none — Sonar API exposes no prompt-cache surface                      |
 
 `mode` values follow the canonical `TokenUsage.cache_provider_mode` enum:
 
@@ -72,6 +72,23 @@ CROSS_REVIEW_DISABLE_CACHE=true
 ```
 
 Disables prompt caching globally for the runtime. Adapters fall back to the pre-v2.21 behavior (no `prompt_cache_key`, no `cache_control` blocks, no `x-grok-conv-id` header). The cost layer continues to merge `cache_read_tokens` / `cache_write_tokens` if a provider returns them anyway, so audit reproducibility is preserved.
+
+Per-provider kill-switches use provider names:
+
+```powershell
+CROSS_REVIEW_DISABLE_CACHE_OPENAI=true
+CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC=false
+CROSS_REVIEW_DISABLE_CACHE_GEMINI=true
+CROSS_REVIEW_DISABLE_CACHE_DEEPSEEK=true
+CROSS_REVIEW_DISABLE_CACHE_GROK=true
+CROSS_REVIEW_DISABLE_CACHE_PERPLEXITY=true
+```
+
+Anthropic defaults to disabled because the recorded hit rate was not
+cost-effective for the observed session corpus; set
+`CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC=false` to re-enable it deliberately.
+Other supported cache surfaces default to enabled unless the global or
+per-provider switch disables them.
 
 Use cases:
 
@@ -133,4 +150,5 @@ The smoke harness (`scripts/smoke.ts`) ships five anti-drift markers covering th
 - `cache_schema_version_in_prefix_test` — first line of `stablePrefix` matches `^cache_schema_version: v\d+$`
 - `cache_rates_json_loaded_test` — every provider has a rate card with a numeric `fresh_input_per_million_usd`
 - `cache_manifest_atomic_write_test` — sequential appends preserve every entry
-- `cache_disable_kill_switch_test` — `CROSS_REVIEW_DISABLE_CACHE=true` flips `config.cache.enabled`
+- `cache_disable_kill_switch_test` — global and per-provider cache switches
+  are parsed, including Anthropic's default-off behavior

@@ -603,9 +603,13 @@ export interface PeerProbeResult {
   message?: string | undefined;
 }
 
+export type RuntimeEventType =
+  | "append_event_persist_failed"
+  | `${"session" | "round" | "peer" | "provider"}.${string}`;
+
 export interface RuntimeEvent {
   seq?: number | undefined;
-  type: string;
+  type: RuntimeEventType;
   ts?: string | undefined;
   session_id?: string | undefined;
   round?: number | undefined;
@@ -750,7 +754,7 @@ export interface ConvergenceResult {
 export interface AppConfig {
   version: string;
   data_dir: string;
-  log_level: string;
+  log_level: "debug" | "info" | "warn" | "error";
   stub: boolean;
   dashboard_port: number;
   retry: {

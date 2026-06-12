@@ -230,6 +230,18 @@ export class SessionStore {
     return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
   }
 
+  private resolveContainedExistingPath(parent: string, candidate: string): string | undefined {
+    const resolvedCandidate = path.resolve(parent, candidate);
+    if (!this.isPathContained(parent, resolvedCandidate)) return undefined;
+    try {
+      const realCandidate = fs.realpathSync(resolvedCandidate);
+      return this.isPathContained(parent, realCandidate) ? realCandidate : undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolvedCandidate;
+      throw error;
+    }
+  }
+
   private processAlive(pid: number): boolean {
     try {
       process.kill(pid, 0);
@@ -460,8 +472,8 @@ export class SessionStore {
 
   readTextArtifact(sessionId: string, relativePath: string, maxChars: number): string {
     const sessionDir = this.sessionDir(sessionId);
-    const absolutePath = path.resolve(sessionDir, relativePath);
-    if (!this.isPathContained(sessionDir, absolutePath)) {
+    const absolutePath = this.resolveContainedExistingPath(sessionDir, relativePath);
+    if (!absolutePath) {
       throw new Error(`artifact path escapes session directory: ${relativePath}`);
     }
     const raw = fs.readFileSync(absolutePath, "utf8");
@@ -2197,8 +2209,8 @@ export class SessionStore {
     }> = [];
     let used = 0;
     for (const file of files) {
-      const absolutePath = path.resolve(sessionDir, file.path);
-      if (!this.isPathContained(sessionDir, absolutePath)) continue;
+      const absolutePath = this.resolveContainedExistingPath(sessionDir, file.path);
+      if (!absolutePath) continue;
       let raw: string;
       try {
         raw = fs.readFileSync(absolutePath, "utf8");

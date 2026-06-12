@@ -334,7 +334,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       const probeClient = await this.client();
       const probePayload: PerplexityChatPayload = {
         model: this.model,
-        messages: [{ role: "user", content: "probe" }],
+        messages: [{ role: "user", content: "." }],
         max_tokens: 16,
         disable_search: true,
       };

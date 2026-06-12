@@ -42,7 +42,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 
-import type { PeerId } from "./types.js";
+import { PEERS, type PeerId } from "./types.js";
 
 // All sub-schemas use .strict() so an unknown field surfaces as a
 // zod error at boot rather than silently being ignored. The operator
@@ -58,53 +58,26 @@ const ReasoningEffortValueSchema = z.enum([
   "max",
 ]);
 
-const PerPeerStringSchema = z
-  .object({
-    codex: z.string().optional(),
-    claude: z.string().optional(),
-    gemini: z.string().optional(),
-    deepseek: z.string().optional(),
-    grok: z.string().optional(),
-    perplexity: z.string().optional(),
-  })
-  .strict()
-  .optional();
+function perPeerOptionalShape<T extends z.ZodTypeAny>(schema: T): Record<PeerId, z.ZodOptional<T>> {
+  return Object.fromEntries(PEERS.map((peer) => [peer, schema.optional()])) as Record<
+    PeerId,
+    z.ZodOptional<T>
+  >;
+}
+
+const PerPeerStringSchema = z.object(perPeerOptionalShape(z.string())).strict().optional();
 
 const PerPeerStringListSchema = z
-  .object({
-    codex: z.array(z.string()).optional(),
-    claude: z.array(z.string()).optional(),
-    gemini: z.array(z.string()).optional(),
-    deepseek: z.array(z.string()).optional(),
-    grok: z.array(z.string()).optional(),
-    perplexity: z.array(z.string()).optional(),
-  })
+  .object(perPeerOptionalShape(z.array(z.string())))
   .strict()
   .optional();
 
 const PerPeerReasoningSchema = z
-  .object({
-    codex: ReasoningEffortValueSchema.optional(),
-    claude: ReasoningEffortValueSchema.optional(),
-    gemini: ReasoningEffortValueSchema.optional(),
-    deepseek: ReasoningEffortValueSchema.optional(),
-    grok: ReasoningEffortValueSchema.optional(),
-    perplexity: ReasoningEffortValueSchema.optional(),
-  })
+  .object(perPeerOptionalShape(ReasoningEffortValueSchema))
   .strict()
   .optional();
 
-const PerPeerBoolSchema = z
-  .object({
-    codex: z.boolean().optional(),
-    claude: z.boolean().optional(),
-    gemini: z.boolean().optional(),
-    deepseek: z.boolean().optional(),
-    grok: z.boolean().optional(),
-    perplexity: z.boolean().optional(),
-  })
-  .strict()
-  .optional();
+const PerPeerBoolSchema = z.object(perPeerOptionalShape(z.boolean())).strict().optional();
 
 // Per-peer cost-rate sub-schema. Mirrors AppConfig.cost_rates[peer]
 // from src/core/types.ts (18 optional fields). All numbers; operator
@@ -141,14 +114,7 @@ const CostRateEntrySchema = z
   .strict();
 
 const PerPeerCostRatesSchema = z
-  .object({
-    codex: CostRateEntrySchema.optional(),
-    claude: CostRateEntrySchema.optional(),
-    gemini: CostRateEntrySchema.optional(),
-    deepseek: CostRateEntrySchema.optional(),
-    grok: CostRateEntrySchema.optional(),
-    perplexity: CostRateEntrySchema.optional(),
-  })
+  .object(perPeerOptionalShape(CostRateEntrySchema))
   .strict()
   .optional();
 

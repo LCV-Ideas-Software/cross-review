@@ -18,13 +18,19 @@ const config = loadConfig();
 
 {
   const adapter = new PerplexityAdapter(config);
-  let capturedPayload: { max_tokens?: number; disable_search?: boolean } | undefined;
+  let capturedPayload:
+    | { max_tokens?: number; disable_search?: boolean; messages?: Array<{ content?: string }> }
+    | undefined;
   (
     adapter as unknown as {
       client: () => Promise<{
         chat: {
           completions: {
-            create: (payload: { max_tokens?: number; disable_search?: boolean }) => Promise<void>;
+            create: (payload: {
+              max_tokens?: number;
+              disable_search?: boolean;
+              messages?: Array<{ content?: string }>;
+            }) => Promise<void>;
           };
         };
       }>;
@@ -45,6 +51,16 @@ const config = loadConfig();
   assert.ok(
     typeof capturedPayload?.max_tokens === "number" && capturedPayload.max_tokens >= 16,
     "Perplexity probe must request at least 16 max_tokens for sonar-reasoning-pro.",
+  );
+  assert.equal(
+    capturedPayload?.max_tokens,
+    16,
+    "Perplexity probe should keep token exposure at the provider minimum.",
+  );
+  assert.equal(
+    capturedPayload?.messages?.[0]?.content,
+    ".",
+    "Perplexity probe should use the smallest non-empty prompt body.",
   );
 }
 

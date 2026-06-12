@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyFileConfigToEnv } from "./file-config.js";
-import type { AppConfig, PeerId } from "./types.js";
+import { type AppConfig, PEERS, type PeerId } from "./types.js";
 
 // v2.4.0 / audit closure (P3.12): tilde expansion for env-provided paths.
 // `path.resolve` does NOT expand `~` to the user's home directory on any
@@ -19,8 +19,8 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.3.9";
-export const RELEASE_DATE = "2026-06-11";
+export const VERSION = "4.4.0";
+export const RELEASE_DATE = "2026-06-12";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   codex: "CROSS_REVIEW_OPENAI",
@@ -149,6 +149,16 @@ function listEnv(name: string): string[] {
     .filter(Boolean);
 }
 
+function logLevelEnv(name: string, fallback: AppConfig["log_level"]): AppConfig["log_level"] {
+  const raw = (envValue(name) ?? "").trim().toLowerCase();
+  if (raw === "") return fallback;
+  if (raw === "debug" || raw === "info" || raw === "warn" || raw === "error") return raw;
+  console.error(
+    `[cross-review] notice: ${name}="${raw}" is not recognized; defaulting to "${fallback}". Recognized values: debug, info, warn, error.`,
+  );
+  return fallback;
+}
+
 function keyForPeer(peer: PeerId): string | undefined {
   switch (peer) {
     case "codex":
@@ -213,7 +223,7 @@ export function loadConfig(): AppConfig {
   return {
     version: VERSION,
     data_dir: dataDir,
-    log_level: envValue("CROSS_REVIEW_LOG_LEVEL") || "info",
+    log_level: logLevelEnv("CROSS_REVIEW_LOG_LEVEL", "info"),
     stub: boolEnv("CROSS_REVIEW_STUB", false),
     dashboard_port: intEnv("CROSS_REVIEW_DASHBOARD_PORT", 4588),
     retry: {
@@ -455,9 +465,8 @@ function parseTtlEnv(name: string, fallback: "5m" | "1h"): "5m" | "1h" {
 // (orchestrator construction) — keeping the parser pure makes it easy
 // to test in isolation.
 function loadPeerEnabledConfig(): Record<PeerId, boolean> {
-  const peers: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
   const result = {} as Record<PeerId, boolean>;
-  for (const peer of peers) {
+  for (const peer of PEERS) {
     const envName = `CROSS_REVIEW_PEER_${peer.toUpperCase()}`;
     const raw = (envValue(envName) ?? "").trim().toLowerCase();
     if (raw === "") {
@@ -491,8 +500,7 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
   const rawConsensusPeers = (
     envValue("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS") ?? ""
   ).trim();
-  const peerKnown: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
-  const peer = (peerKnown as readonly string[]).includes(rawPeer) ? (rawPeer as PeerId) : undefined;
+  const peer = (PEERS as readonly string[]).includes(rawPeer) ? (rawPeer as PeerId) : undefined;
   // v2.15.0 (item 1): parse consensus peers list. Comma-separated; only
   // peers that are members of PEERS are kept. Need >=2 valid entries
   // for consensus to apply (orchestrator guard); below 2 falls back to
@@ -501,7 +509,7 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
     ? rawConsensusPeers
         .split(",")
         .map((entry) => entry.trim())
-        .filter((entry) => (peerKnown as readonly string[]).includes(entry))
+        .filter((entry) => (PEERS as readonly string[]).includes(entry))
         .map((entry) => entry as PeerId)
     : [];
   const mode = rawMode === "" ? "off" : rawMode;

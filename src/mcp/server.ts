@@ -563,6 +563,35 @@ function recordIdentityForgeryBlocked(
   });
 }
 
+function verifyToolCallerIdentity(
+  runtime: Runtime,
+  site: string,
+  caller: PeerId | "operator",
+  clientInfo: ClientInfo,
+  session_id?: string,
+): CallerIdentityResult {
+  try {
+    const identity = verifyCallerIdentity(caller, clientInfo);
+    runtime.emit({
+      type: "session.identity_verified",
+      session_id,
+      message: "caller identity verification completed.",
+      data: {
+        site,
+        caller,
+        identity_verified: identity.identity_verified,
+        verification_method: identity.verification_method,
+        client_info_name: identity.client_info_name,
+        identity_metadata: identity.identity_metadata,
+      },
+    });
+    return identity;
+  } catch (error) {
+    recordIdentityForgeryBlocked(runtime, site, caller, clientInfo, error, session_id);
+    throw error;
+  }
+}
+
 function installSignalFlushHandlers(runtime: Runtime): void {
   let shuttingDown = false;
   const flushAndExit = (signal: "SIGTERM" | "SIGINT") => {
@@ -686,39 +715,6 @@ function runtimeCapabilities(runtime: Runtime): RuntimeCapabilities {
   };
 }
 
-const TOOL_NAMES = [
-  "server_info",
-  "runtime_capabilities",
-  "probe_peers",
-  "session_init",
-  "session_list",
-  "session_read",
-  "ask_peers",
-  "session_start_round",
-  "run_until_unanimous",
-  "session_start_unanimous",
-  "session_cancel_job",
-  "session_recover_interrupted",
-  "session_poll",
-  "session_events",
-  "session_metrics",
-  "session_peer_reliability_report",
-  "session_doctor",
-  "session_report",
-  "session_check_convergence",
-  "session_truthfulness_preflight_check",
-  "session_attach_evidence",
-  "session_evidence_checklist_update",
-  "session_evidence_judge_pass",
-  "session_evidence_judge_consensus_pass",
-  "session_judgment_precision_report",
-  "contest_verdict",
-  "escalate_to_operator",
-  "regenerate_caller_tokens",
-  "session_sweep",
-  "session_finalize",
-] as const;
-
 export async function main(): Promise<void> {
   const runtime = createRuntime();
   // v2.18.0 / F1: initialize the per-host token map (load existing OR
@@ -741,6 +737,11 @@ export async function main(): Promise<void> {
     name: "cross-review",
     version: VERSION,
   });
+  const toolNames: string[] = [];
+  const registerTool: McpServer["registerTool"] = (name, config, callback) => {
+    toolNames.push(name);
+    return server.registerTool(name, config, callback);
+  };
   // v3.7.5 (A2, logs+sessions study 2026-05-15): snapshot the enabled
   // peer set once at boot. Static after config load — `peer_enabled` is
   // env-driven and the runtime does not mutate it. Each lock call
@@ -751,7 +752,7 @@ export async function main(): Promise<void> {
     (peer) => runtime.config.peer_enabled[peer],
   );
 
-  server.registerTool(
+  registerTool(
     "server_info",
     {
       title: "Server Info",
@@ -778,7 +779,7 @@ export async function main(): Promise<void> {
           cli_execution: false,
           stable_release: true,
           capabilities: runtimeCapabilities(runtime),
-          tools: TOOL_NAMES,
+          tools: toolNames,
           data_dir: runtime.config.data_dir,
           log_file: runtime.eventLog.path(),
           stub: runtime.config.stub,
@@ -847,7 +848,7 @@ export async function main(): Promise<void> {
       ),
   );
 
-  server.registerTool(
+  registerTool(
     "runtime_capabilities",
     {
       title: "Runtime Capabilities",
@@ -868,13 +869,13 @@ export async function main(): Promise<void> {
           version: VERSION,
           release_date: RELEASE_DATE,
           capabilities: runtimeCapabilities(runtime),
-          tools: TOOL_NAMES,
+          tools: toolNames,
         },
         response_format,
       ),
   );
 
-  server.registerTool(
+  registerTool(
     "probe_peers",
     {
       title: "Probe Peers",
@@ -892,7 +893,7 @@ export async function main(): Promise<void> {
       textResult(await runtime.orchestrator.probeAll(), response_format),
   );
 
-  server.registerTool(
+  registerTool(
     "session_init",
     {
       title: "Initialize Session",
@@ -913,18 +914,7 @@ export async function main(): Promise<void> {
     },
     async ({ task, review_focus, caller, response_format }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      try {
-        verifyCallerIdentity(caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "session_init",
-          caller,
-          server.server.getClientVersion(),
-          error,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(runtime, "session_init", caller, server.server.getClientVersion());
       const meta = await runtime.orchestrator.initSession(task, caller, review_focus);
       return response_format === "markdown"
         ? textResult(sessionInitMarkdown(meta), "markdown")
@@ -932,7 +922,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_list",
     {
       title: "List Sessions",
@@ -970,7 +960,7 @@ export async function main(): Promise<void> {
       ),
   );
 
-  server.registerTool(
+  registerTool(
     "session_read",
     {
       title: "Read Session",
@@ -990,7 +980,7 @@ export async function main(): Promise<void> {
       textResult(runtime.orchestrator.store.read(session_id), response_format),
   );
 
-  server.registerTool(
+  registerTool(
     "ask_peers",
     {
       title: "Ask Peers",
@@ -1026,19 +1016,13 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      try {
-        verifyCallerIdentity(input.caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "ask_peers",
-          input.caller,
-          server.server.getClientVersion(),
-          error,
-          input.session_id,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "ask_peers",
+        input.caller,
+        server.server.getClientVersion(),
+        input.session_id,
+      );
       // v3.3.0: caller peer-selection lock — silently strips
       // caller-supplied `peers` (and, for peer callers, `lead_peer`) and
       // emits an audit event for the operator. See lockCallerPeerSelection
@@ -1057,7 +1041,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_start_round",
     {
       title: "Start Review Round",
@@ -1093,19 +1077,13 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      try {
-        verifyCallerIdentity(input.caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "session_start_round",
-          input.caller,
-          server.server.getClientVersion(),
-          error,
-          input.session_id,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "session_start_round",
+        input.caller,
+        server.server.getClientVersion(),
+        input.session_id,
+      );
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_round",
@@ -1134,7 +1112,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "run_until_unanimous",
     {
       title: "Run Until Unanimous",
@@ -1203,18 +1181,12 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      try {
-        verifyCallerIdentity(input.caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "run_until_unanimous",
-          input.caller,
-          server.server.getClientVersion(),
-          error,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "run_until_unanimous",
+        input.caller,
+        server.server.getClientVersion(),
+      );
       // v3.3.0: caller peer-selection lock — peers panel always full
       // enabled set; lead_peer ignored for peer callers (forced lottery).
       const locked = lockCallerPeerSelection(input, {
@@ -1231,7 +1203,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_start_unanimous",
     {
       title: "Start Until Unanimous",
@@ -1287,18 +1259,13 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      try {
-        verifyCallerIdentity(input.caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "session_start_unanimous",
-          input.caller,
-          server.server.getClientVersion(),
-          error,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "session_start_unanimous",
+        input.caller,
+        server.server.getClientVersion(),
+        input.session_id,
+      );
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_unanimous",
@@ -1336,7 +1303,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_cancel_job",
     {
       title: "Cancel Session Job",
@@ -1357,19 +1324,13 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, job_id, reason, caller, response_format }) => {
-      try {
-        verifyCallerIdentity(caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "session_cancel_job",
-          caller,
-          server.server.getClientVersion(),
-          error,
-          session_id,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "session_cancel_job",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
       const jobs = [...runtime.jobs.values()].filter(
         (job) =>
           job.session_id === session_id &&
@@ -1403,7 +1364,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_recover_interrupted",
     {
       title: "Recover Interrupted Sessions",
@@ -1432,7 +1393,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_poll",
     {
       title: "Poll Session",
@@ -1503,7 +1464,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_metrics",
     {
       title: "Session Metrics",
@@ -1524,7 +1485,7 @@ export async function main(): Promise<void> {
       textResult(runtime.orchestrator.store.metrics(session_id), response_format),
   );
 
-  server.registerTool(
+  registerTool(
     "session_peer_reliability_report",
     {
       title: "Peer Reliability Report",
@@ -1545,7 +1506,7 @@ export async function main(): Promise<void> {
       textResult(runtime.orchestrator.store.peerReliabilityReport(session_id), response_format),
   );
 
-  server.registerTool(
+  registerTool(
     "session_doctor",
     {
       title: "Session Doctor",
@@ -1585,7 +1546,7 @@ export async function main(): Promise<void> {
       ),
   );
 
-  server.registerTool(
+  registerTool(
     "session_events",
     {
       title: "Read Session Events",
@@ -1613,7 +1574,7 @@ export async function main(): Promise<void> {
       ),
   );
 
-  server.registerTool(
+  registerTool(
     "session_report",
     {
       title: "Session Report",
@@ -1643,7 +1604,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_check_convergence",
     {
       title: "Check Convergence",
@@ -1679,7 +1640,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_truthfulness_preflight_check",
     {
       title: "Check Truthfulness Preflight",
@@ -1749,7 +1710,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_attach_evidence",
     {
       title: "Attach Evidence",
@@ -1782,7 +1743,7 @@ export async function main(): Promise<void> {
       ),
   );
 
-  server.registerTool(
+  registerTool(
     "session_evidence_checklist_update",
     {
       title: "Update Evidence Checklist Item Status",
@@ -1821,7 +1782,7 @@ export async function main(): Promise<void> {
       ),
   );
 
-  server.registerTool(
+  registerTool(
     "session_evidence_judge_pass",
     {
       title: "Run Evidence Judge Pass",
@@ -1884,7 +1845,7 @@ export async function main(): Promise<void> {
   // zero parser_warnings). Reduces single-judge bias risk before
   // operator-wide active-mode autowire is enabled in high-stakes
   // scenarios. Cost-aware: each item costs N peer calls in parallel.
-  server.registerTool(
+  registerTool(
     "session_evidence_judge_consensus_pass",
     {
       title: "Run Evidence Judge Consensus Pass",
@@ -1950,7 +1911,7 @@ export async function main(): Promise<void> {
   // matching evidence_checklist item by id, and rolls up per
   // judge_peer. Operator-triggered observability — DOES NOT mutate
   // session state; safe to run on any session.
-  server.registerTool(
+  registerTool(
     "session_judgment_precision_report",
     {
       title: "Judgment Precision Report",
@@ -1987,7 +1948,7 @@ export async function main(): Promise<void> {
   // only); a new session is initialized with a structural reference
   // back. Caller NOT_READY (contesta) → use this tool. Caller READY
   // (acata) → use session_finalize as before.
-  server.registerTool(
+  registerTool(
     "contest_verdict",
     {
       title: "Contest Verdict",
@@ -2018,36 +1979,24 @@ export async function main(): Promise<void> {
       new_caller,
       response_format,
     }) => {
-      try {
-        verifyCallerIdentity(caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "contest_verdict",
-          caller,
-          server.server.getClientVersion(),
-          error,
-          session_id,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "contest_verdict",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
       // Skip when new_caller is undefined (orchestrator falls back to a
       // sensible default); otherwise verify like the other handlers.
       if (new_caller !== undefined) {
-        try {
-          verifyCallerIdentity(new_caller, server.server.getClientVersion());
-        } catch (error) {
-          recordIdentityForgeryBlocked(
-            runtime,
-            "contest_verdict.new_caller",
-            new_caller,
-            server.server.getClientVersion(),
-            error,
-            session_id,
-          );
-          throw error;
-        }
+        verifyToolCallerIdentity(
+          runtime,
+          "contest_verdict.new_caller",
+          new_caller,
+          server.server.getClientVersion(),
+          session_id,
+        );
       }
       return textResult(
         await runtime.orchestrator.store.contestVerdict({
@@ -2062,7 +2011,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "regenerate_caller_tokens",
     {
       title: "Regenerate Caller Tokens (F1)",
@@ -2080,18 +2029,12 @@ export async function main(): Promise<void> {
       },
     },
     async ({ caller, response_format }) => {
-      try {
-        verifyCallerIdentity(caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "regenerate_caller_tokens",
-          caller,
-          server.server.getClientVersion(),
-          error,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "regenerate_caller_tokens",
+        caller,
+        server.server.getClientVersion(),
+      );
       const generated = f1GenerateHostTokens(runtime.config.data_dir, {
         overwrite: true,
       });
@@ -2128,7 +2071,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "escalate_to_operator",
     {
       title: "Escalate To Operator",
@@ -2149,19 +2092,13 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, reason, severity, caller, response_format }) => {
-      try {
-        verifyCallerIdentity(caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "escalate_to_operator",
-          caller,
-          server.server.getClientVersion(),
-          error,
-          session_id,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "escalate_to_operator",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
       return textResult(
         await runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
         response_format,
@@ -2169,7 +2106,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_sweep",
     {
       title: "Sweep Idle Sessions",
@@ -2228,7 +2165,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "session_finalize",
     {
       title: "Finalize Session",
@@ -2249,19 +2186,13 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, outcome, reason, caller, response_format }) => {
-      try {
-        verifyCallerIdentity(caller, server.server.getClientVersion());
-      } catch (error) {
-        recordIdentityForgeryBlocked(
-          runtime,
-          "session_finalize",
-          caller,
-          server.server.getClientVersion(),
-          error,
-          session_id,
-        );
-        throw error;
-      }
+      verifyToolCallerIdentity(
+        runtime,
+        "session_finalize",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
       return textResult(
         await runtime.orchestrator.store.finalize(session_id, outcome, reason),
         response_format,

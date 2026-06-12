@@ -208,8 +208,11 @@ import { truthfulnessPreflight } from "../src/core/orchestrator.js";
   );
   assert.ok(
     /"session_truthfulness_preflight_check"/.test(serverSrcTruth) &&
-      /TOOL_NAMES[\s\S]*session_truthfulness_preflight_check/.test(serverSrcTruth),
-    "v4.2.4 / truthfulness_preflight: server_info tool list must include session_truthfulness_preflight_check",
+      /const toolNames: string\[\] = \[\]/.test(serverSrcTruth) &&
+      /toolNames\.push\(name\)/.test(serverSrcTruth) &&
+      /registerTool\(\s*\n\s*"session_truthfulness_preflight_check"/.test(serverSrcTruth) &&
+      /tools: toolNames/.test(serverSrcTruth),
+    "v4.4.0 / truthfulness_preflight: server_info tool list must derive from real registerTool calls and include session_truthfulness_preflight_check",
   );
   console.log("[smoke] truthfulness_preflight_runtime_contract_test: PASS");
 }

@@ -17,7 +17,7 @@ function smokeTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-${label}-`));
 }
 
-import { loadConfig } from "../src/core/config.js";
+import { loadConfig, RELEASE_DATE, VERSION } from "../src/core/config.js";
 import {
   checkConvergence,
   isSkippableFailure,
@@ -27,7 +27,7 @@ import {
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import { SWEEP_MIN_IDLE_MS } from "../src/core/session-store.js";
 import { parsePeerStatus } from "../src/core/status.js";
-import type { PeerId, PeerResult } from "../src/core/types.js";
+import type { PeerId, PeerResult, RuntimeEvent } from "../src/core/types.js";
 import { PEERS } from "../src/core/types.js";
 import type { JobStatus } from "../src/mcp/server.js";
 import {
@@ -86,10 +86,15 @@ const previousPreflightMaxRoundCost = process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROU
 const previousUntilStoppedMaxCost = process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD;
 const previousStreamTokens = process.env.CROSS_REVIEW_STREAM_TOKENS;
 const previousStreamText = process.env.CROSS_REVIEW_STREAM_TEXT;
+const previousLogLevel = process.env.CROSS_REVIEW_LOG_LEVEL;
 process.env.CROSS_REVIEW_MAX_OUTPUT_TOKENS = "32000";
 assert.equal(loadConfig().max_output_tokens, 32_000);
 process.env.CROSS_REVIEW_MAX_OUTPUT_TOKENS = "not-a-number";
 assert.equal(loadConfig().max_output_tokens, 20_000);
+process.env.CROSS_REVIEW_LOG_LEVEL = "WARN";
+assert.equal(loadConfig().log_level, "warn");
+process.env.CROSS_REVIEW_LOG_LEVEL = "verbose";
+assert.equal(loadConfig().log_level, "info");
 process.env.CROSS_REVIEW_MAX_REVIEW_FOCUS_CHARS = "1234";
 assert.equal(loadConfig().prompt.max_review_focus_chars, 1_234);
 process.env.CROSS_REVIEW_MAX_SESSION_COST_USD = "20";
@@ -142,6 +147,11 @@ if (previousStreamText == null) {
   delete process.env.CROSS_REVIEW_STREAM_TEXT;
 } else {
   process.env.CROSS_REVIEW_STREAM_TEXT = previousStreamText;
+}
+if (previousLogLevel == null) {
+  delete process.env.CROSS_REVIEW_LOG_LEVEL;
+} else {
+  process.env.CROSS_REVIEW_LOG_LEVEL = previousLogLevel;
 }
 
 const config = loadConfig();
@@ -239,7 +249,7 @@ for (const artifact of ["meta.json", "task.md", "review-focus.md"]) {
   );
 }
 await orchestrator.store.appendEvent({
-  type: "smoke.secret_event",
+  type: "session.secret_event",
   session_id: persistenceSession.session_id,
   message: `event message ${persistenceSecret}`,
   data: { secret: persistenceSecret },
@@ -255,7 +265,7 @@ assert.doesNotMatch(
 );
 const eventLog = new EventLog(config);
 eventLog.emit({
-  type: "smoke.secret_log",
+  type: "session.secret_log",
   session_id: persistenceSession.session_id,
   message: `log message ${persistenceSecret}`,
   data: { secret: persistenceSecret },
@@ -1698,6 +1708,43 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(doctor.event_noise.token_delta_events, 1);
   assert.equal(doctorStore.read(doctorSession.session_id).outcome, undefined);
   console.log("[smoke] session_doctor_readonly_findings_test: PASS");
+}
+
+// v4.4.0: artifact/evidence reads must enforce containment after
+// resolving symlinks/junctions, not only by lexical path normalization.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const containmentStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("artifact-containment"),
+  });
+  const containmentSession = await containmentStore.init("containment fixture", "operator", []);
+  const outsideDir = smokeTmpDir("artifact-containment-outside");
+  const outsideFile = path.join(outsideDir, "leak.txt");
+  fs.writeFileSync(outsideFile, "outside secret", "utf8");
+  const linkDir = path.join(containmentStore.sessionDir(containmentSession.session_id), "linked");
+  fs.symlinkSync(outsideDir, linkDir, "junction");
+  assert.throws(
+    () => containmentStore.readTextArtifact(containmentSession.session_id, "linked/leak.txt", 100),
+    /escapes session directory/,
+    "v4.4.0 / containment: readTextArtifact must reject symlink/junction escapes",
+  );
+  const meta = containmentStore.read(containmentSession.session_id);
+  meta.evidence_files = [
+    {
+      ts: new Date().toISOString(),
+      label: "junction escape",
+      path: "linked/leak.txt",
+      content_type: "text/plain",
+    },
+  ];
+  fs.writeFileSync(containmentStore.metaPath(containmentSession.session_id), JSON.stringify(meta));
+  assert.equal(
+    containmentStore.readEvidenceAttachments(containmentSession.session_id, 1000).length,
+    0,
+    "v4.4.0 / containment: readEvidenceAttachments must skip symlink/junction escapes",
+  );
+  console.log("[smoke] artifact_realpath_containment_test: PASS");
 }
 
 // v2.22.0 (A.P2): session_doctor legacy filter test. Default behavior
@@ -6329,6 +6376,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       "v3.1.0: zod schema must use .strict() so unknown fields surface as errors",
     );
     assert.ok(
+      /import \{ PEERS, type PeerId \}/.test(fcSrc) &&
+        /function perPeerOptionalShape/.test(fcSrc) &&
+        /PEERS\.map\(\(peer\)/.test(fcSrc),
+      "v4.4.0 / file-config: per-peer schemas must derive from the canonical PEERS tuple.",
+    );
+    assert.ok(
       /applyFileConfigToEnv/.test(fcSrc) && /resolveConfigFilePath/.test(fcSrc),
       "v3.1.0: file-config.ts must export applyFileConfigToEnv + resolveConfigFilePath",
     );
@@ -6552,6 +6605,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     /identity_forgery_blocked/.test(serverSrcIdentity) &&
       /session\.identity_forgery_blocked/.test(serverSrcIdentity),
     "v4.3.3 / identity: identity forgery throws must emit a forensic RuntimeEvent.",
+  );
+  assert.ok(
+    /function verifyToolCallerIdentity/.test(serverSrcIdentity) &&
+      /session\.identity_verified/.test(serverSrcIdentity),
+    "v4.4.0 / identity: successful caller identity checks must be routed through an auditable helper event.",
   );
 
   // (3) Legitimate override (unknown clientInfo).
@@ -7666,6 +7724,49 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       orchSrc,
     ),
     "v2.24.0 / fabrication_lock: the unified drift branch increments consecutiveLeadDrifts when any of the three failure modes fires",
+  );
+
+  const initialFabricationEvents: RuntimeEvent[] = [];
+  const initialFabricationOrchestrator = new CrossReviewOrchestrator(
+    {
+      ...config,
+      data_dir: smokeTmpDir("initial-fabrication-lock"),
+      evidence_preflight_enabled: false,
+      truthfulness_preflight_enabled: false,
+    },
+    (event) => initialFabricationEvents.push(event),
+  );
+  const initialFabricationResult = await initialFabricationOrchestrator.runUntilUnanimous({
+    task: [
+      "FORCE_INITIAL_FABRICATION",
+      "Create a release summary.",
+      "Caller narrative only: cargo test had 17 passed, 0 failed.",
+      "Caller narrative only: git diff --check passed.",
+    ].join("\n"),
+    caller: "operator",
+    max_rounds: 1,
+  });
+  assert.equal(
+    initialFabricationResult.session.outcome,
+    "aborted",
+    "v4.4.0 / initial_fabrication_lock: fabricated initial drafts must abort before reviewer calls",
+  );
+  assert.equal(
+    initialFabricationResult.session.outcome_reason,
+    "lead_fabrication_initial",
+    "v4.4.0 / initial_fabrication_lock: initial-draft fabrication must use a specific terminal reason",
+  );
+  assert.equal(
+    initialFabricationResult.session.rounds.length,
+    0,
+    "v4.4.0 / initial_fabrication_lock: fabricated initial drafts must not dispatch a paid review round",
+  );
+  assert.equal(
+    initialFabricationEvents.some(
+      (event) => event.type === "session.lead_fabrication_detected" && event.round === 0,
+    ),
+    true,
+    "v4.4.0 / initial_fabrication_lock: initial-draft fabrication must emit a round-0 fabrication event",
   );
 
   console.log("[smoke] relator_evidence_provenance_lock_test: PASS");
@@ -8931,10 +9032,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
   // AUDIT-2.
   assert.ok(
-    /this\.config\.peer_enabled\.codex \? "codex" : \(sessionPeers\[0\] \?\? "codex"\)/.test(
+    /const fallbackLeadPeer = this\.config\.peer_enabled\.codex \? "codex" : sessionPeers\[0\]/.test(
       orchSrcA,
-    ),
-    "v3.7.0 / AUDIT-2: operator leadPeer default must respect peer_enabled (prefer codex when enabled, else first enabled session peer)",
+    ) && !orchSrcA.includes('sessionPeers[0] ?? "codex"'),
+    "v4.4.0 / AUDIT-2: operator leadPeer default must respect peer_enabled without a dead fallback to disabled codex",
   );
 
   // AUDIT-3: no bare `.max(5)` on the peers / judge_peers schemas; the
@@ -9214,6 +9315,25 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     pl.name,
     "@lcv-ideas-software/cross-review",
     `v4.0.2 / AUDIT-1: package-lock.json .name must be "@lcv-ideas-software/cross-review"; got "${pl.name}".`,
+  );
+  assert.equal(
+    VERSION,
+    pjVer,
+    `v4.4.0 / release_metadata: src/core/config.ts VERSION (${VERSION}) must equal package.json .version (${pjVer}).`,
+  );
+  assert.match(
+    RELEASE_DATE,
+    /^\d{4}-\d{2}-\d{2}$/,
+    `v4.4.0 / release_metadata: RELEASE_DATE must use YYYY-MM-DD; got ${RELEASE_DATE}.`,
+  );
+  const displayVersion = `v${pjVer
+    .split(".")
+    .map((part: string) => part.padStart(2, "0"))
+    .join(".")}`;
+  const changelogSrc = fs.readFileSync(path.join(process.cwd(), "CHANGELOG.md"), "utf8");
+  assert.ok(
+    changelogSrc.includes(`## [${displayVersion}] — ${RELEASE_DATE}`),
+    `v4.4.0 / release_metadata: CHANGELOG.md must contain heading "## [${displayVersion}] — ${RELEASE_DATE}".`,
   );
   console.log("[smoke] package_version_consistency_test: PASS");
 }
@@ -9496,6 +9616,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       ),
       "v4.1.1 / CodeQL: race-migration-toctou must not statSync(lockfilePath) then readFileSync(lockfilePath).",
     );
+    assert.ok(
+      /SIGNAL_WAIT_TIMEOUT_MS/.test(migrationRaceSrc) &&
+        /async function waitForFile/.test(migrationRaceSrc),
+      "v4.4.0 / TOCTOU smoke: race-migration signal waits must have an explicit timeout.",
+    );
+    assert.ok(
+      !/while\s*\(\s*!\s*fs\.existsSync\(\s*(v41aDoneSignal|startSignal|enteredSignal)\s*\)\s*\)/.test(
+        migrationRaceSrc,
+      ),
+      "v4.4.0 / TOCTOU smoke: named signal waits must go through waitForFile instead of unbounded loops.",
+    );
     console.log("[smoke] codeql_file_system_race_regression_test: PASS");
   }
   for (const required of ["dist", "shasum", "integrity", "tarball"]) {
@@ -9638,7 +9769,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   const cancelJobBlock = serverSrc.match(
-    /"session_cancel_job"[\s\S]{0,2600}?server\.registerTool\(\s*"session_recover_interrupted"/,
+    /"session_cancel_job"[\s\S]{0,2600}?registerTool\(\s*"session_recover_interrupted"/,
   );
   assert.ok(
     cancelJobBlock,
@@ -9680,8 +9811,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "escalate_to_operator",
     "session_finalize",
   ]) {
-    const toolStart = serverSrc.indexOf(`server.registerTool(\n    "${toolName}"`);
-    const nextToolStart = serverSrc.indexOf("server.registerTool", toolStart + toolName.length + 2);
+    const toolStart = serverSrc.indexOf(`registerTool(\n    "${toolName}"`);
+    const nextToolStart = serverSrc.indexOf("registerTool(", toolStart + toolName.length + 2);
     const handlerBlock =
       toolStart >= 0
         ? serverSrc.slice(toolStart, nextToolStart >= 0 ? nextToolStart : serverSrc.length)
@@ -9692,7 +9823,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       `v4.3.2 / identity: ${toolName} must expose caller with operator default.`,
     );
     assert.ok(
-      /verifyCallerIdentity\(\s*caller,\s*server\.server\.getClientVersion\(\)\s*\)/.test(
+      /verifyToolCallerIdentity\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
         handlerBlock ?? "",
       ),
       `v4.3.2 / identity: ${toolName} must verify caller identity before side effects.`,

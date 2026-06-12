@@ -1,7 +1,7 @@
 import { classifyProviderError } from "../peers/errors.js";
 import { resolveBestModels } from "../peers/model-selection.js";
 import { createAdapters, selectAdapters } from "../peers/registry.js";
-import { redact } from "../security/redact.js";
+import { redact, safeErrorMessage } from "../security/redact.js";
 import { appendCacheManifestEntry } from "./cache-manifest.js";
 import { missingFinancialControlVars, RELEASE_DATE } from "./config.js";
 import { checkConvergence, isSkippableFailure } from "./convergence.js";
@@ -27,6 +27,7 @@ import type {
   ReviewRound,
   ReviewStatus,
   RuntimeEvent,
+  RuntimeEventType,
   SessionMeta,
   TokenUsage,
 } from "./types.js";
@@ -1480,17 +1481,15 @@ export class InsufficientEnabledPeersError extends Error {
     super(
       `insufficient_enabled_peers: cross-review requires at least 2 enabled peers, ` +
         `but only ${enabled.length} ${enabled.length === 1 ? "is" : "are"} enabled (${enabled.join(", ") || "(none)"}). ` +
-        `Set at least 2 of CROSS_REVIEW_PEER_{CODEX,CLAUDE,GEMINI,DEEPSEEK} to "on".`,
+        `Set at least 2 CROSS_REVIEW_PEER_<NAME> variables to "on" for supported peers (${PEERS.join(", ")}).`,
     );
     this.name = "InsufficientEnabledPeersError";
   }
 }
 
-// v2.14.0: returns the list of enabled peer ids in the canonical order
-// (codex, claude, gemini, deepseek) — used by the orchestrator to filter
-// `selectedPeers` to the runtime-enabled subset before lottery + dispatch.
+// v2.14.0: returns the list of enabled peer ids in canonical PEERS order.
 function enabledPeersFromConfig(config: AppConfig): PeerId[] {
-  return (Object.keys(config.peer_enabled) as PeerId[]).filter((peer) => config.peer_enabled[peer]);
+  return PEERS.filter((peer) => config.peer_enabled[peer]);
 }
 
 export class CrossReviewOrchestrator {
@@ -2279,8 +2278,10 @@ export class CrossReviewOrchestrator {
         },
         this.config.cache.schema_version,
       );
-    } catch {
-      // best-effort
+    } catch (error) {
+      console.error(
+        `[cross-review] cache manifest append failed: ${safeErrorMessage(error)}; continuing review.`,
+      );
     }
   }
 
@@ -2314,8 +2315,10 @@ export class CrossReviewOrchestrator {
           percent_used: cumulative / ceiling,
         },
       });
-    } catch {
-      // best-effort
+    } catch (error) {
+      console.error(
+        `[cross-review] budget warning check failed: ${safeErrorMessage(error)}; continuing review.`,
+      );
     }
   }
 
@@ -4060,7 +4063,11 @@ export class CrossReviewOrchestrator {
         // operator-caller with no lead_peer still got codex as relator,
         // a disabled peer back in the loop. Prefer codex when enabled
         // (back-compat), else the first enabled session peer.
-        leadPeer = this.config.peer_enabled.codex ? "codex" : (sessionPeers[0] ?? "codex");
+        const fallbackLeadPeer = this.config.peer_enabled.codex ? "codex" : sessionPeers[0];
+        if (!fallbackLeadPeer) {
+          throw new InsufficientEnabledPeersError(enabledPeersFromConfig(this.config));
+        }
+        leadPeer = fallbackLeadPeer;
       }
     } else {
       // v2.11.0 fix: pass sessionPeers so the lottery picks ONLY from
@@ -4332,12 +4339,15 @@ export class CrossReviewOrchestrator {
         },
       );
       await this.store.saveGeneration(session.session_id, 0, generation, "initial-draft");
+      let initialAttachments: ReturnType<SessionStore["readEvidenceAttachments"]> | undefined;
       if (this.config.truthfulness_preflight_enabled) {
-        const attachmentsPresent =
+        initialAttachments =
+          initialAttachments ??
           this.store.readEvidenceAttachments(
             session.session_id,
             this.config.prompt.max_attached_evidence_chars,
-          ).length > 0;
+          );
+        const attachmentsPresent = initialAttachments.length > 0;
         const truthfulness = truthfulnessPreflight({
           task: input.task,
           initialDraft: generation.text,
@@ -4393,24 +4403,87 @@ export class CrossReviewOrchestrator {
           };
         }
       }
-      // v2.13.0: drift detection on initial-draft path. There is no
-      // prior draft to fall back to here, so a drifted initial generation
-      // aborts immediately. Only fires in `ship` mode — in `review` mode
-      // a structured response is acceptable.
-      if (sessionMode === "ship" && detectLeadDrift(generation.text)) {
+      // v4.4.0: initial-draft guard. There is no prior draft to fall
+      // back to here, so unusable lead output aborts before reviewers
+      // spend a paid round on a contaminated draft.
+      const initialEmptyText = generation.text.trim() === "";
+      const initialDriftDetected = sessionMode === "ship" && detectLeadDrift(generation.text);
+      let initialFabricationResult: FabricationDetectionResult | null = null;
+      let initialMetaAuditResult: MetaAuditDetectionResult | null = null;
+      if (sessionMode === "ship" && !initialEmptyText && !initialDriftDetected) {
+        initialAttachments =
+          initialAttachments ??
+          this.store.readEvidenceAttachments(
+            session.session_id,
+            this.config.prompt.max_attached_evidence_chars,
+          );
+        initialFabricationResult = detectFabricatedEvidence(generation.text, {
+          provenanceCorpus: initialAttachments.map((a) => a.content).join("\n"),
+          priorDraftCorpus: "",
+          narrativeCorpus: input.task,
+        });
+        initialMetaAuditResult = detectMetaAuditFabrication(generation.text);
+      }
+      const initialFabricationDetected = initialFabricationResult?.fabricated === true;
+      const initialMetaAuditDetected = initialMetaAuditResult?.fabricated === true;
+      if (
+        initialEmptyText ||
+        initialDriftDetected ||
+        initialFabricationDetected ||
+        initialMetaAuditDetected
+      ) {
+        const driftReason = initialEmptyText
+          ? "empty_revision"
+          : initialFabricationDetected
+            ? "fabricated_evidence"
+            : initialMetaAuditDetected
+              ? "meta_audit_fabrication"
+              : "structured_review";
+        const eventType = initialEmptyText
+          ? "session.lead_empty_revision"
+          : initialFabricationDetected
+            ? "session.lead_fabrication_detected"
+            : initialMetaAuditDetected
+              ? "session.lead_meta_audit_fabrication_detected"
+              : "session.lead_drift_detected";
+        const eventData: Record<string, unknown> = {
+          lead_peer: leadPeer,
+          round_kind: "initial-draft",
+          first_chars: generation.text.slice(0, 100),
+          drift_reason: driftReason,
+        };
+        if (initialFabricationDetected && initialFabricationResult) {
+          eventData.fabrication_signals = {
+            net_new_hex_count: initialFabricationResult.net_new_hex_count,
+            net_new_hex_sample: initialFabricationResult.net_new_hex_sample,
+            suspicious_assertion_count: initialFabricationResult.suspicious_assertion_count,
+            suspicious_assertion_sample: initialFabricationResult.suspicious_assertion_sample,
+          };
+        }
+        if (initialMetaAuditDetected && initialMetaAuditResult) {
+          eventData.meta_audit_signals = {
+            placeholder_count: initialMetaAuditResult.placeholder_count,
+            placeholder_sample: initialMetaAuditResult.placeholder_sample,
+            section_count: initialMetaAuditResult.section_count,
+            section_sample: initialMetaAuditResult.section_sample,
+          };
+        }
         this.emit({
-          type: "session.lead_drift_detected",
+          type: eventType,
           session_id: session.session_id,
           round: 0,
           peer: leadPeer,
-          message: `Lead ${leadPeer} emitted a structured peer-review response instead of a refined initial draft (likely meta-review drift on "Review v..." task wording). No prior draft to fall back to; aborting.`,
-          data: {
-            lead_peer: leadPeer,
-            round_kind: "initial-draft",
-            first_chars: generation.text.slice(0, 100),
-          },
+          message: `Lead ${leadPeer} emitted unusable initial draft output (${driftReason}). No prior draft to fall back to; aborting before reviewer peer calls.`,
+          data: eventData,
         });
-        await this.store.finalize(session.session_id, "aborted", "lead_meta_review_drift");
+        const finalizeReason = initialEmptyText
+          ? "lead_empty_initial"
+          : initialFabricationDetected
+            ? "lead_fabrication_initial"
+            : initialMetaAuditDetected
+              ? "lead_meta_audit_initial"
+              : "lead_meta_review_drift";
+        await this.store.finalize(session.session_id, "aborted", finalizeReason);
         return {
           session: this.store.read(session.session_id),
           final_text: undefined,
@@ -4675,7 +4748,7 @@ export class CrossReviewOrchestrator {
                 ? "meta_audit_fabrication"
                 : "structured_review";
           const parserWarnings = generation.parser_warnings ?? [];
-          let eventType: string;
+          let eventType: RuntimeEventType;
           if (emptyText) eventType = "session.lead_empty_revision";
           else if (fabricationDetected) eventType = "session.lead_fabrication_detected";
           else if (metaAuditDetected) eventType = "session.lead_meta_audit_fabrication_detected";

@@ -4,7 +4,10 @@ Runtime calls are real provider API calls by default.
 
 ## Smoke Tests
 
-`npm test` uses `CROSS_REVIEW_STUB=1` and does not call provider APIs.
+`npm test` is safe to run locally: the repository smokes that exercise peer
+review paths set `CROSS_REVIEW_STUB=1` with explicit confirmation, while
+metadata/runtime smokes avoid provider calls. The test command must not spend
+provider API budget.
 
 ## Real Runs
 
