@@ -7,6 +7,29 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.03.09] — 2026-06-11
+
+**Patch — focused truthfulness preflight smoke + stricter evidence artifact
+matching.** This release continues the smoke/test-debt cleanup from the
+operational robustness plan and closes two small evidence-gate refinements.
+
+### Fixed
+
+- Path-qualified evidence references such as `logs/prod.log` now require the
+  matching attached evidence path instead of passing via a basename-only
+  attachment such as `prod.log`.
+- Evidence artifact detection now also covers `.md`, `.diff`, `.patch`, and
+  `.csv` references in evidence-context lines.
+
+### Changed
+
+- Moved the `truthfulness_preflight` behavioral and runtime-contract coverage
+  into `scripts/truthfulness-preflight-smoke.ts` and added a
+  `truthfulness-preflight-smoke` npm script.
+- `npm test` now runs the focused truthfulness-preflight smoke before the
+  broader smoke suite, matching the focused `evidence-preflight-smoke` path and
+  reducing the amount of guardrail coverage embedded in `scripts/smoke.ts`.
+
 ## [v04.03.08] — 2026-06-11
 
 **Patch — focused evidence preflight smoke.** This release continues the

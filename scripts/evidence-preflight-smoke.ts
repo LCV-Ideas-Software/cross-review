@@ -117,6 +117,63 @@ assert.equal(
   "v4.3.7 / evidence_preflight: referenced evidence artifacts present in attachments must pass",
 );
 
+const bareFilenameReferenceMatchesPathAttachment = evidencePreflight({
+  task: "Review this release audit. npm run smoke passed.",
+  initialDraft: "The literal production log proof is in prod.log.",
+  attachmentsPresent: true,
+  attachedEvidenceRefs: ["logs/prod.log"],
+});
+assert.equal(
+  bareFilenameReferenceMatchesPathAttachment.pass,
+  true,
+  "v4.3.9 / evidence_preflight: bare evidence refs may match an attached path basename",
+);
+
+const pathSpecificReference = evidencePreflight({
+  task: "Review this release audit. npm run smoke passed.",
+  initialDraft: "The raw production log proof is in logs/prod.log.",
+  structuredEvidence:
+    "Attached prod.log is a summary, but the literal source-of-truth is logs/prod.log.",
+  attachmentsPresent: true,
+  attachedEvidenceRefs: ["prod.log"],
+});
+assert.equal(
+  pathSpecificReference.pass,
+  false,
+  "v4.3.9 / evidence_preflight: path-qualified evidence refs must not pass via basename-only attachments",
+);
+assert.deepEqual(pathSpecificReference.unattached_evidence_references, ["logs/prod.log"]);
+
+const normalizedPathReference = evidencePreflight({
+  task: "Review this release audit. npm run smoke passed.",
+  initialDraft: "The raw production log proof is in ./logs/prod.log.",
+  structuredEvidence: "The same source-of-truth may be cited as logs\\prod.log in Windows output.",
+  attachmentsPresent: true,
+  attachedEvidenceRefs: ["logs/prod.log"],
+});
+assert.equal(
+  normalizedPathReference.pass,
+  true,
+  "v4.3.9 / evidence_preflight: dot-slash and backslash path-qualified refs normalize to attached paths",
+);
+
+const broaderArtifactExtensions = evidencePreflight({
+  task: "Review this release audit. npm run smoke passed.",
+  initialDraft: "Literal evidence lives in audit.md, changes.diff, fix.patch, and metrics.csv.",
+  attachmentsPresent: false,
+});
+assert.equal(
+  broaderArtifactExtensions.pass,
+  false,
+  "v4.3.9 / evidence_preflight: md/diff/patch/csv evidence artifact refs must be detected",
+);
+assert.deepEqual(broaderArtifactExtensions.unattached_evidence_references, [
+  "audit.md",
+  "changes.diff",
+  "fix.patch",
+  "metrics.csv",
+]);
+
 // (f) benign task with no completed-work claim -> PASS (nothing to preflight).
 const benign = evidencePreflight({
   task: "Review this CHANGELOG wording for clarity.",

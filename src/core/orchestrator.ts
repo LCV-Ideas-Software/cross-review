@@ -708,22 +708,32 @@ const EVIDENCE_MARKER_PATTERN =
 const EXTERNAL_EVIDENCE_CONTEXT_PATTERN =
   /\b(?:evidence|attachment|attached|anex(?:o|os|a|as|ad[ao]s?)|artifact|artefato|proof|prova|raw|literal|verbatim|source[- ]of[- ]truth|log)\b/i;
 const EXTERNAL_EVIDENCE_ARTIFACT_PATTERN =
-  /(?:^|[\s`'"([{])([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:output|log|txt|json|ndjson))(?:\b|[\s`'")}\]])/gi;
+  /(?:^|[\s`'"([{])((?:\.[/\\])?[A-Za-z0-9][A-Za-z0-9._/\\-]*\.(?:output|log|txt|json|ndjson|md|diff|patch|csv))(?:\b|[\s`'")}\]])/gi;
 
-function evidenceRefAliases(value: string): string[] {
-  const normalized = value
+function normalizeEvidenceRef(value: string): string {
+  return value
     .trim()
     .replace(/^[`'"]+|[`'".,;:)\]}]+$/g, "")
     .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/^(?:\.\/)+/, "")
     .toLowerCase();
-  if (!normalized) return [];
+}
+
+function evidenceRefBasename(normalized: string): string | undefined {
   const parts = normalized.split("/").filter(Boolean);
-  const basename = parts.at(-1);
-  return basename && basename !== normalized ? [normalized, basename] : [normalized];
+  return parts.at(-1);
 }
 
 function findUnattachedEvidenceReferences(text: string, attachedEvidenceRefs: string[]): string[] {
-  const attached = new Set(attachedEvidenceRefs.flatMap(evidenceRefAliases));
+  const attachedExact = new Set(
+    attachedEvidenceRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
+  );
+  const attachedBasenames = new Set(
+    [...attachedExact]
+      .map((ref) => evidenceRefBasename(ref))
+      .filter((ref): ref is string => Boolean(ref)),
+  );
   const missing: string[] = [];
   const seen = new Set<string>();
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
@@ -733,10 +743,13 @@ function findUnattachedEvidenceReferences(text: string, attachedEvidenceRefs: st
     for (const match of line.matchAll(EXTERNAL_EVIDENCE_ARTIFACT_PATTERN)) {
       const rawRef = match[1];
       if (!rawRef) continue;
-      const aliases = evidenceRefAliases(rawRef);
-      const canonical = aliases[0];
+      const canonical = normalizeEvidenceRef(rawRef);
       if (!canonical || seen.has(canonical)) continue;
-      if (aliases.some((alias) => attached.has(alias))) continue;
+      const pathQualified = canonical.includes("/");
+      const attached = pathQualified
+        ? attachedExact.has(canonical)
+        : attachedExact.has(canonical) || attachedBasenames.has(canonical);
+      if (attached) continue;
       seen.add(canonical);
       missing.push(rawRef.replace(/\\/g, "/"));
     }

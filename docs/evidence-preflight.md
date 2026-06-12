@@ -47,9 +47,11 @@ From v4.3.7 onward, that declaration is no longer a blank cheque for
 references to separate artifacts. If `task`, `initial_draft`, or the
 structured `evidence` text explicitly points to an external evidence/log
 artifact such as `wmx4fm04e.output`, `release-evidence.txt`, `events.ndjson`,
-or `audit.log`, that artifact name must match an attached evidence label,
-relative path, or basename. Otherwise the preflight aborts locally with
-`unattached_evidence_references`.
+`audit.log`, `audit.md`, `changes.diff`, `fix.patch`, or `metrics.csv`, that
+artifact name must match an attached evidence label, relative path, or basename.
+From v4.3.9 onward, path-qualified references require the same attached path; a
+basename-only attachment does not satisfy a draft that cites a specific path.
+Otherwise the preflight aborts locally with `unattached_evidence_references`.
 
 ## Minimum evidence format
 
@@ -129,16 +131,23 @@ also visible in `meta.failed_attempts` with `failure_class =
 
 ## Retesting after evidence
 
-The behavioral matrix for this guard lives in
-`scripts/evidence-preflight-smoke.ts` and runs through:
+The evidence-preflight behavioral matrix, including external artifact-reference
+matching, lives in `scripts/evidence-preflight-smoke.ts` and runs through:
 
 ```bash
 npm run evidence-preflight-smoke
 ```
 
-`npm test` runs that focused smoke before the broader `scripts/smoke.ts` suite
-so evidence-preflight behavior can be validated without searching the monolithic
-smoke harness.
+The truthfulness-preflight behavioral and runtime-contract matrix lives in
+`scripts/truthfulness-preflight-smoke.ts` and runs through:
+
+```bash
+npm run truthfulness-preflight-smoke
+```
+
+`npm test` runs both focused smokes before the broader `scripts/smoke.ts` suite
+so evidence and truthfulness preflight behavior can be validated without
+searching the monolithic smoke harness.
 
 After attaching evidence with `session_attach_evidence`, call
 `session_truthfulness_preflight_check` to re-run the local truthfulness preflight

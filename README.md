@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.03.08** (npm package `4.3.8`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.03.09** (npm package `4.3.9`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                              |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`v04.03.09`**      | Patch — move `truthfulness_preflight` coverage into a focused smoke script and tighten evidence-artifact matching for path-qualified refs and `.md/.diff/.patch/.csv` files.                                       |
 | **`v04.03.08`**      | Patch — move `evidence_preflight` behavior coverage into a focused smoke script and run it explicitly before the broader smoke suite.                                                                              |
 | **`v04.03.07`**      | Patch — evidence preflight now blocks paid review when the submission references an external evidence/log artifact that was not attached to the session.                                                           |
 | **`v04.03.06`**      | Patch — isolate `runtime-smoke` in a temporary data directory so harness runs do not write open sessions into the operator's real runtime corpus.                                                                  |

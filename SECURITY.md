@@ -2,9 +2,11 @@
 
 ## Supported status
 
-Latest supported release: v04.03.08 for npm package 4.3.8. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.03.09 for npm package 4.3.9. The current main branch is also supported for security fixes until the next release is published.
 
-v04.03.08 changes only the local smoke-test organization; it does not change the runtime security model, token handling, redaction policy, or provider-call behavior.
+v04.03.09 tightens local evidence-artifact preflight matching and reorganizes
+truthfulness-preflight smoke coverage. It does not change token handling,
+redaction policy, provider adapters, or the broader runtime security model.
 
 ## Reporting a vulnerability
 
