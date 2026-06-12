@@ -24,7 +24,7 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.04.02** (npm package `4.4.2`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current release: **v04.04.03** (npm package `4.4.3`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +38,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                   |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.04.03`**      | Patch — continue the T2#10 smoke-debt reduction by moving the lazy provider SDK import source contract into the dedicated source-contract smoke, preserving coverage while reducing broad smoke regex pins.                                                             |
 | **`v04.04.02`**      | Patch — support Claude Fable 5 as an explicit Anthropic production-model option, including verified model selection, refusal handling, refusal events, docs and cost guidance.                                                                                          |
 | **`v04.04.01`**      | Patch — complete residual audit sweep: full mutating-tool identity gate, evidence attachment cache/safety, async EventLog flush, Perplexity auth-only probe mode, cache-cost correctness, dashboard report method split, and dedicated source-contract smoke isolation. |
 | **`v04.04.00`**      | Minor — consolidated audit close-out: log-level validation, realpath containment, initial-draft fabrication guard, Perplexity probe minimization, identity audit events, derived tool list, docs and metadata guards.                                                   |

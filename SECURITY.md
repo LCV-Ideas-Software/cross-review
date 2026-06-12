@@ -2,13 +2,11 @@
 
 ## Supported status
 
-Latest supported release: v04.04.02 for npm package 4.4.2. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.04.03 for npm package 4.4.3. The current main branch is also supported for security fixes until the next release is published.
 
-v04.04.02 adds explicit Claude Fable 5 support for the Anthropic peer. Fable 5
-is opt-in, records Anthropic classifier refusals as `provider_refusal`, and the
-documentation calls out Anthropic's 30-day/no-zero-data-retention posture for
-that model. It does not weaken token handling, redaction policy, caller
-identity gates, or secret sourcing.
+v04.04.03 is a test-harness maintenance release for source-contract smoke
+isolation. It does not change runtime security, token handling, redaction
+policy, caller identity gates, provider adapters, or secret sourcing.
 
 ## Reporting a vulnerability
 

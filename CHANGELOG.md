@@ -7,6 +7,20 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.03] — 2026-06-12
+
+**Patch — source-contract smoke split follow-up for T2#10 test-debt.** This
+release moves the lazy provider SDK import contract out of the broad behavioral
+smoke harness and into the dedicated source-contract smoke, reducing
+`scripts/smoke.ts` source-style regex pins while preserving coverage.
+
+### Changed
+
+- Moved `lazy_provider_sdk_imports_test` from `scripts/smoke.ts` to
+  `scripts/source-contract-smoke.ts`, where static source contracts belong.
+- `smoke_source_contract_budget_test` now has headroom below its cap instead of
+  sitting exactly at the limit.
+
 ## [v04.04.02] — 2026-06-12
 
 **Patch — Claude Fable 5 operational support as an explicit Anthropic model

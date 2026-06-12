@@ -320,6 +320,94 @@ import path from "node:path";
   console.log("[source-contract-smoke] session_init_markdown_response_test: PASS");
 }
 
+// v2.27.1 — lazy_provider_sdk_imports_test. Pins the cold-start
+// hardening contract: every peer adapter must keep provider SDK imports
+// as `import type` at the top of the file and resolve the runtime ctor
+// via a cached dynamic `import()` inside `client()` / loader helper.
+{
+  const peerSources = [
+    "src/peers/anthropic.ts",
+    "src/peers/openai.ts",
+    "src/peers/gemini.ts",
+    "src/peers/deepseek.ts",
+    "src/peers/grok.ts",
+    "src/peers/model-selection.ts",
+  ];
+  const runtimeImportPatterns = [
+    /^import\s+(?!type\s)[^;]*from\s+["']@anthropic-ai\/sdk["']/m,
+    /^import\s+(?!type\s)[^;]*from\s+["']openai["']/m,
+    /^import\s+(?!type\s)[^;]*from\s+["']@google\/genai["']/m,
+  ];
+  for (const file of peerSources) {
+    const source = fs.readFileSync(file, "utf8");
+    for (const pattern of runtimeImportPatterns) {
+      assert.ok(
+        !pattern.test(source),
+        `v2.27.1 / lazy_provider_sdk_imports: ${file} must keep provider SDK imports as type-only (pattern matched: ${pattern})`,
+      );
+    }
+  }
+
+  const distFiles = [
+    "dist/src/peers/anthropic.js",
+    "dist/src/peers/openai.js",
+    "dist/src/peers/gemini.js",
+    "dist/src/peers/deepseek.js",
+    "dist/src/peers/grok.js",
+    "dist/src/peers/model-selection.js",
+  ];
+  for (const file of distFiles) {
+    if (!fs.existsSync(file)) continue;
+    const compiled = fs.readFileSync(file, "utf8");
+    assert.ok(
+      !/from\s+["']@anthropic-ai\/sdk["']/.test(compiled),
+      `v2.27.1 / lazy_provider_sdk_imports: ${file} must not contain @anthropic-ai/sdk runtime import`,
+    );
+    assert.ok(
+      !/from\s+["']openai["']/.test(compiled),
+      `v2.27.1 / lazy_provider_sdk_imports: ${file} must not contain openai runtime import`,
+    );
+    assert.ok(
+      !/from\s+["']@google\/genai["']/.test(compiled),
+      `v2.27.1 / lazy_provider_sdk_imports: ${file} must not contain @google/genai runtime import`,
+    );
+  }
+
+  const anthropicSrc = fs.readFileSync("src/peers/anthropic.ts", "utf8");
+  assert.ok(
+    /export function loadAnthropicCtor\b/.test(anthropicSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: anthropic.ts must export loadAnthropicCtor",
+  );
+  const openaiSrc = fs.readFileSync("src/peers/openai.ts", "utf8");
+  assert.ok(
+    /export function loadOpenAICtor\b/.test(openaiSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: openai.ts must export loadOpenAICtor",
+  );
+  const geminiSrc = fs.readFileSync("src/peers/gemini.ts", "utf8");
+  assert.ok(
+    /export function loadGenaiModule\b/.test(geminiSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: gemini.ts must export loadGenaiModule",
+  );
+  const deepseekSrc = fs.readFileSync("src/peers/deepseek.ts", "utf8");
+  assert.ok(
+    /loadOpenAICtor/.test(deepseekSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: deepseek.ts must consume loadOpenAICtor",
+  );
+  const grokSrc = fs.readFileSync("src/peers/grok.ts", "utf8");
+  assert.ok(
+    /loadOpenAICtor/.test(grokSrc),
+    "v2.27.1 / lazy_provider_sdk_imports: grok.ts must consume loadOpenAICtor",
+  );
+  const modelSelSrc = fs.readFileSync("src/peers/model-selection.ts", "utf8");
+  for (const loader of ["loadAnthropicCtor", "loadOpenAICtor", "loadGenaiModule"]) {
+    assert.ok(
+      new RegExp(`\\b${loader}\\b`).test(modelSelSrc),
+      `v2.27.1 / lazy_provider_sdk_imports: model-selection.ts must consume ${loader}`,
+    );
+  }
+  console.log("[source-contract-smoke] lazy_provider_sdk_imports_test: PASS");
+}
+
 {
   const smokeSrc = fs.readFileSync(path.join(process.cwd(), "scripts", "smoke.ts"), "utf8");
   const sourceStylePins = (

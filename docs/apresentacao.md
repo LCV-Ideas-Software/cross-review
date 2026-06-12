@@ -578,6 +578,7 @@ SemVer. Marcos principais:
 | `v04.03.07`      | Preflight de evidência bloqueia referências a artefatos externos de prova/log não anexados à sessão.                                                                                    |
 | `v04.03.08`      | Smoke focado para a matriz comportamental de `evidence_preflight`.                                                                                                                      |
 | `v04.03.09`      | Smoke focado para `truthfulness_preflight` e match mais estrito de evidências.                                                                                                          |
+| `v04.04.03`      | Reduz o débito T2#10 movendo contrato estático de SDK lazy imports para o smoke dedicado de source contracts.                                                                           |
 | `v04.04.02`      | Suporte operacional ao Claude Fable 5 como opção Anthropic explícita, com seleção verificada, refusal handling e docs de custo/retenção.                                                |
 | `v04.04.01`      | Varredura residual completa: identity gate em toda superfície mutável, cache/anexos, EventLog async, probe Perplexity auth-only, custo/cache e smoke dedicado para contratos de source. |
 | `v04.04.00`      | Release consolidada de auditoria: `log_level`, containment realpath, guard inicial anti-fabricação, identity audit, probe Perplexity e docs.                                            |
