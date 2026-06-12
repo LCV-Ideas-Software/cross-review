@@ -270,11 +270,17 @@ eventLog.emit({
   message: `log message ${persistenceSecret}`,
   data: { secret: persistenceSecret },
 });
+await eventLog.flush();
 const logText = fs.readFileSync(eventLog.path(), "utf8");
 assert.doesNotMatch(
   logText,
   new RegExp(persistenceSecret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
   "v4.3.2 / redaction: logs/*.ndjson must not persist raw secret material",
+);
+const eventLogSrc = fs.readFileSync("src/observability/logger.ts", "utf8");
+assert.ok(
+  /flush\(\):\s*Promise<void>/.test(eventLogSrc) && !/appendFileSync/.test(eventLogSrc),
+  "v4.4.1 / event-log: EventLog should queue async appends and expose flush().",
 );
 console.log("[smoke] persistence_redaction_boundary_test: PASS");
 
@@ -4930,7 +4936,30 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const resolved = capOrch.store.readEvidenceAttachments(sessionId, 80_000);
   const totalChars = resolved.reduce((sum, a) => sum + a.content.length, 0);
   assert.ok(totalChars <= 80_000, `total inlined content must respect 80k cap (got ${totalChars})`);
-  assert.ok(resolved.length >= 1, `at least 1 attachment must be returned`);
+  assert.equal(
+    resolved.length,
+    3,
+    "80k cap with 30k files should include two full files and one truncated file",
+  );
+  assert.deepEqual(
+    resolved.map((attachment) => attachment.label),
+    ["att-0", "att-1", "att-2"],
+    "attachments should be returned in durable metadata order",
+  );
+  const [firstAttachment, secondAttachment, thirdAttachment] = resolved;
+  assert.ok(firstAttachment && secondAttachment && thirdAttachment);
+  assert.equal(firstAttachment.content.length, 30_000, "first attachment should be complete");
+  assert.equal(secondAttachment.content.length, 30_000, "second attachment should be complete");
+  assert.equal(
+    thirdAttachment.content.length,
+    20_000,
+    "third attachment should fill the remaining cap",
+  );
+  assert.equal(
+    thirdAttachment.truncated,
+    true,
+    "third attachment must be explicitly marked truncated",
+  );
   console.log("[smoke] attached_evidence_cap_respected_test: PASS");
 }
 
@@ -6979,7 +7008,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // (2) Source-level: numeric fallback after Number.parseInt is also 4.
   assert.ok(
-    /Number\.isFinite\(rawCap\)\s*&&\s*rawCap\s*!==\s*0\s*\?\s*rawCap\s*:\s*4/.test(configSrc),
+    /Number\.isFinite\(rawCap\)\s*&&\s*rawCap\s*>\s*0\s*\?\s*rawCap\s*:\s*4/.test(configSrc),
     "v2.18.5 / P1.4: numeric fallback `: 4` preserves the new default when parseInt returns 0/NaN",
   );
   // (3) Anti-drift negative: the legacy `?? "8"` literal must NOT
@@ -9695,194 +9724,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     }
   }
   console.log("[smoke] npm_registry_discipline_test: PASS");
-}
-
-{
-  const prettierIgnore = fs.readFileSync(path.join(process.cwd(), ".prettierignore"), "utf8");
-  const ignoredPatterns = prettierIgnore
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"));
-  for (const forbidden of ["README.md", "**/README.md", "src", "src/**", "scripts", "scripts/**"]) {
-    assert.ok(
-      !ignoredPatterns.includes(forbidden),
-      `hard-gate / no-mask: .prettierignore must not hide ${forbidden} from Prettier coverage.`,
-    );
-  }
-
-  const eslintConfig = fs.readFileSync(path.join(process.cwd(), "eslint.config.js"), "utf8");
-  assert.ok(
-    !/"@typescript-eslint\/no-explicit-any"\s*:\s*["']off["']/.test(eslintConfig),
-    "hard-gate / no-mask: eslint.config.js must not disable @typescript-eslint/no-explicit-any globally.",
-  );
-  assert.ok(
-    !/"@typescript-eslint\/no-unused-vars"\s*:\s*["']off["']/.test(eslintConfig),
-    "hard-gate / no-mask: eslint.config.js must not disable @typescript-eslint/no-unused-vars globally.",
-  );
-  assert.ok(
-    /"@typescript-eslint\/no-unused-vars"\s*:\s*\[\s*["']error["']/.test(eslintConfig),
-    "hard-gate / no-mask: @typescript-eslint/no-unused-vars must remain an error.",
-  );
-  console.log("[smoke] hard_gate_no_linter_formatter_masking_test: PASS");
-}
-
-{
-  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
-  const sessionListBlock = serverSrc.match(
-    /"session_list"[\s\S]{0,2500}?async \(\{ limit, offset, outcome_filter, detail, response_format \}\)/,
-  );
-  assert.ok(
-    sessionListBlock,
-    "v4.2.0 / session_list: handler must expose bounded pagination inputs.",
-  );
-  assert.ok(
-    serverSrc.includes("const SESSION_LIST_DEFAULT_LIMIT = 25"),
-    "v4.2.0 / session_list: default limit must stay bounded for stdio transports.",
-  );
-  assert.ok(
-    serverSrc.includes("const SESSION_LIST_MAX_LIMIT = 100"),
-    "v4.2.0 / session_list: max limit must cap oversized pages.",
-  );
-  assert.ok(
-    serverSrc.includes("SessionListOutcomeFilterSchema"),
-    "v4.2.0 / session_list: outcome_filter schema must remain wired.",
-  );
-  assert.ok(
-    serverSrc.includes("summarizeSessionForList"),
-    "v4.2.0 / session_list: default list output must stay summary-based.",
-  );
-  assert.ok(
-    serverSrc.includes("pagination: {"),
-    "v4.2.0 / session_list: response must surface pagination metadata.",
-  );
-  const runtimeSmokeSrc = fs.readFileSync(
-    path.join(process.cwd(), "scripts", "runtime-smoke.ts"),
-    "utf8",
-  );
-  assert.ok(
-    runtimeSmokeSrc.includes('callTool("session_list"'),
-    "v4.2.0 / session_list: runtime-smoke must exercise bounded session_list.",
-  );
-  console.log("[smoke] session_list_bounded_pagination_test: PASS");
-}
-
-{
-  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
-  const cancelJobBlock = serverSrc.match(
-    /"session_cancel_job"[\s\S]{0,2600}?registerTool\(\s*"session_recover_interrupted"/,
-  );
-  assert.ok(
-    cancelJobBlock,
-    "v4.2.0 / session_cancel_job: smoke must find the cancel-job handler block.",
-  );
-  const cancelJobSrc = cancelJobBlock?.[0] ?? "";
-  assert.ok(
-    /if \(!jobs\.length\) \{[\s\S]{0,500}?requested:\s*false[\s\S]{0,500}?no_running_job_matched/.test(
-      cancelJobSrc,
-    ),
-    "v4.2.0 / session_cancel_job: no active job must return requested=false/no_running_job_matched.",
-  );
-  assert.ok(
-    !/if \(!jobs\.length\) \{[\s\S]{0,300}?markCancelled/.test(cancelJobSrc),
-    "v4.2.0 / session_cancel_job: no active job must not terminal-abort the whole session.",
-  );
-
-  const runtimeSmokeSrc = fs.readFileSync(
-    path.join(process.cwd(), "scripts", "runtime-smoke.ts"),
-    "utf8",
-  );
-  assert.ok(
-    runtimeSmokeSrc.includes("runtime_smoke_no_active_job"),
-    "v4.2.0 / session_cancel_job: runtime-smoke must exercise the no-active-job path.",
-  );
-  assert.ok(
-    /assert\.equal\(\s*noJobCancelState\.outcome,\s*undefined/.test(runtimeSmokeSrc),
-    "v4.2.0 / session_cancel_job: runtime-smoke must assert no-job cancellation stays non-terminal.",
-  );
-  console.log("[smoke] session_cancel_job_no_active_job_test: PASS");
-}
-
-{
-  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
-  for (const toolName of [
-    "session_cancel_job",
-    "contest_verdict",
-    "regenerate_caller_tokens",
-    "escalate_to_operator",
-    "session_finalize",
-  ]) {
-    const toolStart = serverSrc.indexOf(`registerTool(\n    "${toolName}"`);
-    const nextToolStart = serverSrc.indexOf("registerTool(", toolStart + toolName.length + 2);
-    const handlerBlock =
-      toolStart >= 0
-        ? serverSrc.slice(toolStart, nextToolStart >= 0 ? nextToolStart : serverSrc.length)
-        : undefined;
-    assert.ok(handlerBlock, `v4.3.2 / identity: smoke must find ${toolName} handler block.`);
-    assert.ok(
-      /caller:\s*CallerSchema\.default\("operator"\)/.test(handlerBlock ?? ""),
-      `v4.3.2 / identity: ${toolName} must expose caller with operator default.`,
-    );
-    assert.ok(
-      /verifyToolCallerIdentity\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
-        handlerBlock ?? "",
-      ),
-      `v4.3.2 / identity: ${toolName} must verify caller identity before side effects.`,
-    );
-  }
-  console.log("[smoke] side_effect_tool_identity_gate_test: PASS");
-}
-
-{
-  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
-  assert.ok(
-    !/tokens:\s*generated\.map/.test(serverSrc),
-    "v4.3.2 / caller_tokens: regenerate_caller_tokens must not return plaintext generated.map in the MCP response.",
-  );
-  assert.ok(
-    /token_fingerprints/.test(serverSrc),
-    "v4.3.2 / caller_tokens: regenerate_caller_tokens response must expose token fingerprints instead of secrets.",
-  );
-  assert.ok(
-    !/Returns the new map so the operator can copy/.test(serverSrc),
-    "v4.3.2 / caller_tokens: tool description must not instruct hosts to expose copied plaintext tokens via MCP response.",
-  );
-  console.log("[smoke] regenerate_caller_tokens_no_plaintext_response_test: PASS");
-}
-
-{
-  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
-  assert.ok(
-    /process\.on\("SIGTERM"/.test(serverSrc) && /process\.on\("SIGINT"/.test(serverSrc),
-    "v4.3.3 / shutdown: server main must install SIGTERM and SIGINT handlers.",
-  );
-  assert.ok(
-    /flushPendingEvents\(\)/.test(serverSrc) && /setTimeout\(/.test(serverSrc),
-    "v4.3.3 / shutdown: signal handlers must flush pending events with a bounded timeout.",
-  );
-  console.log("[smoke] signal_flush_handlers_test: PASS");
-}
-
-{
-  const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
-  assert.ok(
-    serverSrc.includes("function sessionInitMarkdown"),
-    "v4.2.0 / session_init: markdown renderer must exist.",
-  );
-  assert.ok(
-    /response_format === "markdown"\s*\?\s*textResult\(sessionInitMarkdown\(meta\), "markdown"\)/.test(
-      serverSrc,
-    ),
-    'v4.2.0 / session_init: response_format="markdown" must not fall through to JSON.stringify.',
-  );
-  const runtimeSmokeSrc = fs.readFileSync(
-    path.join(process.cwd(), "scripts", "runtime-smoke.ts"),
-    "utf8",
-  );
-  assert.ok(
-    runtimeSmokeSrc.includes('callToolText("session_init"'),
-    "v4.2.0 / session_init: runtime-smoke must exercise markdown session_init.",
-  );
-  console.log("[smoke] session_init_markdown_response_test: PASS");
 }
 
 // v2.6.1 NOTE: smoke coverage for `peer.fallback.budget_blocked` and

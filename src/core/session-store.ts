@@ -191,6 +191,17 @@ export class SessionStore {
   // promise here. Promises resolve/reject within appendEvent's own
   // try/catch — flush() therefore always settles, never rejects.
   private readonly pendingEventWrites = new Set<Promise<void>>();
+  private readonly evidenceAttachmentCache = new Map<
+    string,
+    Array<{
+      label: string;
+      relative_path: string;
+      content: string;
+      bytes: number;
+      truncated: boolean;
+      content_type?: string | undefined;
+    }>
+  >();
 
   constructor(private readonly config: AppConfig) {
     fs.mkdirSync(this.sessionsDir(), { recursive: true });
@@ -1060,8 +1071,8 @@ export class SessionStore {
     if (!incoming.length) return [];
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
-      const existing = meta.evidence_checklist ?? [];
-      const byId = new Map(existing.map((item) => [item.id, item]));
+      const checklist = meta.evidence_checklist ?? [];
+      const byId = new Map(checklist.map((item) => [item.id, item]));
       const ts = now();
       for (const { peer, ask } of incoming) {
         const trimmed = ask.trim();
@@ -1071,17 +1082,17 @@ export class SessionStore {
           .update(`${peer}:${trimmed}`)
           .digest("hex")
           .slice(0, 16);
-        const existing = byId.get(id);
-        if (existing) {
+        const existingItem = byId.get(id);
+        if (existingItem) {
           // Same ask resurfaced. Bump last_round/last_seen_at and
           // round_count only when the round number is strictly newer
           // (avoid double-counting if the same caller_request appears
           // multiple times within the same round across peers — though
           // we already iterate per-peer, so this is defensive).
-          if (round > existing.last_round) {
-            existing.last_round = round;
-            existing.last_seen_at = ts;
-            existing.round_count += 1;
+          if (round > existingItem.last_round) {
+            existingItem.last_round = round;
+            existingItem.last_seen_at = ts;
+            existingItem.round_count += 1;
           }
         } else {
           byId.set(id, {
@@ -1251,11 +1262,8 @@ export class SessionStore {
         throw new Error(`evidence_checklist_item_not_found: ${itemId}`);
       }
       const from: EvidenceChecklistStatus = item.status ?? "open";
-      if (from === status) {
-        // No-op: already at the requested status. We still record a
-        // history entry so the audit trail captures the operator's
-        // explicit intent.
-      }
+      // No-op transitions still record history so the audit trail captures
+      // the operator's explicit intent.
       const ts = now();
       const entry: EvidenceStatusHistoryEntry = {
         ts,
@@ -1366,8 +1374,11 @@ export class SessionStore {
   // (O(events) per call); acceptable for v2.12 because the corpus is
   // bounded (≤ a few hundred sessions historically) and the dashboard
   // refreshes on demand.
-  aggregateShadowJudgments(sessionId?: string): ShadowJudgmentRollup {
-    const sessions = sessionId ? [this.read(sessionId)] : this.list();
+  aggregateShadowJudgments(
+    sessionId?: string,
+    preloadedSessions?: readonly SessionMeta[],
+  ): ShadowJudgmentRollup {
+    const sessions = preloadedSessions ?? (sessionId ? [this.read(sessionId)] : this.list());
     const byPeer: Partial<Record<PeerId, ShadowJudgmentPeerStats>> = {};
     let decisionsTotal = 0;
     let wouldPromoteTotal = 0;
@@ -1563,7 +1574,7 @@ export class SessionStore {
       },
       per_peer_health: perPeerHealth,
       // v2.12.0: shadow_decision rollup. See aggregateShadowJudgments().
-      shadow_judgment: this.aggregateShadowJudgments(sessionId),
+      shadow_judgment: this.aggregateShadowJudgments(sessionId, sessions),
     };
   }
 
@@ -1742,8 +1753,9 @@ export class SessionStore {
     // the operator explicitly passes `repair: true`. Recomputes
     // `convergence_health` from the latest round's `convergence.converged`.
     const repaired: NonNullable<SessionDoctorReport["repaired"]> = [];
+    const sessions = this.list();
     if (repair) {
-      for (const session of this.list()) {
+      for (const session of sessions) {
         if (session.outcome === "converged" && session.convergence_health?.state === "blocked") {
           const latest = session.rounds.at(-1);
           const latestConverged = latest?.convergence?.converged === true;
@@ -1773,6 +1785,8 @@ export class SessionStore {
               return false;
             });
             if (fixed) {
+              const index = sessions.findIndex((item) => item.session_id === session.session_id);
+              if (index >= 0) sessions[index] = this.read(session.session_id);
               repaired.push({
                 session_id: session.session_id,
                 from_health_state: fromState,
@@ -1785,7 +1799,6 @@ export class SessionStore {
         }
       }
     }
-    const sessions = this.list();
     const openSessions: SessionDoctorEntry[] = [];
     const staleSessions: SessionDoctorEntry[] = [];
     const blockedSessions: SessionDoctorEntry[] = [];
@@ -2194,11 +2207,20 @@ export class SessionStore {
     content_type?: string | undefined;
   }> {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
-    const meta = this.read(sessionId);
+    const cacheKey = `${sessionId}:${totalCapChars}`;
+    const cached = this.evidenceAttachmentCache.get(cacheKey);
+    if (cached) return cached.map((item) => ({ ...item }));
+    let meta: SessionMeta;
+    let sessionDir: string;
+    try {
+      meta = this.read(sessionId);
+      sessionDir = this.sessionDir(sessionId);
+    } catch {
+      return [];
+    }
     const files = meta.evidence_files ?? [];
     if (!files.length) return [];
     const perFileCap = Math.max(2_000, Math.floor(totalCapChars * 0.6));
-    const sessionDir = this.sessionDir(sessionId);
     const result: Array<{
       label: string;
       relative_path: string;
@@ -2232,6 +2254,10 @@ export class SessionStore {
       });
       used += slice.length;
     }
+    this.evidenceAttachmentCache.set(
+      cacheKey,
+      result.map((item) => ({ ...item })),
+    );
     return result;
   }
 
@@ -2314,6 +2340,9 @@ export class SessionStore {
       await writeJson(this.metaPath(sessionId), current);
       return current;
     });
+    for (const key of [...this.evidenceAttachmentCache.keys()]) {
+      if (key.startsWith(`${sessionId}:`)) this.evidenceAttachmentCache.delete(key);
+    }
 
     return { path: relativePath.replace(/\\/g, "/"), meta };
   }

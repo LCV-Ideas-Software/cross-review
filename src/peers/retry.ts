@@ -20,6 +20,24 @@ function backoffWithJitter(attempt: number, config: AppConfig): number {
   return Math.floor(Math.random() * capped);
 }
 
+function attachPeerFailure(error: unknown, failure: PeerFailure): unknown {
+  if (typeof error === "object" && error !== null) {
+    Object.defineProperty(error, "peerFailure", {
+      value: failure,
+      enumerable: false,
+      configurable: true,
+    });
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  Object.defineProperty(wrapped, "peerFailure", {
+    value: failure,
+    enumerable: false,
+    configurable: true,
+  });
+  return wrapped;
+}
+
 export async function withRetry<T>(
   config: AppConfig,
   run: (attempt: number) => Promise<T>,
@@ -32,7 +50,8 @@ export async function withRetry<T>(
       return await run(attempt);
     } catch (error) {
       last = onFailure(error, attempt, started);
-      if (!last.retryable || attempt >= config.retry.max_attempts) throw error;
+      if (!last.retryable || attempt >= config.retry.max_attempts)
+        throw attachPeerFailure(error, last);
       const wait = last.retry_after_ms ?? backoffWithJitter(attempt, config);
       await delay(wait);
     }

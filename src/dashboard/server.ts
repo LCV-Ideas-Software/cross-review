@@ -53,6 +53,14 @@ function notFound(response: http.ServerResponse): void {
   response.end("Not found");
 }
 
+function methodNotAllowed(response: http.ServerResponse, allowed: string): void {
+  response.writeHead(405, {
+    "content-type": "text/plain; charset=utf-8",
+    allow: allowed,
+  });
+  response.end("Method not allowed");
+}
+
 function escapeHtmlServer(value: string): string {
   return value.replace(/[&<>"']/g, (char) => {
     switch (char) {
@@ -349,10 +357,16 @@ const server = http.createServer(async (request, response) => {
     const reportMatch = url.pathname.match(/^\/api\/sessions\/([a-f0-9-]{36})\/report$/);
     const reportSessionId = reportMatch?.[1];
     if (reportSessionId) {
+      if (request.method !== "GET" && request.method !== "POST") {
+        methodNotAllowed(response, "GET, POST");
+        return;
+      }
       const sessionId = reportSessionId;
       const session = orchestrator.store.read(sessionId);
       const markdown = sessionReportMarkdown(session, orchestrator.store.readEvents(sessionId));
-      orchestrator.store.saveReport(sessionId, markdown);
+      if (request.method === "POST") {
+        orchestrator.store.saveReport(sessionId, markdown);
+      }
       response.writeHead(200, {
         "content-type": "text/markdown; charset=utf-8",
         "cache-control": "no-store",

@@ -209,9 +209,10 @@ async function grokModels(config: AppConfig): Promise<ModelCandidate[]> {
 // surface). Operators choose among the 4 documented Sonar models via
 // CROSS_REVIEW_PERPLEXITY_MODEL; this resolver returns an empty live-
 // candidate set so `selectFromCandidates` falls through to the
-// documented PRIORITY list with confidence "inferred". The probe step
-// in `peers/perplexity.ts` still validates that the API key works at
-// boot via a minimal `disable_search` round-trip.
+// documented PRIORITY list with confidence "inferred". The Perplexity
+// runtime probe defaults to auth_only to avoid tokenized health checks;
+// operators can set CROSS_REVIEW_PERPLEXITY_PROBE_MODE=live when they
+// explicitly want a paid minimal `disable_search` round-trip.
 async function perplexityModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.perplexity;
   if (!apiKey) return [];

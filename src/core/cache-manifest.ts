@@ -23,8 +23,12 @@ const MANIFEST_FILENAME = "cache_manifest.json";
 const ATOMIC_WRITE_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EEXIST"]);
 const ATOMIC_WRITE_MAX_ATTEMPTS = 5;
 const TMP_NONCE_BYTES = 2;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function manifestPath(dataDir: string, sessionId: string): string {
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    throw new Error(`invalid session_id for cache manifest: ${sessionId}`);
+  }
   return path.resolve(dataDir, "sessions", sessionId, MANIFEST_FILENAME);
 }
 
@@ -32,7 +36,7 @@ async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const nonce = crypto.randomBytes(TMP_NONCE_BYTES).toString("hex");
   const tmp = `${file}.${process.pid}.${Date.now()}.${nonce}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < ATOMIC_WRITE_MAX_ATTEMPTS; attempt += 1) {
     try {

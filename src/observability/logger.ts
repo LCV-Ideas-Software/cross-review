@@ -7,6 +7,7 @@ import { redact, redactJsonValue } from "../security/redact.js";
 export class EventLog {
   private readonly file: string;
   private readonly logger;
+  private pendingAppend: Promise<void> = Promise.resolve();
 
   constructor(readonly config: AppConfig) {
     fs.mkdirSync(path.join(config.data_dir, "logs"), { recursive: true });
@@ -20,11 +21,22 @@ export class EventLog {
   }
 
   emit(event: RuntimeEvent): void {
-    const payload = { ts: new Date().toISOString(), ...event };
+    const payload = { ...event, ts: event.ts ?? new Date().toISOString() };
     const redactedPayload = redactJsonValue(payload);
     const redactedPayloadText = JSON.stringify(redactedPayload);
-    fs.appendFileSync(this.file, `${redactedPayloadText}\n`, "utf8");
+    this.pendingAppend = this.pendingAppend
+      .then(() => fs.promises.appendFile(this.file, `${redactedPayloadText}\n`, "utf8"))
+      .catch((error: unknown) => {
+        this.logger.error(
+          { error: error instanceof Error ? error.message : String(error) },
+          "event_log_append_failed",
+        );
+      });
     this.logger.info(redactedPayload, redact(event.message ?? event.type));
+  }
+
+  async flush(): Promise<void> {
+    await this.pendingAppend;
   }
 
   path(): string {

@@ -92,7 +92,6 @@ function usageFromOpenAI(usage: OpenAIUsage | null | undefined): TokenUsage | un
   if (!usage) return undefined;
   const cached =
     usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
-  const inputTokens = usage.input_tokens ?? 0;
   const result: TokenUsage = {
     input_tokens: usage.input_tokens,
     output_tokens: usage.output_tokens,
@@ -101,10 +100,10 @@ function usageFromOpenAI(usage: OpenAIUsage | null | undefined): TokenUsage | un
   };
   if (cached > 0) {
     result.cache_read_tokens = cached;
-    // OpenAI does not separately report write tokens; the diff between
-    // total input and cached tokens is the "fresh" input tokens that
-    // were potentially cacheable for the next call.
-    if (inputTokens > cached) result.cache_write_tokens = inputTokens - cached;
+    // OpenAI reports cache reads via cached_tokens but does not expose
+    // cache writes/creations. Do not infer write tokens from
+    // input_tokens - cached_tokens; that is fresh input, not a billed
+    // cache-write counter.
     result.cache_provider_mode = "auto";
   } else {
     result.cache_provider_mode = "auto";

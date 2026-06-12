@@ -41,10 +41,10 @@ O produto atual é estável. A release de referência reporta:
 | -------------------------- | ---------------------------------- |
 | Nome                       | `cross-review`                     |
 | Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.4.0`                            |
+| Versão runtime             | `4.4.1`                            |
 | Release date runtime       | `2026-06-12`                       |
 | Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.4.0`                            |
+| Versão npm publicada       | `4.4.1`                            |
 | Transporte MCP             | `stdio`                            |
 | Execução CLI por peers     | desativada                         |
 | Modo padrão                | chamadas reais de API              |
@@ -715,42 +715,43 @@ publica com provenance quando aplicável.
 
 ## Changelog breve
 
-| Versão           | Data          | Destaque                                                                                                                                       |
-| ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v04.04.00`      | 2026-06-12    | Consolida o close-out da auditoria: `log_level`, containment realpath, guard inicial anti-fabricação, identity audit, probe Perplexity e docs. |
-| `v04.03.09`      | 2026-06-11    | Move `truthfulness_preflight` para smoke dedicado e endurece o match de artefatos externos de evidência.                                       |
-| `v04.03.08`      | 2026-06-11    | Move a matriz comportamental de `evidence_preflight` para smoke dedicado, reduzindo acoplamento no smoke geral.                                |
-| `v04.03.07`      | 2026-06-11    | Bloqueia antes de chamadas pagas quando o texto referencia artefato externo de evidência/log que não foi anexado à sessão.                     |
-| `v04.03.06`      | 2026-06-11    | Isola `runtime-smoke` em data dir temporário para não gravar sessões de harness no corpus real do operador.                                    |
-| `v04.03.05`      | 2026-06-11    | Filtra `<think>` em eventos streaming da Perplexity, expande `~` no config central e reforça dashboard/smokes.                                 |
-| `v04.03.04`      | 2026-06-11    | Endurece sequência de eventos cross-process, detector anti-fabricação, fallback Gemini sem texto e retry de erro streaming.                    |
-| `v04.03.03`      | 2026-06-11    | Adiciona diagnósticos forenses para append/identity, flush em sinais, retry de 5xx estruturado e refresh de SDKs oficiais.                     |
-| `v04.03.02`      | 2026-06-11    | Endurece redaction de persistência, guards de sessão finalizada, identity gates e rotação de tokens sem plaintext no payload.                  |
-| `v04.03.01`      | 2026-06-05    | Restringe skip por `provider_error` a falhas retryable e melhora diagnóstico de overload do Anthropic.                                         |
-| `v04.03.00`      | 2026-06-05    | Adiciona disposition de evidência pendente, eval offline por fixtures e relatório agregado de confiabilidade por peer.                         |
-| `v04.02.05`      | 2026-06-05    | Endurece auditoria de sessões com eventos terminais, split de custo, visibilidade de `not_resurfaced` e proveniência do relator.               |
-| `v04.02.04`      | 2026-06-05    | Torna o truthfulness preflight mais auditável, adiciona reteste local e reduz falsos warnings de evidência anexada/logs.                       |
-| `v04.02.03`      | 2026-06-03    | Promove Gemini 3.1 Pro Preview como pin canônico e atualiza o rate card Gemini local.                                                          |
-| `v04.02.02`      | 2026-06-02    | Atualiza pins Claude/Grok, corrige probe Perplexity e refresca rate cards conforme documentação oficial dos providers.                         |
-| `v04.02.01`      | 2026-05-21    | Publica cleanup de hard-gate como pacote `4.2.1`, com ajustes de strict TypeScript, dependências e `tsconfig.base.json` local.                 |
-| `v04.02.00`      | 2026-05-17    | Lista de sessões paginada, cancelamento sem abortar sessão indevidamente e resposta Markdown de `session_init`.                                |
-| `v04.01.00`      | 2026-05-17    | Hardening de concorrência do session-store, redaction de chaves privadas truncadas e remoção de busy-wait.                                     |
-| `v04.00.00`      | 2026-05-15    | Renomeia o projeto para `cross-review`; o antigo `cross-review-v2` vira histórico.                                                             |
-| `v03.07.x`       | 2026-05-14/15 | Série de auditorias operacionais, logs/sessions study, política sem fallback silencioso e correções de runtime.                                |
-| `v03.03.00`      | 2026-05-12    | Trava seleção de peers pelo caller; todos os peers configurados participam conforme diretiva do operador.                                      |
-| `v03.01.00`      | 2026-05-12    | Introduz `config.json` central para reduzir centenas de variáveis duplicadas em hosts MCP.                                                     |
-| `v03.00.00`      | 2026-05-12    | Perplexity entra como sexto peer.                                                                                                              |
-| `v02.28.00`      | 2026-05-12    | Cache de lookup de variáveis do registro do Windows para reduzir cold start.                                                                   |
-| `v02.25.00`      | 2026-05-10    | Adiciona modo deliberativo `circular`.                                                                                                         |
-| `v02.21.00`      | 2026-05-09    | Prompt caching cross-provider.                                                                                                                 |
-| `v02.18.00`      | 2026-05-05    | Caller capability tokens.                                                                                                                      |
-| `v02.17.00`      | 2026-05-05    | Rejeição de identity forgery como hard gate.                                                                                                   |
-| `v02.11.00`      | 2026-05-04    | Relator lottery e auto-wire shadow.                                                                                                            |
-| `v02.08.00`      | 2026-05-03    | Health por peer e ciclo do Evidence Broker.                                                                                                    |
-| `v02.03.00`      | 2026-05-01    | `review_focus` provider-neutral.                                                                                                               |
-| `v02.02.00`      | 2026-04-30    | Streaming de tokens dos provedores.                                                                                                            |
-| `v02.01.00`      | 2026-04-30    | Primeira release estável.                                                                                                                      |
-| `v2.0.0-alpha.0` | 2026-04       | Implementação inicial API/SDK-only do servidor MCP.                                                                                            |
+| Versão           | Data          | Destaque                                                                                                                                                                               |
+| ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.04.01`      | 2026-06-12    | Fecha a varredura residual: identity gate completo, cache/attachments, EventLog async, probe Perplexity auth-only, correções de custo/cache e smoke dedicado para contratos de source. |
+| `v04.04.00`      | 2026-06-12    | Consolida o close-out da auditoria: `log_level`, containment realpath, guard inicial anti-fabricação, identity audit, probe Perplexity e docs.                                         |
+| `v04.03.09`      | 2026-06-11    | Move `truthfulness_preflight` para smoke dedicado e endurece o match de artefatos externos de evidência.                                                                               |
+| `v04.03.08`      | 2026-06-11    | Move a matriz comportamental de `evidence_preflight` para smoke dedicado, reduzindo acoplamento no smoke geral.                                                                        |
+| `v04.03.07`      | 2026-06-11    | Bloqueia antes de chamadas pagas quando o texto referencia artefato externo de evidência/log que não foi anexado à sessão.                                                             |
+| `v04.03.06`      | 2026-06-11    | Isola `runtime-smoke` em data dir temporário para não gravar sessões de harness no corpus real do operador.                                                                            |
+| `v04.03.05`      | 2026-06-11    | Filtra `<think>` em eventos streaming da Perplexity, expande `~` no config central e reforça dashboard/smokes.                                                                         |
+| `v04.03.04`      | 2026-06-11    | Endurece sequência de eventos cross-process, detector anti-fabricação, fallback Gemini sem texto e retry de erro streaming.                                                            |
+| `v04.03.03`      | 2026-06-11    | Adiciona diagnósticos forenses para append/identity, flush em sinais, retry de 5xx estruturado e refresh de SDKs oficiais.                                                             |
+| `v04.03.02`      | 2026-06-11    | Endurece redaction de persistência, guards de sessão finalizada, identity gates e rotação de tokens sem plaintext no payload.                                                          |
+| `v04.03.01`      | 2026-06-05    | Restringe skip por `provider_error` a falhas retryable e melhora diagnóstico de overload do Anthropic.                                                                                 |
+| `v04.03.00`      | 2026-06-05    | Adiciona disposition de evidência pendente, eval offline por fixtures e relatório agregado de confiabilidade por peer.                                                                 |
+| `v04.02.05`      | 2026-06-05    | Endurece auditoria de sessões com eventos terminais, split de custo, visibilidade de `not_resurfaced` e proveniência do relator.                                                       |
+| `v04.02.04`      | 2026-06-05    | Torna o truthfulness preflight mais auditável, adiciona reteste local e reduz falsos warnings de evidência anexada/logs.                                                               |
+| `v04.02.03`      | 2026-06-03    | Promove Gemini 3.1 Pro Preview como pin canônico e atualiza o rate card Gemini local.                                                                                                  |
+| `v04.02.02`      | 2026-06-02    | Atualiza pins Claude/Grok, corrige probe Perplexity e refresca rate cards conforme documentação oficial dos providers.                                                                 |
+| `v04.02.01`      | 2026-05-21    | Publica cleanup de hard-gate como pacote `4.2.1`, com ajustes de strict TypeScript, dependências e `tsconfig.base.json` local.                                                         |
+| `v04.02.00`      | 2026-05-17    | Lista de sessões paginada, cancelamento sem abortar sessão indevidamente e resposta Markdown de `session_init`.                                                                        |
+| `v04.01.00`      | 2026-05-17    | Hardening de concorrência do session-store, redaction de chaves privadas truncadas e remoção de busy-wait.                                                                             |
+| `v04.00.00`      | 2026-05-15    | Renomeia o projeto para `cross-review`; o antigo `cross-review-v2` vira histórico.                                                                                                     |
+| `v03.07.x`       | 2026-05-14/15 | Série de auditorias operacionais, logs/sessions study, política sem fallback silencioso e correções de runtime.                                                                        |
+| `v03.03.00`      | 2026-05-12    | Trava seleção de peers pelo caller; todos os peers configurados participam conforme diretiva do operador.                                                                              |
+| `v03.01.00`      | 2026-05-12    | Introduz `config.json` central para reduzir centenas de variáveis duplicadas em hosts MCP.                                                                                             |
+| `v03.00.00`      | 2026-05-12    | Perplexity entra como sexto peer.                                                                                                                                                      |
+| `v02.28.00`      | 2026-05-12    | Cache de lookup de variáveis do registro do Windows para reduzir cold start.                                                                                                           |
+| `v02.25.00`      | 2026-05-10    | Adiciona modo deliberativo `circular`.                                                                                                                                                 |
+| `v02.21.00`      | 2026-05-09    | Prompt caching cross-provider.                                                                                                                                                         |
+| `v02.18.00`      | 2026-05-05    | Caller capability tokens.                                                                                                                                                              |
+| `v02.17.00`      | 2026-05-05    | Rejeição de identity forgery como hard gate.                                                                                                                                           |
+| `v02.11.00`      | 2026-05-04    | Relator lottery e auto-wire shadow.                                                                                                                                                    |
+| `v02.08.00`      | 2026-05-03    | Health por peer e ciclo do Evidence Broker.                                                                                                                                            |
+| `v02.03.00`      | 2026-05-01    | `review_focus` provider-neutral.                                                                                                                                                       |
+| `v02.02.00`      | 2026-04-30    | Streaming de tokens dos provedores.                                                                                                                                                    |
+| `v02.01.00`      | 2026-04-30    | Primeira release estável.                                                                                                                                                              |
+| `v2.0.0-alpha.0` | 2026-04       | Implementação inicial API/SDK-only do servidor MCP.                                                                                                                                    |
 
 ## Checklist operacional recomendado
 

@@ -7,6 +7,53 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.01] — 2026-06-12
+
+**Patch — complete residual audit sweep after v4.4.0.** This release closes
+the remaining verified low/info findings from the v4.3.x/v4.4.0 audit rather
+than leaving them as follow-up debt, and separates intentional source-contract
+checks from the broader behavioral smoke harness.
+
+### Fixed
+
+- All MCP tools marked `readOnlyHint:false` now expose and verify caller
+  identity before side effects. The smoke suite now checks the complete
+  mutating surface instead of a hand-maintained subset.
+- Pre-call cancellation now persists per-peer failure artifacts with
+  `savePeerFailure`, matching the other failure branches.
+- Session evidence attachment reads now use a per-session/cap cache, invalidate
+  on new attachment, enforce containment through the existing realpath helper,
+  and fail closed to an empty attachment set when optional prompt evidence
+  cannot be read.
+- `sessionDoctor(repair=true)` and metrics shadow-judgment rollups reuse
+  already-loaded session lists instead of performing redundant `list()` passes.
+- Cache manifest paths now validate UUID session IDs and temporary writes use
+  `flag: "wx"` as documented.
+- `GET /api/sessions/<id>/report` no longer writes a report file; only `POST`
+  persists a saved report.
+- EventLog writes are queued with async file appends and expose `flush()`; MCP
+  shutdown now flushes both session events and the process log.
+- Retry exhaustion attaches the classified `PeerFailure` metadata to the thrown
+  error so callers do not lose failure class/retryability diagnostics.
+- OpenAI and Grok no longer infer `cache_write_tokens` from
+  `input_tokens - cached_tokens`; those providers only report cache reads.
+- Perplexity probes default to `auth_only`, avoiding tokenized Sonar health
+  checks. Set `CROSS_REVIEW_PERPLEXITY_PROBE_MODE=live` to request the prior
+  minimal `disable_search` round-trip explicitly.
+- Numeric env var parsing now warns on invalid/negative values, and
+  `max_items_per_pass` is positive at the config boundary.
+- Caller peer-selection notices now suppress no-op full-enabled-panel inputs,
+  and caller-facing `peers` schemas allow empty arrays to reach the lock.
+- File config evidence-judge peer fields are roster enums, not arbitrary
+  strings.
+- Runtime event typing now has a typed data map for high-value emitted events.
+- Smoke hardgates now cover array-form eslint masking and verify attached
+  evidence cap behavior by order, content size, and truncation state.
+- Source-grep style contracts that were added for the residual sweep now run in
+  `scripts/source-contract-smoke.ts`, which is part of `npm test`. The regular
+  `scripts/smoke.ts` has a source-contract budget so future static pins do not
+  silently re-accumulate in the behavioral smoke harness.
+
 ## [v04.04.00] — 2026-06-12
 
 **Minor — consolidated audit close-out and runtime hardening.** This release

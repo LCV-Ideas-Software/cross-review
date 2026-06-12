@@ -138,7 +138,7 @@ function usageFromSonar(
 // text to begin with JSON-shaped content (or contain it within
 // extractable shape); the thinking block breaks both code paths and
 // the format-recovery retry inherits the same problem. Strip every
-// `<think>...</think>` block (greedy across lines, multiple
+// `<think>...</think>` block (non-greedy across lines, multiple
 // occurrences) before downstream extraction. Real Sonar responses
 // never legitimately include the literal substring "<think>" inside
 // the structured payload, so this is safe.
@@ -257,7 +257,7 @@ type PerplexityChatStreamPayload = OpenAI.ChatCompletionCreateParamsStreaming &
 // inferred from which adapter method the orchestrator invokes:
 //   - `call()`  → reviewer  → search HONORED per config (default ON)
 //   - `generate()` → relator  → search FORCED OFF
-//   - `probe()` → health check → search FORCED OFF (already inline)
+//   - `probe()` → auth_only by default; live probe uses search FORCED OFF
 // This preserves Perplexity's role-symmetry across the sexteto (it can
 // still be caller / lead_peer / reviewer per session) while the
 // adapter's internal contract ensures the search behavior matches the
@@ -326,8 +326,21 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         message: "PERPLEXITY_API_KEY is missing.",
       };
     }
+    if (this.config.perplexity.probe_mode === "auth_only") {
+      return {
+        peer: this.id,
+        provider: this.provider,
+        model: this.model,
+        available: true,
+        auth_present: true,
+        latency_ms: Date.now() - started,
+        model_selection: this.config.model_selection.perplexity,
+        message:
+          "Perplexity probe_mode=auth_only: skipped tokenized Sonar round-trip because Perplexity does not document a zero-token model/auth endpoint.",
+      };
+    }
     // Perplexity does not document a public `models.list` endpoint via
-    // the OpenAI-SDK base path. Probe with a minimal `disable_search`
+    // the OpenAI-SDK base path. Live probe uses a minimal `disable_search`
     // call to avoid burning a request fee on the health check; Sonar
     // reasoning models reject values below 16 even for probes.
     try {

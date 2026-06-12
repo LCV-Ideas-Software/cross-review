@@ -63,7 +63,13 @@ The cost layer (`src/core/cost.ts`) extends `CostEstimate` with two cache-relate
 
 Rate cards live in `config.cost_rates`, loaded from environment variables or the central config file. Cache read/write rates use the same per-provider prefix as input/output, for example `CROSS_REVIEW_<PROVIDER>_CACHE_READ_USD_PER_MILLION` and `CROSS_REVIEW_<PROVIDER>_CACHE_WRITE_USD_PER_MILLION`. The rate card delta is computed from the configured rates: `(fresh_input_per_million - cached_input_per_million) × cache_read_tokens / 1e6`.
 
-Adapters surface the read/write counts via `TokenUsage.cache_read_tokens` and `TokenUsage.cache_write_tokens`. The orchestrator reads them, emits a `provider.cache.usage` event, and appends a row to `<data_dir>/sessions/<session_id>/cache_manifest.json`.
+Adapters surface provider-reported cache counts via `TokenUsage.cache_read_tokens`
+and, only when the provider exposes a creation/miss counter,
+`TokenUsage.cache_write_tokens`. OpenAI and Grok report `cached_tokens` for
+cache reads but do not expose a cache-write counter, so cross-review does not
+infer writes from `input_tokens - cached_tokens`. The orchestrator reads the
+canonical fields, emits a `provider.cache.usage` event, and appends a row to
+`<data_dir>/sessions/<session_id>/cache_manifest.json`.
 
 ## Bypass / kill-switch
 

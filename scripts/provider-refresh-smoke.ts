@@ -47,6 +47,52 @@ const config = loadConfig();
 
   const probe = await adapter.probe();
   assert.equal(probe.available, true);
+  assert.equal(
+    capturedPayload,
+    undefined,
+    "Perplexity default probe_mode=auth_only must not spend tokens.",
+  );
+  assert.match(
+    probe.message ?? "",
+    /probe_mode=auth_only/,
+    "Perplexity auth-only probe should be explicit in the probe result message.",
+  );
+}
+
+{
+  const adapter = new PerplexityAdapter({
+    ...config,
+    perplexity: { ...config.perplexity, probe_mode: "live" },
+  });
+  let capturedPayload:
+    | { max_tokens?: number; disable_search?: boolean; messages?: Array<{ content?: string }> }
+    | undefined;
+  (
+    adapter as unknown as {
+      client: () => Promise<{
+        chat: {
+          completions: {
+            create: (payload: {
+              max_tokens?: number;
+              disable_search?: boolean;
+              messages?: Array<{ content?: string }>;
+            }) => Promise<void>;
+          };
+        };
+      }>;
+    }
+  ).client = async () => ({
+    chat: {
+      completions: {
+        create: async (payload) => {
+          capturedPayload = payload;
+        },
+      },
+    },
+  });
+
+  const probe = await adapter.probe();
+  assert.equal(probe.available, true);
   assert.equal(capturedPayload?.disable_search, true);
   assert.ok(
     typeof capturedPayload?.max_tokens === "number" && capturedPayload.max_tokens >= 16,

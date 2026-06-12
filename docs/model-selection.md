@@ -66,6 +66,12 @@ Sonar billing has a 3rd dimension: per-1000-requests fee that scales with
 Perplexity is the relator (lottery), the adapter forces `disable_search=true`
 to skip search for the synthesis step.
 
+Perplexity does not document a zero-token model/auth endpoint. To avoid
+accidental probe spend, `probe_peers` defaults to
+`CROSS_REVIEW_PERPLEXITY_PROBE_MODE=auth_only`, which reports key presence and
+the configured pin without a Sonar completion. Set the mode to `live` when you
+explicitly want a minimal `disable_search` round-trip.
+
 ## Thinking Configuration
 
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:

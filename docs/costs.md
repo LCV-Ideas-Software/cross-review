@@ -11,7 +11,11 @@ provider API budget.
 
 ## Real Runs
 
-`probe_peers`, `session_init`, `ask_peers` and `run_until_unanimous` may call provider APIs when keys are present.
+`session_init`, `ask_peers` and `run_until_unanimous` may call provider APIs
+when keys are present. `probe_peers` may call provider metadata APIs; Perplexity
+defaults to `CROSS_REVIEW_PERPLEXITY_PROBE_MODE=auth_only` so the probe does
+not spend Sonar completion tokens unless the operator explicitly sets
+`CROSS_REVIEW_PERPLEXITY_PROBE_MODE=live`.
 
 The server records token usage returned by providers. Paid review/generation tools are blocked until explicit budget ceilings and rate cards are configured. This avoids stale hard-coded prices because provider pricing changes frequently.
 

@@ -470,12 +470,20 @@ export function buildResponseNotices<
 >(
   originalInput: T,
   output: { session?: { convergence_scope?: ConvergenceScope | undefined } | undefined },
+  enabledPeers?: readonly PeerId[] | undefined,
 ): string[] {
   const notices: string[] = [];
   // B4 — peer-selection lock notice. If the caller supplied `peers` or
   // (as a peer caller) `lead_peer`, the v3.3.0 lock stripped it.
   const caller: PeerId | "operator" = originalInput.caller ?? "operator";
-  const triedPeers = Array.isArray(originalInput.peers) && originalInput.peers.length > 0;
+  const suppliedPeers = Array.isArray(originalInput.peers) ? originalInput.peers : undefined;
+  const suppliedPeersMatchEnabled =
+    enabledPeers !== undefined &&
+    suppliedPeers !== undefined &&
+    suppliedPeers.length === enabledPeers.length &&
+    [...suppliedPeers].sort().join("|") === [...enabledPeers].sort().join("|");
+  const triedPeers =
+    suppliedPeers !== undefined && suppliedPeers.length > 0 && !suppliedPeersMatchEnabled;
   const triedLeadPeer = caller !== "operator" && originalInput.lead_peer !== undefined;
   if (triedPeers || triedLeadPeer) {
     notices.push(
@@ -597,7 +605,10 @@ function installSignalFlushHandlers(runtime: Runtime): void {
   const flushAndExit = (signal: "SIGTERM" | "SIGINT") => {
     if (shuttingDown) return;
     shuttingDown = true;
-    const flush = runtime.orchestrator.store.flushPendingEvents();
+    const flush = Promise.all([
+      runtime.orchestrator.store.flushPendingEvents(),
+      runtime.eventLog.flush(),
+    ]);
     const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2_000));
     void Promise.race([flush, timeout])
       .catch((error) => {
@@ -758,7 +769,10 @@ export async function main(): Promise<void> {
       title: "Server Info",
       description:
         "Return runtime information for the API-only Cross Review MCP server, including version, data directory and active security mode.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }),
+      inputSchema: z.object({
+        caller: CallerSchema.default("operator"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -854,7 +868,10 @@ export async function main(): Promise<void> {
       title: "Runtime Capabilities",
       description:
         "Return the stable cross-review runtime capability contract and active tool list.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }),
+      inputSchema: z.object({
+        caller: CallerSchema.default("operator"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -881,7 +898,10 @@ export async function main(): Promise<void> {
       title: "Probe Peers",
       description:
         "Query official provider APIs to discover available models for the current API keys, select the highest-capability documented model, and verify provider reachability.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }),
+      inputSchema: z.object({
+        caller: CallerSchema.default("operator"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -995,7 +1015,7 @@ export async function main(): Promise<void> {
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
-          .min(1)
+          .min(0)
           // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
           // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
           // regression that rejected an explicit full 6-peer panel
@@ -1035,7 +1055,7 @@ export async function main(): Promise<void> {
       const askPeersOut = await runtime.orchestrator.askPeers(locked);
       // v3.6.0 (B3 + B4): surface relator-non-voting + peer-lock notices.
       return textResult(
-        { ...askPeersOut, notices: buildResponseNotices(input, askPeersOut) },
+        { ...askPeersOut, notices: buildResponseNotices(input, askPeersOut, enabledPeersSnapshot) },
         response_format,
       );
     },
@@ -1056,7 +1076,7 @@ export async function main(): Promise<void> {
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
-          .min(1)
+          .min(0)
           // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
           // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
           // regression that rejected an explicit full 6-peer panel
@@ -1105,7 +1125,7 @@ export async function main(): Promise<void> {
           // v3.6.0 (B4): peer-lock notice surfaces at job start; the
           // relator-non-voting notice (B3) surfaces later via session_poll
           // once the round resolves convergence_scope.
-          notices: buildResponseNotices(input, {}),
+          notices: buildResponseNotices(input, {}, enabledPeersSnapshot),
         },
         response_format,
       );
@@ -1134,7 +1154,7 @@ export async function main(): Promise<void> {
         caller: CallerSchema.default("operator"),
         peers: z
           .array(PeerSchema)
-          .min(1)
+          .min(0)
           // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
           // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
           // regression that rejected an explicit full 6-peer panel
@@ -1197,7 +1217,7 @@ export async function main(): Promise<void> {
       const runOut = await runtime.orchestrator.runUntilUnanimous(locked);
       // v3.6.0 (B3 + B4): surface relator-non-voting + peer-lock notices.
       return textResult(
-        { ...runOut, notices: buildResponseNotices(input, runOut) },
+        { ...runOut, notices: buildResponseNotices(input, runOut, enabledPeersSnapshot) },
         response_format,
       );
     },
@@ -1218,7 +1238,7 @@ export async function main(): Promise<void> {
         caller: CallerSchema.default("operator"),
         peers: z
           .array(PeerSchema)
-          .min(1)
+          .min(0)
           // v3.7.0 (AUDIT-3, Codex super-audit 2026-05-14): PEERS has 6
           // entries since v3.0.0 (Perplexity) — `.max(5)` was a stale
           // regression that rejected an explicit full 6-peer panel
@@ -1296,7 +1316,7 @@ export async function main(): Promise<void> {
           events_tool: "session_events",
           // v3.6.0 (B4): peer-lock notice at job start; relator-non-voting
           // notice (B3) surfaces via session_poll once the round resolves.
-          notices: buildResponseNotices(input, {}),
+          notices: buildResponseNotices(input, {}, enabledPeersSnapshot),
         },
         response_format,
       );
@@ -1370,7 +1390,10 @@ export async function main(): Promise<void> {
       title: "Recover Interrupted Sessions",
       description:
         "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly.",
-      inputSchema: z.object({ response_format: ResponseFormatSchema }),
+      inputSchema: z.object({
+        caller: CallerSchema.default("operator"),
+        response_format: ResponseFormatSchema,
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1378,7 +1401,13 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ response_format }) => {
+    async ({ caller, response_format }) => {
+      verifyToolCallerIdentity(
+        runtime,
+        "session_recover_interrupted",
+        caller,
+        server.server.getClientVersion(),
+      );
       const active = new Set(
         [...runtime.jobs.values()]
           .filter((job) => job.status === "running")
@@ -1524,6 +1553,7 @@ export async function main(): Promise<void> {
         // corruption artifact) has convergence_health recomputed from the
         // latest round; the `repaired` array reports what changed.
         repair: z.boolean().optional(),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1535,15 +1565,17 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ limit, include_legacy, repair, response_format }) =>
-      textResult(
+    async ({ limit, include_legacy, repair, caller, response_format }) => {
+      verifyToolCallerIdentity(runtime, "session_doctor", caller, server.server.getClientVersion());
+      return textResult(
         await runtime.orchestrator.store.sessionDoctor(
           limit,
           include_legacy ?? false,
           repair ?? false,
         ),
         response_format,
-      ),
+      );
+    },
   );
 
   registerTool(
@@ -1722,6 +1754,7 @@ export async function main(): Promise<void> {
         content: z.string().min(1).max(2_000_000),
         content_type: z.string().min(1).max(120).default("text/plain"),
         extension: z.string().min(1).max(16).default("txt"),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1731,8 +1764,15 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, label, content, content_type, extension, response_format }) =>
-      textResult(
+    async ({ session_id, label, content, content_type, extension, caller, response_format }) => {
+      verifyToolCallerIdentity(
+        runtime,
+        "session_attach_evidence",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
+      return textResult(
         await runtime.orchestrator.store.attachEvidence(session_id, {
           label,
           content,
@@ -1740,7 +1780,8 @@ export async function main(): Promise<void> {
           extension,
         }),
         response_format,
-      ),
+      );
+    },
   );
 
   registerTool(
@@ -1758,6 +1799,7 @@ export async function main(): Promise<void> {
           .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
         status: z.enum(["open", "satisfied", "deferred", "rejected"]),
         note: z.string().min(1).max(2000).optional(),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1767,8 +1809,15 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, item_id, status, note, response_format }) =>
-      textResult(
+    async ({ session_id, item_id, status, note, caller, response_format }) => {
+      verifyToolCallerIdentity(
+        runtime,
+        "session_evidence_checklist_update",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
+      return textResult(
         await runtime.orchestrator.store.setEvidenceChecklistItemStatus(
           session_id,
           item_id,
@@ -1779,7 +1828,8 @@ export async function main(): Promise<void> {
           },
         ),
         response_format,
-      ),
+      );
+    },
   );
 
   registerTool(
@@ -1805,6 +1855,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4000).optional(),
         shadow_mode: z.boolean().optional(),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1822,9 +1873,17 @@ export async function main(): Promise<void> {
       round,
       review_focus,
       shadow_mode,
+      caller,
       response_format,
-    }) =>
-      textResult(
+    }) => {
+      verifyToolCallerIdentity(
+        runtime,
+        "session_evidence_judge_pass",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
+      return textResult(
         await runtime.orchestrator.runEvidenceChecklistJudgePass({
           session_id,
           judge_peer,
@@ -1835,7 +1894,8 @@ export async function main(): Promise<void> {
           mode: shadow_mode ? "shadow" : "active",
         }),
         response_format,
-      ),
+      );
+    },
   );
 
   // v2.14.0 (item 3): multi-peer judge consensus pass. Fires the judge
@@ -1871,6 +1931,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4_000).optional(),
         shadow_mode: z.boolean().optional(),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1888,9 +1949,17 @@ export async function main(): Promise<void> {
       round,
       review_focus,
       shadow_mode,
+      caller,
       response_format,
-    }) =>
-      textResult(
+    }) => {
+      verifyToolCallerIdentity(
+        runtime,
+        "session_evidence_judge_consensus_pass",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
+      return textResult(
         await runtime.orchestrator.runEvidenceChecklistJudgeConsensusPass({
           session_id,
           judge_peers,
@@ -1901,7 +1970,8 @@ export async function main(): Promise<void> {
           mode: shadow_mode ? "shadow" : "active",
         }),
         response_format,
-      ),
+      );
+    },
   );
 
   // v2.14.0 (item 1): precision/recall/F1 of the shadow judge against
@@ -2124,6 +2194,7 @@ export async function main(): Promise<void> {
         // `corrupt_min_age_days` (default 30 days).
         prune_corrupt: z.boolean().default(false),
         corrupt_min_age_days: z.number().int().min(1).max(365).default(30),
+        caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2139,8 +2210,10 @@ export async function main(): Promise<void> {
       reason,
       prune_corrupt,
       corrupt_min_age_days,
+      caller,
       response_format,
     }) => {
+      verifyToolCallerIdentity(runtime, "session_sweep", caller, server.server.getClientVersion());
       const swept = await runtime.orchestrator.store.sweepIdle(
         idle_minutes * 60_000,
         outcome,

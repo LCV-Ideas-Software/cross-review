@@ -91,12 +91,11 @@ export interface TokenUsage {
   reasoning_tokens?: number | undefined;
   // v2.21.0 (caching): canonical cross-provider cache telemetry. Adapters
   // populate these from provider-native fields (Anthropic
-  // cache_creation_input_tokens / cache_read_input_tokens; OpenAI
-  // prompt_tokens_details.cached_tokens; DeepSeek
+  // cache_creation_input_tokens / cache_read_input_tokens; OpenAI and
+  // Grok prompt_tokens_details.cached_tokens for reads only; DeepSeek
   // prompt_cache_hit_tokens / prompt_cache_miss_tokens; Gemini
-  // usageMetadata.cachedContentTokenCount; Grok mirrors OpenAI). The
-  // shape is uniform so the cost layer + dashboard + manifest never
-  // branch on provider.
+  // usageMetadata.cachedContentTokenCount). The shape is uniform so the
+  // cost layer + dashboard + manifest never branch on provider.
   cache_read_tokens?: number | undefined;
   cache_write_tokens?: number | undefined;
   cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported" | undefined;
@@ -607,15 +606,63 @@ export type RuntimeEventType =
   | "append_event_persist_failed"
   | `${"session" | "round" | "peer" | "provider"}.${string}`;
 
-export interface RuntimeEvent {
+export interface RuntimeEventDataByType {
+  append_event_persist_failed: {
+    event_type?: string | undefined;
+    error?: string | undefined;
+  };
+  "session.identity_verified": {
+    site: string;
+    caller: PeerId | "operator";
+    identity_verified: boolean;
+    verification_method?: string | undefined;
+    client_info_name?: string | null | undefined;
+    identity_metadata?: Record<string, unknown> | undefined;
+  };
+  "session.identity_forgery_blocked": {
+    site: string;
+    caller: PeerId | "operator";
+    client_info_name?: string | null | undefined;
+    error: string;
+    identity_metadata?: Record<string, unknown> | undefined;
+  };
+  "session.caller_peer_selection_ignored": {
+    site: string;
+    caller: PeerId | "operator";
+    peer_panel_overridden: boolean;
+    ignored_peers?: PeerId[] | undefined;
+    lead_peer_overridden: boolean;
+    ignored_lead_peer?: PeerId | undefined;
+  };
+  "provider.cache.usage": {
+    peer: PeerId;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    cache_provider_mode?: TokenUsage["cache_provider_mode"] | undefined;
+    hit: boolean;
+    latency_ms?: number | undefined;
+    estimated_savings_usd?: number | undefined;
+    savings_unknown?: boolean | undefined;
+  };
+}
+
+export type RuntimeEventData<T extends RuntimeEventType> = T extends keyof RuntimeEventDataByType
+  ? RuntimeEventDataByType[T]
+  : Record<string, unknown>;
+
+export type RuntimeEventPayload<T extends RuntimeEventType> = RuntimeEventType extends T
+  ? Record<string, unknown>
+  : RuntimeEventData<T>;
+
+export interface RuntimeEvent<T extends RuntimeEventType = RuntimeEventType> {
   seq?: number | undefined;
-  type: RuntimeEventType;
+  type: T;
   ts?: string | undefined;
   session_id?: string | undefined;
   round?: number | undefined;
   peer?: PeerId | undefined;
   message?: string | undefined;
-  data?: Record<string, unknown> | undefined;
+  data?: RuntimeEventPayload<T> | undefined;
 }
 
 export interface SessionEvent extends RuntimeEvent {
@@ -924,9 +971,13 @@ export interface AppConfig {
   // attached evidence; pricing reduces to token-based only). Set via
   // CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE (default "low") and
   // CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH (default false).
+  // `probe_mode` defaults to auth_only so probe_peers never burns Sonar
+  // completion tokens unless the operator explicitly requests a live
+  // model round-trip.
   perplexity: {
     search_context_size: "low" | "medium" | "high";
     disable_search: boolean;
+    probe_mode: "auth_only" | "live";
   };
 }
 

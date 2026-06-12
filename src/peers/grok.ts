@@ -92,7 +92,6 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
   // adapter is OpenAI-compatible so the same parsing path applies.
   const cached =
     usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
-  const inputTokens = usage.input_tokens ?? 0;
   const result: TokenUsage = {
     input_tokens: usage.input_tokens,
     output_tokens: usage.output_tokens,
@@ -101,7 +100,8 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
   };
   if (cached > 0) {
     result.cache_read_tokens = cached;
-    if (inputTokens > cached) result.cache_write_tokens = inputTokens - cached;
+    // xAI reports OpenAI-compatible cached_tokens for reads, but not a
+    // separate cache-write counter.
     result.cache_provider_mode = "auto";
   } else {
     result.cache_provider_mode = "auto";

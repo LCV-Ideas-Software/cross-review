@@ -19,7 +19,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.4.0";
+export const VERSION = "4.4.1";
 export const RELEASE_DATE = "2026-06-12";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -138,8 +138,14 @@ function intEnv(name: string, fallback: number): number {
 }
 
 function numberEnv(name: string): number | undefined {
-  const parsed = Number.parseFloat(envValue(name) ?? "");
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  const raw = (envValue(name) ?? "").trim();
+  if (raw === "") return undefined;
+  const parsed = Number.parseFloat(raw);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  console.error(
+    `[cross-review] notice: ${name}="${raw}" must be a non-negative number; ignoring this value.`,
+  );
+  return undefined;
 }
 
 function listEnv(name: string): string[] {
@@ -248,10 +254,10 @@ export function loadConfig(): AppConfig {
       // permitted in a `mode: "circular"` session before the runtime
       // aborts with `circular_max_rotations_exceeded`. A "rotation" is
       // `rotation_order.length` rounds (one turn per non-caller peer).
-      // Default 3 maps to 12 rounds for a 4-peer panel (caller=peer)
-      // or 15 rounds for a 5-peer panel (caller=operator) — large
-      // enough that a well-behaved artifact converges, small enough
-      // that runaway revisions abort within reasonable budget.
+      // The absolute round count depends on the enabled rotation order;
+      // default 3 permits three complete turns through that order. This
+      // is large enough that a well-behaved artifact converges, small
+      // enough that runaway revisions abort within reasonable budget.
       // Empirical anchor: maestro-app circular sessions historically
       // converged within 2 rotations; 3 gives one safety margin.
       circular_max_rotations: intEnv("CROSS_REVIEW_CIRCULAR_MAX_ROTATIONS", 3),
@@ -372,6 +378,7 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
   const sizeRaw = (envValue("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE") ?? "")
     .trim()
     .toLowerCase();
+  const probeModeRaw = (envValue("CROSS_REVIEW_PERPLEXITY_PROBE_MODE") ?? "").trim().toLowerCase();
   let searchContextSize: AppConfig["perplexity"]["search_context_size"] = "low";
   if (sizeRaw === "medium" || sizeRaw === "high") {
     searchContextSize = sizeRaw;
@@ -380,9 +387,18 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
       `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE="${sizeRaw}" not recognized; defaulting to "low". Recognized values: low, medium, high.`,
     );
   }
+  let probeMode: AppConfig["perplexity"]["probe_mode"] = "auth_only";
+  if (probeModeRaw === "live") {
+    probeMode = "live";
+  } else if (probeModeRaw !== "" && probeModeRaw !== "auth_only") {
+    console.error(
+      `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_PROBE_MODE="${probeModeRaw}" not recognized; defaulting to "auth_only". Recognized values: auth_only, live.`,
+    );
+  }
   return {
     search_context_size: searchContextSize,
     disable_search: boolEnv("CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH", false),
+    probe_mode: probeMode,
   };
 }
 
@@ -518,13 +534,10 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
   // consensus_peers >= 2 (single-peer field becomes optional in that case).
   const active =
     (mode === "shadow" || mode === "active") && (peer !== undefined || consensusPeers.length >= 2);
-  // v2.12.0: preserve EXACT pre-v2.12 semantics. The legacy inline read
-  // was `Number.parseInt(env ?? "8", 10) || 8` — this lets negative
-  // values flow through (because `-5 || 8 === -5` in JS) so the
-  // orchestrator's `Math.max(1, Math.min(100, cap))` clamps -5 to 1, NOT 8.
-  // We don't use `intEnv` here because that helper has a `parsed > 0`
-  // filter, which would change the consumer's clamp result for negatives.
-  // codex R1 ship-review of v2.12.0 caught the divergence.
+  // v4.4.1: parse as a positive integer at the config boundary. Older
+  // versions let negative typo values flow through to the orchestrator's
+  // clamp; that preserved history but made `server_info` expose an
+  // impossible negative `max_items_per_pass`.
   // v2.18.4 / Codex audit 2026-05-07 P1.4: defensive cap reduction
   // 8 → 4. Math: with default consensus_peers=4 (codex+gemini+
   // deepseek+grok), worst-case round fires `consensus_peers ×
@@ -539,7 +552,7 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
     envValue("CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS") ?? "4",
     10,
   );
-  const maxItemsPerPass = Number.isFinite(rawCap) && rawCap !== 0 ? rawCap : 4;
+  const maxItemsPerPass = Number.isFinite(rawCap) && rawCap > 0 ? rawCap : 4;
   return {
     mode,
     peer,

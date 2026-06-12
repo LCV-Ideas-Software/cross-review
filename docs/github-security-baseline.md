@@ -20,7 +20,7 @@ Required repository settings after the remote is created:
 13. Disable force-push and branch deletion on `main`.
 
 Package publishing requires the `NPM_TOKEN` secret. Pushes to `main`
-auto-create an organization-standard display tag such as `v04.04.00` from
+auto-create an organization-standard display tag such as `vXX.XX.XX` from
 `package.json`; the tag then creates a normal GitHub Release and publishes
 `@lcv-ideas-software/cross-review` to npmjs.com and GitHub Packages. The
 API-first package is separate from the archived CLI package

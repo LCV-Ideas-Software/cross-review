@@ -44,6 +44,8 @@ import { z } from "zod";
 
 import { PEERS, type PeerId } from "./types.js";
 
+const PeerSchema = z.enum(PEERS);
+
 // All sub-schemas use .strict() so an unknown field surfaces as a
 // zod error at boot rather than silently being ignored. The operator
 // gets a clear message pointing at the typo'd field.
@@ -121,8 +123,8 @@ const PerPeerCostRatesSchema = z
 const EvidenceJudgeAutowireSchema = z
   .object({
     mode: z.enum(["off", "shadow", "active"]).optional(),
-    peer: z.string().optional(),
-    consensus_peers: z.array(z.string()).optional(),
+    peer: PeerSchema.optional(),
+    consensus_peers: z.array(PeerSchema).optional(),
     max_items_per_pass: z.number().int().positive().optional(),
   })
   .strict()
@@ -164,6 +166,7 @@ const PerplexitySubSchema = z
   .object({
     search_context_size: z.enum(["low", "medium", "high"]).optional(),
     disable_search: z.boolean().optional(),
+    probe_mode: z.enum(["auth_only", "live"]).optional(),
   })
   .strict()
   .optional();
@@ -380,6 +383,7 @@ export function flattenFileConfigToEnvMap(config: FileConfig): Record<string, st
   }
   if (config.perplexity) {
     set("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE", config.perplexity.search_context_size);
+    set("CROSS_REVIEW_PERPLEXITY_PROBE_MODE", config.perplexity.probe_mode);
     if (config.perplexity.disable_search != null) {
       set(
         "CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH",

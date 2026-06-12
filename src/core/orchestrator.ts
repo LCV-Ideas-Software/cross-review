@@ -214,7 +214,7 @@ function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
     .slice(-config.prompt.max_prior_rounds)
     .map((round) => {
       const peerLines = round.peers.map((peer) => {
-        const summary = safePromptText(
+        const peerSummary = safePromptText(
           peer.structured?.summary ?? "No structured summary was returned.",
           700,
         );
@@ -224,7 +224,7 @@ function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
         );
         return [
           `- ${peer.peer}: ${peer.status ?? "NO_STATUS"} (${peer.decision_quality ?? "unknown"})`,
-          `  summary: ${summary}`,
+          `  summary: ${peerSummary}`,
           `  requested changes: ${requests}`,
         ].join("\n");
       });
@@ -2911,6 +2911,9 @@ export class CrossReviewOrchestrator {
           "Session cancellation was requested before this round started.",
         ),
       );
+      for (const failure of rejected) {
+        await this.store.savePeerFailure(session.session_id, roundNumber, failure);
+      }
       const round = await this.store.appendRound(session.session_id, {
         caller_status: callerStatus,
         draft_file: draftFile,
