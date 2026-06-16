@@ -6,7 +6,9 @@ Latest supported release: v04.04.07 for npm package 4.4.7. The current main bran
 
 v04.04.07 promotes `protobufjs` to a direct dependency pinned to the patched
 floor (`^7.6.3`) to clear a security advisory and enforce the fix for downstream
-consumers of the published package. It does not change secret sourcing or
+consumers of the published package, and raises the transitive `hono` override
+floor to `>=4.12.25` to clear five hono advisories flagged by the OpenSSF
+Scorecard vulnerabilities probe. It does not change secret sourcing or
 caller-token handling.
 
 ## Reporting a vulnerability

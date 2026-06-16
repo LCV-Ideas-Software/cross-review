@@ -9,14 +9,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [v04.04.07] — 2026-06-16
 
-**Patch — clear a transitive `protobufjs` security advisory.** Promotes
-`protobufjs` to a direct dependency pinned to the patched floor `^7.6.3` (it is
-otherwise reached transitively via `@google/genai`), clearing the high- and
-medium-severity advisories that affected `<= 7.6.0` and `<= 7.6.2` respectively.
-A direct dependency — unlike an `overrides` entry, which npm honors only in a
-project's root and which is not published — is part of the published package, so
-it also enforces the patched floor for downstream consumers of this CLI. `^7.6.3`
-satisfies `@google/genai`'s declared range and dedupes to a single copy. Source
+**Patch — clear transitive `protobufjs` and `hono` security advisories.**
+Promotes `protobufjs` to a direct dependency pinned to the patched floor `^7.6.3`
+(it is otherwise reached transitively via `@google/genai`), clearing the high-
+and medium-severity advisories that affected `<= 7.6.0` and `<= 7.6.2`
+respectively. A direct dependency — unlike an `overrides` entry, which npm honors
+only in a project's root and which is not published — is part of the published
+package, so it also enforces the patched floor for downstream consumers of this
+CLI. `^7.6.3` satisfies `@google/genai`'s declared range and dedupes to a single
+copy.
+
+Also raises the `hono` override floor from `>=4.12.16` to `>=4.12.25` (hono is a
+transitive dependency via `@modelcontextprotocol/sdk` and is not imported by this
+project, so it stays an override rather than a direct dependency), resolving it
+to 4.12.25 and clearing five hono advisories (one high CORS issue plus four
+medium issues) flagged by the OpenSSF Scorecard vulnerabilities probe. Source
 code is unchanged.
 
 ## [v04.04.06] — 2026-06-12
