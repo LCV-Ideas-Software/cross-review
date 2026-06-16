@@ -1,6 +1,6 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.4.7",
+  "version": "4.4.8",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "main": "dist/src/mcp/server.js",
@@ -56,7 +56,7 @@
   },
   "overrides": {
     "ip-address": ">=10.1.1",
-    "hono": ">=4.12.16"
+    "hono": ">=4.12.25"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

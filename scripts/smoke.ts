@@ -7107,9 +7107,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // threading, P1.4 max_items_per_pass default 4, P2.1 clampEffortForModel
 // direct test, P2.4 consensus event shape (judge_peers + per_peer_verdict).
 
-// P1.1 anti-drift: package.json `overrides` includes `hono >=4.12.16`
-// to clear npm audit moderate advisories (GHSA-9vqf-7f2p-gf9v +
-// GHSA-69xw-7hcm-h432) via @modelcontextprotocol/sdk transitive. A
+// P1.1 anti-drift: package.json `overrides` includes `hono >=4.12.25`
+// to clear five hono advisories (GHSA-88fw-hqm2-52qc high CORS + four
+// medium, all affecting hono < 4.12.25; flagged by the OpenSSF Scorecard
+// vulnerabilities probe) via @modelcontextprotocol/sdk transitive. A
 // future Dependabot PR or refactor could strip the override; this
 // guard catches that. Same precedent as ip-address override since v2.18.1.
 {
@@ -7133,8 +7134,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   assert.equal(
     overrides.hono,
-    ">=4.12.16",
-    `v2.18.5 / P1.1: hono override pinned to ">=4.12.16" (got ${overrides.hono})`,
+    ">=4.12.25",
+    `v2.18.5 / P1.1: hono override pinned to ">=4.12.25" (got ${overrides.hono})`,
   );
   assert.ok(
     overrides["ip-address"],
