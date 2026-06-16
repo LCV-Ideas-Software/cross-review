@@ -7,6 +7,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.07] — 2026-06-16
+
+**Patch — clear a transitive `protobufjs` security advisory.** Adds an npm
+`overrides` entry pinning the transitive `protobufjs` dependency (pulled via
+`@google/genai`) to 7.6.3, clearing the high- and medium-severity advisories
+that affected `<= 7.6.0` and `<= 7.6.2` respectively. 7.6.3 covers both and sits
+within `@google/genai`'s declared range, so no peer change. Source code is
+unchanged.
+
 ## [v04.04.06] — 2026-06-12
 
 **Patch — close the remaining Claude re-validation tail and clean
