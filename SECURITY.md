@@ -4,8 +4,9 @@
 
 Latest supported release: v04.04.07 for npm package 4.4.7. The current main branch is also supported for security fixes until the next release is published.
 
-v04.04.07 pins the transitive protobufjs dependency to a patched release
-(7.6.3) to clear a security advisory. It does not change secret sourcing or
+v04.04.07 promotes `protobufjs` to a direct dependency pinned to the patched
+floor (`^7.6.3`) to clear a security advisory and enforce the fix for downstream
+consumers of the published package. It does not change secret sourcing or
 caller-token handling.
 
 ## Reporting a vulnerability

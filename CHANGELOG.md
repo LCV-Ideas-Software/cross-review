@@ -9,12 +9,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [v04.04.07] — 2026-06-16
 
-**Patch — clear a transitive `protobufjs` security advisory.** Adds an npm
-`overrides` entry pinning the transitive `protobufjs` dependency (pulled via
-`@google/genai`) to 7.6.3, clearing the high- and medium-severity advisories
-that affected `<= 7.6.0` and `<= 7.6.2` respectively. 7.6.3 covers both and sits
-within `@google/genai`'s declared range, so no peer change. Source code is
-unchanged.
+**Patch — clear a transitive `protobufjs` security advisory.** Promotes
+`protobufjs` to a direct dependency pinned to the patched floor `^7.6.3` (it is
+otherwise reached transitively via `@google/genai`), clearing the high- and
+medium-severity advisories that affected `<= 7.6.0` and `<= 7.6.2` respectively.
+A direct dependency — unlike an `overrides` entry, which npm honors only in a
+project's root and which is not published — is part of the published package, so
+it also enforces the patched floor for downstream consumers of this CLI. `^7.6.3`
+satisfies `@google/genai`'s declared range and dedupes to a single copy. Source
+code is unchanged.
 
 ## [v04.04.06] — 2026-06-12
 
