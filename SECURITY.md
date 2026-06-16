@@ -2,12 +2,13 @@
 
 ## Supported status
 
-Latest supported release: v04.04.07 for npm package 4.4.7. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.04.08 for npm package 4.4.8. The current main branch is also supported for security fixes until the next release is published.
 
-v04.04.07 promotes `protobufjs` to a direct dependency pinned to the patched
-floor (`^7.6.3`) to clear a security advisory and enforce the fix for downstream
-consumers of the published package. It does not change secret sourcing or
-caller-token handling.
+v04.04.08 raises the transitive `hono` override floor to `>=4.12.25`, clearing
+five hono advisories (one high CORS issue plus four medium) flagged by the
+OpenSSF Scorecard vulnerabilities probe. (v04.04.07 promoted `protobufjs` to a
+direct dependency pinned to `^7.6.3` to clear its advisory for downstream
+consumers.) Neither release changes secret sourcing or caller-token handling.
 
 ## Reporting a vulnerability
 

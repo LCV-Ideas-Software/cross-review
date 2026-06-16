@@ -7,6 +7,19 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.04.08] — 2026-06-16
+
+**Patch — clear transitive `hono` security advisories.** Raises the `hono`
+override floor from `>=4.12.16` to `>=4.12.25`, resolving the transitive `hono`
+(pulled via `@modelcontextprotocol/sdk`, not imported by this project) to 4.12.25
+and clearing five advisories flagged by the OpenSSF Scorecard vulnerabilities
+probe: GHSA-88fw-hqm2-52qc (high — CORS middleware reflects any origin with
+credentials) plus four medium issues (Set-Cookie merging, body-limit bypass,
+repeated-header dropping, and `serve-static` path traversal on Windows). `hono`
+stays an `overrides` floor rather than a direct dependency because it is not
+imported here (a direct dependency would be an unused-dependency violation).
+Source code is unchanged.
+
 ## [v04.04.07] — 2026-06-16
 
 **Patch — clear a transitive `protobufjs` security advisory.** Promotes
