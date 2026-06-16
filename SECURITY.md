@@ -2,11 +2,11 @@
 
 ## Supported status
 
-Latest supported release: v04.04.06 for npm package 4.4.6. The current main branch is also supported for security fixes until the next release is published.
+Latest supported release: v04.04.07 for npm package 4.4.7. The current main branch is also supported for security fixes until the next release is published.
 
-v04.04.06 keeps the verified residual audit tail closed. It makes
-orchestrator evidence attachment reads fail closed, keeps session-doctor
-findings action-oriented by default, and does not change secret sourcing or
+v04.04.07 promotes `protobufjs` to a direct dependency pinned to the patched
+floor (`^7.6.3`) to clear a security advisory and enforce the fix for downstream
+consumers of the published package. It does not change secret sourcing or
 caller-token handling.
 
 ## Reporting a vulnerability
