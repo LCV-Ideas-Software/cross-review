@@ -61,7 +61,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "eslint": "^10.4.0",
     "eslint-config-prettier": "^10.1.8",
