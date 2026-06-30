@@ -223,8 +223,7 @@ function reasoningEffort(
 let LAST_FILE_CONFIG_RESULT: import("./file-config.js").ApplyFileConfigResult | undefined;
 
 export function getLastFileConfigResult():
-  | import("./file-config.js").ApplyFileConfigResult
-  | undefined {
+  import("./file-config.js").ApplyFileConfigResult | undefined {
   return LAST_FILE_CONFIG_RESULT;
 }
 
