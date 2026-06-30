@@ -57,9 +57,16 @@ export type SessionOutcome = "converged" | "aborted" | "max-rounds";
 export type SessionMode = "ship" | "review" | "circular";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SessionControlStatus =
-  "running" | "cancel_requested" | "cancelled" | "recovered_after_restart";
+  | "running"
+  | "cancel_requested"
+  | "cancelled"
+  | "recovered_after_restart";
 export type DecisionQuality =
-  "clean" | "format_warning" | "recovered" | "needs_operator_review" | "failed";
+  | "clean"
+  | "format_warning"
+  | "recovered"
+  | "needs_operator_review"
+  | "failed";
 
 export interface ModelCandidate {
   id: string;
@@ -286,7 +293,10 @@ export interface PeerFailure {
   message: string;
   retryable: boolean;
   recovery_hint?:
-    "wait_and_retry" | "reformulate_and_retry" | "consult_docs_then_revise" | undefined;
+    | "wait_and_retry"
+    | "reformulate_and_retry"
+    | "consult_docs_then_revise"
+    | undefined;
   reformulation_advice?: string | undefined;
   retry_after_ms?: number | undefined;
   attempts: number;
@@ -345,7 +355,8 @@ export interface ConvergenceScope {
   voting_peers?: PeerId[] | undefined;
   quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready" | undefined;
   anti_self_review_exclusion_reason?:
-    "lead_peer_authored_or_revised_artifact_under_review" | undefined;
+    | "lead_peer_authored_or_revised_artifact_under_review"
+    | undefined;
   // v3.7.3 (operator no-fallback directive 2026-05-14): reviewer peers
   // skipped this round because their pinned model was genuinely
   // unavailable (infra failure, retries exhausted, no user-declared
@@ -400,7 +411,12 @@ export interface EvidenceAttachment {
 // confirmed). `addressed` is now reserved for judge verified-satisfied
 // promotions and explicit operator action — paths with real signal.
 export type EvidenceChecklistStatus =
-  "open" | "addressed" | "not_resurfaced" | "satisfied" | "deferred" | "rejected";
+  | "open"
+  | "addressed"
+  | "not_resurfaced"
+  | "satisfied"
+  | "deferred"
+  | "rejected";
 
 export interface EvidenceChecklistItem {
   // Stable id derived from sha256(`${peer}:${ask}`); identical asks
@@ -588,7 +604,8 @@ export interface PeerProbeResult {
 }
 
 export type RuntimeEventType =
-  "append_event_persist_failed" | `${"session" | "round" | "peer" | "provider"}.${string}`;
+  | "append_event_persist_failed"
+  | `${"session" | "round" | "peer" | "provider"}.${string}`;
 
 export interface RuntimeEventDataByType {
   append_event_persist_failed: {

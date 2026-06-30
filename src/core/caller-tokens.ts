@@ -44,7 +44,8 @@ export interface ParentProcessSnapshot {
 }
 
 export type TokenVerification =
-  { method: "token"; verified: true } | { method: "absent"; verified: false };
+  | { method: "token"; verified: true }
+  | { method: "absent"; verified: false };
 
 export function getTokensFilePath(dataDir: string): string {
   const override = process.env.CROSS_REVIEW_TOKENS_FILE;
