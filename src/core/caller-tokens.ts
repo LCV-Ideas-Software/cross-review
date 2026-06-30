@@ -43,6 +43,7 @@ export interface ParentProcessSnapshot {
   parent_exe_basename: string | null;
 }
 
+// prettier-ignore
 export type TokenVerification =
   | { method: "token"; verified: true }
   | { method: "absent"; verified: false };
