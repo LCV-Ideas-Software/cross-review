@@ -56,11 +56,13 @@ export type SessionOutcome = "converged" | "aborted" | "max-rounds";
 // or review modes.
 export type SessionMode = "ship" | "review" | "circular";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+// prettier-ignore
 export type SessionControlStatus =
   | "running"
   | "cancel_requested"
   | "cancelled"
   | "recovered_after_restart";
+// prettier-ignore
 export type DecisionQuality =
   | "clean"
   | "format_warning"
@@ -292,6 +294,7 @@ export interface PeerFailure {
     | "unknown";
   message: string;
   retryable: boolean;
+  // prettier-ignore
   recovery_hint?:
     | "wait_and_retry"
     | "reformulate_and_retry"
@@ -354,6 +357,7 @@ export interface ConvergenceScope {
   lead_peer_role?: "relator_non_voting" | undefined;
   voting_peers?: PeerId[] | undefined;
   quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready" | undefined;
+  // prettier-ignore
   anti_self_review_exclusion_reason?:
     | "lead_peer_authored_or_revised_artifact_under_review"
     | undefined;
@@ -410,6 +414,7 @@ export interface EvidenceAttachment {
 // `addressed` (so the audit trail no longer claims the evidence was
 // confirmed). `addressed` is now reserved for judge verified-satisfied
 // promotions and explicit operator action — paths with real signal.
+// prettier-ignore
 export type EvidenceChecklistStatus =
   | "open"
   | "addressed"
@@ -603,6 +608,7 @@ export interface PeerProbeResult {
   message?: string | undefined;
 }
 
+// prettier-ignore
 export type RuntimeEventType =
   | "append_event_persist_failed"
   | `${"session" | "round" | "peer" | "provider"}.${string}`;

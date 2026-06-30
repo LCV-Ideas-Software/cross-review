@@ -222,6 +222,7 @@ function reasoningEffort(
 // snapshots remain backward-compatible.
 let LAST_FILE_CONFIG_RESULT: import("./file-config.js").ApplyFileConfigResult | undefined;
 
+// prettier-ignore
 export function getLastFileConfigResult():
   | import("./file-config.js").ApplyFileConfigResult
   | undefined {
