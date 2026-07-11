@@ -73,6 +73,14 @@ function checklistEvidenceHasDiffRecord(corpus: string): boolean {
   return /(?:^|\n)\s*diff --git\b|(?:^|\n)\s*@@\s*[-+]|\b\d+\s+files? changed\b/i.test(corpus);
 }
 
+export function extractChecklistCommands(ask: string): string[] {
+  return (
+    ask.match(
+      /\b(?:npm\s+(?:run\s+)?[a-z0-9:_-]+|cargo\s+[a-z0-9:_-]+|git\s+[a-z0-9:_-]+(?:\s+(?:--[a-z0-9_:][a-z0-9:_-]*|-[a-z0-9_:][a-z0-9:_-]*))*)\b/gi,
+    ) ?? []
+  );
+}
+
 function checklistAskCorroborated(
   item: EvidenceChecklistItem,
   evidenceSources: readonly string[],
@@ -87,10 +95,7 @@ function checklistAskCorroborated(
     ...(ask.match(/\b\d+(?:\.\d+)*\b/g) ?? []),
     ...(ask.match(/\b[\w./-]+\.\w+(?::\d+)?\b/gi) ?? []),
   ].map((value) => value.replace(/\s+/g, " ").trim());
-  const commands =
-    ask.match(
-      /\b(?:npm\s+(?:run\s+)?[a-z0-9:_-]+|cargo\s+[a-z0-9:_-]+|git\s+[a-z0-9:_-]+(?:\s+--?[a-z0-9:_-]+)*)\b/gi,
-    ) ?? [];
+  const commands = extractChecklistCommands(ask);
   const semanticAnchors = [
     [/(?:exit[_ ]code)/i, /exit[_ ]code/i],
     [/\btests?\b/i, /\btests?\b/i],

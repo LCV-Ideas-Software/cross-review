@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-11: `4.5.2`. O registro pode ficar
+> Estado do source/release target em 2026-07-11: `4.5.3`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -599,6 +599,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.03`      | Corrige ReDoS e falsos bloqueios do hardgate em citações autenticadas, aspas simples correlacionadas e bumps de versão do artefato.                                                     |
 | `v04.05.02`      | Publicação do transporte automático de evidência com fixture de regressão hermético, independente da configuração central do operador.                                                  |
 | `v04.05.01`      | Transporte automático de evidência autenticada, autoridade sem confusão de owner, painel independente estrito e terminais imutáveis.                                                    |
 | `v04.05.00`      | Refresh dos seis providers e hardening de terminais, config fingerprint, custody, grounding e anti-fabricação.                                                                          |

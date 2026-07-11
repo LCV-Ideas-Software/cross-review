@@ -7,6 +7,32 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.03] — 2026-07-11
+
+**Security and hardgate correctness — bounded parsing without false evidence rejection.**
+
+### Security
+
+- Replaced the ambiguous Git-option expression used while correlating evidence
+  checklist asks. A repeated `-- -` fragment can no longer trigger exponential
+  JavaScript-regex backtracking (`js/redos`, code-scanning alert 31).
+
+### Fixed
+
+- Treats the server-generated path and SHA-256 of every integrity-checked
+  attachment as provenance metadata. A valid citation can no longer be marked
+  fabricated merely because its generated filename contains a UUID.
+- Parses an explicit `Artifact quote:` as one paired wrapper, including
+  single-quoted, multiline and inner-quote code literals. The complete wrapped
+  value must occur in the authenticated corpus, so a truthful prefix with an
+  invented suffix can no longer ground READY.
+- Restricts historical-runtime timing detection to actual temporal language.
+  A source/package version described as `bumped` no longer requires an
+  unrelated workflow-start runtime snapshot.
+- Added RED/GREEN regressions for the hardgate failures above, altered digests,
+  ordinary apostrophes, prefix fabrication and the adversarial
+  repeated-double-hyphen ReDoS input.
+
 ## [v04.05.02] — 2026-07-11
 
 **Patch — hermetic release verification for authenticated evidence transport.**

@@ -24,7 +24,7 @@ npm upgrade -g @lcv-ideas-software/cross-review
 npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. This source prepares **v04.05.02** (package `4.5.2`).
+**Status.** Stable. This source prepares **v04.05.03** (package `4.5.3`).
 The public registry can lag while the publish workflow runs; use the npm badge
 or `npm view @lcv-ideas-software/cross-review version` for registry state and
 `server_info` for the version actually loaded by an MCP window. See
@@ -42,6 +42,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.03`**      | Security/hardgate patch — remove exponential regex backtracking, trust integrity-checked attachment path/digest metadata, accept correlated single-quoted artifact literals and stop treating source-version bumps as historical runtime claims.                            |
 | **`v04.05.02`**      | Patch release — publish the complete authenticated-evidence transport update with a hermetic clean-runner regression fixture; no operator central configuration is required by the test gate.                                                                               |
 | **`v04.05.01`**      | Patch release — restore authenticated peer evidence transport with append-only active snapshots, combined preflight parity, strict operational records, independent relator/reviewer roles and immutable terminal outcomes; no manual operator attachment is required.      |
 | **`v04.05.00`**      | Minor release — refresh all six provider contracts and add fail-closed provider terminals, runtime config fingerprints, operator evidence custody, peer self-attestation rejection, and grounded READY votes.                                                               |

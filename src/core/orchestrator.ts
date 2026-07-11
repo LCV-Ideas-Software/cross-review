@@ -696,6 +696,10 @@ export interface ReadyPeerEvidenceGroundingInput {
   artifactText: string;
   attachedEvidenceText: string;
   attachmentRefs: string[];
+  evidenceAttachments?: ReadonlyArray<{
+    relative_path: string;
+    sha256?: string | undefined;
+  }>;
   callerSubmittedAttachments?: ReadonlyArray<{
     label?: string | undefined;
     relative_path: string;
@@ -720,6 +724,22 @@ function normalizeGroundingText(value: string): string {
 }
 
 function quotedEvidencePhrases(source: string): string[] {
+  const explicitMarker = /\bArtifact quote:\s*/i.exec(source);
+  if (explicitMarker) {
+    const wrapped = source.slice((explicitMarker.index ?? 0) + explicitMarker[0].length).trim();
+    const pairs = [
+      ['"', '"'],
+      ["'", "'"],
+      ["“", "”"],
+    ] as const;
+    for (const [open, close] of pairs) {
+      if (!wrapped.startsWith(open) || !wrapped.endsWith(close)) continue;
+      const phrase = wrapped.slice(open.length, -close.length).trim();
+      return phrase.length >= 12 ? [phrase] : [];
+    }
+    return [];
+  }
+
   const phrases: string[] = [];
   for (const match of source.matchAll(/["“]([^"”\r\n]{12,})["”]/g)) {
     const phrase = match[1]?.trim();
@@ -883,12 +903,22 @@ export function groundReadyPeerEvidence(
   const callerSubmittedEvidenceText = callerSubmittedAttachments
     .map((attachment) => attachment.content)
     .join("\n");
+  const evidenceAttachmentProvenanceText = (input.evidenceAttachments ?? callerSubmittedAttachments)
+    .map((attachment) =>
+      [
+        `relative_path=${attachment.relative_path}`,
+        attachment.sha256 ? `sha256=${attachment.sha256}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    )
+    .join("\n");
   const trustedCorpus = `${input.artifactText}\n${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}`;
   const attachmentRefs = new Set(
     input.attachmentRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
   );
   const fabrication = detectFabricatedEvidence(sources.join("\n"), {
-    provenanceCorpus: `${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}`,
+    provenanceCorpus: `${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}\n${evidenceAttachmentProvenanceText}`,
     priorDraftCorpus: input.artifactText,
     narrativeCorpus: "",
   });
@@ -1647,7 +1677,7 @@ const ISO_DATE_TOKEN_PATTERN = /\b20\d{2}-\d{2}-\d{2}\b/g;
 const CURRENT_STATE_CLAIM_PATTERN =
   /\b(?:current|currently|actual|atual|runtime|production|prod|loaded|carregad[ao]s?|(?:is|are|est[aã]o?|esta|está)\s+(?:running|rodando))\b/i;
 const HISTORICAL_RUNTIME_TIMING_PATTERN =
-  /\b(?:when\s+(?:the\s+)?(?:workflow|run|audit|session)\s+began|at\s+(?:workflow|run|audit|session)\s+start|between\s+r\d+\s+and\s+r\d+|bump(?:ed)?|started\s+on|was\s+running|quando\s+(?:o\s+)?(?:workflow|run|auditoria|sess[aã]o)\s+come[cç]ou|no\s+in[ií]cio\s+(?:do|da)\s+(?:workflow|run|auditoria|sess[aã]o)|estava\s+rodando)\b/i;
+  /\b(?:when\s+(?:the\s+)?(?:workflow|run|audit|session)\s+began|at\s+(?:workflow|run|audit|session)\s+start|between\s+r\d+\s+and\s+r\d+|started\s+on|was\s+running|quando\s+(?:o\s+)?(?:workflow|run|auditoria|sess[aã]o)\s+come[cç]ou|no\s+in[ií]cio\s+(?:do|da)\s+(?:workflow|run|auditoria|sess[aã]o)|estava\s+rodando)\b/i;
 const TRUTHFULNESS_SOURCE_MARKER_PATTERN =
   /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events|provider docs|provider api)\b|https?:\/\/|\b[\w./-]+\.\w+:\d+\b|\bevidence[\\/][\w./-]+\b|\bAttachment:\s*\S|\bL\d{2,}\b|```/i;
 const FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN =
@@ -4420,6 +4450,7 @@ export class CrossReviewOrchestrator {
             attachedEvidenceText: trustedAttachments
               .map((attachment) => attachment.content)
               .join("\n"),
+            evidenceAttachments: attachments,
             callerSubmittedAttachments: submittedAttachments,
             requirePeerSubmittedCorroboration:
               roundTruthfulnessPreflight?.independent_review_required === true,
