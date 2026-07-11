@@ -7,6 +7,20 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.02] — 2026-07-11
+
+**Patch — hermetic release verification for authenticated evidence transport.**
+
+### Fixed
+
+- The evidence-transport regression harness now supplies deterministic
+  synthetic zero-cost rate cards instead of inheriting the operator's central
+  runtime configuration. Clean GitHub runners therefore exercise the reviewer
+  stubs rather than failing closed at financial preflight.
+- This package includes the complete `v04.05.01` evidence-transport feature
+  set. The `v04.05.01` source tag was not published to npm because its
+  pre-publish gate correctly exposed the non-hermetic test fixture.
+
 ## [v04.05.01] — 2026-07-11
 
 **Patch — authenticated evidence transport without manual operator custody.**

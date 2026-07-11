@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.1`                            |
+| Versão preparada pelo source  | `4.5.2`                            |
 | Data do source/release target | `2026-07-11`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -782,6 +782,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.02`      | 2026-07-11    | Publica o transporte autenticado de evidência com regressões herméticas que não dependem da configuração central do operador.                                                          |
 | `v04.05.01`      | 2026-07-11    | Restaura transporte autenticado de evidência sem anexo manual, fecha confusão de autoridade, exige painel independente estrito e preserva terminais imutáveis.                         |
 | `v04.05.00`      | 2026-07-10    | Atualiza os seis contratos de provider e endurece terminais, fingerprint de config, custody, grounding de READY e detecção anti-fabricação.                                            |
 | `v04.04.08`      | 2026-06-16    | Eleva o piso transitivo de `hono` e fecha os advisories correntes.                                                                                                                     |
@@ -844,7 +845,7 @@ Antes de usar uma revisão como gate:
 
 - Contrato runtime do source target: smokes verificados em 2026-07-11. O
   `server_info` da janela instalada reportava `4.5.0` antes da publicação e do
-  upgrade de `4.5.1`.
+  upgrade de `4.5.2`.
 - `package.json` do repositório local.
 - `README.md`.
 - `CHANGELOG.md`.

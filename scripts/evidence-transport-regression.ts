@@ -38,6 +38,23 @@ function regressionConfig(prefix: string) {
   return {
     ...base,
     data_dir: fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-${prefix}-`)),
+    // Keep the stub fixture independent from an operator's central config.
+    // Production correctly fails closed when rate cards are absent, but these
+    // regressions exercise evidence transport rather than financial controls.
+    cost_rates: {
+      codex: { input_per_million: 0, output_per_million: 0 },
+      claude: { input_per_million: 0, output_per_million: 0 },
+      gemini: { input_per_million: 0, output_per_million: 0 },
+      deepseek: { input_per_million: 0, output_per_million: 0 },
+      grok: { input_per_million: 0, output_per_million: 0 },
+      perplexity: {
+        input_per_million: 0,
+        output_per_million: 0,
+        request_fee_low_per_1000: 0,
+        request_fee_medium_per_1000: 0,
+        request_fee_high_per_1000: 0,
+      },
+    },
     budget: {
       ...base.budget,
       max_session_cost_usd: 10_000,
