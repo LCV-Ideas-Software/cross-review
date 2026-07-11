@@ -6,10 +6,11 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado verificado em 2026-07-10: source candidate `4.5.0`; versão publicada
-> no npm `4.4.8`. Em uma janela MCP já aberta, `server_info` é a fonte da
-> versão runtime efetivamente carregada e a janela precisa ser recarregada após
-> atualização de pacote, configuração central ou variáveis.
+> Estado do source/release target em 2026-07-11: `4.5.1`. O registro pode ficar
+> atrás do source durante o workflow; consulte `npm view
+@lcv-ideas-software/cross-review version` para a publicação e `server_info`
+> para a versão runtime efetivamente carregada. Recarregue a janela após
+> upgrade do pacote, mudança de configuração central ou variáveis.
 
 ---
 
@@ -172,27 +173,34 @@ executam uma **pré-checagem puramente textual de evidência**. Ela detecta o
 caso de uma submissão que **afirma** ter concluído um trabalho ("os testes
 passaram", "o build está verde") mas **não embute nenhuma evidência
 concreta** (trechos de diff, saída de comando, hashes, referências de
-linha). Nesse caso, a sessão é encerrada localmente com
-`needs_evidence_preflight` — **sem gastar orçamento de API**. A pré-checagem
-é deliberadamente conservadora: um plano de trabalho legítimo, sem diff,
+linha). Nesse caso, a sessão fica bloqueada e aberta para correção com
+`needs_evidence_preflight` — **sem gastar orçamento de API**. O mesmo caller
+autenticado pode reenviar a evidência inline ou no campo `evidence`. A
+pré-checagem é deliberadamente conservadora: um plano legítimo, sem diff,
 passa normalmente.
 
 Há também uma **pré-checagem de veracidade operacional** para alegações de
 runtime, versão, data, histórico de sessão, workflow, deploy ou autorização.
 Quando uma dessas alegações contradiz o runtime carregado ou aparece sem fonte
-verificável, a sessão é bloqueada com `needs_truthfulness_preflight`; desde
-`v04.02.04`, o operador pode anexar evidência e reexecutar essa checagem local
-com `session_truthfulness_preflight_check`, sem chamar provedores.
+correspondente, a sessão é bloqueada com `needs_truthfulness_preflight`. O
+próprio agente autenticado pode corrigir a evidência inline ou no campo
+`evidence` e reexecutar `session_preflight_check`, sem chamar provedores nem
+pedir anexo manual ao operador.
 
 Esses controles não aceitam a palavra de um agente como prova. Todo voto
-`READY`, inclusive com confiança `inferred`, precisa citar fonte rastreável ao
-artefato ou a anexos sob custódia do operador. Fatos do runtime só corroboram
+`READY` precisa citar fonte rastreável ao artefato ou à evidência transportada.
+Se uma alegação operacional depender apenas de material enviado por um peer,
+dois revisores independentes precisam retornar `READY/verified` e citar path,
+SHA-256 e linhas brutas correlacionadas; `inferred` ou repetição narrativa não
+servem. Fatos do runtime só corroboram
 uma alegação runtime correspondente e, isoladamente, não provam revisão;
 caso contrário, o voto é rebaixado para `NEEDS_EVIDENCE`. Alegações de
 workflow, deploy, hashes, testes e autorização precisam coincidir com valores
 presentes na evidência, e itens `open` ou `not_resurfaced` impedem a
-convergência. Só um host humano com capability `operator` separada pode anexar
-ou encerrar evidência; tokens de peers não servem como operador. Cada anexo
+convergência. O autor de uma ask pode retirar somente a própria exigência após
+revalidação estrita (`requester_reverified`); silêncio não a fecha. Só um host
+humano com capability `operator` separada pode atribuir autoridade de operador
+ou dar disposição terminal; tokens de peers não servem como operador. Cada anexo
 novo registra autor, origem, horário, bytes e SHA-256; a leitura recalcula
 a integridade e falha fechada se houver adulteração. Anexos legados ficam
 marcados como `legacy_unverified` e ficam fora do corpus confiável.
@@ -406,8 +414,9 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_peer_reliability_report` — relatório agregado e somente leitura por
   peer.
 - `session_check_convergence` — verifica a convergência.
-- `session_truthfulness_preflight_check` — reexecuta a pré-checagem de
-  veracidade de uma sessão sem chamar provedores.
+- `session_preflight_check` — executa os mesmos gates de evidência e veracidade
+  da rodada real, sem chamar provedores.
+- `session_truthfulness_preflight_check` — alias legado do preflight combinado.
 
 **Evidência**
 
@@ -445,29 +454,26 @@ grava ainda um log NDJSON por processo sob `<data_dir>/logs`.
 ### Instalação via npm
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review
 ```
 
-Enquanto `4.5.0` permanecer source candidate, o npm público instala `4.4.8`.
-Use o build local para testar o candidate antes da publicação e confirme a
-versão efetiva em `server_info`.
+Use somente o pacote publicado pelo registro; não instale o runtime globalmente
+a partir dos fontes e não aponte o host MCP para este checkout. Depois,
+recarregue a janela MCP e confirme a versão efetiva em `server_info`.
 
 Alternativamente, pelo espelho do GitHub Packages:
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
 A instalação disponibiliza dois binários: `cross-review` (o servidor MCP) e
 `cross-review-dashboard` (o painel local).
 
-### Build a partir do código-fonte
+### Política de runtime no desenvolvimento
 
-```bash
-npm install
-npm run build
-node dist/src/mcp/server.js
-```
+Builds e testes de validação podem rodar no checkout, mas não constituem uma
+instalação. O host MCP deve executar somente a versão global publicada.
 
 ### Registro no host MCP
 
@@ -593,6 +599,10 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.01`      | Transporte automático de evidência autenticada, autoridade sem confusão de owner, painel independente estrito e terminais imutáveis.                                                    |
+| `v04.05.00`      | Refresh dos seis providers e hardening de terminais, config fingerprint, custody, grounding e anti-fabricação.                                                                          |
+| `v04.04.08`      | Piso transitivo corrigido de `hono` e advisory set corrente fechado.                                                                                                                    |
+| `v04.04.07`      | Piso corrigido de `protobufjs` para consumidores downstream.                                                                                                                            |
 | `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                                                                                                      |
 | `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                                                                                              |
 | `v02.14.00`      | Grok entra no painel de revisão.                                                                                                                                                        |

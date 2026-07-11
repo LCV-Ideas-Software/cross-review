@@ -74,12 +74,19 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           NAME="$(node -p "require('./package.json').name")"
           DISPLAY_TAG="$(echo "${VERSION%%-*}" | awk -F. '{ printf "v%02d.%02d.%02d", $1, $2, $3 }')"
+          if [[ "$VERSION" == *-* ]]; then
+            DISPLAY_TAG="${DISPLAY_TAG}-${VERSION#*-}"
+          fi
           TAG="$INPUT_TAG"
           if [ -z "$TAG" ] && [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
           if [ -z "$TAG" ]; then
             TAG="$DISPLAY_TAG"
+          fi
+          if [ "$TAG" != "$DISPLAY_TAG" ]; then
+            echo "::error::Publish tag '$TAG' does not match package.json version '$VERSION' (expected '$DISPLAY_TAG')."
+            exit 1
           fi
           if [[ "$VERSION" == *-* ]]; then
             DIST_TAG="${VERSION#*-}"
@@ -303,9 +310,15 @@ jobs:
             -v display_np="$DISPLAY_NO_PREFIX" \
             -v semver="$SEMVER_TAG" \
             -v semver_np="$SEMVER_NO_PREFIX" '
-            $0 == "## [" tag "]" || $0 == "## [" tag_np "]" ||
-            $0 == "## [" display "]" || $0 == "## [" display_np "]" ||
-            $0 == "## [" semver "]" || $0 == "## [" semver_np "]" { found=1; next }
+            function matches_heading(key, prefix, next_char) {
+              prefix = "## [" key "]"
+              if (index($0, prefix) != 1) return 0
+              next_char = substr($0, length(prefix) + 1, 1)
+              return next_char == "" || next_char == " "
+            }
+            matches_heading(tag) || matches_heading(tag_np) ||
+            matches_heading(display) || matches_heading(display_np) ||
+            matches_heading(semver) || matches_heading(semver_np) { found=1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md)

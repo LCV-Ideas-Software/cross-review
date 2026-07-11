@@ -6,6 +6,7 @@ import { redact, redactJsonValue, safeErrorMessage } from "../security/redact.js
 import { mergeCost, mergeUsage } from "./cost.js";
 import type {
   AppConfig,
+  CallerEvidenceSubmission,
   ConvergenceResult,
   ConvergenceScope,
   EvidenceAttachment,
@@ -45,6 +46,87 @@ function now(): string {
   return new Date().toISOString();
 }
 
+const CHECKLIST_NON_EXECUTION_PATTERN =
+  /\b(?:(?:was|were|is|are|has|have|had)\s+(?:not|never)\s+(?:been\s+)?(?:attempted|started|executed|run|performed|completed)|(?:could|can)\s+not\s+(?:be\s+)?(?:attempted|started|executed|run|performed|completed)|(?:cannot|unable\s+to)\s+(?:attempt|start|execute|run|perform|complete)|(?:was|were|is|are|been)?\s*(?:aborted(?:\s+before\s+(?:execution|running|start))?|cancelled|canceled|skipped|omitted|deferred|blocked|pending|not[- ]run)|(?:n[aã]o|nunca)\s+(?:(?:foi|foram|p[oô]de)\s+)?(?:tentad[oa]s?|iniciad[oa]s?|executad[oa]s?|rodad[oa]s?|realizad[oa]s?|conclu[ií]d[oa]s?)|(?:foi|foram)\s+(?:abortad[oa]s?|cancelad[oa]s?|ignorado?s?|pulad[oa]s?|adiad[oa]s?|bloquead[oa]s?)|sem\s+(?:tentar|iniciar|executar|rodar|realizar|concluir))\b/i;
+
+function checklistEvidenceHasExecutionRecord(corpus: string): boolean {
+  if (CHECKLIST_NON_EXECUTION_PATTERN.test(corpus)) return false;
+  const exitCodes = [...corpus.matchAll(/\bexit[_ ]?code\s*[:=]\s*(\d+)\b/gi)].map((match) =>
+    Number(match[1]),
+  );
+  if (exitCodes.some((code) => code !== 0)) return false;
+  return (
+    (exitCodes.length > 0 && exitCodes.every((code) => code === 0)) ||
+    /\b(?:tests?|test files)\s+\d+\s+passed\b|\b\d+\s+(?:tests?\s+)?passed\b|\btest result:\s*ok\b|\b(?:status|conclusion|result)\s*[:=]\s*(?:success|successful|passed)\b/i.test(
+      corpus,
+    )
+  );
+}
+
+function checklistEvidenceHasOperationalRecord(corpus: string): boolean {
+  return /\b(?:run|task|workflow|deployment|rollback|session)[_-]?id\s*[:=#]\s*[a-z0-9._-]+|\b(?:status|conclusion|result)\s*[:=]\s*[a-z0-9._-]+/i.test(
+    corpus,
+  );
+}
+
+function checklistEvidenceHasDiffRecord(corpus: string): boolean {
+  return /(?:^|\n)\s*diff --git\b|(?:^|\n)\s*@@\s*[-+]|\b\d+\s+files? changed\b/i.test(corpus);
+}
+
+function checklistAskCorroborated(
+  item: EvidenceChecklistItem,
+  evidenceSources: readonly string[],
+): boolean {
+  const corpus = evidenceSources.join("\n").normalize("NFKC").toLowerCase();
+  if (!corpus.trim()) return false;
+  const ask = item.ask.normalize("NFKC").toLowerCase();
+  const valueAnchors = [
+    ...(ask.match(/https?:\/\/[^\s)\]}>'"]+/gi) ?? []),
+    ...(ask.match(/\b[a-f0-9]{12,64}\b/gi) ?? []),
+    ...(ask.match(/\b[a-z][a-z0-9_-]*_id\s*[:=#]\s*[a-z0-9._-]+\b/gi) ?? []),
+    ...(ask.match(/\b\d+(?:\.\d+)*\b/g) ?? []),
+    ...(ask.match(/\b[\w./-]+\.\w+(?::\d+)?\b/gi) ?? []),
+  ].map((value) => value.replace(/\s+/g, " ").trim());
+  const commands =
+    ask.match(
+      /\b(?:npm\s+(?:run\s+)?[a-z0-9:_-]+|cargo\s+[a-z0-9:_-]+|git\s+[a-z0-9:_-]+(?:\s+--?[a-z0-9:_-]+)*)\b/gi,
+    ) ?? [];
+  const semanticAnchors = [
+    [/(?:exit[_ ]code)/i, /exit[_ ]code/i],
+    [/\btests?\b/i, /\btests?\b/i],
+    [/\b(?:deploy|deployment|rollback)\b/i, /\b(?:deploy|deployment|rollback)\b/i],
+    [/\b(?:workflow|pipeline|github actions?)\b/i, /\b(?:workflow|pipeline|github actions?)\b/i],
+    [/\b(?:diff|patch)\b/i, /\b(?:diff|patch)\b/i],
+  ] as const;
+  const requestedSemantics = semanticAnchors.filter(([askPattern]) => askPattern.test(ask));
+  // A Checklist-Item id routes a recheck to the right ask; it is not proof
+  // that the cited material answers that ask. Auto-close only when the ask
+  // itself supplied a concrete value, command, or verifiable semantic anchor.
+  const hasAskDerivedAnchor =
+    valueAnchors.length > 0 || commands.length > 0 || requestedSemantics.length > 0;
+  if (!hasAskDerivedAnchor) return false;
+  if (!valueAnchors.every((value) => corpus.includes(value))) return false;
+  if (!commands.every((command) => corpus.includes(command.replace(/\s+/g, " ").toLowerCase()))) {
+    return false;
+  }
+  if (!requestedSemantics.every(([, evidencePattern]) => evidencePattern.test(corpus)))
+    return false;
+  const requestsExecutionRecord =
+    commands.length > 0 ||
+    /(?:exit[_ ]code)/i.test(ask) ||
+    /\btests?\b/i.test(ask) ||
+    /\b(?:execut(?:e|ed|ion)|run|ran|output|resultado|sa[ií]da|executad[oa])\b/i.test(ask);
+  if (requestsExecutionRecord && !checklistEvidenceHasExecutionRecord(corpus)) return false;
+  if (
+    /\b(?:deploy|deployment|rollback|workflow|pipeline|github actions?)\b/i.test(ask) &&
+    !checklistEvidenceHasOperationalRecord(corpus)
+  ) {
+    return false;
+  }
+  if (/\b(?:diff|patch)\b/i.test(ask) && !checklistEvidenceHasDiffRecord(corpus)) return false;
+  return true;
+}
+
 function sessionMetaShapeError(value: unknown): string | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return "root must be an object";
@@ -57,6 +139,90 @@ function sessionMetaShapeError(value: unknown): string | undefined {
   }
   if (meta.caller !== "operator" && !PEERS.includes(meta.caller as PeerId)) {
     return "caller must be operator or a known peer";
+  }
+  if (meta.convergence_scope !== undefined) {
+    if (
+      meta.convergence_scope === null ||
+      typeof meta.convergence_scope !== "object" ||
+      Array.isArray(meta.convergence_scope)
+    ) {
+      return "convergence_scope must be an object";
+    }
+    const scope = meta.convergence_scope as Record<string, unknown>;
+    const validActor = (actor: unknown): actor is PeerId | "operator" =>
+      actor === "operator" || PEERS.includes(actor as PeerId);
+    if (!validActor(scope.caller)) return "convergence_scope.caller must be a known actor";
+    if (scope.petitioner !== undefined && !validActor(scope.petitioner)) {
+      return "convergence_scope.petitioner must be a known actor";
+    }
+    if (scope.acting_peer !== undefined && !validActor(scope.acting_peer)) {
+      return "convergence_scope.acting_peer must be a known actor";
+    }
+    const versionMatch = String(meta.version).match(/^v?(\d+)\.(\d+)\.(\d+)/);
+    const major = Number(versionMatch?.[1] ?? -1);
+    const minor = Number(versionMatch?.[2] ?? -1);
+    const durablePetitioner = major > 2 || (major === 2 && minor >= 16);
+    if (
+      durablePetitioner &&
+      (scope.caller !== meta.caller ||
+        (scope.petitioner !== undefined && scope.petitioner !== meta.caller))
+    ) {
+      return "convergence_scope petitioner and caller must match the persisted session owner";
+    }
+  }
+  if (meta.caller_evidence_submissions !== undefined) {
+    if (!Array.isArray(meta.caller_evidence_submissions)) {
+      return "caller_evidence_submissions must be an array";
+    }
+    for (const value of meta.caller_evidence_submissions) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return "caller_evidence_submissions entries must be objects";
+      }
+      const submission = value as Record<string, unknown>;
+      if (
+        typeof submission.submission_id !== "string" ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(
+          submission.submission_id,
+        )
+      ) {
+        return "caller evidence submission_id must be a UUID";
+      }
+      if (
+        typeof submission.submitted_at !== "string" ||
+        Number.isNaN(Date.parse(submission.submitted_at))
+      ) {
+        return "caller evidence submitted_at must be an ISO timestamp";
+      }
+      const submittedBy = submission.submitted_by;
+      if (submittedBy !== "operator" && !PEERS.includes(submittedBy as PeerId)) {
+        return "caller evidence submitted_by must be a known actor";
+      }
+      if (
+        typeof submission.artifact_sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(submission.artifact_sha256)
+      ) {
+        return "caller evidence artifact_sha256 must be a lowercase SHA-256";
+      }
+      if (
+        !Array.isArray(submission.attachment_paths) ||
+        !submission.attachment_paths.every((entry) => typeof entry === "string" && entry.length > 0)
+      ) {
+        return "caller evidence attachment_paths must contain only non-empty path strings";
+      }
+    }
+  }
+  if (meta.active_caller_evidence_submission_id !== undefined) {
+    if (typeof meta.active_caller_evidence_submission_id !== "string") {
+      return "active_caller_evidence_submission_id must be a string";
+    }
+    const manifests = (meta.caller_evidence_submissions ?? []) as Array<Record<string, unknown>>;
+    if (
+      !manifests.some(
+        (submission) => submission.submission_id === meta.active_caller_evidence_submission_id,
+      )
+    ) {
+      return "active caller evidence submission must reference a persisted manifest";
+    }
   }
   if (!Array.isArray(meta.capability_snapshot)) return "capability_snapshot must be an array";
   if (!Array.isArray(meta.rounds)) return "rounds must be an array";
@@ -203,6 +369,7 @@ function timestampFilePart(): string {
 
 const EVIDENCE_ATTACHMENT_ORIGINS = new Set<EvidenceAttachmentOrigin>([
   "session_attach_evidence",
+  "caller_submitted",
   "runtime_generated",
 ]);
 
@@ -545,7 +712,10 @@ export class SessionStore {
   }
 
   read(sessionId: string): SessionMeta {
-    return readJson<SessionMeta>(this.metaPath(sessionId));
+    const meta = readJson<unknown>(this.metaPath(sessionId));
+    const shapeError = sessionMetaShapeError(meta);
+    if (shapeError) throw new Error(`schema_validation_failed: ${shapeError}`);
+    return meta as SessionMeta;
   }
 
   readTextArtifact(sessionId: string, relativePath: string, maxChars: number): string {
@@ -1003,6 +1173,16 @@ export class SessionStore {
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome) {
+        if (meta.outcome === outcome && (reason === undefined || meta.outcome_reason === reason)) {
+          return meta;
+        }
+        const err = new Error(
+          `session_already_finalized: session ${sessionId} is finalized as ${meta.outcome}/${meta.outcome_reason ?? "unspecified"}; refusing terminal transition to ${outcome}/${reason ?? "unspecified"}`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
       // v3.2.0 (Codex bug report 2026-05-12): when the caller asserts
       // outcome="converged", the latest round (if any) MUST have
       // `convergence.converged === true`. Otherwise we would persist the
@@ -1089,6 +1269,14 @@ export class SessionStore {
   async markCancelled(sessionId: string, reason = "cancelled"): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome) {
+        if (meta.outcome === "aborted" && meta.outcome_reason === reason) return meta;
+        const err = new Error(
+          `session_already_finalized: session ${sessionId} is finalized as ${meta.outcome}/${meta.outcome_reason ?? "unspecified"}; refusing cancellation overwrite`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
       const ts = now();
       meta.outcome = "aborted";
       meta.outcome_reason = reason;
@@ -1256,10 +1444,10 @@ export class SessionStore {
           // becomes `not_resurfaced`, NOT `addressed`. "The peer did not
           // re-ask" is not proof the evidence was satisfied — only the
           // judge autowire (verified-satisfied) or explicit operator
-          // action may move an item to a confirmed state. This keeps the
-          // audit trail honest. `not_resurfaced` is still not `open`, so
-          // it does not hard-block the `=== "open"` convergence gate;
-          // the inference is recorded, not enforced.
+          // action or a later strictly grounded READY/verified recheck by the
+          // same requester may move an item to a confirmed state. This keeps
+          // the audit trail honest. `not_resurfaced` remains convergence-
+          // blocking until one of those explicit signals arrives.
           item.status = "not_resurfaced";
           item.addressed_at_round = currentRound;
           // v2.9.0: tag the inference path so the dashboard and audit
@@ -1415,6 +1603,62 @@ export class SessionStore {
       meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
       return { item, history_entry: entry };
+    });
+  }
+
+  async markEvidenceItemsAddressedByRequesterReverification(
+    sessionId: string,
+    params: { round: number; peer: PeerId; evidence_sources: string[] },
+  ): Promise<Array<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry }>> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      const checklist = meta.evidence_checklist ?? [];
+      const evidenceSources = params.evidence_sources
+        .map((source) => source.trim())
+        .filter(Boolean);
+      if (!evidenceSources.length) return [];
+      const sourceDigest = crypto
+        .createHash("sha256")
+        .update(JSON.stringify(evidenceSources))
+        .digest("hex");
+      const ts = now();
+      const history = meta.evidence_status_history ?? [];
+      const promoted: Array<{
+        item: EvidenceChecklistItem;
+        history_entry: EvidenceStatusHistoryEntry;
+      }> = [];
+      for (const item of checklist) {
+        const status: EvidenceChecklistStatus = item.status ?? "open";
+        if (
+          item.peer !== params.peer ||
+          item.last_round >= params.round ||
+          (status !== "open" && status !== "not_resurfaced")
+        ) {
+          continue;
+        }
+        if (!checklistAskCorroborated(item, evidenceSources)) continue;
+        const entry: EvidenceStatusHistoryEntry = {
+          ts,
+          item_id: item.id,
+          from: status,
+          to: "addressed",
+          by: "runtime",
+          round: params.round,
+          note: `requester_reverified[${params.peer}]: ${evidenceSources.length} strictly grounded source(s), sha256=${sourceDigest}`,
+        };
+        item.status = "addressed";
+        item.addressed_at_round = params.round;
+        item.address_method = "requester_reverified";
+        delete item.judge_rationale;
+        history.push(entry);
+        promoted.push({ item, history_entry: entry });
+      }
+      if (!promoted.length) return [];
+      meta.evidence_checklist = checklist;
+      meta.evidence_status_history = history;
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return promoted;
     });
   }
 
@@ -2262,8 +2506,10 @@ export class SessionStore {
   // entries into in-memory contents for inlining into peer prompts.
   // Reads each attachment from disk, applies a per-file cap (60% of the
   // total cap to leave room for at least 1 other attachment + headers),
-  // accumulates into a total-cap, and returns whatever fits. Order
-  // preserved (oldest attachment first). Files that cannot be read
+  // accumulates into a total-cap, and returns whatever fits. The active
+  // automatic caller snapshot is read first; superseded caller submissions
+  // remain durable audit history but cannot poison or starve a correction.
+  // Other custody channels retain their historical order. Files that cannot be read
   // (deleted, permission denied) are skipped silently — the caller
   // sees only the metadata that survived. This closes the recurring
   // "meta-channel limit" pattern (v2.5.0, v2.13.0) where codex demanded
@@ -2271,7 +2517,11 @@ export class SessionStore {
   // the file content already lives in `data_dir/sessions/<id>/evidence/`
   // by the time we inline, so the only constraint is the peer model's
   // context window — much larger than the MCP boundary.
-  readEvidenceAttachments(sessionId: string, totalCapChars: number): ResolvedEvidenceAttachment[] {
+  readEvidenceAttachments(
+    sessionId: string,
+    totalCapChars: number,
+    callerSubmissionId?: string,
+  ): ResolvedEvidenceAttachment[] {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
     let meta: SessionMeta;
     let sessionDir: string;
@@ -2281,8 +2531,34 @@ export class SessionStore {
     } catch {
       return [];
     }
-    const files = meta.evidence_files ?? [];
-    if (!files.length) return [];
+    const allFiles = meta.evidence_files ?? [];
+    if (!allFiles.length) return [];
+    let files = allFiles;
+    const activeSubmissionId = callerSubmissionId ?? meta.active_caller_evidence_submission_id;
+    if (activeSubmissionId) {
+      const activeSubmission = (meta.caller_evidence_submissions ?? []).find(
+        (submission) => submission.submission_id === activeSubmissionId,
+      );
+      if (!activeSubmission) {
+        throw new Error(
+          `active_caller_evidence_submission_invalid: ${activeSubmissionId} has no persisted manifest`,
+        );
+      }
+      const byPath = new Map(allFiles.map((file) => [file.path, file]));
+      const activeFiles = activeSubmission.attachment_paths.map((attachmentPath) => {
+        const file = byPath.get(attachmentPath);
+        if (!file) {
+          throw new Error(
+            `evidence_integrity_unavailable: active caller submission ${activeSubmissionId} references ${attachmentPath}`,
+          );
+        }
+        return file;
+      });
+      const nonCallerSubmissionFiles = allFiles.filter(
+        (file) => currentEvidenceAttachment(file)?.origin !== "caller_submitted",
+      );
+      files = [...activeFiles, ...nonCallerSubmissionFiles];
+    }
     const perFileCap = Math.max(2_000, Math.floor(totalCapChars * 0.6));
     const result: ResolvedEvidenceAttachment[] = [];
     let used = 0;
@@ -2324,6 +2600,11 @@ export class SessionStore {
         bytes: actualBytes,
         truncated,
         provenance_status: custody ? "verified" : "legacy_unverified",
+        authority_status: custody
+          ? custody.attached_by === "operator"
+            ? "operator_verified"
+            : "caller_submitted_unverified"
+          : "legacy_unverified",
         content_type: file.content_type,
         ...(custody
           ? {
@@ -2405,6 +2686,139 @@ export class SessionStore {
     return { contested_meta: contestedMeta, new_session_id: newSessionId };
   }
 
+  async attachCallerEvidenceSubmission(
+    sessionId: string,
+    params: {
+      submitted_by: PeerId | "operator";
+      artifact_text: string;
+      items: Array<{
+        label: string;
+        content: string;
+        content_type?: string;
+        extension?: string;
+      }>;
+    },
+  ): Promise<{ submission: CallerEvidenceSubmission; meta: SessionMeta }> {
+    if (params.submitted_by !== "operator" && !PEERS.includes(params.submitted_by)) {
+      throw new Error(`evidence_submitted_by_invalid: ${String(params.submitted_by)}`);
+    }
+    const submissionId = crypto.randomUUID();
+    const artifactSha256 = crypto
+      .createHash("sha256")
+      .update(params.artifact_text, "utf8")
+      .digest("hex");
+    const prepared = params.items.map((item) => {
+      const persisted = Buffer.from(redact(item.content), "utf8");
+      return {
+        label: item.label,
+        safeLabel: safeFilePart(item.label),
+        extension: safeFilePart(item.extension ?? "txt").replace(/\./g, "") || "txt",
+        content_type: item.content_type,
+        persisted,
+        sha256: crypto.createHash("sha256").update(persisted).digest("hex"),
+        bytes: persisted.byteLength,
+      };
+    });
+
+    return this.withSessionLock(sessionId, async () => {
+      const current = this.read(sessionId);
+      if (current.outcome) {
+        const error = new Error(
+          `session_already_finalized: session ${sessionId} is finalized with outcome="${current.outcome}"; cannot submit caller evidence`,
+        );
+        (error as Error & { code?: string }).code = "session_already_finalized";
+        throw error;
+      }
+      const submittedAt = now();
+      const attachmentPaths: string[] = [];
+      const attachmentEvents: RuntimeEvent[] = [];
+      for (const item of prepared) {
+        const duplicate = (current.evidence_files ?? []).find((candidate) => {
+          const currentCandidate = currentEvidenceAttachment(candidate);
+          return (
+            currentCandidate?.sha256 === item.sha256 &&
+            currentCandidate.bytes === item.bytes &&
+            currentCandidate.attached_by === params.submitted_by &&
+            currentCandidate.origin === "caller_submitted" &&
+            currentCandidate.label === item.label
+          );
+        });
+        if (duplicate) {
+          attachmentPaths.push(duplicate.path);
+          continue;
+        }
+        const relativePath =
+          `evidence/${timestampFilePart()}-${item.safeLabel}-${crypto.randomUUID()}.${item.extension}`.replace(
+            /\\/g,
+            "/",
+          );
+        const file = path.join(this.sessionDir(sessionId), relativePath);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, item.persisted);
+        const attachment: EvidenceAttachment = {
+          ts: submittedAt,
+          attached_at: submittedAt,
+          attached_by: params.submitted_by,
+          origin: "caller_submitted",
+          integrity_version: 1,
+          sha256: item.sha256,
+          bytes: item.bytes,
+          label: item.label,
+          path: relativePath,
+          content_type: item.content_type,
+        };
+        current.evidence_files = [...(current.evidence_files ?? []), attachment];
+        attachmentPaths.push(relativePath);
+        attachmentEvents.push({
+          type: "session.evidence_attached",
+          session_id: sessionId,
+          ts: submittedAt,
+          message: `Caller-submitted evidence persisted as unverified material from ${params.submitted_by}: ${item.label}`,
+          data: {
+            label: item.label,
+            path: relativePath,
+            content_type: item.content_type,
+            sha256: item.sha256,
+            bytes: item.bytes,
+            attached_by: params.submitted_by,
+            attached_at: submittedAt,
+            origin: "caller_submitted",
+            authority_status: "caller_submitted_unverified",
+          },
+        });
+      }
+      const submission: CallerEvidenceSubmission = {
+        submission_id: submissionId,
+        submitted_at: submittedAt,
+        submitted_by: params.submitted_by,
+        artifact_sha256: artifactSha256,
+        attachment_paths: attachmentPaths,
+      };
+      current.caller_evidence_submissions = [
+        ...(current.caller_evidence_submissions ?? []),
+        submission,
+      ];
+      current.active_caller_evidence_submission_id = submissionId;
+      current.updated_at = submittedAt;
+      await writeJson(this.metaPath(sessionId), current);
+      for (const event of attachmentEvents) this.appendEventRecord(event);
+      this.appendEventRecord({
+        type: "session.caller_evidence_submission_activated",
+        session_id: sessionId,
+        ts: submittedAt,
+        message: `Activated caller evidence submission ${submissionId} from ${params.submitted_by} with ${attachmentPaths.length} artifact(s).`,
+        data: {
+          submission_id: submissionId,
+          submitted_by: params.submitted_by,
+          artifact_sha256: artifactSha256,
+          attachment_paths: attachmentPaths,
+          attachment_count: attachmentPaths.length,
+        },
+      });
+      return { submission, meta: current };
+    });
+  }
+
   async attachEvidence(
     sessionId: string,
     params: {
@@ -2414,6 +2828,7 @@ export class SessionStore {
       extension?: string;
       attached_by: PeerId | "operator";
       origin: EvidenceAttachmentOrigin;
+      deduplicate?: boolean;
     },
   ): Promise<{ path: string; meta: SessionMeta }> {
     if (params.attached_by !== "operator" && !PEERS.includes(params.attached_by)) {
@@ -2424,12 +2839,6 @@ export class SessionStore {
     }
     const extension = safeFilePart(params.extension ?? "txt").replace(/\./g, "") || "txt";
     const label = safeFilePart(params.label);
-    const attachedAt = now();
-    const relativePath = `evidence/${timestampFilePart()}-${label}.${extension}`.replace(
-      /\\/g,
-      "/",
-    );
-    const file = path.join(this.sessionDir(sessionId), relativePath);
     const persisted = Buffer.from(redact(params.content), "utf8");
     const sha256 = crypto.createHash("sha256").update(persisted).digest("hex");
     const bytes = persisted.byteLength;
@@ -2443,6 +2852,27 @@ export class SessionStore {
         (error as Error & { code?: string }).code = "session_already_finalized";
         throw error;
       }
+      if (params.deduplicate) {
+        const duplicate = (current.evidence_files ?? []).find((candidate) => {
+          const currentCandidate = currentEvidenceAttachment(candidate);
+          return (
+            currentCandidate?.sha256 === sha256 &&
+            currentCandidate.bytes === bytes &&
+            currentCandidate.attached_by === params.attached_by &&
+            currentCandidate.origin === params.origin
+          );
+        });
+        if (duplicate) {
+          return { meta: current, path: duplicate.path };
+        }
+      }
+      const attachedAt = now();
+      const relativePath =
+        `evidence/${timestampFilePart()}-${label}-${crypto.randomUUID()}.${extension}`.replace(
+          /\\/g,
+          "/",
+        );
+      const file = path.join(this.sessionDir(sessionId), relativePath);
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, persisted);
       const attachment: EvidenceAttachment = {
@@ -2464,7 +2894,10 @@ export class SessionStore {
         type: "session.evidence_attached",
         session_id: sessionId,
         ts: attachedAt,
-        message: `Evidence attached by ${params.attached_by}: ${params.label}`,
+        message:
+          params.origin === "caller_submitted" && params.attached_by !== "operator"
+            ? `Caller-submitted evidence persisted as unverified material from ${params.attached_by}: ${params.label}`
+            : `Evidence attached by ${params.attached_by}: ${params.label}`,
         data: {
           label: params.label,
           path: relativePath,
@@ -2474,12 +2907,14 @@ export class SessionStore {
           attached_by: params.attached_by,
           attached_at: attachedAt,
           origin: params.origin,
+          authority_status:
+            params.attached_by === "operator" ? "operator_verified" : "caller_submitted_unverified",
         },
       });
-      return current;
+      return { meta: current, path: relativePath };
     });
 
-    return { path: relativePath, meta };
+    return { path: meta.path, meta: meta.meta };
   }
 
   async escalateToOperator(

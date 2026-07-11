@@ -45,6 +45,9 @@ jobs:
           fi
           BASE="$(echo "$VERSION" | sed -E 's/-.*$//')"
           TAG="$(echo "$BASE" | awk -F. '{ printf "v%02d.%02d.%02d", $1, $2, $3 }')"
+          if [[ "$VERSION" == *-* ]]; then
+            TAG="${TAG}-${VERSION#*-}"
+          fi
           LEGACY_TAG="v${VERSION}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"

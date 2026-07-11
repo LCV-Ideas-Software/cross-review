@@ -2,13 +2,28 @@
 
 ## Supported status
 
-Current supported source candidate: v04.05.00 for package 4.5.0. Latest published npm release: v04.04.08 for package 4.4.8. The current main branch is supported for security fixes until the next release is published.
+Current supported source/release target: v04.05.01 for package 4.5.1. Registry publication state is verified independently through npm; the current main branch remains supported for security fixes while a publish workflow is in flight.
 
-v04.05.00 strengthens the trust boundary around model output and runtime
-evidence. Incomplete or unhealthy provider terminal states fail closed;
-operator-only mutations require a distinct operator capability token; attached
-evidence is hashed, attributed and reverified on every read; and unsupported operational
-claims, model-pin contradictions and unresolved evidence cannot converge.
+v04.05.01 preserves that trust boundary while transporting evidence submitted
+by authenticated callers automatically into the review session. Peer-submitted
+evidence is hashed, attributed, reverified on every read and clearly marked as
+unverified; no manual operator attachment is required for admission or
+convergence. Operator-only mutations still require a distinct capability token,
+incomplete or unhealthy provider terminal states fail closed, and unsupported
+operational claims, model-pin contradictions and unresolved evidence cannot
+converge.
+
+Peer-submitted integrity is not treated as authority. Operational claims that
+depend only on that tier require at least two independent non-author reviewers,
+each with a `READY/verified` vote bound to attachment path, SHA-256 and literal
+value-corresponding lines. Non-zero exits, explicit failures, conflicting command
+records, inferred confidence and narrative-only citations fail closed.
+
+Evidence attribution is bound to the authenticated invoker, never copied from a
+session's persisted petitioner. Existing-session review starters require the
+petitioner's capability or the dedicated operator capability, preventing a peer
+from continuing an operator-owned session and acquiring operator evidence
+authority.
 Invalid session metadata is quarantined rather than trusted by list/doctor
 operations. The release also retains the dependency advisory floors introduced
 in v04.04.07 and v04.04.08.

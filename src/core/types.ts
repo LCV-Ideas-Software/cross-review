@@ -379,7 +379,11 @@ export interface ConvergenceHealth {
   idle_ms?: number | undefined;
 }
 
-export type EvidenceAttachmentOrigin = "session_attach_evidence" | "runtime_generated";
+// prettier-ignore
+export type EvidenceAttachmentOrigin =
+  | "session_attach_evidence"
+  | "caller_submitted"
+  | "runtime_generated";
 
 // Attachments written by the current runtime carry a complete custody
 // envelope. `sha256` and `bytes` describe the exact redacted UTF-8 bytes
@@ -395,6 +399,17 @@ export interface EvidenceAttachment {
   label: string;
   path: string;
   content_type?: string | undefined;
+}
+
+// Every authenticated external submission creates an immutable manifest.
+// The active pointer selects exactly one automatic caller-evidence snapshot
+// for review; older manifests and blobs remain append-only audit history.
+export interface CallerEvidenceSubmission {
+  submission_id: string;
+  submitted_at: string;
+  submitted_by: PeerId | "operator";
+  artifact_sha256: string;
+  attachment_paths: string[];
 }
 
 // Pre-custody metadata remains readable for backwards compatibility, but
@@ -414,6 +429,10 @@ export interface ResolvedEvidenceAttachment {
   bytes: number;
   truncated: boolean;
   provenance_status: "verified" | "legacy_unverified";
+  // Integrity and authority are deliberately separate. `verified` above
+  // means the persisted bytes still match their custody digest; it does not
+  // mean a human operator vouched for caller-supplied content.
+  authority_status: "operator_verified" | "caller_submitted_unverified" | "legacy_unverified";
   content_type?: string | undefined;
   sha256?: string | undefined;
   attached_by?: PeerId | "operator" | undefined;
@@ -432,7 +451,8 @@ export interface ResolvedEvidenceAttachment {
 // subsequent round goes by without the peer resurfacing the same ask,
 // the runtime marks it "not_resurfaced" (v3.5.0 / CRV2-2 — NOT
 // "addressed"; non-resurfacing is not proof of satisfaction). "addressed"
-// is reserved for the judge-autowire verified-satisfied path. The
+// is reserved for a judge verified-satisfied decision or a strictly grounded
+// READY/verified recheck by the same peer that authored the ask. The
 // operator can move items to terminal states via
 // session_evidence_checklist_update. Conflict rule: when a peer
 // resurfaces a "not_resurfaced" OR "addressed" item it reverts to "open"
@@ -446,11 +466,10 @@ export interface ResolvedEvidenceAttachment {
 // the ask — but "the peer did not re-ask" is NOT proof the evidence was
 // satisfied. That promotion produced a false-positive audit trail.
 // `not_resurfaced` now carries that inference honestly: it is NOT
-// `open` (so it does not block the `=== "open"` convergence gate, i.e.
-// the runtime still does not hard-block on inference) and it is NOT
-// `addressed` (so the audit trail no longer claims the evidence was
-// confirmed). `addressed` is now reserved for judge verified-satisfied
-// promotions and explicit operator action — paths with real signal.
+// `open` and it is NOT `addressed`; both `open` and `not_resurfaced` block
+// convergence. `addressed` is reserved for judge verified-satisfied or
+// requester-reverified promotions, while explicit operator actions use the
+// terminal satisfied/deferred/rejected states.
 // prettier-ignore
 export type EvidenceChecklistStatus =
   | "open"
@@ -485,12 +504,13 @@ export interface EvidenceChecklistItem {
   // v2.8.0: round in which the runtime auto-promoted the item to
   // "addressed". Cleared when the item reverts to "open".
   addressed_at_round?: number | undefined;
-  // v2.9.0: how the runtime promoted the item. "resurfacing" is the
-  // v2.8.0 inference (peer did not bring the ask back); "judge" is the
-  // v2.9.0 LLM judgment (judge peer ruled the new draft satisfies the
-  // ask). Operator-set terminal statuses do not populate this field.
+  // How the runtime transitioned the item: "resurfacing" records only
+  // silence, "judge" is an independent judge decision, and
+  // "requester_reverified" means the same peer that opened the ask later
+  // returned a strictly grounded READY/verified verdict. Operator-set
+  // terminal statuses do not populate this field.
   // Cleared together with addressed_at_round on revert to "open".
-  address_method?: "resurfacing" | "judge" | undefined;
+  address_method?: "resurfacing" | "judge" | "requester_reverified" | undefined;
   // v2.9.0: brief verbatim rationale string returned by the judge peer
   // when address_method === "judge". Capped to keep the checklist
   // payload bounded; full rationale lives in the round's prompt/draft
@@ -620,12 +640,9 @@ export interface PeerCallContext {
   // v2.15.0 (item 2): per-call reasoning_effort override. When supplied,
   // the adapter reads this instead of `config.reasoning_effort[peer_id]`
   // for the current call. Operator uses this to dial down expensive
-  // peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents = $1+/call)
-  // for routine cross-reviews while keeping the global default at xhigh
-  // for ship-critical paths. The adapter is responsible for honoring
-  // the field; OpenAI/Anthropic/Gemini/DeepSeek treat it as
-  // chain-of-thought depth, Grok treats it as agent count (semantic
-  // divergence per peers/grok.ts header).
+  // peers for routine cross-reviews while retaining deeper settings for
+  // ship-critical paths. Each adapter maps the shared scale to its provider
+  // contract; the canonical Grok 4.5 adapter clamps it to low/medium/high.
   reasoning_effort_override?: ReasoningEffort | undefined;
   // v2.21.0 (caching): caller identity plumbed to the adapter so
   // OpenAI/Grok adapters can build a pair-scoped prompt_cache_key
@@ -694,6 +711,14 @@ export interface RuntimeEventDataByType {
     attached_by: PeerId | "operator";
     attached_at: string;
     origin: EvidenceAttachmentOrigin;
+    authority_status?: "operator_verified" | "caller_submitted_unverified" | undefined;
+  };
+  "session.caller_evidence_submission_activated": {
+    submission_id: string;
+    submitted_by: PeerId | "operator";
+    artifact_sha256: string;
+    attachment_paths: string[];
+    attachment_count: number;
   };
   "provider.cache.usage": {
     peer: PeerId;
@@ -746,6 +771,8 @@ export interface SessionMeta {
   convergence_health?: ConvergenceHealth | undefined;
   failed_attempts?: Array<PeerFailure & { round: number }> | undefined;
   evidence_files?: Array<EvidenceAttachment | LegacyEvidenceAttachment> | undefined;
+  caller_evidence_submissions?: CallerEvidenceSubmission[] | undefined;
+  active_caller_evidence_submission_id?: string | undefined;
   evidence_checklist?: EvidenceChecklistItem[] | undefined;
   // v2.8.0: durable audit trail for every status transition on an
   // evidence checklist item (auto + operator). Newest entries appended.
@@ -889,13 +916,10 @@ export interface AppConfig {
     max_draft_chars: number;
     max_prior_rounds: number;
     max_peer_requests: number;
-    // v2.14.0 (path-A structural fix): cap on the total bytes of
-    // attached evidence inlined into peer-facing prompts. The caller
-    // anexa via `session_attach_evidence` (existing MCP tool); the
-    // attachedEvidenceBlock helper walks meta.evidence_files, reads
-    // each file from disk, and inlines up to this cap. Default 80_000
-    // bytes balances "enough room for codex's literal evidence asks"
-    // against "fits comfortably in the smaller peer context windows".
+    // Cap on total persisted evidence inlined into peer-facing prompts.
+    // Authenticated caller evidence is persisted automatically; optional
+    // operator artifacts share the same bounded read path. Default 80_000
+    // bytes balances literal evidence needs against provider context limits.
     max_attached_evidence_chars: number;
   };
   max_output_tokens: number;

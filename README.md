@@ -16,16 +16,18 @@
 [![runtime: API-only](https://img.shields.io/badge/runtime-API--only-blue.svg)](#what-it-does)
 [![license: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](./LICENSE)
 
-**Install.**
+**Upgrade from the published registry.**
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review
 # or using the GitHub Packages mirror:
-npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current source candidate: **v04.05.00** (package
-`4.5.0`); latest npm-published release: **v04.04.08** (`4.4.8`). See
+**Status.** Stable. This source prepares **v04.05.01** (package `4.5.1`).
+The public registry can lag while the publish workflow runs; use the npm badge
+or `npm view @lcv-ideas-software/cross-review version` for registry state and
+`server_info` for the version actually loaded by an MCP window. See
 [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
@@ -40,7 +42,8 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`v04.05.00`**      | Minor source candidate — refresh all six provider contracts and add fail-closed provider terminals, runtime config fingerprints, operator evidence custody, peer self-attestation rejection, and grounded READY votes.                                                      |
+| **`v04.05.01`**      | Patch release — restore authenticated peer evidence transport with append-only active snapshots, combined preflight parity, strict operational records, independent relator/reviewer roles and immutable terminal outcomes; no manual operator attachment is required.      |
+| **`v04.05.00`**      | Minor release — refresh all six provider contracts and add fail-closed provider terminals, runtime config fingerprints, operator evidence custody, peer self-attestation rejection, and grounded READY votes.                                                               |
 | **`v04.04.08`**      | Patch — raise the transitive `hono` override floor and clear the current advisory set.                                                                                                                                                                                      |
 | **`v04.04.07`**      | Patch — promote the patched `protobufjs` floor for downstream consumers.                                                                                                                                                                                                    |
 | **`v04.04.06`**      | Patch — close the remaining Claude re-validation tail: orchestrator attached-evidence reads now fail closed, session_doctor defaults to action-oriented findings, and T2#10 source-regex debt drops to a locked total of 160.                                               |
@@ -173,12 +176,11 @@ tests and CI when `CROSS_REVIEW_STUB=1`.
 
 Restart your terminal after changing environment variables.
 
-Build and run locally:
+Run the MCP host only from the package published by the registry; do not point a
+production host at this checkout:
 
 ```bash
-npm install
-npm --registry=https://registry.npmjs.org run build
-node dist/src/mcp/server.js
+npm upgrade -g @lcv-ideas-software/cross-review
 ```
 
 For local smoke tests (no-cost):
@@ -257,6 +259,7 @@ these environment variables before running real sessions (example):
 - `session_report`
 - `session_peer_reliability_report`
 - `session_check_convergence`
+- `session_preflight_check`
 - `session_truthfulness_preflight_check`
 - `session_attach_evidence`
 - `session_evidence_checklist_update`
@@ -289,11 +292,18 @@ The runtime does not treat a peer's claim that work was completed as proof.
 Before paid calls and again during convergence, it checks runtime/model claims,
 workflow and authorization assertions, test/build/hash claims, concrete source
 correspondence, unresolved evidence asks, model attestation, and structured
-status completeness. Every `READY` vote, including `confidence="inferred"`,
-must cite sources traceable to the reviewed artifact or operator-custodied
-attachments; otherwise it is downgraded to
-`NEEDS_EVIDENCE`. Relator output that invents operational evidence is rejected
-rather than propagated.
+status completeness. Authenticated caller evidence supplied inline or through
+the `evidence` field is persisted with an integrity digest and transported to
+every reviewer as `PEER-SUBMITTED / UNVERIFIED`; no manual operator attachment
+is required. Each external submission atomically supersedes the active caller
+snapshot while preserving prior manifests for audit, so retries cannot inherit
+old failures or replay old successes. Every `READY` vote must cite sources traceable to the reviewed
+artifact or admitted evidence. When operational claims depend only on
+peer-submitted material, at least two independent non-author reviewers must use
+`confidence="verified"` and cite the attachment path, SHA-256 and correlated raw
+lines; one voter, inferred confidence or narrative repetition cannot converge.
+Relator output that invents operational evidence is rejected rather than
+propagated.
 
 `READY` is intentionally not free-form. Its `summary` must be exactly
 `No blocking objections remain.`, `caller_requests` and `follow_ups` must be
@@ -301,13 +311,23 @@ empty, and no narrative may appear outside the JSON/status envelope. Detail
 belongs in `evidence_sources`. This removes synonym/negation ambiguity: any
 noncanonical READY becomes `NEEDS_EVIDENCE` and cannot converge.
 
-Only the human operator may call `session_attach_evidence` or mutate
-authoritative evidence, terminal state, or security configuration. Each new
+Only the human operator may call the optional `session_attach_evidence`
+authority surface or mutate terminal state and security configuration. Each new
 attachment records the verified caller, origin, timestamp, byte count and
 SHA-256, emits a durable custody event, and is re-hashed on every read.
-Tampering fails closed. Legacy or peer-attributed attachments remain readable
-for audit but are excluded from every trusted corpus; a generic attachment does
-not by itself prove an unrelated claim.
+Tampering fails closed. Peer-attributed material remains reviewable but cannot
+grant operator authority; a generic attachment does not by itself prove an
+unrelated claim.
+
+An evidence requester may automatically withdraw only its own earlier ask after
+a strictly grounded `READY/verified` recheck. That transition is recorded as
+`requester_reverified`; silence remains `not_resurfaced`, and no peer can close
+another peer's ask or an operator-terminal item.
+
+On an existing session, review starters require the persisted petitioner token
+or the dedicated operator token. Evidence is attributed to the authenticated
+invoker rather than inherited from the session owner, so a peer cannot turn its
+submission into `operator_verified` by continuing an operator-owned session.
 
 Caller identity uses seven distinct local capabilities: one for each peer and
 one for `operator`. Operator tools require the operator token even when token

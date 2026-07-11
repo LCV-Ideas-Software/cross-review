@@ -10,6 +10,7 @@ const runtimeSmokeDataDir =
   process.env.CROSS_REVIEW_RUNTIME_SMOKE_DATA_DIR ??
   fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-runtime-smoke-"));
 const runtimeSmokeConfigPath = path.join(runtimeSmokeDataDir, "config.json");
+const runtimeSmokeCodexToken = "01".repeat(32);
 const runtimeSmokeOperatorToken = "07".repeat(32);
 fs.writeFileSync(
   runtimeSmokeConfigPath,
@@ -23,7 +24,7 @@ fs.writeFileSync(
       version: 2,
       generated_at: "2026-07-10T00:00:00.000Z",
       tokens: {
-        codex: "01".repeat(32),
+        codex: runtimeSmokeCodexToken,
         claude: "02".repeat(32),
         gemini: "03".repeat(32),
         deepseek: "04".repeat(32),
@@ -41,7 +42,7 @@ const invalidMetaDir = path.join(runtimeSmokeDataDir, "sessions", "invalid-shape
 fs.mkdirSync(invalidMetaDir, { recursive: true });
 fs.writeFileSync(path.join(invalidMetaDir, "meta.json"), "{}", "utf8");
 
-const transport = new StdioClientTransport({
+const runtimeSmokeTransportOptions = {
   command: process.execPath,
   args: ["dist/src/mcp/server.js"],
   cwd: process.cwd(),
@@ -104,12 +105,17 @@ const transport = new StdioClientTransport({
     CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS:
       process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS ?? "0",
   },
-});
+};
+const transport = new StdioClientTransport(runtimeSmokeTransportOptions);
 
 const client = new Client({ name: "cross-review-runtime-smoke", version: "0.0.0" });
 
-async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-  const result = await client.callTool({ name, arguments: args }, undefined, {
+async function callToolWithClient(
+  targetClient: Client,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const result = await targetClient.callTool({ name, arguments: args }, undefined, {
     timeout: MCP_REQUEST_TIMEOUT_MS,
     maxTotalTimeout: MCP_REQUEST_TIMEOUT_MS,
   });
@@ -119,6 +125,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
     throw new Error(text);
   }
   return JSON.parse(text);
+}
+
+async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  return await callToolWithClient(client, name, args);
 }
 
 async function callToolText(name: string, args: Record<string, unknown>): Promise<string> {
@@ -131,6 +141,23 @@ async function callToolText(name: string, args: Record<string, unknown>): Promis
 }
 
 type PollState = { outcome?: string; jobs?: Array<{ status: string }> };
+type RuntimePreflightPayload = {
+  pass?: boolean;
+  truthfulness_pass?: boolean;
+  evidence_pass?: boolean;
+  blocking_gates?: string[];
+  operator_verified_evidence_count?: number;
+  evidence?: {
+    result?: { evidence_authority?: string; operator_grounded?: boolean } | null;
+  };
+  truthfulness?: { result?: { operator_grounded?: boolean } | null };
+};
+
+type RuntimePreflightAuthorityAttempt = {
+  tool: "session_preflight_check" | "session_truthfulness_preflight_check";
+  payload?: RuntimePreflightPayload;
+  error?: string;
+};
 
 const POLL_INTERVAL_MS = 250;
 const POLL_TIMEOUT_MS = 60_000;
@@ -214,6 +241,159 @@ try {
     JSON.stringify({ version: "runtime-smoke-v1" }, null, 2),
     "utf8",
   );
+  const negativePreflightSession = (await callTool("session_init", {
+    task: "Runtime preflight check: completed implementation with 74 passed.",
+    response_format: "json",
+  })) as { session_id: string };
+  const negativePreflightArgs = {
+    session_id: negativePreflightSession.session_id,
+    draft: "Implementation summary without any raw output.",
+    caller: "operator",
+    response_format: "json",
+  };
+  const negativeCombinedPreflight = (await callTool(
+    "session_preflight_check",
+    negativePreflightArgs,
+  )) as RuntimePreflightPayload;
+  const negativeAliasPreflight = (await callTool(
+    "session_truthfulness_preflight_check",
+    negativePreflightArgs,
+  )) as RuntimePreflightPayload;
+  for (const [tool, payload] of [
+    ["session_preflight_check", negativeCombinedPreflight],
+    ["session_truthfulness_preflight_check", negativeAliasPreflight],
+  ] as const) {
+    assert.equal(payload.truthfulness_pass, true, `${tool}: truthfulness control must pass`);
+    assert.equal(payload.evidence_pass, false, `${tool}: missing evidence must fail`);
+    assert.equal(
+      payload.pass,
+      false,
+      `${tool}: top-level pass must reflect the failing evidence gate, not truthfulness alone`,
+    );
+    assert.deepEqual(payload.blocking_gates, ["evidence"]);
+  }
+
+  const codexTransport = new StdioClientTransport({
+    ...runtimeSmokeTransportOptions,
+    env: {
+      ...runtimeSmokeTransportOptions.env,
+      CROSS_REVIEW_CALLER_TOKEN: runtimeSmokeCodexToken,
+    },
+  });
+  const codexClient = new Client({ name: "codex", version: "0.0.0" });
+  let positiveCombinedPreflight: RuntimePreflightPayload;
+  let positiveAliasPreflight: RuntimePreflightPayload;
+  const operatorOwnerAttempts: RuntimePreflightAuthorityAttempt[] = [];
+  try {
+    await codexClient.connect(codexTransport);
+    const peerSession = (await callToolWithClient(codexClient, "session_init", {
+      task: "Runtime peer preflight: completed implementation with 74 passed.",
+      caller: "codex",
+      response_format: "json",
+    })) as { session_id: string };
+    const peerEvidenceArgs = {
+      session_id: peerSession.session_id,
+      draft: "Implementation candidate submitted by Codex.",
+      evidence: "COMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 74 passed, 0 failed",
+      caller: "codex",
+      response_format: "json",
+    };
+    positiveCombinedPreflight = (await callToolWithClient(
+      codexClient,
+      "session_preflight_check",
+      peerEvidenceArgs,
+    )) as RuntimePreflightPayload;
+    positiveAliasPreflight = (await callToolWithClient(
+      codexClient,
+      "session_truthfulness_preflight_check",
+      peerEvidenceArgs,
+    )) as RuntimePreflightPayload;
+
+    const operatorOwnerArgs = {
+      session_id: negativePreflightSession.session_id,
+      caller: "codex",
+      task: "I triggered workflow deployment run_id=8842 and confirmed the remote deployment succeeded; npm run test reports 74 passed.",
+      draft: "Implementation candidate and deployment closure submitted by Codex.",
+      evidence: [
+        "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
+        "COMMAND: npm run test",
+        "EXIT_CODE: 0",
+        "STDOUT:",
+        "Tests 74 passed, 0 failed",
+      ].join("\n"),
+      response_format: "json",
+    };
+    for (const tool of [
+      "session_preflight_check",
+      "session_truthfulness_preflight_check",
+    ] as const) {
+      try {
+        const payload = (await callToolWithClient(
+          codexClient,
+          tool,
+          operatorOwnerArgs,
+        )) as RuntimePreflightPayload;
+        operatorOwnerAttempts.push({ tool, payload });
+      } catch (error) {
+        operatorOwnerAttempts.push({
+          tool,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  } finally {
+    await codexClient.close();
+  }
+  for (const [tool, payload] of [
+    ["session_preflight_check", positiveCombinedPreflight],
+    ["session_truthfulness_preflight_check", positiveAliasPreflight],
+  ] as const) {
+    assert.equal(payload.truthfulness_pass, true, `${tool}: peer evidence truthfulness must pass`);
+    assert.equal(payload.evidence_pass, true, `${tool}: peer evidence admission must pass`);
+    assert.equal(
+      payload.pass,
+      true,
+      `${tool}: authenticated peer evidence must pass without operator attachment`,
+    );
+    assert.equal(payload.operator_verified_evidence_count, 0);
+    assert.equal(
+      payload.evidence?.result?.evidence_authority,
+      "caller_submitted_unverified",
+      `${tool}: peer evidence must remain explicitly unverified`,
+    );
+  }
+  for (const attempt of operatorOwnerAttempts) {
+    if (attempt.error) {
+      assert.match(
+        attempt.error,
+        /session_owner_mismatch|caller[^\n]*(?:mismatch|forbidden)|(?:owner|authority)[^\n]*mismatch/i,
+        `${attempt.tool}: rejecting a Codex client on an operator-owned session must report an authority mismatch`,
+      );
+      continue;
+    }
+    const payload = attempt.payload;
+    assert.ok(payload, `${attempt.tool}: expected either a payload or an authority rejection`);
+    assert.equal(
+      payload.evidence?.result?.evidence_authority,
+      "caller_submitted_unverified",
+      `${attempt.tool}: a Codex client must never inherit the operator owner's evidence authority`,
+    );
+    assert.equal(
+      payload.evidence?.result?.operator_grounded,
+      false,
+      `${attempt.tool}: Codex inline evidence in an operator-owned session must not be operator-grounded`,
+    );
+    assert.equal(
+      payload.truthfulness?.result?.operator_grounded,
+      false,
+      `${attempt.tool}: truthfulness preflight must preserve the Codex client's unverified authority`,
+    );
+    assert.equal(
+      payload.operator_verified_evidence_count,
+      0,
+      `${attempt.tool}: Codex inline evidence must not create operator-verified evidence`,
+    );
+  }
   const markdownInitText = await callToolText("session_init", {
     task: "Runtime smoke: verify session_init markdown response.",
     review_focus: "runtime/markdown-init",
@@ -391,6 +571,10 @@ try {
         runtime_smoke_data_dir: runtimeSmokeDataDir,
         serverInfo,
         capabilities,
+        negativeCombinedPreflight,
+        negativeAliasPreflight,
+        positiveCombinedPreflight,
+        positiveAliasPreflight,
         markdownInitText,
         sessionListResult,
         no_job_cancel_session_id: noJobSession.session_id,

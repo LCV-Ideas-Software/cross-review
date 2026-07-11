@@ -4656,6 +4656,45 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] relator_auto_recusal_filters_session_peers_test: PASS");
 }
 
+// v4.5.1 — a peer petitioner plus one remaining peer cannot produce both
+// an independent relator and an independent voting reviewer. The relator
+// must never be reinserted as its own reviewer merely to avoid an empty panel.
+{
+  const base = loadConfig();
+  const cfg = {
+    ...base,
+    data_dir: smokeTmpDir("two-peer-relator-self-review"),
+    peer_enabled: {
+      codex: true,
+      claude: true,
+      gemini: false,
+      deepseek: false,
+      grok: false,
+      perplexity: false,
+    },
+    budget: {
+      ...base.budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+  };
+  const orch = new CrossReviewOrchestrator(cfg, () => {});
+  await assert.rejects(
+    () =>
+      orch.runUntilUnanimous({
+        task: "Two-peer relator self-review guard",
+        initial_draft: "Review candidate.",
+        caller: "codex",
+        peers: ["codex", "claude"],
+        max_rounds: 1,
+      }),
+    /no_eligible_reviewer_peers|independent.*reviewer/i,
+    "the sole non-caller peer cannot act as both relator and voting reviewer",
+  );
+  console.log("[smoke] two_peer_relator_self_review_guard_test: PASS");
+}
+
 // v2.16.0 — ask_peers also obeys the self-review prohibition.
 // Direct ask_peers calls have no relator by default, but the caller is
 // still the petitioner and must be auto-recused from reviewer_peers.
@@ -5525,6 +5564,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     task: "Contest test original task",
     draft: "Original draft body.",
     caller: "operator",
+    caller_status: "NOT_READY",
     peers: ["claude"],
   });
   const originalId = initial.session.session_id;
@@ -6065,12 +6105,43 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     ...config,
     data_dir: smokeTmpDir("session-meta-shape"),
   });
-  const invalidDir = path.join(invalidMetaStore.sessionsDir(), "invalid-shape");
+  const invalidSessionId = "00000000-0000-4000-8000-000000000001";
+  const invalidDir = path.join(invalidMetaStore.sessionsDir(), invalidSessionId);
   fs.mkdirSync(invalidDir, { recursive: true });
+  fs.writeFileSync(path.join(invalidDir, "meta.json"), "null", "utf8");
+  assert.throws(
+    () => invalidMetaStore.read(invalidSessionId),
+    /schema_validation_failed: root must be an object/,
+    "direct session reads must validate shape instead of returning null to authority callsites",
+  );
   fs.writeFileSync(path.join(invalidDir, "meta.json"), "{}", "utf8");
   assert.doesNotThrow(() => invalidMetaStore.list());
   assert.equal(invalidMetaStore.list().length, 0);
   assert.equal(fs.existsSync(path.join(invalidDir, "meta.json.bad")), true);
+
+  const inconsistentSession = await invalidMetaStore.init(
+    "inconsistent petitioner fixture",
+    "codex",
+    [],
+  );
+  const inconsistentPath = invalidMetaStore.metaPath(inconsistentSession.session_id);
+  const inconsistentMeta = JSON.parse(fs.readFileSync(inconsistentPath, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  inconsistentMeta.convergence_scope = {
+    petitioner: "claude",
+    caller: "claude",
+    caller_status: "READY",
+    expected_peers: ["gemini"],
+    reviewer_peers: ["gemini"],
+  };
+  fs.writeFileSync(inconsistentPath, `${JSON.stringify(inconsistentMeta, null, 2)}\n`, "utf8");
+  assert.throws(
+    () => invalidMetaStore.read(inconsistentSession.session_id),
+    /schema_validation_failed:.*petitioner|session owner/i,
+    "trusted-version metadata cannot replace the persisted session caller through convergence_scope",
+  );
   console.log("[smoke] invalid_session_meta_shape_quarantined_test: PASS");
 }
 
@@ -6501,8 +6572,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(dOut.lead_peer, undefined);
   assert.equal(captured.length, 0, "no caller override MUST NOT emit audit event");
 
-  // Scenario E: caller passes empty `peers: []` → not treated as override
-  // (empty list is functionally equivalent to "no preference").
+  // Scenario E: caller passes empty `peers: []` → stripped as an override.
+  // Keeping it would let the caller turn the full-panel lock into a
+  // no_eligible_reviewer_peers abort instead of normalizing to all enabled
+  // reviewers.
   captured.length = 0;
   const eIn = {
     task: "lock-test-E",
@@ -6510,8 +6583,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     caller: "claude" as const,
     peers: [] as PeerId[],
   };
-  lockCallerPeerSelection(eIn, { site: "ask_peers", emit: captureEmit });
-  assert.equal(captured.length, 0, "empty peers list MUST NOT emit audit event");
+  const eOut = lockCallerPeerSelection(eIn, { site: "ask_peers", emit: captureEmit });
+  assert.equal(eOut.peers, undefined, "empty peers list MUST be stripped to restore full panel");
+  assert.equal(captured.length, 1, "empty peers override MUST emit one audit event");
+  assert.equal(captured[0]?.data?.peer_panel_overridden, true);
+  assert.deepEqual(captured[0]?.data?.ignored_peers, []);
 
   // Scenario F: source-level pin — server.ts MUST call
   // lockCallerPeerSelection from EVERY caller-facing tool handler so
@@ -7286,6 +7362,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(hasTrustedPetitionerProvenance("4.5.0"), true);
   assert.equal(hasTrustedPetitionerProvenance("legacy"), false);
   assert.equal(hasTrustedPetitionerProvenance("legacy-4.5.0-corrupt"), false);
+  assert.equal(
+    hasTrustedPetitionerProvenance(undefined),
+    false,
+    "session JSON without a version must fail closed instead of throwing",
+  );
+  assert.equal(
+    hasTrustedPetitionerProvenance(null),
+    false,
+    "session JSON with a null version must fail closed instead of throwing",
+  );
 
   // (13) generateHostTokens overwrite rotates secrets — file content differs.
   delete process.env.CROSS_REVIEW_CALLER_TOKEN;
@@ -9224,10 +9310,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "utf8",
   );
   assert.ok(
-    /const effectivePetitioner: PeerId \| "operator" =\s*\n?\s*input\.petitioner \?\?/.test(
+    /const effectivePetitioner: PeerId \| "operator" =\s*\n?\s*persistedPetitioner \?\? input\.petitioner \?\? requestedPetitioner/.test(
       a1OrchSrc,
     ),
-    "v3.7.0 / AUDIT-1: askPeers must derive effectivePetitioner before recusal",
+    "v4.5.1 / AUDIT-1: askPeers must derive effectivePetitioner from persisted ownership before recusal",
   );
   assert.ok(
     /effectivePetitioner === "operator"\s*\n?\s*\? enabledRequestedPeers/.test(a1OrchSrc),
@@ -9304,6 +9390,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // recuse codex — the v3.7.1 fix was DEAD on the public path because it
   // led the ?? chain with input.caller. Each iteration uses a FRESH codex
   // session (the runUntilUnanimous call above finalized a2r1's session).
+  // The dedicated operator may continue it; a different peer must now be
+  // rejected instead of being silently reclassified as the persisted owner.
   for (const postSchemaCaller of ["operator", "claude"] as const) {
     const pscR1 = await a2Orch.askPeers({
       task: "AUDIT-2 smoke: post-schema caller continuation.",
@@ -9311,13 +9399,23 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       caller: "codex",
       peers: ["claude", "gemini", "deepseek"],
     });
-    const pscRun = await a2Orch.runUntilUnanimous({
+    const continuation = {
       session_id: pscR1.session.session_id,
       task: "AUDIT-2 smoke: post-schema caller continuation.",
       initial_draft: "FORCE_NEEDS_EVIDENCE",
       caller: postSchemaCaller,
       max_rounds: 1,
-    });
+    } as const;
+    if (postSchemaCaller === "claude") {
+      await assert.rejects(
+        a2Orch.runUntilUnanimous(continuation),
+        /session_owner_mismatch/,
+        "v4.5.1 / authority: a non-owner peer cannot continue another peer's session",
+      );
+      assert.equal(a2Orch.store.read(pscR1.session.session_id).rounds.length, 1);
+      continue;
+    }
+    const pscRun = await a2Orch.runUntilUnanimous(continuation);
     const pscScope = pscRun.session.convergence_scope;
     assert.equal(
       pscScope?.petitioner,
@@ -9334,18 +9432,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       `v3.7.2 / AUDIT-2: codex must be recused from reviewer_peers with post-schema caller="${postSchemaCaller}" — got [${(pscScope?.reviewer_peers ?? []).join(", ")}]`,
     );
   }
-  // Source pin: runUntilUnanimous derives callerForLottery with the
-  // persisted session BEFORE input.caller (v3.7.2 ordering — input.caller
-  // is schema-defaulted so it cannot lead the chain).
+  // Source pins: the persisted session owns petitioner identity, while the
+  // acting caller remains distinct for authorization and evidence attribution.
   const a2OrchSrc = fs.readFileSync(
     new URL("../src/core/orchestrator.ts", import.meta.url),
     "utf8",
   );
   assert.ok(
-    /const callerForLottery: PeerId \| "operator" =\s*existingSession\?\.convergence_scope\?\.petitioner \?\?\s*existingSession\?\.caller \?\?\s*input\.caller \?\?\s*"operator";/.test(
-      a2OrchSrc,
-    ),
-    "v3.7.2 / AUDIT-1: runUntilUnanimous must derive callerForLottery from the persisted session BEFORE input.caller",
+    /const actingCaller: PeerId \| "operator" = input\.caller \?\? "operator";/.test(a2OrchSrc) &&
+      /existingSession\?\.convergence_scope\?\.petitioner \?\? existingSession\?\.caller \?\? actingCaller/.test(
+        a2OrchSrc,
+      ) &&
+      /session_owner_mismatch/.test(a2OrchSrc),
+    "v4.5.1 / authority: persisted petitioner and acting invoker must remain distinct and mismatches must fail closed",
   );
   // v3.7.2 (AUDIT-3): NO model fallback — every peer PRIORITY list is a
   // SINGLE canonical pin. Negative pins (off-policy models that must never
@@ -9450,10 +9549,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.7.5 / A2: lock must compare caller-supplied panel against enabled set via sorted set-equality before deciding peerPanelOverridden",
   );
   assert.ok(
-    /const peerPanelOverridden =\s*!!callerSuppliedPeers && callerSuppliedPeers\.length > 0 && !callerPanelMatchesEnabled;/.test(
+    /const peerPanelOverridden =\s*callerSuppliedPeers !== undefined && !callerPanelMatchesEnabled;/.test(
       serverSrcA2,
     ),
-    "v3.7.5 / A2: peerPanelOverridden must subtract callerPanelMatchesEnabled so the lock skips the emit when the panels match",
+    "v4.5.1 / A2: every explicit non-matching panel, including [], must override while set-equal panels pass through",
   );
   // All 4 lock call sites must pass enabledPeers.
   const enabledPeersCallSites = (serverSrcA2.match(/enabledPeers: enabledPeersSnapshot/g) ?? [])
@@ -9465,15 +9564,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
 
   // v3.7.5 / A2 — behavioral coverage. Exercise lockCallerPeerSelection
-  // through 5 input combinations addressing the codex R1 ask on
-  // duplicate/set-equality safety:
-  //  (a) enabledPeers undefined → backward-compat (any non-empty list
-  //      treated as override; v3.3.0..v3.7.4 behavior preserved)
+  // through 6 input combinations addressing panel equality and the empty
+  // panel no-reviewer-abort regression:
+  //  (a) enabledPeers undefined → any explicitly supplied list is an override
   //  (b) callerSupplied set-equal to enabledPeers → no emit, no strip
   //  (c) callerSupplied has duplicates → length matches but sorted
   //      joins differ → still override (no false-positive equivalence)
   //  (d) callerSupplied is a strict subset → override
   //  (e) callerSupplied is a strict superset → override
+  //  (f) callerSupplied is empty → override
   type LockEvent = { type: string; data?: { peer_panel_overridden?: boolean } };
   const lockCallerPeerSelection = (await import("../src/mcp/server.js")).lockCallerPeerSelection;
   const enabledSet: readonly PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok"];
@@ -9523,6 +9622,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       .emits.length,
     1,
     "v3.7.5 / A2 (e): strict superset must trigger override",
+  );
+  assert.equal(
+    runLockCase("claude", [], true).emits.length,
+    1,
+    "v4.5.1 / A2 (f): empty caller panel must trigger override and restore the enabled panel",
   );
 
   console.log("[smoke] caller_peer_selection_lock_panel_equality_test: PASS");
@@ -9692,9 +9796,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const securitySrc = fs.readFileSync(path.join(process.cwd(), "SECURITY.md"), "utf8");
   assert.ok(
     securitySrc.includes(
-      `Current supported source candidate: ${displayVersion} for package ${pjVer}.`,
+      `Current supported source/release target: ${displayVersion} for package ${pjVer}.`,
     ),
-    `v4.5.0 / release_metadata: SECURITY.md must name the current source candidate "${displayVersion}" and package "${pjVer}" without implying npm publication.`,
+    `v4.5.1 / release_metadata: SECURITY.md must name the current neutral source/release target "${displayVersion}" and package "${pjVer}" without implying npm publication state.`,
   );
   console.log("[smoke] package_version_consistency_test: PASS");
 }
@@ -10005,6 +10109,25 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       "npm --registry=https://registry.npmjs.org run release:verify-registry",
     ),
     "v4.0.5 / AUDIT-6: publish workflow must verify npm registry artifact metadata after publication.",
+  );
+  assert.ok(
+    /if \[ "\$TAG" != "\$DISPLAY_TAG" \]/.test(publishWorkflow),
+    "v4.5.1 / release metadata: publish must reject a tag that does not match package.json.",
+  );
+  assert.ok(
+    /function matches_heading\(key, prefix, next_char\)/.test(publishWorkflow) &&
+      /return next_char == "" \|\| next_char == " "/.test(publishWorkflow),
+    "v4.5.1 / release notes: dated CHANGELOG headings must match an exact bracketed tag plus end/space boundary.",
+  );
+  const autoTagWorkflow = fs.readFileSync(
+    path.join(process.cwd(), ".github", "workflows", "auto-tag.yml"),
+    "utf8",
+  );
+  assert.ok(
+    /if \[\[ "\$VERSION" == \*-\* \]\]; then[\s\S]{0,120}TAG="\$\{TAG\}-\$\{VERSION#\*-\}"/.test(
+      autoTagWorkflow,
+    ),
+    "v4.5.1 / release metadata: auto-tag and publish must derive the same prerelease display tag.",
   );
   console.log("[smoke] registry_dist_metadata_verification_test: PASS");
 }

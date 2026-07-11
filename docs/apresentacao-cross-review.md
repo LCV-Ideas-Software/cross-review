@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-07-10.
+Data de referência desta apresentação: 2026-07-11.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -9,11 +9,11 @@ Este documento apresenta o `cross-review` para dois públicos:
 - profissionais de TI e desenvolvimento que precisam instalar, configurar,
   operar, auditar ou integrar o servidor MCP.
 
-As informações abaixo acompanham o source candidate do repositório. A versão
-publicada no npm é identificada separadamente. Em uma sessão MCP já carregada,
-consulte `server_info` para confirmar a versão runtime efetivamente ativa; após
-atualização global por npm, o host MCP ainda precisa ser recarregado para
-refletir a nova versão.
+As informações abaixo acompanham o release target do repositório. Como o
+registro público pode ficar alguns minutos atrás do source durante o workflow,
+consulte `npm view @lcv-ideas-software/cross-review version` para o estado do
+registro e `server_info` para a versão efetivamente carregada pela janela MCP.
+Após um upgrade global por npm, o host MCP ainda precisa ser recarregado.
 
 ## Resumo executivo
 
@@ -36,20 +36,19 @@ Na prática, ele funciona como uma banca técnica automatizada:
 5. os resultados ficam persistidos em sessões duráveis, logs, eventos e
    relatórios.
 
-O produto publicado é estável. O source candidate de referência reporta:
+O produto é estável. O source/release target de referência reporta:
 
-| Campo                              | Valor atual                        |
-| ---------------------------------- | ---------------------------------- |
-| Nome                               | `cross-review`                     |
-| Publicador                         | `LCV Ideas & Software`             |
-| Versão runtime do source candidate | `4.5.0`                            |
-| Release date runtime               | `2026-07-10`                       |
-| Pacote npm                         | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada               | `4.4.8`                            |
-| Transporte MCP                     | `stdio`                            |
-| Execução CLI por peers             | desativada                         |
-| Modo padrão                        | chamadas reais de API              |
-| Diretório de dados runtime         | `<data_dir>`                       |
+| Campo                         | Valor atual                        |
+| ----------------------------- | ---------------------------------- |
+| Nome                          | `cross-review`                     |
+| Publicador                    | `LCV Ideas & Software`             |
+| Versão preparada pelo source  | `4.5.1`                            |
+| Data do source/release target | `2026-07-11`                       |
+| Pacote npm                    | `@lcv-ideas-software/cross-review` |
+| Transporte MCP                | `stdio`                            |
+| Execução CLI por peers        | desativada                         |
+| Modo padrão                   | chamadas reais de API              |
+| Diretório de dados runtime    | `<data_dir>`                       |
 
 ## Explicação para não especialistas
 
@@ -246,7 +245,8 @@ A superfície MCP da release expõe as seguintes ferramentas:
 | `session_report`                        | Gera relatório Markdown de uma sessão.                                                            |
 | `session_peer_reliability_report`       | Agrega sinais de confiabilidade por peer sem alterar seleção ou estado de sessão.                 |
 | `session_check_convergence`             | Retorna estado de convergência durável sem chamar provedores.                                     |
-| `session_truthfulness_preflight_check`  | Reexecuta localmente o truthfulness preflight de uma sessão sem chamar provedores.                |
+| `session_preflight_check`               | Executa os mesmos gates de evidência e veracidade da rodada real sem chamar provedores.           |
+| `session_truthfulness_preflight_check`  | Alias legado do preflight combinado.                                                              |
 | `session_attach_evidence`               | Anexa evidência textual à sessão.                                                                 |
 | `session_evidence_checklist_update`     | Atualiza status de itens de evidência.                                                            |
 | `session_evidence_judge_pass`           | Usa um peer como juiz de evidência em modo controlado.                                            |
@@ -312,29 +312,28 @@ existe para impedir que uma sessão paga avance com afirmações sem base.
 ### Instalação global via npm
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review
 ```
 
-Enquanto `4.5.0` permanecer source candidate, esse comando instala a versão
-publicada `4.4.8`. Para executar `4.5.0` antes da publicação, use o build local
-do repositório e confirme a versão efetiva em `server_info`.
+Esse comando usa somente o pacote publicado. Não instale o runtime globalmente
+a partir dos fontes e não aponte o host MCP para este checkout. Confirme o
+registro com `npm view @lcv-ideas-software/cross-review version` e a versão
+efetiva com `server_info` depois de recarregar a janela MCP.
 
 ### Instalação via GitHub Packages
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
 Dependendo do ambiente, GitHub Packages pode exigir autenticação npm
 configurada para o escopo `@lcv-ideas-software`.
 
-### Instalação local para desenvolvimento
+### Política de runtime para desenvolvimento
 
-```bash
-npm install
-npm --registry=https://registry.npmjs.org run build
-node dist/src/mcp/server.js
-```
+Testes e builds de validação podem rodar no checkout, mas isso não instala o
+produto. O host MCP deve continuar apontando apenas para o pacote global
+publicado pelo registro.
 
 ### Smoke tests locais sem custo
 
@@ -512,10 +511,11 @@ Dependências diretas de desenvolvimento:
 ## Scripts do projeto
 
 Os scripts principais são `build`, `dev`, `dashboard`, `smoke`,
-`evidence-preflight-smoke`, `truthfulness-preflight-smoke`, `runtime-smoke`,
-`api-streaming-smoke`, `test`, `lint`, `format:check`, `typecheck`, `biome` e
-`check`. O script `check` reúne formatação, lint, Biome e typecheck; `test`
-executa build, smokes focados, smoke geral e runtime smoke.
+`evidence-preflight-smoke`, `evidence-transport-regression`,
+`truthfulness-preflight-smoke`, `runtime-smoke`, `api-streaming-smoke`, `test`,
+`lint`, `format:check`, `typecheck`, `biome` e `check`. O script `check` reúne
+formatação, lint, Biome e typecheck; `test` executa build, smokes focados, smoke
+geral e runtime smoke.
 
 ## Persistência e observabilidade
 
@@ -537,7 +537,8 @@ Arquivos típicos por sessão:
 
 - `meta.json`: estado durável da sessão;
 - `events.ndjson`: eventos incrementais;
-- evidências anexadas via `session_attach_evidence`;
+- evidências do caller persistidas automaticamente e anexos opcionais do
+  operador;
 - `session-report.md`, quando gerado por `session_report`;
 - manifestos de cache, quando aplicável.
 
@@ -555,12 +556,15 @@ e cadeia de custódia:
   identidade `operator` separada;
 - `operator` exige seu próprio token mesmo quando enforcement de peer é
   permissivo; esse segredo só pode existir num console humano dedicado;
-- anexos e mutações de evidência/checklist, estado terminal e segurança são
-  exclusivos do operador humano;
-- cada anexo novo registra autor verificado, origem, horário, bytes e SHA-256,
-  emite evento durável e tem sua integridade recalculada a cada leitura;
-- anexos adulterados falham fechados; anexos legados ou atribuídos a peer são
-  auditáveis, mas não entram no corpus confiável;
+- evidência inline/estruturada de caller autenticado é persistida e transportada
+  automaticamente como `caller_submitted_unverified`; somente a promoção de
+  autoridade e as mutações de checklist, estado terminal e segurança são
+  exclusivas do operador humano;
+- cada artefato registra caller, origem, horário, bytes e SHA-256, emite evento
+  durável e tem sua integridade recalculada a cada leitura;
+- artefatos adulterados falham fechados; material de peer entra no corpus com
+  rótulo não autoritativo e exige painel independente estrito para claims
+  operacionais;
 - raw chain-of-thought não é persistido;
 - eventos de token registram contagens por padrão, não texto bruto;
 - texto de streaming só aparece com opt-in explícito;
@@ -647,7 +651,8 @@ Os campos essenciais de uma revisão são:
 - `draft` ou `initial_draft`: artefato a ser revisado;
 - `caller`: identidade que submete a revisão;
 - `caller_status`: estado do caller para convergência;
-- `evidence`: evidência estruturada opcional em fluxos até unanimidade;
+- `evidence`: evidência estruturada opcional em `ask_peers`,
+  `session_start_round` e nos fluxos até unanimidade;
 - `reasoning_effort_overrides`: ajuste pontual por peer quando necessário.
 
 O campo `review_focus` é importante para reduzir ruído. Ele deve dizer
@@ -680,19 +685,26 @@ Evidências aceitáveis incluem:
   equivalente;
 - referências `arquivo:linha`;
 - hashes;
-- anexos persistidos por `session_attach_evidence`;
+- evidência inline ou no campo `evidence`, persistida automaticamente com
+  caller, bytes e SHA-256;
+- anexos opcionais promovidos pelo operador via `session_attach_evidence`;
 - logs relevantes.
 
 Um anexo genérico não prova uma alegação não relacionada. Claims de runtime,
 modelo, workflow/deploy, autorização, hashes e resultados de testes precisam
-corresponder aos valores da evidência. Todo `READY`, inclusive com confiança
-`inferred`, precisa de fonte rastreável ao artefato ou a anexo sob custódia do
-operador. Metadados de runtime só corroboram uma alegação runtime correspondente
+corresponder aos valores da evidência. Todo `READY` precisa de fonte rastreável
+ao artefato ou à evidência transportada. Se a alegação operacional depender
+apenas de bytes enviados por um peer, ao menos dois revisores independentes
+devem usar `confidence=verified` e citar path, SHA-256 e linhas brutas
+correlacionadas; confiança `inferred` não basta. Metadados de runtime só
+corroboram uma alegação runtime correspondente
 e não provam revisão do artefato; caso contrário, o voto é rebaixado para
 `NEEDS_EVIDENCE`. Status estruturado incompleto, autorrevisão, model mismatch,
 READY truncado/contraditório, evidência aberta/não ressurgida e fabricação do
-relator não convergem. Só o operador autenticado pode anexar ou dar disposição
-autoritativa à evidência, e um peer não pode julgar o próprio pedido.
+relator não convergem. Um peer pode retirar somente a própria ask depois de uma
+revalidação estrita, sem fechar pedido alheio ou estado terminal. Só o operador
+autenticado pode promover evidência para autoridade de operador ou dar disposição
+autoritativa terminal.
 
 Para revisões sérias, empacote evidência antes de chamar peers. O servidor não
 deve ser tratado como coletor de repo, shell ou CI.
@@ -770,6 +782,10 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.01`      | 2026-07-11    | Restaura transporte autenticado de evidência sem anexo manual, fecha confusão de autoridade, exige painel independente estrito e preserva terminais imutáveis.                         |
+| `v04.05.00`      | 2026-07-10    | Atualiza os seis contratos de provider e endurece terminais, fingerprint de config, custody, grounding de READY e detecção anti-fabricação.                                            |
+| `v04.04.08`      | 2026-06-16    | Eleva o piso transitivo de `hono` e fecha os advisories correntes.                                                                                                                     |
+| `v04.04.07`      | 2026-06-16    | Promove o piso corrigido de `protobufjs` para consumidores downstream.                                                                                                                 |
 | `v04.04.06`      | 2026-06-12    | Fecha a cauda restante da revalidação Claude: leituras de evidência no orquestrador falham fechado, `session_doctor` separa histórico terminal de achados e T2#10 cai para 160 pins.   |
 | `v04.04.05`      | 2026-06-12    | Fecha os 7 resíduos verificados da auditoria: realpath fail-closed em evidências, tipagem de `shadow_decision`, data derivada do CHANGELOG, comentário JWT e budget T2#10 bloqueado.   |
 | `v04.04.04`      | 2026-06-12    | Adiciona rate cards por modelo no `config.json`, permitindo guardar preços de Claude Opus 4.8 e Claude Fable 5 e selecionar automaticamente pelo modelo configurado.                   |
@@ -818,7 +834,7 @@ Antes de usar uma revisão como gate:
 - confirmar `server_info` no runtime carregado;
 - confirmar `paid_calls_ready`;
 - confirmar peers habilitados;
-- anexar evidência objetiva;
+- fornecer evidência objetiva inline ou no campo `evidence`;
 - definir `review_focus` com escopo claro;
 - usar `session_start_*` para trabalhos longos;
 - ler `session_check_convergence` ou `session_report` antes de declarar pronto;
@@ -826,8 +842,9 @@ Antes de usar uma revisão como gate:
 
 ## Fontes verificadas para esta apresentação
 
-- Runtime MCP do source candidate: `server_info` e `runtime_capabilities`
-  verificados em 2026-07-10.
+- Contrato runtime do source target: smokes verificados em 2026-07-11. O
+  `server_info` da janela instalada reportava `4.5.0` antes da publicação e do
+  upgrade de `4.5.1`.
 - `package.json` do repositório local.
 - `README.md`.
 - `CHANGELOG.md`.

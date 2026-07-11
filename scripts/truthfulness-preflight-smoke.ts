@@ -108,8 +108,9 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.ok(
     /attachments_present=false/.test(fabricatedTiming.reason) &&
-      /session_attach_evidence/.test(fabricatedTiming.reason),
-    "v4.2.4 / truthfulness_preflight: failure reason must tell operators that no attachment was visible and how to fix it",
+      /inline|evidence field/.test(fabricatedTiming.reason) &&
+      /no manual operator attachment/.test(fabricatedTiming.reason),
+    "v4.5.1 / truthfulness_preflight: remediation must accept authenticated caller evidence without manual attachment",
   );
 
   const fabricatedWorkflowClaim = truthfulnessPreflight({
@@ -161,7 +162,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.ok(
     /recordPreflightFailure/.test(orchSrcTruth),
-    "v4.2.4 / truthfulness_preflight: preflight aborts without rounds must still persist failed_attempts metadata",
+    "v4.5.1 / truthfulness_preflight: preflight blocks without rounds must still persist failed_attempts metadata",
   );
   assert.ok(
     /boolEnv\("CROSS_REVIEW_TRUTHFULNESS_PREFLIGHT", true\)/.test(configSrcTruth),
@@ -472,7 +473,7 @@ import type { PeerResult } from "../src/core/types.js";
     "v4.4.9 / truthfulness: value-corresponding workflow evidence must pass",
   );
 
-  const peerSelfAttestedWorkflow = truthfulnessPreflight({
+  const peerSubmittedWorkflow = truthfulnessPreflight({
     task: "Summarize deployment closure.",
     initialDraft: "I triggered the deployment and confirmed the remote deployment succeeded.",
     caller: "claude",
@@ -482,10 +483,16 @@ import type { PeerResult } from "../src/core/types.js";
     runtimeFacts: { runtime_version: "4.5.0" },
   });
   assert.equal(
-    peerSelfAttestedWorkflow.pass,
-    false,
-    "v4.5.0 / truthfulness: a peer cannot corroborate its own operational claim with peer-supplied structured text",
+    peerSubmittedWorkflow.pass,
+    true,
+    "v4.5.1 / truthfulness: value-corresponding authenticated peer evidence must not require an operator attachment",
   );
+  assert.equal(
+    peerSubmittedWorkflow.independent_review_required,
+    true,
+    "peer-submitted workflow evidence must be admitted but remain subject to strict independent panel corroboration",
+  );
+  assert.equal(peerSubmittedWorkflow.operator_grounded, false);
 
   const peerUsesCustodiedWorkflowEvidence = truthfulnessPreflight({
     task: "Summarize deployment closure.",
@@ -494,6 +501,8 @@ import type { PeerResult } from "../src/core/types.js";
     attachmentsPresent: true,
     attachedEvidenceText:
       "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
+    operatorVerifiedEvidenceText:
+      "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
     runtimeFacts: { runtime_version: "4.5.0" },
   });
   assert.equal(
@@ -501,6 +510,8 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "v4.5.0 / truthfulness: a peer may rely on operator-custodied attached evidence",
   );
+  assert.equal(peerUsesCustodiedWorkflowEvidence.independent_review_required, false);
+  assert.equal(peerUsesCustodiedWorkflowEvidence.operator_grounded, true);
 
   const orchestratorSource = fs.readFileSync(
     new URL("../src/core/orchestrator.ts", import.meta.url),
@@ -819,10 +830,12 @@ import type { PeerResult } from "../src/core/types.js";
     "v4.2.4 / truthfulness_preflight: runUntilUnanimous must run truthfulness/evidence preflight before paid lead generation",
   );
   assert.ok(
-    /"session_truthfulness_preflight_check"/.test(serverSrcTruth) &&
-      /readEvidenceAttachments/.test(serverSrcTruth) &&
-      /truthfulnessPreflight/.test(serverSrcTruth),
-    "v4.2.4 / truthfulness_preflight: MCP must expose a read-only session_truthfulness_preflight_check retest tool",
+    /"session_preflight_check"/.test(serverSrcTruth) &&
+      /"session_truthfulness_preflight_check"/.test(serverSrcTruth) &&
+      /checkSessionPreflights/.test(serverSrcTruth) &&
+      /truthfulnessPreflight/.test(orchSrcTruth) &&
+      /evidencePreflight/.test(orchSrcTruth),
+    "v4.5.1 / preflight: MCP must expose a read-only combined preflight plus the legacy alias",
   );
   assert.ok(
     /"session_truthfulness_preflight_check"/.test(serverSrcTruth) &&

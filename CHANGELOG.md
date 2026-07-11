@@ -7,6 +7,107 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.01] — 2026-07-11
+
+**Patch — authenticated evidence transport without manual operator custody.**
+
+### Added
+
+- `session_preflight_check`, which runs the same enabled evidence and
+  truthfulness gates as a real round; the legacy truthfulness-only tool name is
+  retained as a combined-gate alias.
+- Focused regression coverage for peer inline evidence, structured-evidence
+  prompt transport, combined preflight parity and terminal outcome
+  immutability.
+- Integrity/authority separation for evidence artifacts, including explicit
+  `caller_submitted` origin and `caller_submitted_unverified` prompt labeling.
+- A strict independent-panel gate for operational claims backed only by
+  peer-submitted evidence: at least two non-author reviewers must return
+  `READY/verified` and cite attachment path, SHA-256 and value-corresponding raw
+  lines.
+
+### Changed
+
+- Authenticated peer evidence supplied inline or through `evidence` is
+  persisted with SHA-256, byte count and caller identity, then transported to
+  relators and reviewers without any manual operator attachment requirement.
+- `ask_peers` and `session_start_round` now accept the same optional `evidence`
+  channel as the unanimous workflows.
+- Remediable caller preflight failures leave the durable session open for a
+  corrected authenticated submission instead of creating an unrecoverable
+  terminal abort.
+- `COMMAND` / `EXIT_CODE` / `STDOUT` records are parsed as correlated command
+  blocks; a later successful command cannot validate an earlier failed one.
+- A reviewer that opened an evidence ask may close only that same prior ask via
+  `requester_reverified` after a strictly grounded `READY/verified` vote;
+  silence remains `not_resurfaced`, and other peers' or terminal items are
+  immutable.
+- Publish metadata now requires the selected tag to match the display tag
+  derived from `package.json`, and dated changelog headings are extracted into
+  GitHub Release notes instead of falling back to a generic sentence.
+
+### Fixed
+
+- Structured `evidence` no longer disappears between the unanimous preflight
+  and reviewer prompt.
+- Inline raw evidence from a Codex caller no longer becomes invisible merely
+  because the caller is a peer.
+- Every authenticated external submission now creates an append-only evidence
+  manifest and atomically selects one active snapshot. A corrected retry no
+  longer inherits an older failure, an evidence-less retry cannot replay an
+  older success, and superseded blobs cannot consume the reviewer prompt cap.
+- Concurrent evidence writes with the same label now receive UUID-qualified
+  paths, preventing same-millisecond overwrite and digest corruption.
+- A terminal result produced inside `askPeers` can no longer be overwritten by
+  the outer loop as `max-rounds`; terminal transitions are immutable and exact
+  replays are idempotent.
+- Non-zero exit codes, explicit failure counts and conflicting runs of the same
+  command can no longer be overridden by convenient `passed`/`success` words.
+- Explicit English or Portuguese non-execution, modal failure and skipped-run
+  statements can no longer be reinterpreted as success because an unrelated
+  `ok`/`green` word appears nearby; inline command success must bind the command
+  and result in the same raw line or structured block.
+- Bare command/success phrases such as `git diff --stat`, `git status clean`,
+  `tests passed`, `build succeeded` and `all checks passed` are narrative, not
+  raw proof; the matching gate now requires an actual hunk/count/status record
+  or a correlated command plus zero exit code.
+- A correctly reverified evidence ask no longer remains trapped forever as
+  `not_resurfaced` when judge autowire is disabled.
+- A `Checklist-Item` identifier is now routing metadata, not proof: abstract
+  asks or command-name-only documentation quotes cannot auto-close a request
+  for raw execution output; execution, workflow and diff asks require their
+  corresponding record shapes.
+- Current/historical operational-state claims without a version or date no
+  longer bypass truthfulness classification, and a current `server_info`
+  snapshot cannot prove what was loaded at workflow start without temporal
+  provenance in the raw content. Temporal markers and asserted values must
+  belong to the same historically scoped record; current-only lines are
+  excluded even when a start timestamp appears elsewhere.
+- A no-claim preflight is now authority-neutral (`evidence_authority=none`);
+  absence of an assertion can no longer manufacture `operator_verified` by
+  vacuous truth.
+- Continuations can no longer attribute a peer invoker's evidence to the
+  persisted session owner. Existing-session starters enforce petitioner/operator
+  authority, and the orchestrator persists evidence under the actual invoker,
+  closing a peer-to-operator privilege-confusion path.
+- An explicit empty reviewer panel (`peers: []`) is now treated as a caller
+  override, audited and stripped so the full enabled panel is restored instead
+  of letting the caller force a no-reviewer abort.
+- A sole non-caller peer can no longer be both the relator and its own voting
+  reviewer; ship/review mode fails closed when no independent voter remains.
+- Source member calls such as `console.log(...)` are no longer misclassified as
+  unattached `.log` evidence files; artifact tokens must have independent
+  evidence context, and call syntax is excluded.
+- Malformed or externally altered sessions whose persisted `version` is
+  missing or null are rejected by direct metadata-shape validation instead of
+  throwing later during mutation-authority derivation.
+- Direct session reads now apply the same metadata-shape validation as session
+  listings, so valid JSON such as `null` cannot reach authorization callsites
+  as a falsely typed session object.
+- Durable-version metadata must keep `convergence_scope` petitioner/caller
+  consistent with the persisted session owner, preventing corrupted scope
+  data from transferring mutation authority to another peer.
+
 ## [v04.05.00] — 2026-07-10
 
 **Minor — six-provider model refresh and evidence-backed truthfulness hardening.**

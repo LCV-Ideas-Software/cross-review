@@ -76,18 +76,18 @@ assert.equal(
 );
 assert.equal(designReview.completed_work_claim_matched, false);
 
-// (d) structured `evidence` field supplied -> PASS unconditionally
-//     even when the task makes a bare completed-work claim.
+// (d) structured `evidence` is a transport channel, not automatic proof.
+//     A value-corresponding raw command record satisfies the claim.
 const withStructured = evidencePreflight({
   task: "Review my patch - 99 passed.",
   initialDraft: "no markers here",
-  structuredEvidence: "git diff --stat: 3 files changed; test log: 99 passed 0 failed",
+  structuredEvidence: "COMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 99 passed (99)",
   attachmentsPresent: false,
 });
 assert.equal(
   withStructured.pass,
   true,
-  "v3.5.0 / evidence_preflight: non-empty structured evidence field must satisfy preflight unconditionally",
+  "structured evidence must pass only when its raw record value-corresponds with the claim",
 );
 assert.equal(withStructured.structured_evidence_supplied, true);
 
@@ -130,7 +130,7 @@ assert.equal(
   "v4.4.9 / evidence_preflight: generic structuredEvidence must not satisfy a 99-passed claim",
 );
 
-const peerCannotSelfAttestStructuredEvidence = evidencePreflight({
+const peerSubmittedStructuredEvidence = evidencePreflight({
   task: "Review my patch - 99 passed.",
   initialDraft: "no markers here",
   caller: "claude",
@@ -138,22 +138,87 @@ const peerCannotSelfAttestStructuredEvidence = evidencePreflight({
   attachmentsPresent: false,
 });
 assert.equal(
-  peerCannotSelfAttestStructuredEvidence.pass,
-  false,
-  "v4.5.0 / evidence_preflight: a peer caller cannot turn its own structured text into provenance-grade evidence",
+  peerSubmittedStructuredEvidence.pass,
+  true,
+  "v4.5.1 / evidence_preflight: authenticated peer raw material must pass transport admission",
 );
+assert.equal(peerSubmittedStructuredEvidence.operator_grounded, false);
+assert.equal(peerSubmittedStructuredEvidence.evidence_authority, "caller_submitted_unverified");
 
 const peerCanUseOperatorCustodiedAttachment = evidencePreflight({
   task: "Review my patch - 99 passed.",
   initialDraft: "no markers here",
   caller: "claude",
   attachedEvidenceText: "Tests 99 passed, 0 failed\nEXIT_CODE: 0",
+  operatorVerifiedEvidenceText: "Tests 99 passed, 0 failed\nEXIT_CODE: 0",
   attachmentsPresent: true,
 });
 assert.equal(
   peerCanUseOperatorCustodiedAttachment.pass,
   true,
   "v4.5.0 / evidence_preflight: a peer may rely on content already admitted through operator-only attachment custody",
+);
+assert.equal(peerCanUseOperatorCustodiedAttachment.operator_grounded, true);
+assert.equal(peerCanUseOperatorCustodiedAttachment.evidence_authority, "operator_verified");
+
+const commandRecord = evidencePreflight({
+  task: "Review completed work: npm run lint passed and git diff --check is clean.",
+  initialDraft:
+    "COMMAND: npm run lint\nEXIT_CODE: 0\nSTDOUT:\nNo lint errors\n\nCOMMAND: git diff --check\nEXIT_CODE: 0\nSTDOUT: <empty>",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(commandRecord.pass, true, "COMMAND/EXIT_CODE blocks must remain correlated");
+
+const crossCommandFalsePositive = evidencePreflight({
+  task: "Review completed work: npm run lint passed.",
+  initialDraft:
+    "COMMAND: npm run lint\nEXIT_CODE: 1\nSTDOUT: lint failed\n\nCOMMAND: npm test\nEXIT_CODE: 0\nTests 4 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  crossCommandFalsePositive.pass,
+  false,
+  "a later command's EXIT_CODE:0 must not corroborate an earlier failed command",
+);
+
+const nonZeroExitDominatesSuccessWords = evidencePreflight({
+  task: "Review completed work: npm run test passed and the tests passed.",
+  initialDraft:
+    "COMMAND: npm run test\nEXIT_CODE: 1\nSTDOUT:\nTests 74 passed, 1 failed\nThe runner printed a success summary before exiting with failure.",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  nonZeroExitDominatesSuccessWords.pass,
+  false,
+  "EXIT_CODE != 0 must override passed/success words in the same COMMAND block",
+);
+
+const conflictingRunsOfSameCommand = evidencePreflight({
+  task: "Review completed work: npm run lint passed.",
+  initialDraft:
+    "COMMAND: npm run lint\nEXIT_CODE: 0\nSTDOUT: lint passed\n\nCOMMAND: npm run lint\nEXIT_CODE: 1\nSTDOUT: lint failed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  conflictingRunsOfSameCommand.pass,
+  false,
+  "conflicting success and failure records for the same command must not corroborate a success claim",
+);
+
+const incompatiblePassedFailedCounts = evidencePreflight({
+  task: "Review completed work: the tests passed; 99 passed.",
+  initialDraft: "COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 99 passed, 1 failed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  incompatiblePassedFailedCounts.pass,
+  false,
+  "a matching passed count cannot corroborate suite success when the same record reports failures",
 );
 
 const mismatchedStructuredValue = evidencePreflight({
@@ -379,6 +444,11 @@ const directBlocked = await directOrchestrator.askPeers({
 });
 assert.equal(directBlocked.converged, false);
 assert.equal(directBlocked.round.peers.length, 0);
+assert.equal(
+  directBlocked.session.outcome,
+  undefined,
+  "remediable preflight failures must leave the session open for corrected peer evidence",
+);
 assert.ok(
   directBlocked.round.rejected.every((failure) => failure.failure_class === "evidence_preflight"),
   "direct askPeers must materialize a local evidence_preflight failure",
@@ -389,7 +459,7 @@ assert.equal(
   "preflight must run before peer calls",
 );
 
-// Source pins: env var + config flag + orchestrator wiring + outcome reason.
+// Source pins: env var + config flag + orchestrator wiring.
 const orchSrcPf = fs.readFileSync(new URL("../src/core/orchestrator.ts", import.meta.url), "utf8");
 const configSrcPf = fs.readFileSync(new URL("../src/core/config.ts", import.meta.url), "utf8");
 assert.ok(
@@ -406,10 +476,6 @@ const askPeersSource = orchSrcPf.slice(askPeersStart, runUntilStart);
 assert.ok(
   /evidencePreflight\(/.test(askPeersSource),
   "v4.5.0 / evidence_preflight: direct askPeers must run evidence preflight before paid calls",
-);
-assert.ok(
-  /"needs_evidence_preflight"/.test(orchSrcPf),
-  "v3.5.0 / evidence_preflight: finalize reason `needs_evidence_preflight` must be wired",
 );
 assert.ok(
   /session\.evidence_preflight_failed/.test(orchSrcPf),

@@ -43,6 +43,10 @@ export interface AskPeersInput {
   task: string;
   review_focus?: string | undefined;
   draft: string;
+  // Optional raw material submitted by the authenticated caller. The runtime
+  // persists it with an integrity digest and forwards it to reviewers, but a
+  // peer caller cannot promote it to operator-verified custody.
+  evidence?: string | undefined;
   // Petitioner/impetrante that submitted the case. Internal callers such
   // as runUntilUnanimous use this to keep the original caller distinct
   // from the relator currently presenting a revised draft.
@@ -69,6 +73,23 @@ export function trustedEvidenceAttachments(
   return attachments.filter(
     (attachment) =>
       attachment.provenance_status === "verified" && attachment.attached_by === "operator",
+  );
+}
+
+// Reviewable evidence has a verified integrity envelope, but may still have
+// been submitted by an untrusted model caller. It is safe to transport to the
+// independent reviewers; it is not equivalent to operator authority.
+export function reviewableEvidenceAttachments(
+  attachments: readonly ResolvedEvidenceAttachment[],
+): ResolvedEvidenceAttachment[] {
+  return attachments.filter((attachment) => attachment.provenance_status === "verified");
+}
+
+export function callerSubmittedEvidenceAttachments(
+  attachments: readonly ResolvedEvidenceAttachment[],
+): ResolvedEvidenceAttachment[] {
+  return reviewableEvidenceAttachments(attachments).filter(
+    (attachment) => attachment.attached_by !== "operator",
   );
 }
 
@@ -105,10 +126,10 @@ export interface RunUntilUnanimousInput {
   mode?: import("./types.js").SessionMode | undefined;
   // v3.5.0 (CRV2-4, Codex operational report): structured evidence the
   // caller supplies up-front. It is value-correlated with operational
-  // claims; mere presence is never proof. A peer caller cannot self-attest
-  // through this channel — only operator-custodied attachments corroborate
-  // peer claims. Cross-review stays API-only and never executes shell or
-  // reads the caller's repo (see docs/evidence-preflight.md).
+  // claims; mere presence is never proof. Authenticated peer evidence is
+  // persisted and transported as unverified review material, without any
+  // manual operator step. Cross-review stays API-only and never executes
+  // shell or reads the caller's repo (see docs/evidence-preflight.md).
   evidence?: string | undefined;
 }
 
@@ -164,11 +185,10 @@ function sessionContractDirectives(): string[] {
     // v3.4.0 — proportionality guidance. Observed in sess 0003b2fe
     // (2026-05-12, Perplexity reviewer): for a small config/script
     // change validated only by static scans, Perplexity demanded a
-    // separate `session_attach_evidence` of the same rg output the
-    // caller had narrated inline. This wastes rounds without improving
-    // safety. Default remains "rigor > economy" for runtime work —
-    // this clause only loosens the bar for pure static-scan reviews.
-    "5) Proportionality: scale evidence demands to change risk. For pure config/script/text changes validated by static scans (rg/grep, JSON parse, git diff --check) where the caller narrates the scan inline, that inline narration IS the evidence — do not also demand separate `session_attach_evidence` of the same scan output unless you suspect the scan was performed incorrectly. For changes with runtime effect (build, test, deploy, migration, network call), always demand raw output. When in doubt, prefer asking for evidence over assuming.",
+    // duplicate operator attachment of the same rg output the caller had
+    // supplied inline. This wastes rounds without improving safety.
+    "5) Proportionality: scale evidence demands to change risk. For pure config/script/text changes validated by static scans (rg/grep, JSON parse, git diff --check), supply the literal scan output inline or in the evidence field. For changes with runtime effect (build, test, deploy, migration, network call), always demand raw output. If the supplied proof is suspect, ask the authenticated caller to correct and resubmit it through those same automatic channels; never require a manual operator attachment for an ordinary review. When in doubt, prefer asking for evidence over assuming.",
+    "6) Peer-evidence corroboration: peer-submitted operational evidence is reviewable but UNVERIFIED. A READY vote that relies on it MUST use `confidence: verified` and cite the persisted attachment path, its SHA-256, and verbatim raw lines that value-correlate every operational assertion. When withdrawing a prior evidence ask, also cite its `Checklist-Item` id. Narrative-only citations and inferred confidence cannot support READY. At least two independent non-author reviewers must satisfy this contract; no manual operator attachment is required.",
     "",
   ];
 }
@@ -255,51 +275,52 @@ function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
   return limitBlock(summary, config.prompt.max_history_chars);
 }
 
-// v2.14.0 (path-A structural fix): inline session-attached evidence
-// into peer-facing prompts. Caller anexa via `session_attach_evidence`
-// (already exists in v2.x); this block reads each attachment from disk
-// (via `SessionStore.readEvidenceAttachments`) and injects content
-// inline so peers see the full literal evidence (gates output, diff
-// hunks, log files) without the caller having to paste 200KB+ into the
-// MCP `draft` channel. Closes the recurring "meta-channel limit"
-// pattern (v2.5.0 + v2.13.0 ship-trilaterals) where codex demanded
-// literal evidence and the MCP caller→server channel could not carry
-// it. The server→peer channel is bounded only by the peer's context
-// window (Claude Opus 4.7 = 1M tokens; GPT-5.5 = 128K), much wider
-// than the MCP boundary. Per-attachment + total caps in
+// v2.14.0/v4.5.1: inline persisted evidence into peer-facing prompts.
+// Authenticated caller evidence is now persisted automatically; optional
+// operator-custodied artifacts use the same read path. This block injects
+// full literal gate output, diff hunks, and logs without forcing large payloads
+// through the draft channel. The server-to-peer channel still has provider
+// context limits, so per-attachment + total caps in
 // `config.prompt.max_attached_evidence_chars` keep prompts within
 // peer context budgets.
-function attachedEvidenceBlock(
-  attachments: Array<{
-    label: string;
-    relative_path: string;
-    content: string;
-    bytes: number;
-    truncated: boolean;
-    content_type?: string | undefined;
-  }>,
-): string[] {
+function attachedEvidenceBlock(attachments: ResolvedEvidenceAttachment[]): string[] {
   if (!attachments.length) return [];
-  const lines: string[] = [
-    "## Attached Evidence",
-    "",
-    "The caller has attached the following files to the session via `session_attach_evidence`. The content below is read VERBATIM from the corresponding file in the server-side `evidence/` directory (no truncation unless explicitly noted). When reviewing the artifact, consult these attachments as the literal source of truth — they are NOT summarized.",
-    "",
-  ];
-  for (const att of attachments) {
-    const truncatedNote = att.truncated
-      ? ` (truncated to ${att.content.length} of ${att.bytes} bytes)`
-      : ` (${att.bytes} bytes)`;
-    const ctype = att.content_type ? ` content-type: \`${att.content_type}\`,` : "";
-    lines.push(
-      `### ${att.label} — \`${att.relative_path}\`${ctype}${truncatedNote}`,
-      "",
-      "```",
-      att.content,
-      "```",
-      "",
-    );
-  }
+  const operatorVerified = trustedEvidenceAttachments(attachments);
+  const callerSubmitted = callerSubmittedEvidenceAttachments(attachments);
+  const lines: string[] = [];
+  const appendArtifacts = (
+    heading: string,
+    explanation: string,
+    artifacts: typeof attachments,
+  ): void => {
+    if (!artifacts.length) return;
+    lines.push(heading, "", explanation, "");
+    for (const att of artifacts) {
+      const truncatedNote = att.truncated
+        ? ` (truncated to ${att.content.length} of ${att.bytes} bytes)`
+        : ` (${att.bytes} bytes)`;
+      const ctype = att.content_type ? ` content-type: \`${att.content_type}\`,` : "";
+      lines.push(
+        `### ${att.label} — \`${att.relative_path}\`${ctype}${truncatedNote}`,
+        `Integrity: sha256=\`${att.sha256 ?? "unavailable"}\`; submitted_by=\`${att.attached_by ?? "unknown"}\``,
+        "",
+        "```",
+        att.content,
+        "```",
+        "",
+      );
+    }
+  };
+  appendArtifacts(
+    "## Attached Evidence (OPERATOR-VERIFIED)",
+    "The authenticated human operator admitted these exact persisted bytes. This optional higher-trust tier is never required for an ordinary review; integrity is rechecked before every use.",
+    operatorVerified,
+  );
+  appendArtifacts(
+    "## Peer-Submitted Evidence (UNVERIFIED)",
+    "The authenticated peer caller submitted these exact persisted bytes for independent review. Their integrity, caller identity and hash are recorded, but they are NOT promoted to operator-verified authority. Inspect them as review material and do not claim independent execution that the bytes do not prove.",
+    callerSubmitted,
+  );
   return lines;
 }
 
@@ -341,14 +362,7 @@ function buildReviewPrompt(
   draft: string,
   config: AppConfig,
   reviewFocus?: string,
-  attachments?: Array<{
-    label: string;
-    relative_path: string;
-    content: string;
-    bytes: number;
-    truncated: boolean;
-    content_type?: string | undefined;
-  }>,
+  attachments?: ResolvedEvidenceAttachment[],
 ): string {
   return [
     "# Cross Review - Review Round",
@@ -374,26 +388,29 @@ function buildReviewPrompt(
 // "[seen N rounds]" tag so the caller knows the ask is sticky.
 // Each item shows the originating peer + the verbatim ask.
 //
-// v2.8.0: only items in `open` status (or status undefined for legacy
-// pre-v2.8 sessions) appear in the prompt. Items marked `not_resurfaced`
-// by resurfacing inference (v3.5.0 — was `addressed` pre-v3.5.0),
-// `addressed` by the judge autowire, or moved to terminal states
-// (`satisfied`, `deferred`, `rejected`) by the operator, are suppressed
-// here so peers focus on what is still outstanding. The dashboard and
+// v4.5.1: both `open` and `not_resurfaced` items appear because silence is
+// not satisfaction; the requester needs the stable Checklist-Item id to
+// explicitly reverify it. `addressed` and terminal operator states stay
+// suppressed so peers focus on unresolved asks. The dashboard and
 // session_read still surface the full checklist with status badges.
 function evidenceChecklistBlock(meta: SessionMeta): string[] {
   const checklist = meta.evidence_checklist ?? [];
-  const open = checklist.filter((item) => (item.status ?? "open") === "open");
-  if (!open.length) return [];
+  const unresolved = checklist.filter((item) => {
+    const status = item.status ?? "open";
+    return status === "open" || status === "not_resurfaced";
+  });
+  if (!unresolved.length) return [];
   const lines = [
     "## Outstanding Evidence Asks (running checklist across all rounds)",
     "Each line below is a `caller_request` returned by a peer in NEEDS_EVIDENCE state.",
     "Address every outstanding ask in the revised version below — concrete file:line references, grep output, diff hunks, MD5 hashes, log lines. R1 NEEDS_EVIDENCE indicates missing upfront evidence in the original draft (a draft defect per session-start contract rule #1); any same ask resurfacing in R2+ is additionally a revision defect.",
     "",
   ];
-  for (const item of open) {
+  for (const item of unresolved) {
     const persistence = item.round_count > 1 ? ` [seen ${item.round_count} rounds]` : "";
-    lines.push(`- **${item.peer}** (R${item.first_round}${persistence}): ${item.ask}`);
+    lines.push(
+      `- Checklist-Item: ${item.id} — **${item.peer}** (R${item.first_round}${persistence}, status=${item.status ?? "open"}): ${item.ask}`,
+    );
   }
   lines.push("");
   return lines;
@@ -459,8 +476,8 @@ function detectLeadDrift(generationText: string): boolean {
 // embed the verbatim diff + raw gate output in `initial_draft`) was
 // wrongly flagged as fabricating (session 506f006a). The prior
 // artifact is split out as its own tier:
-//   - PROVENANCE-GRADE corpus = attached evidence content only
-//     (persisted via session_attach_evidence).
+//   - PROVENANCE corpus = integrity-checked persisted evidence content;
+//     operator and caller authority tiers remain distinct at later gates.
 //   - PRIOR-ARTIFACT corpus = the prior round's draft / the caller's
 //     `initial_draft` — the artifact the relator is revising. An
 //     operational assertion the relator PRESERVES from it is not
@@ -589,8 +606,9 @@ export interface FabricationDetectionResult {
 
 export interface FabricationDetectionCorpus {
   /**
-   * PROVENANCE-GRADE corpus. Raw command/tool output persisted via
-   * `session_attach_evidence`.
+   * PROVENANCE corpus. Integrity-checked raw command/tool output persisted by
+   * either the automatic authenticated-caller path or the optional operator
+   * authority path. Callers do not acquire operator authority here.
    */
   provenanceCorpus: string;
   /**
@@ -678,6 +696,13 @@ export interface ReadyPeerEvidenceGroundingInput {
   artifactText: string;
   attachedEvidenceText: string;
   attachmentRefs: string[];
+  callerSubmittedAttachments?: ReadonlyArray<{
+    label?: string | undefined;
+    relative_path: string;
+    sha256?: string | undefined;
+    content: string;
+  }>;
+  requirePeerSubmittedCorroboration?: boolean | undefined;
   runtimeFacts: TruthfulnessRuntimeFacts;
 }
 
@@ -686,6 +711,8 @@ export interface ReadyPeerEvidenceGroundingResult {
   grounded: boolean;
   unsupported_sources: string[];
   fabrication: FabricationDetectionResult;
+  peer_submitted_evidence_required: boolean;
+  peer_submitted_evidence_corroborated: boolean;
 }
 
 function normalizeGroundingText(value: string): string {
@@ -748,6 +775,98 @@ function evidenceSourceHasGroundedAnchor(
   return referencesKnownAttachment && hasVerbatimLine;
 }
 
+function evidenceSourceNamesPeerCustody(
+  sourceText: string,
+  attachments: NonNullable<ReadyPeerEvidenceGroundingInput["callerSubmittedAttachments"]>,
+): boolean {
+  const normalizedSource = normalizeGroundingText(sourceText);
+  return attachments.some((attachment) => {
+    const pathMentioned = normalizedSource.includes(
+      normalizeGroundingText(attachment.relative_path),
+    );
+    const labelMentioned = attachment.label
+      ? normalizedSource.includes(normalizeGroundingText(attachment.label))
+      : false;
+    const digestMentioned =
+      typeof attachment.sha256 === "string" &&
+      attachment.sha256.length >= 32 &&
+      normalizedSource.includes(attachment.sha256.toLowerCase());
+    return (pathMentioned || labelMentioned) && digestMentioned;
+  });
+}
+
+function truthfulnessClaimAnchors(claim: string): string[] {
+  const anchors = [
+    ...uniqueMatches(VERSION_TOKEN_PATTERN, claim),
+    ...uniqueMatches(ISO_DATE_TOKEN_PATTERN, claim),
+    ...uniqueMatches(MODEL_TOKEN_PATTERN, claim),
+    ...uniqueMatches(OPERATIONAL_VALUE_PATTERN, claim),
+  ].map((value) => normalizeGroundingText(value));
+  return [...new Set(anchors.filter(Boolean))];
+}
+
+function truthfulnessClaimHasMatchingAnchors(claim: string, evidenceText: string): boolean {
+  const uniqueAnchors = truthfulnessClaimAnchors(claim);
+  if (!uniqueAnchors.length) return false;
+  const normalizedEvidence = normalizeGroundingText(evidenceText);
+  return uniqueAnchors.every((anchor) => normalizedEvidence.includes(anchor));
+}
+
+function truthfulnessClaimHasMatchingEvidence(claim: string, evidenceText: string): boolean {
+  const hasExplicitAnchors = truthfulnessClaimAnchors(claim).length > 0;
+  const hasOperationalState = operationalStateClaimDetected(claim);
+  if (!hasExplicitAnchors && !hasOperationalState) return false;
+  return (
+    (!hasExplicitAnchors || truthfulnessClaimHasMatchingAnchors(claim, evidenceText)) &&
+    (!hasOperationalState || operationalStateClaimCorroborated(claim, evidenceText))
+  );
+}
+
+function historicalEvidenceRawMaterial(evidenceText: string): string {
+  // Paths and attachment metadata are routing data, not temporal provenance.
+  // Evaluate only the raw/cited material so a filename such as
+  // `workflow-start.txt` cannot turn a current snapshot into historical proof.
+  return evidenceText
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .filter((line) => !/^\s*(?:Attachment|sha-?256)\s*:/i.test(line))
+    .join("\n");
+}
+
+const HISTORICAL_EVIDENCE_TIMING_PATTERN =
+  /\b(?:(?:when|at|for)\s+(?:the\s+)?(?:workflow|run|audit|session)\s+(?:began|start(?:ed)?)|(?:workflow|run|audit|session)[_ ](?:start|started_at|began|created_at)|snapshot\s+(?:captured|recorded|taken)\s+(?:when|at|for)\s+(?:the\s+)?(?:workflow|run|audit|session)\s+(?:began|start(?:ed)?))\b/i;
+
+function historicalEvidenceHasSnapshotTiming(evidenceText: string): boolean {
+  return HISTORICAL_EVIDENCE_TIMING_PATTERN.test(historicalEvidenceRawMaterial(evidenceText));
+}
+
+function historicalEvidenceLineIsCurrentSnapshot(line: string): boolean {
+  if (/\b(?:current|currently|now)\b/i.test(line)) return true;
+  return (
+    /\b(?:server_info|runtime_capabilities)\b/i.test(line) &&
+    !HISTORICAL_EVIDENCE_TIMING_PATTERN.test(line) &&
+    !/\b(?:runtime_version|model|release_date)_at_(?:workflow|run|audit|session)?_?start\b/i.test(
+      line,
+    )
+  );
+}
+
+function historicalClaimHasMatchingSnapshot(claim: string, evidenceText: string): boolean {
+  const rawMaterial = historicalEvidenceRawMaterial(evidenceText);
+  const records = rawMaterial
+    .split(/\n\s*\n+/)
+    .map((record) => record.trim())
+    .filter(Boolean);
+  return records.some((record) => {
+    if (!HISTORICAL_EVIDENCE_TIMING_PATTERN.test(record)) return false;
+    const historicallyScopedRecord = record
+      .split("\n")
+      .filter((line) => !historicalEvidenceLineIsCurrentSnapshot(line))
+      .join("\n");
+    return truthfulnessClaimHasMatchingEvidence(claim, historicallyScopedRecord);
+  });
+}
+
 /**
  * READY is a claim about work performed by an untrusted model. This gate ties
  * every evidence_sources item back to the reviewed artifact, operator-custodied
@@ -760,33 +879,125 @@ export function groundReadyPeerEvidence(
   input: ReadyPeerEvidenceGroundingInput,
 ): ReadyPeerEvidenceGroundingResult {
   const sources = peerResult.structured?.evidence_sources ?? [];
-  const trustedCorpus = `${input.artifactText}\n${input.attachedEvidenceText}`;
+  const callerSubmittedAttachments = input.callerSubmittedAttachments ?? [];
+  const callerSubmittedEvidenceText = callerSubmittedAttachments
+    .map((attachment) => attachment.content)
+    .join("\n");
+  const trustedCorpus = `${input.artifactText}\n${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}`;
   const attachmentRefs = new Set(
     input.attachmentRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
   );
   const fabrication = detectFabricatedEvidence(sources.join("\n"), {
-    provenanceCorpus: input.attachedEvidenceText,
+    provenanceCorpus: `${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}`,
     priorDraftCorpus: input.artifactText,
     narrativeCorpus: "",
   });
   const unsupportedSources = sources.filter(
     (source) => !evidenceSourceHasGroundedAnchor(source, trustedCorpus, attachmentRefs),
   );
+  const operationalAssertions = extractEvidenceOperationalAssertions(input.artifactText);
+  const fabricationProneClaims = splitTruthfulnessLines(input.artifactText).filter((line) =>
+    FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line),
+  );
+  const historicalClaims = splitTruthfulnessLines(input.artifactText).filter((line) =>
+    HISTORICAL_RUNTIME_TIMING_PATTERN.test(line),
+  );
+  const forcedCurrentStateClaims = input.requirePeerSubmittedCorroboration
+    ? splitTruthfulnessLines(input.artifactText).filter((line) =>
+        CURRENT_STATE_CLAIM_PATTERN.test(line),
+      )
+    : [];
+  const hasHighRiskOperationalClaims =
+    operationalAssertions.length > 0 ||
+    fabricationProneClaims.length > 0 ||
+    historicalClaims.length > 0 ||
+    forcedCurrentStateClaims.length > 0;
+  const operatorGrounded =
+    hasHighRiskOperationalClaims &&
+    operationalAssertions.every((assertion) =>
+      evidenceCorroboratesOperationalAssertion(assertion, input.attachedEvidenceText),
+    ) &&
+    fabricationProneClaims.every((claim) =>
+      operationalClaimCorroborated(claim, input.attachedEvidenceText),
+    ) &&
+    historicalClaims.every((claim) =>
+      historicalClaimHasMatchingSnapshot(claim, input.attachedEvidenceText),
+    ) &&
+    forcedCurrentStateClaims.every((claim) =>
+      truthfulnessClaimHasMatchingEvidence(claim, input.attachedEvidenceText),
+    );
+  const peerEvidenceGrounded =
+    hasHighRiskOperationalClaims &&
+    operationalAssertions.every((assertion) =>
+      evidenceCorroboratesOperationalAssertion(assertion, callerSubmittedEvidenceText),
+    ) &&
+    fabricationProneClaims.every((claim) =>
+      operationalClaimCorroborated(claim, callerSubmittedEvidenceText),
+    ) &&
+    historicalClaims.every((claim) =>
+      historicalClaimHasMatchingSnapshot(claim, callerSubmittedEvidenceText),
+    ) &&
+    forcedCurrentStateClaims.every((claim) =>
+      truthfulnessClaimHasMatchingEvidence(claim, callerSubmittedEvidenceText),
+    );
+  const peerSubmittedEvidenceRequired =
+    input.requirePeerSubmittedCorroboration === true ||
+    (!operatorGrounded && hasHighRiskOperationalClaims && callerSubmittedAttachments.length > 0);
+  const sourceText = sources.join("\n");
+  const peerSubmittedEvidenceCorroborated =
+    !peerSubmittedEvidenceRequired ||
+    (peerResult.structured?.confidence === "verified" &&
+      callerSubmittedAttachments.length > 0 &&
+      peerEvidenceGrounded &&
+      evidenceSourceNamesPeerCustody(sourceText, callerSubmittedAttachments) &&
+      evidenceSourceHasGroundedAnchor(
+        sourceText,
+        callerSubmittedEvidenceText,
+        new Set(
+          callerSubmittedAttachments.flatMap((attachment) =>
+            [attachment.label, attachment.relative_path]
+              .filter((value): value is string => Boolean(value))
+              .map(normalizeEvidenceRef),
+          ),
+        ),
+      ) &&
+      operationalAssertions.every((assertion) =>
+        evidenceCorroboratesOperationalAssertion(assertion, sourceText),
+      ) &&
+      fabricationProneClaims.every((claim) => operationalClaimCorroborated(claim, sourceText)) &&
+      historicalClaims.every((claim) => historicalClaimHasMatchingSnapshot(claim, sourceText)) &&
+      forcedCurrentStateClaims.every((claim) =>
+        truthfulnessClaimHasMatchingEvidence(claim, sourceText),
+      ));
   const grounded =
     peerResult.status !== "READY" ||
-    (sources.length > 0 && unsupportedSources.length === 0 && !fabrication.fabricated);
+    (sources.length > 0 &&
+      unsupportedSources.length === 0 &&
+      !fabrication.fabricated &&
+      peerSubmittedEvidenceCorroborated);
   if (grounded) {
-    return { result: peerResult, grounded, unsupported_sources: [], fabrication };
+    return {
+      result: peerResult,
+      grounded,
+      unsupported_sources: [],
+      fabrication,
+      peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
+      peer_submitted_evidence_corroborated: peerSubmittedEvidenceCorroborated,
+    };
   }
 
-  const warning = fabrication.fabricated
-    ? "ready_evidence_sources_fabricated"
-    : sources.length === 0
-      ? "ready_evidence_sources_missing"
-      : "ready_evidence_sources_ungrounded";
+  const warning = !peerSubmittedEvidenceCorroborated
+    ? peerResult.structured?.confidence !== "verified"
+      ? "ready_peer_submitted_evidence_requires_verified_confidence"
+      : "ready_peer_submitted_evidence_requires_path_hash_and_correlated_raw_quote"
+    : fabrication.fabricated
+      ? "ready_evidence_sources_fabricated"
+      : sources.length === 0
+        ? "ready_evidence_sources_missing"
+        : "ready_evidence_sources_ungrounded";
   const parserWarnings = [...peerResult.parser_warnings, warning];
   const callerRequest =
-    "Cite evidence verbatim from the reviewed artifact or operator-custodied attachments; invented or untraceable sources cannot support READY.";
+    "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
   return {
     result: {
       ...peerResult,
@@ -807,6 +1018,37 @@ export function groundReadyPeerEvidence(
     grounded: false,
     unsupported_sources: unsupportedSources,
     fabrication,
+    peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
+    peer_submitted_evidence_corroborated: false,
+  };
+}
+
+export function blockConvergenceForPeerSubmittedEvidencePanel(
+  convergence: ConvergenceResult,
+  params: {
+    required: boolean;
+    corroborating_peers: readonly PeerId[];
+    minimum_reviewers?: number | undefined;
+  },
+): ConvergenceResult {
+  if (!convergence.converged || !params.required) return convergence;
+  const minimum = Math.max(2, params.minimum_reviewers ?? 2);
+  const readyPeers = new Set(convergence.ready_peers);
+  const corroboratingPeers = [...new Set(params.corroborating_peers)].filter((peer) =>
+    readyPeers.has(peer),
+  );
+  if (corroboratingPeers.length >= minimum) return convergence;
+  return {
+    ...convergence,
+    converged: false,
+    reason: `peer_submitted_evidence_requires_independent_panel: ${corroboratingPeers.length}/${minimum} strictly grounded READY reviewers`,
+    latest_round_converged: false,
+    session_quorum_converged: false,
+    recovery_converged: false,
+    blocking_details: [
+      ...convergence.blocking_details,
+      `Peer-submitted operational evidence remains unverified until at least ${minimum} independent READY/verified reviewers cite attachment path, SHA-256 and value-corresponding raw lines.`,
+    ],
   };
 }
 
@@ -889,18 +1131,18 @@ export function detectMetaAuditFabrication(revisionText: string): MetaAuditDetec
 //       refs, `$ `/`> ` command-prompt lines.
 // Mere keyword presence ("I plan to write a patch", "the test plan
 // is...") does NOT trip — a design review legitimately has no diff.
-// Structured or attached evidence is inspected for value-level
+// Structured, inline or attached evidence is inspected for value-level
 // correspondence with every detected operational assertion. Presence,
 // filenames, hashes, or a code fence alone never make the preflight pass.
-// A peer cannot self-attest provenance through its own task, draft or
-// structured-evidence text: only operator-custodied attachments corroborate
-// peer callers. Operator callers may additionally supply raw inline or
-// structured evidence.
+// Peer-submitted material may satisfy this ADMISSION gate so independent
+// reviewers can inspect it, but remains explicitly unverified. Only
+// operator-custodied material is authority-grade for the separate
+// truthfulness/provenance gates.
 // Opt-out via CROSS_REVIEW_EVIDENCE_PREFLIGHT=off.
 const COMPLETED_WORK_CLAIM_PATTERN =
   /\b\d+\s+(?:passed|failed)\b|\bgit\s+diff\b|\bgit\s+status\b|\bnpm\s+run\b|\bcargo\s+(?:test|build)\b|\bbuild\s+(?:passed|succeeded|clean|green)\b|\btests?\s+(?:pass|passed|green|all\s+green)\b|\bgit\s+diff\s+--check\b|\b(?:ci|pipeline|workflow)\s+(?:completed|passed|succeeded|green|without\s+errors)\b|\b(?:all|every)\s+(?:checks?|jobs?)\s+(?:passed|succeeded|green)\b/gi;
 const EVIDENCE_MARKER_PATTERN =
-  /```|@@\s*[-+]|\b[a-f0-9]{7,}\b|\b[\w./-]+\.\w+:\d+\b|(?:^|\n)\s*[$>]\s+\S/;
+  /```|@@\s*[-+]|\b[a-f0-9]{7,}\b|\b[\w./-]+\.\w+:\d+\b|(?:^|\n)\s*(?:[$>]\s+\S|COMMAND\s*:\s*\S)/i;
 const EXTERNAL_EVIDENCE_CONTEXT_PATTERN =
   /\b(?:evidence|attachment|attached|anex(?:o|os|a|as|ad[ao]s?)|artifact|artefato|proof|prova|raw|literal|verbatim|source[- ]of[- ]truth|log)\b/i;
 const EXTERNAL_EVIDENCE_ARTIFACT_PATTERN =
@@ -958,7 +1200,7 @@ function extractEvidenceOperationalAssertions(text: string): EvidenceOperational
     }
   }
 
-  for (const match of assertiveMatches(/\bgit\s+diff\b/gi, text)) {
+  for (const match of assertiveMatches(/\bgit\s+diff\b(?!\s+--check)/gi, text)) {
     add("git_diff", { kind: "git_diff", display: match[0] });
   }
   for (const match of assertiveMatches(/\bgit\s+status\b/gi, text)) {
@@ -985,7 +1227,7 @@ function extractEvidenceOperationalAssertions(text: string): EvidenceOperational
   return assertions;
 }
 
-function extractInlineRawEvidence(text: string): string {
+export function extractInlineRawEvidence(text: string): string {
   const pieces: string[] = [];
   const fencePattern = /```[^\n]*\n([\s\S]*?)```/g;
   for (const match of text.matchAll(fencePattern)) {
@@ -998,11 +1240,20 @@ function extractInlineRawEvidence(text: string): string {
       pieces.push(body);
     }
   }
+  // Codex and other tool hosts commonly serialize command captures without a
+  // shell prompt, using COMMAND/EXIT_CODE/STDOUT records. Preserve each whole
+  // block so the command and its outcome remain value-correlated.
+  const commandBlockPattern =
+    /(?:^|\n)\s*COMMAND\s*:\s*[^\n]+[\s\S]*?(?=(?:\n\s*COMMAND\s*:)|(?:\n\s*#{1,6}\s)|$)/gi;
+  for (const match of text.matchAll(commandBlockPattern)) {
+    const body = match[0]?.trim() ?? "";
+    if (/\bEXIT[_ ]?CODE\s*[:=]\s*\d+\b/i.test(body)) pieces.push(body);
+  }
   const rawLines = text
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .filter((line) =>
-      /\bEXIT[_ ]?CODE\s*[:=]\s*\d+\b|\bTest Files\s+\d+\s+(?:passed|failed)\b|\bTests?\s+\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b|@@\s*[-+]|\bdiff --git\b|\bgit diff --stat\b|\bOn branch\b|\bnothing to commit\b|^\s*[$>]\s+\S/i.test(
+      /\bEXIT[_ ]?CODE\s*[:=]\s*\d+\b|\bTest Files\s+\d+\s+(?:passed|failed)\b|\bTests?\s+\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b|@@\s*[-+]|\bdiff --git\b|\bgit diff --stat\b[^\n]*\b\d+ files? changed\b|\bOn branch\b|\bnothing to commit\b|^\s*[$>]\s+\S/i.test(
         line,
       ),
     );
@@ -1010,10 +1261,94 @@ function extractInlineRawEvidence(text: string): string {
   return pieces.join("\n");
 }
 
-function evidenceHasSuccessSignal(text: string): boolean {
-  return /\bEXIT[_ ]?CODE\s*[:=]\s*0\b|\b(?:passed|succeeded|success|successful|clean|green|ok)\b|\bconclusion\s*[:=]\s*success\b/i.test(
+const EVIDENCE_NON_EXECUTION_PATTERN =
+  /\b(?:(?:was|were|is|are|has|have|had)\s+(?:not|never)\s+(?:been\s+)?(?:attempted|started|executed|run|performed|invoked|completed)|did\s+(?:not|never)\s+(?:attempt|start|execute|run|perform|invoke|complete)|(?:could|can)\s+not\s+(?:be\s+)?(?:attempted|started|executed|run|performed|invoked|completed)|(?:cannot|unable\s+to)\s+(?:attempt|start|execute|run|perform|invoke|complete)|(?:was|were|is|are|been)?\s*(?:aborted(?:\s+before\s+(?:execution|running|start))?|cancelled|canceled|skipped|omitted|deferred|blocked|pending|not[- ]run)|(?:not|never)\s+(?:attempted|started|executed|run|performed|invoked|completed)|(?:n[aã]o|nunca)\s+(?:(?:foi|foram|p[oô]de)\s+)?(?:tentad[oa]s?|iniciad[oa]s?|executad[oa]s?|rodad[oa]s?|realizad[oa]s?|invocad[oa]s?|conclu[ií]d[oa]s?|executei|rodei|realizei|invoquei)|(?:foi|foram)\s+(?:abortad[oa]s?|cancelad[oa]s?|ignorado?s?|pulad[oa]s?|adiad[oa]s?|bloquead[oa]s?)|sem\s+(?:tentar|iniciar|executar|rodar|realizar|invocar|concluir))\b/i;
+
+function evidenceHasExplicitFailureSignal(text: string): boolean {
+  if (EVIDENCE_NON_EXECUTION_PATTERN.test(text)) return true;
+  const exitCodes = [...text.matchAll(/\bEXIT[_ ]?CODE\s*[:=]\s*(\d+)\b/gi)]
+    .map((match) => Number(match[1]))
+    .filter(Number.isFinite);
+  if (exitCodes.some((code) => code !== 0)) return true;
+  for (const match of text.matchAll(/\b(\d+)\s+failed\b/gi)) {
+    if (Number(match[1]) > 0) return true;
+  }
+  return /\btest result:\s*FAILED\b|\bconclusion\s*[:=]\s*(?:failure|failed|cancelled|timed_out)\b|\bstatus\s*[:=]\s*(?:failure|failed|error)\b/i.test(
     text,
   );
+}
+
+function evidenceHasInlineCommandSuccess(command: string, evidenceText: string): boolean {
+  const lines = evidenceText.replace(/\r\n?/g, "\n").split("\n");
+  const anyCommandPattern =
+    /\b(?:npm\s+run\s+[a-z0-9:_-]+|cargo\s+(?:test|build)|git\s+diff\s+--check)\b/i;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const normalizedLine = normalizeOperationalCommand(line);
+    const commandIndex = normalizedLine.indexOf(command);
+    if (commandIndex < 0) continue;
+    let tail = normalizedLine.slice(commandIndex + command.length);
+    const nextCommandIndex = tail.search(anyCommandPattern);
+    if (nextCommandIndex >= 0) tail = tail.slice(0, nextCommandIndex);
+    const recordLines = [`${command}${tail}`];
+    for (let following = index + 1; following < lines.length; following += 1) {
+      const candidate = lines[following] ?? "";
+      if (!candidate.trim() || /^\s*#{1,6}\s/.test(candidate)) break;
+      if (anyCommandPattern.test(candidate)) break;
+      recordLines.push(candidate);
+    }
+    const record = recordLines.join("\n");
+    if (evidenceHasExplicitFailureSignal(record)) continue;
+    const exitCodes = [...record.matchAll(/\bEXIT[_ ]?CODE\s*[:=]\s*(\d+)\b/gi)].map((match) =>
+      Number(match[1]),
+    );
+    if (exitCodes.length > 0 && exitCodes.every((code) => code === 0)) return true;
+    if (
+      /\b(?:tests?|test files)\s+\d+\s+passed\b|\b\d+\s+(?:tests?\s+)?passed\b|\btest result:\s*ok\b|\b(?:status|conclusion|result)\s*[:=]\s*(?:success|successful|passed)\b/i.test(
+        record,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function evidenceHasSuccessfulCommandRecord(evidenceText: string, commandSubject: RegExp): boolean {
+  const blocks = evidenceText
+    .replace(/\r\n?/g, "\n")
+    .split(/(?=^\s*COMMAND\s*:)/gim)
+    .filter((block) => /^\s*COMMAND\s*:/im.test(block));
+  return blocks.some((block) => {
+    commandSubject.lastIndex = 0;
+    if (!commandSubject.test(block)) return false;
+    const exitCodes = [...block.matchAll(/\bEXIT[_ ]?CODE\s*[:=]\s*(\d+)\b/gi)].map((match) =>
+      Number(match[1]),
+    );
+    return (
+      exitCodes.length > 0 &&
+      exitCodes.every((code) => code === 0) &&
+      !evidenceHasExplicitFailureSignal(block)
+    );
+  });
+}
+
+function evidenceHasStructuredSuccessRecord(evidenceText: string, subject: RegExp): boolean {
+  const records = evidenceText
+    .replace(/\r\n?/g, "\n")
+    .split(/\n\s*\n+/)
+    .map((record) => record.trim())
+    .filter(Boolean);
+  return records.some((record) => {
+    subject.lastIndex = 0;
+    return (
+      subject.test(record) &&
+      /\b(?:status|conclusion|result)\s*[:=]\s*(?:success|successful|passed|ok|clean|green)\b/i.test(
+        record,
+      ) &&
+      !evidenceHasExplicitFailureSignal(record)
+    );
+  });
 }
 
 function evidenceCorroboratesOperationalAssertion(
@@ -1021,44 +1356,73 @@ function evidenceCorroboratesOperationalAssertion(
   evidenceText: string,
 ): boolean {
   if (!evidenceText.trim()) return false;
-  const normalized = normalizeOperationalCommand(evidenceText);
   if (assertion.kind === "count") {
     const exact = new RegExp(`\\b${assertion.value}\\s+${assertion.outcome}\\b`, "i");
-    return exact.test(evidenceText);
+    if (!exact.test(evidenceText) || evidenceHasExplicitFailureSignal(evidenceText)) return false;
+    return (
+      /\b(?:tests?|test files)\s*:?\s*\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i.test(
+        evidenceText,
+      ) || evidenceHasSuccessfulCommandRecord(evidenceText, /\btest\b/i)
+    );
   }
   if (assertion.kind === "command") {
-    return normalized.includes(assertion.command) && evidenceHasSuccessSignal(evidenceText);
+    const explicitBlocks = evidenceText
+      .replace(/\r\n?/g, "\n")
+      .split(/(?=^\s*(?:COMMAND\s*:|[$>]\s+\S))/gim)
+      .filter((block) => /^\s*(?:COMMAND\s*:|[$>]\s+\S)/im.test(block));
+    const matchingBlocks = explicitBlocks.filter((block) =>
+      normalizeOperationalCommand(block).includes(assertion.command),
+    );
+    if (matchingBlocks.length > 0) {
+      return matchingBlocks.every((block) => {
+        const exitCodes = [...block.matchAll(/\bEXIT[_ ]?CODE\s*[:=]\s*(\d+)\b/gi)].map((match) =>
+          Number(match[1]),
+        );
+        return (
+          exitCodes.length > 0 &&
+          exitCodes.every((code) => code === 0) &&
+          !evidenceHasExplicitFailureSignal(block)
+        );
+      });
+    }
+    return evidenceHasInlineCommandSuccess(assertion.command, evidenceText);
   }
   if (assertion.kind === "git_diff") {
     return (
-      /@@\s*[-+]|\bdiff --git\b|\bgit diff --stat\b|\b\d+ files? changed\b/i.test(evidenceText) ||
-      (normalized.includes("git diff") && evidenceHasSuccessSignal(evidenceText))
+      /@@\s*[-+]|\bdiff --git\b|\b\d+ files? changed\b/i.test(evidenceText) ||
+      evidenceHasSuccessfulCommandRecord(evidenceText, /\bgit\s+diff\b/i)
     );
   }
   if (assertion.kind === "git_status") {
     return (
-      normalized.includes("git status") &&
-      (/\bOn branch\b|\bnothing to commit\b|(?:^|\n)\s*(?:M|A|D|R|\?\?)\s+\S/im.test(
-        evidenceText,
-      ) ||
-        evidenceHasSuccessSignal(evidenceText))
+      /\bOn branch\b|\bnothing to commit\b|(?:^|\n)\s*(?:M|A|D|R|\?\?)\s+\S/im.test(evidenceText) ||
+      evidenceHasSuccessfulCommandRecord(evidenceText, /\bgit\s+status\b/i)
     );
   }
   if (assertion.kind === "tests_success") {
     return (
-      /\b(?:tests?|test files|test result)\b/i.test(evidenceText) &&
-      evidenceHasSuccessSignal(evidenceText)
+      (/\b(?:tests?|test files)\s*:?\s*\d+\s+passed\b|\btest result:\s*ok\b/i.test(evidenceText) &&
+        !evidenceHasExplicitFailureSignal(evidenceText)) ||
+      evidenceHasSuccessfulCommandRecord(evidenceText, /\btest\b/i) ||
+      evidenceHasStructuredSuccessRecord(evidenceText, /\btests?\b/i)
     );
   }
   if (assertion.kind === "ci_success") {
     return (
-      /\b(?:ci|pipeline|workflow)\b/i.test(evidenceText) && evidenceHasSuccessSignal(evidenceText)
+      evidenceHasSuccessfulCommandRecord(evidenceText, /\b(?:ci|pipeline|workflow|gh\s+run)\b/i) ||
+      evidenceHasStructuredSuccessRecord(evidenceText, /\b(?:ci|pipeline|workflow)\b/i)
     );
   }
   if (assertion.kind === "checks_success") {
-    return /\b(?:checks?|jobs?)\b/i.test(evidenceText) && evidenceHasSuccessSignal(evidenceText);
+    return (
+      evidenceHasSuccessfulCommandRecord(evidenceText, /\b(?:checks?|jobs?|gh\s+pr\s+checks)\b/i) ||
+      evidenceHasStructuredSuccessRecord(evidenceText, /\b(?:checks?|jobs?)\b/i)
+    );
   }
-  return /\bbuild\b/i.test(evidenceText) && evidenceHasSuccessSignal(evidenceText);
+  return (
+    evidenceHasSuccessfulCommandRecord(evidenceText, /\bbuild\b/i) ||
+    evidenceHasStructuredSuccessRecord(evidenceText, /\bbuild\b/i)
+  );
 }
 
 function normalizeEvidenceRef(value: string): string {
@@ -1089,11 +1453,20 @@ function findUnattachedEvidenceReferences(text: string, attachedEvidenceRefs: st
   const seen = new Set<string>();
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   for (const line of lines) {
-    if (!EXTERNAL_EVIDENCE_CONTEXT_PATTERN.test(line)) continue;
     EXTERNAL_EVIDENCE_ARTIFACT_PATTERN.lastIndex = 0;
-    for (const match of line.matchAll(EXTERNAL_EVIDENCE_ARTIFACT_PATTERN)) {
+    const artifactMatches = [...line.matchAll(EXTERNAL_EVIDENCE_ARTIFACT_PATTERN)];
+    if (!artifactMatches.length) continue;
+    const contextWithoutArtifactTokens = artifactMatches.reduce((current, match) => {
+      const rawRef = match[1];
+      return rawRef ? current.replace(rawRef, " ") : current;
+    }, line);
+    if (!EXTERNAL_EVIDENCE_CONTEXT_PATTERN.test(contextWithoutArtifactTokens)) continue;
+    for (const match of artifactMatches) {
       const rawRef = match[1];
       if (!rawRef) continue;
+      const rawOffset = match[0].indexOf(rawRef);
+      const rawStart = (match.index ?? 0) + Math.max(rawOffset, 0);
+      if (line[rawStart + rawRef.length] === "(") continue;
       const canonical = normalizeEvidenceRef(rawRef);
       if (!canonical || seen.has(canonical)) continue;
       const pathQualified = canonical.includes("/");
@@ -1117,6 +1490,9 @@ export interface EvidencePreflightResult {
   attachments_present: boolean;
   unattached_evidence_references: string[];
   uncorroborated_operational_claims: string[];
+  operator_uncorroborated_operational_claims: string[];
+  operator_grounded: boolean;
+  evidence_authority: "none" | "caller_submitted_unverified" | "operator_verified";
 }
 
 export function evidencePreflight(params: {
@@ -1124,25 +1500,44 @@ export function evidencePreflight(params: {
   initialDraft?: string | undefined;
   structuredEvidence?: string | undefined;
   attachedEvidenceText?: string | undefined;
+  operatorVerifiedEvidenceText?: string | undefined;
   caller?: PeerId | "operator" | undefined;
   attachmentsPresent: boolean;
   attachedEvidenceRefs?: string[] | undefined;
 }): EvidencePreflightResult {
   const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
-  const peerSelfAttestation = params.caller !== undefined && params.caller !== "operator";
   const claimText = `${params.task}\n${params.initialDraft ?? ""}`;
   const referenceCorpus = `${claimText}\n${params.structuredEvidence ?? ""}`;
-  const evidenceText = [
-    peerSelfAttestation ? "" : (params.structuredEvidence ?? ""),
+  const reviewableEvidenceText = [
+    params.structuredEvidence ?? "",
     params.attachedEvidenceText ?? "",
-    peerSelfAttestation ? "" : extractInlineRawEvidence(claimText),
+    extractInlineRawEvidence(claimText),
+  ]
+    .filter((value) => value.trim().length > 0)
+    .join("\n");
+  const callerIsOperator = params.caller === undefined || params.caller === "operator";
+  const operatorEvidenceText = [
+    callerIsOperator ? (params.structuredEvidence ?? "") : "",
+    params.operatorVerifiedEvidenceText ??
+      (callerIsOperator ? (params.attachedEvidenceText ?? "") : ""),
+    callerIsOperator ? extractInlineRawEvidence(claimText) : "",
   ]
     .filter((value) => value.trim().length > 0)
     .join("\n");
   const assertions = extractEvidenceOperationalAssertions(claimText);
   const uncorroboratedClaims = assertions
-    .filter((assertion) => !evidenceCorroboratesOperationalAssertion(assertion, evidenceText))
+    .filter(
+      (assertion) => !evidenceCorroboratesOperationalAssertion(assertion, reviewableEvidenceText),
+    )
     .map((assertion) => assertion.display);
+  const operatorUncorroboratedClaims = assertions
+    .filter(
+      (assertion) => !evidenceCorroboratesOperationalAssertion(assertion, operatorEvidenceText),
+    )
+    .map((assertion) => assertion.display);
+  const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
+  const operatorGrounded =
+    claimMatched && assertions.length > 0 && operatorUncorroboratedClaims.length === 0;
   const unattachedEvidenceReferences = findUnattachedEvidenceReferences(
     referenceCorpus,
     params.attachedEvidenceRefs ?? [],
@@ -1150,35 +1545,54 @@ export function evidencePreflight(params: {
   if (unattachedEvidenceReferences.length > 0) {
     return {
       pass: false,
-      reason: `text references evidence artifact(s) that are not attached to this session: ${unattachedEvidenceReferences.join(
+      reason: `text references evidence artifact(s) whose literal content was not supplied to this session: ${unattachedEvidenceReferences.join(
         ", ",
-      )}; attach the referenced files with session_attach_evidence before submitting`,
-      completed_work_claim_matched: assertions.length > 0,
+      )}; embed the literal content inline or in the evidence field before submitting`,
+      completed_work_claim_matched: claimMatched,
       evidence_marker_found: EVIDENCE_MARKER_PATTERN.test(referenceCorpus),
       structured_evidence_supplied: structuredEvidenceSupplied,
       attachments_present: params.attachmentsPresent,
       unattached_evidence_references: unattachedEvidenceReferences,
       uncorroborated_operational_claims: uncorroboratedClaims,
+      operator_uncorroborated_operational_claims: operatorUncorroboratedClaims,
+      operator_grounded: operatorGrounded,
+      evidence_authority: operatorGrounded
+        ? "operator_verified"
+        : claimMatched && reviewableEvidenceText.trim()
+          ? "caller_submitted_unverified"
+          : "none",
     };
   }
-  const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
-  const evidenceFound = evidenceText.trim().length > 0;
+  const evidenceFound = reviewableEvidenceText.trim().length > 0;
   const pass = !claimMatched || (assertions.length > 0 && uncorroboratedClaims.length === 0);
+  // No claim is neutral, not operator verification. Authority exists only
+  // when concrete operational assertions are actually corroborated by the
+  // operator tier; vacuous truth must never manufacture custody.
+  const evidenceAuthority: EvidencePreflightResult["evidence_authority"] = operatorGrounded
+    ? "operator_verified"
+    : pass && claimMatched
+      ? "caller_submitted_unverified"
+      : "none";
   return {
     pass,
     reason: pass
       ? claimMatched
-        ? "completed-work claims are value-correlated with supplied or inline raw evidence"
+        ? operatorGrounded
+          ? "completed-work claims are value-correlated with operator-verified raw evidence"
+          : "completed-work claims are value-correlated with caller-submitted raw material; admitted for independent review but not promoted to operator-verified custody"
         : "no completed-work claim detected — nothing to preflight"
       : `task/draft claims completed operational work without value-corresponding evidence: ${
           uncorroboratedClaims.join(", ") || "unclassified completed-work claim"
-        }; attach raw matching output inline, via the evidence field, or as session evidence`,
+        }; supply raw matching output inline or via the evidence field; use operator attachment custody only when privileged verification is required`,
     completed_work_claim_matched: claimMatched,
     evidence_marker_found: evidenceFound,
     structured_evidence_supplied: structuredEvidenceSupplied,
     attachments_present: params.attachmentsPresent,
     unattached_evidence_references: [],
     uncorroborated_operational_claims: uncorroboratedClaims,
+    operator_uncorroborated_operational_claims: operatorUncorroboratedClaims,
+    operator_grounded: operatorGrounded,
+    evidence_authority: evidenceAuthority,
   };
 }
 
@@ -1200,6 +1614,26 @@ export interface TruthfulnessPreflightResult {
   attachments_present: boolean;
   source_marker_found: boolean;
   runtime_facts_available: boolean;
+  fabrication_prone_claim_matched: boolean;
+  operator_grounded: boolean;
+  independent_review_required: boolean;
+}
+
+export interface CombinedSessionPreflightResult {
+  pass: boolean;
+  blocking_gates: Array<"evidence" | "truthfulness">;
+  evidence: {
+    enabled: boolean;
+    pass: boolean;
+    result: EvidencePreflightResult | null;
+  };
+  truthfulness: {
+    enabled: boolean;
+    pass: boolean;
+    result: TruthfulnessPreflightResult | null;
+  };
+  reviewable_attachment_count: number;
+  operator_verified_attachment_count: number;
 }
 
 export type TruthfulnessIssueClass =
@@ -1239,6 +1673,55 @@ const MODEL_TOKEN_PREFIXES: Record<PeerId, readonly string[]> = {
 };
 const OPERATIONAL_VALUE_PATTERN =
   /https?:\/\/[^\s)\]}>'"]+|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b[0-9a-f]{12,64}\b|\b(?:run|task|workflow|deployment|session)[_-]?id\s*[:=#]\s*[a-z0-9_-]+/gi;
+
+const OPERATIONAL_STATE_SUBJECT_PATTERN =
+  /\b(?:production|prod|deployment|deploy|service|server|ci|pipeline|workflow|produ[cç][aã]o|servi[cç]o|servidor)\b/i;
+const POSITIVE_OPERATIONAL_STATE_PATTERN =
+  /\b(?:healthy|green|online|up|running|loaded|live|stable|available|operational|ready|success|successful|succeeded|completed|saud[aá]vel|verde|ativo|rodando|carregad[oa]|est[aá]vel|dispon[ií]vel|operacional|pronto|sucesso|conclu[ií]d[oa])\b/i;
+const NEGATIVE_OPERATIONAL_STATE_PATTERN =
+  /\b(?:unhealthy|red|offline|down|degraded|failed|failing|errored|indispon[ií]vel|degradad[oa]|falhou|falhando|vermelho|fora\s+do\s+ar)\b/i;
+const OPERATIONAL_STATE_INSTRUCTION_PATTERN =
+  /^\s*(?:please\s+)?(?:check|verify|review|ensure|determine|assess|investigate|validate|confirm\s+whether|verifique|revise|garanta|determine|avalie|investigue|valide|confirme\s+se)\b/i;
+
+function operationalStateClaimDetected(claim: string): boolean {
+  if (OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(claim) || /\?\s*$/.test(claim)) return false;
+  return (
+    OPERATIONAL_STATE_SUBJECT_PATTERN.test(claim) &&
+    (POSITIVE_OPERATIONAL_STATE_PATTERN.test(claim) ||
+      NEGATIVE_OPERATIONAL_STATE_PATTERN.test(claim))
+  );
+}
+
+function operationalStateClaimCorroborated(claim: string, suppliedEvidence: string): boolean {
+  const evidence = suppliedEvidence.trim();
+  if (!evidence || !operationalStateClaimDetected(claim)) return false;
+  const subjects = [
+    /\b(?:production|prod|produ[cç][aã]o)\b/i,
+    /\b(?:deployment|deploy)\b/i,
+    /\b(?:service|servi[cç]o)\b/i,
+    /\b(?:server|servidor)\b/i,
+    /\bci\b/i,
+    /\bpipeline\b/i,
+    /\bworkflow\b/i,
+  ];
+  const claimedSubjects = subjects.filter((pattern) => pattern.test(claim));
+  if (!claimedSubjects.some((pattern) => pattern.test(evidence))) return false;
+  if (
+    POSITIVE_OPERATIONAL_STATE_PATTERN.test(claim) &&
+    !POSITIVE_OPERATIONAL_STATE_PATTERN.test(evidence)
+  ) {
+    return false;
+  }
+  if (
+    NEGATIVE_OPERATIONAL_STATE_PATTERN.test(claim) &&
+    !NEGATIVE_OPERATIONAL_STATE_PATTERN.test(evidence)
+  ) {
+    return false;
+  }
+  return /\b(?:status|state|health|conclusion|result)\s*[:=]|\b(?:run|workflow|deployment|session)[_-]?id\s*[:=#]|\b(?:workflow|run|audit|session)[_ ](?:start|started_at|began|created_at)\b|\b(?:captured|recorded|observed)_at\s*[:=]/i.test(
+    evidence,
+  );
+}
 
 function operationalClaimCorroborated(claim: string, suppliedEvidence: string): boolean {
   const evidence = suppliedEvidence.trim().toLowerCase();
@@ -1327,22 +1810,29 @@ export function truthfulnessPreflight(params: {
   initialDraft?: string | undefined;
   structuredEvidence?: string | undefined;
   attachedEvidenceText?: string | undefined;
+  operatorVerifiedEvidenceText?: string | undefined;
   caller?: PeerId | "operator" | undefined;
   attachmentsPresent: boolean;
   runtimeFacts?: TruthfulnessRuntimeFacts | undefined;
 }): TruthfulnessPreflightResult {
   const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
-  const peerSelfAttestation = params.caller !== undefined && params.caller !== "operator";
-  const trustedStructuredEvidence = peerSelfAttestation ? "" : (params.structuredEvidence ?? "");
   const corpus = `${params.task}\n${params.initialDraft ?? ""}`;
-  const suppliedEvidence = `${trustedStructuredEvidence}\n${params.attachedEvidenceText ?? ""}`;
+  const suppliedEvidence = `${params.structuredEvidence ?? ""}\n${
+    params.attachedEvidenceText ?? ""
+  }\n${extractInlineRawEvidence(corpus)}`;
+  const callerIsOperator = params.caller === undefined || params.caller === "operator";
+  const operatorEvidence = [
+    callerIsOperator ? (params.structuredEvidence ?? "") : "",
+    params.operatorVerifiedEvidenceText ?? "",
+    callerIsOperator ? extractInlineRawEvidence(corpus) : "",
+  ]
+    .filter((value) => value.trim().length > 0)
+    .join("\n");
   const lines = splitTruthfulnessLines(corpus);
   const runtimeVersion = params.runtimeFacts?.runtime_version;
   const releaseDate = params.runtimeFacts?.release_date;
   const modelPins = params.runtimeFacts?.model_pins ?? {};
-  const sourceMarkerFound = TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(
-    peerSelfAttestation ? suppliedEvidence : `${corpus}\n${suppliedEvidence}`,
-  );
+  const sourceMarkerFound = TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(suppliedEvidence);
   const runtimeFactsAvailable = Boolean(
     runtimeVersion || releaseDate || Object.values(modelPins).some(Boolean),
   );
@@ -1351,16 +1841,22 @@ export function truthfulnessPreflight(params: {
   const issueClasses: TruthfulnessIssueClass[] = [];
   let currentStateClaimMatched = false;
   let historicalStateClaimMatched = false;
+  let fabricationProneClaimMatched = false;
+  let independentReviewRequired = false;
 
   for (const line of lines) {
-    if (
-      FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line) &&
-      !operationalClaimCorroborated(line, suppliedEvidence)
-    ) {
-      addIssueClass(issueClasses, "fabrication_pattern");
-      unsupportedClaims.push(
-        `fabrication-prone operational claim lacks value-corresponding provenance evidence: ${line.slice(0, 240)}`,
-      );
+    const historicalClaim = HISTORICAL_RUNTIME_TIMING_PATTERN.test(line);
+    let lineCurrentModelClaimMatched = false;
+    if (FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line)) {
+      fabricationProneClaimMatched = true;
+      if (!operationalClaimCorroborated(line, suppliedEvidence)) {
+        addIssueClass(issueClasses, "fabrication_pattern");
+        unsupportedClaims.push(
+          `fabrication-prone operational claim lacks value-corresponding provenance evidence: ${line.slice(0, 240)}`,
+        );
+      } else if (!operationalClaimCorroborated(line, operatorEvidence)) {
+        independentReviewRequired = true;
+      }
     }
 
     if (CURRENT_STATE_CLAIM_PATTERN.test(line)) {
@@ -1373,6 +1869,7 @@ export function truthfulnessPreflight(params: {
             MODEL_TOKEN_PREFIXES[peer].some((prefix) => candidate.startsWith(prefix)),
           );
         if (!candidates.length) continue;
+        lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
         const expected = normalizeVersionToken(expectedModel);
         if (!candidates.includes(expected)) {
@@ -1386,9 +1883,34 @@ export function truthfulnessPreflight(params: {
 
     const versions = uniqueMatches(VERSION_TOKEN_PATTERN, line);
     const dates = uniqueMatches(ISO_DATE_TOKEN_PATTERN, line);
+
+    if (!historicalClaim && !lineCurrentModelClaimMatched && operationalStateClaimDetected(line)) {
+      currentStateClaimMatched = true;
+      if (!operationalStateClaimCorroborated(line, suppliedEvidence)) {
+        addIssueClass(issueClasses, "unsupported_current_state_claim");
+        unsupportedClaims.push(
+          `current operational-state claim lacks a correlated raw status record: ${line.slice(0, 240)}`,
+        );
+      } else if (!operationalStateClaimCorroborated(line, operatorEvidence)) {
+        independentReviewRequired = true;
+      }
+    }
+
+    if (historicalClaim) {
+      historicalStateClaimMatched = true;
+      if (!historicalEvidenceHasSnapshotTiming(suppliedEvidence)) {
+        addIssueClass(issueClasses, "unsupported_historical_claim");
+        unsupportedClaims.push(
+          `historical runtime timing claim lacks raw workflow/run/session-start snapshot provenance: ${line.slice(0, 240)}`,
+        );
+      } else if (!historicalEvidenceHasSnapshotTiming(operatorEvidence)) {
+        independentReviewRequired = true;
+      }
+    }
+
     if (!versions.length && !dates.length) continue;
 
-    if (CURRENT_STATE_CLAIM_PATTERN.test(line)) {
+    if (CURRENT_STATE_CLAIM_PATTERN.test(line) && !historicalClaim) {
       currentStateClaimMatched = true;
       if (runtimeVersion) {
         const expected = normalizeVersionToken(runtimeVersion);
@@ -1416,36 +1938,37 @@ export function truthfulnessPreflight(params: {
         unsupportedClaims.push(
           `current-state claim lacks runtime facts or source marker: ${line.slice(0, 240)}`,
         );
-      }
-    }
-
-    if (HISTORICAL_RUNTIME_TIMING_PATTERN.test(line)) {
-      historicalStateClaimMatched = true;
-      if (!trustedStructuredEvidence.trim() && !params.attachmentsPresent) {
-        addIssueClass(issueClasses, "unsupported_historical_claim");
-        unsupportedClaims.push(
-          `historical runtime timing claim lacks snapshot evidence: ${line.slice(0, 240)}`,
-        );
+      } else if (
+        !runtimeFactsAvailable &&
+        sourceMarkerFound &&
+        !TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(operatorEvidence)
+      ) {
+        independentReviewRequired = true;
       }
     }
   }
 
   const pass = contradictions.length === 0 && unsupportedClaims.length === 0;
+  if (!pass) independentReviewRequired = false;
+  const operatorGrounded = pass && !independentReviewRequired;
   const detail = [...contradictions, ...unsupportedClaims].join("; ");
   const evidenceState =
     `attachments_present=${params.attachmentsPresent}; ` +
     `structured_evidence_supplied=${structuredEvidenceSupplied}; ` +
     `source_marker_found=${sourceMarkerFound}; ` +
     `runtime_facts_available=${runtimeFactsAvailable}`;
-  const remediation = peerSelfAttestation
-    ? "ask the operator to attach raw snapshot evidence with session_attach_evidence, then retry the truthfulness preflight"
-    : "attach raw snapshot evidence with session_attach_evidence or pass value-corresponding structured evidence, then retry the truthfulness preflight";
+  const remediation =
+    "supply value-corresponding raw material inline or through the evidence field, then retry the combined preflight; no manual operator attachment is required";
   return {
     pass,
     reason: pass
       ? currentStateClaimMatched || historicalStateClaimMatched
-        ? "high-risk runtime truthfulness claims are consistent with runtime facts or backed by evidence"
-        : "no high-risk runtime truthfulness claim detected"
+        ? independentReviewRequired
+          ? "high-risk claims are accompanied by value-corresponding peer-submitted material and require strict independent panel corroboration"
+          : "high-risk runtime truthfulness claims are consistent with runtime facts or operator-grounded evidence"
+        : fabricationProneClaimMatched && independentReviewRequired
+          ? "fabrication-prone operational claims are admitted with peer-submitted raw material and require strict independent panel corroboration"
+          : "no high-risk runtime truthfulness claim detected"
       : `${detail}. ${evidenceState}. Remediation: ${remediation}.`,
     issue_classes: issueClasses,
     current_state_claim_matched: currentStateClaimMatched,
@@ -1456,6 +1979,9 @@ export function truthfulnessPreflight(params: {
     attachments_present: params.attachmentsPresent,
     source_marker_found: sourceMarkerFound,
     runtime_facts_available: runtimeFactsAvailable,
+    fabrication_prone_claim_matched: fabricationProneClaimMatched,
+    operator_grounded: operatorGrounded,
+    independent_review_required: independentReviewRequired,
   };
 }
 
@@ -1484,10 +2010,10 @@ function leadShipModeDirective(): string[] {
     // rationale, prose) but MUST refuse to invent operational facts.
     "## Evidence Provenance Lock (HARD)",
     "Operational evidence — git SHAs, content hashes, build outputs, test counts (e.g. `147 passed`), diff hunks, `git diff --check passed` style assertions, vite asset filenames with hex suffixes, `cargo test`/`npm run build`/`npm run typecheck` result lines, `git rev-parse HEAD` output, session IDs, GitHub URLs, timestamps, file paths — has a PROVENANCE level. Two levels exist:",
-    "  - PROVENANCE-GRADE: raw command/tool output persisted via `session_attach_evidence` (visible to you below as `## Attached Evidence`), or a verbatim file slice with explicit path:line refs.",
-    "  - NARRATIVE: the caller's natural-language summary in the task or in a prior draft (e.g. `I ran cargo test, 147 passed`).",
-    "NARRATIVE is NOT evidence. The caller's claim that a command produced a specific result is unverified until the raw output is attached. You MUST NOT quote NARRATIVE operational claims as if they were verified evidence. You MAY summarize that the caller claims X; you MUST NOT assert that X happened.",
-    "If the relevant evidence is not in PROVENANCE-GRADE form, describe the gap as a concrete blocker — e.g. `caller narrated cargo test 147 passed but raw output was not attached; reviewer must request session_attach_evidence with the persisted log before declaring READY.`",
+    "  - OPERATOR-VERIFIED: exact persisted bytes admitted by the authenticated human operator. This tier is optional and is never required merely to start or complete a review.",
+    "  - PEER-SUBMITTED / UNVERIFIED: raw command/tool output supplied inline or through the evidence field by the authenticated caller, persisted with caller identity, SHA-256 and byte count. This is valid review material, but do not claim that you independently executed the command.",
+    "  - NARRATIVE: a natural-language claim without the corresponding raw output (e.g. `I ran cargo test, it passed`). Narrative alone is not evidence.",
+    "Use peer-submitted raw material directly when it value-corresponds with the claim. Ask for corrected inline/evidence-field content only when the raw material is absent, mismatched or internally insufficient; never require a manual operator attachment as routine remediation.",
     "Do NOT generate plausible-looking SHAs, hashes, or build output to make the revision feel complete. Do NOT paraphrase tool output with ellipses, pseudocode, or summary counts when the raw output is missing. The relator may not fabricate AND may not propagate caller narrative as if it were fact.",
     "A post-revision heuristic detector flags net-new operational tokens (hex strings, test counts, command-output assertions) and causes the revision to be discarded if the threshold trips. Two consecutive discards abort the session.",
     "Distinguish `peer_analysis` (your interpretation, free-form) from `cited_evidence` (verbatim from `## Attached Evidence`, marked with source path/line). When in doubt about the provenance level of a claim, prefer marking it as a blocker over quoting it as evidence.",
@@ -1546,8 +2072,8 @@ function leadCircularModeDirective(): string[] {
     "You may have produced an earlier version in a prior round of this rotation. You are NOT reviewing your own immediate output — between your previous turn and now, other peers had custody and may have transformed the artifact. Engage with the current text as the panel's product, not as your own draft.",
     "",
     "### Evidence Provenance Lock (HARD, shared with ship mode)",
-    "Operational evidence — git SHAs, content hashes, build outputs, test counts (`147 passed`), diff hunks, `git diff --check passed`, vite asset filenames, `cargo test`/`npm run *` result lines, `git rev-parse HEAD` output, timestamps, file paths — may only be cited from PROVENANCE-GRADE sources: raw command/tool output persisted via `session_attach_evidence` (visible as `## Attached Evidence`), or a verbatim file slice with path:line refs.",
-    "NARRATIVE operational claims (the caller's task body or a prior draft saying `I ran X, result was Y`) are NOT evidence. You must NOT fabricate SHAs/hashes/test counts to make the artifact feel complete, and you must NOT propagate narrative claims as if verified. A post-revision detector enforces this — two consecutive trips abort the session.",
+    "Operational evidence — git SHAs, content hashes, build outputs, test counts (`147 passed`), diff hunks, `git diff --check passed`, vite asset filenames, `cargo test`/`npm run *` result lines, `git rev-parse HEAD` output, timestamps, file paths — may be cited from raw PEER-SUBMITTED / UNVERIFIED material, optional OPERATOR-VERIFIED material, or a verbatim file slice with path:line refs. Preserve the trust label and never claim independent execution.",
+    "NARRATIVE operational claims without corresponding raw content are NOT evidence. You must NOT fabricate SHAs/hashes/test counts to make the artifact feel complete. A post-revision detector enforces this — two consecutive trips abort the session.",
     "",
     "### Output format",
     "Output ONLY the artifact text (revised or verbatim). No meeting notes, no review summary, no commentary, no JSON wrapper, no status field. The runtime infers your decision from a byte comparison: if your output equals the prior artifact, you approved unchanged; otherwise you revised.",
@@ -1563,14 +2089,7 @@ function buildRevisionPrompt(
   config: AppConfig,
   reviewFocus?: string,
   mode: import("./types.js").SessionMode = "ship",
-  attachments?: Array<{
-    label: string;
-    relative_path: string;
-    content: string;
-    bytes: number;
-    truncated: boolean;
-    content_type?: string | undefined;
-  }>,
+  attachments?: ResolvedEvidenceAttachment[],
 ): string {
   const modeDirective: string[] =
     mode === "ship"
@@ -1612,6 +2131,7 @@ function buildInitialDraftPrompt(
   config: AppConfig,
   reviewFocus?: string,
   mode: import("./types.js").SessionMode = "ship",
+  attachments?: ResolvedEvidenceAttachment[],
 ): string {
   const modeDirective: string[] =
     mode === "ship"
@@ -1624,6 +2144,7 @@ function buildInitialDraftPrompt(
     "",
     ...sessionContractDirectives(),
     ...modeDirective,
+    ...(attachments ? attachedEvidenceBlock(attachments) : []),
     "Create a complete first version for the task below.",
     mode === "circular"
       ? "This version will enter a serial rotation of peer custodians; each will either approve unchanged or produce a narrowly justified revision. Convergence happens when the artifact survives a full rotation untouched."
@@ -1985,12 +2506,14 @@ export class CrossReviewOrchestrator {
 
   private safeReadEvidenceAttachments(
     sessionId: string,
+    callerSubmissionId?: string,
   ): ReturnType<SessionStore["readEvidenceAttachments"]> {
     try {
-      return trustedEvidenceAttachments(
+      return reviewableEvidenceAttachments(
         this.store.readEvidenceAttachments(
           sessionId,
           this.config.prompt.max_attached_evidence_chars,
+          callerSubmissionId,
         ),
       );
     } catch (error) {
@@ -2003,6 +2526,105 @@ export class CrossReviewOrchestrator {
       });
       return [];
     }
+  }
+
+  private async persistCallerSubmittedEvidence(params: {
+    sessionId: string;
+    caller: PeerId | "operator";
+    task: string;
+    draft?: string | undefined;
+    evidence?: string | undefined;
+    includeInline?: boolean | undefined;
+  }): Promise<string | undefined> {
+    if (params.includeInline === false && !params.evidence?.trim()) return undefined;
+    const candidates = [
+      {
+        label: "caller-structured-evidence",
+        content: params.evidence?.trim() ?? "",
+      },
+      {
+        label: "caller-inline-raw-evidence",
+        content:
+          params.includeInline === false
+            ? ""
+            : extractInlineRawEvidence(`${params.task}\n${params.draft ?? ""}`).trim(),
+      },
+    ].filter((candidate) => candidate.content.length > 0);
+    const persisted = await this.store.attachCallerEvidenceSubmission(params.sessionId, {
+      submitted_by: params.caller,
+      artifact_text: `${params.task}\n${params.draft ?? ""}`,
+      items: candidates.map((candidate) => ({
+        ...candidate,
+        content_type: "text/plain; charset=utf-8",
+        extension: "txt",
+      })),
+    });
+    return persisted.submission.submission_id;
+  }
+
+  checkSessionPreflights(params: {
+    sessionId: string;
+    task: string;
+    draft?: string | undefined;
+    evidence?: string | undefined;
+    caller: PeerId | "operator";
+  }): CombinedSessionPreflightResult {
+    const reviewableAttachments = this.safeReadEvidenceAttachments(params.sessionId);
+    const trustedAttachments = trustedEvidenceAttachments(reviewableAttachments);
+    const evidenceResult = this.config.evidence_preflight_enabled
+      ? evidencePreflight({
+          task: params.task,
+          initialDraft: params.draft,
+          structuredEvidence: params.evidence,
+          caller: params.caller,
+          attachmentsPresent: reviewableAttachments.length > 0,
+          attachedEvidenceText: reviewableAttachments
+            .map((attachment) => attachment.content)
+            .join("\n"),
+          operatorVerifiedEvidenceText: trustedAttachments
+            .map((attachment) => attachment.content)
+            .join("\n"),
+          attachedEvidenceRefs: reviewableAttachments.flatMap((attachment) => [
+            attachment.label,
+            attachment.relative_path,
+          ]),
+        })
+      : null;
+    const truthfulnessResult = this.config.truthfulness_preflight_enabled
+      ? truthfulnessPreflight({
+          task: params.task,
+          initialDraft: params.draft,
+          structuredEvidence: params.evidence,
+          caller: params.caller,
+          attachmentsPresent: reviewableAttachments.length > 0,
+          attachedEvidenceText: reviewableAttachments
+            .map((attachment) => attachment.content)
+            .join("\n"),
+          operatorVerifiedEvidenceText: trustedAttachments
+            .map((attachment) => attachment.content)
+            .join("\n"),
+          runtimeFacts: runtimeTruthFacts(this.config),
+        })
+      : null;
+    const blockingGates: CombinedSessionPreflightResult["blocking_gates"] = [];
+    if (evidenceResult && !evidenceResult.pass) blockingGates.push("evidence");
+    if (truthfulnessResult && !truthfulnessResult.pass) blockingGates.push("truthfulness");
+    return {
+      pass: blockingGates.length === 0,
+      blocking_gates: blockingGates,
+      evidence: {
+        enabled: this.config.evidence_preflight_enabled,
+        pass: evidenceResult?.pass ?? true,
+        result: evidenceResult,
+      },
+      truthfulness: {
+        enabled: this.config.truthfulness_preflight_enabled,
+        pass: truthfulnessResult?.pass ?? true,
+        result: truthfulnessResult,
+      },
+      reviewable_attachment_count: reviewableAttachments.length,
+      operator_verified_attachment_count: trustedAttachments.length,
+    };
   }
 
   async probeAll(): Promise<PeerProbeResult[]> {
@@ -3158,11 +3780,35 @@ export class CrossReviewOrchestrator {
     // identical to pre-v3.7.0 behavior, zero regression on that path.
     if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
+    const persistedPetitioner = existingSession
+      ? (existingSession.convergence_scope?.petitioner ?? existingSession.caller)
+      : undefined;
+    if (
+      persistedPetitioner !== undefined &&
+      input.petitioner !== undefined &&
+      input.petitioner !== persistedPetitioner
+    ) {
+      throw new Error(
+        `session_petitioner_mismatch: existing session ${existingSession?.session_id} belongs to petitioner '${persistedPetitioner}'; internal petitioner override '${input.petitioner}' is forbidden`,
+      );
+    }
     const effectivePetitioner: PeerId | "operator" =
-      input.petitioner ??
-      existingSession?.convergence_scope?.petitioner ??
-      existingSession?.caller ??
-      requestedPetitioner;
+      persistedPetitioner ?? input.petitioner ?? requestedPetitioner;
+    const internalRelatorContinuation =
+      existingSession !== undefined &&
+      input.petitioner !== undefined &&
+      input.lead_peer === actingPeer &&
+      input.petitioner === persistedPetitioner;
+    if (
+      existingSession &&
+      actingPeer !== "operator" &&
+      actingPeer !== effectivePetitioner &&
+      !internalRelatorContinuation
+    ) {
+      throw new Error(
+        `session_owner_mismatch: existing session ${existingSession.session_id} belongs to petitioner '${effectivePetitioner}'; caller '${actingPeer}' cannot start or mutate its review round`,
+      );
+    }
     // Tribunal-colegiado hard gate: the petitioner/caller never votes as
     // a reviewer on their own petition. Direct ask_peers has no relator
     // unless the caller explicitly supplies one through the internal API,
@@ -3223,24 +3869,43 @@ export class CrossReviewOrchestrator {
           }
         : {}),
     };
+    if (input.evidence?.trim() && actingPeer !== "operator" && actingPeer !== effectivePetitioner) {
+      throw new Error(
+        `caller_evidence_submission_forbidden: acting peer ${actingPeer} cannot inject structured evidence into petitioner ${effectivePetitioner}'s session`,
+      );
+    }
+    const callerSubmissionId = await this.persistCallerSubmittedEvidence({
+      sessionId: session.session_id,
+      caller: actingPeer,
+      task: input.task,
+      draft: input.draft,
+      evidence: input.evidence,
+      includeInline: !internalRelatorContinuation,
+    });
     const draftFile = this.store.saveDraft(session.session_id, roundNumber, input.draft);
     // v2.14.0 (path-A structural fix): resolve session-attached evidence
     // once per round and inline into the review prompt so peers see the
     // full literal content (gates output, diff hunks, log files) without
     // the caller having to paste 200KB+ into the MCP `draft` channel.
-    const attachments = this.safeReadEvidenceAttachments(session.session_id);
+    const attachments = this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId);
+    let roundEvidencePreflight: EvidencePreflightResult | null = null;
     if (this.config.evidence_preflight_enabled) {
-      const preflight = evidencePreflight({
+      roundEvidencePreflight = evidencePreflight({
         task: input.task,
         initialDraft: input.draft,
-        caller: petitioner,
+        structuredEvidence: input.evidence,
+        caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
+        operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
+          .map((attachment) => attachment.content)
+          .join("\n"),
         attachedEvidenceRefs: attachments.flatMap((attachment) => [
           attachment.label,
           attachment.relative_path,
         ]),
       });
+      const preflight = roundEvidencePreflight;
       if (!preflight.pass) {
         const message = `Evidence preflight failed before any paid peer call: ${preflight.reason}`;
         const promptFile = this.store.savePrompt(
@@ -3265,11 +3930,7 @@ export class CrossReviewOrchestrator {
           convergence_scope: convergenceScope,
           started_at: startedAt,
         });
-        const updated = await this.store.finalize(
-          session.session_id,
-          "aborted",
-          "needs_evidence_preflight",
-        );
+        const updated = this.store.read(session.session_id);
         this.emit({
           type: "session.evidence_preflight_failed",
           session_id: session.session_id,
@@ -3282,20 +3943,28 @@ export class CrossReviewOrchestrator {
             attachments_present: preflight.attachments_present,
             unattached_evidence_references: preflight.unattached_evidence_references,
             uncorroborated_operational_claims: preflight.uncorroborated_operational_claims,
+            operator_grounded: preflight.operator_grounded,
+            evidence_authority: preflight.evidence_authority,
           },
         });
         return { session: updated, round, converged: false };
       }
     }
+    let roundTruthfulnessPreflight: TruthfulnessPreflightResult | null = null;
     if (this.config.truthfulness_preflight_enabled) {
-      const truthfulness = truthfulnessPreflight({
+      roundTruthfulnessPreflight = truthfulnessPreflight({
         task: input.task,
         initialDraft: input.draft,
-        caller: petitioner,
+        structuredEvidence: input.evidence,
+        caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
+        operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
+          .map((attachment) => attachment.content)
+          .join("\n"),
         runtimeFacts: runtimeTruthFacts(this.config),
       });
+      const truthfulness = roundTruthfulnessPreflight;
       if (!truthfulness.pass) {
         const message = `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`;
         const promptFile = this.store.savePrompt(
@@ -3326,11 +3995,7 @@ export class CrossReviewOrchestrator {
           convergence_scope: convergenceScope,
           started_at: startedAt,
         });
-        const updated = await this.store.finalize(
-          session.session_id,
-          "aborted",
-          "needs_truthfulness_preflight",
-        );
+        const updated = this.store.read(session.session_id);
         this.emit({
           type: "session.truthfulness_preflight_failed",
           session_id: session.session_id,
@@ -3530,6 +4195,7 @@ export class CrossReviewOrchestrator {
     // rather than block: the round converges on the remaining peers,
     // subject to the skip-gated quorum floor in `checkConvergence`.
     const skipped: PeerFailure[] = [];
+    const peerEvidenceCorroborators = new Set<PeerId>();
 
     // v2.4.0 / audit closure: format-recovery quota. Pre-v2.4.0 every
     // parser-failed response triggered a recovery + retry call (extra
@@ -3747,9 +4413,16 @@ export class CrossReviewOrchestrator {
           }
         }
         if (!this.config.stub && peerResult.status === "READY") {
+          const trustedAttachments = trustedEvidenceAttachments(attachments);
+          const submittedAttachments = callerSubmittedEvidenceAttachments(attachments);
           const grounding = groundReadyPeerEvidence(peerResult, {
-            artifactText: input.draft,
-            attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
+            artifactText: `${session.task}\n${input.draft}`,
+            attachedEvidenceText: trustedAttachments
+              .map((attachment) => attachment.content)
+              .join("\n"),
+            callerSubmittedAttachments: submittedAttachments,
+            requirePeerSubmittedCorroboration:
+              roundTruthfulnessPreflight?.independent_review_required === true,
             attachmentRefs: attachments.flatMap((attachment) => [
               attachment.label,
               attachment.relative_path,
@@ -3757,6 +4430,22 @@ export class CrossReviewOrchestrator {
             runtimeFacts: runtimeTruthFacts(this.config),
           });
           peerResult = grounding.result;
+          if (
+            grounding.peer_submitted_evidence_corroborated &&
+            peerResult.status === "READY" &&
+            peerResult.structured?.confidence === "verified" &&
+            peerResult.model_match !== false
+          ) {
+            peerEvidenceCorroborators.add(peerResult.peer);
+          }
+        } else if (
+          this.config.stub &&
+          peerResult.status === "READY" &&
+          peerResult.structured?.confidence === "verified"
+        ) {
+          // Synthetic peers never validate citations. Counting them here only
+          // lets offline tests exercise the structural minimum-panel rule.
+          peerEvidenceCorroborators.add(peerResult.peer);
         }
         peers.push(peerResult);
         await this.store.savePeerResult(session.session_id, roundNumber, peerResult);
@@ -3830,9 +4519,57 @@ export class CrossReviewOrchestrator {
       recovery_converged: isRecoveryRound && quorumConvergence.converged,
       quorum_peers: quorumPeers,
     };
-    const convergence = blockConvergenceForUnresolvedEvidence(
+    if (!this.config.stub) {
+      const readyPeers = new Set(peerConvergence.ready_peers);
+      for (const peer of peerEvidenceCorroborators) {
+        if (!readyPeers.has(peer)) continue;
+        const result = peers.find((candidate) => candidate.peer === peer);
+        const sources = result?.structured?.evidence_sources ?? [];
+        if (
+          result?.status !== "READY" ||
+          result.structured?.confidence !== "verified" ||
+          (result.structured.caller_requests?.length ?? 0) > 0 ||
+          (result.structured.follow_ups?.length ?? 0) > 0 ||
+          result.model_match === false ||
+          !sources.some((source) => source.trim().length > 0)
+        ) {
+          continue;
+        }
+        const promoted = await this.store.markEvidenceItemsAddressedByRequesterReverification(
+          session.session_id,
+          { round: roundNumber, peer, evidence_sources: sources },
+        );
+        if (promoted.length > 0) {
+          this.emit({
+            type: "session.evidence_checklist_requester_reverified",
+            session_id: session.session_id,
+            round: roundNumber,
+            peer,
+            message: `${peer} strictly reverified ${promoted.length} prior evidence ask(s).`,
+            data: {
+              peer,
+              count: promoted.length,
+              ids: promoted.map(({ item }) => item.id),
+              address_method: "requester_reverified",
+            },
+          });
+        }
+      }
+    }
+    const evidencePanelConvergence = blockConvergenceForPeerSubmittedEvidencePanel(
       peerConvergence,
-      session.evidence_checklist ?? [],
+      {
+        required:
+          (roundEvidencePreflight?.pass === true &&
+            roundEvidencePreflight.completed_work_claim_matched &&
+            !roundEvidencePreflight.operator_grounded) ||
+          roundTruthfulnessPreflight?.independent_review_required === true,
+        corroborating_peers: [...peerEvidenceCorroborators],
+      },
+    );
+    const convergence = blockConvergenceForUnresolvedEvidence(
+      evidencePanelConvergence,
+      this.store.read(session.session_id).evidence_checklist ?? [],
     );
     const round = await this.store.appendRound(session.session_id, {
       caller_status: callerStatus,
@@ -4150,8 +4887,17 @@ export class CrossReviewOrchestrator {
     input: RunUntilUnanimousInput;
     costLimit?: number | undefined;
     initialDraft?: string | undefined;
+    callerSubmissionId?: string | undefined;
   }): Promise<RunUntilUnanimousOutput> {
-    const { adapters, sessionPeers, callerForLottery, firstRotator, input, costLimit } = params;
+    const {
+      adapters,
+      sessionPeers,
+      callerForLottery,
+      firstRotator,
+      input,
+      costLimit,
+      callerSubmissionId,
+    } = params;
     let session = params.session;
     let draft = params.initialDraft;
 
@@ -4230,7 +4976,13 @@ export class CrossReviewOrchestrator {
         throw new Error("circular_rotation_cursor_out_of_bounds");
       }
       const initGeneration = await adapters[initRotator].generate(
-        buildInitialDraftPrompt(input.task, this.config, input.review_focus, sessionMode),
+        buildInitialDraftPrompt(
+          input.task,
+          this.config,
+          input.review_focus,
+          sessionMode,
+          this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId),
+        ),
         {
           session_id: session.session_id,
           round: 0,
@@ -4266,7 +5018,10 @@ export class CrossReviewOrchestrator {
           rounds: 0,
         };
       }
-      const initAttachments = this.safeReadEvidenceAttachments(session.session_id);
+      const initAttachments = this.safeReadEvidenceAttachments(
+        session.session_id,
+        callerSubmissionId,
+      );
       if (this.config.truthfulness_preflight_enabled) {
         const truthfulness = truthfulnessPreflight({
           task: input.task,
@@ -4275,6 +5030,9 @@ export class CrossReviewOrchestrator {
           caller: callerForLottery,
           attachmentsPresent: initAttachments.length > 0,
           attachedEvidenceText: initAttachments.map((attachment) => attachment.content).join("\n"),
+          operatorVerifiedEvidenceText: trustedEvidenceAttachments(initAttachments)
+            .map((attachment) => attachment.content)
+            .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
         if (!truthfulness.pass) {
@@ -4309,8 +5067,12 @@ export class CrossReviewOrchestrator {
       const initialFabricationResult =
         !initialEmptyText && !initialDriftDetected
           ? detectFabricatedEvidence(initGeneration.text, {
-              provenanceCorpus: initAttachments.map((attachment) => attachment.content).join("\n"),
-              priorDraftCorpus: "",
+              provenanceCorpus: trustedEvidenceAttachments(initAttachments)
+                .map((attachment) => attachment.content)
+                .join("\n"),
+              priorDraftCorpus: callerSubmittedEvidenceAttachments(initAttachments)
+                .map((attachment) => attachment.content)
+                .join("\n"),
               narrativeCorpus: input.task,
             })
           : null;
@@ -4418,7 +5180,10 @@ export class CrossReviewOrchestrator {
       }
       const startedAt = new Date().toISOString();
 
-      const attachedEvidence = this.safeReadEvidenceAttachments(session.session_id);
+      const attachedEvidence = this.safeReadEvidenceAttachments(
+        session.session_id,
+        callerSubmissionId,
+      );
       const prompt = buildRevisionPrompt(
         session,
         draft as string,
@@ -4473,6 +5238,9 @@ export class CrossReviewOrchestrator {
           caller: callerForLottery,
           attachmentsPresent: attachedEvidence.length > 0,
           attachedEvidenceText: attachedEvidence.map((attachment) => attachment.content).join("\n"),
+          operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachedEvidence)
+            .map((attachment) => attachment.content)
+            .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
         if (!truthfulness.pass) {
@@ -4510,13 +5278,17 @@ export class CrossReviewOrchestrator {
       let fabricationResult: FabricationDetectionResult | null = null;
       let metaAuditResult: MetaAuditDetectionResult | null = null;
       if (!emptyText && !driftDetected) {
+        const trustedAttachedEvidence = trustedEvidenceAttachments(attachedEvidence);
+        const submittedAttachedEvidence = callerSubmittedEvidenceAttachments(attachedEvidence);
         fabricationResult = detectFabricatedEvidence(generation.text, {
-          provenanceCorpus: attachedEvidence.map((a) => a.content).join("\n"),
+          provenanceCorpus: trustedAttachedEvidence.map((a) => a.content).join("\n"),
           // v3.7.4: the prior artifact (the draft the relator is
           // revising) is its own corpus tier — assertions preserved
           // from it are not fabrication. The task narrative stays
           // separate (a task-narrated claim is still not evidence).
-          priorDraftCorpus: draft as string,
+          priorDraftCorpus: `${draft as string}\n${submittedAttachedEvidence
+            .map((attachment) => attachment.content)
+            .join("\n")}`,
           narrativeCorpus: input.task,
         });
         metaAuditResult = detectMetaAuditFabrication(generation.text);
@@ -4799,11 +5571,14 @@ export class CrossReviewOrchestrator {
     // `input.caller ?? "operator"`, identical to pre-v3.7.2.
     if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
+    const actingCaller: PeerId | "operator" = input.caller ?? "operator";
     const callerForLottery: PeerId | "operator" =
-      existingSession?.convergence_scope?.petitioner ??
-      existingSession?.caller ??
-      input.caller ??
-      "operator";
+      existingSession?.convergence_scope?.petitioner ?? existingSession?.caller ?? actingCaller;
+    if (existingSession && actingCaller !== "operator" && actingCaller !== callerForLottery) {
+      throw new Error(
+        `session_owner_mismatch: existing session ${existingSession.session_id} belongs to petitioner '${callerForLottery}'; caller '${actingCaller}' cannot continue it`,
+      );
+    }
     // v2.14.0: explicit `peers` entries referencing a disabled peer are
     // rejected before any work; lead_peer is checked below. Without an
     // explicit list, default to the enabled subset (NOT global PEERS).
@@ -4937,8 +5712,20 @@ export class CrossReviewOrchestrator {
     }
     let session =
       existingSession ?? (await this.initSession(input.task, callerForLottery, input.review_focus));
-    const adapters = createAdapters(this.config);
     const reviewerPeers = selectedPeers.filter((peer) => peer !== leadPeer);
+    if (!reviewerPeers.length) {
+      throw new Error(
+        `no_eligible_reviewer_peers: caller=${callerForLottery} and non-voting relator=${leadPeer} leave no independent voting reviewer. Enable at least one additional peer.`,
+      );
+    }
+    const callerSubmissionId = await this.persistCallerSubmittedEvidence({
+      sessionId: session.session_id,
+      caller: actingCaller,
+      task: input.task,
+      draft: input.initial_draft,
+      evidence: input.evidence,
+    });
+    const adapters = createAdapters(this.config);
     let draft = input.initial_draft;
 
     // v3.5.0 (CRV2-1 + CRV2-6): persist requested-vs-effective budget +
@@ -4952,7 +5739,10 @@ export class CrossReviewOrchestrator {
     });
 
     if (this.config.truthfulness_preflight_enabled) {
-      const truthfulnessAttachments = this.safeReadEvidenceAttachments(session.session_id);
+      const truthfulnessAttachments = this.safeReadEvidenceAttachments(
+        session.session_id,
+        callerSubmissionId,
+      );
       const truthfulness = truthfulnessPreflight({
         task: input.task,
         initialDraft: draft,
@@ -4962,14 +5752,14 @@ export class CrossReviewOrchestrator {
         attachedEvidenceText: truthfulnessAttachments
           .map((attachment) => attachment.content)
           .join("\n"),
+        operatorVerifiedEvidenceText: trustedEvidenceAttachments(truthfulnessAttachments)
+          .map((attachment) => attachment.content)
+          .join("\n"),
         runtimeFacts: runtimeTruthFacts(this.config),
       });
       if (!truthfulness.pass) {
         const message = `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`;
-        const rejected = selectAdapters(
-          adapters,
-          reviewerPeers.length ? reviewerPeers : selectedPeers,
-        ).map((adapter) =>
+        const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
           truthfulnessPreflightFailure(
             adapter.id,
             adapter.provider,
@@ -4982,7 +5772,6 @@ export class CrossReviewOrchestrator {
           await this.store.savePeerFailure(session.session_id, 0, failure);
         }
         await this.store.recordPreflightFailure(session.session_id, rejected);
-        await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
         this.emit({
           type: "session.truthfulness_preflight_failed",
           session_id: session.session_id,
@@ -5016,7 +5805,7 @@ export class CrossReviewOrchestrator {
     // `needs_evidence_preflight` instead of burning API across rounds.
     // Opt-out via CROSS_REVIEW_EVIDENCE_PREFLIGHT=off.
     if (this.config.evidence_preflight_enabled) {
-      const attachments = this.safeReadEvidenceAttachments(session.session_id);
+      const attachments = this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId);
       const preflight = evidencePreflight({
         task: input.task,
         initialDraft: draft,
@@ -5024,13 +5813,27 @@ export class CrossReviewOrchestrator {
         caller: callerForLottery,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
+        operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
+          .map((attachment) => attachment.content)
+          .join("\n"),
         attachedEvidenceRefs: attachments.flatMap((attachment) => [
           attachment.label,
           attachment.relative_path,
         ]),
       });
       if (!preflight.pass) {
-        await this.store.finalize(session.session_id, "aborted", "needs_evidence_preflight");
+        const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
+          evidencePreflightFailure(
+            adapter.id,
+            adapter.provider,
+            adapter.model,
+            `Evidence preflight failed before any paid peer call: ${preflight.reason}`,
+          ),
+        );
+        for (const failure of rejected) {
+          await this.store.savePeerFailure(session.session_id, 0, failure);
+        }
+        await this.store.recordPreflightFailure(session.session_id, rejected);
         this.emit({
           type: "session.evidence_preflight_failed",
           session_id: session.session_id,
@@ -5043,6 +5846,8 @@ export class CrossReviewOrchestrator {
             attachments_present: preflight.attachments_present,
             unattached_evidence_references: preflight.unattached_evidence_references,
             uncorroborated_operational_claims: preflight.uncorroborated_operational_claims,
+            operator_grounded: preflight.operator_grounded,
+            evidence_authority: preflight.evidence_authority,
           },
         });
         return {
@@ -5091,6 +5896,7 @@ export class CrossReviewOrchestrator {
         input,
         costLimit,
         initialDraft: draft,
+        callerSubmissionId,
       });
     }
 
@@ -5105,7 +5911,13 @@ export class CrossReviewOrchestrator {
         };
       }
       const generation = await adapters[leadPeer].generate(
-        buildInitialDraftPrompt(input.task, this.config, input.review_focus, sessionMode),
+        buildInitialDraftPrompt(
+          input.task,
+          this.config,
+          input.review_focus,
+          sessionMode,
+          this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId),
+        ),
         {
           session_id: session.session_id,
           round: 0,
@@ -5143,7 +5955,8 @@ export class CrossReviewOrchestrator {
       let initialAttachments: ReturnType<SessionStore["readEvidenceAttachments"]> | undefined;
       if (this.config.truthfulness_preflight_enabled) {
         initialAttachments =
-          initialAttachments ?? this.safeReadEvidenceAttachments(session.session_id);
+          initialAttachments ??
+          this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId);
         const attachmentsPresent = initialAttachments.length > 0;
         const truthfulness = truthfulnessPreflight({
           task: input.task,
@@ -5154,14 +5967,14 @@ export class CrossReviewOrchestrator {
           attachedEvidenceText: initialAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
+          operatorVerifiedEvidenceText: trustedEvidenceAttachments(initialAttachments)
+            .map((attachment) => attachment.content)
+            .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
         if (!truthfulness.pass) {
           const message = `Truthfulness preflight failed on lead-generated initial draft before reviewer peer calls: ${truthfulness.reason}`;
-          const rejected = selectAdapters(
-            adapters,
-            reviewerPeers.length ? reviewerPeers : selectedPeers,
-          ).map((adapter) =>
+          const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
             truthfulnessPreflightFailure(
               adapter.id,
               adapter.provider,
@@ -5213,10 +6026,15 @@ export class CrossReviewOrchestrator {
       let initialMetaAuditResult: MetaAuditDetectionResult | null = null;
       if (sessionMode === "ship" && !initialEmptyText && !initialDriftDetected) {
         initialAttachments =
-          initialAttachments ?? this.safeReadEvidenceAttachments(session.session_id);
+          initialAttachments ??
+          this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId);
+        const trustedInitialAttachments = trustedEvidenceAttachments(initialAttachments);
+        const submittedInitialAttachments = callerSubmittedEvidenceAttachments(initialAttachments);
         initialFabricationResult = detectFabricatedEvidence(generation.text, {
-          provenanceCorpus: initialAttachments.map((a) => a.content).join("\n"),
-          priorDraftCorpus: "",
+          provenanceCorpus: trustedInitialAttachments.map((a) => a.content).join("\n"),
+          priorDraftCorpus: submittedInitialAttachments
+            .map((attachment) => attachment.content)
+            .join("\n"),
           narrativeCorpus: input.task,
         });
         initialMetaAuditResult = detectMetaAuditFabrication(generation.text);
@@ -5309,12 +6127,20 @@ export class CrossReviewOrchestrator {
         caller: leadPeer,
         lead_peer: leadPeer,
         caller_status: "READY",
-        peers: reviewerPeers.length ? reviewerPeers : selectedPeers,
+        peers: reviewerPeers,
         review_focus: input.review_focus,
         signal: input.signal,
         reasoning_effort_overrides: input.reasoning_effort_overrides,
       });
       session = this.store.read(session.session_id);
+      if (session.outcome) {
+        return {
+          session,
+          final_text: draft,
+          converged: session.outcome === "converged",
+          rounds: round,
+        };
+      }
       if (result.converged) {
         return {
           session: this.store.read(session.session_id),
@@ -5392,7 +6218,7 @@ export class CrossReviewOrchestrator {
             input.review_focus,
             sessionMode,
             // v2.14.0 (path-A): same attachment resolution as askPeers.
-            this.safeReadEvidenceAttachments(session.session_id),
+            this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId),
           ),
           {
             session_id: session.session_id,
@@ -5429,7 +6255,10 @@ export class CrossReviewOrchestrator {
           };
         }
         if (this.config.truthfulness_preflight_enabled) {
-          const truthfulnessAttachments = this.safeReadEvidenceAttachments(session.session_id);
+          const truthfulnessAttachments = this.safeReadEvidenceAttachments(
+            session.session_id,
+            callerSubmissionId,
+          );
           const truthfulness = truthfulnessPreflight({
             task: input.task,
             initialDraft: generation.text,
@@ -5439,14 +6268,14 @@ export class CrossReviewOrchestrator {
             attachedEvidenceText: truthfulnessAttachments
               .map((attachment) => attachment.content)
               .join("\n"),
+            operatorVerifiedEvidenceText: trustedEvidenceAttachments(truthfulnessAttachments)
+              .map((attachment) => attachment.content)
+              .join("\n"),
             runtimeFacts: runtimeTruthFacts(this.config),
           });
           if (!truthfulness.pass) {
             const message = `Truthfulness preflight failed on lead-generated revision before reviewer peer calls: ${truthfulness.reason}`;
-            const rejected = selectAdapters(
-              adapters,
-              reviewerPeers.length ? reviewerPeers : selectedPeers,
-            ).map((adapter) =>
+            const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
               truthfulnessPreflightFailure(
                 adapter.id,
                 adapter.provider,
@@ -5528,7 +6357,13 @@ export class CrossReviewOrchestrator {
         let fabricationResult: FabricationDetectionResult | null = null;
         let metaAuditResult: MetaAuditDetectionResult | null = null;
         if (sessionMode === "ship" && !emptyText && !driftDetected) {
-          const attachmentsForCheck = this.safeReadEvidenceAttachments(session.session_id);
+          const attachmentsForCheck = this.safeReadEvidenceAttachments(
+            session.session_id,
+            callerSubmissionId,
+          );
+          const trustedAttachmentsForCheck = trustedEvidenceAttachments(attachmentsForCheck);
+          const submittedAttachmentsForCheck =
+            callerSubmittedEvidenceAttachments(attachmentsForCheck);
           // Three-tier corpus (v2.24.0 two-tier per Codex R1 blocker
           // session 91935993; split in v3.7.4 — Codex v3.7.3 parecer
           // follow-up). An operational assertion the relator PRESERVED
@@ -5538,8 +6373,10 @@ export class CrossReviewOrchestrator {
           // union since IDs/paths/SHAs are commonly referenced as
           // identifiers without being claimed as command-output evidence.
           fabricationResult = detectFabricatedEvidence(generation.text, {
-            provenanceCorpus: attachmentsForCheck.map((a) => a.content).join("\n"),
-            priorDraftCorpus: draft,
+            provenanceCorpus: trustedAttachmentsForCheck.map((a) => a.content).join("\n"),
+            priorDraftCorpus: `${draft}\n${submittedAttachmentsForCheck
+              .map((attachment) => attachment.content)
+              .join("\n")}`,
             narrativeCorpus: input.task,
           });
           // v3.4.0: meta-audit detector. Sess 51973fac shipped a
@@ -5586,7 +6423,7 @@ export class CrossReviewOrchestrator {
               `Lead ${leadPeer} produced revision text with operational evidence that does not appear in the caller's task, prior draft, or attached evidence (consecutive drift count: ${consecutiveLeadDrifts}). ` +
               `Signals: net_new_hex_tokens=${sample.net_new_hex_count} [${sample.net_new_hex_sample.join(",")}]; suspicious_assertions=${sample.suspicious_assertion_count} [${assertionLabels}]. ` +
               `Preserving prior draft for next round per evidence-provenance lock (v2.24.0); the relator may not fabricate SHAs, hashes, test counts, or build outputs. ` +
-              `If the citation is real, the caller must attach the proof via session_attach_evidence before the next round.`;
+              `If the citation is real, the caller must resubmit the raw proof inline or through the evidence field before the next round; no manual operator attachment is required.`;
           } else if (metaAuditDetected) {
             const sample = metaAuditResult ?? {
               placeholder_count: 0,

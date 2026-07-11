@@ -13,11 +13,7 @@ import {
   RELEASE_DATE,
   VERSION,
 } from "../core/config.js";
-import {
-  CrossReviewOrchestrator,
-  trustedEvidenceAttachments,
-  truthfulnessPreflight,
-} from "../core/orchestrator.js";
+import { CrossReviewOrchestrator } from "../core/orchestrator.js";
 import { sessionReportMarkdown } from "../core/reports.js";
 import type {
   ConvergenceScope,
@@ -81,7 +77,7 @@ const ReasoningEffortOverridesSchema = z
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. Useful to dial down expensive peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents, or Perplexity sonar-deep-research that bills citation + reasoning + search queries separately) for routine reviews without editing the host MCP configs.",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. Provider adapters clamp the shared scale to each selected model's documented API values (for example, Grok 4.5 uses low/medium/high).",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -398,8 +394,9 @@ export function lockCallerPeerSelection<
     // ignored_peers = full 6-peer panel = enabled set). When this
     // field is supplied the lock short-circuits the emit when the
     // caller-supplied panel set-equals the enabled set; otherwise
-    // (legacy callers, undefined) behavior matches v3.3.0..v3.7.4
-    // exactly.
+    // (legacy callers, undefined) any explicitly supplied list is treated
+    // as an override, including an empty list that would otherwise turn the
+    // full-panel lock into a no-reviewer abort.
     enabledPeers?: readonly PeerId[] | undefined;
   },
 ): T {
@@ -419,8 +416,7 @@ export function lockCallerPeerSelection<
     callerSuppliedPeers !== undefined &&
     callerSuppliedPeers.length === ctx.enabledPeers.length &&
     [...callerSuppliedPeers].sort().join("|") === [...ctx.enabledPeers].sort().join("|");
-  const peerPanelOverridden =
-    !!callerSuppliedPeers && callerSuppliedPeers.length > 0 && !callerPanelMatchesEnabled;
+  const peerPanelOverridden = callerSuppliedPeers !== undefined && !callerPanelMatchesEnabled;
   // lead_peer: locked for peer callers (forces lottery so callers cannot
   // pin a sympathetic relator). Operator caller may pin lead_peer for
   // legitimate testing.
@@ -676,7 +672,8 @@ export function assertSessionMutationAuthority(
   }
 }
 
-export function hasTrustedPetitionerProvenance(version: string): boolean {
+export function hasTrustedPetitionerProvenance(version: unknown): boolean {
+  if (typeof version !== "string") return false;
   const match = version.match(
     /^v?(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/,
   );
@@ -1149,6 +1146,7 @@ export async function main(): Promise<void> {
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
+        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         caller: CallerSchema.default("operator"),
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
@@ -1174,13 +1172,22 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyToolCallerIdentity(
-        runtime,
-        "ask_peers",
-        input.caller,
-        server.server.getClientVersion(),
-        input.session_id,
-      );
+      if (input.session_id) {
+        verifySessionMutationAuthority(
+          runtime,
+          "ask_peers",
+          input.caller,
+          server.server.getClientVersion(),
+          input.session_id,
+        );
+      } else {
+        verifyToolCallerIdentity(
+          runtime,
+          "ask_peers",
+          input.caller,
+          server.server.getClientVersion(),
+        );
+      }
       // v3.3.0: caller peer-selection lock — silently strips
       // caller-supplied `peers` (and, for peer callers, `lead_peer`) and
       // emits an audit event for the operator. See lockCallerPeerSelection
@@ -1210,6 +1217,7 @@ export async function main(): Promise<void> {
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
+        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         caller: CallerSchema.default("operator"),
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
@@ -1235,13 +1243,22 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyToolCallerIdentity(
-        runtime,
-        "session_start_round",
-        input.caller,
-        server.server.getClientVersion(),
-        input.session_id,
-      );
+      if (input.session_id) {
+        verifySessionMutationAuthority(
+          runtime,
+          "session_start_round",
+          input.caller,
+          server.server.getClientVersion(),
+          input.session_id,
+        );
+      } else {
+        verifyToolCallerIdentity(
+          runtime,
+          "session_start_round",
+          input.caller,
+          server.server.getClientVersion(),
+        );
+      }
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_round",
@@ -1275,7 +1292,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Until Unanimous",
       description:
-        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
+        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
       inputSchema: z.object({
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
@@ -1322,9 +1339,9 @@ export async function main(): Promise<void> {
         mode: z.enum(["ship", "review", "circular"]).default("ship"),
         // v3.5.0 (CRV2-4): optional structured evidence supplied up-front.
         // The preflight checks value correspondence with every operational
-        // claim; presence alone is never proof. Peer callers cannot
-        // self-attest through this text channel and must rely on evidence
-        // admitted through operator-only attachment custody.
+        // claim; presence alone is never proof. Peer material is persisted,
+        // hashed and transported as unverified review evidence without a
+        // manual operator attachment step.
         evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         response_format: ResponseFormatSchema,
       }),
@@ -1398,9 +1415,9 @@ export async function main(): Promise<void> {
         mode: z.enum(["ship", "review", "circular"]).default("ship"),
         // v3.5.0 (CRV2-4): optional structured evidence supplied up-front.
         // The preflight checks value correspondence with every operational
-        // claim; presence alone is never proof. Peer callers cannot
-        // self-attest through this text channel and must rely on evidence
-        // admitted through operator-only attachment custody.
+        // claim; presence alone is never proof. Peer material is persisted,
+        // hashed and transported as unverified review evidence without a
+        // manual operator attachment step.
         evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         response_format: ResponseFormatSchema,
       }),
@@ -1413,13 +1430,22 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyToolCallerIdentity(
-        runtime,
-        "session_start_unanimous",
-        input.caller,
-        server.server.getClientVersion(),
-        input.session_id,
-      );
+      if (input.session_id) {
+        verifySessionMutationAuthority(
+          runtime,
+          "session_start_unanimous",
+          input.caller,
+          server.server.getClientVersion(),
+          input.session_id,
+        );
+      } else {
+        verifyToolCallerIdentity(
+          runtime,
+          "session_start_unanimous",
+          input.caller,
+          server.server.getClientVersion(),
+        );
+      }
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_unanimous",
@@ -1832,27 +1858,25 @@ export async function main(): Promise<void> {
     },
   );
 
-  registerTool(
-    "session_truthfulness_preflight_check",
-    {
-      title: "Check Truthfulness Preflight",
-      description:
-        "Re-run the local truthfulness preflight for a saved session without calling providers. Useful after attaching evidence to confirm whether a prior truthfulness_preflight abort is now supported.",
-      inputSchema: z.object({
-        session_id: SessionIdSchema,
-        task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
-        draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
-        evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async ({ session_id, task, draft, evidence, response_format }) => {
+  const savedSessionPreflightSchema = z.object({
+    session_id: SessionIdSchema,
+    task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
+    draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
+    evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+    caller: CallerSchema.default("operator"),
+    response_format: ResponseFormatSchema,
+  });
+  const savedSessionPreflightHandler =
+    (site: "session_preflight_check" | "session_truthfulness_preflight_check") =>
+    async ({
+      session_id,
+      task,
+      draft,
+      evidence,
+      caller,
+      response_format,
+    }: z.infer<typeof savedSessionPreflightSchema>) => {
+      verifyToolCallerIdentity(runtime, site, caller, server.server.getClientVersion(), session_id);
       const session = runtime.orchestrator.store.read(session_id);
       const latestDraftPath = session.rounds.at(-1)?.draft_file;
       let effectiveDraft = draft;
@@ -1863,47 +1887,83 @@ export async function main(): Promise<void> {
           SCHEMA_DRAFT_MAX_CHARS,
         );
       }
-      const attachments = trustedEvidenceAttachments(
-        runtime.orchestrator.store.readEvidenceAttachments(
-          session_id,
-          runtime.config.prompt.max_attached_evidence_chars,
-        ),
-      );
-      const result = truthfulnessPreflight({
+      const result = runtime.orchestrator.checkSessionPreflights({
+        sessionId: session_id,
         task: task ?? session.task,
-        initialDraft: effectiveDraft,
-        structuredEvidence: evidence,
-        caller: session.convergence_scope?.petitioner ?? session.caller,
-        attachmentsPresent: attachments.length > 0,
-        attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
-        runtimeFacts: {
-          runtime_version: runtime.config.version,
-          release_date: RELEASE_DATE,
-          model_pins: runtime.config.models,
-        },
+        draft: effectiveDraft,
+        evidence,
+        caller,
       });
+      const truthfulness = result.truthfulness.result;
+      const evidenceResult = result.evidence.result;
       return textResult(
         {
           session_id: session.session_id,
           used_task_source: task ? "input" : "session",
           used_draft_source: draft ? "input" : latestDraftPath ? latestDraftPath : null,
           pass: result.pass,
-          reason: result.reason,
-          issue_classes: result.issue_classes,
-          current_state_claim_matched: result.current_state_claim_matched,
-          historical_state_claim_matched: result.historical_state_claim_matched,
-          contradictions: result.contradictions,
-          unsupported_claims: result.unsupported_claims,
-          structured_evidence_supplied: result.structured_evidence_supplied,
-          attachments_present: result.attachments_present,
-          attached_evidence_count: attachments.length,
+          reason: result.pass
+            ? "all enabled submission preflights passed"
+            : `submission blocked by preflight gate(s): ${result.blocking_gates.join(", ")}`,
+          blocking_gates: result.blocking_gates,
+          truthfulness_pass: result.truthfulness.pass,
+          evidence_pass: result.evidence.pass,
+          truthfulness: result.truthfulness,
+          evidence: result.evidence,
+          // Legacy truthfulness fields remain additive for existing clients.
+          issue_classes: truthfulness?.issue_classes ?? [],
+          current_state_claim_matched: truthfulness?.current_state_claim_matched ?? false,
+          historical_state_claim_matched: truthfulness?.historical_state_claim_matched ?? false,
+          contradictions: truthfulness?.contradictions ?? [],
+          unsupported_claims: truthfulness?.unsupported_claims ?? [],
+          structured_evidence_supplied:
+            truthfulness?.structured_evidence_supplied ??
+            evidenceResult?.structured_evidence_supplied ??
+            false,
+          attachments_present:
+            result.reviewable_attachment_count > 0 || result.operator_verified_attachment_count > 0,
+          attached_evidence_count: result.reviewable_attachment_count,
+          operator_verified_evidence_count: result.operator_verified_attachment_count,
           evidence_files: session.evidence_files ?? [],
-          source_marker_found: result.source_marker_found,
-          runtime_facts_available: result.runtime_facts_available,
+          source_marker_found: truthfulness?.source_marker_found ?? false,
+          runtime_facts_available: truthfulness?.runtime_facts_available ?? true,
         },
         response_format,
       );
+    };
+
+  registerTool(
+    "session_preflight_check",
+    {
+      title: "Check Submission Preflights",
+      description:
+        "Run the same enabled evidence and truthfulness gates used by a real review round, without calling providers. Peer-submitted inline/structured evidence is checked as review material and requires no manual operator attachment.",
+      inputSchema: savedSessionPreflightSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
+    savedSessionPreflightHandler("session_preflight_check"),
+  );
+
+  registerTool(
+    "session_truthfulness_preflight_check",
+    {
+      title: "Check Submission Preflights (Legacy Alias)",
+      description:
+        "Backward-compatible alias for session_preflight_check. Its top-level pass now reflects both enabled runtime gates, eliminating truthfulness-only false positives.",
+      inputSchema: savedSessionPreflightSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    savedSessionPreflightHandler("session_truthfulness_preflight_check"),
   );
 
   registerTool(
@@ -2632,7 +2692,7 @@ const PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new 
 // env var. Both paths must be canonicalized because Node resolves the ESM
 // module through npm's symlink/junction while process.argv[1] can retain the
 // linked bin path. A plain path.resolve comparison therefore exits silently
-// for legitimate `npm link` / `npm install -g .` development installs.
+// for legitimate symlinked or junction-backed development entry paths.
 export function isMainModule(moduleUrl: string, argvEntry?: string): boolean {
   if (!argvEntry) return false;
 
