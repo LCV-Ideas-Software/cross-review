@@ -7,6 +7,71 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.00] — 2026-07-10
+
+**Minor — six-provider model refresh and evidence-backed truthfulness hardening.**
+This source release updates the canonical reviewer contracts for OpenAI,
+Anthropic and xAI, validates the current Google, DeepSeek and Perplexity
+choices, and makes configuration drift and ungrounded completion claims fail
+closed.
+
+### Added
+
+- Canonical pins for `gpt-5.6-sol`, `claude-fable-5` and `grok-4.5`, while
+  retaining `gemini-3.1-pro-preview`, `deepseek-v4-pro` and
+  `sonar-reasoning-pro` after an official-documentation review.
+- Provider-terminal gates that reject incomplete, truncated, filtered,
+  refused or unterminated output before it can become a verdict or relator
+  artifact.
+- Runtime configuration diagnostics in `server_info`, including the loaded and
+  current file fingerprints, parse/apply state and `reload_required` signal.
+- Evidence-attachment custody metadata (SHA-256, byte count, actor, origin and
+  timestamp), integrity verification on every read, durable attachment events
+  and explicit legacy-unverified status.
+- Focused regression suites for provider contracts, terminal states, evidence
+  preflight, truthfulness and custody.
+
+### Changed
+
+- GPT-5.6 Sol uses Responses API `reasoning.effort=max`,
+  `prompt_cache_options` and cache-write telemetry. `ultra` remains rejected:
+  it is a Codex product mode, not a valid Responses API effort value.
+- Claude Fable 5 leaves `thinking` unset so the model's adaptive thinking is
+  used, and handles the provider's refusal terminal separately from ordinary
+  completion.
+- Grok 4.5 uses its documented `low|medium|high` effort range and Responses
+  prompt-cache key without OpenAI-only retention fields.
+- DeepSeek V4 Pro now sends `reasoning_effort` at the documented top level.
+- OpenAI, Grok, DeepSeek and Gemini usage normalization separates fresh input,
+  cache reads and cache writes so cached tokens cannot be billed twice.
+- Perplexity request fees are accounted for even when search is disabled.
+- OpenAI, Anthropic and Google SDK dependencies were refreshed for the new
+  provider contracts.
+
+### Security
+
+- A structured `READY` result requires concrete, provenance-bearing evidence;
+  malformed/legacy pseudo-JSON, unsupported operational assertions, model-pin
+  contradictions and unresolved evidence cannot converge.
+- Workflow and deployment assertions must match evidence values, and
+  truthfulness/fabrication/meta-audit gates now apply to circular as well as
+  ship workflows.
+- Operator-only mutation tools reject agent callers, including forged
+  `caller=operator` input. A seventh, distinct operator capability is now
+  mandatory for privileged tools; legacy six-token files migrate in place.
+- READY runtime metadata cannot substitute for artifact evidence; lossy,
+  contradictory, noncanonical or unknown-confidence READY votes fail closed.
+  READY uses a fixed summary, empty request/follow-up fields and no prose outside
+  the structured envelope, eliminating synonym/negation bypasses. Peer/legacy
+  attachments are excluded from trusted corpora, direct `ask_peers` runs the
+  evidence preflight, and a peer cannot judge its own evidence ask.
+- Cancellation and verdict contestation require the explicit persisted
+  petitioner token or the dedicated operator; legacy sessions with ambiguous
+  ownership fail closed, and contestation cannot silently create an
+  operator-attributed successor session.
+- Invalid session metadata is quarantined before listing/sorting, zero-round
+  convergence is rejected and finalized sessions cannot accept new evidence.
+
 ## [v04.04.08] — 2026-06-16
 
 **Patch — clear transitive `hono` security advisories.** Raises the `hono`

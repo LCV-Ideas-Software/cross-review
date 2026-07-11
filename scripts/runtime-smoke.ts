@@ -9,6 +9,37 @@ import { MCP_REQUEST_TIMEOUT_MS } from "../src/core/timeouts.js";
 const runtimeSmokeDataDir =
   process.env.CROSS_REVIEW_RUNTIME_SMOKE_DATA_DIR ??
   fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-runtime-smoke-"));
+const runtimeSmokeConfigPath = path.join(runtimeSmokeDataDir, "config.json");
+const runtimeSmokeOperatorToken = "07".repeat(32);
+fs.writeFileSync(
+  runtimeSmokeConfigPath,
+  JSON.stringify({ version: "runtime-smoke-v1" }, null, 2),
+  "utf8",
+);
+fs.writeFileSync(
+  path.join(runtimeSmokeDataDir, "host-tokens.json"),
+  JSON.stringify(
+    {
+      version: 2,
+      generated_at: "2026-07-10T00:00:00.000Z",
+      tokens: {
+        codex: "01".repeat(32),
+        claude: "02".repeat(32),
+        gemini: "03".repeat(32),
+        deepseek: "04".repeat(32),
+        grok: "05".repeat(32),
+        perplexity: "06".repeat(32),
+        operator: runtimeSmokeOperatorToken,
+      },
+    },
+    null,
+    2,
+  ),
+  "utf8",
+);
+const invalidMetaDir = path.join(runtimeSmokeDataDir, "sessions", "invalid-shape");
+fs.mkdirSync(invalidMetaDir, { recursive: true });
+fs.writeFileSync(path.join(invalidMetaDir, "meta.json"), "{}", "utf8");
 
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -17,6 +48,9 @@ const transport = new StdioClientTransport({
   env: {
     ...process.env,
     CROSS_REVIEW_DATA_DIR: runtimeSmokeDataDir,
+    CROSS_REVIEW_CONFIG_FILE: runtimeSmokeConfigPath,
+    CROSS_REVIEW_CALLER_TOKEN: runtimeSmokeOperatorToken,
+    CROSS_REVIEW_REQUIRE_TOKEN: "true",
     CROSS_REVIEW_STUB: process.env.CROSS_REVIEW_STUB ?? "1",
     // v2.4.0 / audit closure (P1.1): runtime smoke is a legitimate stub
     // consumer; opt in to the double-confirmation gate.
@@ -58,13 +92,9 @@ const transport = new StdioClientTransport({
       process.env.CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION ?? "1000",
     CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION:
       process.env.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION ?? "1000",
-    // Perplexity also bills a per-1000-requests search fee; when search is
-    // enabled `missingFinancialControlVars` requires the request fee for
-    // the configured `search_context_size`. This stub smoke does not
-    // exercise paid search, so disable it — and, belt-and-suspenders in
-    // case an inherited operator env re-enables it, inject the request fee
-    // for every search_context_size so the financial preflight passes
-    // regardless.
+    // Perplexity bills a context-tier fee for every request even when
+    // disable_search=true. Inject every tier so inherited context settings
+    // cannot make this runtime smoke fail financial preflight.
     CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH:
       process.env.CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH ?? "1",
     CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS:
@@ -85,6 +115,9 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
   });
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content ?? [];
   const text = content[0]?.type === "text" ? (content[0].text ?? "{}") : "{}";
+  if ((result as { isError?: boolean }).isError) {
+    throw new Error(text);
+  }
   return JSON.parse(text);
 }
 
@@ -139,6 +172,48 @@ try {
     packageVersion,
     "runtime-smoke: runtime_capabilities.version must match package.json version",
   );
+  const configLoad = (
+    serverInfo as {
+      config_load?: {
+        path?: string;
+        applied?: boolean;
+        parse_error?: string | null;
+        live_reload_supported?: boolean;
+        reload_required?: boolean;
+        loaded_sha256?: string;
+      };
+      models?: Record<string, string>;
+      reasoning_effort?: Record<string, string>;
+    }
+  ).config_load;
+  assert.equal(configLoad?.path, runtimeSmokeConfigPath);
+  assert.equal(configLoad?.applied, true);
+  assert.equal(configLoad?.parse_error, null);
+  assert.equal(configLoad?.live_reload_supported, false);
+  assert.equal(configLoad?.reload_required, false);
+  assert.match(configLoad?.loaded_sha256 ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(typeof (serverInfo as { models?: unknown }).models, "object");
+  assert.equal(typeof (serverInfo as { reasoning_effort?: unknown }).reasoning_effort, "object");
+
+  fs.writeFileSync(
+    runtimeSmokeConfigPath,
+    JSON.stringify({ version: "runtime-smoke-v2" }, null, 2),
+    "utf8",
+  );
+  const staleServerInfo = (await callTool("server_info", {
+    response_format: "json",
+  })) as { config_load?: { reload_required?: boolean; current_sha256?: string } };
+  assert.equal(
+    staleServerInfo.config_load?.reload_required,
+    true,
+    "server_info must reveal when config.json changed after this MCP window loaded it.",
+  );
+  assert.match(staleServerInfo.config_load?.current_sha256 ?? "", /^[a-f0-9]{64}$/);
+  fs.writeFileSync(
+    runtimeSmokeConfigPath,
+    JSON.stringify({ version: "runtime-smoke-v1" }, null, 2),
+    "utf8",
+  );
   const markdownInitText = await callToolText("session_init", {
     task: "Runtime smoke: verify session_init markdown response.",
     review_focus: "runtime/markdown-init",
@@ -161,11 +236,35 @@ try {
     detail?: string | undefined;
     outcome_filter?: string | undefined;
   };
+  assert.equal(
+    fs.existsSync(path.join(invalidMetaDir, "meta.json.bad")),
+    true,
+    "runtime session_list must quarantine a syntactically valid but structurally invalid meta.json.",
+  );
   const noJobSession = (await callTool("session_init", {
     task: "Runtime smoke: verify no-job cancellation is non-terminal.",
     review_focus: "runtime/cancel-no-job",
     response_format: "json",
   })) as { session_id: string };
+  let peerFinalizeBlocked = false;
+  try {
+    await callTool("session_finalize", {
+      session_id: noJobSession.session_id,
+      outcome: "aborted",
+      reason: "unauthorized peer fixture",
+      caller: "claude",
+      response_format: "json",
+    });
+  } catch (error) {
+    peerFinalizeBlocked = /operator_authority_required|identity_forgery_blocked/.test(
+      String(error),
+    );
+  }
+  assert.equal(
+    peerFinalizeBlocked,
+    true,
+    "A peer must not be able to mutate terminal session state through session_finalize.",
+  );
   const noJobCancelResult = (await callTool("session_cancel_job", {
     session_id: noJobSession.session_id,
     reason: "runtime_smoke_no_active_job",

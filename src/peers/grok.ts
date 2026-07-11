@@ -9,6 +9,7 @@
 //   - `provider = "xai"`
 //   - auth via canonical `GROK_API_KEY`
 //   - operator chooses the model through CROSS_REVIEW_GROK_MODEL:
+//       * grok-4.5 (canonical): explicit reasoning.effort through high
 //       * grok-4-latest / grok-4.20 / grok-4.20-reasoning:
 //         xAI automatic reasoning; omit reasoning.effort
 //       * grok-4.3: explicit reasoning.effort supported through high
@@ -39,6 +40,11 @@ import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor, streamingFailureErrorFromEvent } from "./openai.js";
 import { withRetry } from "./retry.js";
+import {
+  assertResponsesCompletion,
+  assertResponsesStreamCompleted,
+  observeResponsesStreamTerminal,
+} from "./terminal.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 
 type GrokUsage = {
@@ -60,6 +66,7 @@ type GrokStreamEvent = {
   type: string;
   delta?: unknown | undefined;
   response?: {
+    status?: string | undefined;
     usage?: GrokUsage | null | undefined;
     model?: string | undefined;
     error?:
@@ -87,13 +94,16 @@ const GROK_BASE_URL = "https://api.x.ai/v1";
 
 function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
-  // v2.21.0 (caching): xAI's grok-4.3 mirrors the OpenAI Responses API
-  // shape and surfaces cached tokens under prompt_tokens_details. The
-  // adapter is OpenAI-compatible so the same parsing path applies.
+  // xAI's OpenAI-compatible Responses usage surfaces cached tokens under
+  // prompt_tokens_details (or input_tokens_details on newer response shapes),
+  // so the same parsing path applies to the current Grok 4.5 pin and legacy
+  // supported pins.
   const cached =
     usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
+  const providerInput = usage.input_tokens ?? 0;
   const result: TokenUsage = {
-    input_tokens: usage.input_tokens,
+    input_tokens:
+      usage.input_tokens === undefined ? undefined : Math.max(0, providerInput - cached),
     output_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
     reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
@@ -112,10 +122,11 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
 // v2.16.0 clarification (operator directive 2026-05-05) / v2.18.4 update
 // (Codex audit 2026-05-07 P2.1): per CURRENT xAI docs at
 // https://docs.x.ai/developers/model-capabilities/text/reasoning,
-// BOTH `grok-4.20-multi-agent` AND `grok-4.3` accept the
+// `grok-4.5`, `grok-4.20-multi-agent`, and `grok-4.3` accept the
 // `reasoning.effort` parameter (xAI added grok-4.3 reasoning_effort
 // support after v2.16.0 froze; verified via WebFetch 2026-05-07).
 // Their accepted value sets DIFFER:
+//   - grok-4.5: { "low", "medium", "high" (default) }
 //   - grok-4.3: { "none", "low" (default), "medium", "high" }
 //   - grok-4.20-multi-agent: { "low", "medium", "high", "xhigh" }
 // The internal config scale uses
@@ -150,6 +161,11 @@ export function clampEffortForModel(
   effort: GrokReasoningEffort,
   model: string,
 ): GrokReasoningEffort {
+  if (model === "grok-4.5") {
+    if (effort === "none" || effort === "minimal" || effort === "low") return "low";
+    if (effort === "xhigh") return "high";
+    return effort;
+  }
   if (model === "grok-4.3") {
     // grok-4.3 accepts only { none, low, medium, high }. Our internal
     // post-grokEffort scale is { none, minimal, low, medium, high,
@@ -165,7 +181,8 @@ export function clampEffortForModel(
 }
 
 // v2.15.0/v2.16.0: per-model reasoning capability detection. Per
-// official xAI docs, `grok-4.3` and `grok-4.20-multi-agent` accept the
+// official xAI docs, `grok-4.5`, `grok-4.3`, and
+// `grok-4.20-multi-agent` accept the
 // `reasoning.effort` body field. Other Grok models (including
 // `grok-4-latest`, `grok-4.20`, and `grok-4.20-reasoning`) have automatic
 // reasoning by design in this runtime, so the field is unnecessary and
@@ -184,6 +201,7 @@ export function clampEffortForModel(
 // capability discovery endpoint, replace the static set with a
 // runtime probe + cache.
 export const GROK_REASONING_EFFORT_MODELS: ReadonlySet<string> = new Set([
+  "grok-4.5",
   "grok-4.20-multi-agent",
   // v2.18.4 / Codex audit 2026-05-07 P2.1: xAI docs (WebFetch verified
   // 2026-05-07) document grok-4.3 as supporting reasoning_effort with
@@ -207,29 +225,16 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
     this.model = modelOverride ?? config.models.grok;
   }
 
-  // v2.21.0 (caching): construct a per-call client so we can attach a
-  // dynamic x-grok-conv-id header derived from the pair-scoped cache
-  // key. xAI uses the header to bucket cache entries the same way
-  // OpenAI uses prompt_cache_key — it ties a sequence of calls to the
-  // same conversation/cache scope.
+  // Responses API uses prompt_cache_key in the request body. The
+  // x-grok-conv-id header is the corresponding Chat Completions surface
+  // and is intentionally not duplicated here.
   private async client(callerForCache?: PeerId | "operator"): Promise<OpenAI> {
     const apiKey = this.config.api_keys.grok;
     if (!apiKey) {
       throw new Error("GROK_API_KEY was not found in environment variables.");
     }
     const Ctor = await loadOpenAICtor();
-    if (this.config.cache.enabled) {
-      const convId = pairScopedCacheKey(
-        this.id,
-        callerForCache ?? "operator",
-        this.config.cache.schema_version,
-      );
-      return new Ctor({
-        apiKey,
-        baseURL: GROK_BASE_URL,
-        defaultHeaders: { "x-grok-conv-id": convId },
-      });
-    }
+    void callerForCache;
     return new Ctor({ apiKey, baseURL: GROK_BASE_URL });
   }
 
@@ -328,9 +333,6 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,
-                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
-                  ? "24h"
-                  : "in_memory") as "in_memory" | "24h",
               }
             : {}),
         };
@@ -343,12 +345,20 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
+          let responseCompleted = false;
           const reviewClient = await this.client(context.caller);
           const stream = await reviewClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
           for await (const event of stream as AsyncIterable<GrokStreamEvent>) {
+            responseCompleted = observeResponsesStreamTerminal(event, responseCompleted, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+            });
             if (event.type === "response.output_text.delta") {
               const delta = typeof event.delta === "string" ? event.delta : "";
               stream_buffer.append(delta);
@@ -360,6 +370,13 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
             }
           }
+          assertResponsesStreamCompleted(responseCompleted, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.resultFromText({
@@ -375,6 +392,13 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
         const response = await reviewClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
+        });
+        assertResponsesCompletion(response as { status?: unknown }, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "review",
         });
         return this.resultFromText({
           text: textFromOpenAIResponse(response),
@@ -430,9 +454,6 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,
-                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
-                  ? "24h"
-                  : "in_memory") as "in_memory" | "24h",
               }
             : {}),
         };
@@ -445,12 +466,20 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
+          let responseCompleted = false;
           const generateClient = await this.client(context.caller);
           const stream = await generateClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
           for await (const event of stream as AsyncIterable<GrokStreamEvent>) {
+            responseCompleted = observeResponsesStreamTerminal(event, responseCompleted, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+            });
             if (event.type === "response.output_text.delta") {
               const delta = typeof event.delta === "string" ? event.delta : "";
               stream_buffer.append(delta);
@@ -462,6 +491,13 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
             }
           }
+          assertResponsesStreamCompleted(responseCompleted, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.generationFromText({
@@ -477,6 +513,13 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
         const response = await generateClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
+        });
+        assertResponsesCompletion(response as { status?: unknown }, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "generation",
         });
         return this.generationFromText({
           text: textFromOpenAIResponse(response),

@@ -25,23 +25,24 @@ prompt workflow, or shared utility — never inside the MCP server.
 
 ## How it decides
 
-The preflight trips **only** when **both** are true:
-
-1. **Completed-work claim present** — the text matches one of:
-   `\d+ passed/failed`, `git diff`, `git status`, `npm run`,
-   `cargo test|build`, `build passed/succeeded/clean/green`,
-   `tests? pass/passed/green`, `git diff --check`.
-2. **Zero evidence markers** — the text contains none of: fenced code
-   blocks (` ``` `), `@@ -`/`@@ +` diff hunks, 7+ hex-char hashes,
-   `file.ext:NN` line refs, `$`/`>` command-prompt lines.
+The preflight first detects completed-work assertions such as
+`\d+ passed/failed`, `git diff`, `git status`, `npm run`,
+`cargo test|build`, successful builds or green tests. It then requires each
+assertion to have value-corresponding evidence: the same test count and
+outcome, the same command plus a success signal, or the actual diff/status
+form. A filename, hash, generic attachment, code fence, or `trust me` text does
+not satisfy that correlation.
 
 Mere keyword presence does **not** trip it. "I plan to write a patch"
 or "here is the test plan" is a design review with legitimately no diff
 — it passes.
 
-A non-empty `evidence` field **or** any attached evidence satisfies the
-baseline evidence-presence check — that is the caller's authoritative
-declaration that concrete evidence exists.
+Only a current, integrity-verified attachment is provenance-grade for an AI
+peer. A peer caller cannot turn its own `task`, `initial_draft`, or structured
+`evidence` prose into proof; those channels remain narrative even when they
+contain plausible-looking raw output. An operator caller may supply inline or
+structured raw evidence, and every value still has to correspond to the
+specific operational, workflow, runtime or authorization assertion.
 
 From v4.3.7 onward, that declaration is no longer a blank cheque for
 references to separate artifacts. If `task`, `initial_draft`, or the
@@ -55,9 +56,10 @@ Otherwise the preflight aborts locally with `unattached_evidence_references`.
 
 ## Minimum evidence format
 
-To pass the preflight when your task makes a completed-work claim,
-embed at least one of these inline in `initial_draft` or in the
-`evidence` field:
+To pass the preflight when an operator submission makes a completed-work claim,
+embed the corresponding raw material in `initial_draft`/`evidence`, or attach it
+through `session_attach_evidence`. A peer submission must use the attachment
+path. Useful material includes:
 
 - a fenced code block with the relevant diff hunk(s) — `@@ -N,M +N,M @@`;
 - `file/path.ext:LINE` references for every changed location;
@@ -72,15 +74,39 @@ it is obviously absent.
 
 ## The `evidence` field
 
-Both `run_until_unanimous` and `session_start_unanimous` accept an
-optional `evidence: string`. When non-empty it satisfies the baseline
-evidence-presence check. Use it to include the caller-packaged evidence bundle
-without inflating `initial_draft`.
+Both `run_until_unanimous` and `session_start_unanimous` accept an optional
+`evidence: string`. For an operator caller it can carry a value-corresponding
+raw evidence bundle without inflating `initial_draft`. For an AI peer it is
+recorded and checked for references but cannot self-attest the peer's own
+claims; the operator must first admit the raw artifact with
+`session_attach_evidence`.
 
 If the bundle says that proof lives in another file, attach that file with
 `session_attach_evidence` before starting the paid round. The preflight compares
 the referenced artifact names against the attached evidence labels, relative
 paths, and basenames; it does not read arbitrary filesystem paths.
+
+## Attachment custody and authority
+
+`session_attach_evidence` is operator-only. AI peers, including Claude, cannot
+promote their own prose into authoritative evidence or close evidence items.
+The same operator-only gate covers evidence-checklist mutations, terminal-state
+mutations and security configuration.
+
+Every new attachment records `attached_by`, `origin`, `attached_at`, UTF-8
+`bytes`, `sha256`, and `integrity_version`, and persists a
+`session.evidence_attached` event. `readEvidenceAttachments` recalculates byte
+count and SHA-256 on every read; deletion, containment failure, malformed
+custody metadata or content tampering fails closed and the orchestrator
+continues without treating the file as evidence. Pre-custody attachments remain
+readable for historical compatibility but are labeled
+`provenance_status=legacy_unverified` and are not provenance-grade.
+
+Operator authority is not inferred from `caller="operator"` or `clientInfo`.
+It requires the seventh, dedicated operator capability from
+`host-tokens.json`. Keep this token only in a separate human-console MCP host.
+The six model-host tokens cannot call operator mutation tools. Judge passes are
+operator-only, use distinct judges, and reject a peer ruling on its own ask.
 
 ## Opt-out
 
@@ -89,6 +115,11 @@ entirely (default: `on`). Disabling is rarely needed — the trip
 condition is deliberately conservative — but the escape hatch exists
 for callers whose tasks legitimately make completed-work claims in
 prose without inline markers.
+
+The separate truthfulness gate is controlled by
+`CROSS_REVIEW_TRUTHFULNESS_PREFLIGHT` and remains enabled by default. Disabling
+either gate weakens anti-deception protection and should be an explicit human
+operator decision, not a peer-requested workaround.
 
 ## Outcome when it trips
 
@@ -100,9 +131,9 @@ prose without inline markers.
   `unattached_evidence_references`;
 - **zero paid peer calls** were made.
 
-Re-submit with evidence embedded inline, with the `evidence` field
-populated, or with every referenced external evidence artifact attached via
-`session_attach_evidence`.
+Re-submit as operator with value-corresponding raw evidence inline/structured,
+or attach every referenced external artifact via `session_attach_evidence`.
+Peer callers must use the operator-custodied attachment route.
 
 ## Truthfulness preflight (v4.2.x)
 
@@ -111,6 +142,19 @@ local truthfulness preflight for high-risk runtime claims. It looks for current
 runtime/version/date claims, historical runtime timing claims, and
 fabrication-prone workflow/deployment/authorization claims before paid reviewer
 calls.
+
+The gate also checks value correspondence for fabrication-prone claims. A
+workflow/deploy claim needs matching workflow/run identity and outcome evidence;
+a model/runtime assertion is compared with live runtime facts; hashes and test
+counts must occur in the provenance corpus. Negated or instructional examples
+are not misclassified as completed work. Every `READY` decision, including
+`confidence="inferred"`, must cite sources traceable to the reviewed artifact
+or operator-custodied attachments. Runtime metadata may corroborate a matching
+runtime claim but never establishes artifact review by itself. Otherwise it is
+downgraded to `NEEDS_EVIDENCE`. Incomplete structured status, model mismatch,
+self-review, lossy/truncated READY, READY with blockers or caller requests,
+open/not-resurfaced asks, or fabricated relator
+output cannot converge.
 
 When it trips, the session is finalized with
 `reason = "needs_truthfulness_preflight"` and the event

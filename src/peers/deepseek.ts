@@ -19,6 +19,11 @@ import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor } from "./openai.js";
 import { withRetry } from "./retry.js";
+import {
+  assertChatCompletionTerminal,
+  assertChatStreamCompleted,
+  observeChatStreamTerminals,
+} from "./terminal.js";
 import { userPrompt } from "./text.js";
 
 type ChatUsage = {
@@ -42,20 +47,27 @@ type DeepSeekReasoningEffort = "high" | "max";
 type DeepSeekThinkingExtension = {
   thinking: {
     type: "enabled";
-    reasoning_effort: DeepSeekReasoningEffort;
   };
+  reasoning_effort: DeepSeekReasoningEffort;
 };
-type DeepSeekChatPayload = OpenAI.ChatCompletionCreateParamsNonStreaming &
+type DeepSeekChatPayload = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, "reasoning_effort"> &
   DeepSeekThinkingExtension;
-type DeepSeekChatStreamPayload = OpenAI.ChatCompletionCreateParamsStreaming &
+type DeepSeekChatStreamPayload = Omit<
+  OpenAI.ChatCompletionCreateParamsStreaming,
+  "reasoning_effort"
+> &
   DeepSeekThinkingExtension;
 
 function usageFromChat(usage: ChatUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
   const cacheHit = usage.prompt_cache_hit_tokens ?? 0;
   const cacheMiss = usage.prompt_cache_miss_tokens ?? 0;
+  const providerInput = usage.prompt_tokens ?? 0;
   const result: TokenUsage = {
-    input_tokens: usage.prompt_tokens,
+    input_tokens:
+      usage.prompt_tokens === undefined
+        ? undefined
+        : Math.max(0, providerInput - cacheHit - cacheMiss),
     output_tokens: usage.completion_tokens,
     total_tokens: usage.total_tokens,
     reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens,
@@ -87,8 +99,8 @@ function deepSeekThinking(
   return {
     thinking: {
       type: "enabled",
-      reasoning_effort: deepSeekReasoningEffort(override ?? config.reasoning_effort.deepseek),
     },
+    reasoning_effort: deepSeekReasoningEffort(override ?? config.reasoning_effort.deepseek),
   };
 }
 
@@ -195,16 +207,32 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage = usageFromChat(chunk.usage) ?? usage;
+            observeChatStreamTerminals(chunk.choices, completedChoices, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+              allowToolCalls: false,
+            });
             for (const choice of chunk.choices ?? []) {
               const delta = choice.delta?.content ?? "";
               stream_buffer.append(delta);
               tokenStream.append(delta);
             }
           }
+          assertChatStreamCompleted(completedChoices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.resultFromText({
@@ -220,6 +248,14 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
         const response = await reviewClient.chat.completions.create(payload, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
+        });
+        assertChatCompletionTerminal(response.choices, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "review",
+          allowToolCalls: false,
         });
         return this.resultFromText({
           text: chatText(response),
@@ -278,16 +314,32 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage = usageFromChat(chunk.usage) ?? usage;
+            observeChatStreamTerminals(chunk.choices, completedChoices, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+              allowToolCalls: false,
+            });
             for (const choice of chunk.choices ?? []) {
               const delta = choice.delta?.content ?? "";
               stream_buffer.append(delta);
               tokenStream.append(delta);
             }
           }
+          assertChatStreamCompleted(completedChoices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.generationFromText({
@@ -303,6 +355,14 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
         const response = await generateClient.chat.completions.create(payload, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
+        });
+        assertChatCompletionTerminal(response.choices, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "generation",
+          allowToolCalls: false,
         });
         return this.generationFromText({
           text: chatText(response),

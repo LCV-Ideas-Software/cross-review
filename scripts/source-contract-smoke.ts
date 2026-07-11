@@ -124,6 +124,8 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   for (const toolName of [
     "session_cancel_job",
+    "session_evidence_judge_pass",
+    "session_evidence_judge_consensus_pass",
     "contest_verdict",
     "regenerate_caller_tokens",
     "escalate_to_operator",
@@ -141,11 +143,19 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
       `v4.3.2 / identity: ${toolName} must expose caller with operator default.`,
     );
     assert.ok(
-      /verifyToolCallerIdentity\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
+      /verify(?:OperatorToolCallerIdentity|ToolCallerIdentity|SessionMutationAuthority)\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
         handlerBlock ?? "",
       ),
       `v4.3.2 / identity: ${toolName} must verify caller identity before side effects.`,
     );
+    if (toolName.startsWith("session_evidence_judge_")) {
+      assert.ok(
+        /verifyOperatorToolCallerIdentity\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
+          handlerBlock ?? "",
+        ),
+        `v4.5.0 / identity: ${toolName} active mutation must require operator authority.`,
+      );
+    }
   }
   const toolRegistrations = [...serverSrc.matchAll(/registerTool\(\n\s+"([^"]+)"/g)];
   const mutatingIdentityFailures: string[] = [];
@@ -159,7 +169,7 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     if (!/readOnlyHint:\s*false/.test(handlerBlock)) continue;
     const hasCallerSchema = /caller:\s*CallerSchema\.default\("operator"\)/.test(handlerBlock);
     const hasIdentityVerification =
-      /verifyToolCallerIdentity\(\s*runtime,\s*"[^"]+",\s*(?:caller|input\.caller),\s*server\.server\.getClientVersion\(\)/.test(
+      /verify(?:OperatorToolCallerIdentity|ToolCallerIdentity|SessionMutationAuthority)\(\s*runtime,\s*"[^"]+",\s*(?:caller|input\.caller),\s*server\.server\.getClientVersion\(\)/.test(
         handlerBlock,
       );
     if (!hasCallerSchema || !hasIdentityVerification) {
@@ -244,9 +254,10 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   );
 
   assert.ok(
-    /evidenceAttachmentCache/.test(storeSrc) &&
-      /catch\s*\{\s*\n\s*return \[\];\s*\n\s*\}/.test(storeSrc),
-    "v4.4.1 / evidence: readEvidenceAttachments should cache reads and fail closed to no attachments.",
+    sourceOmits(storeSrc, /evidenceAttachmentCache/) &&
+      storeSrc.includes('crypto.createHash("sha256").update(persisted).digest("hex")') &&
+      storeSrc.includes("evidence_integrity_mismatch"),
+    "v4.5.0 / evidence: current-format attachments must be re-hashed on every read; stale content caches cannot bypass custody integrity.",
   );
   assert.ok(
     storeSrc.includes("safeResolveContainedExistingPath") &&

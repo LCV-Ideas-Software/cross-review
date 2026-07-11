@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-06-12.
+Data de referência desta apresentação: 2026-07-10.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -9,10 +9,11 @@ Este documento apresenta o `cross-review` para dois públicos:
 - profissionais de TI e desenvolvimento que precisam instalar, configurar,
   operar, auditar ou integrar o servidor MCP.
 
-As informações abaixo acompanham a release do repositório. Em uma sessão MCP já
-carregada, consulte `server_info` para confirmar a versão runtime efetivamente
-ativa; após atualização global por npm, o host MCP ainda precisa ser
-recarregado para refletir a nova versão.
+As informações abaixo acompanham o source candidate do repositório. A versão
+publicada no npm é identificada separadamente. Em uma sessão MCP já carregada,
+consulte `server_info` para confirmar a versão runtime efetivamente ativa; após
+atualização global por npm, o host MCP ainda precisa ser recarregado para
+refletir a nova versão.
 
 ## Resumo executivo
 
@@ -35,20 +36,20 @@ Na prática, ele funciona como uma banca técnica automatizada:
 5. os resultados ficam persistidos em sessões duráveis, logs, eventos e
    relatórios.
 
-O produto atual é estável. A release de referência reporta:
+O produto publicado é estável. O source candidate de referência reporta:
 
-| Campo                      | Valor atual                        |
-| -------------------------- | ---------------------------------- |
-| Nome                       | `cross-review`                     |
-| Publicador                 | `LCV Ideas & Software`             |
-| Versão runtime             | `4.4.6`                            |
-| Release date runtime       | `2026-06-12`                       |
-| Pacote npm                 | `@lcv-ideas-software/cross-review` |
-| Versão npm publicada       | `4.4.6`                            |
-| Transporte MCP             | `stdio`                            |
-| Execução CLI por peers     | desativada                         |
-| Modo padrão                | chamadas reais de API              |
-| Diretório de dados runtime | `<data_dir>`                       |
+| Campo                              | Valor atual                        |
+| ---------------------------------- | ---------------------------------- |
+| Nome                               | `cross-review`                     |
+| Publicador                         | `LCV Ideas & Software`             |
+| Versão runtime do source candidate | `4.5.0`                            |
+| Release date runtime               | `2026-07-10`                       |
+| Pacote npm                         | `@lcv-ideas-software/cross-review` |
+| Versão npm publicada               | `4.4.8`                            |
+| Transporte MCP                     | `stdio`                            |
+| Execução CLI por peers             | desativada                         |
+| Modo padrão                        | chamadas reais de API              |
+| Diretório de dados runtime         | `<data_dir>`                       |
 
 ## Explicação para não especialistas
 
@@ -198,23 +199,27 @@ documentados no repositório atual são:
 
 | Peer         | Modelo padrão            | Override                        |
 | ------------ | ------------------------ | ------------------------------- |
-| `codex`      | `gpt-5.5`                | `CROSS_REVIEW_OPENAI_MODEL`     |
-| `claude`     | `claude-opus-4-8`        | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| `codex`      | `gpt-5.6-sol`            | `CROSS_REVIEW_OPENAI_MODEL`     |
+| `claude`     | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | `gemini`     | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | `deepseek`   | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| `grok`       | `grok-4.3`               | `CROSS_REVIEW_GROK_MODEL`       |
+| `grok`       | `grok-4.5`               | `CROSS_REVIEW_GROK_MODEL`       |
 | `perplexity` | `sonar-reasoning-pro`    | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Overrides devem ser decisão explícita do operador. A proposta do sistema é
 priorizar correção, rastreabilidade e profundidade de raciocínio, não custo ou
 latência mínimos.
 
-`claude-fable-5` é uma opção Anthropic totalmente suportada para o peer
-`claude` quando configurada explicitamente por
-`CROSS_REVIEW_ANTHROPIC_MODEL`. Ela não substitui o pin padrão
-`claude-opus-4-8`; ao usar Fable 5, configure também o rate card Anthropic
-correspondente e trate recusas `stop_reason="refusal"` como
-`provider_refusal`.
+`claude-fable-5` é o pin Anthropic canônico. O request omite o campo explícito
+`thinking` porque o pensamento adaptativo é automático e usa
+`output_config.effort` para controlar profundidade. A retenção documentada é
+de 30 dias, sem ZDR; recusas `stop_reason="refusal"` bloqueiam como
+`provider_refusal` e seu texto parcial não é aceito como parecer.
+
+Para `gpt-5.6-sol`, `ultra` designa um modo de execução do produto Codex, não
+um `reasoning.effort` da Responses API. O valor correto no cross-review é
+`max`. O `grok-4.5` aceita somente `low`, `medium` e `high`, portanto o
+adaptador limita a escala comum antes de enviá-la.
 
 ## Ferramentas MCP
 
@@ -222,7 +227,7 @@ A superfície MCP da release expõe as seguintes ferramentas:
 
 | Ferramenta                              | Uso principal                                                                                     |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `server_info`                           | Inspeciona versão, diretório de dados, capacidades, budget, peers e segurança ativa.              |
+| `server_info`                           | Inspeciona versão, configuração carregada/hash/reload, budget, peers e segurança ativa.           |
 | `runtime_capabilities`                  | Retorna contrato de capacidades e lista de ferramentas.                                           |
 | `probe_peers`                           | Consulta provedores para verificar reachability e modelos disponíveis.                            |
 | `session_init`                          | Cria uma sessão durável sem chamar reviewers.                                                     |
@@ -309,6 +314,10 @@ existe para impedir que uma sessão paga avance com afirmações sem base.
 ```bash
 npm install -g @lcv-ideas-software/cross-review
 ```
+
+Enquanto `4.5.0` permanecer source candidate, esse comando instala a versão
+publicada `4.4.8`. Para executar `4.5.0` antes da publicação, use o build local
+do repositório e confirme a versão efetiva em `server_info`.
 
 ### Instalação via GitHub Packages
 
@@ -459,6 +468,7 @@ do host. Esses itens continuam separados por desenho.
 | `CROSS_REVIEW_STREAM_TOKENS`               | Habilita eventos de progresso de tokens.                    |
 | `CROSS_REVIEW_STREAM_TEXT`                 | Inclui texto redigido nos eventos, opt-in.                  |
 | `CROSS_REVIEW_EVIDENCE_PREFLIGHT`          | Liga/desliga preflight textual de evidência, padrão ligado. |
+| `CROSS_REVIEW_TRUTHFULNESS_PREFLIGHT`      | Liga/desliga preflight anti-fabricação, padrão ligado.      |
 | `CROSS_REVIEW_PEER_<NAME>`                 | Habilita ou desabilita peer específico com `on`/`off`.      |
 | `CROSS_REVIEW_STUB`                        | Ativa stubs quando combinado com confirmação explícita.     |
 | `CROSS_REVIEW_STUB_CONFIRMED`              | Confirma uso deliberado de stubs.                           |
@@ -473,12 +483,13 @@ Dependências diretas de runtime declaradas no `package.json` atual:
 
 | Pacote                      | Versão declarada | Uso                               |
 | --------------------------- | ---------------- | --------------------------------- |
-| `@anthropic-ai/sdk`         | `^0.104.1`       | Cliente Anthropic/Claude.         |
-| `@google/genai`             | `^2.8.0`         | Cliente Google Gemini.            |
+| `@anthropic-ai/sdk`         | `^0.111.0`       | Cliente Anthropic/Claude.         |
+| `@google/genai`             | `^2.11.0`        | Cliente Google Gemini.            |
 | `@modelcontextprotocol/sdk` | `^1.29.0`        | Implementação MCP.                |
-| `openai`                    | `^6.42.0`        | OpenAI e APIs compatíveis.        |
+| `openai`                    | `^6.46.0`        | OpenAI e APIs compatíveis.        |
 | `pino`                      | `^10.3.1`        | Logging estruturado.              |
 | `proper-lockfile`           | `^4.1.2`         | Locking de sessão multi-processo. |
+| `protobufjs`                | `^8.6.4`         | Serialização protobuf.            |
 | `zod`                       | `^4.4.3`         | Validação de schemas.             |
 
 ### Desenvolvimento
@@ -489,7 +500,7 @@ Dependências diretas de desenvolvimento:
 | ------------------------ | ---------------- | ----------------------------------- |
 | `@biomejs/biome`         | `^2.4.15`        | Lint/format complementar.           |
 | `@eslint/js`             | `^10.0.1`        | ESLint base.                        |
-| `@types/node`            | `^25.9.1`        | Tipos Node.js.                      |
+| `@types/node`            | `^26.0.0`        | Tipos Node.js.                      |
 | `@types/proper-lockfile` | `^4.1.4`         | Tipos do `proper-lockfile`.         |
 | `eslint`                 | `^10.4.0`        | Lint.                               |
 | `eslint-config-prettier` | `^10.1.8`        | Integração ESLint/Prettier.         |
@@ -516,7 +527,11 @@ instalação real, `server_info` reporta o caminho efetivo:
 ```
 
 Esse diretório contém sessões, eventos, logs, tokens locais de host e relatórios.
-O `server_info` também informa o arquivo de log NDJSON ativo por processo.
+O `server_info` também informa o arquivo de log NDJSON ativo e
+`config_load`: caminho, resultado do parse, campos aplicados/sobrepostos,
+mtime/SHA-256 carregado e atual, e `reload_required`. A configuração é
+capturada no início do processo e `live_reload_supported=false`; depois de
+editar o arquivo central ou variáveis, reinicie/recarregue a janela ou host MCP.
 
 Arquivos típicos por sessão:
 
@@ -536,8 +551,16 @@ e cadeia de custódia:
 - `.env` com segredos reais é explicitamente desaconselhado;
 - `server_info` expõe readiness, peers habilitados e estado de tokens sem expor
   segredos;
-- capability tokens por caller podem vincular um host a uma identidade de agente;
-- `operator` não deve ser forjado por um host que carrega token de agente;
+- sete capability tokens vinculam hosts às seis identidades de agente e a uma
+  identidade `operator` separada;
+- `operator` exige seu próprio token mesmo quando enforcement de peer é
+  permissivo; esse segredo só pode existir num console humano dedicado;
+- anexos e mutações de evidência/checklist, estado terminal e segurança são
+  exclusivos do operador humano;
+- cada anexo novo registra autor verificado, origem, horário, bytes e SHA-256,
+  emite evento durável e tem sua integridade recalculada a cada leitura;
+- anexos adulterados falham fechados; anexos legados ou atribuídos a peer são
+  auditáveis, mas não entram no corpus confiável;
 - raw chain-of-thought não é persistido;
 - eventos de token registram contagens por padrão, não texto bruto;
 - texto de streaming só aparece com opt-in explícito;
@@ -551,24 +574,35 @@ e cadeia de custódia:
 
 O `cross-review` usa prompt caching quando o provedor oferece suporte:
 
-| Provider  | Modo       |
-| --------- | ---------- |
-| OpenAI    | automático |
-| Anthropic | explícito  |
-| Gemini    | implícito  |
-| DeepSeek  | automático |
-| Grok      | automático |
+| Provider   | Modo          |
+| ---------- | ------------- |
+| OpenAI     | automático    |
+| Anthropic  | explícito     |
+| Gemini     | implícito     |
+| DeepSeek   | automático    |
+| Grok       | automático    |
+| Perplexity | não suportado |
 
 A telemetria é normalizada em eventos `provider.cache.usage` e manifestos por
-sessão. Operadores podem desligar o cache globalmente:
+sessão. Operadores podem desligar globalmente os controles de cache que o
+cliente consegue influenciar:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DISABLE_CACHE", "true", "User")
 ```
 
+Esse controle remove os campos de cache enviados a OpenAI, Anthropic e Grok,
+mas não pode obrigar Gemini ou DeepSeek a desativar o cache implícito/automático
+administrado pelo próprio serviço.
+
 Também há controles de TTL e versionamento de schema de cache, incluindo
 `CROSS_REVIEW_CACHE_SCHEMA_VERSION`,
 `CROSS_REVIEW_CACHE_TTL_ANTHROPIC` e `CROSS_REVIEW_CACHE_TTL_OPENAI`.
+
+No pin atual, GPT-5.6 Sol usa `prompt_cache_options` implícito com TTL de 30
+minutos e reporta tokens de leitura/escrita. Grok 4.5 usa
+`prompt_cache_key`, tem retenção administrada pela xAI e não fornece contador
+separado de escrita; o runtime não inventa esse consumo.
 
 ## Limites e cuidados
 
@@ -627,10 +661,11 @@ mesmo tempo como caller, relator e peer votante na mesma sessão. O conjunto de
 peers é controlado pelo servidor e pode ser travado por configuração para evitar
 que o caller escolha uma banca conveniente.
 
-Tokens de caller reforçam essa separação. Quando `CROSS_REVIEW_REQUIRE_TOKEN`
-está ativo, hosts precisam apresentar `CROSS_REVIEW_CALLER_TOKEN` válido. A
-rotação é feita por `regenerate_caller_tokens`, mas a redistribuição dos tokens
-é uma operação sensível e deve ser tratada como segredo operacional.
+Tokens de caller reforçam essa separação. Cada peer recebe apenas seu token. O
+sétimo token, `operator`, é sempre obrigatório nas ferramentas privilegiadas,
+independentemente de `CROSS_REVIEW_REQUIRE_TOKEN`, e nunca deve ser colocado em
+host de modelo. A rotação é feita por `regenerate_caller_tokens`; a
+redistribuição é uma operação sensível.
 
 ### Evidência e preflight
 
@@ -647,6 +682,17 @@ Evidências aceitáveis incluem:
 - hashes;
 - anexos persistidos por `session_attach_evidence`;
 - logs relevantes.
+
+Um anexo genérico não prova uma alegação não relacionada. Claims de runtime,
+modelo, workflow/deploy, autorização, hashes e resultados de testes precisam
+corresponder aos valores da evidência. Todo `READY`, inclusive com confiança
+`inferred`, precisa de fonte rastreável ao artefato ou a anexo sob custódia do
+operador. Metadados de runtime só corroboram uma alegação runtime correspondente
+e não provam revisão do artefato; caso contrário, o voto é rebaixado para
+`NEEDS_EVIDENCE`. Status estruturado incompleto, autorrevisão, model mismatch,
+READY truncado/contraditório, evidência aberta/não ressurgida e fabricação do
+relator não convergem. Só o operador autenticado pode anexar ou dar disposição
+autoritativa à evidência, e um peer não pode julgar o próprio pedido.
 
 Para revisões sérias, empacote evidência antes de chamar peers. O servidor não
 deve ser tratado como coletor de repo, shell ou CI.
@@ -780,7 +826,8 @@ Antes de usar uma revisão como gate:
 
 ## Fontes verificadas para esta apresentação
 
-- Runtime MCP `server_info` e `runtime_capabilities` carregados em 2026-05-22.
+- Runtime MCP do source candidate: `server_info` e `runtime_capabilities`
+  verificados em 2026-07-10.
 - `package.json` do repositório local.
 - `README.md`.
 - `CHANGELOG.md`.
@@ -796,4 +843,8 @@ Antes de usar uma revisão como gate:
 - `src/mcp/server.ts`.
 - `src/peers/registry.ts`.
 - `src/core/status.ts`.
-- `npm view @lcv-ideas-software/cross-review` no registry público npm.
+- `npm view @lcv-ideas-software/cross-review` no registry público npm,
+  verificado em 2026-07-10.
+- Documentação oficial dos seis provedores, com links diretos em
+  `docs/model-selection.md`, `docs/costs.md` e `docs/caching.md`, verificada em
+  2026-07-10.

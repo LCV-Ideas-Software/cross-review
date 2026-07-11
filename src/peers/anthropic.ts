@@ -34,6 +34,7 @@ import { redact } from "../security/redact.js";
 import { BasePeerAdapter, STREAM_TEXT_MAX_BYTES, StreamBufferOverflowError } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";
+import { assertAnthropicCompletion } from "./terminal.js";
 import { parseAnthropicContent, userPrompt } from "./text.js";
 
 type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -152,6 +153,16 @@ function anthropicThinking(): { type: "adaptive"; display: "omitted" } {
   return { type: "adaptive", display: "omitted" };
 }
 
+function anthropicThinkingFields(
+  model: string,
+): Record<string, never> | { thinking: ReturnType<typeof anthropicThinking> } {
+  // Fable 5 runs adaptive thinking whenever the field is unset. Anthropic's
+  // official Opus 4.8 -> Fable 5 migration removes the thinking field and
+  // uses output_config.effort as the depth control.
+  if (/^claude-fable-5(?:-|$)/i.test(model)) return {};
+  return { thinking: anthropicThinking() };
+}
+
 export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
   id: PeerId = "claude";
   provider = "anthropic";
@@ -198,6 +209,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             ? redact(details.explanation).slice(0, 500)
             : null,
         billed,
+        retryable: false,
+        usable_output: false,
         input_tokens: usage?.input_tokens ?? null,
         output_tokens: usage?.output_tokens ?? null,
       },
@@ -291,7 +304,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
               content: `${userPrompt(prompt)}\n\n${statusInstruction()}`,
             },
           ],
-          thinking: anthropicThinking(),
+          ...anthropicThinkingFields(this.model),
           output_config: {
             effort: anthropicEffort(
               context.reasoning_effort_override ?? this.config.reasoning_effort.claude,
@@ -327,6 +340,13 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           });
           const message = await stream.finalMessage();
           this.throwIfRefusal(message, context, "review");
+          assertAnthropicCompletion(message, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+          });
           const parsed = parseAnthropicContent(message.content);
           tokenStream.complete(parsed.text.length);
           return this.resultFromText({
@@ -342,6 +362,13 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         const reviewClient = await this.client();
         const message = await reviewClient.messages.create(body, { signal: context.signal });
         this.throwIfRefusal(message, context, "review");
+        assertAnthropicCompletion(message, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "review",
+        });
         const parsed = parseAnthropicContent(message.content);
         return this.resultFromText({
           text: parsed.text,
@@ -375,7 +402,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           max_tokens: this.config.max_output_tokens,
           system: buildSystemBlock(this.systemPrompt(context), this.config),
           messages: [{ role: "user" as const, content: userPrompt(prompt) }],
-          thinking: anthropicThinking(),
+          ...anthropicThinkingFields(this.model),
           output_config: {
             effort: anthropicEffort(
               context.reasoning_effort_override ?? this.config.reasoning_effort.claude,
@@ -401,6 +428,13 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           });
           const message = await stream.finalMessage();
           this.throwIfRefusal(message, context, "generation");
+          assertAnthropicCompletion(message, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+          });
           const parsed = parseAnthropicContent(message.content);
           tokenStream.complete(parsed.text.length);
           return this.generationFromText({
@@ -416,6 +450,13 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         const generateClient = await this.client();
         const message = await generateClient.messages.create(body, { signal: context.signal });
         this.throwIfRefusal(message, context, "generation");
+        assertAnthropicCompletion(message, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "generation",
+        });
         const parsed = parseAnthropicContent(message.content);
         return this.generationFromText({
           text: parsed.text,

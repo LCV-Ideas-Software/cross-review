@@ -37,6 +37,7 @@
 // File location: `${data_dir}/config.json` by default, overridable via
 // CROSS_REVIEW_CONFIG_FILE env var. Absence is non-fatal (boot
 // proceeds with env+defaults exactly like pre-v3.1.0).
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -494,7 +495,36 @@ export interface ApplyFileConfigResult {
   path: string;
   fields_applied: number;
   fields_overridden_by_env: number;
+  checked_at: string;
+  file_exists: boolean;
+  loaded_mtime_ms?: number | undefined;
+  loaded_sha256?: string | undefined;
   parse_error?: string | undefined;
+}
+
+export interface ConfigFileFingerprint {
+  exists: boolean;
+  mtime_ms?: number | undefined;
+  sha256?: string | undefined;
+  read_error?: string | undefined;
+}
+
+function sha256(value: string | Buffer): string {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+export function inspectConfigFileFingerprint(filePath: string): ConfigFileFingerprint {
+  if (!fs.existsSync(filePath)) return { exists: false };
+  try {
+    const raw = fs.readFileSync(filePath);
+    const stat = fs.statSync(filePath);
+    return { exists: true, mtime_ms: stat.mtimeMs, sha256: sha256(raw) };
+  } catch (error) {
+    return {
+      exists: true,
+      read_error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 // Public API used by `loadConfig()`. Reads the file (if present),
@@ -521,21 +551,34 @@ export function applyFileConfigToEnv(
   // CROSS_REVIEW_CONFIG_FILE override respects v2.28.0 registry
   // fallback (operator-stored override path in HKCU\Environment works).
   const filePath = resolveConfigFilePath(dataDir, envValue);
+  const checkedAt = new Date().toISOString();
   if (!fs.existsSync(filePath)) {
-    return { applied: false, path: filePath, fields_applied: 0, fields_overridden_by_env: 0 };
+    return {
+      applied: false,
+      path: filePath,
+      fields_applied: 0,
+      fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: false,
+    };
   }
   let raw: string;
+  let loadedMtimeMs: number | undefined;
   try {
     raw = fs.readFileSync(filePath, "utf8");
+    loadedMtimeMs = fs.statSync(filePath).mtimeMs;
   } catch (error) {
     return {
       applied: false,
       path: filePath,
       fields_applied: 0,
       fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: true,
       parse_error: `read_failed: ${(error as Error).message}`,
     };
   }
+  const loadedSha256 = sha256(raw);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -545,6 +588,10 @@ export function applyFileConfigToEnv(
       path: filePath,
       fields_applied: 0,
       fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: true,
+      loaded_mtime_ms: loadedMtimeMs,
+      loaded_sha256: loadedSha256,
       parse_error: `json_parse_failed: ${(error as Error).message}`,
     };
   }
@@ -555,6 +602,10 @@ export function applyFileConfigToEnv(
       path: filePath,
       fields_applied: 0,
       fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: true,
+      loaded_mtime_ms: loadedMtimeMs,
+      loaded_sha256: loadedSha256,
       parse_error: `schema_validation_failed: ${validated.error.message}`,
     };
   }
@@ -578,5 +629,9 @@ export function applyFileConfigToEnv(
     path: filePath,
     fields_applied: applied,
     fields_overridden_by_env: overridden,
+    checked_at: checkedAt,
+    file_exists: true,
+    loaded_mtime_ms: loadedMtimeMs,
+    loaded_sha256: loadedSha256,
   };
 }

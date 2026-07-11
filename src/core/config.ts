@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyFileConfigToEnv } from "./file-config.js";
+import { applyFileConfigToEnv, inspectConfigFileFingerprint } from "./file-config.js";
 import { type AppConfig, PEERS, type PeerId } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,7 +28,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.4.8";
+export const VERSION = "4.5.0";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -229,6 +229,36 @@ export function getLastFileConfigResult():
   return LAST_FILE_CONFIG_RESULT;
 }
 
+export function getFileConfigRuntimeStatus():
+  | (Omit<import("./file-config.js").ApplyFileConfigResult, "parse_error"> & {
+      parse_error: string | null;
+      live_reload_supported: false;
+      current_file_exists: boolean;
+      current_mtime_ms?: number | undefined;
+      current_sha256?: string | undefined;
+      current_read_error?: string | undefined;
+      reload_required: boolean;
+    })
+  | undefined {
+  const loaded = LAST_FILE_CONFIG_RESULT;
+  if (!loaded) return undefined;
+  const current = inspectConfigFileFingerprint(loaded.path);
+  const reloadRequired =
+    loaded.file_exists !== current.exists ||
+    loaded.loaded_sha256 !== current.sha256 ||
+    Boolean(current.read_error);
+  return {
+    ...loaded,
+    parse_error: loaded.parse_error ?? null,
+    live_reload_supported: false,
+    current_file_exists: current.exists,
+    ...(current.mtime_ms === undefined ? {} : { current_mtime_ms: current.mtime_ms }),
+    ...(current.sha256 === undefined ? {} : { current_sha256: current.sha256 }),
+    ...(current.read_error === undefined ? {} : { current_read_error: current.read_error }),
+    reload_required: reloadRequired,
+  };
+}
+
 export function loadConfig(): AppConfig {
   const configuredDataDir = envValue("CROSS_REVIEW_DATA_DIR");
   const dataDir = configuredDataDir
@@ -319,15 +349,14 @@ export function loadConfig(): AppConfig {
       include_text: boolEnv("CROSS_REVIEW_STREAM_TEXT", false),
     },
     models: {
-      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.5",
-      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-opus-4-8",
+      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.6-sol",
+      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
-      // v4.2.2 (provider-doc refresh 2026-06-02): grok default pinned to
-      // `grok-4.3`; xAI documents `grok-4-latest` as an alias, but using
-      // the concrete id keeps capability snapshots from looking like
-      // non-canonical overrides.
-      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.3",
+      // v4.5.0 (provider-doc refresh 2026-07-10): Grok 4.5 is xAI's
+      // frontier coding/agentic model. Keep the concrete id so model
+      // selection, reasoning clamps and model-aware pricing stay stable.
+      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.5",
       // v3.0.0 (operator directive 2026-05-12): Perplexity default
       // `sonar-reasoning-pro` — reasoning + grounding + chain-of-thought,
       // best fit for cross-review where the peer must reason about the
@@ -346,10 +375,14 @@ export function loadConfig(): AppConfig {
       perplexity: listEnv("CROSS_REVIEW_PERPLEXITY_FALLBACK_MODELS"),
     },
     reasoning_effort: {
-      codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh"),
-      claude: reasoningEffort("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "xhigh"),
+      // v4.5.0: Sol and Fable both document `max`; this is the API effort
+      // value, distinct from the Codex product's `ultra` execution mode.
+      codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max"),
+      claude: reasoningEffort("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max"),
       deepseek: reasoningEffort("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max"),
-      grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh"),
+      // Grok 4.5 accepts only low|medium|high. Keeping the canonical default
+      // directly representable avoids relying on adapter-side clamping.
+      grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "high"),
       // v3.0.0: Perplexity Sonar API only accepts `minimal|low|medium|high`
       // for sonar-reasoning-pro / sonar-deep-research (other models
       // ignore the field entirely). Default `high` matches the
@@ -388,8 +421,8 @@ export function loadConfig(): AppConfig {
 // / high=$12-14 depending on model). Default `low` minimizes noise
 // and cost for cross-review use (peer reasons about attached draft;
 // search is a fact-check overlay). `disable_search` turns off the
-// web-search component entirely (peer becomes a pure LLM; pricing
-// reduces to token-based only). Default `false` per operator directive
+// web-search component entirely (peer becomes a pure LLM) but does not
+// remove Perplexity's context-tier request fee. Default `false` per operator directive
 // 2026-05-12 — search-active is the differentiator versus the other 5
 // peers.
 function loadPerplexityConfig(): AppConfig["perplexity"] {
@@ -589,6 +622,13 @@ export function missingFinancialControlVars(
   options: { untilStopped?: boolean | undefined } = {},
 ): string[] {
   const missing = new Set<string>();
+  const configLoad = getFileConfigRuntimeStatus();
+  if (configLoad?.file_exists && configLoad.parse_error) {
+    missing.add("CROSS_REVIEW_CONFIG_FILE_INVALID");
+  }
+  if (configLoad?.reload_required) {
+    missing.add("CROSS_REVIEW_CONFIG_RELOAD_REQUIRED");
+  }
 
   if (config.budget.max_session_cost_usd == null) {
     missing.add("CROSS_REVIEW_MAX_SESSION_COST_USD");
@@ -607,17 +647,16 @@ export function missingFinancialControlVars(
     missing.add(`${prefix}_OUTPUT_USD_PER_MILLION`);
   }
 
-  // v3.0.0 (Perplexity 6th peer): when the perplexity peer is in scope
-  // AND search is enabled (default), the request fee for the configured
+  // v3.0.0/v4.5.0 (Perplexity 6th peer): when the peer is in scope,
+  // the request fee for the configured
   // search_context_size MUST be set — Perplexity bills BOTH per-token
   // AND per-1000-requests, and the request fee is the only way the
-  // cost layer can account for the search cost dimension. When
-  // disable_search is true, the request fee is irrelevant (peer
-  // becomes pure-LLM and the missing fee is harmless). This preserves
+  // cost layer can account for the request dimension. Per official
+  // current pricing, disable_search changes latency but not this fee. This preserves
   // the v2.26.0 "no-hardcoded-financials" contract: every dimension of
   // pricing that applies to the current call must be operator-
   // configured before paid traffic is allowed.
-  if (peers.includes("perplexity") && !config.perplexity.disable_search) {
+  if (peers.includes("perplexity")) {
     const rate = config.cost_rates.perplexity;
     const size = config.perplexity.search_context_size;
     const requestFeeField =

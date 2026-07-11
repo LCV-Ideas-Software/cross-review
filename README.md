@@ -24,7 +24,9 @@ npm install -g @lcv-ideas-software/cross-review
 npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. Current release: **v04.04.06** (npm package `4.4.6`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+**Status.** Stable. Current source candidate: **v04.05.00** (package
+`4.5.0`); latest npm-published release: **v04.04.08** (`4.4.8`). See
+[CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -38,6 +40,9 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.00`**      | Minor source candidate — refresh all six provider contracts and add fail-closed provider terminals, runtime config fingerprints, operator evidence custody, peer self-attestation rejection, and grounded READY votes.                                                      |
+| **`v04.04.08`**      | Patch — raise the transitive `hono` override floor and clear the current advisory set.                                                                                                                                                                                      |
+| **`v04.04.07`**      | Patch — promote the patched `protobufjs` floor for downstream consumers.                                                                                                                                                                                                    |
 | **`v04.04.06`**      | Patch — close the remaining Claude re-validation tail: orchestrator attached-evidence reads now fail closed, session_doctor defaults to action-oriented findings, and T2#10 source-regex debt drops to a locked total of 160.                                               |
 | **`v04.04.05`**      | Patch — close the seven verified residual audit items: evidence fail-closed realpath handling, typed shadow-decision runtime events, derived release date, redaction-comment correction, retry/security gate verification, and a locked T2#10 smoke source-contract budget. |
 | **`v04.04.04`**      | Patch — central config can now carry model-specific rate cards, so Claude Opus 4.8 and Claude Fable 5 pricing are both stored and the active Anthropic rates follow the configured Claude model automatically.                                                              |
@@ -189,28 +194,38 @@ Model selection and runtime behaviour can be controlled with environment
 variables. Example overrides (PowerShell):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.5", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-opus-4-8", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "xhigh", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.20-multi-agent", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "high", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "sonar-reasoning-pro", "User")
 ```
 
-Claude Fable 5 is supported as an explicit Anthropic model override:
-`CROSS_REVIEW_ANTHROPIC_MODEL=claude-fable-5`. It is not the default pin; when
-selected, the runtime validates that pin and expects `provider_refusal`
-failures when the API returns `stop_reason="refusal"`. Central `config.json`
-files can store both Claude Opus 4.8 and Fable 5 rate cards under
-`model_cost_rates.claude`; the runtime chooses the active Anthropic rate card
-from the configured Claude model.
+`ultra` is a Codex product/CLI execution mode, not a valid OpenAI Responses API
+`reasoning.effort`. Use `max` for `gpt-5.6-sol`; an `ultra` value in central
+`config.json` fails schema validation and causes that file to be rejected.
 
-For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.3`, which
-accepts explicit `reasoning.effort` through `high`; the adapter clamps the
-shared effort scale before sending it. `grok-4-latest`, `grok-4.20`, and
-`grok-4.20-reasoning` use xAI automatic reasoning in this runtime.
-`grok-4.20-multi-agent` remains available as an explicit override for the
-multi-agent variant.
+Claude Fable 5 is the canonical Anthropic pin. Its request deliberately omits
+the explicit `thinking` field: Fable applies adaptive thinking automatically,
+while `output_config.effort` controls depth. Anthropic documents a 30-day data
+retention posture and no zero-data-retention option for this model. A response
+with `stop_reason="refusal"` is recorded as `provider_refusal`, and partial
+refusal output is not accepted as a review.
+
+For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.5`; xAI
+accepts only `low`, `medium`, or `high` reasoning effort for it, so the adapter
+clamps the shared scale before sending the request.
+
+Central configuration is loaded once when the MCP server process starts. Use
+`server_info.config_load` to inspect the loaded path, parse result, loaded and
+current SHA-256/mtime, and `reload_required`. `live_reload_supported` is
+`false`: after editing `config.json` or host environment variables, restart or
+reload the MCP host/window. A stale or invalid central config blocks paid calls
+instead of silently spending under fallback defaults.
 
 Financial and budget controls are required for paid provider calls. Configure
 these environment variables before running real sessions (example):
@@ -267,6 +282,43 @@ evidence was satisfied. If a session otherwise reaches unanimity with open or
 evidence event. `session_peer_reliability_report` is read-only and aggregates
 per-peer parser warnings, evidence ask status, provider failures, cost and
 latency.
+
+## Anti-deception and evidence custody
+
+The runtime does not treat a peer's claim that work was completed as proof.
+Before paid calls and again during convergence, it checks runtime/model claims,
+workflow and authorization assertions, test/build/hash claims, concrete source
+correspondence, unresolved evidence asks, model attestation, and structured
+status completeness. Every `READY` vote, including `confidence="inferred"`,
+must cite sources traceable to the reviewed artifact or operator-custodied
+attachments; otherwise it is downgraded to
+`NEEDS_EVIDENCE`. Relator output that invents operational evidence is rejected
+rather than propagated.
+
+`READY` is intentionally not free-form. Its `summary` must be exactly
+`No blocking objections remain.`, `caller_requests` and `follow_ups` must be
+empty, and no narrative may appear outside the JSON/status envelope. Detail
+belongs in `evidence_sources`. This removes synonym/negation ambiguity: any
+noncanonical READY becomes `NEEDS_EVIDENCE` and cannot converge.
+
+Only the human operator may call `session_attach_evidence` or mutate
+authoritative evidence, terminal state, or security configuration. Each new
+attachment records the verified caller, origin, timestamp, byte count and
+SHA-256, emits a durable custody event, and is re-hashed on every read.
+Tampering fails closed. Legacy or peer-attributed attachments remain readable
+for audit but are excluded from every trusted corpus; a generic attachment does
+not by itself prove an unrelated claim.
+
+Caller identity uses seven distinct local capabilities: one for each peer and
+one for `operator`. Operator tools require the operator token even when token
+enforcement for peers is otherwise permissive. Keep that token only in a
+dedicated human-console MCP host—placing it in a model host grants that model
+operator authority. `host-tokens.json` contains secrets and assumes the local
+OS account/data directory is trusted.
+
+`session_cancel_job` and `contest_verdict` accept only the explicitly persisted
+session petitioner with its peer token, or the dedicated operator. Legacy
+sessions without an explicit petitioner require the operator token.
 
 ## Repository conventions
 

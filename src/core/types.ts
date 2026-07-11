@@ -2,7 +2,8 @@
 // quarteto, making it a quinteto. Per `project_cross_review_v2_grok_integration_pending.md`,
 // xAI's Grok uses the OpenAI Responses API surface at base URL
 // `https://api.x.ai/v1`. Auth is via GROK_API_KEY. Operators may choose
-// `grok-4.3` (explicit reasoning.effort supported), `grok-4-latest`
+// `grok-4.5` (canonical; explicit reasoning.effort through high),
+// `grok-4.3` (legacy explicit reasoning.effort support), `grok-4-latest`
 // / `grok-4.20` aliases (xAI automatic reasoning in this runtime), or
 // `grok-4.20-multi-agent` (explicit multi-agent reasoning effort).
 // Adapter at `peers/grok.ts` inherits the same Responses API code path
@@ -286,6 +287,7 @@ export interface PeerFailure {
     | "unparseable_after_recovery"
     | "budget_exceeded"
     | "budget_preflight"
+    | "evidence_preflight"
     | "truthfulness_preflight"
     | "cancelled"
     | "fallback_exhausted"
@@ -377,11 +379,46 @@ export interface ConvergenceHealth {
   idle_ms?: number | undefined;
 }
 
+export type EvidenceAttachmentOrigin = "session_attach_evidence" | "runtime_generated";
+
+// Attachments written by the current runtime carry a complete custody
+// envelope. `sha256` and `bytes` describe the exact redacted UTF-8 bytes
+// persisted at `path`; attached_by is the already-verified tool caller.
 export interface EvidenceAttachment {
+  ts: string;
+  attached_at: string;
+  attached_by: PeerId | "operator";
+  origin: EvidenceAttachmentOrigin;
+  integrity_version: 1;
+  sha256: string;
+  bytes: number;
+  label: string;
+  path: string;
+  content_type?: string | undefined;
+}
+
+// Pre-custody metadata remains readable for backwards compatibility, but
+// readers must never treat it as provenance-grade evidence because it has
+// neither an authenticated caller nor a persisted digest/byte count.
+export interface LegacyEvidenceAttachment {
   ts: string;
   label: string;
   path: string;
   content_type?: string | undefined;
+}
+
+export interface ResolvedEvidenceAttachment {
+  label: string;
+  relative_path: string;
+  content: string;
+  bytes: number;
+  truncated: boolean;
+  provenance_status: "verified" | "legacy_unverified";
+  content_type?: string | undefined;
+  sha256?: string | undefined;
+  attached_by?: PeerId | "operator" | undefined;
+  attached_at?: string | undefined;
+  origin?: EvidenceAttachmentOrigin | undefined;
 }
 
 // v2.7.0 Evidence Broker: when a peer returns NEEDS_EVIDENCE with
@@ -648,6 +685,16 @@ export interface RuntimeEventDataByType {
     satisfied?: boolean | undefined;
     confidence?: Confidence | undefined;
   };
+  "session.evidence_attached": {
+    label: string;
+    path: string;
+    content_type?: string | undefined;
+    sha256: string;
+    bytes: number;
+    attached_by: PeerId | "operator";
+    attached_at: string;
+    origin: EvidenceAttachmentOrigin;
+  };
   "provider.cache.usage": {
     peer: PeerId;
     cache_read_tokens: number;
@@ -698,7 +745,7 @@ export interface SessionMeta {
   convergence_scope?: ConvergenceScope | undefined;
   convergence_health?: ConvergenceHealth | undefined;
   failed_attempts?: Array<PeerFailure & { round: number }> | undefined;
-  evidence_files?: EvidenceAttachment[] | undefined;
+  evidence_files?: Array<EvidenceAttachment | LegacyEvidenceAttachment> | undefined;
   evidence_checklist?: EvidenceChecklistItem[] | undefined;
   // v2.8.0: durable audit trail for every status transition on an
   // evidence checklist item (auto + operator). Newest entries appended.

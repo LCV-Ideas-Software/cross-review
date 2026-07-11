@@ -37,23 +37,20 @@ const DOCS = {
 // Pre-v3.7.2 codex/claude/grok kept multi-entry same-provider chains and
 // gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
 const PRIORITY: Record<PeerId, string[]> = {
-  codex: ["gpt-5.5"],
-  claude: ["claude-opus-4-8"],
+  codex: ["gpt-5.6-sol"],
+  claude: ["claude-fable-5"],
   gemini: ["gemini-3.1-pro-preview"],
   deepseek: ["deepseek-v4-pro"],
-  // grok-4.3: concrete canonical pin for cross-review. xAI documents
-  // `grok-4-latest` as an alias, but pinning the concrete id keeps
-  // model-selection confidence verified when the runtime uses grok-4.3.
-  grok: ["grok-4.3"],
+  // grok-4.5: concrete canonical pin for cross-review. xAI positions
+  // it as the frontier model for coding, agentic tasks and knowledge work.
+  grok: ["grok-4.5"],
   perplexity: ["sonar-reasoning-pro"],
 };
 
 const SUPPORTED_MODEL_OVERRIDES: Partial<Record<PeerId, string[]>> = {
-  // Claude Fable 5 is a fully supported operator-selected Anthropic peer
-  // model. It is not the default pin because Fable-specific refusals need
-  // explicit operator cost/privacy posture, but it must not be reported as
-  // an unknown/off-policy override when selected deliberately.
-  claude: ["claude-fable-5"],
+  // Preserve Opus 4.8 as an explicit compatibility option for operators
+  // whose Anthropic organization cannot accept Fable 5's 30-day retention.
+  claude: ["claude-opus-4-8"],
 };
 
 function supportedModels(peer: PeerId): string[] {

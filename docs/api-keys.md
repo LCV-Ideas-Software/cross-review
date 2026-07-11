@@ -15,26 +15,43 @@ All runtime credentials must come from Windows environment variables.
 
 Restart any terminal, editor, app or MCP host after changing these variables.
 
+## Cross-review caller capabilities
+
+`host-tokens.json` contains seven local caller capabilities: six peer tokens
+and a distinct `operator` token. Put each peer token only in its matching MCP
+host as `CROSS_REVIEW_CALLER_TOKEN`. The operator token is mandatory for
+evidence attachment, judge/checklist mutation, finalization, sweep and token
+rotation; keep it only in a dedicated human-console host. Never put it in a
+model host. Legacy six-token files are migrated in place without rotating the
+existing peer tokens.
+
+DeepSeek, Grok and Perplexity do not need separate local MCP caller hosts merely
+to participate as outbound review adapters; their provider API keys are enough.
+Distribute a peer capability token only when a local MCP client actually acts
+under that peer identity. Cancellation and verdict contestation additionally
+require the persisted petitioner's peer token (or the operator token).
+
 ## Optional Model Overrides
 
-Use overrides only when you intentionally want to pin a model rather than use automatic best-model selection.
+Use overrides only when you intentionally want to deviate from the canonical
+no-fallback pins.
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.5", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-opus-4-8", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "xhigh", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.3", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "high", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "sonar-reasoning-pro", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE", "low", "User")
 ```
 
-To opt into Claude Fable 5 for the `claude` peer, replace the Anthropic model
-override with:
+The canonical Claude Fable 5 rate variables are:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
@@ -44,16 +61,25 @@ override with:
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION", "20", "User")
 ```
 
-When using the central `config.json`, prefer storing both Claude families under
-`model_cost_rates.claude` instead of changing the Anthropic rate env vars by
-hand. The runtime chooses the active rate card from the configured Claude
-model, after honoring any explicit env/registry model override.
+When using central `config.json`, prefer a model-keyed entry under
+`model_cost_rates.claude` instead of changing Anthropic rate variables by hand.
+The runtime chooses the active rate card after honoring any explicit
+environment/registry model override.
 
-Fable 5 is generally available on the Claude API, but it can return successful
-responses with `stop_reason="refusal"`. The runtime records those as
-`provider_refusal` unless you configure an explicit Anthropic fallback chain.
-Anthropic also documents Fable 5 as a 30-day-retention model with no zero data
-retention option, so enable it only when that data posture is acceptable.
+Fable 5 can return successful responses with `stop_reason="refusal"`. The
+runtime records those as `provider_refusal` and discards partial refusal output.
+Its request omits the explicit `thinking` field because adaptive thinking is
+automatic. Anthropic documents Fable 5 as a 30-day-retention model with no zero
+data retention option, so enable it only when that posture is acceptable.
+
+`ultra` is a Codex product/CLI mode, not an OpenAI Responses API
+`reasoning.effort`. Use `max` for `gpt-5.6-sol`. A central config containing
+`reasoning_effort.codex="ultra"` is invalid and is rejected atomically.
+
+Environment variables and central `config.json` are snapshotted at MCP process
+startup. After changing either source, reload/restart the editor or MCP host and
+confirm `server_info.config_load.reload_required=false`. The same object exposes
+the loaded/current file hashes and any parse error without revealing secrets.
 
 ## Safety
 

@@ -31,7 +31,9 @@ import type { PeerId, PeerResult, RuntimeEvent } from "../src/core/types.js";
 import { PEERS } from "../src/core/types.js";
 import type { JobStatus } from "../src/mcp/server.js";
 import {
+  assertSessionMutationAuthority,
   getCallerCandidatesFromClientInfo,
+  hasTrustedPetitionerProvenance,
   lockCallerPeerSelection,
   pruneCompletedJobs,
   SessionIdSchema,
@@ -331,11 +333,11 @@ for (const deprecatedOrWeakModel of [
 // every peer is pinned to a SINGLE canonical model in PRIORITY. The
 // "must remain" list is therefore exactly the 6 lone canonical pins.
 for (const canonicalPin of [
-  "gpt-5.5",
-  "claude-opus-4-8",
+  "gpt-5.6-sol",
+  "claude-fable-5",
   "gemini-3.1-pro-preview",
   "deepseek-v4-pro",
-  "grok-4.3",
+  "grok-4.5",
   "sonar-reasoning-pro",
 ]) {
   assert.ok(
@@ -619,9 +621,9 @@ assert.equal(
 }
 console.error("[smoke] full_pricing_model_v2260_test: PASS");
 
-// v2.18.4 / Codex audit 2026-05-07 P2.1: grok-4.3 added to the
-// reasoning-effort allowlist; verify both call sites gate correctly.
+// v4.5.0 provider refresh: Grok 4.5 joins the reasoning-effort allowlist.
 const grokAllowlist = await import("../src/peers/grok.js");
+assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.5"), true);
 assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
 assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.3"), true);
 assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4-latest"), false);
@@ -712,19 +714,18 @@ const overlongReady = parsePeerStatus(
     follow_ups: [],
   }),
 );
-assert.equal(overlongReady.status, "READY");
+assert.equal(overlongReady.status, "NEEDS_EVIDENCE");
 assert.equal(overlongReady.structured?.summary?.length, 800);
 assert.equal(overlongReady.parser_warnings.includes("summary_truncated_to_800"), true);
 
 const fencedReady = parsePeerStatus(
   [
-    "Review complete.",
     "```json",
     JSON.stringify({
       status: "READY",
-      summary: "Approved inside a fenced JSON block.",
+      summary: "No blocking objections remain.",
       confidence: "verified",
-      evidence_sources: [],
+      evidence_sources: ['server_info: {"version":"4.5.0","models":{"claude":"claude-fable-5"}}'],
       caller_requests: [],
       follow_ups: [],
     }),
@@ -735,10 +736,10 @@ assert.equal(fencedReady.status, "READY");
 assert.equal(fencedReady.parser_warnings.includes("status_json_extracted_from_fence"), true);
 
 const invalidJsonRecovered = parsePeerStatus('{ "status": "READY", "summary": "ok", ');
-assert.equal(invalidJsonRecovered.status, "READY");
+assert.equal(invalidJsonRecovered.status, null);
 assert.equal(
   invalidJsonRecovered.parser_warnings.some((warning) =>
-    warning.startsWith("status_recovered_from_invalid_json"),
+    warning.startsWith("status_recovery_rejected_incomplete_contract"),
   ),
   true,
 );
@@ -749,7 +750,14 @@ const fakeReady = (peer: PeerResult["peer"]): PeerResult =>
     provider: "stub",
     model: "stub",
     status: "READY",
-    structured: { status: "READY" },
+    structured: {
+      status: "READY",
+      summary: "Deterministic smoke fixture.",
+      confidence: "inferred",
+      evidence_sources: ["Attachment: deterministic-smoke-fixture"],
+      caller_requests: [],
+      follow_ups: [],
+    },
     text: "{}",
     raw: {},
     latency_ms: 0,
@@ -765,6 +773,12 @@ assert.equal(
   checkConvergence(["codex", "claude"], "READY", [fakeReady("codex"), fakeReady("claude")], [])
     .converged,
   true,
+);
+const incompleteReady: PeerResult = { ...fakeReady("codex"), structured: { status: "READY" } };
+assert.equal(
+  checkConvergence(["codex"], "READY", [incompleteReady], []).converged,
+  false,
+  "v4.5.0 / truthfulness: convergence must reject a manually forged READY with an incomplete structured contract",
 );
 
 // v3.7.3 (operator no-fallback directive 2026-05-14): skip-peer on
@@ -1092,14 +1106,21 @@ assert.ok(
 );
 assert.doesNotMatch(reviewPrompt, /\/focus\s+services\/billing/);
 
-const evidence = await orchestrator.store.attachEvidence(result.session.session_id, {
+const evidenceSession = await orchestrator.store.init(
+  "open evidence attachment smoke session",
+  "operator",
+  probes,
+);
+const evidence = await orchestrator.store.attachEvidence(evidenceSession.session_id, {
   label: "smoke evidence",
   content: "smoke evidence body",
   content_type: "text/markdown",
   extension: "md",
+  attached_by: "operator",
+  origin: "runtime_generated",
 });
 assert.equal(
-  fs.existsSync(path.join(config.data_dir, "sessions", result.session.session_id, evidence.path)),
+  fs.existsSync(path.join(config.data_dir, "sessions", evidenceSession.session_id, evidence.path)),
   true,
 );
 
@@ -1147,6 +1168,11 @@ await assert.rejects(
     }),
   /session_already_finalized/,
   "v4.3.2 / outcome_guard: markInFlight must reject finalized sessions",
+);
+await assert.rejects(
+  () => orchestrator.store.requestCancellation(finalizedGuardSession.session_id),
+  /session_already_finalized/,
+  "v4.5.0 / outcome_guard: requestCancellation must reject finalized sessions under lock",
 );
 const preflightGuardBefore = orchestrator.store.read(finalizedGuardSession.session_id);
 await orchestrator.store.recordPreflightFailure(finalizedGuardSession.session_id, [
@@ -2269,10 +2295,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] terminal_cost_evidence_audit_test: PASS");
 }
 
-// v4.3.0 / P1: unanimous READY with unresolved evidence must not look like a
-// plain unanimous_ready close-out. `not_resurfaced` is inference-only: it may
-// allow convergence, but the final metadata/report must keep that disposition
-// visible for operators.
+// v4.5.0: unanimous READY with unresolved evidence must not converge.
+// `not_resurfaced` is inference-only, never proof that the ask was satisfied.
 {
   const { sessionReportMarkdown } = await import("../src/core/reports.js");
   const unresolvedEvents: string[] = [];
@@ -2307,16 +2331,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     caller: "operator",
     peers: ["claude"],
   });
-  assert.equal(unresolvedR2.converged, true);
-  assert.equal(unresolvedR2.session.outcome, "converged");
-  assert.equal(
-    unresolvedR2.session.outcome_reason,
-    "unanimous_ready_with_unresolved_evidence",
-    "v4.3.0 / P1: convergence with not_resurfaced evidence must not finalize as plain unanimous_ready",
+  assert.equal(unresolvedR2.converged, false);
+  assert.equal(unresolvedR2.session.outcome, undefined);
+  assert.match(
+    unresolvedR2.round.convergence.reason,
+    /unresolved_evidence_blocks_convergence/,
+    "v4.5.0 / evidence: not_resurfaced items must block finalization until an auditable terminal disposition exists",
   );
-  assert.ok(
+  assert.equal(
     unresolvedEvents.includes("session.evidence_checklist_unresolved_on_finalize"),
-    "v4.3.0 / P1: unresolved evidence close-out must emit an audit event",
+    false,
+    "v4.5.0 / evidence: a blocked round must not emit a misleading finalize event",
   );
   const unresolvedReport = sessionReportMarkdown(
     unresolvedOrch.store.read(unresolvedR2.session.session_id),
@@ -2838,28 +2863,36 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const evidenceOver = "e".repeat(2501);
   const requestAt1500 = "r".repeat(1500);
   const requestOver = "r".repeat(1501);
-  assert.equal(statusSchema.safeParse({ status: "READY", summary: summaryAt800 }).success, true);
-  assert.equal(statusSchema.safeParse({ status: "READY", summary: summaryOver }).success, false);
+  const completeStatus = {
+    status: "READY" as const,
+    summary: "fixture",
+    confidence: "inferred" as const,
+    evidence_sources: ["Attachment: cap-fixture"],
+    caller_requests: [] as string[],
+    follow_ups: [] as string[],
+  };
+  assert.equal(statusSchema.safeParse({ ...completeStatus, summary: summaryAt800 }).success, true);
+  assert.equal(statusSchema.safeParse({ ...completeStatus, summary: summaryOver }).success, false);
   assert.equal(
-    statusSchema.safeParse({ status: "READY", evidence_sources: [evidenceAt2500] }).success,
+    statusSchema.safeParse({ ...completeStatus, evidence_sources: [evidenceAt2500] }).success,
     true,
     "evidence_sources items must accept up to 2500 chars (v2.5.0)",
   );
   assert.equal(
-    statusSchema.safeParse({ status: "READY", evidence_sources: [evidenceOver] }).success,
+    statusSchema.safeParse({ ...completeStatus, evidence_sources: [evidenceOver] }).success,
     false,
   );
   assert.equal(
-    statusSchema.safeParse({ status: "READY", caller_requests: [requestAt1500] }).success,
+    statusSchema.safeParse({ ...completeStatus, caller_requests: [requestAt1500] }).success,
     true,
     "caller_requests items must accept up to 1500 chars (v2.5.0)",
   );
   assert.equal(
-    statusSchema.safeParse({ status: "READY", caller_requests: [requestOver] }).success,
+    statusSchema.safeParse({ ...completeStatus, caller_requests: [requestOver] }).success,
     false,
   );
   assert.equal(
-    statusSchema.safeParse({ status: "READY", follow_ups: [requestAt1500] }).success,
+    statusSchema.safeParse({ ...completeStatus, follow_ups: [requestAt1500] }).success,
     true,
   );
   console.log("[smoke] summary_cap_differentiation_test: PASS");
@@ -2897,7 +2930,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const ungrounded = parseStatusForTruth(
     JSON.stringify({
       status: "READY",
-      summary: "Looks correct.",
+      summary: "No blocking objections remain.",
       confidence: "verified",
       evidence_sources: [],
       caller_requests: [],
@@ -2913,11 +2946,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "verified",
     "v4.2.2 / truthfulness_guardrails: parser warning must not silently rewrite peer confidence",
   );
+  assert.equal(
+    ungrounded.status,
+    "NEEDS_EVIDENCE",
+    "v4.5.0 / truthfulness_guardrails: READY+verified without evidence must not converge",
+  );
 
   const grounded = parseStatusForTruth(
     JSON.stringify({
       status: "READY",
-      summary: "Runtime claim matches the raw source.",
+      summary: "No blocking objections remain.",
       confidence: "verified",
       evidence_sources: ['server_info: {"version":"4.2.1","release_date":"2026-05-21"}'],
       caller_requests: [],
@@ -2931,7 +2969,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const attachedEvidenceGrounded = parseStatusForTruth(
     JSON.stringify({
       status: "READY",
-      summary: "The raw gate proves the fix.",
+      summary: "No blocking objections remain.",
       confidence: "verified",
       evidence_sources: [
         "Attachment: RAW clean-room CI-equivalent gate (Node 24.14.0): npm ci exit 0; npm test 22 passed.",
@@ -3845,7 +3883,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Operator-triggered judge pass with a draft that satisfies the ask.
   const judgeResult = await judgeOrch.runEvidenceChecklistJudgePass({
     session_id: sessionId,
-    judge_peer: "claude",
+    judge_peer: "codex",
     draft: "Revised draft with FORCE_JUDGE_SATISFIED — stub returns verified satisfied.",
   });
   assert.equal(judgeResult.judged_count, 1);
@@ -3869,7 +3907,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(historyEntry?.from, "open");
   assert.equal(historyEntry?.by, "runtime");
   assert.ok(
-    (historyEntry?.note ?? "").startsWith("judge[claude]:"),
+    (historyEntry?.note ?? "").startsWith("judge[codex]:"),
     "history note must carry judge attribution",
   );
   // Events: judge pass + per-item addressed event.
@@ -3882,6 +3920,43 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(addressedEvent, "addressed event must carry method=judge");
   assert.deepEqual(addressedEvent?.ids, [seededItem.id]);
   console.log("[smoke] evidence_judge_marks_addressed_when_verified_satisfied_test: PASS");
+}
+
+// A peer must never clear its own evidence ask, even when its judge response
+// claims verified satisfaction. The item remains open and blocks convergence.
+{
+  const cfg = {
+    ...loadConfig(),
+    data_dir: smokeTmpDir("judge-self-review-forbidden"),
+    budget: {
+      ...loadConfig().budget,
+      max_session_cost_usd: 10000,
+      preflight_max_round_cost_usd: 10000,
+      until_stopped_max_cost_usd: 10000,
+    },
+  };
+  const orch = new CrossReviewOrchestrator(cfg, () => {});
+  const seed = await orch.askPeers({
+    task: "Self-judge rejection smoke",
+    draft: "FORCE_NEEDS_EVIDENCE",
+    caller: "operator",
+    peers: ["claude"],
+  });
+  const item = seed.session.evidence_checklist?.[0];
+  assert.ok(item, "seed must create a Claude evidence ask");
+  const result = await orch.runEvidenceChecklistJudgePass({
+    session_id: seed.session.session_id,
+    judge_peer: "claude",
+    draft: "FORCE_JUDGE_SATISFIED",
+  });
+  assert.equal(result.promoted.length, 0);
+  assert.equal(result.skipped[0]?.reason, "judge_failed");
+  assert.match(result.skipped[0]?.message ?? "", /self_judgment_forbidden/);
+  assert.equal(
+    orch.store.read(seed.session.session_id).evidence_checklist?.[0]?.status ?? "open",
+    "open",
+  );
+  console.log("[smoke] evidence_judge_self_review_forbidden_test: PASS");
 }
 
 // v2.9.0 Judge — Skip when inferred or unknown.
@@ -3911,7 +3986,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Pass 1: inferred — must skip.
   const inferredResult = await skipOrch.runEvidenceChecklistJudgePass({
     session_id: sessionId,
-    judge_peer: "claude",
+    judge_peer: "codex",
     draft: "Revised draft with FORCE_JUDGE_INFERRED.",
   });
   assert.equal(inferredResult.promoted.length, 0);
@@ -3927,7 +4002,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Pass 2: unknown — must skip with reason not_satisfied (stub maps unknown to satisfied=false).
   const unknownResult = await skipOrch.runEvidenceChecklistJudgePass({
     session_id: sessionId,
-    judge_peer: "claude",
+    judge_peer: "codex",
     draft: "Revised draft with FORCE_JUDGE_UNKNOWN.",
   });
   assert.equal(unknownResult.promoted.length, 0);
@@ -4045,7 +4120,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // filter would be visible immediately.
   const result = await tpOrch.runEvidenceChecklistJudgePass({
     session_id: sessionId,
-    judge_peer: "claude",
+    judge_peer: "codex",
     draft: "Replacement draft with FORCE_JUDGE_SATISFIED everywhere.",
     round: FIXTURE_ROUND,
   });
@@ -4118,7 +4193,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // this as judge_failed, NOT not_satisfied.
   const result = await rmOrch.runEvidenceChecklistJudgePass({
     session_id: sessionId,
-    judge_peer: "claude",
+    judge_peer: "codex",
     draft: "Revised draft with FORCE_JUDGE_PARSE_FAIL marker.",
   });
   assert.equal(result.promoted.length, 0, "malformed response must not promote");
@@ -4178,7 +4253,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Judge autowire OFF smoke",
       draft: "FORCE_NEEDS_EVIDENCE",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     assert.ok(
       !offEvents.some((event) => event.startsWith("session.evidence_judge_pass.")),
@@ -4198,7 +4273,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.10.0 Judge Auto-wire — SHADOW emits decisions.
-// With AUTOWIRE_MODE=shadow + AUTOWIRE_PEER=claude, R1 produces a
+// With AUTOWIRE_MODE=shadow + an independent Codex judge, R1 produces a
 // NEEDS_EVIDENCE item; R2 with FORCE_JUDGE_SATISFIED draft fires the
 // shadow judge AFTER address detection. The shadow_decision event MUST
 // fire with would_promote=true; checklist state MUST stay open
@@ -4207,13 +4282,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
   const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
   process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
   try {
     const events: string[] = [];
     const eventData: Array<Record<string, unknown> | undefined> = [];
     const cfg = {
       ...loadConfig(),
       data_dir: smokeTmpDir("judge-autowire-shadow"),
+      evidence_judge_autowire: {
+        ...loadConfig().evidence_judge_autowire,
+        consensus_peers: [],
+      },
       budget: {
         ...loadConfig().budget,
         max_session_cost_usd: 10000,
@@ -4231,7 +4310,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Judge autowire SHADOW smoke",
       draft: "FORCE_NEEDS_EVIDENCE",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     const seedItemId = r1.session.evidence_checklist?.[0]?.id;
     assert.ok(seedItemId, "R1 must produce 1 checklist item");
@@ -4250,7 +4329,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Judge autowire SHADOW smoke",
       draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     // Filter shadow_decision events for the seed item id with would_promote=true.
     const shadowForSeed = eventData.filter(
@@ -4313,7 +4392,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(seedItemId);
   const result = await orch.runEvidenceChecklistJudgePass({
     session_id: sessionId,
-    judge_peer: "claude",
+    judge_peer: "codex",
     draft: "Revised draft with FORCE_JUDGE_SATISFIED marker.",
     mode: "shadow",
   });
@@ -4709,11 +4788,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
   const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
   process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
   try {
     const cfg = {
       ...loadConfig(),
       data_dir: smokeTmpDir("shadow-rollup"),
+      evidence_judge_autowire: {
+        ...loadConfig().evidence_judge_autowire,
+        consensus_peers: [],
+      },
       budget: {
         ...loadConfig().budget,
         max_session_cost_usd: 10000,
@@ -4735,14 +4818,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Shadow rollup smoke R1",
       draft: "FORCE_NEEDS_EVIDENCE",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     await rollupOrch.askPeers({
       session_id: r1.session.session_id,
       task: "Shadow rollup smoke R2",
       draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     // v4.1.0: emit pipeline uses `void store.appendEvent(...)` (fire-
     // and-forget). Flush pending writes before reading the events file.
@@ -4756,12 +4839,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       rollup.would_promote_total >= 1,
       `aggregate must record at least 1 would_promote (got ${rollup.would_promote_total})`,
     );
-    const claudeStats = rollup.by_judge_peer.claude;
-    assert.ok(claudeStats, "by_judge_peer.claude must be populated");
-    assert.ok(claudeStats.decisions_total >= 1);
-    assert.ok(claudeStats.would_promote >= 1);
-    assert.ok((claudeStats.by_confidence.verified ?? 0) >= 1);
-    assert.ok(claudeStats.first_seen_at && claudeStats.last_seen_at);
+    const codexStats = rollup.by_judge_peer.codex;
+    assert.ok(codexStats, "by_judge_peer.codex must be populated");
+    assert.ok(codexStats.decisions_total >= 1);
+    assert.ok(codexStats.would_promote >= 1);
+    assert.ok((codexStats.by_confidence.verified ?? 0) >= 1);
+    assert.ok(codexStats.first_seen_at && codexStats.last_seen_at);
 
     const metrics = rollupOrch.store.metrics(); // already flushed above
     assert.ok(metrics.shadow_judgment, "metrics().shadow_judgment must be present");
@@ -5001,11 +5084,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     label: "gates-output",
     content: "EXIT 0 typecheck\nEXIT 0 lint\nEXIT 0 build\nEXIT 0 smoke 41/41 PASS\n",
     extension: "log",
+    attached_by: "operator",
+    origin: "runtime_generated",
   });
   await aeOrch.store.attachEvidence(sessionId, {
     label: "diff-stat",
     content: " path/to/file.ts | +12/-3\n 1 file changed, 12 insertions, 3 deletions\n",
     extension: "txt",
+    attached_by: "operator",
+    origin: "runtime_generated",
   });
   await aeOrch.askPeers({
     session_id: sessionId,
@@ -5062,19 +5149,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     },
   };
   const capOrch = new CrossReviewOrchestrator(cfg, () => {});
-  const initial = await capOrch.askPeers({
-    task: "Cap test",
-    draft: "init",
-    caller: "operator",
-    peers: ["claude"],
-  });
-  const sessionId = initial.session.session_id;
+  const initial = await capOrch.store.init("Cap test", "operator", []);
+  const sessionId = initial.session_id;
   const big = "X".repeat(30_000);
   for (let i = 0; i < 4; i++) {
     await capOrch.store.attachEvidence(sessionId, {
       label: `att-${i}`,
       content: big,
       extension: "txt",
+      attached_by: "operator",
+      origin: "runtime_generated",
     });
   }
   const resolved = capOrch.store.readEvidenceAttachments(sessionId, 80_000);
@@ -5264,11 +5348,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
   const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
   process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "shadow";
-  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
   try {
     const cfg = {
       ...loadConfig(),
       data_dir: smokeTmpDir("precision-report"),
+      evidence_judge_autowire: {
+        ...loadConfig().evidence_judge_autowire,
+        consensus_peers: [],
+      },
       budget: {
         ...loadConfig().budget,
         max_session_cost_usd: 10000,
@@ -5293,7 +5381,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Precision report smoke",
       draft: "FORCE_NEEDS_EVIDENCE",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     const sessionId = r1.session.session_id;
     await prOrch.askPeers({
@@ -5301,7 +5389,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Precision report smoke",
       draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     // R3: clean draft (no FORCE_NEEDS_EVIDENCE) → claude returns READY,
     // ask is NOT resurfaced. The R2 judge said would_promote=true; ask
@@ -5311,22 +5399,22 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Precision report smoke",
       draft: "Clean revised draft body — no force markers.",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     await prOrch.store.flushPendingEvents();
     const report = prOrch.store.computeJudgmentPrecisionReport();
     assert.ok(report.decisions_total >= 1, `at least 1 decision recorded`);
-    const claudeStats = report.by_judge_peer.claude;
-    assert.ok(claudeStats, `claude judge stats present`);
-    assert.ok(claudeStats.decisions_with_ground_truth >= 1, `≥1 decision with GT`);
+    const codexStats = report.by_judge_peer.codex;
+    assert.ok(codexStats, `codex judge stats present`);
+    assert.ok(codexStats.decisions_with_ground_truth >= 1, `≥1 decision with GT`);
     // We expect at least 1 TP (R2 judge said promote, R3 ask did not resurface).
     assert.ok(
-      claudeStats.true_positive >= 1,
-      `at least 1 true positive (got tp=${claudeStats.true_positive}, fp=${claudeStats.false_positive}, tn=${claudeStats.true_negative}, fn=${claudeStats.false_negative})`,
+      codexStats.true_positive >= 1,
+      `at least 1 true positive (got tp=${codexStats.true_positive}, fp=${codexStats.false_positive}, tn=${codexStats.true_negative}, fn=${codexStats.false_negative})`,
     );
     // Precision should be defined (tp+fp > 0).
     assert.ok(
-      claudeStats.precision !== null && Number.isFinite(claudeStats.precision),
+      codexStats.precision !== null && Number.isFinite(codexStats.precision),
       `precision must be a finite number when tp+fp > 0`,
     );
     console.log("[smoke] judgment_precision_report_test: PASS");
@@ -5347,11 +5435,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const prevMode = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE;
   const prevPeer = process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER;
   process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE = "active";
-  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "claude";
+  process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER = "codex";
   try {
     const cfg = {
       ...loadConfig(),
       data_dir: smokeTmpDir("autowire-active"),
+      evidence_judge_autowire: {
+        ...loadConfig().evidence_judge_autowire,
+        consensus_peers: [],
+      },
       budget: {
         ...loadConfig().budget,
         max_session_cost_usd: 10000,
@@ -5373,7 +5465,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Active mode autowire smoke",
       draft: "FORCE_NEEDS_EVIDENCE",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     const seedItemId = r1.session.evidence_checklist?.[0]?.id;
     assert.ok(seedItemId, "R1 must produce 1 evidence checklist item");
@@ -5385,7 +5477,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       task: "Active mode autowire smoke",
       draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
       caller: "operator",
-      peers: ["claude"],
+      peers: ["claude", "codex"],
     });
     const after = acOrch.store.read(r1.session.session_id);
     const persisted = after.evidence_checklist?.find((e) => e.id === seedItemId);
@@ -5472,6 +5564,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       session_id: originalId,
       reason: "Trying to contest twice",
       new_task: "Should not happen",
+      new_caller: "operator",
     });
   } catch (err) {
     threw = err;
@@ -5496,6 +5589,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       session_id: inFlight.session.session_id,
       reason: "in-flight should reject",
       new_task: "should not happen",
+      new_caller: "operator",
     });
   } catch (err) {
     threw = err;
@@ -5509,6 +5603,57 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       `in-flight contestation must throw cannot_contest_in_flight_session if no outcome (got ${threw})`,
     );
   }
+
+  const missingCallerOriginal = await cvOrch.store.init(
+    "contest requires explicit successor caller",
+    "operator",
+    [],
+  );
+  await cvOrch.store.finalize(missingCallerOriginal.session_id, "max-rounds", "fixture");
+  await assert.rejects(
+    () =>
+      cvOrch.store.contestVerdict({
+        session_id: missingCallerOriginal.session_id,
+        reason: "must fail closed",
+        new_task: "must not be created as operator implicitly",
+      }),
+    /new_caller_required/,
+  );
+
+  const raceOriginal = await cvOrch.store.init("concurrent contest source", "operator", []);
+  await cvOrch.store.finalize(raceOriginal.session_id, "max-rounds", "fixture");
+  const raceResults = await Promise.allSettled([
+    cvOrch.store.contestVerdict({
+      session_id: raceOriginal.session_id,
+      reason: "race A",
+      new_task: "race successor A",
+      new_caller: "operator",
+    }),
+    cvOrch.store.contestVerdict({
+      session_id: raceOriginal.session_id,
+      reason: "race B",
+      new_task: "race successor B",
+      new_caller: "operator",
+    }),
+  ]);
+  assert.equal(
+    raceResults.filter((result) => result.status === "fulfilled").length,
+    1,
+    "concurrent contest attempts must create exactly one successor",
+  );
+  assert.equal(
+    cvOrch.store.list().filter((session) => session.contests_session_id === raceOriginal.session_id)
+      .length,
+    1,
+    "concurrent contest attempts must not leave an orphaned second successor",
+  );
+
+  const serverSource = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  assert.match(
+    serverSource,
+    /const effectiveNewCaller = new_caller \?\? caller;/,
+    "contest_verdict handler must resolve omitted new_caller to the authenticated caller",
+  );
   console.log("[smoke] contest_verdict_chain_of_custody_test: PASS");
 }
 
@@ -5541,7 +5686,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // FORCE_JUDGE_SATISFIED uniformly). Active mode promotes the item.
   const consensus = await consOrch.runEvidenceChecklistJudgeConsensusPass({
     session_id: r1.session.session_id,
-    judge_peers: ["codex", "claude", "gemini"],
+    judge_peers: ["codex", "gemini", "deepseek"],
     draft: "Revised draft FORCE_JUDGE_SATISFIED",
     mode: "active",
   });
@@ -5550,7 +5695,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(consensus.promoted[0]?.item_id, seedItemId);
   // All 3 peers must appear in rationales.
   assert.ok(consensus.promoted[0]?.rationales.codex);
-  assert.ok(consensus.promoted[0]?.rationales.claude);
+  assert.ok(consensus.promoted[0]?.rationales.deepseek);
   assert.ok(consensus.promoted[0]?.rationales.gemini);
   assert.equal(consensus.consensus_decisions[0]?.unanimous_verified_satisfied, true);
   // Disabled-peer rejection.
@@ -5581,7 +5726,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     try {
       await dOrch.runEvidenceChecklistJudgeConsensusPass({
         session_id: dInit.session.session_id,
-        judge_peers: ["codex", "claude", "gemini"],
+        judge_peers: ["codex", "gemini", "deepseek"],
         draft: "x",
       });
     } catch (err) {
@@ -5617,15 +5762,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "PEERS must have 6 entries (codex/claude/gemini/deepseek/grok/perplexity)",
   );
   const cfg = loadConfig();
-  // v4.2.2 provider-doc refresh: default grok model is the concrete
-  // `grok-4.3` pin. `grok-4-latest` remains a valid xAI alias and
+  // v4.5.0 provider-doc refresh: default grok model is the concrete
+  // `grok-4.5` pin. `grok-4-latest` remains a valid xAI alias and
   // `grok-4.20-multi-agent` remains a valid env-override for explicit
   // multi-agent reasoning behavior; the adapter tests below continue to
   // pin those capabilities.
   assert.equal(
     cfg.models.grok,
-    "grok-4.3",
-    "default grok model must be grok-4.3 (v4.2.2 provider-doc refresh)",
+    "grok-4.5",
+    "default grok model must be grok-4.5 (v4.5.0 provider-doc refresh)",
   );
   assert.ok("grok" in cfg.fallback_models, "fallback_models must have grok entry");
   assert.equal(cfg.peer_enabled.grok, true, "grok must be enabled by default");
@@ -5687,15 +5832,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // v2.15.0 (item 6) / v2.18.4 (Codex audit P2.1) — per-model reasoning
 // capability detection. Allowlist `GROK_REASONING_EFFORT_MODELS`
 // controls whether the GrokAdapter includes `reasoning.effort` in the
-// request body. As of v2.18.4 the allowlist holds BOTH
-// `grok-4.20-multi-agent` AND `grok-4.3` (xAI docs verified 2026-05-07
+// request body. As of v4.5.0 the allowlist holds Grok 4.5 plus
+// `grok-4.20-multi-agent` and `grok-4.3` (xAI docs verified
 // via WebFetch — grok-4.3 supports reasoning_effort with values
 // none/low/medium/high). Other Grok models (per xAI docs) reject the
 // param OR auto-apply reasoning internally, so we omit it.
 {
   const grokMod = await import("../src/peers/grok.js");
   const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } = grokMod;
-  // Allowlist contract: grok-4.20-multi-agent + grok-4.3.
+  // Allowlist contract: grok-4.5 + grok-4.20-multi-agent + grok-4.3.
+  assert.equal(modelAcceptsReasoningEffort("grok-4.5"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.3"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4-latest"), false);
@@ -5706,7 +5852,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-3-fast"), false);
   // Set is exposed as ReadonlySet so future xAI additions are a 1-line
   // change in peers/grok.ts. Test asserts the expected size + content.
-  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 2);
+  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 3);
+  assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.5"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.20-multi-agent"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.3"));
   console.log("[smoke] grok_reasoning_capability_allowlist_test: PASS");
@@ -5845,28 +5992,24 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] perplexity_reasoning_capability_allowlist_test: PASS");
 }
 
-// v3.0.0 R1 fix (codex cross-review catch 2026-05-12) — request_cost
-// is per-call search-aware. The relator (generate) role forces
-// disable_search:true on the wire regardless of operator config; the
-// PerplexityAdapter signals this via `TokenUsage.search_performed`,
-// and estimateCost() must NOT charge the request fee when search did
-// not run. Conversely, reviewer (call) calls with the default config
-// DO accrue the request fee. Legacy/stub paths (search_performed
-// undefined) fall back to the config check for backward compatibility.
+// v4.5.0 provider-doc refresh — Sonar's request fee is charged for every
+// request at the configured search-context tier even when disable_search=true
+// and no web search is triggered. `disable_search` is a latency control, not a
+// billing exemption. This regression test prevents relator and disabled-search
+// calls from being undercounted by the budget preflight.
 {
   const { estimateCost } = await import("../src/core/cost.js");
   const cfg = loadConfig();
-  // Scenario A: relator path — search_performed=false → NO request_cost.
+  // Scenario A: relator path — search_performed=false still pays request fee.
   const relatorUsage = {
     input_tokens: 100,
     output_tokens: 50,
     search_performed: false,
   };
   const relatorCost = estimateCost(cfg, "perplexity", relatorUsage);
-  assert.equal(
-    relatorCost.request_cost,
-    undefined,
-    "relator call (search_performed=false) MUST NOT accrue request_cost even when config.perplexity.disable_search=false",
+  assert.ok(
+    typeof relatorCost.request_cost === "number" && relatorCost.request_cost > 0,
+    "Perplexity request fees apply even when disable_search=true/search_performed=false.",
   );
   // Scenario B: reviewer path — search_performed=true → YES request_cost
   // (smoke seeds CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW=1000 so a real
@@ -5890,22 +6033,67 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     typeof legacyCost.request_cost === "number" && legacyCost.request_cost > 0,
     "legacy call (search_performed unset) with config.disable_search=false MUST preserve v3.0.0 baseline (request_cost present)",
   );
-  // Scenario D: source-level pins for the fix sites.
-  const perplexitySrc = fs.readFileSync("src/peers/perplexity.ts", "utf8");
-  assert.ok(
-    /sonarOptions\.disable_search !== true/.test(perplexitySrc),
-    "v3.0.0 R1 fix: search_performed must be derived from the on-wire sonarOptions.disable_search",
+  // Scenario D: config-wide disable_search also keeps the request fee.
+  const disabledConfigCost = estimateCost(
+    {
+      ...cfg,
+      perplexity: { ...cfg.perplexity, disable_search: true },
+    },
+    "perplexity",
+    { input_tokens: 100, output_tokens: 50, search_performed: false },
   );
   assert.ok(
-    /searchPerformed: boolean/.test(perplexitySrc),
-    "v3.0.0 R1 fix: usageFromSonar must accept searchPerformed parameter",
+    typeof disabledConfigCost.request_cost === "number" && disabledConfigCost.request_cost > 0,
+    "Config disable_search=true must not suppress Sonar's per-request fee.",
   );
   const costSrc = fs.readFileSync("src/core/cost.ts", "utf8");
-  assert.ok(
+  assert.equal(
     /usage\.search_performed \?\? !config\.perplexity\?\.disable_search/.test(costSrc),
-    "v3.0.0 R1 fix: estimateCost must gate request_cost on usage.search_performed (with config fallback)",
+    false,
+    "Perplexity request-cost accounting must not be gated on whether web search ran.",
   );
-  console.log("[smoke] perplexity_request_cost_search_aware_test: PASS");
+  console.log("[smoke] perplexity_request_cost_always_billed_test: PASS");
+}
+
+// v4.5.0 runtime resilience — syntactically valid JSON is not necessarily a
+// valid SessionMeta. A three-byte `{}` left on disk used to enter list() and
+// crash session_list/session_doctor at updated_at.localeCompare. Schema-invalid
+// metadata must be skipped and quarantined just like JSON parse failures.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const invalidMetaStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("session-meta-shape"),
+  });
+  const invalidDir = path.join(invalidMetaStore.sessionsDir(), "invalid-shape");
+  fs.mkdirSync(invalidDir, { recursive: true });
+  fs.writeFileSync(path.join(invalidDir, "meta.json"), "{}", "utf8");
+  assert.doesNotThrow(() => invalidMetaStore.list());
+  assert.equal(invalidMetaStore.list().length, 0);
+  assert.equal(fs.existsSync(path.join(invalidDir, "meta.json.bad")), true);
+  console.log("[smoke] invalid_session_meta_shape_quarantined_test: PASS");
+}
+
+// v4.5.0 anti-false-consensus invariant — a session with no adjudicated
+// round can never truthfully be called converged, regardless of the manual
+// outcome_reason supplied by a caller.
+{
+  const { SessionStore } = await import("../src/core/session-store.js");
+  const zeroRoundStore = new SessionStore({
+    ...config,
+    data_dir: smokeTmpDir("zero-round-convergence"),
+  });
+  const zeroRoundSession = await zeroRoundStore.init(
+    "zero-round convergence fixture",
+    "operator",
+    [],
+  );
+  await assert.rejects(
+    () => zeroRoundStore.finalize(zeroRoundSession.session_id, "converged", "claimed_unanimity"),
+    /at least one completed round|cannot finalize.*converged/i,
+  );
+  assert.equal(zeroRoundStore.read(zeroRoundSession.session_id).outcome, undefined);
+  console.log("[smoke] zero_round_false_convergence_blocked_test: PASS");
 }
 
 // v3.2.0 (Codex bug report 2026-05-12) — `sonar-reasoning-pro` and
@@ -6802,7 +6990,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 //  (1) declared caller matches clientInfo single-resolved → identity_verified=true
 //  (2) declared caller != clientInfo single-resolved → throws identity_forgery_blocked
 //  (3) declared caller + clientInfo unknown → identity_verified=false (legitimate override)
-//  (4) declared caller="operator" → identity_verified=false (no agent claim made)
+//  (4) declared caller="operator" from an agent-identified host → rejected
 //  (5) declared caller != clientInfo multi-match → throws (cannot validate against ambiguous host)
 //  (6) empirical attack reproduction (Codex client + caller=claude → rejected)
 {
@@ -6846,10 +7034,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(override.identity_verified, false);
   assert.equal(override.client_info_name, "headless-orchestrator-v9");
 
-  // (4) operator caller (no agent claim).
-  const operator = verifyCallerIdentity("operator", { name: "claude-code" });
-  assert.equal(operator.identity_verified, false);
-  assert.equal(operator.client_info_name, "claude-code");
+  // (4) An agent-identified host cannot escape its identity by declaring operator.
+  assert.throws(
+    () => verifyCallerIdentity("operator", { name: "claude-code" }),
+    /identity_forgery_blocked.*operator.*agent-identified host/i,
+  );
+  assert.throws(
+    () => verifyCallerIdentity("operator", { name: "cross-review-human-console" }),
+    /operator_authority_required/,
+  );
 
   // (5) Multi-match clientInfo while declaring an agent caller.
   let threwMulti = false;
@@ -6899,22 +7092,57 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   delete process.env.CROSS_REVIEW_CALLER_TOKEN;
 
   // (1) ensureHostTokens generates with mode 0o600 (POSIX); tokens are
-  // 5 distinct 64-char lowercase hex strings.
+  // 7 distinct 64-char lowercase hex strings (six peers + operator).
   const r1 = f1.ensureHostTokens(tmpRoot);
   assert.ok(r1?.map, "ensureHostTokens returns a record");
   const map = r1?.map;
   assert.ok(map, "tokens map present");
   if (!map) throw new Error("tokens map missing");
   // v3.0.0: perplexity added to the canonical agent roster.
-  for (const agent of ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const) {
-    assert.match(map[agent], /^[0-9a-f]{64}$/, `${agent} token is 64-char lowercase hex`);
+  for (const identity of [
+    "codex",
+    "claude",
+    "gemini",
+    "deepseek",
+    "grok",
+    "perplexity",
+    "operator",
+  ] as const) {
+    assert.match(map[identity], /^[0-9a-f]{64}$/, `${identity} token is 64-char lowercase hex`);
   }
   const distinct = new Set(Object.values(map));
-  assert.equal(distinct.size, 6, "all 6 tokens are distinct");
+  assert.equal(distinct.size, 7, "all 7 identity tokens are distinct");
 
   // (2) loadHostTokens is idempotent — re-read returns the same map.
   const r2 = f1.loadHostTokens(tmpRoot);
   assert.deepEqual(r2?.map, r1?.map, "loadHostTokens is idempotent");
+
+  // Legacy v1 files carried only the six peer tokens. Loading them must
+  // preserve those principals while adding a distinct operator capability
+  // and upgrading the on-disk schema to v2. (The migration fails closed on
+  // write error; the local-file trust boundary is documented in SECURITY.md.)
+  const legacyPath = path.join(tmpRoot, "legacy-host-tokens.json");
+  fs.writeFileSync(
+    legacyPath,
+    JSON.stringify({
+      version: 1,
+      generated_at: "2026-05-01T00:00:00.000Z",
+      tokens: Object.fromEntries(
+        (["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const).map(
+          (identity) => [identity, map[identity]],
+        ),
+      ),
+    }),
+    "utf8",
+  );
+  process.env.CROSS_REVIEW_TOKENS_FILE = legacyPath;
+  const migrated = f1.loadHostTokens(tmpRoot);
+  assert.ok(migrated?.map.operator, "legacy token file migration must add operator capability");
+  for (const peer of ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const) {
+    assert.equal(migrated?.map[peer], map[peer], `migration must preserve ${peer} token`);
+  }
+  assert.equal(JSON.parse(fs.readFileSync(legacyPath, "utf8")).version, 2);
+  process.env.CROSS_REVIEW_TOKENS_FILE = isolatedPath;
 
   // (3) tokensMatch (constant-time hex comparison) — equal/different/length-mismatch/null.
   assert.equal(f1.tokensMatch(map.claude, map.claude), true);
@@ -6933,7 +7161,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   try {
     f1.verifyTokenForCaller("codex", r1);
   } catch (err) {
-    mismatchThrown = /resolves to agent='claude' but caller declared='codex'/.test(
+    mismatchThrown = /resolves to identity='claude' but caller declared='codex'/.test(
       (err as Error).message,
     );
   }
@@ -6992,41 +7220,72 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(hardEnforceThrown, "v2.18.0 F1: hard-enforce mode rejects token-absent calls");
   delete process.env.CROSS_REVIEW_REQUIRE_TOKEN;
 
-  // (12) operator caller — R2 codex catch hardening: a host carrying
-  // CROSS_REVIEW_CALLER_TOKEN cannot declare caller="operator" (the token
-  // binds to a specific AI agent identity; declaring operator from such
-  // a host is forgery). Throws.
+  // (12) operator caller — an agent-named host cannot declare operator,
+  // regardless of the token it presents.
   process.env.CROSS_REVIEW_CALLER_TOKEN = "deadbeef".repeat(8);
   let operatorWithTokenThrown = false;
   try {
     verifyCallerIdentity("operator", { name: "claude-code" });
   } catch (err) {
-    operatorWithTokenThrown =
-      /caller='operator' is not permitted from a host that carries CROSS_REVIEW_CALLER_TOKEN/.test(
-        (err as Error).message,
-      );
+    operatorWithTokenThrown = /operator.*agent-identified host/i.test((err as Error).message);
   }
   assert.ok(
     operatorWithTokenThrown,
     "v2.18.0 F1: caller='operator' from a token-bearing host MUST throw (R2 codex catch hardening)",
   );
 
-  // (12b) operator caller without token → OK (genuine human-driven
-  // invocation; operator is the gate-setter, exempt from agent-token
-  // enforcement by design).
+  // (12b) operator caller without its dedicated token is rejected even from
+  // a human-console client name.
   delete process.env.CROSS_REVIEW_CALLER_TOKEN;
-  const opIdent = verifyCallerIdentity("operator", { name: "claude-code" });
-  assert.equal(opIdent.verification_method, "none");
-  assert.equal(opIdent.identity_verified, false);
+  assert.throws(
+    () => verifyCallerIdentity("operator", { name: "claude-code" }),
+    /identity_forgery_blocked/,
+  );
+  assert.throws(
+    () => verifyCallerIdentity("operator", { name: "cross-review-human-console" }),
+    /operator_authority_required/,
+  );
 
-  // (12c) operator caller in hard-enforce mode WITHOUT token → OK
-  // (operator is the gate-setter; hard-enforce applies only to agent
-  // identities, not to the human-driven operator caller).
+  // (12c) operator is available only with its distinct capability token.
   process.env.CROSS_REVIEW_REQUIRE_TOKEN = "true";
-  const opHardEnforce = verifyCallerIdentity("operator", { name: "claude-code" });
-  assert.equal(opHardEnforce.verification_method, "none");
-  assert.equal(opHardEnforce.identity_verified, false);
+  assert.throws(
+    () => verifyCallerIdentity("operator", { name: "cross-review-human-console" }),
+    /operator_authority_required/,
+  );
+  process.env.CROSS_REVIEW_CALLER_TOKEN = map.operator;
+  const opHardEnforce = verifyCallerIdentity("operator", {
+    name: "cross-review-human-console",
+  });
+  assert.equal(opHardEnforce.verification_method, "token");
+  assert.equal(opHardEnforce.identity_verified, true);
   delete process.env.CROSS_REVIEW_REQUIRE_TOKEN;
+
+  // (12d) Authoritative session mutations require either the verified
+  // petitioner token or the distinct operator token. A different peer and a
+  // clientInfo-only caller must not cancel/contest another session.
+  assert.doesNotThrow(() =>
+    assertSessionMutationAuthority("session_cancel_job", "claude", idV, "claude"),
+  );
+  assert.throws(
+    () => assertSessionMutationAuthority("session_cancel_job", "claude", idV, "codex"),
+    /session_owner_mismatch/,
+  );
+  assert.throws(
+    () => assertSessionMutationAuthority("session_cancel_job", "claude", idV, null),
+    /session_owner_unverified/,
+  );
+  assert.throws(
+    () => assertSessionMutationAuthority("contest_verdict", "claude", idFallback, "claude"),
+    /session_owner_token_required/,
+  );
+  assert.doesNotThrow(() =>
+    assertSessionMutationAuthority("contest_verdict", "operator", opHardEnforce, "claude"),
+  );
+  assert.equal(hasTrustedPetitionerProvenance("2.15.9"), false);
+  assert.equal(hasTrustedPetitionerProvenance("v02.16.00"), true);
+  assert.equal(hasTrustedPetitionerProvenance("4.5.0"), true);
+  assert.equal(hasTrustedPetitionerProvenance("legacy"), false);
+  assert.equal(hasTrustedPetitionerProvenance("legacy-4.5.0-corrupt"), false);
 
   // (13) generateHostTokens overwrite rotates secrets — file content differs.
   delete process.env.CROSS_REVIEW_CALLER_TOKEN;
@@ -7239,6 +7498,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // so the smoke can verify it directly without a request-shape stub.
 {
   const { clampEffortForModel } = await import("../src/peers/grok.js");
+  // grok-4.5 — API accepts only low|medium|high.
+  assert.equal(clampEffortForModel("none", "grok-4.5"), "low");
+  assert.equal(clampEffortForModel("minimal", "grok-4.5"), "low");
+  assert.equal(clampEffortForModel("low", "grok-4.5"), "low");
+  assert.equal(clampEffortForModel("medium", "grok-4.5"), "medium");
+  assert.equal(clampEffortForModel("high", "grok-4.5"), "high");
+  assert.equal(clampEffortForModel("xhigh", "grok-4.5"), "high");
   // grok-4.3 — clamp xhigh/minimal to high; passthrough for accepted values.
   assert.equal(
     clampEffortForModel("xhigh", "grok-4.3"),
@@ -7923,8 +8189,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v2.24.0 / fabrication_lock: net-new hex threshold pinned at 3",
   );
   assert.ok(
-    /FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD\s*=\s*2/.test(orchSrc),
-    "v2.24.0 / fabrication_lock: suspicious assertion threshold pinned at 2",
+    /FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD\s*=\s*1/.test(orchSrc),
+    "v4.5.0 / fabrication_lock: one unsupported operational assertion is sufficient to fail closed",
   );
 
   // (3) Orchestrator branch emits `session.lead_fabrication_detected`
@@ -7947,13 +8213,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
 
   // (5) Consecutive drift counter is reused (single counter increments
-  // for empty + structured-drift + fabrication, so the cap fires
-  // uniformly across all three failure modes).
+  // for empty + structured-drift + fabrication + meta-audit drift, so the cap
+  // fires uniformly across all four failure modes).
   assert.ok(
-    /if \(emptyText \|\| driftDetected \|\| fabricationDetected\) \{[\s\S]{0,400}consecutiveLeadDrifts\s*\+=\s*1/.test(
+    /if \(emptyText \|\| driftDetected \|\| fabricationDetected \|\| metaAuditDetected\) \{[\s\S]{0,400}consecutiveLeadDrifts\s*\+=\s*1/.test(
       orchSrc,
     ),
-    "v2.24.0 / fabrication_lock: the unified drift branch increments consecutiveLeadDrifts when any of the three failure modes fires",
+    "v4.5.0 / fabrication_lock: the unified drift branch increments consecutiveLeadDrifts when any enforced drift/fabrication mode fires",
   );
 
   const initialFabricationEvents: RuntimeEvent[] = [];
@@ -9095,11 +9361,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
   }
   for (const [peer, pin] of [
-    ["codex", "gpt-5.5"],
-    ["claude", "claude-opus-4-8"],
+    ["codex", "gpt-5.6-sol"],
+    ["claude", "claude-fable-5"],
     ["gemini", "gemini-3.1-pro-preview"],
     ["deepseek", "deepseek-v4-pro"],
-    ["grok", "grok-4.3"],
+    ["grok", "grok-4.5"],
     ["perplexity", "sonar-reasoning-pro"],
   ] as const) {
     assert.ok(
@@ -9425,8 +9691,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   const securitySrc = fs.readFileSync(path.join(process.cwd(), "SECURITY.md"), "utf8");
   assert.ok(
-    securitySrc.includes(`Latest supported release: ${displayVersion} for npm package ${pjVer}.`),
-    `v4.4.2 / release_metadata: SECURITY.md must name the current release "${displayVersion}" and npm package "${pjVer}".`,
+    securitySrc.includes(
+      `Current supported source candidate: ${displayVersion} for package ${pjVer}.`,
+    ),
+    `v4.5.0 / release_metadata: SECURITY.md must name the current source candidate "${displayVersion}" and package "${pjVer}" without implying npm publication.`,
   );
   console.log("[smoke] package_version_consistency_test: PASS");
 }

@@ -58,6 +58,11 @@ import { BasePeerAdapter, StreamBuffer, type TokenEventBuffer } from "./base.js"
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor } from "./openai.js";
 import { withRetry } from "./retry.js";
+import {
+  assertChatCompletionTerminal,
+  assertChatStreamCompleted,
+  observeChatStreamTerminals,
+} from "./terminal.js";
 import { userPrompt } from "./text.js";
 
 const PERPLEXITY_BASE_URL = "https://api.perplexity.ai";
@@ -442,18 +447,34 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage =
               usageFromSonar(chunk.usage as SonarUsage | null | undefined, searchPerformed) ??
               usage;
+            observeChatStreamTerminals(chunk.choices, completedChoices, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+              allowToolCalls: false,
+            });
             for (const choice of chunk.choices ?? []) {
               const delta = choice.delta?.content ?? "";
               stream_buffer.append(delta);
               perplexityTokenStream.append(delta);
             }
           }
+          assertChatStreamCompleted(completedChoices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+          });
           // v3.4.0 Fix #1: apply stripPerplexityThinkingBlock to the
           // streamed text. Non-streaming path at line ~426 uses
           // sonarText(response) which already strips; streaming path was
@@ -480,6 +501,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         const response = await reviewClient.chat.completions.create(payload, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
+        });
+        assertChatCompletionTerminal(response.choices, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "review",
+          allowToolCalls: false,
         });
         return this.resultFromText({
           text: sonarText(response),
@@ -549,18 +578,34 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage =
               usageFromSonar(chunk.usage as SonarUsage | null | undefined, searchPerformed) ??
               usage;
+            observeChatStreamTerminals(chunk.choices, completedChoices, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+              allowToolCalls: false,
+            });
             for (const choice of chunk.choices ?? []) {
               const delta = choice.delta?.content ?? "";
               stream_buffer.append(delta);
               perplexityTokenStream.append(delta);
             }
           }
+          assertChatStreamCompleted(completedChoices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+          });
           // v3.4.0 Fix #1: streaming-path strip parity for generation
           // (relator) path — same root cause as the call() branch above.
           // When Perplexity is sortead as relator (e.g. sess 51973fac),
@@ -583,6 +628,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         const response = await generateClient.chat.completions.create(payload, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
+        });
+        assertChatCompletionTerminal(response.choices, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "generation",
+          allowToolCalls: false,
         });
         return this.generationFromText({
           text: sonarText(response),

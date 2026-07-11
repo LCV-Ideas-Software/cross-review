@@ -5,6 +5,11 @@
 > changelog resumido. As seções 1 a 3 e 8 a 9 são acessíveis a qualquer
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
+>
+> Estado verificado em 2026-07-10: source candidate `4.5.0`; versão publicada
+> no npm `4.4.8`. Em uma janela MCP já aberta, `server_info` é a fonte da
+> versão runtime efetivamente carregada e a janela precisa ser recarregada após
+> atualização de pacote, configuração central ou variáveis.
 
 ---
 
@@ -179,6 +184,19 @@ verificável, a sessão é bloqueada com `needs_truthfulness_preflight`; desde
 `v04.02.04`, o operador pode anexar evidência e reexecutar essa checagem local
 com `session_truthfulness_preflight_check`, sem chamar provedores.
 
+Esses controles não aceitam a palavra de um agente como prova. Todo voto
+`READY`, inclusive com confiança `inferred`, precisa citar fonte rastreável ao
+artefato ou a anexos sob custódia do operador. Fatos do runtime só corroboram
+uma alegação runtime correspondente e, isoladamente, não provam revisão;
+caso contrário, o voto é rebaixado para `NEEDS_EVIDENCE`. Alegações de
+workflow, deploy, hashes, testes e autorização precisam coincidir com valores
+presentes na evidência, e itens `open` ou `not_resurfaced` impedem a
+convergência. Só um host humano com capability `operator` separada pode anexar
+ou encerrar evidência; tokens de peers não servem como operador. Cada anexo
+novo registra autor, origem, horário, bytes e SHA-256; a leitura recalcula
+a integridade e falha fechada se houver adulteração. Anexos legados ficam
+marcados como `legacy_unverified` e ficam fora do corpus confiável.
+
 ---
 
 ## 3. Características
@@ -287,18 +305,19 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 
 | Par          | Modelo canônico          |
 | ------------ | ------------------------ |
-| OpenAI/Codex | `gpt-5.5`                |
-| Anthropic    | `claude-opus-4-8`        |
+| OpenAI/Codex | `gpt-5.6-sol`            |
+| Anthropic    | `claude-fable-5`         |
 | Google       | `gemini-3.1-pro-preview` |
 | DeepSeek     | `deepseek-v4-pro`        |
-| xAI/Grok     | `grok-4.3`               |
+| xAI/Grok     | `grok-4.5`               |
 | Perplexity   | `sonar-reasoning-pro`    |
 
-`claude-fable-5` é suportado como opção Anthropic explícita para o par
-`claude`. Ele não substitui o pin padrão `claude-opus-4-8`; quando o operador
-o seleciona, a seleção de modelo o reconhece como suportado, refusals
-`stop_reason="refusal"` bloqueiam a unanimidade como `provider_refusal`, e o
-rate card Anthropic deve ser ajustado para os preços de Fable 5.
+No Fable 5, o adaptador omite o campo explícito `thinking`, pois o raciocínio
+adaptativo é automático, e usa `output_config.effort` para a profundidade. A
+retenção documentada é de 30 dias, sem opção ZDR. No GPT-5.6 Sol, `ultra` é um
+modo do produto Codex, não um `reasoning.effort` da Responses API; a
+configuração do cross-review deve usar `max`. O Grok 4.5 aceita apenas
+`low`/`medium`/`high` e recebe o valor compartilhado já limitado a esse enum.
 
 Como o `cross-review` é orientado à correção, os adaptadores pedem
 explicitamente o maior nível de raciocínio que cada API oficial oferece. O
@@ -336,8 +355,16 @@ O runtime integra-se ao cache de prompt de cada provedor compatível, emite um
 evento uniforme `provider.cache.usage` e grava um `cache_manifest.json` por
 sessão. Os modos de cache observados são: `auto` (OpenAI, DeepSeek, Grok),
 `explicit` (Anthropic), `implicit` (Gemini) e `not_supported` (Perplexity,
-cuja API Sonar não expõe superfície de cache). O cache pode ser desativado
-globalmente com `CROSS_REVIEW_DISABLE_CACHE=true`.
+cuja API Sonar não expõe superfície de cache).
+
+`CROSS_REVIEW_DISABLE_CACHE=true` remove globalmente os controles de cache que
+o cliente consegue influenciar. Ele não pode obrigar Gemini ou DeepSeek a
+desativar o cache implícito/automático administrado pelo serviço.
+
+GPT-5.6 Sol usa `prompt_cache_options` em modo implícito com TTL de 30 minutos
+e contabiliza leitura e escrita de cache separadamente. Grok 4.5 usa
+`prompt_cache_key`, com retenção administrada pela xAI e sem inferir tokens de
+escrita.
 
 ### 4.8. As 30 ferramentas MCP
 
@@ -345,7 +372,8 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 
 **Descoberta e diagnóstico**
 
-- `server_info` — informações e capacidades do servidor.
+- `server_info` — informações, capacidades e estado da configuração carregada,
+  incluindo hashes, erro de parse e `reload_required`.
 - `runtime_capabilities` — capacidades efetivas do runtime.
 - `probe_peers` — testa a disponibilidade e a autenticação dos pares.
 
@@ -419,6 +447,10 @@ grava ainda um log NDJSON por processo sob `<data_dir>/logs`.
 ```bash
 npm install -g @lcv-ideas-software/cross-review
 ```
+
+Enquanto `4.5.0` permanecer source candidate, o npm público instala `4.4.8`.
+Use o build local para testar o candidate antes da publicação e confirme a
+versão efetiva em `server_info`.
 
 Alternativamente, pelo espelho do GitHub Packages:
 
@@ -506,9 +538,13 @@ Use as variáveis de substituição apenas quando quiser fixar um modelo
 diferente do canônico:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.5", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
 ```
+
+O arquivo central e as variáveis são carregados uma vez no início do processo.
+Depois de alterá-los, reinicie ou recarregue a janela/host MCP e confirme em
+`server_info.config_load` que `reload_required=false`; não há live reload.
 
 ### 6.4. Tempo limite e streaming
 
@@ -516,7 +552,9 @@ diferente do canônico:
   de 30 minutos.
 - `CROSS_REVIEW_STREAM_EVENTS` e `CROSS_REVIEW_STREAM_TOKENS` — controlam o
   streaming; ambos ativos por padrão.
-- `CROSS_REVIEW_DISABLE_CACHE=true` — desativa o cache de prompt globalmente.
+- `CROSS_REVIEW_DISABLE_CACHE=true` — remove globalmente os controles de cache
+  que o cliente consegue influenciar; não desliga caching administrado pelo
+  provedor.
 
 ---
 
@@ -538,6 +576,7 @@ diferente do canônico:
 | `zod`                       | validação de esquemas de entrada                           |
 | `pino`                      | logs estruturados (NDJSON)                                 |
 | `proper-lockfile`           | trava de arquivo para concorrência segura                  |
+| `protobufjs`                | serialização protobuf usada pela árvore de runtime         |
 
 ### Dependências de desenvolvimento
 

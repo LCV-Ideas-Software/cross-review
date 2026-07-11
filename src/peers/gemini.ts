@@ -19,6 +19,11 @@ import type {
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";
+import {
+  assertGeminiCompletion,
+  assertGeminiStreamCompleted,
+  observeGeminiStreamTerminals,
+} from "./terminal.js";
 import { userPrompt } from "./text.js";
 
 type GeminiUsage = {
@@ -39,6 +44,8 @@ type GeminiResponse = {
   text?: string | undefined;
   modelVersion?: string | undefined;
   usageMetadata?: GeminiUsage | undefined;
+  promptFeedback?: { blockReason?: unknown } | null | undefined;
+  candidates?: Array<{ index?: number | undefined; finishReason?: unknown }> | null | undefined;
 };
 
 export const GEMINI_RESPONSE_MISSING_TEXT_WARNING = "gemini_response_missing_text";
@@ -58,8 +65,13 @@ export function geminiTextWithWarning(
 function usageFromGemini(usage: GeminiUsage | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
   const cached = usage.cachedContentTokenCount ?? 0;
+  // Gemini's promptTokenCount includes cachedContentTokenCount. Canonical
+  // TokenUsage keeps fresh input and cache-read buckets mutually exclusive so
+  // cost accounting cannot charge the cached prefix twice.
+  const freshInput =
+    usage.promptTokenCount === undefined ? undefined : Math.max(0, usage.promptTokenCount - cached);
   const result: TokenUsage = {
-    input_tokens: usage.promptTokenCount,
+    input_tokens: freshInput,
     output_tokens: usage.candidatesTokenCount,
     total_tokens: usage.totalTokenCount,
     reasoning_tokens: usage.thoughtsTokenCount,
@@ -197,12 +209,27 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             "generateContentStream.text",
           );
           let last: GeminiResponse | undefined;
+          const completedCandidates = new Set<number>();
           for await (const chunk of stream as AsyncGenerator<GeminiResponse>) {
             last = chunk;
+            observeGeminiStreamTerminals(chunk, completedCandidates, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+            });
             const delta = chunk.text ?? "";
             stream_buffer.append(delta);
             tokenStream.append(delta);
           }
+          assertGeminiStreamCompleted(completedCandidates, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           const normalized = text ? { text, parser_warnings: [] } : geminiTextWithWarning(last);
@@ -217,6 +244,13 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           });
         }
         const response = (await reviewClient.ai.models.generateContent(params)) as GeminiResponse;
+        assertGeminiCompletion(response, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "review",
+        });
         const normalized = geminiTextWithWarning(response);
         return this.resultFromText({
           text: normalized.text,
@@ -264,12 +298,27 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             "generateContentStream.text",
           );
           let last: GeminiResponse | undefined;
+          const completedCandidates = new Set<number>();
           for await (const chunk of stream as AsyncGenerator<GeminiResponse>) {
             last = chunk;
+            observeGeminiStreamTerminals(chunk, completedCandidates, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+            });
             const delta = chunk.text ?? "";
             stream_buffer.append(delta);
             tokenStream.append(delta);
           }
+          assertGeminiStreamCompleted(completedCandidates, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           const normalized = text ? { text, parser_warnings: [] } : geminiTextWithWarning(last);
@@ -284,6 +333,13 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           });
         }
         const response = (await generateClient.ai.models.generateContent(params)) as GeminiResponse;
+        assertGeminiCompletion(response, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase: "generation",
+        });
         const normalized = geminiTextWithWarning(response);
         return this.generationFromText({
           text: normalized.text,

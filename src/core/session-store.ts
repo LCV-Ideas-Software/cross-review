@@ -8,6 +8,8 @@ import type {
   AppConfig,
   ConvergenceResult,
   ConvergenceScope,
+  EvidenceAttachment,
+  EvidenceAttachmentOrigin,
   EvidenceChecklistItem,
   EvidenceChecklistStatus,
   EvidenceStatusHistoryEntry,
@@ -22,6 +24,7 @@ import type {
   PeerReliabilityReport,
   PeerReliabilityStats,
   PeerResult,
+  ResolvedEvidenceAttachment,
   ReviewRound,
   ReviewStatus,
   RuntimeEvent,
@@ -40,6 +43,27 @@ export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function sessionMetaShapeError(value: unknown): string | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return "root must be an object";
+  }
+  const meta = value as Record<string, unknown>;
+  for (const field of ["session_id", "version", "created_at", "updated_at", "task"] as const) {
+    if (typeof meta[field] !== "string" || meta[field].length === 0) {
+      return `${field} must be a non-empty string`;
+    }
+  }
+  if (meta.caller !== "operator" && !PEERS.includes(meta.caller as PeerId)) {
+    return "caller must be operator or a known peer";
+  }
+  if (!Array.isArray(meta.capability_snapshot)) return "capability_snapshot must be an array";
+  if (!Array.isArray(meta.rounds)) return "rounds must be an array";
+  if (meta.totals === null || typeof meta.totals !== "object" || Array.isArray(meta.totals)) {
+    return "totals must be an object";
+  }
+  return undefined;
 }
 
 function isStubSession(session: SessionMeta): boolean {
@@ -177,6 +201,46 @@ function timestampFilePart(): string {
   return now().replace(/[:.]/g, "-");
 }
 
+const EVIDENCE_ATTACHMENT_ORIGINS = new Set<EvidenceAttachmentOrigin>([
+  "session_attach_evidence",
+  "runtime_generated",
+]);
+
+function currentEvidenceAttachment(
+  value: NonNullable<SessionMeta["evidence_files"]>[number],
+): EvidenceAttachment | undefined {
+  const record = value as unknown as Record<string, unknown>;
+  const custodyFields = [
+    "integrity_version",
+    "sha256",
+    "bytes",
+    "attached_by",
+    "attached_at",
+    "origin",
+  ];
+  if (!custodyFields.some((field) => field in record)) return undefined;
+
+  const validCaller =
+    record.attached_by === "operator" || PEERS.includes(record.attached_by as PeerId);
+  const validOrigin = EVIDENCE_ATTACHMENT_ORIGINS.has(record.origin as EvidenceAttachmentOrigin);
+  const valid =
+    record.integrity_version === 1 &&
+    typeof record.sha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(record.sha256) &&
+    typeof record.bytes === "number" &&
+    Number.isSafeInteger(record.bytes) &&
+    record.bytes >= 0 &&
+    validCaller &&
+    typeof record.attached_at === "string" &&
+    !Number.isNaN(Date.parse(record.attached_at)) &&
+    record.ts === record.attached_at &&
+    validOrigin;
+  if (!valid) {
+    throw new Error(`evidence_custody_metadata_invalid: ${value.path}`);
+  }
+  return value as EvidenceAttachment;
+}
+
 export class SessionStore {
   // v2.4.0 / audit closure (P3.13): in-memory monotonic seq counter per
   // session. Pre-v2.4.0 appendEvent recomputed seq by reading the events
@@ -198,18 +262,6 @@ export class SessionStore {
   // promise here. Promises resolve/reject within appendEvent's own
   // try/catch — flush() therefore always settles, never rejects.
   private readonly pendingEventWrites = new Set<Promise<void>>();
-  private readonly evidenceAttachmentCache = new Map<
-    string,
-    Array<{
-      label: string;
-      relative_path: string;
-      content: string;
-      bytes: number;
-      truncated: boolean;
-      content_type?: string | undefined;
-    }>
-  >();
-
   constructor(private readonly config: AppConfig) {
     fs.mkdirSync(this.sessionsDir(), { recursive: true });
   }
@@ -614,8 +666,9 @@ export class SessionStore {
       .filter((event) => event.seq > sinceSeq);
   }
 
-  // v2.27.0: corrupted meta.json files are silently skipped + quarantined to
-  // `<session_dir>/meta.json.bad` so subsequent startup sweeps do not re-throw.
+  // v2.27.0/v4.5.0: parse-corrupt or structurally invalid meta.json files are
+  // skipped + quarantined to `<session_dir>/meta.json.bad` so listing and
+  // startup sweeps cannot be crashed by valid JSON with an invalid shape.
   // Empirically demonstrated by 3 sessions corrupted by the v2.25.1 redact
   // escape-boundary bug (77c47284, be47a5b0, 7edf63e3) that caused parse
   // errors on every Claude Code reload until manually deleted 2026-05-12.
@@ -629,7 +682,10 @@ export class SessionStore {
       const file = path.join(sessionDir, "meta.json");
       if (!fs.existsSync(file)) continue;
       try {
-        metas.push(readJson<SessionMeta>(file));
+        const meta = readJson<unknown>(file);
+        const shapeError = sessionMetaShapeError(meta);
+        if (shapeError) throw new Error(`schema_validation_failed: ${shapeError}`);
+        metas.push(meta as SessionMeta);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const quarantine = path.join(sessionDir, "meta.json.bad");
@@ -956,7 +1012,14 @@ export class SessionStore {
       // with outcome="converged"/"unanimous_ready" anyway). Refuse with a
       // structured error so the operator/caller fixes the mismatch
       // upstream instead of corrupting the meta.
-      if (outcome === "converged" && meta.rounds.length > 0) {
+      if (outcome === "converged") {
+        if (meta.rounds.length === 0) {
+          const err = new Error(
+            'session_finalize_outcome_mismatch: cannot finalize as "converged" — at least one completed convergent round is required',
+          );
+          (err as Error & { code?: string }).code = "session_finalize_outcome_mismatch";
+          throw err;
+        }
         const latest = meta.rounds[meta.rounds.length - 1];
         if (latest?.convergence?.converged !== true) {
           const err = new Error(
@@ -995,11 +1058,16 @@ export class SessionStore {
 
   async requestCancellation(
     sessionId: string,
-    reason = "operator_requested",
+    reason = "requester_requested",
     jobId?: string,
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome) {
+        throw new Error(
+          `session_already_finalized: cannot request cancellation for ${sessionId} with outcome=${meta.outcome}`,
+        );
+      }
       meta.control = {
         status: "cancel_requested",
         reason,
@@ -2203,21 +2271,8 @@ export class SessionStore {
   // the file content already lives in `data_dir/sessions/<id>/evidence/`
   // by the time we inline, so the only constraint is the peer model's
   // context window — much larger than the MCP boundary.
-  readEvidenceAttachments(
-    sessionId: string,
-    totalCapChars: number,
-  ): Array<{
-    label: string;
-    relative_path: string;
-    content: string;
-    bytes: number;
-    truncated: boolean;
-    content_type?: string | undefined;
-  }> {
+  readEvidenceAttachments(sessionId: string, totalCapChars: number): ResolvedEvidenceAttachment[] {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
-    const cacheKey = `${sessionId}:${totalCapChars}`;
-    const cached = this.evidenceAttachmentCache.get(cacheKey);
-    if (cached) return cached.map((item) => ({ ...item }));
     let meta: SessionMeta;
     let sessionDir: string;
     try {
@@ -2229,24 +2284,34 @@ export class SessionStore {
     const files = meta.evidence_files ?? [];
     if (!files.length) return [];
     const perFileCap = Math.max(2_000, Math.floor(totalCapChars * 0.6));
-    const result: Array<{
-      label: string;
-      relative_path: string;
-      content: string;
-      bytes: number;
-      truncated: boolean;
-      content_type?: string | undefined;
-    }> = [];
+    const result: ResolvedEvidenceAttachment[] = [];
     let used = 0;
     for (const file of files) {
+      const custody = currentEvidenceAttachment(file);
       const absolutePath = this.safeResolveContainedExistingPath(sessionDir, file.path);
-      if (!absolutePath) continue;
-      let raw: string;
-      try {
-        raw = fs.readFileSync(absolutePath, "utf8");
-      } catch {
+      if (!absolutePath) {
+        if (custody) {
+          throw new Error(`evidence_integrity_unavailable: ${file.path}`);
+        }
         continue;
       }
+      let persisted: Buffer;
+      try {
+        persisted = fs.readFileSync(absolutePath);
+      } catch (error) {
+        if (custody) {
+          throw new Error(`evidence_integrity_unavailable: ${file.path}`, { cause: error });
+        }
+        continue;
+      }
+      const actualBytes = persisted.byteLength;
+      const actualSha256 = crypto.createHash("sha256").update(persisted).digest("hex");
+      if (custody && (actualBytes !== custody.bytes || actualSha256 !== custody.sha256)) {
+        throw new Error(
+          `evidence_integrity_mismatch: ${file.path} expected sha256=${custody.sha256} bytes=${custody.bytes}, got sha256=${actualSha256} bytes=${actualBytes}`,
+        );
+      }
+      const raw = persisted.toString("utf8");
       const remaining = totalCapChars - used;
       if (remaining <= 0) break;
       const cap = Math.min(perFileCap, remaining);
@@ -2256,16 +2321,21 @@ export class SessionStore {
         label: file.label,
         relative_path: file.path,
         content: slice,
-        bytes: raw.length,
+        bytes: actualBytes,
         truncated,
+        provenance_status: custody ? "verified" : "legacy_unverified",
         content_type: file.content_type,
+        ...(custody
+          ? {
+              sha256: custody.sha256,
+              attached_by: custody.attached_by,
+              attached_at: custody.attached_at,
+              origin: custody.origin,
+            }
+          : {}),
       });
       used += slice.length;
     }
-    this.evidenceAttachmentCache.set(
-      cacheKey,
-      result.map((item) => ({ ...item })),
-    );
     return result;
   }
 
@@ -2285,74 +2355,131 @@ export class SessionStore {
     new_initial_draft?: string | undefined;
     new_caller?: PeerId | "operator" | undefined;
   }): Promise<{ contested_meta: SessionMeta; new_session_id: string }> {
-    const original = this.read(params.session_id);
-    if (!original.outcome) {
+    if (!params.new_caller) {
       throw new Error(
-        `cannot_contest_in_flight_session: session ${params.session_id} has no outcome yet (still in flight). Wait for it to converge or finalize before contesting.`,
+        "new_caller_required: contestVerdict requires an explicitly authenticated new session caller.",
       );
     }
-    if (original.contestation) {
-      throw new Error(
-        `session_already_contested: session ${params.session_id} was already contested at ${original.contestation.contested_at} (new_session_id=${original.contestation.new_session_id}).`,
-      );
-    }
-    const newCaller: PeerId | "operator" = params.new_caller ?? "operator";
-    const newSession = await this.init(params.new_task, newCaller, [], undefined);
-    // Cross-link new session → original.
-    await this.withSessionLock(newSession.session_id, async () => {
-      const m = this.read(newSession.session_id);
-      m.contests_session_id = params.session_id;
-      m.updated_at = now();
-      await writeJson(this.metaPath(newSession.session_id), m);
-      return m;
-    });
-    // Stamp original with contestation record.
+    const newCaller: PeerId | "operator" = params.new_caller;
+    let newSessionId: string | undefined;
+    // Validation, successor creation and original stamping are serialized by
+    // the original session lock. Before this boundary two concurrent contests
+    // could both observe `contestation` as absent, create two successors and
+    // let the last writer orphan the first chain link.
     const contestedMeta = await this.withSessionLock(params.session_id, async () => {
-      const m = this.read(params.session_id);
-      m.contestation = {
+      const original = this.read(params.session_id);
+      if (!original.outcome) {
+        throw new Error(
+          `cannot_contest_in_flight_session: session ${params.session_id} has no outcome yet (still in flight). Wait for it to converge or finalize before contesting.`,
+        );
+      }
+      if (original.contestation) {
+        throw new Error(
+          `session_already_contested: session ${params.session_id} was already contested at ${original.contestation.contested_at} (new_session_id=${original.contestation.new_session_id}).`,
+        );
+      }
+
+      const newSession = await this.init(params.new_task, newCaller, [], undefined);
+      newSessionId = newSession.session_id;
+      // Cross-link successor → original while the original contest right is
+      // exclusively held. Lock ordering is original then newly-created child;
+      // no other path can hold the child and wait for its not-yet-linked parent.
+      await this.withSessionLock(newSession.session_id, async () => {
+        const successor = this.read(newSession.session_id);
+        successor.contests_session_id = params.session_id;
+        successor.updated_at = now();
+        await writeJson(this.metaPath(newSession.session_id), successor);
+      });
+
+      original.contestation = {
         contested_at: now(),
         reason: params.reason,
-        original_outcome: m.outcome ?? null,
+        original_outcome: original.outcome ?? null,
         new_session_id: newSession.session_id,
       };
-      m.updated_at = now();
-      await writeJson(this.metaPath(params.session_id), m);
-      return m;
+      original.updated_at = now();
+      await writeJson(this.metaPath(params.session_id), original);
+      return original;
     });
-    return { contested_meta: contestedMeta, new_session_id: newSession.session_id };
+    if (!newSessionId) throw new Error("contest_successor_creation_failed");
+    return { contested_meta: contestedMeta, new_session_id: newSessionId };
   }
 
   async attachEvidence(
     sessionId: string,
-    params: { label: string; content: string; content_type?: string; extension?: string },
+    params: {
+      label: string;
+      content: string;
+      content_type?: string;
+      extension?: string;
+      attached_by: PeerId | "operator";
+      origin: EvidenceAttachmentOrigin;
+    },
   ): Promise<{ path: string; meta: SessionMeta }> {
+    if (params.attached_by !== "operator" && !PEERS.includes(params.attached_by)) {
+      throw new Error(`evidence_attached_by_invalid: ${String(params.attached_by)}`);
+    }
+    if (!EVIDENCE_ATTACHMENT_ORIGINS.has(params.origin)) {
+      throw new Error(`evidence_origin_invalid: ${String(params.origin)}`);
+    }
     const extension = safeFilePart(params.extension ?? "txt").replace(/\./g, "") || "txt";
     const label = safeFilePart(params.label);
-    const relativePath = `evidence/${timestampFilePart()}-${label}.${extension}`;
+    const attachedAt = now();
+    const relativePath = `evidence/${timestampFilePart()}-${label}.${extension}`.replace(
+      /\\/g,
+      "/",
+    );
     const file = path.join(this.sessionDir(sessionId), relativePath);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, redact(params.content), "utf8");
+    const persisted = Buffer.from(redact(params.content), "utf8");
+    const sha256 = crypto.createHash("sha256").update(persisted).digest("hex");
+    const bytes = persisted.byteLength;
 
     const meta = await this.withSessionLock(sessionId, async () => {
       const current = this.read(sessionId);
-      current.evidence_files = [
-        ...(current.evidence_files ?? []),
-        {
-          ts: now(),
-          label: params.label,
-          path: relativePath.replace(/\\/g, "/"),
-          content_type: params.content_type,
-        },
-      ];
-      current.updated_at = now();
+      if (current.outcome) {
+        const error = new Error(
+          `session_already_finalized: session ${sessionId} is finalized with outcome="${current.outcome}"; cannot attach evidence`,
+        );
+        (error as Error & { code?: string }).code = "session_already_finalized";
+        throw error;
+      }
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, persisted);
+      const attachment: EvidenceAttachment = {
+        ts: attachedAt,
+        attached_at: attachedAt,
+        attached_by: params.attached_by,
+        origin: params.origin,
+        integrity_version: 1,
+        sha256,
+        bytes,
+        label: params.label,
+        path: relativePath,
+        content_type: params.content_type,
+      };
+      current.evidence_files = [...(current.evidence_files ?? []), attachment];
+      current.updated_at = attachedAt;
       await writeJson(this.metaPath(sessionId), current);
+      this.appendEventRecord({
+        type: "session.evidence_attached",
+        session_id: sessionId,
+        ts: attachedAt,
+        message: `Evidence attached by ${params.attached_by}: ${params.label}`,
+        data: {
+          label: params.label,
+          path: relativePath,
+          content_type: params.content_type,
+          sha256,
+          bytes,
+          attached_by: params.attached_by,
+          attached_at: attachedAt,
+          origin: params.origin,
+        },
+      });
       return current;
     });
-    for (const key of [...this.evidenceAttachmentCache.keys()]) {
-      if (key.startsWith(`${sessionId}:`)) this.evidenceAttachmentCache.delete(key);
-    }
 
-    return { path: relativePath.replace(/\\/g, "/"), meta };
+    return { path: relativePath, meta };
   }
 
   async escalateToOperator(
@@ -2584,16 +2711,16 @@ export class SessionStore {
   // v2.5.0: abort sessions that were never finalized.
   //
   // Empirical analysis of 253 historical sessions surfaced 22 in-progress
-  // orphans where every peer had reached READY but the caller never
-  // invoked `session_finalize`. Those sessions stayed at `outcome:
+  // orphans where every peer had reached READY but the dedicated operator
+  // console never invoked `session_finalize`. Those sessions stayed at `outcome:
   // undefined` indefinitely, polluting `session_list` and stealing rows
   // from `session_recover_interrupted` consumers that interpret a missing
   // outcome as "still running".
   //
   // The session-start contract (orchestrator.ts > sessionContractDirectives
-  // rule 4) now codifies the caller's finalize obligation; this boot
-  // sweep cleans up the cases where the caller exited without honoring
-  // that contract. It is a companion to `clearStaleInFlight`, with a
+  // rule 4) now requires the caller to notify the human operator; this boot
+  // sweep cleans up cases where the operator console never finalized after
+  // that notification. It is a companion to `clearStaleInFlight`, with a
   // longer threshold because the failure mode is "host died after a
   // session ran", not "host died mid-round".
   //

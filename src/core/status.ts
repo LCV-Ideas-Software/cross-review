@@ -24,13 +24,13 @@ const MAX_ARRAY_ITEMS = 30;
 // the v1.6.7 P1.4 fix.
 const MAX_PAYLOAD_BYTES = 64 * 1024;
 
-export const statusSchema = z.object({
+export const statusSchema = z.strictObject({
   status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]),
-  summary: z.string().max(MAX_SUMMARY_LENGTH).optional(),
-  confidence: z.enum(["verified", "inferred", "unknown"]).optional(),
-  evidence_sources: z.array(z.string().max(MAX_EVIDENCE_LENGTH)).max(MAX_ARRAY_ITEMS).optional(),
-  caller_requests: z.array(z.string().max(MAX_REQUEST_LENGTH)).max(MAX_ARRAY_ITEMS).optional(),
-  follow_ups: z.array(z.string().max(MAX_REQUEST_LENGTH)).max(MAX_ARRAY_ITEMS).optional(),
+  summary: z.string().max(MAX_SUMMARY_LENGTH),
+  confidence: z.enum(["verified", "inferred", "unknown"]),
+  evidence_sources: z.array(z.string().max(MAX_EVIDENCE_LENGTH)).max(MAX_ARRAY_ITEMS),
+  caller_requests: z.array(z.string().max(MAX_REQUEST_LENGTH)).max(MAX_ARRAY_ITEMS),
+  follow_ups: z.array(z.string().max(MAX_REQUEST_LENGTH)).max(MAX_ARRAY_ITEMS),
 });
 
 export const statusJsonSchema = {
@@ -79,6 +79,9 @@ export function statusInstruction(): string {
     JSON.stringify(statusJsonSchema),
     "Do not invent evidence. If evidence is missing, use NEEDS_EVIDENCE.",
     '`confidence:"verified"` is allowed ONLY when `evidence_sources` contains concrete source citations or quotes. Empty or generic `evidence_sources` means the decision is not verified; use `confidence:"inferred"` or NEEDS_EVIDENCE instead.',
+    "READY always requires at least one concrete evidence source, including when confidence is inferred. An empty list, generic assurance, or an otherwise empty code fence is a lazy non-decision and will be downgraded to NEEDS_EVIDENCE.",
+    `READY must be lossless and canonical: confidence cannot be unknown, \`summary\` must be exactly ${JSON.stringify(READY_CANONICAL_SUMMARY)}, and both \`caller_requests\` and \`follow_ups\` must be empty. Put all detailed findings and citations in \`evidence_sources\`. Any other READY wording is downgraded to NEEDS_EVIDENCE.`,
+    "For READY, return only the machine-readable JSON object (optionally inside the documented status tag or a JSON fence). Narrative prose outside that envelope is ambiguous and will be downgraded to NEEDS_EVIDENCE.",
     "For current runtime/version/model/pricing claims, task framing is not evidence. Cite raw `server_info`, `runtime_capabilities`, `probe_peers`, `capability_snapshot`, provider docs/API output, or attached evidence.",
     "READY means you have no remaining blocking objection.",
     "NOT_READY means concrete corrections remain.",
@@ -188,25 +191,223 @@ function extractJsonKeyStatus(candidate: string): ReviewStatus | null {
   return match ? (match[1] as ReviewStatus) : null;
 }
 
-const CONCRETE_EVIDENCE_SOURCE_PATTERN =
-  /\b(?:server_info|runtime_capabilities|probe_peers|capability_snapshot|session_read|session_events)\b|https?:\/\/|```|@@\s*[-+]|\b[\w./-]+\.\w+:\d+\b|\bevidence[\\/][\w./-]+\b|\bAttachment:\s*\S|\bL\d{2,}\b|\bEXIT_CODE=\d+\b|\b(?:npm|pnpm|yarn|node|git|gh)\s+\S|\bTest Files\s+\d+\s+passed\b|\bTests?\s+\d+\s+(?:passed|failed)\b|\{[\s\S]{0,400}"(?:version|release_date|model|status|peer)"\s*:/i;
+function hasDuplicateJsonProperty(candidate: string): boolean {
+  type JsonFrame = { kind: "object"; keys: Set<string>; expectingKey: boolean } | { kind: "array" };
+  const stack: JsonFrame[] = [];
 
-function appendTruthfulnessStatusWarnings(
+  let index = 0;
+  while (index < candidate.length) {
+    const char = candidate[index];
+    if (char === '"') {
+      const stringStart = index;
+      index += 1;
+      while (index < candidate.length) {
+        if (candidate[index] === "\\") {
+          index += 2;
+          continue;
+        }
+        if (candidate[index] === '"') {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+
+      const frame = stack.at(-1);
+      if (frame?.kind === "object" && frame.expectingKey) {
+        let afterString = index;
+        while (/\s/.test(candidate[afterString] ?? "")) afterString += 1;
+        if (candidate[afterString] === ":") {
+          let key: unknown;
+          try {
+            key = JSON.parse(candidate.slice(stringStart, index));
+          } catch {
+            // Malformed JSON is handled by the normal parser below.
+            return false;
+          }
+          if (typeof key === "string") {
+            if (frame.keys.has(key)) return true;
+            frame.keys.add(key);
+            frame.expectingKey = false;
+          }
+        }
+      }
+      continue;
+    }
+
+    if (char === "{") {
+      stack.push({ kind: "object", keys: new Set<string>(), expectingKey: true });
+    } else if (char === "[") {
+      stack.push({ kind: "array" });
+    } else if (char === "}" || char === "]") {
+      stack.pop();
+    } else if (char === ",") {
+      const frame = stack.at(-1);
+      if (frame?.kind === "object") frame.expectingKey = true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+const CONCRETE_EVIDENCE_SOURCE_PATTERN =
+  /https?:\/\/|@@\s*[-+]|\bevidence[\\/][\w./-]+\b|\bAttachment:\s*\S|["“][^"”\r\n]{12,}["”]|\bEXIT[_ ]?CODE\s*[:=]\s*\d+\b|\bTest Files\s+\d+\s+(?:passed|failed)\b|\bTests?\s+\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i;
+
+export const READY_CANONICAL_SUMMARY = "No blocking objections remain.";
+
+function normalizeResponseNarrative(text: string): string {
+  return text
+    .replace(/```(?:json)?/gi, " ")
+    .replaceAll("```", " ")
+    .replaceAll(OPEN_TAG, " ")
+    .replaceAll(CLOSE_TAG, " ")
+    .trim();
+}
+
+function hasConcreteJsonEvidence(source: string): boolean {
+  const trimmed = source.trim();
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart < 0 || objectEnd <= objectStart) return false;
+  try {
+    const parsed = JSON.parse(trimmed.slice(objectStart, objectEnd + 1)) as unknown;
+    if (!isObject(parsed)) return false;
+    const entries = Object.entries(parsed);
+    if (entries.length < 2) return false;
+    const selfDescribingRuntimeKeys = new Set([
+      "version",
+      "release_date",
+      "model",
+      "status",
+      "peer",
+    ]);
+    return entries.some(([key, value]) => {
+      if (selfDescribingRuntimeKeys.has(key.toLowerCase())) return false;
+      if (isObject(value) || Array.isArray(value)) return true;
+      return typeof value === "number" || typeof value === "boolean" || String(value).length >= 4;
+    });
+  } catch {
+    return false;
+  }
+}
+
+function isConcreteEvidenceSource(source: string): boolean {
+  return CONCRETE_EVIDENCE_SOURCE_PATTERN.test(source) || hasConcreteJsonEvidence(source);
+}
+
+function enforceReadyInvariants(
   structured: PeerStructuredStatus,
   warnings: string[],
-): void {
-  if (structured.confidence !== "verified") return;
+  responseNarrative = "",
+): PeerStructuredStatus {
+  if (structured.status !== "READY") return structured;
+
+  const lossy = warnings.some(
+    (warning) =>
+      warning.includes("truncated") ||
+      warning.includes("dropped") ||
+      warning.includes("recovered_after_schema_warning"),
+  );
+  if (lossy) {
+    warnings.push("ready_rejected_lossy_parse");
+    return {
+      ...structured,
+      status: "NEEDS_EVIDENCE",
+      caller_requests: [
+        ...(structured.caller_requests ?? []),
+        "Return a complete, non-truncated structured verdict before claiming readiness.",
+      ].slice(0, MAX_ARRAY_ITEMS),
+    };
+  }
+
+  if (structured.confidence === "unknown") {
+    warnings.push("ready_with_unknown_confidence");
+    return {
+      ...structured,
+      status: "NEEDS_EVIDENCE",
+      caller_requests: [
+        ...(structured.caller_requests ?? []),
+        "Resolve the stated uncertainty and cite concrete evidence before claiming readiness.",
+      ].slice(0, MAX_ARRAY_ITEMS),
+    };
+  }
+
+  if (structured.summary !== READY_CANONICAL_SUMMARY) {
+    warnings.push("ready_noncanonical_summary");
+    return {
+      ...structured,
+      status: "NEEDS_EVIDENCE",
+      caller_requests: [
+        ...(structured.caller_requests ?? []),
+        `Use the exact canonical READY summary: ${READY_CANONICAL_SUMMARY}`,
+      ].slice(0, MAX_ARRAY_ITEMS),
+    };
+  }
+
+  if (responseNarrative.trim().length > 0) {
+    warnings.push("ready_with_external_narrative");
+    return {
+      ...structured,
+      status: "NEEDS_EVIDENCE",
+      caller_requests: [
+        ...(structured.caller_requests ?? []),
+        "Return READY only as the complete machine-readable status object, without narrative outside its envelope.",
+      ].slice(0, MAX_ARRAY_ITEMS),
+    };
+  }
+
+  if ((structured.caller_requests ?? []).length > 0) {
+    warnings.push("ready_with_caller_requests");
+    return { ...structured, status: "NEEDS_EVIDENCE" };
+  }
+
+  if ((structured.follow_ups ?? []).length > 0) {
+    warnings.push("ready_with_follow_ups");
+    return { ...structured, status: "NEEDS_EVIDENCE" };
+  }
+
+  return structured;
+}
+
+function enforceTruthfulnessStatus(
+  structured: PeerStructuredStatus,
+  warnings: string[],
+  responseNarrative = "",
+): PeerStructuredStatus {
+  const contradictionChecked = enforceReadyInvariants(structured, warnings, responseNarrative);
+  if (contradictionChecked.status !== "READY") return contradictionChecked;
+  structured = contradictionChecked;
+  if (structured.confidence !== "verified" && structured.status !== "READY") return structured;
   const evidenceSources = (structured.evidence_sources ?? [])
     .map((source) => source.trim())
     .filter(Boolean);
+  let evidenceWarning: string | undefined;
   if (!evidenceSources.length) {
-    warnings.push("verified_without_evidence_sources");
-    return;
+    evidenceWarning =
+      structured.confidence === "verified"
+        ? "verified_without_evidence_sources"
+        : "ready_without_evidence_sources";
+  } else {
+    const hasConcreteEvidence = evidenceSources.some(isConcreteEvidenceSource);
+    if (!hasConcreteEvidence) {
+      evidenceWarning =
+        structured.confidence === "verified"
+          ? "verified_without_concrete_evidence_sources"
+          : "ready_without_concrete_evidence_sources";
+    }
   }
-  const hasConcreteEvidence = evidenceSources.some((source) =>
-    CONCRETE_EVIDENCE_SOURCE_PATTERN.test(source),
-  );
-  if (!hasConcreteEvidence) warnings.push("verified_without_concrete_evidence_sources");
+  if (!evidenceWarning) return structured;
+  warnings.push(evidenceWarning);
+  if (structured.status !== "READY") return structured;
+  warnings.push("ready_downgraded_to_needs_evidence");
+  return {
+    ...structured,
+    status: "NEEDS_EVIDENCE",
+    caller_requests: [
+      ...(structured.caller_requests ?? []),
+      "Provide concrete evidence sources before claiming verified readiness.",
+    ].slice(0, MAX_ARRAY_ITEMS),
+  };
 }
 
 export function parsePeerStatus(text: string): {
@@ -254,16 +455,27 @@ export function parsePeerStatus(text: string): {
       warnings.push(`status_candidate_dropped_oversized:${candidate.source}`);
       continue;
     }
+    if (hasDuplicateJsonProperty(candidate.json)) {
+      warnings.push(`status_candidate_rejected_duplicate_property:${candidate.source}`);
+      return { status: null, structured: null, parser_warnings: warnings };
+    }
     try {
       const json = JSON.parse(candidate.json) as unknown;
       const parsed = statusSchema.safeParse(json);
+      const candidateAt = trimmed.lastIndexOf(candidate.json);
+      const responseNarrative =
+        candidateAt >= 0
+          ? normalizeResponseNarrative(
+              `${trimmed.slice(0, candidateAt)} ${trimmed.slice(candidateAt + candidate.json.length)}`,
+            )
+          : trimmed;
       if (parsed.success) {
         if (candidate.source === "fenced_json") warnings.push("status_json_extracted_from_fence");
         if (candidate.source === "status_tag") warnings.push("status_json_extracted_from_tag");
-        appendTruthfulnessStatusWarnings(parsed.data, warnings);
+        const structured = enforceTruthfulnessStatus(parsed.data, warnings, responseNarrative);
         return {
-          status: parsed.data.status,
-          structured: parsed.data,
+          status: structured.status,
+          structured,
           parser_warnings: warnings,
         };
       }
@@ -275,11 +487,15 @@ export function parsePeerStatus(text: string): {
           recoveryWarnings.push("status_json_extracted_from_fence");
         if (candidate.source === "status_tag")
           recoveryWarnings.push("status_json_extracted_from_tag");
-        appendTruthfulnessStatusWarnings(normalized, recoveryWarnings);
         recoveryWarnings.push("status_json_recovered_after_schema_warning");
+        const structured = enforceTruthfulnessStatus(
+          normalized,
+          recoveryWarnings,
+          responseNarrative,
+        );
         return {
-          status: normalized.status,
-          structured: normalized,
+          status: structured.status,
+          structured,
           parser_warnings: recoveryWarnings,
         };
       }
@@ -288,23 +504,14 @@ export function parsePeerStatus(text: string): {
     } catch {
       const recoveredStatus = extractJsonKeyStatus(candidate.json);
       if (recoveredStatus) {
-        warnings.push(`status_recovered_from_invalid_json:${candidate.source}`);
-        return {
-          status: recoveredStatus,
-          structured: { status: recoveredStatus },
-          parser_warnings: warnings,
-        };
+        warnings.push(`status_recovery_rejected_incomplete_contract:${candidate.source}`);
       }
     }
   }
 
   const legacy = trimmed.match(/STATUS:\s*(READY|NOT_READY|NEEDS_EVIDENCE)\s*$/);
   if (legacy) {
-    return {
-      status: legacy[1] as ReviewStatus,
-      structured: { status: legacy[1] as ReviewStatus },
-      parser_warnings: warnings,
-    };
+    warnings.push("legacy_status_rejected_incomplete_contract");
   }
 
   return { status: null, structured: null, parser_warnings: warnings };

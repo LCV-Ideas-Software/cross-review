@@ -30,7 +30,9 @@ import { PEERS } from "./types.js";
 export const TOKEN_BYTES = 32;
 export const TOKEN_HEX_LENGTH = TOKEN_BYTES * 2;
 
-export type HostTokensMap = Record<PeerId, string>;
+export type CallerIdentity = PeerId | "operator";
+export const CALLER_IDENTITIES: readonly CallerIdentity[] = [...PEERS, "operator"];
+export type HostTokensMap = Record<CallerIdentity, string>;
 
 export interface HostTokensRecord {
   filePath: string;
@@ -62,8 +64,8 @@ export function generateHostTokens(
 ): HostTokensRecord | null {
   const filePath = getTokensFilePath(dataDir);
   const map = {} as HostTokensMap;
-  for (const agent of PEERS) {
-    map[agent] = crypto.randomBytes(TOKEN_BYTES).toString("hex");
+  for (const identity of CALLER_IDENTITIES) {
+    map[identity] = crypto.randomBytes(TOKEN_BYTES).toString("hex");
   }
   const seen = new Set<string>();
   for (const tok of Object.values(map)) {
@@ -73,7 +75,7 @@ export function generateHostTokens(
     seen.add(tok);
   }
   const payload = {
-    version: 1 as const,
+    version: 2 as const,
     generated_at: new Date().toISOString(),
     tokens: map,
   };
@@ -136,7 +138,7 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
   if (
     typeof parsed !== "object" ||
     parsed === null ||
-    (parsed as { version?: unknown }).version !== 1 ||
+    ![1, 2].includes((parsed as { version?: number }).version ?? 0) ||
     typeof (parsed as { tokens?: unknown }).tokens !== "object" ||
     (parsed as { tokens?: unknown }).tokens === null
   ) {
@@ -145,16 +147,52 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
   const tokensIn = (parsed as { tokens: Record<string, unknown> }).tokens;
   const map = {} as HostTokensMap;
   const seen = new Set<string>();
-  for (const agent of PEERS) {
-    const tok = tokensIn[agent];
+  for (const identity of PEERS) {
+    const tok = tokensIn[identity];
     if (typeof tok !== "string" || tok.length !== TOKEN_HEX_LENGTH || !/^[0-9a-f]+$/i.test(tok)) {
       return null;
     }
-    if (seen.has(tok)) {
+    const normalizedToken = tok.toLowerCase();
+    if (seen.has(normalizedToken)) {
       return null;
     }
-    seen.add(tok);
-    map[agent] = tok.toLowerCase();
+    seen.add(normalizedToken);
+    map[identity] = normalizedToken;
+  }
+  const storedOperatorToken = tokensIn.operator;
+  const operatorToken =
+    typeof storedOperatorToken === "string" &&
+    storedOperatorToken.length === TOKEN_HEX_LENGTH &&
+    /^[0-9a-f]+$/i.test(storedOperatorToken) &&
+    !seen.has(storedOperatorToken.toLowerCase())
+      ? storedOperatorToken.toLowerCase()
+      : crypto.randomBytes(TOKEN_BYTES).toString("hex");
+  if (seen.has(operatorToken)) return null;
+  seen.add(operatorToken);
+  map.operator = operatorToken;
+
+  if ((parsed as { version?: number }).version !== 2 || storedOperatorToken !== operatorToken) {
+    try {
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            version: 2,
+            generated_at:
+              typeof (parsed as { generated_at?: unknown }).generated_at === "string"
+                ? (parsed as { generated_at: string }).generated_at
+                : new Date().toISOString(),
+            operator_token_added_at: new Date().toISOString(),
+            tokens: map,
+          },
+          null,
+          2,
+        ),
+        { encoding: "utf8", mode: 0o600 },
+      );
+    } catch {
+      return null;
+    }
   }
   const generated_at = (parsed as { generated_at?: unknown }).generated_at;
   return {
@@ -188,13 +226,13 @@ export function tokensMatch(a: unknown, b: unknown): boolean {
 export function resolveAgentForToken(
   presented: string | null,
   tokensMap: HostTokensMap | undefined,
-): PeerId | null {
+): CallerIdentity | null {
   if (!presented || !tokensMap) return null;
-  let matched: PeerId | null = null;
-  for (const agent of PEERS) {
-    const stored = tokensMap[agent];
+  let matched: CallerIdentity | null = null;
+  for (const identity of CALLER_IDENTITIES) {
+    const stored = tokensMap[identity];
     if (tokensMatch(presented, stored) && matched === null) {
-      matched = agent;
+      matched = identity;
     }
   }
   return matched;
@@ -212,7 +250,7 @@ export function isHardEnforceMode(): boolean {
 }
 
 export function verifyTokenForCaller(
-  declaredCaller: PeerId,
+  declaredCaller: CallerIdentity,
   tokensRecord: HostTokensRecord | null,
 ): TokenVerification {
   const presented = getEnvToken();
@@ -222,15 +260,15 @@ export function verifyTokenForCaller(
       "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN is set but the host-tokens.json file could not be loaded; either remove the env var, regenerate the tokens file via the regenerate_caller_tokens tool, or repair the file (default path: <data_dir>/host-tokens.json; override via CROSS_REVIEW_TOKENS_FILE).",
     );
   }
-  const agent = resolveAgentForToken(presented, tokensRecord.map);
-  if (!agent) {
+  const identity = resolveAgentForToken(presented, tokensRecord.map);
+  if (!identity) {
     throw new Error(
       "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN does not match any known agent's secret in host-tokens.json. Either the token is stale (regenerate via regenerate_caller_tokens) or the host-tokens.json file has been rotated without re-distributing the new value.",
     );
   }
-  if (agent !== declaredCaller) {
+  if (identity !== declaredCaller) {
     throw new Error(
-      `identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN resolves to agent='${agent}' but caller declared='${declaredCaller}'. The token is bound to a specific agent's MCP host config; declaring a different caller from a host carrying another agent's token is identity forgery.`,
+      `identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN resolves to identity='${identity}' but caller declared='${declaredCaller}'. The token is bound to a specific MCP host identity; declaring a different caller is identity forgery.`,
     );
   }
   return { method: "token", verified: true };

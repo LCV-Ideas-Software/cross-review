@@ -1,4 +1,11 @@
-import type { ConvergenceResult, PeerFailure, PeerId, PeerResult, ReviewStatus } from "./types.js";
+import type {
+  ConvergenceResult,
+  EvidenceChecklistItem,
+  PeerFailure,
+  PeerId,
+  PeerResult,
+  ReviewStatus,
+} from "./types.js";
 
 // v3.7.3 (operator no-fallback directive 2026-05-14): when a peer's pinned
 // model is genuinely unavailable, the round SKIPS that peer and converges
@@ -55,6 +62,77 @@ export function isSkippableFailure(failure: PeerFailure): boolean {
   return SKIPPABLE_FAILURE_CLASSES.has(failure.failure_class);
 }
 
+const READY_BLOCKING_TRUTHFULNESS_WARNINGS = [
+  "verified_without_evidence_sources",
+  "verified_without_concrete_evidence_sources",
+  "ready_without_evidence_sources",
+  "ready_without_concrete_evidence_sources",
+  "ready_downgraded_to_needs_evidence",
+  "status_recovery_rejected_incomplete_contract",
+  "legacy_status_rejected_incomplete_contract",
+  "ready_rejected_lossy_parse",
+  "ready_with_unknown_confidence",
+  "ready_contradicts_blocking_content",
+  "ready_with_caller_requests",
+] as const;
+
+function readyHasBlockingTruthfulnessWarning(peer: PeerResult): boolean {
+  if (peer.status !== "READY") return false;
+  const structured = peer.structured;
+  const completeReadyContract =
+    structured?.status === "READY" &&
+    typeof structured.summary === "string" &&
+    (structured.confidence === "verified" ||
+      structured.confidence === "inferred" ||
+      structured.confidence === "unknown") &&
+    Array.isArray(structured.evidence_sources) &&
+    structured.evidence_sources.some((source) => source.trim().length > 0) &&
+    Array.isArray(structured.caller_requests) &&
+    Array.isArray(structured.follow_ups);
+  if (!completeReadyContract) return true;
+  return peer.parser_warnings.some(
+    (warning) =>
+      warning.includes("truncated") ||
+      warning.includes("dropped") ||
+      warning.includes("recovered_after_schema_warning") ||
+      READY_BLOCKING_TRUTHFULNESS_WARNINGS.some((blocked) => warning.startsWith(blocked)),
+  );
+}
+
+/**
+ * Evidence checklist state is part of the convergence contract. `open` means
+ * the peer still needs proof; `not_resurfaced` only means the peer stopped
+ * repeating the ask and is explicitly not proof of satisfaction.
+ */
+export function blockConvergenceForUnresolvedEvidence(
+  convergence: ConvergenceResult,
+  checklist: EvidenceChecklistItem[],
+): ConvergenceResult {
+  if (!convergence.converged) return convergence;
+  const unresolved = checklist.filter((item) => {
+    const status = item.status ?? "open";
+    return status === "open" || status === "not_resurfaced";
+  });
+  if (!unresolved.length) return convergence;
+  const evidencePeers = [...new Set(unresolved.map((item) => item.peer))];
+  return {
+    ...convergence,
+    converged: false,
+    reason: `unresolved_evidence_blocks_convergence: ${unresolved.length} open/not_resurfaced item(s) remain`,
+    latest_round_converged: false,
+    session_quorum_converged: false,
+    recovery_converged: false,
+    needs_evidence_peers: [...new Set([...convergence.needs_evidence_peers, ...evidencePeers])],
+    blocking_details: [
+      ...convergence.blocking_details,
+      ...unresolved.map(
+        (item) =>
+          `${item.peer}: unresolved evidence ${item.id} (${item.status ?? "open"}) — ${item.ask}`,
+      ),
+    ],
+  };
+}
+
 export function checkConvergence(
   expectedPeers: PeerId[],
   callerStatus: ReviewStatus,
@@ -70,7 +148,10 @@ export function checkConvergence(
   // addition, not a behavioral change.
   skipped: PeerFailure[] = [],
 ): ConvergenceResult {
-  const ready = peers.filter((p) => p.status === "READY").map((p) => p.peer);
+  const truthfulnessBlockedReady = peers.filter(readyHasBlockingTruthfulnessWarning);
+  const ready = peers
+    .filter((p) => p.status === "READY" && !readyHasBlockingTruthfulnessWarning(p))
+    .map((p) => p.peer);
   const notReady = peers.filter((p) => p.status === "NOT_READY").map((p) => p.peer);
   // v2.4.0 / audit closure (P3.15): strict equality. Pre-v2.4.0 used
   // `p.status == null` (loose), which would also accept the empty string
@@ -79,7 +160,13 @@ export function checkConvergence(
   // so anchoring to those values eliminates a class of edge-case false
   // positives.
   const needsEvidence = peers
-    .filter((p) => p.status === "NEEDS_EVIDENCE" || p.status === null || p.status === undefined)
+    .filter(
+      (p) =>
+        p.status === "NEEDS_EVIDENCE" ||
+        p.status === null ||
+        p.status === undefined ||
+        readyHasBlockingTruthfulnessWarning(p),
+    )
     .map((p) => p.peer);
   const rejectedPeers = rejected.map((f) => f.peer);
   const skippedPeers = skipped.map((f) => f.peer);
@@ -98,6 +185,9 @@ export function checkConvergence(
   const blockingDetails = [
     ...notReady.map((peer) => `${peer}: NOT_READY`),
     ...needsEvidence.map((peer) => `${peer}: NEEDS_EVIDENCE`),
+    ...truthfulnessBlockedReady.map(
+      (peer) => `${peer.peer}: READY rejected by truthfulness/parser warnings`,
+    ),
     ...rejected.map((failure) => `${failure.peer}: ${failure.failure_class}`),
     ...missing.map((peer) => `${peer}: missing response`),
   ];
