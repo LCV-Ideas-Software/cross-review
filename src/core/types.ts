@@ -589,6 +589,27 @@ export interface EvidenceStatusHistoryEntry {
   note?: string | undefined;
 }
 
+/**
+ * Audit record for an item removed from the active checklist after proving
+ * that the runtime, rather than the attributed peer, authored the request.
+ * The original peer result and round remain immutable forensic evidence.
+ */
+export interface EvidenceChecklistRuntimeReclassification {
+  ts: string;
+  item_id: string;
+  peer: PeerId;
+  ask: string;
+  first_round: number;
+  last_round: number;
+  previous_status: "open" | "not_resurfaced";
+  proof_round: number;
+  proof_rule: string;
+  reason: "runtime_remediation_misattributed_as_peer_request";
+}
+
+export type EvidenceChecklistRuntimeReclassificationLog =
+  EvidenceChecklistRuntimeReclassification[];
+
 export interface GenerationArtifact {
   ts: string;
   round: number;
@@ -856,6 +877,7 @@ export interface SessionMeta {
   caller_evidence_submissions?: CallerEvidenceSubmission[] | undefined;
   active_caller_evidence_submission_id?: string | undefined;
   evidence_checklist?: EvidenceChecklistItem[] | undefined;
+  evidence_checklist_runtime_reclassifications?: EvidenceChecklistRuntimeReclassificationLog;
   // v2.8.0: durable audit trail for every status transition on an
   // evidence checklist item (auto + operator). Newest entries appended.
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;

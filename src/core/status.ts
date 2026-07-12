@@ -371,6 +371,11 @@ const CONCRETE_EVIDENCE_SOURCE_PATTERN =
 
 export const READY_CANONICAL_SUMMARY = "No blocking objections remain.";
 
+// `caller_requests` is part of the peer's signed/parsed verdict and feeds the
+// durable evidence checklist. Server-authored remediation must therefore stay
+// in the transformation audit trail; mixing it into `caller_requests` turns a
+// parser correction into an unresolvable peer ask (DEF-10).
+
 function recordDecisionTransformation(
   transformations: DecisionTransformation[],
   stage: string,
@@ -444,6 +449,8 @@ function enforceReadyInvariants(
       warning.includes("recovered_after_schema_warning"),
   );
   if (lossy) {
+    const remediation =
+      "Return a complete, non-truncated structured verdict before claiming readiness.";
     warnings.push("ready_rejected_lossy_parse");
     recordDecisionTransformation(
       transformations,
@@ -451,18 +458,14 @@ function enforceReadyInvariants(
       "READY",
       "NEEDS_EVIDENCE",
       "ready_rejected_lossy_parse",
+      { remediation },
     );
-    return {
-      ...structured,
-      status: "NEEDS_EVIDENCE",
-      caller_requests: [
-        ...(structured.caller_requests ?? []),
-        "Return a complete, non-truncated structured verdict before claiming readiness.",
-      ].slice(0, MAX_ARRAY_ITEMS),
-    };
+    return { ...structured, status: "NEEDS_EVIDENCE" };
   }
 
   if (structured.confidence === "unknown") {
+    const remediation =
+      "Resolve the stated uncertainty and cite concrete evidence before claiming readiness.";
     warnings.push("ready_with_unknown_confidence");
     recordDecisionTransformation(
       transformations,
@@ -470,18 +473,13 @@ function enforceReadyInvariants(
       "READY",
       "NEEDS_EVIDENCE",
       "ready_with_unknown_confidence",
+      { remediation },
     );
-    return {
-      ...structured,
-      status: "NEEDS_EVIDENCE",
-      caller_requests: [
-        ...(structured.caller_requests ?? []),
-        "Resolve the stated uncertainty and cite concrete evidence before claiming readiness.",
-      ].slice(0, MAX_ARRAY_ITEMS),
-    };
+    return { ...structured, status: "NEEDS_EVIDENCE" };
   }
 
   if (structured.summary !== READY_CANONICAL_SUMMARY) {
+    const remediation = `Use the exact canonical READY summary: ${READY_CANONICAL_SUMMARY}`;
     warnings.push("ready_noncanonical_summary");
     recordDecisionTransformation(
       transformations,
@@ -489,18 +487,14 @@ function enforceReadyInvariants(
       "READY",
       "NEEDS_EVIDENCE",
       "ready_noncanonical_summary",
+      { remediation },
     );
-    return {
-      ...structured,
-      status: "NEEDS_EVIDENCE",
-      caller_requests: [
-        ...(structured.caller_requests ?? []),
-        `Use the exact canonical READY summary: ${READY_CANONICAL_SUMMARY}`,
-      ].slice(0, MAX_ARRAY_ITEMS),
-    };
+    return { ...structured, status: "NEEDS_EVIDENCE" };
   }
 
   if (responseNarrative.trim().length > 0) {
+    const remediation =
+      "Return READY only as the complete machine-readable status object, without narrative outside its envelope.";
     warnings.push("ready_with_external_narrative");
     recordDecisionTransformation(
       transformations,
@@ -508,15 +502,9 @@ function enforceReadyInvariants(
       "READY",
       "NEEDS_EVIDENCE",
       "ready_with_external_narrative",
+      { remediation },
     );
-    return {
-      ...structured,
-      status: "NEEDS_EVIDENCE",
-      caller_requests: [
-        ...(structured.caller_requests ?? []),
-        "Return READY only as the complete machine-readable status object, without narrative outside its envelope.",
-      ].slice(0, MAX_ARRAY_ITEMS),
-    };
+    return { ...structured, status: "NEEDS_EVIDENCE" };
   }
 
   if ((structured.caller_requests ?? []).length > 0) {
@@ -583,22 +571,16 @@ function enforceTruthfulnessStatus(
   warnings.push(evidenceWarning);
   if (structured.status !== "READY") return structured;
   warnings.push("ready_downgraded_to_needs_evidence");
+  const remediation = "Provide concrete evidence sources before claiming verified readiness.";
   recordDecisionTransformation(
     transformations,
     "truthfulness",
     "READY",
     "NEEDS_EVIDENCE",
     evidenceWarning,
-    { secondary_rule: "ready_downgraded_to_needs_evidence" },
+    { secondary_rule: "ready_downgraded_to_needs_evidence", remediation },
   );
-  return {
-    ...structured,
-    status: "NEEDS_EVIDENCE",
-    caller_requests: [
-      ...(structured.caller_requests ?? []),
-      "Provide concrete evidence sources before claiming verified readiness.",
-    ].slice(0, MAX_ARRAY_ITEMS),
-  };
+  return { ...structured, status: "NEEDS_EVIDENCE" };
 }
 
 export interface PeerStatusParseResult {

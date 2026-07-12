@@ -15,6 +15,7 @@ import type {
   EvidenceAttachment,
   EvidenceAttachmentOrigin,
   EvidenceChecklistItem,
+  EvidenceChecklistRuntimeReclassification,
   EvidenceChecklistStatus,
   EvidenceStatusHistoryEntry,
   GenerationArtifact,
@@ -1694,6 +1695,60 @@ export class SessionStore {
       meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
       return updated;
+    });
+  }
+
+  /**
+   * Removes only unresolved checklist entries for which the orchestrator has
+   * already proved that the runtime authored the request. This is metadata
+   * repair, not evidence satisfaction: the original rounds remain immutable
+   * and every removal gets a dedicated audit record.
+   */
+  async reclassifyRuntimeGeneratedEvidenceChecklistItems(
+    sessionId: string,
+    proofs: Array<{ item_id: string; peer: PeerId; proof_round: number; proof_rule: string }>,
+  ): Promise<EvidenceChecklistRuntimeReclassification[]> {
+    if (!proofs.length) return [];
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) return [];
+      const proofById = new Map(proofs.map((proof) => [proof.item_id, proof]));
+      const removed: EvidenceChecklistRuntimeReclassification[] = [];
+      const retained: EvidenceChecklistItem[] = [];
+      const ts = now();
+      for (const item of meta.evidence_checklist ?? []) {
+        const proof = proofById.get(item.id);
+        const status = item.status ?? "open";
+        if (
+          !proof ||
+          proof.peer !== item.peer ||
+          (status !== "open" && status !== "not_resurfaced")
+        ) {
+          retained.push(item);
+          continue;
+        }
+        removed.push({
+          ts,
+          item_id: item.id,
+          peer: item.peer,
+          ask: item.ask,
+          first_round: item.first_round,
+          last_round: item.last_round,
+          previous_status: status,
+          proof_round: proof.proof_round,
+          proof_rule: proof.proof_rule,
+          reason: "runtime_remediation_misattributed_as_peer_request",
+        });
+      }
+      if (!removed.length) return [];
+      meta.evidence_checklist = retained;
+      meta.evidence_checklist_runtime_reclassifications = [
+        ...(meta.evidence_checklist_runtime_reclassifications ?? []),
+        ...removed,
+      ];
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return removed;
     });
   }
 

@@ -419,8 +419,22 @@ const regressions: Regression[] = [
         "central-config flattening must choose the longest matching model family",
       );
 
-      const previousOpenAI = process.env.CROSS_REVIEW_OPENAI_MAX_OUTPUT_TOKENS;
-      const previousAnthropic = process.env.CROSS_REVIEW_ANTHROPIC_MAX_OUTPUT_TOKENS;
+      const budgetEnvNames = [
+        "CROSS_REVIEW_OPENAI_MAX_OUTPUT_TOKENS",
+        "CROSS_REVIEW_ANTHROPIC_MAX_OUTPUT_TOKENS",
+        "CROSS_REVIEW_GEMINI_MAX_OUTPUT_TOKENS",
+        "CROSS_REVIEW_DEEPSEEK_MAX_OUTPUT_TOKENS",
+        "CROSS_REVIEW_GROK_MAX_OUTPUT_TOKENS",
+        "CROSS_REVIEW_PERPLEXITY_MAX_OUTPUT_TOKENS",
+      ] as const;
+      const previousBudgetEnv = new Map(
+        budgetEnvNames.map((name) => [name, process.env[name]] as const),
+      );
+      // Make the fixture hermetic even when the operator's central config
+      // defines budgets for the four peers outside this two-provider case.
+      // Whitespace wins over file/registry defaults but trims to undefined
+      // without producing an invalid-value warning.
+      for (const name of budgetEnvNames) process.env[name] = " ";
       process.env.CROSS_REVIEW_OPENAI_MAX_OUTPUT_TOKENS = "25000";
       process.env.CROSS_REVIEW_ANTHROPIC_MAX_OUTPUT_TOKENS = "64000";
       let loadedBudgets: unknown;
@@ -434,11 +448,10 @@ const regressions: Regression[] = [
           Object.entries(loaded ?? {}).filter(([, value]) => value !== undefined),
         );
       } finally {
-        if (previousOpenAI === undefined) delete process.env.CROSS_REVIEW_OPENAI_MAX_OUTPUT_TOKENS;
-        else process.env.CROSS_REVIEW_OPENAI_MAX_OUTPUT_TOKENS = previousOpenAI;
-        if (previousAnthropic === undefined)
-          delete process.env.CROSS_REVIEW_ANTHROPIC_MAX_OUTPUT_TOKENS;
-        else process.env.CROSS_REVIEW_ANTHROPIC_MAX_OUTPUT_TOKENS = previousAnthropic;
+        for (const [name, value] of previousBudgetEnv) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
       }
 
       const config = offlineConfig({ outputByPeer: { codex: 25_000, claude: 64_000 } });

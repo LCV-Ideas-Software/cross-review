@@ -1,6 +1,6 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.5.8",
+  "version": "4.5.9",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "packageManager": "npm@12.0.1",

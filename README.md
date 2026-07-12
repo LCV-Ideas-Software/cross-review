@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current release is **v04.05.08** (package `4.5.8`).
+**Status.** Stable. The current source/release target is **v04.05.09** (package `4.5.9`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.09`**      | Keeps server-authored READY remediation out of peer `caller_requests`, preventing unresolvable evidence-checklist blockers while preserving real peer asks and the complete decision audit trail.                                                                           |
 | **`v04.05.08`**      | Hash-pinned npm 12.0.1 bootstrap across CI/release jobs and trusted default-branch auto-tag checkout with exact successful-CI SHA gating; closes code-scanning alerts 32–38.                                                                                                |
 | **`v04.05.07`**      | Complete 4.5.6 provider remediation plus CI-before-tag release ordering, npm 12.0.1 alignment, strict dependency-script review, cache exclusion and install-only StepSecurity token scope.                                                                                  |
 | **`v04.05.06`**      | Six-provider contract remediation — provider-specific wire schemas and output budgets, controlled OpenAI/Gemini truncation recovery, safe citation/diff correlation, runtime namespace fixes, corrected FinOps, and npm 12/OIDC release hardening.                          |

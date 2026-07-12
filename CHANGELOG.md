@@ -7,6 +7,33 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.09] — 2026-07-12
+
+**Evidence-checklist provenance fix.** Prevents server-authored verdict
+remediation from becoming a permanent peer-evidence blocker while preserving
+every fail-closed grounding, truthfulness and custody rule.
+
+### Fixed
+
+- Keeps `caller_requests` exclusively peer-authored. READY invariant and
+  grounding demotions now record server guidance in
+  `decision_transformations[].details.remediation` instead of inserting it
+  into the durable evidence checklist.
+- Preserves genuine peer requests, explicit `NEEDS_EVIDENCE` verdicts,
+  `hasAskDerivedAnchor`, all-or-nothing citation grounding and unresolved-item
+  convergence blocking unchanged.
+- Repairs active legacy sessions on resume only when persisted provider output
+  proves `READY`, contains no matching request and carries the corresponding
+  server-demotion warning in the checklist item's creation round. A later
+  synthetic text collision cannot erase a genuine earlier ask. Removed
+  metadata receives a durable reclassification record and event; terminal
+  sessions remain untouched as forensic history.
+- Adds focused regressions for all five parser-side READY demotions and the
+  grounding demotion that originally produced the DEF-10 checklist deadlock,
+  plus a legacy-session resume that converges without operator intervention.
+- Makes the provider-budget contract fixture independent from additional
+  per-peer output budgets in the operator's central configuration.
+
 ## [v04.05.08] — 2026-07-12
 
 **Hash-pinned release bootstrap and trusted auto-tag checkout.** Closes the

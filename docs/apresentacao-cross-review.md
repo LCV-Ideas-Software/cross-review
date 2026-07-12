@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.8`                            |
+| Versão preparada pelo source  | `4.5.9`                            |
 | Data do source/release target | `2026-07-12`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -790,6 +790,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.09`      | 2026-07-12    | Elimina o deadlock DEF-10 mantendo remediação interna fora de `caller_requests`, sem afrouxar asks reais, grounding, custódia ou convergência.                                         |
 | `v04.05.08`      | 2026-07-12    | Fecha sete alertas de code scanning com bootstrap npm 12.0.1 pinado por SHA-512 e checkout da branch padrão condicionado ao SHA que passou no CI.                                      |
 | `v04.05.07`      | 2026-07-12    | Embarca a remediação dos seis providers com CI antes da tag, npm 12.0.1, scripts estritos, cache desativado e token StepSecurity restrito ao install.                                  |
 | `v04.05.06`      | 2026-07-12    | Corrige contratos wire dos seis providers, budgets por peer, recovery OpenAI/Gemini, grounding de diffs/escapes, namespaces, terminais e contabilidade por modelo.                     |
@@ -858,8 +859,8 @@ Antes de usar uma revisão como gate:
 ## Fontes verificadas para esta apresentação
 
 - Contrato runtime do source target: smokes verificados em 2026-07-12. O
-  pacote 4.5.7 foi instalado, mas `server_info` continuava reportando o runtime
-  carregado 4.5.5; o próximo reload foi reservado para a versão 4.5.8.
+  runtime 4.5.8 foi confirmado após reload; o source 4.5.9 permanece um target
+  até a publicação no registry e o próximo reload da janela.
 - `package.json` do repositório local.
 - `README.md`.
 - `CHANGELOG.md`.

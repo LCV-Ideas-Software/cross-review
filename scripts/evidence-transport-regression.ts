@@ -12,6 +12,7 @@ import {
   groundReadyPeerEvidence,
   truthfulnessPreflight,
 } from "../src/core/orchestrator.js";
+import { sessionReportMarkdown } from "../src/core/reports.js";
 import { extractChecklistCommands } from "../src/core/session-store.js";
 import type { PeerId, PeerResult } from "../src/core/types.js";
 
@@ -507,6 +508,203 @@ const regressions: Regression[] = [
         byAsk.get(rollbackAsk)?.status ?? "open",
         "open",
         "an ask whose requested value/domain is absent from evidence_sources must remain unresolved",
+      );
+    },
+  },
+  {
+    name: "resuming a legacy session removes only proven runtime-authored checklist asks",
+    run: async () => {
+      const events: string[] = [];
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("runtime-remediation-reclassification"),
+        (event) => events.push(event.type),
+      );
+      const session = await orchestrator.initSession(
+        "Review the implementation candidate.",
+        "codex",
+      );
+      const runtimeAsk =
+        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
+        { peer: "claude", ask: runtimeAsk },
+      ]);
+      const providerText = JSON.stringify({
+        status: "READY",
+        summary: "No blocking objections remain.",
+        confidence: "verified",
+        evidence_sources: [],
+        caller_requests: [],
+        follow_ups: [],
+      });
+      const legacyDemotion: PeerResult = {
+        ...readyPeer("claude", "verified", []),
+        raw_status: "READY",
+        parsed_status: "READY",
+        normalized_status: "NEEDS_EVIDENCE",
+        status: "NEEDS_EVIDENCE",
+        structured: {
+          status: "NEEDS_EVIDENCE",
+          summary: "No blocking objections remain.",
+          confidence: "verified",
+          evidence_sources: [],
+          caller_requests: [runtimeAsk],
+          follow_ups: [],
+        },
+        text: providerText,
+        parser_warnings: ["ready_evidence_sources_missing"],
+        decision_quality: "needs_operator_review",
+      };
+      await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [legacyDemotion],
+        rejected: [],
+        convergence: checkConvergence(["claude"], "READY", [legacyDemotion], []),
+        convergence_scope: {
+          petitioner: "codex",
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude"],
+          reviewer_peers: ["claude"],
+        },
+        started_at: new Date().toISOString(),
+      });
+
+      const resumed = await orchestrator.askPeers({
+        session_id: session.session_id,
+        task: session.task,
+        draft: "Implementation candidate under review.",
+        caller: "codex",
+        peers: ["claude"],
+      });
+      const persisted = orchestrator.store.read(session.session_id);
+
+      assert.equal(resumed.converged, true);
+      assert.deepEqual(persisted.evidence_checklist, []);
+      assert.equal(persisted.evidence_checklist_runtime_reclassifications?.length, 1);
+      assert.equal(
+        persisted.evidence_checklist_runtime_reclassifications?.[0]?.reason,
+        "runtime_remediation_misattributed_as_peer_request",
+      );
+      assert.ok(events.includes("session.evidence_checklist_runtime_remediation_reclassified"));
+      assert.match(
+        sessionReportMarkdown(persisted, []),
+        /Runtime Checklist Reclassifications[\s\S]*ready_evidence_sources_missing/,
+      );
+    },
+  },
+  {
+    name: "legacy repair never erases a genuine earlier ask after a later synthetic collision",
+    run: async () => {
+      const events: string[] = [];
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("runtime-remediation-origin-collision"),
+        (event) => events.push(event.type),
+      );
+      const session = await orchestrator.initSession(
+        "Review the implementation candidate with a real evidence request.",
+        "codex",
+      );
+      const collidingAsk =
+        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+      const genuineText = JSON.stringify({
+        status: "NEEDS_EVIDENCE",
+        summary: "A concrete citation is required.",
+        confidence: "verified",
+        evidence_sources: [],
+        caller_requests: [collidingAsk],
+        follow_ups: [],
+      });
+      const genuineRequest: PeerResult = {
+        ...readyPeer("claude", "verified", []),
+        raw_status: "NEEDS_EVIDENCE",
+        parsed_status: "NEEDS_EVIDENCE",
+        normalized_status: "NEEDS_EVIDENCE",
+        status: "NEEDS_EVIDENCE",
+        structured: JSON.parse(genuineText),
+        text: genuineText,
+        decision_quality: "needs_operator_review",
+      };
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
+        { peer: "claude", ask: collidingAsk },
+      ]);
+      await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [genuineRequest],
+        rejected: [],
+        convergence: checkConvergence(["claude"], "READY", [genuineRequest], []),
+        convergence_scope: {
+          petitioner: "codex",
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude"],
+          reviewer_peers: ["claude"],
+        },
+        started_at: new Date().toISOString(),
+      });
+
+      const laterProviderText = JSON.stringify({
+        status: "READY",
+        summary: "No blocking objections remain.",
+        confidence: "verified",
+        evidence_sources: [],
+        caller_requests: [],
+        follow_ups: [],
+      });
+      const laterSyntheticDemotion: PeerResult = {
+        ...readyPeer("claude", "verified", []),
+        raw_status: "READY",
+        parsed_status: "READY",
+        normalized_status: "NEEDS_EVIDENCE",
+        status: "NEEDS_EVIDENCE",
+        structured: {
+          status: "NEEDS_EVIDENCE",
+          summary: "No blocking objections remain.",
+          confidence: "verified",
+          evidence_sources: [],
+          caller_requests: [collidingAsk],
+          follow_ups: [],
+        },
+        text: laterProviderText,
+        parser_warnings: ["ready_evidence_sources_missing"],
+        decision_quality: "needs_operator_review",
+      };
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 2, [
+        { peer: "claude", ask: collidingAsk },
+      ]);
+      await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-2-prompt.md",
+        peers: [laterSyntheticDemotion],
+        rejected: [],
+        convergence: checkConvergence(["claude"], "READY", [laterSyntheticDemotion], []),
+        convergence_scope: {
+          petitioner: "codex",
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude"],
+          reviewer_peers: ["claude"],
+        },
+        started_at: new Date().toISOString(),
+      });
+
+      const resumed = await orchestrator.askPeers({
+        session_id: session.session_id,
+        task: session.task,
+        draft: "Implementation candidate under review.",
+        caller: "codex",
+        peers: ["claude"],
+      });
+      const persisted = orchestrator.store.read(session.session_id);
+
+      assert.equal(resumed.converged, false);
+      assert.equal(persisted.evidence_checklist?.length, 1);
+      assert.equal(persisted.evidence_checklist?.[0]?.ask, collidingAsk);
+      assert.equal(persisted.evidence_checklist_runtime_reclassifications, undefined);
+      assert.equal(
+        events.includes("session.evidence_checklist_runtime_remediation_reclassified"),
+        false,
       );
     },
   },

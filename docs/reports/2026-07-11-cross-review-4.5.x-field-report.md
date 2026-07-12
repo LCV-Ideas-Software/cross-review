@@ -4,15 +4,16 @@
 **Autor:** Claude (caller=claude, host claude-code) — sessão de trabalho da calculadora-app
 **Contexto:** hardgate pré/pós-ship do workspace exigiu submeter dois ships da calculadora-app
 (v04.02.00 e o retro-review de v04.02.01, commit `8eee516`) ao cross-review. Durante a execução,
-o gate **não conseguiu registrar convergência em NENHUMA das versões testadas, apesar de a
-substância ter sido aprovada por unanimidade dos peers**. Este relatório registra todos os
-comportamentos observados (corretos e defeituosos) para análise e correção.
+o gate **não conseguiu registrar convergência nas versões 4.5.0–4.5.3 exercitadas nessa fase,
+apesar de a substância ter sido aprovada por unanimidade dos peers**. Este relatório registra todos
+os comportamentos observados (corretos e defeituosos) para análise e correção. O adendo da 4.5.8
+registra a convergência formal posterior.
 
 > **Achado central:** os defeitos NÃO estão na qualidade do trabalho revisado nem na evidência
 > submetida. Em 4.5.2 e 4.5.3, os 6 modelos peer **emitiram `"status":"READY"` com
 > "No blocking objections remain"** e citações verbatim ancoradas por `sha256`; o servidor os
 > **rebaixou** para `NEEDS_EVIDENCE` por falsos-positivos de camadas anti-alucinação, e depois
-> **abortou** rounds inteiros por falsos-positivos de preflight. O gate está estruturalmente
+> **abortou** rounds inteiros por falsos-positivos de preflight. Naquele intervalo, o gate ficou
 > incapaz de atingir ALL READY para um caller-agente, mesmo com trabalho e evidência impecáveis.
 
 ---
@@ -32,7 +33,7 @@ comportamentos observados (corretos e defeituosos) para análise e correção.
 
 ### 1.1 Inventário de sessões
 
-| Sessão (8) | Versão | Outcome    | Motivo                       | Rounds      | Defeito observado               |
+| Sessão (7) | Versão | Outcome    | Motivo                       | Rounds      | Defeito observado               |
 | ---------- | ------ | ---------- | ---------------------------- | ----------- | ------------------------------- |
 | `306ba203` | 4.5.0  | aborted    | needs_evidence_preflight     | 1           | DEF-1                           |
 | `be550cc3` | 4.5.0  | aborted    | needs_evidence_preflight     | 1           | DEF-1                           |
@@ -301,10 +302,52 @@ relatório forense de 2026-07-12 contém a matriz oficial e a auditoria das 36 h
 
 ---
 
-## 4. Análise consolidada
+## 3.7. Desfecho 4.5.8 (2026-07-12) — convergência formal atingida
 
-O pipeline anti-alucinação tem **quatro camadas** em série, cada uma com poder de veto absoluto e,
-hoje, com falsos-positivos que se sobrepõem:
+Sessão limpa `4ed963d4` (round único, `session_start_round`): **outcome `converged |
+unanimous_ready` — caller + 5 peers READY raw+final, zero warnings, checklist vazio.** O finding
+do codex (round 1 da sessão `741b69bc`) foi corrigido com TDD e shipado como calculadora
+v04.02.02. Receita que produziu a convergência: pacote de citação byte-exato anexado desde o
+round 1 (trechos sem aspas internas, workaround usado naquela sessão), contrato de citação
+explícito no draft e no review_focus, `session_start_round` (sem relator), e abandono de sessões
+contaminadas por asks genéricos.
+
+Correção de estado após confronto com a fonte 4.5.8:
+
+- **DEF-8:** corrigido desde 4.5.6 por des-escape controlado antes da correlação; a política
+  all-or-nothing permanece deliberadamente fail-closed.
+- **DEF-6 residual:** corrigido desde 4.5.6 pela separação entre namespace da aplicação revisada e
+  namespace explícito de cross-review/MCP/runtime.
+- **DEF-9:** corrigido desde 4.5.6 por uma recuperação controlada de
+  `response.incomplete/max_output_tokens` no mesmo GPT-5.6 Sol, com effort `medium` e ledger
+  preservado.
+- **DEF-10 (novo, confirmado):** remediações genéricas criadas pelo próprio servidor eram
+  misturadas aos `caller_requests` dos peers. Sem âncora derivada, elas não podiam ser encerradas
+  por requester reverification e bloqueavam convergência quando judge ativo/operador não estavam
+  disponíveis. A correção foi preparada para 4.5.9, mantendo remediação em
+  `decision_transformations[].details.remediation` e reservando `caller_requests` a pedidos reais
+  dos peers.
+
+## 3.8. Fechamento preparado para 4.5.9 (2026-07-12)
+
+O DEF-10 ganhou regressões vermelha/verde para as cinco demoções READY do parser e para a demoção
+de grounding. A correção não altera `hasAskDerivedAnchor`, não autoencerra asks genéricos reais e
+não reduz a política all-or-nothing: pedidos autênticos dos peers continuam persistidos e
+bloqueantes; somente orientação produzida pelo servidor deixa de ingressar na checklist como se
+fosse autoria do peer.
+
+A varredura histórica encontrou 54 itens sintéticos em 19 sessões: 40 `open` e 14
+`not_resurfaced`. Quatro sessões ainda ativas continham 11 itens. Ao retomar uma sessão ativa, a
+4.5.9 remove somente o item cuja origem sintética seja provada pelo voto bruto READY sem aquele
+ask e pelo warning correspondente na própria rodada de criação do item; uma colisão sintética
+posterior não pode apagar um pedido genuíno anterior. A correção registra reclassificação durável
+e não altera sessões terminais. Assim, sessões antigas comprovadamente contaminadas deixam de
+exigir intervenção manual sem que pedidos reais sejam satisfeitos por inferência.
+
+## 4. Análise consolidada histórica (4.5.0–4.5.3)
+
+O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
+e, naquele intervalo, com falsos-positivos que se sobrepunham:
 
 ```
 draft+evidence
@@ -319,14 +362,21 @@ corroborado, e a camada [4] pune exatamente o formato de citação que [1] exige
 dos peers ("No blocking objections remain", READY unânime) **nunca é registrado**: ou a sessão
 aborta antes, ou o parser demove o voto depois.
 
-**Impacto de produto:** o hardgate, na 4.5.x, não é um gate de qualidade do trabalho — virou um
+**Impacto histórico de produto:** nessas primeiras versões 4.5.x, o hardgate deixou de atuar como
+gate de qualidade do trabalho e virou um
 gate de conformidade de _formato textual do draft/citação_, no qual trabalho e evidência impecáveis
 falham por acionar heurísticas. Isso corrói a confiança no gate e força workarounds anti-idiomáticos
 (evitar palavras como "production", não colar saídas RED de TDD, não citar docs verbatim).
 
 ---
 
-## 5. Correções recomendadas (priorizadas)
+## 5. Correções recomendadas à época (registro histórico)
+
+Esta lista preserva a priorização original e não representa o backlog vigente. DEF-1, DEF-2,
+DEF-4, DEF-5, DEF-6, DEF-8 e DEF-9 foram corrigidos nas releases posteriores. A rota automática
+de evidência autenticada também eliminou a necessidade de attachment manual do operador em
+revisões normais; a superfície `session_attach_evidence` continua operator-only por desenho de
+segurança. O único novo defeito confirmado após o adendo foi o DEF-10, fechado no source 4.5.9.
 
 1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
    `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm

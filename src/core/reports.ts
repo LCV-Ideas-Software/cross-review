@@ -146,6 +146,25 @@ function evidenceChecklistLines(session: SessionMeta): string[] {
   return lines;
 }
 
+function runtimeReclassificationLines(session: SessionMeta): string[] {
+  const records = session.evidence_checklist_runtime_reclassifications ?? [];
+  if (!records.length) return [];
+  const lines = ["## Runtime Checklist Reclassifications", ""];
+  lines.push(
+    "- These entries were removed from the active checklist because durable peer output proved that the runtime, not the attributed peer, authored the request.",
+  );
+  for (const record of records.slice(-20)) {
+    lines.push(
+      `- ${record.peer}/${record.item_id}: round ${record.proof_round}, rule=${record.proof_rule}, previous_status=${record.previous_status}`,
+    );
+  }
+  if (records.length > 20) {
+    lines.push(`- ... ${records.length - 20} older reclassification(s) omitted.`);
+  }
+  lines.push("");
+  return lines;
+}
+
 export function unresolvedEvidenceItems(session: SessionMeta): EvidenceChecklistItem[] {
   return (session.evidence_checklist ?? []).filter((item) => {
     const status = item.status ?? "open";
@@ -274,6 +293,7 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
   }
 
   lines.push(...evidenceChecklistLines(session));
+  lines.push(...runtimeReclassificationLines(session));
   lines.push(...unresolvedEvidenceDispositionLines(session));
 
   if (session.generation_files?.length) {

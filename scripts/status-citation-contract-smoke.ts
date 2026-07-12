@@ -114,4 +114,76 @@ assert.equal(parsed.raw_status, "READY");
 assert.equal(parsed.normalized_status, "READY");
 assert.deepEqual(parsed.structured?.evidence_sources, [source]);
 
+const serverDemotionCases = [
+  {
+    name: "lossy schema recovery",
+    response: JSON.stringify({ ...canonical, summary: "x".repeat(801) }),
+    warning: "ready_rejected_lossy_parse",
+  },
+  {
+    name: "unknown confidence",
+    response: JSON.stringify({ ...canonical, confidence: "unknown" }),
+    warning: "ready_with_unknown_confidence",
+  },
+  {
+    name: "noncanonical summary",
+    response: JSON.stringify({ ...canonical, summary: "Looks good." }),
+    warning: "ready_noncanonical_summary",
+  },
+  {
+    name: "external narrative",
+    response: `Narrative outside the envelope.\n${JSON.stringify(canonical)}`,
+    warning: "ready_with_external_narrative",
+  },
+  {
+    name: "missing concrete evidence",
+    response: JSON.stringify({ ...canonical, evidence_sources: [] }),
+    warning: "verified_without_evidence_sources",
+  },
+] as const;
+
+for (const testCase of serverDemotionCases) {
+  const demoted = parsePeerStatus(testCase.response);
+  assert.equal(demoted.raw_status, "READY", `${testCase.name}: raw peer vote`);
+  assert.equal(demoted.normalized_status, "NEEDS_EVIDENCE", `${testCase.name}: server demotion`);
+  assert.ok(demoted.parser_warnings.includes(testCase.warning), `${testCase.name}: warning`);
+  assert.deepEqual(
+    demoted.structured?.caller_requests,
+    [],
+    `${testCase.name}: server remediation must not become a peer-authored checklist ask`,
+  );
+  assert.equal(
+    typeof demoted.decision_transformations.at(-1)?.details?.remediation,
+    "string",
+    `${testCase.name}: remediation remains available in the transformation audit trail`,
+  );
+}
+
+const peerAuthoredAsk = "Provide raw npm test output with EXIT_CODE: 0.";
+const contradictoryReady = parsePeerStatus(
+  JSON.stringify({ ...canonical, caller_requests: [peerAuthoredAsk] }),
+);
+assert.equal(contradictoryReady.normalized_status, "NEEDS_EVIDENCE");
+assert.deepEqual(
+  contradictoryReady.structured?.caller_requests,
+  [peerAuthoredAsk],
+  "a genuine peer-authored ask must survive READY invariant enforcement unchanged",
+);
+
+const explicitNeedsEvidence = parsePeerStatus(
+  JSON.stringify({
+    ...canonical,
+    status: "NEEDS_EVIDENCE",
+    summary: "Raw test output is required.",
+    caller_requests: [peerAuthoredAsk],
+  }),
+);
+assert.equal(explicitNeedsEvidence.raw_status, "NEEDS_EVIDENCE");
+assert.equal(explicitNeedsEvidence.normalized_status, "NEEDS_EVIDENCE");
+assert.deepEqual(
+  explicitNeedsEvidence.structured?.caller_requests,
+  [peerAuthoredAsk],
+  "an explicit NEEDS_EVIDENCE verdict must keep its real evidence request",
+);
+
 console.log("[status-citation-contract-smoke] PASS");

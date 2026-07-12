@@ -20,7 +20,7 @@ import { maxOutputTokensForPeer } from "./output-budget.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
 import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
 import { SessionStore } from "./session-store.js";
-import { decisionQualityFromStatus } from "./status.js";
+import { decisionQualityFromStatus, parsePeerStatus } from "./status.js";
 import type {
   AppConfig,
   Confidence,
@@ -74,6 +74,41 @@ export interface AskPeersOutput {
   round: ReviewRound;
   converged: boolean;
 }
+
+const GROUNDING_READY_REMEDIATION =
+  "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+
+const LEGACY_RUNTIME_REMEDIATION_RULES = [
+  {
+    ask: GROUNDING_READY_REMEDIATION,
+    warningPrefixes: ["ready_evidence_sources_", "ready_peer_submitted_evidence_"],
+  },
+  {
+    ask: "Provide concrete evidence sources before claiming verified readiness.",
+    warningPrefixes: [
+      "verified_without_evidence_sources",
+      "verified_without_concrete_evidence_sources",
+      "ready_without_evidence_sources",
+      "ready_without_concrete_evidence_sources",
+    ],
+  },
+  {
+    ask: "Return a complete, non-truncated structured verdict before claiming readiness.",
+    warningPrefixes: ["ready_rejected_lossy_parse"],
+  },
+  {
+    ask: "Resolve the stated uncertainty and cite concrete evidence before claiming readiness.",
+    warningPrefixes: ["ready_with_unknown_confidence"],
+  },
+  {
+    ask: `Use the exact canonical READY summary: No blocking objections remain.`,
+    warningPrefixes: ["ready_noncanonical_summary"],
+  },
+  {
+    ask: "Return READY only as the complete machine-readable status object, without narrative outside its envelope.",
+    warningPrefixes: ["ready_with_external_narrative"],
+  },
+] as const;
 
 export function trustedEvidenceAttachments(
   attachments: readonly ResolvedEvidenceAttachment[],
@@ -1274,8 +1309,7 @@ export function groundReadyPeerEvidence(
                 ? "ready_peer_submitted_evidence_does_not_corroborate_artifact_claims"
                 : "ready_peer_submitted_evidence_not_corroborated";
   const parserWarnings = [...peerResult.parser_warnings, warning];
-  const callerRequest =
-    "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+  const callerRequest = GROUNDING_READY_REMEDIATION;
   const priorTransformations = [
     ...(peerResult.decision_transformations ?? peerResult.status_transformations ?? []),
   ];
@@ -1292,6 +1326,7 @@ export function groundReadyPeerEvidence(
       fabricated: fabrication.fabricated,
       peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
       peer_submitted_evidence_corroborated: false,
+      remediation: callerRequest,
     },
   };
   const decisionTransformations = [...priorTransformations, groundingTransformation];
@@ -1306,10 +1341,6 @@ export function groundReadyPeerEvidence(
         ? {
             ...peerResult.structured,
             status: "NEEDS_EVIDENCE",
-            caller_requests: [
-              ...(peerResult.structured.caller_requests ?? []),
-              callerRequest,
-            ].slice(0, 30),
           }
         : peerResult.structured,
       parser_warnings: parserWarnings,
@@ -1323,6 +1354,78 @@ export function groundReadyPeerEvidence(
     peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
     peer_submitted_evidence_corroborated: false,
   };
+}
+
+/**
+ * The Evidence Broker persists reviewer requests, not remediation authored by
+ * the runtime while normalizing a different peer verdict. Current adapters
+ * always expose raw/parsed lineage; the undefined fallback preserves direct
+ * legacy/test PeerResult producers that predate that telemetry.
+ */
+export function peerAuthoredEvidenceChecklistAsks(
+  peerResults: readonly PeerResult[],
+): Array<{ peer: PeerId; ask: string }> {
+  const asks: Array<{ peer: PeerId; ask: string }> = [];
+  for (const peerResult of peerResults) {
+    if (peerResult.status !== "NEEDS_EVIDENCE") continue;
+    const lineageAvailable =
+      peerResult.raw_status !== undefined || peerResult.parsed_status !== undefined;
+    const declaredPeerStatus = peerResult.raw_status ?? peerResult.parsed_status;
+    const peerExplicitlyRequestedEvidence = declaredPeerStatus === "NEEDS_EVIDENCE";
+    if (lineageAvailable && !peerExplicitlyRequestedEvidence) continue;
+    for (const ask of peerResult.structured?.caller_requests ?? []) {
+      if (typeof ask === "string" && ask.trim()) asks.push({ peer: peerResult.peer, ask });
+    }
+  }
+  return asks;
+}
+
+export function runtimeGeneratedEvidenceChecklistProofs(
+  session: SessionMeta,
+): Array<{ item_id: string; peer: PeerId; proof_round: number; proof_rule: string }> {
+  if (session.outcome) return [];
+  const proofs: Array<{
+    item_id: string;
+    peer: PeerId;
+    proof_round: number;
+    proof_rule: string;
+  }> = [];
+  for (const item of session.evidence_checklist ?? []) {
+    const status = item.status ?? "open";
+    if (status !== "open" && status !== "not_resurfaced") continue;
+    const remediation = LEGACY_RUNTIME_REMEDIATION_RULES.find((entry) => entry.ask === item.ask);
+    if (!remediation) continue;
+    for (const round of session.rounds) {
+      // The proof must describe the round that CREATED the deduplicated item.
+      // A later synthetic collision cannot erase a genuine earlier request
+      // that happens to use the same peer+text identity.
+      if (round.round !== item.first_round) continue;
+      const peerResult = round.peers.find((candidate) => candidate.peer === item.peer);
+      if (!peerResult || (peerResult.normalized_status ?? peerResult.status) !== "NEEDS_EVIDENCE") {
+        continue;
+      }
+      const reparsed = parsePeerStatus(peerResult.text);
+      const declaredPeerStatus =
+        peerResult.raw_status ??
+        reparsed.raw_status ??
+        peerResult.parsed_status ??
+        reparsed.parsed_status;
+      if (declaredPeerStatus !== "READY" || !reparsed.structured) continue;
+      if ((reparsed.structured.caller_requests ?? []).includes(item.ask)) continue;
+      const proofRule = peerResult.parser_warnings.find((warning) =>
+        remediation.warningPrefixes.some((prefix) => warning.startsWith(prefix)),
+      );
+      if (!proofRule) continue;
+      proofs.push({
+        item_id: item.id,
+        peer: item.peer,
+        proof_round: round.round,
+        proof_rule: proofRule,
+      });
+      break;
+    }
+  }
+  return proofs;
 }
 
 export function blockConvergenceForPeerSubmittedEvidencePanel(
@@ -4855,7 +4958,7 @@ export class CrossReviewOrchestrator {
       );
     }
     const missingFinancialVars = missingFinancialControlVars(this.config, selectedPeers);
-    const session = existingSession
+    let session = existingSession
       ? existingSession
       : missingFinancialVars.length
         ? await this.store.init(
@@ -4865,6 +4968,31 @@ export class CrossReviewOrchestrator {
             normalizeReviewFocus(input.review_focus, this.config),
           )
         : await this.initSession(input.task, effectivePetitioner, input.review_focus);
+    if (existingSession) {
+      const reclassificationProofs = runtimeGeneratedEvidenceChecklistProofs(session);
+      const reclassified = await this.store.reclassifyRuntimeGeneratedEvidenceChecklistItems(
+        session.session_id,
+        reclassificationProofs,
+      );
+      if (reclassified.length > 0) {
+        this.emit({
+          type: "session.evidence_checklist_runtime_remediation_reclassified",
+          session_id: session.session_id,
+          message: `${reclassified.length} runtime-authored remediation item(s) were removed from the peer evidence checklist before resuming the session.`,
+          data: {
+            count: reclassified.length,
+            items: reclassified.map((item) => ({
+              item_id: item.item_id,
+              peer: item.peer,
+              proof_round: item.proof_round,
+              proof_rule: item.proof_rule,
+              previous_status: item.previous_status,
+            })),
+          },
+        });
+        session = this.store.read(session.session_id);
+      }
+    }
     const petitioner = effectivePetitioner;
     const roundNumber = session.rounds.length + 1;
     const startedAt = now();
@@ -5681,15 +5809,7 @@ export class CrossReviewOrchestrator {
     // NEEDS_EVIDENCE with `caller_requests` contributes its asks; the
     // store deduplicates by sha256(peer + ":" + ask) so a repeated
     // ask increments round_count instead of duplicating.
-    const evidenceAsks: Array<{ peer: PeerId; ask: string }> = [];
-    for (const peerResult of peers) {
-      if (peerResult.status !== "NEEDS_EVIDENCE") continue;
-      for (const ask of peerResult.structured?.caller_requests ?? []) {
-        if (typeof ask === "string" && ask.trim()) {
-          evidenceAsks.push({ peer: peerResult.peer, ask });
-        }
-      }
-    }
+    const evidenceAsks = peerAuthoredEvidenceChecklistAsks(peers);
     if (evidenceAsks.length > 0) {
       const checklist = await this.store.appendEvidenceChecklistItems(
         session.session_id,

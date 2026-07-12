@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   evidencePreflight,
   groundReadyPeerEvidence,
+  peerAuthoredEvidenceChecklistAsks,
   truthfulnessPreflight,
 } from "../src/core/orchestrator.js";
 import { parsePeerStatus, statusJsonSchema } from "../src/core/status.js";
@@ -98,6 +99,72 @@ const defaultAttachment: EvidenceAttachment = {
 };
 
 const regressions: Regression[] = [
+  {
+    name: "grounding demotion keeps server remediation out of the peer evidence checklist",
+    run: () => {
+      const grounding = groundReadyPeerEvidence(
+        readyPeer([], "claude", {
+          raw_status: "READY",
+          parsed_status: "READY",
+          normalized_status: "READY",
+        }),
+        groundingInput("Implementation candidate under review.", []),
+      );
+
+      assert.equal(grounding.grounded, false);
+      assert.equal(grounding.result.status, "NEEDS_EVIDENCE");
+      assert.ok(grounding.result.parser_warnings.includes("ready_evidence_sources_missing"));
+      assert.deepEqual(
+        grounding.result.structured?.caller_requests,
+        [],
+        "server-authored remediation must not masquerade as a durable peer evidence ask",
+      );
+      assert.equal(
+        grounding.result.decision_transformations?.at(-1)?.details?.remediation,
+        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.",
+        "the remediation must remain auditable on the server-side decision transformation",
+      );
+      assert.deepEqual(
+        peerAuthoredEvidenceChecklistAsks([grounding.result]),
+        [],
+        "a server-demoted READY must never enter the durable evidence checklist",
+      );
+
+      const genuineAsk = "Provide raw npm test output with EXIT_CODE: 0.";
+      const explicitNeedsEvidence: PeerResult = {
+        ...readyPeer([], "gemini", {
+          raw_status: "NEEDS_EVIDENCE",
+          parsed_status: "NEEDS_EVIDENCE",
+          normalized_status: "NEEDS_EVIDENCE",
+        }),
+        status: "NEEDS_EVIDENCE",
+        structured: {
+          status: "NEEDS_EVIDENCE",
+          summary: "Raw test output is required.",
+          confidence: "verified",
+          evidence_sources: [],
+          caller_requests: [genuineAsk],
+          follow_ups: [],
+        },
+      };
+      assert.deepEqual(
+        peerAuthoredEvidenceChecklistAsks([explicitNeedsEvidence]),
+        [{ peer: "gemini", ask: genuineAsk }],
+        "a genuine NEEDS_EVIDENCE request must remain durable and blocking",
+      );
+
+      const parserRewrittenReady: PeerResult = {
+        ...explicitNeedsEvidence,
+        raw_status: "READY",
+        parsed_status: "NEEDS_EVIDENCE",
+      };
+      assert.deepEqual(
+        peerAuthoredEvidenceChecklistAsks([parserRewrittenReady]),
+        [],
+        "raw provider intent takes precedence over any later parser rewrite",
+      );
+    },
+  },
   {
     name: "two individually valid evidence sources remain grounded as a set",
     run: () => {
