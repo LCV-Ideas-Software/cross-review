@@ -130,7 +130,8 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
 //   - grok-4.3: { "none", "low" (default), "medium", "high" }
 //   - grok-4.20-multi-agent: { "low", "medium", "high", "xhigh" }
 // The internal config scale uses
-// { "none", "minimal", "low", "medium", "high", "xhigh", "max" } so this
+// { "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" }
+// so this
 // adapter clamps to each model's accepted set: for grok-4.3,
 // "xhigh"/"max" downgrade to "high"; for multi-agent, "max" maps to
 // "xhigh" (existing behavior). Other Grok-4 models such as
@@ -146,7 +147,7 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
 type GrokReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 function grokEffort(value: AppConfig["reasoning_effort"][PeerId]): GrokReasoningEffort {
-  return value === "max" ? "xhigh" : (value ?? "xhigh");
+  return value === "max" || value === "ultra" ? "xhigh" : (value ?? "xhigh");
 }
 
 // v2.18.4 / Codex audit 2026-05-07 P2.1: per-model effort clamp.
@@ -176,7 +177,14 @@ export function clampEffortForModel(
     // none/low/medium/high pass through unchanged.
     return effort;
   }
-  // grok-4.20-multi-agent and others: existing scale unchanged.
+  if (model === "grok-4.20-multi-agent") {
+    // xAI accepts only low|medium|high|xhigh for this model. The shared
+    // none/minimal settings mean "use the lowest supported effort" here;
+    // max/ultra have already collapsed to xhigh in grokEffort().
+    if (effort === "none" || effort === "minimal") return "low";
+    return effort;
+  }
+  // Models outside the explicit allowlist never call this helper on-wire.
   return effort;
 }
 
@@ -206,7 +214,7 @@ export const GROK_REASONING_EFFORT_MODELS: ReadonlySet<string> = new Set([
   // v2.18.4 / Codex audit 2026-05-07 P2.1: xAI docs (WebFetch verified
   // 2026-05-07) document grok-4.3 as supporting reasoning_effort with
   // { none, low (default), medium, high }. Added to allowlist so the
-  // adapter sends the field; clampEffortForModel narrows xhigh/max to
+  // adapter sends the field; clampEffortForModel narrows xhigh/max/ultra to
   // "high" for this model.
   "grok-4.3",
 ]);
@@ -411,6 +419,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 
@@ -532,6 +541,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 }

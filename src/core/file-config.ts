@@ -59,6 +59,8 @@ const ReasoningEffortValueSchema = z.enum([
   "high",
   "xhigh",
   "max",
+  // Compatibility alias only. Adapters normalize this before the API call.
+  "ultra",
 ]);
 
 function perPeerOptionalShape<T extends z.ZodTypeAny>(schema: T): Record<PeerId, z.ZodOptional<T>> {

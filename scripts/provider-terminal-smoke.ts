@@ -31,6 +31,12 @@ const READY = JSON.stringify({
   follow_ups: [],
 });
 
+type BillingUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+};
+
 const baseConfig = loadConfig();
 const config = {
   ...baseConfig,
@@ -254,6 +260,209 @@ function assertTerminalRejection(
     },
   });
   await assertTerminalRejection(() => adapter.call("fixture", context()));
+}
+
+// Claude Fable 5 gets exactly one controlled recovery from max_tokens. The
+// second call lowers effort and the successful result retains billable usage
+// from both provider responses.
+{
+  const recoveryConfig = {
+    ...config,
+    retry: { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 },
+    reasoning_effort: { ...config.reasoning_effort, claude: "max" as const },
+    cost_rates: {
+      ...config.cost_rates,
+      claude: { input_per_million: 1, output_per_million: 1 },
+    },
+  };
+  const adapter = new AnthropicAdapter(recoveryConfig);
+  const efforts: unknown[] = [];
+  let calls = 0;
+  setClient(adapter, {
+    messages: {
+      create: async (body: { output_config?: { effort?: unknown } }) => {
+        calls += 1;
+        efforts.push(body.output_config?.effort);
+        if (calls === 1) {
+          return {
+            content: [{ type: "text", text: READY }],
+            model: adapter.model,
+            stop_reason: "max_tokens",
+            usage: { input_tokens: 10, output_tokens: 20 },
+          };
+        }
+        return {
+          content: [{ type: "text", text: READY }],
+          model: adapter.model,
+          stop_reason: "end_turn",
+          usage: { input_tokens: 7, output_tokens: 5 },
+        };
+      },
+    },
+  });
+  const ctx = context();
+  const result = await adapter.call("fixture", ctx);
+  assert.equal(calls, 2, "Fable max_tokens recovery must make exactly one retry");
+  assert.deepEqual(efforts, ["max", "medium"]);
+  assert.equal(result.usage?.input_tokens, 17);
+  assert.equal(result.usage?.output_tokens, 25);
+  assert.equal(result.usage?.total_tokens, 42);
+  assert.ok(
+    ctx.events.some((event) => event.type === "peer.max_tokens_recovery.started"),
+    "controlled max_tokens recovery must be observable",
+  );
+}
+
+// If cancellation arrives after the recovery response settles, withRetry
+// attaches the already-combined result. Anthropic must not merge the first
+// max_tokens usage into that combined result a second time.
+{
+  const recoveryConfig = {
+    ...config,
+    retry: { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 },
+    reasoning_effort: { ...config.reasoning_effort, claude: "max" as const },
+    cost_rates: {
+      ...config.cost_rates,
+      claude: { input_per_million: 1, output_per_million: 1 },
+    },
+  };
+  const controller = new AbortController();
+  const adapter = new AnthropicAdapter(recoveryConfig);
+  let calls = 0;
+  setClient(adapter, {
+    messages: {
+      create: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: [{ type: "text", text: READY }],
+            model: adapter.model,
+            stop_reason: "max_tokens",
+            usage: { input_tokens: 10, output_tokens: 20 },
+          };
+        }
+        controller.abort("after second settlement");
+        return {
+          content: [{ type: "text", text: READY }],
+          model: adapter.model,
+          stop_reason: "end_turn",
+          usage: { input_tokens: 7, output_tokens: 5 },
+        };
+      },
+    },
+  });
+  await assert.rejects(
+    () => adapter.call("fixture", { ...context(), signal: controller.signal }),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: Record<string, unknown> }).peerFailure;
+      const usage = failure?.usage as BillingUsage | undefined;
+      const cost = failure?.cost as { total_cost?: number } | undefined;
+      assert.equal(failure?.failure_class, "cancelled");
+      assert.equal(failure?.attempts, 2);
+      assert.equal(failure?.unpriced_attempts ?? 0, 0);
+      assert.equal(failure?.billing_status, "reported");
+      assert.equal(usage?.input_tokens, 17);
+      assert.equal(usage?.output_tokens, 25);
+      assert.equal(usage?.total_tokens, 42);
+      assert.ok(Math.abs((cost?.total_cost ?? 0) - 0.000042) < 1e-12);
+      return true;
+    },
+  );
+}
+
+// A priced refusal after a priced max_tokens recovery has complete coverage.
+// The classifier must not retain the refusal's pre-merge unpriced marker.
+{
+  const recoveryConfig = {
+    ...config,
+    retry: { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 },
+    reasoning_effort: { ...config.reasoning_effort, claude: "max" as const },
+    cost_rates: {
+      ...config.cost_rates,
+      claude: { input_per_million: 1, output_per_million: 1 },
+    },
+  };
+  const adapter = new AnthropicAdapter(recoveryConfig);
+  let calls = 0;
+  setClient(adapter, {
+    messages: {
+      create: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: [{ type: "text", text: READY }],
+            model: adapter.model,
+            stop_reason: "max_tokens",
+            usage: { input_tokens: 10, output_tokens: 20 },
+          };
+        }
+        return {
+          content: [{ type: "text", text: READY }],
+          model: adapter.model,
+          stop_reason: "refusal",
+          stop_details: { type: "refusal", category: "policy" },
+          usage: { input_tokens: 7, output_tokens: 5 },
+        };
+      },
+    },
+  });
+  await assert.rejects(
+    () => adapter.call("fixture", context()),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: Record<string, unknown> }).peerFailure;
+      const usage = failure?.usage as BillingUsage | undefined;
+      assert.equal(failure?.failure_class, "provider_refusal");
+      assert.equal(failure?.unpriced_attempts ?? 0, 0);
+      assert.equal(failure?.billing_status, "reported");
+      assert.equal(usage?.input_tokens, 17);
+      assert.equal(usage?.output_tokens, 25);
+      assert.equal(usage?.total_tokens, 42);
+      return true;
+    },
+  );
+}
+
+// If the controlled retry fails for an unrelated reason, the first
+// max_tokens response remains billed and the unresolved second attempt is
+// marked unpriced instead of disappearing from reconciliation.
+{
+  const recoveryConfig = {
+    ...config,
+    retry: { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 },
+    reasoning_effort: { ...config.reasoning_effort, claude: "max" as const },
+    cost_rates: {
+      ...config.cost_rates,
+      claude: { input_per_million: 1, output_per_million: 1 },
+    },
+  };
+  const adapter = new AnthropicAdapter(recoveryConfig);
+  let calls = 0;
+  setClient(adapter, {
+    messages: {
+      create: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: [{ type: "text", text: READY }],
+            model: adapter.model,
+            stop_reason: "max_tokens",
+            usage: { input_tokens: 10, output_tokens: 20 },
+          };
+        }
+        throw new Error("network fetch failed");
+      },
+    },
+  });
+  await assert.rejects(
+    () => adapter.call("fixture", context()),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: Record<string, unknown> }).peerFailure;
+      assert.equal(failure?.failure_class, "network");
+      assert.equal((failure?.usage as { total_tokens?: number } | undefined)?.total_tokens, 30);
+      assert.equal(failure?.unpriced_attempts, 1);
+      return true;
+    },
+  );
 }
 
 {

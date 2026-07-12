@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
 import { FileConfigSchema, flattenFileConfigToEnvMap } from "../src/core/file-config.js";
-import type { PeerFailure, RuntimeEvent } from "../src/core/types.js";
+import type { PeerFailure, ReasoningEffort, RuntimeEvent } from "../src/core/types.js";
 import { AnthropicAdapter } from "../src/peers/anthropic.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { classifyProviderError } from "../src/peers/errors.js";
@@ -13,7 +13,7 @@ import { GeminiAdapter } from "../src/peers/gemini.js";
 import { GrokAdapter } from "../src/peers/grok.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { OpenAIAdapter } from "../src/peers/openai.js";
-import { PerplexityAdapter } from "../src/peers/perplexity.js";
+import { clampEffortForPerplexity, PerplexityAdapter } from "../src/peers/perplexity.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
@@ -28,17 +28,214 @@ process.env.CROSS_REVIEW_DATA_DIR = fs.mkdtempSync(
 
 const config = loadConfig();
 
+const OPENAI_READY = JSON.stringify({
+  status: "READY",
+  summary: "No blocking objections remain.",
+  confidence: "inferred",
+  evidence_sources: [],
+  caller_requests: [],
+  follow_ups: [],
+});
+
+async function captureOpenAIReasoningEffort(
+  model: string,
+  effort: ReasoningEffort,
+  operation: "call" | "generate" = "generate",
+): Promise<unknown> {
+  const adapter = new OpenAIAdapter({
+    ...config,
+    models: { ...config.models, codex: model },
+    reasoning_effort: { ...config.reasoning_effort, codex: effort },
+    streaming: { ...config.streaming, tokens: false },
+  });
+  let capturedPayload: Record<string, unknown> | undefined;
+  (
+    adapter as unknown as {
+      client: () => Promise<{
+        responses: {
+          create: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+        };
+      }>;
+    }
+  ).client = async () => ({
+    responses: {
+      create: async (payload) => {
+        capturedPayload = payload;
+        return {
+          status: "completed",
+          output_text: operation === "call" ? OPENAI_READY : "revised fixture",
+          model,
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        };
+      },
+    },
+  });
+  const context = {
+    session_id: "550e8400-e29b-41d4-a716-446655440011",
+    round: 1,
+    task: "OpenAI reasoning-effort family matrix",
+    emit: () => undefined,
+  };
+  if (operation === "call") await adapter.call("Review this fixture.", context);
+  else await adapter.generate("Revise this fixture.", context);
+  return (capturedPayload?.reasoning as { effort?: unknown } | undefined)?.effort;
+}
+
+async function captureGrokReasoningEffort(
+  model: string,
+  effort: ReasoningEffort,
+  operation: "call" | "generate",
+): Promise<unknown> {
+  const adapter = new GrokAdapter({
+    ...config,
+    models: { ...config.models, grok: model },
+    reasoning_effort: { ...config.reasoning_effort, grok: effort },
+    streaming: { ...config.streaming, tokens: false },
+  });
+  let capturedPayload: Record<string, unknown> | undefined;
+  (
+    adapter as unknown as {
+      client: () => Promise<{
+        responses: {
+          create: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+        };
+      }>;
+    }
+  ).client = async () => ({
+    responses: {
+      create: async (payload) => {
+        capturedPayload = payload;
+        return {
+          status: "completed",
+          output_text: operation === "call" ? OPENAI_READY : "revised fixture",
+          model,
+        };
+      },
+    },
+  });
+  const context = {
+    session_id: "550e8400-e29b-41d4-a716-446655440013",
+    round: 1,
+    task: "Grok reasoning-effort family matrix",
+    emit: () => undefined,
+  };
+  if (operation === "call") await adapter.call("Review this fixture.", context);
+  else await adapter.generate("Revise this fixture.", context);
+  return (capturedPayload?.reasoning as { effort?: unknown } | undefined)?.effort;
+}
+
 {
-  const invalidUltra = FileConfigSchema.safeParse({
+  const sharedEfforts: ReasoningEffort[] = [
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+  ];
+  const familyMatrix: Array<{
+    models: string[];
+    expected: Record<ReasoningEffort, string>;
+  }> = [
+    {
+      models: ["gpt-5.6-sol"],
+      expected: {
+        none: "none",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+        ultra: "max",
+      },
+    },
+    {
+      models: ["gpt-5.5", "gpt-5.4", "gpt-5.2"],
+      expected: {
+        none: "none",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "xhigh",
+        ultra: "xhigh",
+      },
+    },
+    {
+      models: ["gpt-5.1"],
+      expected: {
+        none: "none",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "high",
+        max: "high",
+        ultra: "high",
+      },
+    },
+    {
+      models: ["gpt-5"],
+      expected: {
+        none: "minimal",
+        minimal: "minimal",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "high",
+        max: "high",
+        ultra: "high",
+      },
+    },
+  ];
+
+  for (const family of familyMatrix) {
+    for (const model of family.models) {
+      for (const effort of sharedEfforts) {
+        assert.equal(
+          await captureOpenAIReasoningEffort(model, effort),
+          family.expected[effort],
+          `${model} must normalize shared reasoning effort ${effort} to ${family.expected[effort]}.`,
+        );
+      }
+    }
+  }
+
+  assert.equal(
+    await captureOpenAIReasoningEffort("gpt-5", "none", "call"),
+    "minimal",
+    "The review-call payload must use the same GPT-5 family normalization as generation.",
+  );
+}
+
+{
+  const compatibleUltra = FileConfigSchema.safeParse({
     reasoning_effort: { codex: "ultra" },
   });
   assert.equal(
-    invalidUltra.success,
-    false,
-    "Codex product mode 'ultra' must not be misrepresented as a Responses API reasoning.effort value; central config must use 'max'.",
+    compatibleUltra.success,
+    true,
+    "Central config must accept the operator-facing ultra compatibility alias.",
   );
-  const apiMax = flattenFileConfigToEnvMap({ reasoning_effort: { codex: "max" } });
-  assert.equal(apiMax.CROSS_REVIEW_OPENAI_REASONING_EFFORT, "max");
+  const aliasEnv = flattenFileConfigToEnvMap({ reasoning_effort: { codex: "ultra" } });
+  assert.equal(aliasEnv.CROSS_REVIEW_OPENAI_REASONING_EFFORT, "ultra");
+
+  const priorEffort = process.env.CROSS_REVIEW_OPENAI_REASONING_EFFORT;
+  process.env.CROSS_REVIEW_OPENAI_REASONING_EFFORT = "ultra";
+  try {
+    assert.equal(
+      loadConfig().reasoning_effort.codex,
+      "ultra",
+      "Environment loading must preserve ultra until the selected adapter normalizes it.",
+    );
+  } finally {
+    if (priorEffort === undefined) delete process.env.CROSS_REVIEW_OPENAI_REASONING_EFFORT;
+    else process.env.CROSS_REVIEW_OPENAI_REASONING_EFFORT = priorEffort;
+  }
 }
 
 {
@@ -51,7 +248,7 @@ const config = loadConfig();
   const adapter = new OpenAIAdapter({
     ...config,
     models: { ...config.models, codex: "gpt-5.6-sol" },
-    reasoning_effort: { ...config.reasoning_effort, codex: "max" },
+    reasoning_effort: { ...config.reasoning_effort, codex: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
   let capturedPayload: Record<string, unknown> | undefined;
@@ -100,7 +297,7 @@ const config = loadConfig();
   assert.deepEqual(
     capturedPayload?.reasoning,
     { effort: "max" },
-    "GPT-5.6 Sol must preserve Responses API reasoning.effort=max instead of downgrading it to xhigh.",
+    "GPT-5.6 Sol must normalize ultra to the official Responses API reasoning.effort=max value.",
   );
   assert.deepEqual(
     capturedPayload?.prompt_cache_options,
@@ -112,12 +309,25 @@ const config = loadConfig();
     false,
     "GPT-5.6 Sol must not send the retired prompt_cache_retention field.",
   );
+
+  await adapter.generate("Revise this fixture with minimal internal effort.", {
+    session_id: "550e8400-e29b-41d4-a716-446655440001",
+    round: 1,
+    task: "provider refresh smoke",
+    reasoning_effort_override: "minimal",
+    emit: () => undefined,
+  });
+  assert.deepEqual(
+    capturedPayload?.reasoning,
+    { effort: "low" },
+    "GPT-5.6 Sol must normalize the shared minimal setting to its lowest active API effort, low.",
+  );
 }
 
 {
   const adapter = new DeepSeekAdapter({
     ...config,
-    reasoning_effort: { ...config.reasoning_effort, deepseek: "max" },
+    reasoning_effort: { ...config.reasoning_effort, deepseek: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
   let capturedPayload: Record<string, unknown> | undefined;
@@ -176,7 +386,7 @@ const config = loadConfig();
   const adapter = new GrokAdapter({
     ...config,
     models: { ...config.models, grok: "grok-4.5" },
-    reasoning_effort: { ...config.reasoning_effort, grok: "xhigh" },
+    reasoning_effort: { ...config.reasoning_effort, grok: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
   let capturedPayload: Record<string, unknown> | undefined;
@@ -214,7 +424,7 @@ const config = loadConfig();
   assert.deepEqual(
     capturedPayload?.reasoning,
     { effort: "high" },
-    "Grok 4.5 accepts low|medium|high; internal xhigh/max must clamp to high.",
+    "Grok 4.5 accepts low|medium|high; the ultra alias must clamp to high.",
   );
   assert.equal(
     Object.hasOwn(capturedPayload ?? {}, "prompt_cache_retention"),
@@ -224,6 +434,74 @@ const config = loadConfig();
   assert.equal(capturedPayload?.prompt_cache_key !== undefined, true);
   assert.equal(generated.usage?.input_tokens, 60);
   assert.equal(generated.usage?.cache_read_tokens, 40);
+}
+
+{
+  const sharedEfforts: ReasoningEffort[] = [
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+  ];
+  const familyMatrix: Array<{
+    model: string;
+    expected: Record<ReasoningEffort, string>;
+  }> = [
+    {
+      model: "grok-4.5",
+      expected: {
+        none: "low",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "high",
+        max: "high",
+        ultra: "high",
+      },
+    },
+    {
+      model: "grok-4.3",
+      expected: {
+        none: "none",
+        minimal: "high",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "high",
+        max: "high",
+        ultra: "high",
+      },
+    },
+    {
+      model: "grok-4.20-multi-agent",
+      expected: {
+        none: "low",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "xhigh",
+        ultra: "xhigh",
+      },
+    },
+  ];
+  for (const family of familyMatrix) {
+    for (const effort of sharedEfforts) {
+      for (const operation of ["call", "generate"] as const) {
+        assert.equal(
+          await captureGrokReasoningEffort(family.model, effort, operation),
+          family.expected[effort],
+          `${family.model} ${operation} must normalize ${effort} to ${family.expected[effort]}.`,
+        );
+      }
+    }
+  }
 }
 
 {
@@ -351,7 +629,7 @@ const config = loadConfig();
   const adapter = new AnthropicAdapter({
     ...config,
     models: { ...config.models, claude: "claude-fable-5" },
-    reasoning_effort: { ...config.reasoning_effort, claude: "max" },
+    reasoning_effort: { ...config.reasoning_effort, claude: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
   let capturedPayload: Record<string, unknown> | undefined;
@@ -387,8 +665,18 @@ const config = loadConfig();
     false,
     "Claude Fable 5 adaptive thinking is always on; the migration contract omits thinking.",
   );
-  assert.deepEqual(capturedPayload?.output_config, { effort: "max" });
+  assert.deepEqual(
+    capturedPayload?.output_config,
+    { effort: "max" },
+    "Claude must normalize the ultra alias to its strongest official output_config.effort value.",
+  );
 }
+
+assert.equal(
+  clampEffortForPerplexity("ultra"),
+  "high",
+  "Perplexity must normalize ultra to the strongest value in its four-value API enum.",
+);
 
 {
   const unavailableFable = selectFromCandidates(
@@ -504,7 +792,18 @@ const config = loadConfig();
         task: "provider refresh smoke",
         emit: (event) => events.push(event),
       }),
-    /Claude Fable 5 refusal/,
+    (error: unknown) => {
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /Claude Fable 5 refusal/,
+      );
+      const failure = (
+        error as { peerFailure?: { cost?: { total_cost?: number }; unpriced_attempts?: number } }
+      ).peerFailure;
+      assert.equal(failure?.cost?.total_cost, 0);
+      assert.equal(failure?.unpriced_attempts ?? 0, 0);
+      return true;
+    },
   );
   assert.ok(
     events.some(
@@ -514,22 +813,82 @@ const config = loadConfig();
         event.data?.model === "claude-fable-5" &&
         event.data?.billed === false,
     ),
-    "Anthropic Fable refusal must emit a structured provider.refusal event with billed=false.",
+    "Anthropic Fable refusal before output must emit billed=false even when usage is reported.",
+  );
+}
+
+{
+  const adapter = new AnthropicAdapter({
+    ...config,
+    models: { ...config.models, claude: "claude-fable-5" },
+    cost_rates: {
+      ...config.cost_rates,
+      claude: { input_per_million: 10, output_per_million: 50 },
+    },
+  });
+  (
+    adapter as unknown as {
+      client: () => Promise<{
+        messages: {
+          create: () => Promise<{
+            content: unknown[];
+            model: string;
+            stop_reason: string;
+            stop_details: { type: string; category: string };
+            usage: { input_tokens: number; output_tokens: number };
+          }>;
+        };
+      }>;
+    }
+  ).client = async () => ({
+    messages: {
+      create: async () => ({
+        content: [{ type: "text", text: "partial refusal output" }],
+        model: "claude-fable-5",
+        stop_reason: "refusal",
+        stop_details: { type: "refusal", category: "cyber" },
+        usage: { input_tokens: 412, output_tokens: 5 },
+      }),
+    },
+  });
+  const events: RuntimeEvent[] = [];
+  await assert.rejects(
+    () =>
+      adapter.call("Review this fixture.", {
+        session_id: "550e8400-e29b-41d4-a716-446655440001",
+        round: 1,
+        task: "provider refresh smoke",
+        emit: (event) => events.push(event),
+      }),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: { cost?: { total_cost?: number } } }).peerFailure;
+      assert.ok((failure?.cost?.total_cost ?? 0) > 0);
+      return true;
+    },
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "provider.refusal" && event.peer === "claude" && event.data?.billed === true,
+    ),
+    "Anthropic refusal after output must emit billed=true and preserve cost.",
   );
 }
 
 {
   const adapter = new GeminiAdapter({
     ...config,
+    reasoning_effort: { ...config.reasoning_effort, gemini: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
+  let capturedPayload: Record<string, unknown> | undefined;
   (
     adapter as unknown as {
       client: () => Promise<{
         ThinkingLevel: { HIGH: string };
         ai: {
           models: {
-            generateContent: () => Promise<Record<string, unknown>>;
+            generateContent: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
           };
         };
       }>;
@@ -538,17 +897,20 @@ const config = loadConfig();
     ThinkingLevel: { HIGH: "HIGH" },
     ai: {
       models: {
-        generateContent: async () => ({
-          text: "revised fixture",
-          modelVersion: "gemini-3.1-pro-preview",
-          candidates: [{ finishReason: "STOP" }],
-          usageMetadata: {
-            promptTokenCount: 100,
-            cachedContentTokenCount: 40,
-            candidatesTokenCount: 20,
-            totalTokenCount: 120,
-          },
-        }),
+        generateContent: async (payload) => {
+          capturedPayload = payload;
+          return {
+            text: "revised fixture",
+            modelVersion: "gemini-3.1-pro-preview",
+            candidates: [{ finishReason: "STOP" }],
+            usageMetadata: {
+              promptTokenCount: 100,
+              cachedContentTokenCount: 40,
+              candidatesTokenCount: 20,
+              totalTokenCount: 120,
+            },
+          };
+        },
       },
     },
   });
@@ -564,6 +926,12 @@ const config = loadConfig();
     "Gemini promptTokenCount includes cachedContentTokenCount; canonical fresh input must exclude cache reads.",
   );
   assert.equal(generated.usage?.cache_read_tokens, 40);
+  assert.deepEqual(
+    (capturedPayload?.config as { thinkingConfig?: unknown } | undefined)?.thinkingConfig,
+    { includeThoughts: false, thinkingLevel: "HIGH" },
+    "Gemini has no shared reasoning_effort wire enum; ultra must keep its native HIGH thinking control without leaking the alias.",
+  );
+  assert.equal(JSON.stringify(capturedPayload).includes("ultra"), false);
 }
 
 {

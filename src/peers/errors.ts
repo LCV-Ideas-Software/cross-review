@@ -1,4 +1,4 @@
-import type { PeerFailure, PeerId } from "../core/types.js";
+import type { CostEstimate, PeerFailure, PeerId, TokenUsage } from "../core/types.js";
 import { safeErrorMessage } from "../security/redact.js";
 
 // v2.4.0 / audit closure (P2.7): extract `Retry-After` from provider
@@ -217,8 +217,15 @@ export function classifyProviderError(
     /\b(?:401|403|unauthorized|forbidden|invalid api key|missing api key|expired api key|authentication failed|authentication required)\b/i.test(
       message,
     );
+  const errorName =
+    error && typeof error === "object" && typeof (error as { name?: unknown }).name === "string"
+      ? String((error as { name: string }).name)
+      : "";
   const cancelled =
-    /\b(?:aborterror|operation was aborted|call cancelled|session_cancelled)\b/i.test(message);
+    /\baborterror\b/i.test(errorName) ||
+    /\b(?:aborterror|(?:operation|request|call)\s+(?:was\s+)?(?:aborted|cancelled)|session_cancelled)\b/i.test(
+      message,
+    );
   const providerRefusal =
     provider.toLowerCase() === "anthropic" &&
     (/\banthropic_refusal\b|\brefusal\b/i.test(providerSignals) ||
@@ -242,6 +249,28 @@ export function classifyProviderError(
   const providerOverloaded =
     /\b(?:overloaded_error|overloaded)\b/i.test(providerSignals) ||
     /\b(?:overloaded_error|overloaded)\b/i.test(message);
+  const retryableAnthropicMaxTokens =
+    /\banthropic_max_tokens_retryable\b/i.test(providerSignals) ||
+    /\banthropic_max_tokens_retryable\b/i.test(message);
+  const errorRecord =
+    error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
+  const billedUsage =
+    errorRecord?.usage && typeof errorRecord.usage === "object"
+      ? (errorRecord.usage as TokenUsage)
+      : undefined;
+  const billedCost =
+    errorRecord?.cost && typeof errorRecord.cost === "object"
+      ? (errorRecord.cost as CostEstimate)
+      : undefined;
+  const accountedAttempts =
+    typeof errorRecord?.accounted_attempts === "number" &&
+    Number.isInteger(errorRecord.accounted_attempts) &&
+    errorRecord.accounted_attempts > 0
+      ? errorRecord.accounted_attempts
+      : typeof billedCost?.total_cost === "number" && Number.isFinite(billedCost.total_cost)
+        ? 1
+        : 0;
+  const unpricedAttempts = Math.max(0, attempts - accountedAttempts);
 
   const failureClass = auth
     ? "auth"
@@ -302,7 +331,12 @@ export function classifyProviderError(
       !cancelled &&
       !auth &&
       !providerRefusal &&
-      (rateLimited || timeout || network || gateway5xx || providerOverloaded),
+      (rateLimited ||
+        timeout ||
+        network ||
+        gateway5xx ||
+        providerOverloaded ||
+        retryableAnthropicMaxTokens),
     recovery_hint: providerRefusal
       ? "reformulate_and_retry"
       : rateLimited || providerOverloaded
@@ -319,6 +353,10 @@ export function classifyProviderError(
     retry_after_ms: extractRetryAfterMs(error),
     attempts,
     latency_ms: Date.now() - started,
+    ...(billedUsage ? { usage: billedUsage } : {}),
+    ...(billedCost ? { cost: billedCost } : {}),
+    billing_status: billedUsage || billedCost ? "reported" : "unknown",
+    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
     docs_hint: docsHint,
   };
 }

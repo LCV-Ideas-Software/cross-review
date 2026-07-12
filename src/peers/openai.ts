@@ -140,12 +140,48 @@ function isGpt56Family(model: string): boolean {
   return /^gpt-5\.6(?:-|$)/i.test(model);
 }
 
+function openAIReasoningFamily(
+  model: string,
+): "gpt-5.6" | "gpt-5.5-5.2" | "gpt-5.1" | "gpt-5" | "other" {
+  if (isGpt56Family(model)) return "gpt-5.6";
+  if (/^gpt-5\.(?:5|4|2)(?:-|$)/i.test(model)) return "gpt-5.5-5.2";
+  if (/^gpt-5\.1(?:-|$)/i.test(model)) return "gpt-5.1";
+  if (/^gpt-5(?:-|$)/i.test(model)) return "gpt-5";
+  return "other";
+}
+
 function openAIEffort(
   value: AppConfig["reasoning_effort"][PeerId],
   model: string,
 ): OpenAIReasoningEffort {
-  if (value === "max") return isGpt56Family(model) ? "max" : "xhigh";
-  return value ?? "xhigh";
+  const effort = value ?? "xhigh";
+  switch (openAIReasoningFamily(model)) {
+    case "gpt-5.6":
+      // GPT-5.6: none|low|medium|high|xhigh|max.
+      if (effort === "minimal") return "low";
+      if (effort === "ultra") return "max";
+      return effort;
+    case "gpt-5.5-5.2":
+      // GPT-5.5, GPT-5.4 and GPT-5.2: none|low|medium|high|xhigh.
+      if (effort === "minimal") return "low";
+      if (effort === "max" || effort === "ultra") return "xhigh";
+      return effort;
+    case "gpt-5.1":
+      // GPT-5.1: none|low|medium|high.
+      if (effort === "minimal") return "low";
+      if (effort === "xhigh" || effort === "max" || effort === "ultra") return "high";
+      return effort;
+    case "gpt-5":
+      // Original GPT-5: minimal|low|medium|high.
+      if (effort === "none") return "minimal";
+      if (effort === "xhigh" || effort === "max" || effort === "ultra") return "high";
+      return effort;
+    case "other":
+      // Preserve the legacy fallback for explicit non-GPT-5 overrides while
+      // ensuring the operator-facing alias never reaches any OpenAI payload.
+      if (effort === "max" || effort === "ultra") return "xhigh";
+      return effort;
+  }
 }
 
 function promptCacheFields(config: AppConfig, model: string, cacheKey: string) {
@@ -358,6 +394,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 
@@ -468,6 +505,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 }

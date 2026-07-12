@@ -56,7 +56,20 @@ export type SessionOutcome = "converged" | "aborted" | "max-rounds";
 // approve/reject judgments over external code/artifacts, prefer ship
 // or review modes.
 export type SessionMode = "ship" | "review" | "circular";
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+// This is a shared cross-provider scale, not a promise that every literal is
+// native to every model. Provider adapters MUST normalize unsupported values
+// against the selected model family. In particular, `ultra` is an
+// operator/Codex product compatibility alias and is never sent verbatim.
+// prettier-ignore
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
 // prettier-ignore
 export type SessionControlStatus =
   | "running"
@@ -70,6 +83,22 @@ export type DecisionQuality =
   | "recovered"
   | "needs_operator_review"
   | "failed";
+
+/**
+ * Durable explanation for any server-side decision rewrite. `status` remains
+ * the effective public verdict; this trace preserves how the provider's
+ * literal value became that verdict.
+ */
+export interface DecisionTransformation {
+  stage: string;
+  from: ReviewStatus | null;
+  to: ReviewStatus | null;
+  /** Stable primary rule for machine consumers. */
+  rule?: string | undefined;
+  /** Additional rules when one transition has more than one contributing cause. */
+  reasons?: string[] | undefined;
+  details?: Record<string, unknown> | undefined;
+}
 
 export interface ModelCandidate {
   id: string;
@@ -191,7 +220,8 @@ export interface CacheManifestEntry {
   peer: PeerId;
   provider: string;
   model: string;
-  cache_key_hash: string;
+  cache_key_hash: string | null;
+  cache_key_unavailable_reason?: string | undefined;
   cache_provider_mode: "auto" | "explicit" | "implicit" | "not_supported";
   read_tokens?: number | undefined;
   write_tokens?: number | undefined;
@@ -224,6 +254,16 @@ export interface PeerResult {
   model: string;
   model_reported?: string | undefined;
   model_match?: boolean | undefined;
+  /** Literal status token selected from the provider response envelope. */
+  raw_status?: ReviewStatus | null | undefined;
+  /** Status after JSON/schema parsing, before semantic READY invariants. */
+  parsed_status?: ReviewStatus | null | undefined;
+  /** Status after all server-side normalization performed so far. */
+  normalized_status?: ReviewStatus | null | undefined;
+  /** Ordered, durable explanation of every status-changing rule. */
+  decision_transformations?: DecisionTransformation[] | undefined;
+  /** @deprecated Compatibility alias; use decision_transformations. */
+  status_transformations?: DecisionTransformation[] | undefined;
   status: ReviewStatus | null;
   structured: PeerStructuredStatus | null;
   text: string;
@@ -232,6 +272,7 @@ export interface PeerResult {
   cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
+  unpriced_attempts?: number | undefined;
   parser_warnings: string[];
   decision_quality: DecisionQuality;
   fallback?: FallbackEvent | undefined;
@@ -249,6 +290,7 @@ export interface GenerationResult {
   cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
+  unpriced_attempts?: number | undefined;
   fallback?: FallbackEvent | undefined;
   // v2.23.0: parser-side diagnostics produced by provider adapters when the
   // response payload was technically valid (tokens billed) but yielded a
@@ -306,6 +348,12 @@ export interface PeerFailure {
   retry_after_ms?: number | undefined;
   attempts: number;
   latency_ms: number;
+  /** Provider-reported billable usage captured even when no usable result exists. */
+  usage?: TokenUsage | undefined;
+  /** Cost derived from provider-reported failure usage and the configured rate card. */
+  cost?: CostEstimate | undefined;
+  billing_status?: "reported" | "unknown" | undefined;
+  unpriced_attempts?: number | undefined;
   preflight_issue_classes?: string[] | undefined;
   // v2.15.0 (item 5): when a provider 4xx error message cites a named
   // parameter (e.g. "Argument not supported on this model: reasoning.effort"),
@@ -373,8 +421,16 @@ export interface ConvergenceScope {
 }
 
 export interface ConvergenceHealth {
-  state: "idle" | "running" | "converged" | "blocked" | "stale";
+  state: "idle" | "running" | "converged" | "blocked" | "stale" | "aborted" | "cancelled";
+  // Backward-compatible alias for last_activity_at. Kept because durable
+  // sessions written before v4.5.4 and external consumers still read it.
   last_event_at: string;
+  // Updated for every event that is successfully appended to events.ndjson,
+  // independently of whether the convergence state changed.
+  last_activity_at?: string | undefined;
+  // Updated only by an explicit health/state mutation. Legacy sessions seed
+  // this from last_event_at the first time a new event is persisted.
+  last_state_transition_at?: string | undefined;
   detail: string;
   idle_ms?: number | undefined;
 }
@@ -542,6 +598,7 @@ export interface GenerationArtifact {
   usage?: TokenUsage | undefined;
   cost?: CostEstimate | undefined;
   latency_ms?: number | undefined;
+  unpriced_attempts?: number | undefined;
 }
 
 export interface OperatorEscalation {
@@ -550,10 +607,30 @@ export interface OperatorEscalation {
   severity: "info" | "warning" | "critical";
 }
 
+export interface PreflightCheckRecord {
+  ts: string;
+  gate: "evidence" | "truthfulness";
+  phase: string;
+  pass: boolean;
+  round?: number | undefined;
+  details: Record<string, unknown>;
+}
+
+export interface BackgroundGenerationInFlight {
+  peer: PeerId;
+  provider: string;
+  model: string;
+  label: string;
+  round: number;
+  started_at: string;
+  owner_pid: number;
+}
+
 export interface SessionControl {
   status: SessionControlStatus;
   reason?: string | undefined;
   job_id?: string | undefined;
+  owner_pid?: number | undefined;
   requested_at?: string | undefined;
   updated_at: string;
 }
@@ -623,6 +700,7 @@ export interface EvidenceAskJudgment {
   cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
+  unpriced_attempts?: number | undefined;
   // Parser warnings encountered while extracting structured fields from
   // the provider response. Non-empty does not invalidate the judgment;
   // it surfaces format-stability concerns to the dashboard.
@@ -758,6 +836,8 @@ export interface SessionEvent extends RuntimeEvent {
 export interface SessionMeta {
   session_id: string;
   version: string;
+  /** v2 records every known billable path and marks unknown attempts explicitly. */
+  accounting_schema_version?: 2 | undefined;
   created_at: string;
   updated_at: string;
   task: string;
@@ -767,6 +847,8 @@ export interface SessionMeta {
   outcome_reason?: string | undefined;
   capability_snapshot: PeerProbeResult[];
   in_flight?: InFlightRound | undefined;
+  /** Provider dispatch marker, independent from async background-job control. */
+  generation_in_flight?: BackgroundGenerationInFlight | undefined;
   convergence_scope?: ConvergenceScope | undefined;
   convergence_health?: ConvergenceHealth | undefined;
   failed_attempts?: Array<PeerFailure & { round: number }> | undefined;
@@ -779,6 +861,7 @@ export interface SessionMeta {
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;
   generation_files?: GenerationArtifact[] | undefined;
   operator_escalations?: OperatorEscalation[] | undefined;
+  preflight_checks?: PreflightCheckRecord[] | undefined;
   control?: SessionControl | undefined;
   fallback_events?: FallbackEvent[] | undefined;
   rounds: ReviewRound[];
@@ -1296,6 +1379,9 @@ export interface SessionDoctorReport {
     total_cost_usd: number | null;
     peer_call_cost_usd: number | null;
     generation_cost_usd: number | null;
+    failed_attempt_cost_usd: number | null;
+    unpriced_provider_attempts: number;
+    legacy_accounting_sessions: number;
   };
   findings: {
     open_sessions: SessionDoctorEntry[];

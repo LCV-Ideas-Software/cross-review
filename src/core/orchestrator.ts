@@ -9,7 +9,7 @@ import {
   checkConvergence,
   isSkippableFailure,
 } from "./convergence.js";
-import { estimateCacheSavings } from "./cost.js";
+import { estimateCacheSavings, mergeCost, mergeUsage } from "./cost.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
 import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
 import { SessionStore } from "./session-store.js";
@@ -21,6 +21,7 @@ import type {
   ConvergenceScope,
   CostEstimate,
   FallbackEvent,
+  GenerationResult,
   PeerAdapter,
   PeerCallContext,
   PeerFailure,
@@ -101,6 +102,10 @@ export interface RunUntilUnanimousInput {
   lead_peer?: PeerId | undefined;
   peers?: PeerId[] | undefined;
   max_rounds?: number | undefined;
+  // Caller ceilings are hard by default. Legacy automatic extension is
+  // available only through this explicit opt-in and every granted ceiling is
+  // persisted back to effective_max_rounds.
+  allow_auto_extension?: boolean | undefined;
   until_stopped?: boolean | undefined;
   max_cost_usd?: number | undefined;
   signal?: AbortSignal | undefined;
@@ -714,6 +719,13 @@ export interface ReadyPeerEvidenceGroundingResult {
   result: PeerResult;
   grounded: boolean;
   unsupported_sources: string[];
+  failed_predicates: string[];
+  source_diagnostics: Array<{
+    index: number;
+    supported: boolean;
+    attachment_custody_claimed: boolean;
+    correlated_attachment?: string | undefined;
+  }>;
   fabrication: FabricationDetectionResult;
   peer_submitted_evidence_required: boolean;
   peer_submitted_evidence_corroborated: boolean;
@@ -724,13 +736,14 @@ function normalizeGroundingText(value: string): string {
 }
 
 function quotedEvidencePhrases(source: string): string[] {
-  const explicitMarker = /\bArtifact quote:\s*/i.exec(source);
+  const explicitMarker = /\b(?:Artifact quote|verbatim|literal quote|quote)\s*:\s*/i.exec(source);
   if (explicitMarker) {
     const wrapped = source.slice((explicitMarker.index ?? 0) + explicitMarker[0].length).trim();
     const pairs = [
       ['"', '"'],
       ["'", "'"],
       ["“", "”"],
+      ["`", "`"],
     ] as const;
     for (const [open, close] of pairs) {
       if (!wrapped.startsWith(open) || !wrapped.endsWith(close)) continue;
@@ -742,6 +755,10 @@ function quotedEvidencePhrases(source: string): string[] {
 
   const phrases: string[] = [];
   for (const match of source.matchAll(/["“]([^"”\r\n]{12,})["”]/g)) {
+    const phrase = match[1]?.trim();
+    if (phrase) phrases.push(phrase);
+  }
+  for (const match of source.matchAll(/`([^`\r\n]{12,})`/g)) {
     const phrase = match[1]?.trim();
     if (phrase) phrases.push(phrase);
   }
@@ -813,6 +830,44 @@ function evidenceSourceNamesPeerCustody(
       normalizedSource.includes(attachment.sha256.toLowerCase());
     return (pathMentioned || labelMentioned) && digestMentioned;
   });
+}
+
+function evidenceSourceMatchesSingleAttachment(
+  source: string,
+  attachment: NonNullable<ReadyPeerEvidenceGroundingInput["callerSubmittedAttachments"]>[number],
+): boolean {
+  const normalizedSource = normalizeGroundingText(source);
+  const pathMentioned = normalizedSource.includes(normalizeGroundingText(attachment.relative_path));
+  const labelMentioned = attachment.label
+    ? normalizedSource.includes(normalizeGroundingText(attachment.label))
+    : false;
+  const digestMentioned =
+    typeof attachment.sha256 === "string" &&
+    attachment.sha256.length >= 32 &&
+    normalizedSource.includes(attachment.sha256.toLowerCase());
+  if ((!pathMentioned && !labelMentioned) || !digestMentioned) return false;
+
+  const normalizedContent = normalizeGroundingText(attachment.content);
+  return quotedEvidencePhrases(source).some((phrase) => {
+    const normalizedPhrase = normalizeGroundingText(phrase);
+    return normalizedPhrase.length >= 12 && normalizedContent.includes(normalizedPhrase);
+  });
+}
+
+function evidenceSourceClaimsAttachmentCustody(
+  source: string,
+  attachments: NonNullable<ReadyPeerEvidenceGroundingInput["callerSubmittedAttachments"]>,
+): boolean {
+  if (/\bAttachment\s*:/i.test(source)) return true;
+  const normalizedSource = normalizeGroundingText(source);
+  return attachments.some(
+    (attachment) =>
+      normalizedSource.includes(normalizeGroundingText(attachment.relative_path)) ||
+      Boolean(
+        attachment.label && normalizedSource.includes(normalizeGroundingText(attachment.label)),
+      ) ||
+      Boolean(attachment.sha256 && normalizedSource.includes(attachment.sha256.toLowerCase())),
+  );
 }
 
 function truthfulnessClaimAnchors(claim: string): string[] {
@@ -913,7 +968,6 @@ export function groundReadyPeerEvidence(
         .join("\n"),
     )
     .join("\n");
-  const trustedCorpus = `${input.artifactText}\n${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}`;
   const attachmentRefs = new Set(
     input.attachmentRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
   );
@@ -922,19 +976,41 @@ export function groundReadyPeerEvidence(
     priorDraftCorpus: input.artifactText,
     narrativeCorpus: "",
   });
-  const unsupportedSources = sources.filter(
-    (source) => !evidenceSourceHasGroundedAnchor(source, trustedCorpus, attachmentRefs),
-  );
+  const nonCallerTrustedCorpus = `${input.artifactText}\n${input.attachedEvidenceText}`;
+  const unsupportedSources = sources.filter((source) => {
+    if (evidenceSourceClaimsAttachmentCustody(source, callerSubmittedAttachments)) {
+      return !callerSubmittedAttachments.some((attachment) =>
+        evidenceSourceMatchesSingleAttachment(source, attachment),
+      );
+    }
+    return !evidenceSourceHasGroundedAnchor(source, nonCallerTrustedCorpus, attachmentRefs);
+  });
+  const sourceDiagnostics = sources.map((source, index) => {
+    const correlatedAttachment = callerSubmittedAttachments.find((attachment) =>
+      evidenceSourceMatchesSingleAttachment(source, attachment),
+    );
+    return {
+      index,
+      supported: !unsupportedSources.includes(source),
+      attachment_custody_claimed: evidenceSourceClaimsAttachmentCustody(
+        source,
+        callerSubmittedAttachments,
+      ),
+      ...(correlatedAttachment
+        ? { correlated_attachment: correlatedAttachment.relative_path }
+        : {}),
+    };
+  });
   const operationalAssertions = extractEvidenceOperationalAssertions(input.artifactText);
   const fabricationProneClaims = splitTruthfulnessLines(input.artifactText).filter((line) =>
     FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line),
   );
   const historicalClaims = splitTruthfulnessLines(input.artifactText).filter((line) =>
-    HISTORICAL_RUNTIME_TIMING_PATTERN.test(line),
+    historicalRuntimeClaimDetected(line),
   );
   const forcedCurrentStateClaims = input.requirePeerSubmittedCorroboration
     ? splitTruthfulnessLines(input.artifactText).filter((line) =>
-        CURRENT_STATE_CLAIM_PATTERN.test(line),
+        isAssertiveCurrentStateClaim(line),
       )
     : [];
   const hasHighRiskOperationalClaims =
@@ -974,23 +1050,20 @@ export function groundReadyPeerEvidence(
     input.requirePeerSubmittedCorroboration === true ||
     (!operatorGrounded && hasHighRiskOperationalClaims && callerSubmittedAttachments.length > 0);
   const sourceText = sources.join("\n");
+  const peerCustodySourcesCorrelated =
+    sources.length > 0 &&
+    sources.every((source) =>
+      callerSubmittedAttachments.some((attachment) =>
+        evidenceSourceMatchesSingleAttachment(source, attachment),
+      ),
+    );
   const peerSubmittedEvidenceCorroborated =
     !peerSubmittedEvidenceRequired ||
     (peerResult.structured?.confidence === "verified" &&
       callerSubmittedAttachments.length > 0 &&
       peerEvidenceGrounded &&
       evidenceSourceNamesPeerCustody(sourceText, callerSubmittedAttachments) &&
-      evidenceSourceHasGroundedAnchor(
-        sourceText,
-        callerSubmittedEvidenceText,
-        new Set(
-          callerSubmittedAttachments.flatMap((attachment) =>
-            [attachment.label, attachment.relative_path]
-              .filter((value): value is string => Boolean(value))
-              .map(normalizeEvidenceRef),
-          ),
-        ),
-      ) &&
+      peerCustodySourcesCorrelated &&
       operationalAssertions.every((assertion) =>
         evidenceCorroboratesOperationalAssertion(assertion, sourceText),
       ) &&
@@ -1005,33 +1078,82 @@ export function groundReadyPeerEvidence(
       unsupportedSources.length === 0 &&
       !fabrication.fabricated &&
       peerSubmittedEvidenceCorroborated);
+  const failedPredicates: string[] = [];
+  if (sources.length === 0) failedPredicates.push("evidence_sources_present");
+  if (unsupportedSources.length > 0) failedPredicates.push("every_source_independently_grounded");
+  if (fabrication.fabricated) failedPredicates.push("no_fabricated_source_tokens_or_assertions");
+  if (peerSubmittedEvidenceRequired) {
+    if (peerResult.structured?.confidence !== "verified") {
+      failedPredicates.push("peer_confidence_verified");
+    }
+    if (callerSubmittedAttachments.length === 0) {
+      failedPredicates.push("caller_evidence_attachment_present");
+    }
+    if (!peerEvidenceGrounded) failedPredicates.push("artifact_claims_match_caller_evidence");
+    if (!peerCustodySourcesCorrelated) {
+      failedPredicates.push("each_source_path_digest_quote_match_one_attachment");
+    }
+    if (!peerSubmittedEvidenceCorroborated) {
+      failedPredicates.push("peer_submitted_evidence_corroborated");
+    }
+  }
   if (grounded) {
     return {
       result: peerResult,
       grounded,
       unsupported_sources: [],
+      failed_predicates: [],
+      source_diagnostics: sourceDiagnostics,
       fabrication,
       peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
       peer_submitted_evidence_corroborated: peerSubmittedEvidenceCorroborated,
     };
   }
 
-  const warning = !peerSubmittedEvidenceCorroborated
-    ? peerResult.structured?.confidence !== "verified"
-      ? "ready_peer_submitted_evidence_requires_verified_confidence"
-      : "ready_peer_submitted_evidence_requires_path_hash_and_correlated_raw_quote"
-    : fabrication.fabricated
-      ? "ready_evidence_sources_fabricated"
-      : sources.length === 0
-        ? "ready_evidence_sources_missing"
-        : "ready_evidence_sources_ungrounded";
+  const warning = fabrication.fabricated
+    ? "ready_evidence_sources_fabricated"
+    : sources.length === 0
+      ? "ready_evidence_sources_missing"
+      : unsupportedSources.length > 0
+        ? "ready_evidence_sources_ungrounded"
+        : peerResult.structured?.confidence !== "verified"
+          ? "ready_peer_submitted_evidence_requires_verified_confidence"
+          : callerSubmittedAttachments.length === 0
+            ? "ready_peer_submitted_evidence_requires_attachment"
+            : !peerCustodySourcesCorrelated
+              ? "ready_peer_submitted_evidence_requires_path_hash_and_correlated_raw_quote"
+              : !peerEvidenceGrounded
+                ? "ready_peer_submitted_evidence_does_not_corroborate_artifact_claims"
+                : "ready_peer_submitted_evidence_not_corroborated";
   const parserWarnings = [...peerResult.parser_warnings, warning];
   const callerRequest =
     "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+  const priorTransformations = [
+    ...(peerResult.decision_transformations ?? peerResult.status_transformations ?? []),
+  ];
+  const groundingTransformation = {
+    stage: "grounding",
+    from: peerResult.normalized_status ?? peerResult.status,
+    to: "NEEDS_EVIDENCE" as const,
+    rule: warning,
+    reasons: [warning],
+    details: {
+      unsupported_sources: unsupportedSources,
+      failed_predicates: failedPredicates,
+      source_diagnostics: sourceDiagnostics,
+      fabricated: fabrication.fabricated,
+      peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
+      peer_submitted_evidence_corroborated: false,
+    },
+  };
+  const decisionTransformations = [...priorTransformations, groundingTransformation];
   return {
     result: {
       ...peerResult,
       status: "NEEDS_EVIDENCE",
+      normalized_status: "NEEDS_EVIDENCE",
+      decision_transformations: decisionTransformations,
+      status_transformations: decisionTransformations,
       structured: peerResult.structured
         ? {
             ...peerResult.structured,
@@ -1047,6 +1169,8 @@ export function groundReadyPeerEvidence(
     },
     grounded: false,
     unsupported_sources: unsupportedSources,
+    failed_predicates: failedPredicates,
+    source_diagnostics: sourceDiagnostics,
     fabrication,
     peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
     peer_submitted_evidence_corroborated: false,
@@ -1537,7 +1661,12 @@ export function evidencePreflight(params: {
 }): EvidencePreflightResult {
   const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
   const claimText = `${params.task}\n${params.initialDraft ?? ""}`;
-  const referenceCorpus = `${claimText}\n${params.structuredEvidence ?? ""}`;
+  // The evidence field already contains transported literal material. It is
+  // not narrative that can claim a second, unattached artifact. Scanning it
+  // made distant JSON keys combine into false references (for example a
+  // CHANGELOG.md value plus an unrelated `artifact` property).
+  const referenceCorpus = claimText;
+  const evidenceMarkerCorpus = `${claimText}\n${params.structuredEvidence ?? ""}`;
   const reviewableEvidenceText = [
     params.structuredEvidence ?? "",
     params.attachedEvidenceText ?? "",
@@ -1579,7 +1708,7 @@ export function evidencePreflight(params: {
         ", ",
       )}; embed the literal content inline or in the evidence field before submitting`,
       completed_work_claim_matched: claimMatched,
-      evidence_marker_found: EVIDENCE_MARKER_PATTERN.test(referenceCorpus),
+      evidence_marker_found: EVIDENCE_MARKER_PATTERN.test(evidenceMarkerCorpus),
       structured_evidence_supplied: structuredEvidenceSupplied,
       attachments_present: params.attachmentsPresent,
       unattached_evidence_references: unattachedEvidenceReferences,
@@ -1711,15 +1840,44 @@ const POSITIVE_OPERATIONAL_STATE_PATTERN =
 const NEGATIVE_OPERATIONAL_STATE_PATTERN =
   /\b(?:unhealthy|red|offline|down|degraded|failed|failing|errored|indispon[ií]vel|degradad[oa]|falhou|falhando|vermelho|fora\s+do\s+ar)\b/i;
 const OPERATIONAL_STATE_INSTRUCTION_PATTERN =
-  /^\s*(?:please\s+)?(?:check|verify|review|ensure|determine|assess|investigate|validate|confirm\s+whether|verifique|revise|garanta|determine|avalie|investigue|valide|confirme\s+se)\b/i;
+  /^\s*(?:please\s+)?(?:check|inspect|verify|review|ensure|determine|assess|investigate|validate|confirm\s+whether|verifique|inspecione|revise|garanta|determine|avalie|investigue|valide|confirme\s+se)\b/i;
+
+const ATTRIBUTED_DOCUMENTATION_CLAIM_PATTERN =
+  /\b(?:documentation|docs?|provider documentation|google|openai|anthropic|xai|deepseek|perplexity)\s+(?:documentation\s+)?(?:says?|states?|describes?|calls?|documents?|informa|afirma|declara|descreve)\s*:/i;
+const CROSS_REVIEW_RUNTIME_SCOPE_PATTERN =
+  /\b(?:cross[- ]review|server_info|runtime_capabilities|mcp\s+(?:runtime|server|host|version)|cross[- ]review\s+(?:runtime|server)|loaded\s+(?:cross[- ]review\s+)?runtime|local\s+(?:cross[- ]review\s+)?runtime|runtime\s+local)\b/i;
+
+function isNonAssertiveTruthfulnessLine(line: string): boolean {
+  return (
+    OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(line) ||
+    /\?\s*$/.test(line) ||
+    ATTRIBUTED_DOCUMENTATION_CLAIM_PATTERN.test(line)
+  );
+}
+
+function isAssertiveCurrentStateClaim(line: string): boolean {
+  return CURRENT_STATE_CLAIM_PATTERN.test(line) && !isNonAssertiveTruthfulnessLine(line);
+}
+
+function historicalRuntimeClaimDetected(line: string): boolean {
+  return (
+    HISTORICAL_RUNTIME_TIMING_PATTERN.test(line) &&
+    CROSS_REVIEW_RUNTIME_SCOPE_PATTERN.test(line) &&
+    !isNonAssertiveTruthfulnessLine(line)
+  );
+}
 
 function operationalStateClaimDetected(claim: string): boolean {
-  if (OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(claim) || /\?\s*$/.test(claim)) return false;
-  return (
-    OPERATIONAL_STATE_SUBJECT_PATTERN.test(claim) &&
-    (POSITIVE_OPERATIONAL_STATE_PATTERN.test(claim) ||
-      NEGATIVE_OPERATIONAL_STATE_PATTERN.test(claim))
-  );
+  if (isNonAssertiveTruthfulnessLine(claim)) return false;
+  const subjectThenState =
+    /\b(?:production|prod|deployment|deploy|service|server|ci|pipeline|workflow|produ[cç][aã]o|servi[cç]o|servidor)\b[\s\S]{0,80}\b(?:is|are|was|were|est[aá]|est[aã]o|ficou|permanece|status\s*[:=])\b[\s\S]{0,40}\b(?:healthy|green|online|up|running|loaded|live|stable|available|operational|ready|success|successful|succeeded|completed|unhealthy|red|offline|down|degraded|failed|failing|errored|saud[aá]vel|verde|ativo|rodando|carregad[oa]|est[aá]vel|dispon[ií]vel|operacional|pronto|sucesso|conclu[ií]d[oa]|indispon[ií]vel|degradad[oa]|falhou|falhando|vermelho|fora\s+do\s+ar)\b/i.test(
+      claim,
+    );
+  const stateThenSubject =
+    /\b(?:healthy|green|online|up|running|loaded|live|stable|available|operational|unhealthy|red|offline|down|degraded|failed|failing|errored|saud[aá]vel|verde|ativo|rodando|carregad[oa]|est[aá]vel|dispon[ií]vel|operacional|indispon[ií]vel|degradad[oa]|falhou|falhando|vermelho|fora\s+do\s+ar)\b[\s\S]{0,30}\b(?:production|prod|deployment|deploy|service|server|ci|pipeline|workflow|produ[cç][aã]o|servi[cç]o|servidor)\b/i.test(
+      claim,
+    );
+  return OPERATIONAL_STATE_SUBJECT_PATTERN.test(claim) && (subjectThenState || stateThenSubject);
 }
 
 function operationalStateClaimCorroborated(claim: string, suppliedEvidence: string): boolean {
@@ -1875,7 +2033,7 @@ export function truthfulnessPreflight(params: {
   let independentReviewRequired = false;
 
   for (const line of lines) {
-    const historicalClaim = HISTORICAL_RUNTIME_TIMING_PATTERN.test(line);
+    const historicalClaim = historicalRuntimeClaimDetected(line);
     let lineCurrentModelClaimMatched = false;
     if (FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line)) {
       fabricationProneClaimMatched = true;
@@ -1889,7 +2047,7 @@ export function truthfulnessPreflight(params: {
       }
     }
 
-    if (CURRENT_STATE_CLAIM_PATTERN.test(line)) {
+    if (isAssertiveCurrentStateClaim(line)) {
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(line)) continue;
@@ -1940,7 +2098,11 @@ export function truthfulnessPreflight(params: {
 
     if (!versions.length && !dates.length) continue;
 
-    if (CURRENT_STATE_CLAIM_PATTERN.test(line) && !historicalClaim) {
+    if (
+      isAssertiveCurrentStateClaim(line) &&
+      CROSS_REVIEW_RUNTIME_SCOPE_PATTERN.test(line) &&
+      !historicalClaim
+    ) {
       currentStateClaimMatched = true;
       if (runtimeVersion) {
         const expected = normalizeVersionToken(runtimeVersion);
@@ -2191,6 +2353,7 @@ function buildFormatRecoveryPrompt(
   priorResponse: string,
   config: AppConfig,
   reviewFocus?: string,
+  lossyReadyDecision = false,
 ): string {
   const boundedTask = safePromptText(meta.task, Math.min(config.prompt.max_task_chars, 4_000));
   const boundedResponse =
@@ -2198,7 +2361,9 @@ function buildFormatRecoveryPrompt(
   return [
     "# Cross Review - Format Recovery",
     "",
-    "Your previous peer-review response could not be parsed by the machine-readable status parser.",
+    lossyReadyDecision
+      ? "Your previous READY response exceeded or violated the structured field limits and was parsed lossily."
+      : "Your previous peer-review response could not be parsed by the machine-readable status parser.",
     "Do not re-review the artifact from scratch unless your previous answer was incomplete.",
     "Use your previous response as the primary source of truth for the recovered decision.",
     "If the previous response does not contain a clear decision, use NEEDS_EVIDENCE.",
@@ -2334,6 +2499,14 @@ function budgetLimit(
   return (
     inputLimit ??
     (options.untilStopped ? config.budget.until_stopped_max_cost_usd : undefined) ??
+    config.budget.max_session_cost_usd
+  );
+}
+
+function sessionBudgetLimit(config: AppConfig, session: SessionMeta): number | undefined {
+  return (
+    session.effective_cost_ceiling_usd ??
+    session.cost_ceiling_usd ??
     config.budget.max_session_cost_usd
   );
 }
@@ -2476,6 +2649,63 @@ function cancellationFailure(
   };
 }
 
+function unpricedAttemptsForFailure(failure: PeerFailure): number {
+  if (failure.unpriced_attempts != null) return failure.unpriced_attempts;
+  return failure.billing_status === "reported" &&
+    typeof failure.cost?.total_cost === "number" &&
+    Number.isFinite(failure.cost.total_cost)
+    ? 0
+    : Math.max(0, failure.attempts);
+}
+
+function mergeFailureChain(
+  failures: readonly PeerFailure[],
+  overrides: Partial<PeerFailure> = {},
+): PeerFailure {
+  const last = failures.at(-1);
+  if (!last) throw new Error("merge_failure_chain_requires_at_least_one_failure");
+  const usageItems = failures.map((failure) => failure.usage);
+  const costItems = failures.map((failure) => failure.cost);
+  const hasUsage = usageItems.some(Boolean);
+  const hasCost = costItems.some(Boolean);
+  const unpricedAttempts = failures.reduce(
+    (sum, failure) => sum + unpricedAttemptsForFailure(failure),
+    0,
+  );
+  return {
+    ...last,
+    ...overrides,
+    attempts: failures.reduce((sum, failure) => sum + Math.max(0, failure.attempts), 0),
+    latency_ms: failures.reduce((sum, failure) => sum + Math.max(0, failure.latency_ms), 0),
+    ...(hasUsage ? { usage: mergeUsage(usageItems) } : {}),
+    ...(hasCost ? { cost: mergeCost(costItems) } : {}),
+    billing_status: unpricedAttempts === 0 && hasCost ? "reported" : "unknown",
+    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+  };
+}
+
+function mergePeerResultWithFailures(
+  result: PeerResult,
+  failures: readonly PeerFailure[],
+): PeerResult {
+  if (!failures.length) return result;
+  const failureUsage = failures.map((failure) => failure.usage);
+  const failureCost = failures.map((failure) => failure.cost);
+  const hasFailureUsage = failureUsage.some(Boolean);
+  const hasFailureCost = failureCost.some(Boolean);
+  const unpricedAttempts =
+    (result.unpriced_attempts ?? 0) +
+    failures.reduce((sum, failure) => sum + unpricedAttemptsForFailure(failure), 0);
+  return {
+    ...result,
+    attempts: result.attempts + failures.reduce((sum, failure) => sum + failure.attempts, 0),
+    latency_ms: result.latency_ms + failures.reduce((sum, failure) => sum + failure.latency_ms, 0),
+    usage: hasFailureUsage ? mergeUsage([...failureUsage, result.usage]) : result.usage,
+    cost: hasFailureCost ? mergeCost([...failureCost, result.cost]) : result.cost,
+    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+  };
+}
+
 interface PeerCallOutcome {
   adapter: PeerAdapter;
   result?: PeerResult | undefined;
@@ -2590,6 +2820,34 @@ export class CrossReviewOrchestrator {
       })),
     });
     return persisted.submission.submission_id;
+  }
+
+  private async recordPreflightChecked(
+    sessionId: string,
+    gate: "evidence" | "truthfulness",
+    result: EvidencePreflightResult | TruthfulnessPreflightResult,
+    phase: string,
+    round?: number,
+  ): Promise<void> {
+    await this.store.recordPreflightCheck(sessionId, {
+      gate,
+      phase,
+      pass: result.pass,
+      ...(round === undefined ? {} : { round }),
+      details: { ...result },
+    });
+    this.emit({
+      type: "session.preflight_checked",
+      session_id: sessionId,
+      round,
+      message: `${gate} preflight ${result.pass ? "passed" : "failed"} (${phase}).`,
+      data: {
+        gate,
+        phase,
+        pass: result.pass,
+        result,
+      },
+    });
   }
 
   checkSessionPreflights(params: {
@@ -2708,6 +2966,7 @@ export class CrossReviewOrchestrator {
       reason:
         | "not_open"
         | "consensus_disagreement"
+        | "insufficient_independent_judges"
         | "satisfied_but_unverified"
         | "not_satisfied"
         | "judge_failed";
@@ -2726,7 +2985,25 @@ export class CrossReviewOrchestrator {
       item_id: string;
       unanimous_verified_satisfied: boolean;
       per_peer_verdict: Record<string, "verified_satisfied" | "disagree" | "failed">;
+      configured_judge_peers: PeerId[];
+      eligible_judge_peers: PeerId[];
+      excluded_judge_peers: PeerId[];
+      reason?: "insufficient_independent_judges" | "consensus_disagreement" | undefined;
     }>;
+    shadow_decisions: Array<{
+      item_id: string;
+      would_promote: boolean;
+      satisfied: boolean;
+      confidence: Confidence;
+      reason: "unanimous_verified_satisfied" | "consensus_disagreement";
+      configured_judge_peers: PeerId[];
+      eligible_judge_peers: PeerId[];
+      excluded_judge_peers: PeerId[];
+      per_peer_verdict: Record<string, "verified_satisfied" | "disagree" | "failed">;
+    }>;
+    configured_judge_peers: PeerId[];
+    eligible_judge_peers: Record<string, PeerId[]>;
+    excluded_judge_peers: Record<string, PeerId[]>;
     judged_count: number;
     capped: boolean;
   }> {
@@ -2762,6 +3039,7 @@ export class CrossReviewOrchestrator {
       reason:
         | "not_open"
         | "consensus_disagreement"
+        | "insufficient_independent_judges"
         | "satisfied_but_unverified"
         | "not_satisfied"
         | "judge_failed";
@@ -2780,8 +3058,61 @@ export class CrossReviewOrchestrator {
       item_id: string;
       unanimous_verified_satisfied: boolean;
       per_peer_verdict: Record<string, "verified_satisfied" | "disagree" | "failed">;
+      configured_judge_peers: PeerId[];
+      eligible_judge_peers: PeerId[];
+      excluded_judge_peers: PeerId[];
+      reason?: "insufficient_independent_judges" | "consensus_disagreement" | undefined;
     }> = [];
+    const shadowDecisions: Array<{
+      item_id: string;
+      would_promote: boolean;
+      satisfied: boolean;
+      confidence: Confidence;
+      reason: "unanimous_verified_satisfied" | "consensus_disagreement";
+      configured_judge_peers: PeerId[];
+      eligible_judge_peers: PeerId[];
+      excluded_judge_peers: PeerId[];
+      per_peer_verdict: Record<string, "verified_satisfied" | "disagree" | "failed">;
+    }> = [];
+    const eligibleJudgePeersByItem: Record<string, PeerId[]> = {};
+    const excludedJudgePeersByItem: Record<string, PeerId[]> = {};
     const judgmentRound = params.round ?? meta.rounds.length;
+    const consensusJudgeEstimate = (() => {
+      let total = 0;
+      for (const item of items) {
+        const eligible = params.judge_peers.filter((peer) => peer !== item.peer);
+        if (eligible.length < 2) continue;
+        for (const peer of eligible) {
+          const estimate = estimatedPeerRoundCost(
+            this.config,
+            [peer],
+            `${item.ask}\n${params.draft}\n${"judge-structured-output".repeat(40)}`,
+          );
+          if (estimate == null) return null;
+          total += estimate;
+        }
+      }
+      return total;
+    })();
+    const judgeCostLimit = sessionBudgetLimit(this.config, meta);
+    const currentJudgeCost = meta.totals.cost.total_cost ?? 0;
+    if (
+      judgeCostLimit != null &&
+      (consensusJudgeEstimate == null || currentJudgeCost + consensusJudgeEstimate > judgeCostLimit)
+    ) {
+      this.emit({
+        type: "session.evidence_judge_pass.budget_blocked",
+        session_id: params.session_id,
+        round: judgmentRound,
+        message: "Consensus judge pass blocked before dispatch by the session cost ceiling.",
+        data: {
+          current_session_cost_usd: currentJudgeCost,
+          estimated_extra_cost_usd: consensusJudgeEstimate,
+          session_limit_usd: judgeCostLimit,
+        },
+      });
+      throw new Error("evidence_judge_budget_preflight");
+    }
     this.emit({
       type: "session.evidence_judge_consensus_pass.started",
       session_id: params.session_id,
@@ -2790,15 +3121,42 @@ export class CrossReviewOrchestrator {
       data: { judge_peers: params.judge_peers, mode, item_count: items.length, capped },
     });
     for (const item of items) {
+      // The author of an evidence ask is never a judge of its own item. The
+      // exclusion must happen before dispatch AND before calculating the
+      // unanimity denominator; representing it as a failed vote made
+      // consensus mathematically impossible whenever the configured panel
+      // included every reviewer that had opened an ask.
+      const eligibleJudgePeers = params.judge_peers.filter((peer) => peer !== item.peer);
+      const excludedJudgePeers = params.judge_peers.filter((peer) => peer === item.peer);
+      eligibleJudgePeersByItem[item.id] = eligibleJudgePeers;
+      excludedJudgePeersByItem[item.id] = excludedJudgePeers;
+
+      if (eligibleJudgePeers.length < 2) {
+        const perPeerVerdict: Record<string, "verified_satisfied" | "disagree" | "failed"> = {};
+        consensus_decisions.push({
+          item_id: item.id,
+          unanimous_verified_satisfied: false,
+          per_peer_verdict: perPeerVerdict,
+          configured_judge_peers: [...params.judge_peers],
+          eligible_judge_peers: [...eligibleJudgePeers],
+          excluded_judge_peers: [...excludedJudgePeers],
+          reason: "insufficient_independent_judges",
+        });
+        skipped.push({
+          item_id: item.id,
+          reason: "insufficient_independent_judges",
+          per_peer: {},
+        });
+        continue;
+      }
+
       const perPeerJudgments = await Promise.all(
-        params.judge_peers.map(async (peer) => {
-          if (peer === item.peer) {
-            return { peer, error: "self_judgment_forbidden" };
-          }
+        eligibleJudgePeers.map(async (peer) => {
           const adapter = this.adapters[peer];
           if (!adapter) {
             return { peer, error: `unknown_judge_peer: ${peer}` };
           }
+          const judgeStarted = Date.now();
           try {
             const judgment = await adapter.judgeEvidenceAsk(item.ask, params.draft, {
               session_id: params.session_id,
@@ -2812,11 +3170,67 @@ export class CrossReviewOrchestrator {
               stream_tokens: this.config.streaming.tokens,
               emit: this.emit,
             });
+            // A judge call is a paid generation even though it does not author
+            // the relator draft. Persist the successful result through the
+            // existing generation ledger so usage/cost enter session totals.
+            // The item id in the label prevents same-peer/same-round judge
+            // artifacts from overwriting each other.
+            await this.store.saveGeneration(
+              params.session_id,
+              judgmentRound,
+              {
+                peer: judgment.peer,
+                provider: judgment.provider,
+                model: judgment.model,
+                text: JSON.stringify({
+                  satisfied: judgment.satisfied,
+                  confidence: judgment.confidence,
+                  rationale: judgment.rationale,
+                  parser_warnings: judgment.parser_warnings,
+                }),
+                raw: judgment.raw,
+                usage: judgment.usage,
+                cost: judgment.cost,
+                latency_ms: judgment.latency_ms,
+                attempts: judgment.attempts,
+                unpriced_attempts: judgment.unpriced_attempts,
+                parser_warnings:
+                  judgment.parser_warnings.length > 0 ? judgment.parser_warnings : undefined,
+              },
+              `judge-${item.id}`,
+            );
+            this.emit({
+              type: "peer.judge.completed",
+              session_id: params.session_id,
+              round: judgmentRound,
+              peer,
+              message: `Consensus judge ruling on ${item.id}: satisfied=${judgment.satisfied}, confidence=${judgment.confidence}.`,
+              data: {
+                item_id: item.id,
+                satisfied: judgment.satisfied,
+                confidence: judgment.confidence,
+                parser_warnings: judgment.parser_warnings,
+              },
+            });
             return { peer, judgment };
           } catch (err) {
+            const judgeFailure = classifyProviderError(
+              peer,
+              adapter.provider,
+              adapter.model,
+              err,
+              1,
+              judgeStarted,
+            );
+            await this.store.recordPeerFailureAccounting(
+              params.session_id,
+              judgmentRound,
+              judgeFailure,
+              `judge-${item.id}-failure`,
+            );
             return {
               peer,
-              error: err instanceof Error ? err.message : String(err),
+              error: judgeFailure.message,
             };
           }
         }),
@@ -2868,9 +3282,13 @@ export class CrossReviewOrchestrator {
         item_id: item.id,
         unanimous_verified_satisfied: unanimousVerifiedSatisfied,
         per_peer_verdict: perPeerVerdict,
+        configured_judge_peers: [...params.judge_peers],
+        eligible_judge_peers: [...eligibleJudgePeers],
+        excluded_judge_peers: [...excludedJudgePeers],
+        reason: unanimousVerifiedSatisfied ? undefined : "consensus_disagreement",
       });
       if (unanimousVerifiedSatisfied && mode === "active") {
-        const primaryJudgePeer = params.judge_peers[0];
+        const primaryJudgePeer = eligibleJudgePeers[0];
         if (!primaryJudgePeer) {
           throw new Error("evidence_judge_consensus_no_primary_judge");
         }
@@ -2889,7 +3307,7 @@ export class CrossReviewOrchestrator {
             type: "session.evidence_checklist_addressed",
             session_id: params.session_id,
             round: judgmentRound,
-            message: `Multi-peer consensus promoted ${item.id} (${params.judge_peers.join(", ")}).`,
+            message: `Multi-peer consensus promoted ${item.id} (${eligibleJudgePeers.join(", ")}).`,
             data: {
               ids: [item.id],
               count: 1,
@@ -2905,65 +3323,110 @@ export class CrossReviewOrchestrator {
               // legacy rollup readers) AND the full `judge_peers` list
               // + `per_peer_verdict` map so operators can compute
               // accurate per-peer accuracy from the raw event stream.
-              judge_peer: params.judge_peers[0],
-              judge_peers: params.judge_peers,
+              judge_peer: primaryJudgePeer,
+              judge_peers: eligibleJudgePeers,
               per_peer_verdict: perPeerVerdict,
-              consensus_peers: params.judge_peers,
+              consensus_peers: eligibleJudgePeers,
+              configured_judge_peers: params.judge_peers,
+              excluded_judge_peers: excludedJudgePeers,
             },
           });
         } else {
           skipped.push({ item_id: item.id, reason: "not_open", per_peer: perPeerDetails });
         }
-      } else if (unanimousVerifiedSatisfied && mode === "shadow") {
-        // Shadow mode: emit but don't mutate. Use the existing shadow
-        // event surface so the precision report (item 1) can include
-        // consensus runs in its corpus.
-        this.emit({
-          type: "session.evidence_judge_pass.shadow_decision",
-          session_id: params.session_id,
-          round: judgmentRound,
-          peer: params.judge_peers[0],
-          message: `Shadow consensus on ${item.id}: would promote (unanimous verified).`,
-          data: {
-            item_id: item.id,
-            would_promote: true,
-            satisfied: true,
-            confidence: "verified",
-            // v2.18.4 / Codex audit 2026-05-07 P2.4: same shape as the
-            // active-mode addressed event above. judge_peer kept for
-            // backward compat; judge_peers + per_peer_verdict provide
-            // accurate per-peer attribution.
-            judge_peer: params.judge_peers[0],
-            judge_peers: params.judge_peers,
-            per_peer_verdict: perPeerVerdict,
-            consensus_peers: params.judge_peers,
-          },
-        });
-      } else {
+      } else if (!unanimousVerifiedSatisfied) {
         skipped.push({
           item_id: item.id,
           reason: "consensus_disagreement",
           per_peer: perPeerDetails,
         });
       }
+
+      if (mode === "shadow") {
+        // Shadow mode emits one decision for every judged item, including
+        // negative consensus. Previously only the positive branch emitted,
+        // making precision telemetry report zero decisions for real passes.
+        const allSatisfied = perPeerJudgments.every(
+          (result) => !result.error && result.judgment?.satisfied === true,
+        );
+        const aggregateConfidence: Confidence = unanimousVerifiedSatisfied
+          ? "verified"
+          : allSatisfied &&
+              perPeerJudgments.some((result) => result.judgment?.confidence === "inferred")
+            ? "inferred"
+            : "unknown";
+        const shadowDecision = {
+          item_id: item.id,
+          would_promote: unanimousVerifiedSatisfied,
+          satisfied: allSatisfied,
+          confidence: aggregateConfidence,
+          reason: unanimousVerifiedSatisfied
+            ? ("unanimous_verified_satisfied" as const)
+            : ("consensus_disagreement" as const),
+          configured_judge_peers: [...params.judge_peers],
+          eligible_judge_peers: [...eligibleJudgePeers],
+          excluded_judge_peers: [...excludedJudgePeers],
+          per_peer_verdict: perPeerVerdict,
+        };
+        shadowDecisions.push(shadowDecision);
+        const primaryJudgePeer = eligibleJudgePeers[0];
+        this.emit({
+          type: "session.evidence_judge_pass.shadow_decision",
+          session_id: params.session_id,
+          round: judgmentRound,
+          peer: primaryJudgePeer,
+          message: unanimousVerifiedSatisfied
+            ? `Shadow consensus on ${item.id}: would promote (unanimous verified).`
+            : `Shadow consensus on ${item.id}: would not promote (consensus disagreement).`,
+          data: {
+            item_id: item.id,
+            would_promote: shadowDecision.would_promote,
+            satisfied: shadowDecision.satisfied,
+            confidence: shadowDecision.confidence,
+            // v2.18.4 / Codex audit 2026-05-07 P2.4: same shape as the
+            // active-mode addressed event above. judge_peer kept for
+            // backward compat; judge_peers + per_peer_verdict provide
+            // accurate per-peer attribution.
+            judge_peer: primaryJudgePeer,
+            judge_peers: eligibleJudgePeers,
+            per_peer_verdict: perPeerVerdict,
+            consensus_peers: eligibleJudgePeers,
+            configured_judge_peers: params.judge_peers,
+            excluded_judge_peers: excludedJudgePeers,
+            reason: shadowDecision.reason,
+          },
+        });
+      }
     }
+    const wouldPromoteCount = consensus_decisions.filter(
+      (decision) => decision.unanimous_verified_satisfied,
+    ).length;
+    const mutationCount = promoted.length;
     this.emit({
       type: "session.evidence_judge_consensus_pass.completed",
       session_id: params.session_id,
       round: judgmentRound,
-      message: `Multi-peer consensus judge pass completed: ${promoted.length} promoted, ${skipped.length} skipped.`,
+      message: `Multi-peer consensus judge pass completed: ${wouldPromoteCount} would-promote, ${mutationCount} mutations, ${skipped.length} skipped.`,
       data: {
         judge_peers: params.judge_peers,
         mode,
         promoted_count: promoted.length,
+        would_promote_count: wouldPromoteCount,
+        mutation_count: mutationCount,
+        shadow_decision_count: shadowDecisions.length,
         skipped_count: skipped.length,
         capped,
       },
     });
+    await this.checkBudgetWarning(params.session_id, judgmentRound);
     return {
       promoted,
       skipped,
       consensus_decisions,
+      shadow_decisions: shadowDecisions,
+      configured_judge_peers: [...params.judge_peers],
+      eligible_judge_peers: eligibleJudgePeersByItem,
+      excluded_judge_peers: excludedJudgePeersByItem,
       judged_count: items.length,
       capped,
     };
@@ -3051,6 +3514,35 @@ export class CrossReviewOrchestrator {
     // from the highest round on the session — that is the round whose
     // draft the judgment is being run against.
     const judgmentRound = params.round ?? meta.rounds[meta.rounds.length - 1]?.round ?? 1;
+    const singleJudgeEstimate = queue.reduce<number | null>((total, item) => {
+      if (total == null || item.peer === params.judge_peer) return total;
+      const estimate = estimatedPeerRoundCost(
+        this.config,
+        [params.judge_peer],
+        `${item.ask}\n${params.draft}\n${"judge-structured-output".repeat(40)}`,
+      );
+      return estimate == null ? null : total + estimate;
+    }, 0);
+    const judgeCostLimit = sessionBudgetLimit(this.config, meta);
+    const currentJudgeCost = meta.totals.cost.total_cost ?? 0;
+    if (
+      judgeCostLimit != null &&
+      (singleJudgeEstimate == null || currentJudgeCost + singleJudgeEstimate > judgeCostLimit)
+    ) {
+      this.emit({
+        type: "session.evidence_judge_pass.budget_blocked",
+        session_id: params.session_id,
+        round: judgmentRound,
+        peer: params.judge_peer,
+        message: "Evidence judge pass blocked before dispatch by the session cost ceiling.",
+        data: {
+          current_session_cost_usd: currentJudgeCost,
+          estimated_extra_cost_usd: singleJudgeEstimate,
+          session_limit_usd: judgeCostLimit,
+        },
+      });
+      throw new Error("evidence_judge_budget_preflight");
+    }
     const promoted: Array<{
       item_id: string;
       rationale: string;
@@ -3074,6 +3566,7 @@ export class CrossReviewOrchestrator {
     });
 
     for (const item of queue) {
+      if (this.isCancelled(params.session_id, params.signal)) break;
       if (item.peer === params.judge_peer) {
         skipped.push({
           item_id: item.id,
@@ -3099,8 +3592,36 @@ export class CrossReviewOrchestrator {
         signal: params.signal,
         emit: this.emit,
       };
+      const judgeStarted = Date.now();
       try {
         const judgment = await adapter.judgeEvidenceAsk(item.ask, params.draft, context);
+        // A judge is a paid generation even though it does not author the
+        // draft. Persist it immediately so usage/cost survives later
+        // cancellation, parser rejection, or state-mutation failure.
+        await this.store.saveGeneration(
+          params.session_id,
+          judgmentRound,
+          {
+            peer: judgment.peer,
+            provider: judgment.provider,
+            model: judgment.model,
+            text: JSON.stringify({
+              satisfied: judgment.satisfied,
+              confidence: judgment.confidence,
+              rationale: judgment.rationale,
+              parser_warnings: judgment.parser_warnings,
+            }),
+            raw: judgment.raw,
+            usage: judgment.usage,
+            cost: judgment.cost,
+            latency_ms: judgment.latency_ms,
+            attempts: judgment.attempts,
+            unpriced_attempts: judgment.unpriced_attempts,
+            parser_warnings:
+              judgment.parser_warnings.length > 0 ? judgment.parser_warnings : undefined,
+          },
+          `judge-${item.id}`,
+        );
         this.emit({
           type: "peer.judge.completed",
           session_id: params.session_id,
@@ -3114,6 +3635,7 @@ export class CrossReviewOrchestrator {
             parser_warnings: judgment.parser_warnings,
           },
         });
+        if (this.isCancelled(params.session_id, params.signal)) break;
         // v2.9.0 — codex R1 catch (cross-review session 59d04035): the
         // promotion path MUST gate on parser_warnings AND a non-empty
         // rationale before mutating state. Pre-fix a malformed judge
@@ -3287,7 +3809,21 @@ export class CrossReviewOrchestrator {
           }
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const judgeFailure = classifyProviderError(
+          params.judge_peer,
+          adapter.provider,
+          adapter.model,
+          err,
+          1,
+          judgeStarted,
+        );
+        await this.store.recordPeerFailureAccounting(
+          params.session_id,
+          judgmentRound,
+          judgeFailure,
+          `judge-${item.id}-failure`,
+        );
+        const message = judgeFailure.message;
         skipped.push({ item_id: item.id, reason: "judge_failed", message });
         this.emit({
           type: "peer.judge.failed",
@@ -3317,6 +3853,7 @@ export class CrossReviewOrchestrator {
         capped,
       },
     });
+    await this.checkBudgetWarning(params.session_id, judgmentRound);
 
     return {
       promoted,
@@ -3398,7 +3935,10 @@ export class CrossReviewOrchestrator {
       const writeTokens = usage.cache_write_tokens ?? 0;
       if (readTokens === 0 && writeTokens === 0) return;
       const mode = usage.cache_provider_mode ?? "auto";
-      const keyHash = usage.cache_key_hash ?? "";
+      const suppliedKeyHash = usage.cache_key_hash?.trim() ?? "";
+      const keyHash = /^[0-9a-f]{64}$/i.test(suppliedKeyHash) ? suppliedKeyHash : null;
+      const cacheKeyUnavailableReason =
+        keyHash === null ? "provider_did_not_expose_a_stable_cache_key_hash" : undefined;
       const savings = estimateCacheSavings(
         peerResult.peer,
         usage,
@@ -3415,6 +3955,7 @@ export class CrossReviewOrchestrator {
           model: peerResult.model,
           cache_provider_mode: mode,
           cache_key_hash: keyHash,
+          cache_key_unavailable_reason: cacheKeyUnavailableReason,
           cache_read_tokens: readTokens,
           cache_write_tokens: writeTokens,
           hit: readTokens > 0,
@@ -3433,6 +3974,9 @@ export class CrossReviewOrchestrator {
           provider: peerResult.provider,
           model: peerResult.model,
           cache_key_hash: keyHash,
+          ...(cacheKeyUnavailableReason
+            ? { cache_key_unavailable_reason: cacheKeyUnavailableReason }
+            : {}),
           cache_provider_mode: mode,
           read_tokens: readTokens,
           write_tokens: writeTokens,
@@ -3524,7 +4068,24 @@ export class CrossReviewOrchestrator {
         if (fallbackEligible) {
           let fallbackWasTried = false;
           let lastFallbackFailure: PeerFailure | undefined;
+          const fallbackFailures: PeerFailure[] = [failure];
           for (const fallback of this.fallbackAdapters(adapter)) {
+            if (this.isCancelled(context.session_id, context.signal)) {
+              const cancelled = cancellationFailure(
+                adapter.id,
+                adapter.provider,
+                adapter.model,
+                "Session cancellation was requested before fallback dispatch.",
+              );
+              return {
+                adapter,
+                failure: mergeFailureChain([...fallbackFailures, cancelled], {
+                  failure_class: "cancelled",
+                  message: cancelled.message,
+                  retryable: false,
+                }),
+              };
+            }
             fallbackWasTried = true;
             const fallbackEvent = await this.recordFallback(
               context.session_id,
@@ -3564,20 +4125,17 @@ export class CrossReviewOrchestrator {
             // would actually breach if multiple peers are simultaneously
             // recovering, but that case is rare and would still trip the
             // post-round `budgetExceeded` check in runUntilUnanimous.
-            const fallbackSessionLimit = budgetLimit(this.config);
-            const priorRoundsCostForFallback = (() => {
-              try {
-                return this.store.read(context.session_id).totals.cost.total_cost ?? 0;
-              } catch {
-                return 0;
-              }
-            })();
+            const fallbackSession = this.store.read(context.session_id);
+            const fallbackSessionLimit = sessionBudgetLimit(this.config, fallbackSession);
+            const priorRoundsCostForFallback = fallbackSession.totals.cost.total_cost ?? 0;
+            const fallbackCostBeforeDispatch =
+              priorRoundsCostForFallback + (failure.cost?.total_cost ?? 0);
             if (
               fallbackEstimate != null &&
               fallbackSessionLimit != null &&
-              priorRoundsCostForFallback + fallbackEstimate > fallbackSessionLimit
+              fallbackCostBeforeDispatch + fallbackEstimate > fallbackSessionLimit
             ) {
-              const message = `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${priorRoundsCostForFallback.toFixed(6)} to $${(priorRoundsCostForFallback + fallbackEstimate).toFixed(6)}, exceeding configured limit $${fallbackSessionLimit.toFixed(6)}.`;
+              const message = `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${fallbackCostBeforeDispatch.toFixed(6)} to $${(fallbackCostBeforeDispatch + fallbackEstimate).toFixed(6)}, exceeding configured limit $${fallbackSessionLimit.toFixed(6)}.`;
               this.emit({
                 type: "peer.fallback.budget_blocked",
                 session_id: context.session_id,
@@ -3588,22 +4146,20 @@ export class CrossReviewOrchestrator {
                   from_model: adapter.model,
                   to_model: fallback.model,
                   estimated_extra_cost_usd: fallbackEstimate,
-                  current_session_cost_usd: priorRoundsCostForFallback,
+                  current_session_cost_usd: fallbackCostBeforeDispatch,
                   session_limit_usd: fallbackSessionLimit,
                 },
               });
               return {
                 adapter,
-                failure: {
+                failure: mergeFailureChain(fallbackFailures, {
                   peer: adapter.id,
                   provider: adapter.provider,
                   model: adapter.model,
                   failure_class: "budget_preflight",
                   message,
                   retryable: false,
-                  attempts: failure.attempts,
-                  latency_ms: 0,
-                },
+                }),
               };
             }
             try {
@@ -3615,8 +4171,7 @@ export class CrossReviewOrchestrator {
               return {
                 adapter: fallback,
                 result: {
-                  ...fallbackResult,
-                  attempts: fallbackResult.attempts + failure.attempts,
+                  ...mergePeerResultWithFailures(fallbackResult, fallbackFailures),
                   parser_warnings: parserWarnings,
                   decision_quality: decisionQualityFromStatus(
                     fallbackResult.status,
@@ -3635,28 +4190,50 @@ export class CrossReviewOrchestrator {
                 started,
               );
               lastFallbackFailure = fallbackFailure;
+              fallbackFailures.push(fallbackFailure);
               if (!fallbackFailure.retryable) {
-                return { adapter: fallback, failure: fallbackFailure };
+                return {
+                  adapter: fallback,
+                  failure: mergeFailureChain(fallbackFailures, {
+                    message: `Primary model failed with ${failure.failure_class}; fallback ${fallback.model} failed terminally: ${fallbackFailure.message}`,
+                    retryable: false,
+                  }),
+                };
               }
             }
           }
           if (fallbackWasTried) {
             return {
               adapter,
-              failure: {
-                ...failure,
+              failure: mergeFailureChain(fallbackFailures, {
                 failure_class: "fallback_exhausted",
                 message: `Primary model failed with ${failure.failure_class}; fallback models were attempted and exhausted. Last fallback: ${
                   lastFallbackFailure?.message ?? "unknown"
                 }`,
                 retryable: false,
-              },
+              }),
             };
           }
         }
         return { adapter, failure };
       }
 
+      if (this.isCancelled(context.session_id, context.signal)) {
+        const cancelled = cancellationFailure(
+          adapter.id,
+          adapter.provider,
+          adapter.model,
+          "Session cancellation was requested before moderation recovery.",
+        );
+        return {
+          adapter,
+          failure: mergeFailureChain([failure, cancelled], {
+            failure_class: "cancelled",
+            message: cancelled.message,
+            retryable: false,
+          }),
+        };
+      }
       this.emit({
         type: "peer.moderation_recovery.started",
         session_id: context.session_id,
@@ -3687,20 +4264,17 @@ export class CrossReviewOrchestrator {
       // current-cost computation as the fallback gate (see comment
       // there): only prior rounds, since callPeerForReview can't see
       // other peers' in-flight costs in the same round.
-      const moderationRecoverySessionLimit = budgetLimit(this.config);
-      const priorRoundsCostForModeration = (() => {
-        try {
-          return this.store.read(context.session_id).totals.cost.total_cost ?? 0;
-        } catch {
-          return 0;
-        }
-      })();
+      const moderationSession = this.store.read(context.session_id);
+      const moderationRecoverySessionLimit = sessionBudgetLimit(this.config, moderationSession);
+      const priorRoundsCostForModeration = moderationSession.totals.cost.total_cost ?? 0;
+      const moderationCostBeforeDispatch =
+        priorRoundsCostForModeration + (failure.cost?.total_cost ?? 0);
       if (
         moderationRecoveryEstimate != null &&
         moderationRecoverySessionLimit != null &&
-        priorRoundsCostForModeration + moderationRecoveryEstimate > moderationRecoverySessionLimit
+        moderationCostBeforeDispatch + moderationRecoveryEstimate > moderationRecoverySessionLimit
       ) {
-        const message = `Moderation-safe retry refused: would push session cost from $${priorRoundsCostForModeration.toFixed(6)} to $${(priorRoundsCostForModeration + moderationRecoveryEstimate).toFixed(6)}, exceeding configured limit $${moderationRecoverySessionLimit.toFixed(6)}.`;
+        const message = `Moderation-safe retry refused: would push session cost from $${moderationCostBeforeDispatch.toFixed(6)} to $${(moderationCostBeforeDispatch + moderationRecoveryEstimate).toFixed(6)}, exceeding configured limit $${moderationRecoverySessionLimit.toFixed(6)}.`;
         this.emit({
           type: "peer.moderation_recovery.budget_blocked",
           session_id: context.session_id,
@@ -3709,22 +4283,20 @@ export class CrossReviewOrchestrator {
           message,
           data: {
             estimated_extra_cost_usd: moderationRecoveryEstimate,
-            current_session_cost_usd: priorRoundsCostForModeration,
+            current_session_cost_usd: moderationCostBeforeDispatch,
             session_limit_usd: moderationRecoverySessionLimit,
           },
         });
         return {
           adapter,
-          failure: {
+          failure: mergeFailureChain([failure], {
             peer: adapter.id,
             provider: adapter.provider,
             model: adapter.model,
             failure_class: "budget_preflight",
             message,
             retryable: false,
-            attempts: failure.attempts,
-            latency_ms: 0,
-          },
+          }),
         };
       }
 
@@ -3734,8 +4306,7 @@ export class CrossReviewOrchestrator {
         return {
           adapter,
           result: {
-            ...recovered,
-            attempts: recovered.attempts + failure.attempts,
+            ...mergePeerResultWithFailures(recovered, [failure]),
             parser_warnings: parserWarnings,
             decision_quality: decisionQualityFromStatus(recovered.status, parserWarnings),
           },
@@ -3751,8 +4322,7 @@ export class CrossReviewOrchestrator {
         );
         return {
           adapter,
-          failure: {
-            ...retryFailure,
+          failure: mergeFailureChain([failure, retryFailure], {
             failure_class:
               retryFailure.failure_class === "prompt_flagged_by_moderation"
                 ? "prompt_flagged_by_moderation"
@@ -3761,10 +4331,113 @@ export class CrossReviewOrchestrator {
             recovery_hint: "reformulate_and_retry",
             reformulation_advice:
               "Compact the prompt, summarize verbose peer content, avoid quoting flagged text, and retry with the same technical intent.",
-            attempts: failure.attempts + retryFailure.attempts,
-          },
+          }),
         };
       }
+    }
+  }
+
+  private async generateWithFailureAccounting(
+    adapter: PeerAdapter,
+    prompt: string,
+    context: Parameters<PeerAdapter["generate"]>[1],
+    label: string,
+  ): Promise<GenerationResult> {
+    const session = this.store.read(context.session_id);
+    const limit = sessionBudgetLimit(this.config, session);
+    const estimate = estimatedPeerRoundCost(this.config, [adapter.id], prompt);
+    const currentCost = session.totals.cost.total_cost ?? 0;
+    if (limit != null && (estimate == null || currentCost + estimate > limit)) {
+      const message =
+        estimate == null
+          ? `generation_budget_preflight: generation by ${adapter.id} cannot be estimated under the persisted session ceiling $${limit.toFixed(6)}.`
+          : `generation_budget_preflight: generation by ${adapter.id} would push session cost from $${currentCost.toFixed(6)} to $${(currentCost + estimate).toFixed(6)}, exceeding persisted ceiling $${limit.toFixed(6)}.`;
+      const failure = budgetPreflightFailure(adapter.id, adapter.provider, adapter.model, message);
+      await this.store.recordPeerFailureAccounting(
+        context.session_id,
+        context.round,
+        failure,
+        label,
+      );
+      this.emit({
+        type: "peer.generation.budget_blocked",
+        session_id: context.session_id,
+        round: context.round,
+        peer: adapter.id,
+        message,
+        data: {
+          current_session_cost_usd: currentCost,
+          estimated_extra_cost_usd: estimate ?? null,
+          session_limit_usd: limit,
+        },
+      });
+      await this.store.finalize(context.session_id, "max-rounds", "generation_budget_preflight");
+      const error = new Error(message);
+      Object.defineProperty(error, "peerFailure", {
+        configurable: true,
+        value: failure,
+      });
+      throw error;
+    }
+    const cancellationBeforeDispatch = (): Error => {
+      const error = new Error("session_cancelled_before_generation_dispatch");
+      error.name = "AbortError";
+      return error;
+    };
+    if (this.isCancelled(context.session_id, context.signal)) {
+      throw cancellationBeforeDispatch();
+    }
+    const marked = await this.store.markBackgroundGenerationInFlight(context.session_id, {
+      peer: adapter.id,
+      provider: adapter.provider,
+      model: adapter.model,
+      label,
+      round: context.round,
+      started_at: now(),
+      owner_pid: process.pid,
+    });
+    // Cancellation can win while the durable marker write is waiting for the
+    // session lock. Clear the marker before throwing because adapter.generate
+    // has not been invoked yet and therefore no provider attempt exists.
+    if (this.isCancelled(context.session_id, context.signal)) {
+      await this.store.clearBackgroundGenerationInFlight(
+        context.session_id,
+        adapter.id,
+        context.round,
+      );
+      throw cancellationBeforeDispatch();
+    }
+    const persistedMarker = marked.generation_in_flight;
+    if (
+      persistedMarker?.peer !== adapter.id ||
+      persistedMarker.round !== context.round ||
+      persistedMarker.label !== label
+    ) {
+      const error = new Error(
+        `generation_dispatch_marker_not_persisted: ${adapter.id}/round-${context.round}/${label}`,
+      );
+      (error as Error & { code?: string }).code = "generation_dispatch_marker_not_persisted";
+      throw error;
+    }
+    const started = Date.now();
+    try {
+      return await adapter.generate(prompt, context);
+    } catch (error) {
+      const failure = classifyProviderError(
+        adapter.id,
+        adapter.provider,
+        adapter.model,
+        error,
+        this.config.retry.max_attempts,
+        started,
+      );
+      await this.store.recordPeerFailureAccounting(
+        context.session_id,
+        context.round,
+        failure,
+        label,
+      );
+      throw error;
     }
   }
 
@@ -3935,6 +4608,13 @@ export class CrossReviewOrchestrator {
           attachment.relative_path,
         ]),
       });
+      await this.recordPreflightChecked(
+        session.session_id,
+        "evidence",
+        roundEvidencePreflight,
+        "review_round",
+        roundNumber,
+      );
       const preflight = roundEvidencePreflight;
       if (!preflight.pass) {
         const message = `Evidence preflight failed before any paid peer call: ${preflight.reason}`;
@@ -3994,6 +4674,13 @@ export class CrossReviewOrchestrator {
           .join("\n"),
         runtimeFacts: runtimeTruthFacts(this.config),
       });
+      await this.recordPreflightChecked(
+        session.session_id,
+        "truthfulness",
+        roundTruthfulnessPreflight,
+        "review_round",
+        roundNumber,
+      );
       const truthfulness = roundTruthfulnessPreflight;
       if (!truthfulness.pass) {
         const message = `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`;
@@ -4095,11 +4782,6 @@ export class CrossReviewOrchestrator {
         convergence_scope: convergenceScope,
         started_at: startedAt,
       });
-      const updated = await this.store.finalize(
-        session.session_id,
-        "max-rounds",
-        "financial_controls_missing",
-      );
       this.emit({
         type: "round.blocked.financial_controls_missing",
         session_id: session.session_id,
@@ -4107,11 +4789,16 @@ export class CrossReviewOrchestrator {
         message,
         data: { missing_variables: missingFinancialVars },
       });
+      const updated = await this.store.finalize(
+        session.session_id,
+        "max-rounds",
+        "financial_controls_missing",
+      );
       return { session: updated, round, converged: false };
     }
 
     const roundPreflightLimit = this.config.budget.preflight_max_round_cost_usd;
-    const sessionPreflightLimit = budgetLimit(this.config);
+    const sessionPreflightLimit = sessionBudgetLimit(this.config, session);
     const preflightEstimate = estimatedPeerRoundCost(this.config, selectedPeers, prompt);
     const currentSessionCost = session.totals.cost.total_cost ?? 0;
     const projectedSessionCost =
@@ -4150,11 +4837,6 @@ export class CrossReviewOrchestrator {
         convergence_scope: convergenceScope,
         started_at: startedAt,
       });
-      const updated = await this.store.finalize(
-        session.session_id,
-        "max-rounds",
-        "budget_preflight",
-      );
       this.emit({
         type: "round.blocked.budget_preflight",
         session_id: session.session_id,
@@ -4168,6 +4850,11 @@ export class CrossReviewOrchestrator {
           session_limit_usd: sessionPreflightLimit,
         },
       });
+      const updated = await this.store.finalize(
+        session.session_id,
+        "max-rounds",
+        "budget_preflight",
+      );
       return { session: updated, round, converged: false };
     }
 
@@ -4257,6 +4944,12 @@ export class CrossReviewOrchestrator {
       "decision_retry_returned_no_status",
     ];
     let recoveriesUsedThisCall = 0;
+    const settledInitialCost = settled.reduce(
+      (sum, outcome) =>
+        sum + (outcome.result?.cost?.total_cost ?? outcome.failure?.cost?.total_cost ?? 0),
+      0,
+    );
+    let recoveryCostIncurred = 0;
     const recoveriesAlready = session.rounds.reduce((sum, round) => {
       for (const peer of round.peers) {
         if (
@@ -4274,7 +4967,23 @@ export class CrossReviewOrchestrator {
       const { adapter } = item;
       if (item.result) {
         let peerResult = item.result;
-        if (peerResult.status == null && peerResult.model_match !== false) {
+        const lossyReadyDecision = peerResult.parser_warnings.includes(
+          "ready_rejected_lossy_parse",
+        );
+        if ((peerResult.status == null || lossyReadyDecision) && peerResult.model_match !== false) {
+          if (this.isCancelled(session.session_id, input.signal)) {
+            const failure = cancellationFailure(
+              peerResult.peer,
+              peerResult.provider,
+              peerResult.model,
+              "Session cancellation was requested before format recovery.",
+            );
+            rejected.push(failure);
+            await this.store.savePeerFailure(session.session_id, roundNumber, failure);
+            peers.push(peerResult);
+            await this.store.savePeerResult(session.session_id, roundNumber, peerResult);
+            continue;
+          }
           const totalRecoveries = recoveriesAlready + recoveriesUsedThisCall;
           if (totalRecoveries >= FORMAT_RECOVERY_PER_SESSION_CAP) {
             const failure: PeerFailure = {
@@ -4294,12 +5003,13 @@ export class CrossReviewOrchestrator {
             continue;
           }
           recoveriesUsedThisCall += 1;
-          const decisionRetry = !containsReviewDecisionLexeme(peerResult.text);
+          const decisionRetry =
+            peerResult.status == null && !containsReviewDecisionLexeme(peerResult.text);
           await this.store.savePeerResult(
             session.session_id,
             roundNumber,
             peerResult,
-            "unparsed-response",
+            lossyReadyDecision ? "lossy-response" : "unparsed-response",
           );
           this.emit({
             type: "peer.format_recovery.started",
@@ -4308,7 +5018,9 @@ export class CrossReviewOrchestrator {
             peer: peerResult.peer,
             message: decisionRetry
               ? "Peer response did not include a usable decision; requesting a full decision retry."
-              : "Peer response did not include a parseable status; requesting format recovery.",
+              : lossyReadyDecision
+                ? "Peer READY response was parsed lossily; requesting one compact, lossless decision."
+                : "Peer response did not include a parseable status; requesting format recovery.",
           });
           try {
             const recoveryPrompt = decisionRetry
@@ -4324,6 +5036,7 @@ export class CrossReviewOrchestrator {
                   peerResult.text,
                   this.config,
                   input.review_focus,
+                  lossyReadyDecision,
                 );
             const recoveryEstimate = estimatedPeerRoundCost(
               this.config,
@@ -4354,15 +5067,10 @@ export class CrossReviewOrchestrator {
             // sum: prior rounds (session.totals at askPeers entry) +
             // already-processed peers in this round (`peers` array) +
             // the current peer's first-call cost (peerResult).
-            const sessionCostLimit = budgetLimit(this.config);
+            const sessionCostLimit = sessionBudgetLimit(this.config, session);
             const priorRoundsCost = session.totals.cost.total_cost ?? 0;
-            const currentRoundPriorPeersCost = peers.reduce(
-              (sum, p) => sum + (p.cost?.total_cost ?? 0),
-              0,
-            );
-            const currentPeerFirstCallCost = peerResult.cost?.total_cost ?? 0;
             const currentSessionCostNow =
-              priorRoundsCost + currentRoundPriorPeersCost + currentPeerFirstCallCost;
+              priorRoundsCost + settledInitialCost + recoveryCostIncurred;
             if (
               recoveryEstimate != null &&
               sessionCostLimit != null &&
@@ -4397,6 +5105,7 @@ export class CrossReviewOrchestrator {
               await this.store.savePeerResult(session.session_id, roundNumber, peerResult);
               continue;
             }
+            const originalPeerResult = peerResult;
             const recovered = await adapter.call(recoveryPrompt, {
               session_id: session.session_id,
               round: roundNumber,
@@ -4407,6 +5116,7 @@ export class CrossReviewOrchestrator {
               reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
               caller: requestedPetitioner,
             });
+            recoveryCostIncurred += recovered.cost?.total_cost ?? 0;
             const parserWarnings = [
               ...peerResult.parser_warnings.map((warning) => `original:${warning}`),
               ...recovered.parser_warnings,
@@ -4420,7 +5130,18 @@ export class CrossReviewOrchestrator {
             ];
             peerResult = {
               ...recovered,
-              attempts: peerResult.attempts + recovered.attempts,
+              usage: mergeUsage([originalPeerResult.usage, recovered.usage]),
+              cost: mergeCost([originalPeerResult.cost, recovered.cost]),
+              latency_ms: originalPeerResult.latency_ms + recovered.latency_ms,
+              attempts: originalPeerResult.attempts + recovered.attempts,
+              ...((originalPeerResult.unpriced_attempts ?? 0) + (recovered.unpriced_attempts ?? 0) >
+              0
+                ? {
+                    unpriced_attempts:
+                      (originalPeerResult.unpriced_attempts ?? 0) +
+                      (recovered.unpriced_attempts ?? 0),
+                  }
+                : {}),
               parser_warnings: parserWarnings,
               decision_quality: decisionQualityFromStatus(recovered.status, parserWarnings),
             };
@@ -4438,6 +5159,7 @@ export class CrossReviewOrchestrator {
               this.config.retry.max_attempts,
               Date.parse(startedAt),
             );
+            recoveryCostIncurred += failure.cost?.total_cost ?? 0;
             rejected.push(failure);
             await this.store.savePeerFailure(session.session_id, roundNumber, failure);
           }
@@ -4608,6 +5330,7 @@ export class CrossReviewOrchestrator {
       prompt_file: promptFile,
       peers,
       rejected,
+      accounting_only_failures: skipped,
       convergence,
       // v3.7.3: surface skipped-for-unavailability peers in the durable
       // convergence_scope so the degraded panel is auditable. Only added
@@ -4721,6 +5444,10 @@ export class CrossReviewOrchestrator {
     // (missing peer, unknown peer) emits a single warning event and is
     // otherwise a no-op so a typo never crashes a paying review round.
     const autowire = this.config.evidence_judge_autowire;
+    if (this.isCancelled(session.session_id, input.signal)) {
+      const updated = await this.store.markCancelled(session.session_id, "session_cancelled");
+      return { session: updated, round, converged: false };
+    }
     // v2.14.0 (item 2): mode "active" promoted to first-class. Same
     // dispatch as "shadow" but mode="active" passes through to
     // runEvidenceChecklistJudgePass so verified-satisfied judgments
@@ -4868,6 +5595,14 @@ export class CrossReviewOrchestrator {
         },
       });
     }
+    this.emit({
+      type: "round.completed",
+      session_id: session.session_id,
+      round: round.round,
+      message: finalConvergence.reason,
+      data: { converged: finalConvergence.converged },
+    });
+    await this.store.flushPendingEvents();
     if (finalConvergence.converged) {
       this.store.saveFinal(session.session_id, input.draft);
       const baseReason = convergence.recovery_converged ? "recovered_unanimity" : "unanimous_ready";
@@ -4880,14 +5615,11 @@ export class CrossReviewOrchestrator {
         this.store.readEvents(session.session_id),
       ),
     );
-    this.emit({
-      type: "round.completed",
-      session_id: session.session_id,
-      round: round.round,
-      message: finalConvergence.reason,
-      data: { converged: finalConvergence.converged },
-    });
-    return { session: updated, round, converged: finalConvergence.converged };
+    return {
+      session: updated,
+      round,
+      converged: finalConvergence.converged && updated.outcome === "converged",
+    };
   }
 
   // v2.25.0 (circular mode): serial deliberative custody loop. Imported
@@ -4937,7 +5669,6 @@ export class CrossReviewOrchestrator {
     // no-self-immediate-output invariant: between any peer's turn and
     // their next turn, at least one different peer must hold custody.
     if (sessionPeers.length < 2) {
-      await this.store.finalize(session.session_id, "aborted", "circular_rotation_too_small");
       this.emit({
         type: "session.circular_rotation_too_small",
         session_id: session.session_id,
@@ -4948,6 +5679,7 @@ export class CrossReviewOrchestrator {
           available_peers: sessionPeers,
         },
       });
+      await this.store.finalize(session.session_id, "aborted", "circular_rotation_too_small");
       return {
         session: this.store.read(session.session_id),
         final_text: draft,
@@ -5006,7 +5738,8 @@ export class CrossReviewOrchestrator {
       if (!initRotator) {
         throw new Error("circular_rotation_cursor_out_of_bounds");
       }
-      const initGeneration = await adapters[initRotator].generate(
+      const initGeneration = await this.generateWithFailureAccounting(
+        adapters[initRotator],
         buildInitialDraftPrompt(
           input.task,
           this.config,
@@ -5025,6 +5758,7 @@ export class CrossReviewOrchestrator {
           reasoning_effort_override: input.reasoning_effort_overrides?.[initRotator],
           caller: callerForLottery,
         },
+        "circular-initial-draft-failure",
       );
       await this.store.saveGeneration(session.session_id, 0, initGeneration, "initial-draft");
       if (initGeneration.model_match === false) {
@@ -5066,6 +5800,13 @@ export class CrossReviewOrchestrator {
             .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
+        await this.recordPreflightChecked(
+          session.session_id,
+          "truthfulness",
+          truthfulness,
+          "circular_initial_draft",
+          0,
+        );
         if (!truthfulness.pass) {
           const message = `Truthfulness preflight failed on circular initial draft: ${truthfulness.reason}`;
           this.emit({
@@ -5171,13 +5912,12 @@ export class CrossReviewOrchestrator {
     // Derive max round ceiling from circular_max_rotations × rotation_size.
     // When caller passes max_rounds explicitly, honor it; otherwise use
     // config.budget.circular_max_rotations × rotationOrder.length.
-    const circularMaxRotations =
-      input.max_rounds && input.max_rounds > 0
-        ? Math.max(1, Math.ceil(input.max_rounds / rotationOrder.length))
-        : this.config.budget.circular_max_rotations;
+    const circularMaxRotations = this.config.budget.circular_max_rotations;
     const maxCircularRounds = input.until_stopped
       ? Number.MAX_SAFE_INTEGER
-      : circularMaxRotations * rotationOrder.length;
+      : input.max_rounds && input.max_rounds > 0
+        ? input.max_rounds
+        : circularMaxRotations * rotationOrder.length;
 
     for (let round = 1; round <= maxCircularRounds; round++) {
       if (this.isCancelled(session.session_id, input.signal)) {
@@ -5190,13 +5930,13 @@ export class CrossReviewOrchestrator {
         };
       }
       if (budgetExceeded(session, costLimit)) {
-        await this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
         this.emit({
           type: "session.budget_exceeded",
           session_id: session.session_id,
           round,
           message: `Circular session aborted: budget exceeded at round ${round}.`,
         });
+        await this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
@@ -5225,17 +5965,22 @@ export class CrossReviewOrchestrator {
       );
       const promptFile = this.store.savePrompt(session.session_id, round, prompt);
 
-      const generation = await adapters[rotator].generate(prompt, {
-        session_id: session.session_id,
-        round,
-        task: input.task,
-        signal: input.signal,
-        stream: this.config.streaming.events,
-        stream_tokens: this.config.streaming.tokens,
-        emit: this.emit,
-        reasoning_effort_override: input.reasoning_effort_overrides?.[rotator],
-        caller: callerForLottery,
-      });
+      const generation = await this.generateWithFailureAccounting(
+        adapters[rotator],
+        prompt,
+        {
+          session_id: session.session_id,
+          round,
+          task: input.task,
+          signal: input.signal,
+          stream: this.config.streaming.events,
+          stream_tokens: this.config.streaming.tokens,
+          emit: this.emit,
+          reasoning_effort_override: input.reasoning_effort_overrides?.[rotator],
+          caller: callerForLottery,
+        },
+        "circular-rotation-failure",
+      );
       await this.store.saveGeneration(session.session_id, round, generation, "rotation");
 
       if (generation.model_match === false) {
@@ -5274,6 +6019,13 @@ export class CrossReviewOrchestrator {
             .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
+        await this.recordPreflightChecked(
+          session.session_id,
+          "truthfulness",
+          truthfulness,
+          "circular_revision",
+          round,
+        );
         if (!truthfulness.pass) {
           const message = `Truthfulness preflight failed on circular revision: ${truthfulness.reason}`;
           this.emit({
@@ -5542,7 +6294,6 @@ export class CrossReviewOrchestrator {
     }
 
     // Exhausted max rotations without convergence.
-    await this.store.finalize(session.session_id, "max-rounds", "circular_max_rotations_exceeded");
     this.emit({
       type: "session.circular_max_rotations_exceeded",
       session_id: session.session_id,
@@ -5555,6 +6306,7 @@ export class CrossReviewOrchestrator {
         last_revision_round: lastRevisionRound,
       },
     });
+    await this.store.finalize(session.session_id, "max-rounds", "circular_max_rotations_exceeded");
     return {
       session: this.store.read(session.session_id),
       final_text: draft,
@@ -5723,17 +6475,17 @@ export class CrossReviewOrchestrator {
           [],
           normalizeReviewFocus(input.review_focus, this.config),
         ));
-      await this.store.finalize(
-        blockedSession.session_id,
-        "max-rounds",
-        "financial_controls_missing",
-      );
       this.emit({
         type: "session.blocked.financial_controls_missing",
         session_id: blockedSession.session_id,
         message: financialControlsMissingMessage(missingFinancialVars),
         data: { missing_variables: missingFinancialVars },
       });
+      await this.store.finalize(
+        blockedSession.session_id,
+        "max-rounds",
+        "financial_controls_missing",
+      );
       return {
         session: this.store.read(blockedSession.session_id),
         final_text: input.initial_draft,
@@ -5788,6 +6540,13 @@ export class CrossReviewOrchestrator {
           .join("\n"),
         runtimeFacts: runtimeTruthFacts(this.config),
       });
+      await this.recordPreflightChecked(
+        session.session_id,
+        "truthfulness",
+        truthfulness,
+        "session_start",
+        0,
+      );
       if (!truthfulness.pass) {
         const message = `Truthfulness preflight failed before any paid peer call: ${truthfulness.reason}`;
         const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
@@ -5852,6 +6611,13 @@ export class CrossReviewOrchestrator {
           attachment.relative_path,
         ]),
       });
+      await this.recordPreflightChecked(
+        session.session_id,
+        "evidence",
+        preflight,
+        "session_start",
+        0,
+      );
       if (!preflight.pass) {
         const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
           evidencePreflightFailure(
@@ -5893,13 +6659,13 @@ export class CrossReviewOrchestrator {
     if (this.config.budget.require_rates_for_budget && costLimit != null) {
       const missingRates = selectedPeers.filter((peer) => !this.config.cost_rates[peer]);
       if (missingRates.length) {
-        await this.store.finalize(session.session_id, "max-rounds", "budget_requires_rates");
         this.emit({
           type: "session.blocked.budget_requires_rates",
           session_id: session.session_id,
           message: "Budget limit requires configured rate cards for all selected peers.",
           data: { missing_rates: missingRates },
         });
+        await this.store.finalize(session.session_id, "max-rounds", "budget_requires_rates");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
@@ -5941,7 +6707,8 @@ export class CrossReviewOrchestrator {
           rounds: 0,
         };
       }
-      const generation = await adapters[leadPeer].generate(
+      const generation = await this.generateWithFailureAccounting(
+        adapters[leadPeer],
         buildInitialDraftPrompt(
           input.task,
           this.config,
@@ -5960,6 +6727,7 @@ export class CrossReviewOrchestrator {
           reasoning_effort_override: input.reasoning_effort_overrides?.[leadPeer],
           caller: callerForLottery,
         },
+        "initial-draft-failure",
       );
       await this.store.saveGeneration(session.session_id, 0, generation, "initial-draft");
       if (generation.model_match === false) {
@@ -6003,6 +6771,13 @@ export class CrossReviewOrchestrator {
             .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
+        await this.recordPreflightChecked(
+          session.session_id,
+          "truthfulness",
+          truthfulness,
+          "lead_initial_draft",
+          0,
+        );
         if (!truthfulness.pass) {
           const message = `Truthfulness preflight failed on lead-generated initial draft before reviewer peer calls: ${truthfulness.reason}`;
           const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
@@ -6018,7 +6793,6 @@ export class CrossReviewOrchestrator {
             await this.store.savePeerFailure(session.session_id, 0, failure);
           }
           await this.store.recordPreflightFailure(session.session_id, rejected);
-          await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
           this.emit({
             type: "session.truthfulness_preflight_failed",
             session_id: session.session_id,
@@ -6040,6 +6814,7 @@ export class CrossReviewOrchestrator {
               round_kind: "initial-draft",
             },
           });
+          await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
           return {
             session: this.store.read(session.session_id),
             final_text: undefined,
@@ -6139,6 +6914,7 @@ export class CrossReviewOrchestrator {
       }
       draft = generation.text;
     }
+    if (draft === undefined) throw new Error("lead_initial_draft_missing_after_generation");
 
     for (let round = 1; round <= effectiveMaxRounds; round++) {
       if (this.isCancelled(session.session_id, input.signal)) {
@@ -6164,6 +6940,15 @@ export class CrossReviewOrchestrator {
         reasoning_effort_overrides: input.reasoning_effort_overrides,
       });
       session = this.store.read(session.session_id);
+      if (this.isCancelled(session.session_id, input.signal)) {
+        await this.store.markCancelled(session.session_id, "session_cancelled");
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: false,
+          rounds: round,
+        };
+      }
       if (session.outcome) {
         return {
           session,
@@ -6195,6 +6980,7 @@ export class CrossReviewOrchestrator {
       // ceiling AND the caller did not opt into until_stopped (in which
       // case the loop is effectively unbounded already).
       if (
+        input.allow_auto_extension === true &&
         !input.until_stopped &&
         round === effectiveMaxRounds &&
         autoGrantsUsed < AUTO_GRANT_CEILING
@@ -6222,6 +7008,13 @@ export class CrossReviewOrchestrator {
             } else {
               autoGrantsUsed += 1;
               effectiveMaxRounds += 1;
+              await this.store.setSessionTraceability(session.session_id, {
+                requested_max_rounds: input.max_rounds ?? null,
+                effective_max_rounds: effectiveMaxRounds,
+                requested_max_cost_usd: input.max_cost_usd ?? null,
+                effective_cost_ceiling_usd: costLimit ?? null,
+                cost_ceiling_source: input.max_cost_usd != null ? "call_arg" : "config_default",
+              });
               lastGrantBlockerFingerprint = fingerprint;
               this.emit({
                 type: "session.auto_round_granted",
@@ -6241,7 +7034,17 @@ export class CrossReviewOrchestrator {
       }
 
       if (round < effectiveMaxRounds) {
-        const generation = await adapters[leadPeer].generate(
+        if (this.isCancelled(session.session_id, input.signal)) {
+          await this.store.markCancelled(session.session_id, "session_cancelled");
+          return {
+            session: this.store.read(session.session_id),
+            final_text: draft,
+            converged: false,
+            rounds: round,
+          };
+        }
+        const generation = await this.generateWithFailureAccounting(
+          adapters[leadPeer],
           buildRevisionPrompt(
             session,
             draft,
@@ -6262,6 +7065,7 @@ export class CrossReviewOrchestrator {
             reasoning_effort_override: input.reasoning_effort_overrides?.[leadPeer],
             caller: callerForLottery,
           },
+          "lead-revision-failure",
         );
         await this.store.saveGeneration(session.session_id, round, generation, "revision");
         if (generation.model_match === false) {
@@ -6304,6 +7108,13 @@ export class CrossReviewOrchestrator {
               .join("\n"),
             runtimeFacts: runtimeTruthFacts(this.config),
           });
+          await this.recordPreflightChecked(
+            session.session_id,
+            "truthfulness",
+            truthfulness,
+            "lead_revision",
+            round + 1,
+          );
           if (!truthfulness.pass) {
             const message = `Truthfulness preflight failed on lead-generated revision before reviewer peer calls: ${truthfulness.reason}`;
             const rejected = selectAdapters(adapters, reviewerPeers).map((adapter) =>
@@ -6319,11 +7130,6 @@ export class CrossReviewOrchestrator {
               await this.store.savePeerFailure(session.session_id, round + 1, failure);
             }
             await this.store.recordPreflightFailure(session.session_id, rejected, round + 1);
-            await this.store.finalize(
-              session.session_id,
-              "aborted",
-              "needs_truthfulness_preflight",
-            );
             this.emit({
               type: "session.truthfulness_preflight_failed",
               session_id: session.session_id,
@@ -6345,6 +7151,11 @@ export class CrossReviewOrchestrator {
                 round_kind: "revision",
               },
             });
+            await this.store.finalize(
+              session.session_id,
+              "aborted",
+              "needs_truthfulness_preflight",
+            );
             return {
               session: this.store.read(session.session_id),
               final_text: draft,

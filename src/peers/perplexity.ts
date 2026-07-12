@@ -199,7 +199,7 @@ function sonarText(response: {
 }
 
 // v3.0.0: Perplexity reasoning_effort enum is `minimal|low|medium|high`.
-// The internal config scale can reach `xhigh`/`max` (used by other
+// The internal config scale can reach `xhigh`/`max`/`ultra` (used by other
 // peers). Clamp down so the on-wire value is always one Perplexity
 // accepts.
 //
@@ -218,6 +218,8 @@ export function clampEffortForPerplexity(
       return "low";
     case "medium":
       return "medium";
+    // Includes high/xhigh/max and the operator-facing ultra alias. Never
+    // transmit the compatibility alias to Perplexity's four-value API enum.
     default:
       return "high";
   }
@@ -521,6 +523,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 
@@ -648,6 +651,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 }

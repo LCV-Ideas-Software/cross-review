@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-11: `4.5.3`. O registro pode ficar
+> Estado do source/release target em 2026-07-12: `4.5.4`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -323,9 +323,11 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 No Fable 5, o adaptador omite o campo explícito `thinking`, pois o raciocínio
 adaptativo é automático, e usa `output_config.effort` para a profundidade. A
 retenção documentada é de 30 dias, sem opção ZDR. No GPT-5.6 Sol, `ultra` é um
-modo do produto Codex, não um `reasoning.effort` da Responses API; a
-configuração do cross-review deve usar `max`. O Grok 4.5 aceita apenas
-`low`/`medium`/`high` e recebe o valor compartilhado já limitado a esse enum.
+modo do produto Codex, não um `reasoning.effort` literal da Responses API; o
+cross-review aceita esse alias na configuração e envia `max` à API. O Grok 4.5
+aceita apenas `low`/`medium`/`high` e recebe `high` quando o alias é usado.
+Overrides explícitos para famílias OpenAI anteriores são normalizados ao enum
+da família: teto `xhigh` em GPT-5.5/5.4/5.2 e `high` em GPT-5.1/GPT-5.
 
 Como o `cross-review` é orientado à correção, os adaptadores pedem
 explicitamente o maior nível de raciocínio que cada API oficial oferece. O
@@ -599,6 +601,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.04`      | Corrige grounding, preflights, consenso, cancelamento multi-janela, contabilidade e tetos efetivos; expõe a cadeia de decisão e aceita `ultra` como alias normalizado por provider.     |
 | `v04.05.03`      | Corrige ReDoS e falsos bloqueios do hardgate em citações autenticadas, aspas simples correlacionadas e bumps de versão do artefato.                                                     |
 | `v04.05.02`      | Publicação do transporte automático de evidência com fixture de regressão hermético, independente da configuração central do operador.                                                  |
 | `v04.05.01`      | Transporte automático de evidência autenticada, autoridade sem confusão de owner, painel independente estrito e terminais imutáveis.                                                    |

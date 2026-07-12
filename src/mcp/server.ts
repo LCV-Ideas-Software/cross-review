@@ -60,7 +60,16 @@ const SESSION_LIST_MAX_LIMIT = 100;
 // since v3.0.0) produces a clean `{type:"object", properties:{...}}`
 // accepted by every host; runtime accepts the same
 // `{codex:"high", claude:"low"}` shape.
-const ReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const ReasoningEffortSchema = z.enum([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
 const ReasoningEffortOverridesSchema = z
   .object({
     codex: ReasoningEffortSchema.optional(),
@@ -77,7 +86,7 @@ const ReasoningEffortOverridesSchema = z
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. Provider adapters clamp the shared scale to each selected model's documented API values (for example, Grok 4.5 uses low/medium/high).",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-5.6 and high on Grok 4.5; older GPT-5 families use their own ceilings).",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -152,6 +161,7 @@ function summarizeSessionForList(meta: SessionMeta) {
     control_status: meta.control?.status ?? null,
     rounds: meta.rounds.length,
     in_flight: Boolean(meta.in_flight),
+    generation_in_flight: Boolean(meta.generation_in_flight),
     open_evidence_items:
       meta.evidence_checklist?.filter((item) => item.status === "open").length ?? 0,
     lead_peer: meta.convergence_scope?.lead_peer ?? null,
@@ -505,7 +515,7 @@ export function buildResponseNotices<
   return notices;
 }
 
-type JobKind = "ask_peers" | "run_until_unanimous";
+type JobKind = "ask_peers" | "run_until_unanimous" | "durable_session_round";
 export type JobStatus = {
   job_id: string;
   kind: JobKind;
@@ -517,17 +527,171 @@ export type JobStatus = {
   result_summary?: Record<string, unknown> | undefined;
 };
 
+type DurableSessionState = Pick<
+  SessionMeta,
+  "session_id" | "outcome" | "outcome_reason" | "in_flight" | "generation_in_flight" | "control"
+>;
+
+export type DurableJobStatus = JobStatus & {
+  kind: "durable_session_round";
+  source: "durable_session";
+  round: number;
+  peers: PeerId[];
+  control_status: NonNullable<SessionMeta["control"]>["status"] | null;
+  cancellation_requested: boolean;
+};
+
+/**
+ * Process-local job maps are only an optimization. The persisted session is
+ * the cross-window authority for whether work is still active.
+ */
+export function durableSessionExecutionActive(session: DurableSessionState): boolean {
+  if (session.outcome) return false;
+  return (
+    Boolean(session.in_flight) ||
+    Boolean(session.generation_in_flight) ||
+    session.control?.status === "running" ||
+    session.control?.status === "cancel_requested"
+  );
+}
+
+export function durableSessionCancellationWon(
+  session: DurableSessionState,
+  signalAborted = false,
+): boolean {
+  return (
+    signalAborted ||
+    (session.outcome === "aborted" && session.outcome_reason === "session_cancelled") ||
+    session.control?.status === "cancelled"
+  );
+}
+
+/**
+ * A background rejection may arrive after the routine has already persisted
+ * its terminal snapshot. In that case the process-local catch handler must not
+ * append an automatic operator escalation or rewrite the sealed meta/report.
+ */
+export function shouldEscalateBackgroundJobFailure(
+  session: DurableSessionState | undefined,
+): boolean {
+  return Boolean(session && !session.outcome);
+}
+
+/**
+ * Build the job-shaped view returned by session_poll when another MCP host
+ * owns the real AbortController and this process therefore has no local job.
+ */
+export function synthesizeDurableJob(
+  session: DurableSessionState,
+  localJobs: readonly JobStatus[],
+): DurableJobStatus | null {
+  if (session.outcome || localJobs.some((job) => job.status === "running")) return null;
+  const controlActive =
+    session.control?.status === "running" || session.control?.status === "cancel_requested";
+  if (!session.in_flight && !session.generation_in_flight && !controlActive) return null;
+  return {
+    job_id: session.control?.job_id ?? session.session_id,
+    kind: "durable_session_round",
+    session_id: session.session_id,
+    status: "running",
+    started_at:
+      session.in_flight?.started_at ??
+      session.generation_in_flight?.started_at ??
+      session.control?.requested_at ??
+      session.control?.updated_at ??
+      "",
+    source: "durable_session",
+    round: session.in_flight?.round ?? session.generation_in_flight?.round ?? 0,
+    peers:
+      session.in_flight?.peers ??
+      (session.generation_in_flight ? [session.generation_in_flight.peer] : []),
+    control_status: session.control?.status ?? null,
+    cancellation_requested: session.control?.status === "cancel_requested",
+  };
+}
+
+/**
+ * Observe cancellation written by a sibling MCP process. This closes the
+ * process-local AbortController gap without holding a session lock for the
+ * duration of a provider call. Read failures are transient/best-effort; the
+ * next interval retries until the job settles.
+ */
+export function watchDurableCancellation(
+  job: Pick<JobStatus, "job_id" | "session_id">,
+  controller: AbortController,
+  readSession: () => DurableSessionState,
+  intervalMs = 250,
+): () => void {
+  let timer: NodeJS.Timeout | undefined;
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clearInterval(timer);
+    controller.signal.removeEventListener("abort", stop);
+  };
+  const observe = () => {
+    if (stopped || controller.signal.aborted) return;
+    try {
+      const session = readSession();
+      const control = session.control;
+      if (
+        control?.status === "cancel_requested" &&
+        (!control.job_id || control.job_id === job.job_id)
+      ) {
+        controller.abort(control.reason ?? "session_cancelled");
+      }
+    } catch {
+      // A sibling may be atomically replacing meta.json. Retry on the next tick.
+    }
+  };
+
+  controller.signal.addEventListener("abort", stop, { once: true });
+  observe();
+  if (!stopped) {
+    timer = setInterval(observe, Math.max(5, intervalMs));
+    timer.unref();
+  }
+  return stop;
+}
+
+/**
+ * Close the startup gap between the watcher's first read and its next poll.
+ * The caller invokes this with the state returned by the atomic
+ * markBackgroundJobRunning transition, immediately before it could dispatch
+ * any work.
+ */
+export function throwIfDurableCancellationRequested(
+  job: Pick<JobStatus, "job_id">,
+  controller: AbortController,
+  session: DurableSessionState,
+): void {
+  const control = session.control;
+  if (control?.status !== "cancel_requested" || (control.job_id && control.job_id !== job.job_id)) {
+    return;
+  }
+  const reason = control.reason ?? "session_cancelled";
+  controller.abort(reason);
+  const error = new Error(reason);
+  error.name = "AbortError";
+  throw error;
+}
+
 function createRuntime() {
   const config = loadConfig();
   const eventLog = new EventLog(config);
   const holder: { orchestrator?: CrossReviewOrchestrator } = {};
   const emit = (event: RuntimeEvent) => {
-    eventLog.emit(event);
+    // Stamp once at occurrence time and pass the same timestamp to both
+    // sinks.  Previously EventLog and SessionStore independently stamped
+    // their copies, so persistence latency could masquerade as event time.
+    const stamped = { ...event, ts: event.ts ?? now() };
+    eventLog.emit(stamped);
     // Fire-and-forget: appendEvent is async (v4.1.0 proper-lockfile lock)
     // but the emit pipeline must stay sync — callers that need synchronous
     // persistence guarantees should await appendEvent directly. Unhandled
     // rejections are swallowed inside appendEvent.
-    void holder.orchestrator?.store.appendEvent(event);
+    void holder.orchestrator?.store.appendEvent(stamped);
   };
   const orchestrator = new CrossReviewOrchestrator(config, emit);
   holder.orchestrator = orchestrator;
@@ -784,29 +948,58 @@ function startJob(
   runtime.jobs.set(job.job_id, job);
   pruneCompletedJobs(runtime.jobs);
   runtime.controllers.set(job.job_id, controller);
-  void run(controller.signal)
+  const stopDurableCancellationWatch = watchDurableCancellation(job, controller, () =>
+    runtime.orchestrator.store.read(sessionId),
+  );
+  void Promise.resolve()
+    .then(async () => {
+      const persisted = await runtime.orchestrator.store.markBackgroundJobRunning(sessionId, {
+        job_id: job.job_id,
+        owner_pid: process.pid,
+      });
+      throwIfDurableCancellationRequested(job, controller, persisted);
+      return run(controller.signal);
+    })
     .then(async (result) => {
-      job.status = controller.signal.aborted ? "cancelled" : "completed";
+      const persisted = runtime.orchestrator.store.read(sessionId);
+      const cancellationWon = durableSessionCancellationWon(persisted, controller.signal.aborted);
+      job.status = cancellationWon ? "cancelled" : "completed";
       job.completed_at = now();
       job.result_summary = summarizeJobResult(result);
       runtime.controllers.delete(job.job_id);
-      if (controller.signal.aborted) {
+      if (cancellationWon) {
         try {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
         } catch {
           // The job status remains visible even if a session write fails.
         }
+      } else {
+        await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
       }
     })
     .catch(async (error) => {
-      job.status = controller.signal.aborted ? "cancelled" : "failed";
+      let persisted: SessionMeta | undefined;
+      try {
+        persisted = runtime.orchestrator.store.read(sessionId);
+      } catch {
+        // Preserve the process-local result when durable state is temporarily unreadable.
+      }
+      const cancellationWon = persisted
+        ? durableSessionCancellationWon(persisted, controller.signal.aborted)
+        : controller.signal.aborted;
+      job.status = cancellationWon ? "cancelled" : "failed";
       job.completed_at = now();
       job.error = safeErrorMessage(error);
       runtime.controllers.delete(job.job_id);
       try {
-        if (controller.signal.aborted) {
+        if (cancellationWon) {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+        } else if (!shouldEscalateBackgroundJobFailure(persisted)) {
+          // The routine already sealed its own terminal failure snapshot.
+          // Process-local bookkeeping must not mutate meta/report afterward.
+          return;
         } else {
+          await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
           await runtime.orchestrator.store.escalateToOperator(sessionId, {
             reason: `Background job failed: ${job.error}`,
             severity: "critical",
@@ -815,7 +1008,8 @@ function startJob(
       } catch {
         // Job state remains available even if the session cannot be updated.
       }
-    });
+    })
+    .finally(stopDurableCancellationWatch);
   return job;
 }
 
@@ -1318,7 +1512,19 @@ export async function main(): Promise<void> {
           // 6-element default. `.max(PEERS.length)` tracks the roster.
           .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
-        max_rounds: z.number().int().min(1).max(1000).default(8),
+        max_rounds: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .default(8)
+          .describe("Hard review-round ceiling unless allow_auto_extension is explicitly true."),
+        allow_auto_extension: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Opt in to at most two evidence-only auto-extensions. False keeps max_rounds rigid.",
+          ),
         until_stopped: z.boolean().default(false),
         max_cost_usd: z.number().positive().optional(),
         reasoning_effort_overrides: ReasoningEffortOverridesSchema,
@@ -1400,7 +1606,19 @@ export async function main(): Promise<void> {
           // 6-element default. `.max(PEERS.length)` tracks the roster.
           .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
-        max_rounds: z.number().int().min(1).max(1000).default(8),
+        max_rounds: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .default(8)
+          .describe("Hard review-round ceiling unless allow_auto_extension is explicitly true."),
+        allow_auto_extension: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Opt in to at most two evidence-only auto-extensions. False keeps max_rounds rigid.",
+          ),
         until_stopped: z.boolean().default(false),
         max_cost_usd: z.number().positive().optional(),
         reasoning_effort_overrides: ReasoningEffortOverridesSchema,
@@ -1488,7 +1706,7 @@ export async function main(): Promise<void> {
     {
       title: "Cancel Session Job",
       description:
-        "Request cancellation for running background jobs in a durable session. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token; another peer cannot cancel the job. Provider calls receive AbortSignal where the provider client supports it.",
+        "Request cancellation for running background jobs in a durable session. The reason accepts at most 300 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token; another peer cannot cancel the job. Provider calls receive AbortSignal where the provider client supports it.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         job_id: SessionIdSchema.optional(),
@@ -1517,7 +1735,9 @@ export async function main(): Promise<void> {
           job.status === "running" &&
           (!job_id || job.job_id === job_id),
       );
-      if (!jobs.length) {
+      const session = runtime.orchestrator.store.read(session_id);
+      const durableExecutionActive = durableSessionExecutionActive(session);
+      if (!jobs.length && !durableExecutionActive) {
         return textResult(
           {
             session_id,
@@ -1532,11 +1752,13 @@ export async function main(): Promise<void> {
       for (const job of jobs) {
         runtime.controllers.get(job.job_id)?.abort(reason);
       }
+      const durableJob = synthesizeDurableJob(meta, jobs);
       return textResult(
         {
           session_id,
           requested: true,
           matched_jobs: jobs,
+          durable_execution: durableJob,
           control: meta.control,
         },
         response_format,
@@ -1601,7 +1823,9 @@ export async function main(): Promise<void> {
     },
     async ({ session_id, response_format }) => {
       const session = runtime.orchestrator.store.read(session_id);
-      const jobs = [...runtime.jobs.values()].filter((job) => job.session_id === session_id);
+      const localJobs = [...runtime.jobs.values()].filter((job) => job.session_id === session_id);
+      const durableJob = synthesizeDurableJob(session, localJobs);
+      const jobs = durableJob ? [...localJobs, durableJob] : localJobs;
       // v3.6.0 (B1, logs+sessions study): `needs_attention` — derived
       // convenience flag. The 169-session corpus showed 28 non-terminal
       // sessions (5 open + 9 stale + 14 blocked), many abandoned by the
@@ -1641,6 +1865,7 @@ export async function main(): Promise<void> {
           outcome: session.outcome,
           health: session.convergence_health,
           in_flight: session.in_flight,
+          generation_in_flight: session.generation_in_flight,
           rounds: session.rounds.length,
           latest_round: session.rounds.at(-1) ?? null,
           jobs,
@@ -1851,6 +2076,7 @@ export async function main(): Promise<void> {
           convergence_health: session.convergence_health,
           convergence_scope: session.convergence_scope,
           in_flight: session.in_flight,
+          generation_in_flight: session.generation_in_flight,
           failed_attempts: session.failed_attempts ?? [],
         },
         response_format,
@@ -2249,7 +2475,7 @@ export async function main(): Promise<void> {
     {
       title: "Contest Verdict",
       description:
-        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token. Petitioner READY (acata) → notify the human operator so the dedicated console can finalize; petitioner NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
+        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token. Petitioner READY (acata) → notify the human operator so the dedicated console can finalize; petitioner NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(4_000),
@@ -2373,7 +2599,7 @@ export async function main(): Promise<void> {
     {
       title: "Escalate To Operator",
       description:
-        "Record a durable operator escalation for sessions that require human judgment or external intervention.",
+        "Record a durable operator escalation for sessions that require human judgment or external intervention. The reason accepts at most 1,000 characters.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(1000),
@@ -2408,7 +2634,7 @@ export async function main(): Promise<void> {
     {
       title: "Sweep Idle Sessions",
       description:
-        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory.",
+        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. The terminal reason accepts at most 200 characters. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory.",
       inputSchema: z.object({
         idle_minutes: z.number().min(1440).max(100_000).default(1440),
         outcome: z.enum(["aborted", "max-rounds"]).default("aborted"),
@@ -2475,7 +2701,7 @@ export async function main(): Promise<void> {
     {
       title: "Finalize Session",
       description:
-        "Operator-only: mark a durable session as converged, aborted or max-rounds with an optional reason. Requires the dedicated operator capability token from a separate human-console host.",
+        "Operator-only: mark a durable session as converged, aborted or max-rounds with an optional reason of at most 200 characters. Requires the dedicated operator capability token from a separate human-console host.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         outcome: z.enum(["converged", "aborted", "max-rounds"]),

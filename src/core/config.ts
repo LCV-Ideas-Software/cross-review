@@ -28,7 +28,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.5.3";
+export const VERSION = "4.5.4";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -210,7 +210,7 @@ function reasoningEffort(
 ): AppConfig["reasoning_effort"][PeerId] {
   const value = envValue(name);
   if (!value) return fallback;
-  if (/^(none|minimal|low|medium|high|xhigh|max)$/i.test(value)) {
+  if (/^(none|minimal|low|medium|high|xhigh|max|ultra)$/i.test(value)) {
     return value.toLowerCase() as AppConfig["reasoning_effort"][PeerId];
   }
   return fallback;
@@ -375,8 +375,9 @@ export function loadConfig(): AppConfig {
       perplexity: listEnv("CROSS_REVIEW_PERPLEXITY_FALLBACK_MODELS"),
     },
     reasoning_effort: {
-      // v4.5.0: Sol and Fable both document `max`; this is the API effort
-      // value, distinct from the Codex product's `ultra` execution mode.
+      // Sol and Fable both document `max` on their API surfaces. Central
+      // config and env inputs also accept `ultra` as an operator-facing
+      // compatibility alias; each adapter normalizes it before transmission.
       codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max"),
       claude: reasoningEffort("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max"),
       deepseek: reasoningEffort("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max"),
@@ -388,7 +389,8 @@ export function loadConfig(): AppConfig {
       // ignore the field entirely). Default `high` matches the
       // canonical "max reasoning per peer" stance the other peers take
       // (xhigh/max for OpenAI/Anthropic/Grok/DeepSeek). The adapter
-      // clamps internal scale (`xhigh`/`max`) to `high` for Perplexity.
+      // clamps the internal scale (`xhigh`/`max`/`ultra`) to `high` for
+      // Perplexity.
       perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high"),
     },
     model_selection: {},

@@ -625,7 +625,8 @@ const regressions: Regression[] = [
   {
     name: "historical peer-only claim requires strict path hash raw grounding before panel convergence",
     run: () => {
-      const historicalClaim = "When the workflow began, version 4.5.0 was in use.";
+      const historicalClaim =
+        "When the workflow began, cross-review runtime version 4.5.0 was in use.";
       const historicalRaw = "session_read snapshot captured for workflow start";
       const historicalPath = "evidence/workflow-start-snapshot.txt";
       const historicalSha = "a".repeat(64);
@@ -1153,7 +1154,7 @@ const regressions: Regression[] = [
         runtimeFacts: { runtime_version: "4.5.1" },
       });
       const historical = truthfulnessPreflight({
-        task: "When the workflow began, production was healthy.",
+        task: "When the workflow began, the local cross-review runtime was healthy.",
         initialDraft: "Historical status report.",
         caller: "codex",
         attachmentsPresent: false,
@@ -1220,7 +1221,7 @@ const regressions: Regression[] = [
   {
     name: "current runtime snapshot cannot corroborate a historical workflow-start claim",
     run: () => {
-      const claim = "When the workflow began, version 4.5.0 was in use.";
+      const claim = "When the workflow began, cross-review runtime version 4.5.0 was in use.";
       const currentSnapshot = "server_info current runtime_version=4.5.0";
       const evidencePath = "evidence/workflow-start-snapshot.txt";
       const evidenceSha = "c".repeat(64);
@@ -1291,7 +1292,7 @@ const regressions: Regression[] = [
   {
     name: "unrelated start timestamp cannot temporalize a current runtime snapshot",
     run: () => {
-      const claim = "When the workflow began, version 4.5.0 was in use.";
+      const claim = "When the workflow began, cross-review runtime version 4.5.0 was in use.";
       const mixedEvidence = [
         "workflow_started_at=2026-07-10T10:00:00Z",
         "server_info current runtime_version=4.5.0",

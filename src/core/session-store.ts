@@ -4,9 +4,12 @@ import path from "node:path";
 import lockfile from "proper-lockfile";
 import { redact, redactJsonValue, safeErrorMessage } from "../security/redact.js";
 import { mergeCost, mergeUsage } from "./cost.js";
+import { sessionCostBreakdown, sessionReportMarkdown } from "./reports.js";
 import type {
   AppConfig,
+  BackgroundGenerationInFlight,
   CallerEvidenceSubmission,
+  ConvergenceHealth,
   ConvergenceResult,
   ConvergenceScope,
   EvidenceAttachment,
@@ -25,6 +28,7 @@ import type {
   PeerReliabilityReport,
   PeerReliabilityStats,
   PeerResult,
+  PreflightCheckRecord,
   ResolvedEvidenceAttachment,
   ReviewRound,
   ReviewStatus,
@@ -44,6 +48,42 @@ export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function latestTimestamp(...values: Array<string | undefined>): string {
+  let latest: string | undefined;
+  let latestMs = -Infinity;
+  for (const value of values) {
+    if (!value) continue;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed >= latestMs) {
+      latest = value;
+      latestMs = parsed;
+    } else if (!latest && !Number.isFinite(parsed)) {
+      latest = value;
+    }
+  }
+  return latest ?? now();
+}
+
+function transitionHealth(
+  meta: Pick<SessionMeta, "convergence_health">,
+  state: ConvergenceHealth["state"],
+  detail: string,
+  ts = now(),
+  extra: Pick<ConvergenceHealth, "idle_ms"> = {},
+): ConvergenceHealth {
+  const previousActivity =
+    meta.convergence_health?.last_activity_at ?? meta.convergence_health?.last_event_at;
+  const lastActivityAt = latestTimestamp(previousActivity, ts);
+  return {
+    state,
+    last_event_at: lastActivityAt,
+    last_activity_at: lastActivityAt,
+    last_state_transition_at: ts,
+    detail,
+    ...extra,
+  };
 }
 
 const CHECKLIST_NON_EXECUTION_PATTERN =
@@ -240,37 +280,12 @@ function sessionMetaShapeError(value: unknown): string | undefined {
 function isStubSession(session: SessionMeta): boolean {
   const peerCosts = session.rounds.flatMap((round) => round.peers.map((peer) => peer.cost));
   const generationCosts = (session.generation_files ?? []).map((generation) => generation.cost);
-  const costs = [...peerCosts, ...generationCosts].filter(Boolean);
+  const failureCosts = (session.failed_attempts ?? []).map((failure) => failure.cost);
+  const costs = [...peerCosts, ...generationCosts, ...failureCosts].filter(Boolean);
   if (costs.length > 0) return costs.every((cost) => cost?.source === "stub");
   return session.capability_snapshot.some(
     (probe) => probe.provider.startsWith("stub-") || probe.model.startsWith("stub-"),
   );
-}
-
-function sessionPeerCostTotal(session: SessionMeta): number | null {
-  let total = 0;
-  let seen = false;
-  for (const round of session.rounds) {
-    for (const peer of round.peers) {
-      const value = peer.cost?.total_cost;
-      if (value == null || !Number.isFinite(value)) continue;
-      seen = true;
-      total += value;
-    }
-  }
-  return seen ? total : null;
-}
-
-function sessionGenerationCostTotal(session: SessionMeta): number | null {
-  let total = 0;
-  let seen = false;
-  for (const generation of session.generation_files ?? []) {
-    const value = generation.cost?.total_cost;
-    if (value == null || !Number.isFinite(value)) continue;
-    seen = true;
-    total += value;
-  }
-  return seen ? total : null;
 }
 
 function addNullableCost(a: number | null, b: number | null): number | null {
@@ -434,6 +449,10 @@ export class SessionStore {
   // promise here. Promises resolve/reject within appendEvent's own
   // try/catch — flush() therefore always settles, never rejects.
   private readonly pendingEventWrites = new Set<Promise<void>>();
+  // Preserve emission order per session.  The durable lock prevents byte
+  // interleaving across processes, but it does not by itself guarantee that
+  // independently scheduled promises acquire the lock in call order.
+  private readonly eventWriteChains = new Map<string, Promise<void>>();
   constructor(private readonly config: AppConfig) {
     fs.mkdirSync(this.sessionsDir(), { recursive: true });
   }
@@ -504,16 +523,82 @@ export class SessionStore {
   private totalsFor(meta: SessionMeta): SessionMeta["totals"] {
     const peerResults = meta.rounds.flatMap((round) => round.peers);
     const generations = meta.generation_files ?? [];
+    const failedAttempts = meta.failed_attempts ?? [];
     return {
       usage: mergeUsage([
         ...peerResults.map((peer) => peer.usage),
         ...generations.map((generation) => generation.usage),
+        ...failedAttempts.map((failure) => failure.usage),
       ]),
       cost: mergeCost([
         ...peerResults.map((peer) => peer.cost),
         ...generations.map((generation) => generation.cost),
+        ...failedAttempts.map((failure) => failure.cost),
       ]),
     };
+  }
+
+  private accountInterruptedInFlight(meta: SessionMeta, reason: string): void {
+    const inFlight = meta.in_flight;
+    if (!inFlight) return;
+    const elapsed = Math.max(0, Date.now() - Date.parse(inFlight.started_at));
+    const unknownAttempts = inFlight.peers.map((peer) => {
+      const snapshot = meta.capability_snapshot.find((entry) => entry.peer === peer);
+      return {
+        peer,
+        provider: snapshot?.provider ?? peer,
+        model: snapshot?.model ?? this.config.models[peer],
+        failure_class: "provider_error" as const,
+        message:
+          `possible_provider_attempt_interrupted: ${reason}; ` +
+          `round ${inFlight.round} ended without a durable provider result. ` +
+          "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+        retryable: false,
+        attempts: 1,
+        latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+        billing_status: "unknown" as const,
+        unpriced_attempts: 1,
+        round: inFlight.round,
+      };
+    });
+    meta.failed_attempts = [...(meta.failed_attempts ?? []), ...unknownAttempts];
+    meta.totals = this.totalsFor(meta);
+  }
+
+  private accountInterruptedBackgroundGeneration(meta: SessionMeta, reason: string): void {
+    // Only a provider-dispatch marker is accounting evidence. `control=running`
+    // alone also covers the zero-dispatch interval before run() starts and the
+    // already-settled interval after a round, so inferring spend from it would
+    // create false unpriced attempts.
+    if (meta.in_flight) return;
+    const pending = meta.generation_in_flight;
+    if (!pending) return;
+    const elapsed = Math.max(0, Date.now() - Date.parse(pending.started_at));
+    const unknownAttempt: PeerFailure & { round: number } = {
+      peer: pending.peer,
+      provider: pending.provider,
+      model: pending.model,
+      failure_class: "provider_error",
+      message:
+        `possible initial/background generation attempt interrupted (${pending.label}): ${reason}; ` +
+        "the durable owner ended before a generation result or review-round in_flight marker was persisted. " +
+        "One attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+      retryable: false,
+      attempts: 1,
+      latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+      billing_status: "unknown",
+      unpriced_attempts: 1,
+      round: pending.round,
+    };
+    meta.failed_attempts = [...(meta.failed_attempts ?? []), unknownAttempt];
+    meta.totals = this.totalsFor(meta);
+  }
+
+  private settleBackgroundGenerationMarker(meta: SessionMeta, peer: PeerId, round: number): void {
+    const pending = meta.generation_in_flight;
+    if (pending?.peer === peer && pending.round === round) {
+      delete meta.generation_in_flight;
+    }
   }
 
   // v4.1.0 hardening: pre-v4.1.0 acquired the lock via an exclusive
@@ -626,6 +711,7 @@ export class SessionStore {
     reviewFocus?: string,
   ): Promise<SessionMeta> {
     const session_id = crypto.randomUUID();
+    const initializedAt = now();
     // v2.22.0 (B.P3): snapshot the cost ceiling at session_init time so
     // budget pressure analysis is decoupled from later env-var mutation.
     // null when the operator runs without a session-level cost cap.
@@ -633,15 +719,18 @@ export class SessionStore {
     const meta: SessionMeta = {
       session_id,
       version: this.config.version,
-      created_at: now(),
-      updated_at: now(),
+      accounting_schema_version: 2,
+      created_at: initializedAt,
+      updated_at: initializedAt,
       task,
       ...(reviewFocus ? { review_focus: reviewFocus } : {}),
       caller,
       capability_snapshot: snapshot,
       convergence_health: {
         state: "idle",
-        last_event_at: now(),
+        last_event_at: initializedAt,
+        last_activity_at: initializedAt,
+        last_state_transition_at: initializedAt,
         detail: "Session initialized.",
       },
       rounds: [],
@@ -705,12 +794,14 @@ export class SessionStore {
         status: "running",
       };
       meta.convergence_scope = params.scope;
-      meta.convergence_health = {
-        state: "running",
-        last_event_at: now(),
-        detail: `Round ${params.round} is running.`,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        "running",
+        `Round ${params.round} is running.`,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
@@ -767,18 +858,44 @@ export class SessionStore {
     this.seqCache.set(sessionId, committed);
   }
 
-  private appendEventRecord(event: RuntimeEvent): void {
+  private async appendEventRecord(event: RuntimeEvent): Promise<void> {
     const sessionId = event.session_id;
     if (!sessionId) return;
     const file = this.eventsPath(sessionId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    const meta = this.read(sessionId);
+    const terminalEvent = event.type === "session.finalized" || event.type === "session.cancelled";
+    if (meta.outcome && !terminalEvent) {
+      const error = new Error(
+        `post_terminal_event_rejected: ${event.type} cannot be appended after outcome=${meta.outcome}`,
+      );
+      (error as Error & { code?: string }).code = "post_terminal_event_rejected";
+      throw error;
+    }
     const seq = this.peekNextSeq(sessionId, file);
+    const eventTs = event.ts ?? now();
     fs.appendFileSync(
       file,
-      `${JSON.stringify(redactJsonValue({ ...event, seq, ts: event.ts ?? now() }))}\n`,
+      `${JSON.stringify(redactJsonValue({ ...event, seq, ts: eventTs }))}\n`,
       "utf8",
     );
     this.commitSeq(sessionId, seq);
+
+    // An event is activity, not necessarily a convergence-state transition.
+    // Keep the old last_event_at field as an activity alias while preserving
+    // the independently meaningful state-transition timestamp.
+    if (meta.convergence_health) {
+      const previousLastEvent = meta.convergence_health.last_event_at;
+      const activityAt = latestTimestamp(
+        meta.convergence_health.last_activity_at ?? previousLastEvent,
+        eventTs,
+      );
+      meta.convergence_health.last_activity_at = activityAt;
+      meta.convergence_health.last_event_at = activityAt;
+      meta.convergence_health.last_state_transition_at ??= previousLastEvent;
+      meta.updated_at = latestTimestamp(meta.updated_at, activityAt);
+      await writeJson(this.metaPath(sessionId), meta);
+    }
   }
 
   // v4.1.0: durable event persistence. withSessionLock became async
@@ -790,14 +907,15 @@ export class SessionStore {
   async appendEvent(event: RuntimeEvent): Promise<void> {
     const sessionId = event.session_id;
     if (!sessionId) return;
-    const write = (async () => {
+    const previous = this.eventWriteChains.get(sessionId) ?? Promise.resolve();
+    const write = previous.then(async () => {
       try {
-        await this.withSessionLock(sessionId, () => {
+        await this.withSessionLock(sessionId, async () => {
           // Only commit the cache AFTER the durable append succeeded.
           // If appendFileSync threw inside appendEventRecord, the cache
           // still reflects the last persisted seq and the next call
           // reuses this seq number.
-          this.appendEventRecord(event);
+          await this.appendEventRecord(event);
         });
       } catch (error) {
         // Event persistence must never break provider calls or MCP responses.
@@ -810,10 +928,14 @@ export class SessionStore {
           }),
         );
       }
-    })();
+    });
+    this.eventWriteChains.set(sessionId, write);
     this.pendingEventWrites.add(write);
     void write.finally(() => {
       this.pendingEventWrites.delete(write);
+      if (this.eventWriteChains.get(sessionId) === write) {
+        this.eventWriteChains.delete(sessionId);
+      }
     });
     return write;
   }
@@ -931,15 +1053,28 @@ export class SessionStore {
     result: GenerationResult,
     label = "generation",
   ): Promise<string> {
-    const file = path.join(
+    const baseFile = path.join(
       this.sessionDir(sessionId),
       "agent-runs",
       `round-${round}-${result.peer}-${label}.json`,
     );
+    const file = fs.existsSync(baseFile)
+      ? baseFile.replace(/\.json$/, `-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`)
+      : baseFile;
     await writeJson(file, { ...result, text: redact(result.text) });
     const relativePath = path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
     await this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      // Cancellation may settle while the provider call is returning. The
+      // terminal meta/report already contain the conservative unknown attempt;
+      // keep them immutable and leave this raw artifact orphaned for forensics.
+      if (meta.outcome) {
+        const err = new Error(
+          `post_terminal_generation_settlement: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (err as Error & { code?: string }).code = "post_terminal_generation_settlement";
+        throw err;
+      }
       const artifact: GenerationArtifact = {
         ts: now(),
         round,
@@ -949,9 +1084,19 @@ export class SessionStore {
         usage: result.usage,
         cost: result.cost,
         latency_ms: result.latency_ms,
+        unpriced_attempts: result.unpriced_attempts,
       };
       meta.generation_files = [...(meta.generation_files ?? []), artifact];
+      // The result and marker settlement share one meta.json replacement: a
+      // crash can leave the marker (fail closed) or the accounted result, but
+      // never clear the marker while losing the result.
+      this.settleBackgroundGenerationMarker(meta, result.peer, round);
       meta.totals = this.totalsFor(meta);
+      if (round > 0 && round <= (meta.costs_per_round?.length ?? 0)) {
+        const costs = [...(meta.costs_per_round ?? [])];
+        costs[round - 1] = (costs[round - 1] ?? 0) + (result.cost?.total_cost ?? 0);
+        meta.costs_per_round = costs;
+      }
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
     });
@@ -985,14 +1130,57 @@ export class SessionStore {
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
-  async savePeerFailure(sessionId: string, round: number, failure: PeerFailure): Promise<string> {
-    const file = path.join(
+  async savePeerFailure(
+    sessionId: string,
+    round: number,
+    failure: PeerFailure,
+    label = "failure",
+  ): Promise<string> {
+    const baseFile = path.join(
       this.sessionDir(sessionId),
       "agent-runs",
-      `round-${round}-${failure.peer}-failure.json`,
+      `round-${round}-${failure.peer}-${label}.json`,
     );
+    const file = fs.existsSync(baseFile)
+      ? baseFile.replace(/\.json$/, `-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`)
+      : baseFile;
     await writeJson(file, { ...failure, message: redact(failure.message) });
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
+  }
+
+  async recordPeerFailureAccounting(
+    sessionId: string,
+    round: number,
+    failure: PeerFailure,
+    label = "failure",
+  ): Promise<string> {
+    const artifact = await this.savePeerFailure(sessionId, round, failure, label);
+    await this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      // Same late-settlement rule as saveGeneration: terminal accounting is
+      // sealed and must not be rewritten by a provider result that lost the
+      // cancellation race.
+      if (meta.outcome) {
+        const err = new Error(
+          `post_terminal_failure_settlement: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (err as Error & { code?: string }).code = "post_terminal_failure_settlement";
+        throw err;
+      }
+      meta.failed_attempts = [...(meta.failed_attempts ?? []), { ...failure, round }];
+      // Provider failure accounting and dispatch-marker settlement are one
+      // durable transition for the same reason as successful generations.
+      this.settleBackgroundGenerationMarker(meta, failure.peer, round);
+      meta.totals = this.totalsFor(meta);
+      if (round > 0 && round <= (meta.costs_per_round?.length ?? 0)) {
+        const costs = [...(meta.costs_per_round ?? [])];
+        costs[round - 1] = (costs[round - 1] ?? 0) + (failure.cost?.total_cost ?? 0);
+        meta.costs_per_round = costs;
+      }
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+    });
+    return artifact;
   }
 
   async appendRound(
@@ -1003,6 +1191,11 @@ export class SessionStore {
       prompt_file: string;
       peers: PeerResult[];
       rejected: PeerFailure[];
+      // Provider-unavailability failures can be excluded from convergence
+      // (`skipped`) without disappearing from the financial ledger. They
+      // remain absent from ReviewRound.rejected but are persisted atomically
+      // with the round in failed_attempts and costs_per_round.
+      accounting_only_failures?: PeerFailure[] | undefined;
       convergence: ConvergenceResult;
       convergence_scope: ConvergenceScope;
       started_at: string;
@@ -1040,15 +1233,21 @@ export class SessionStore {
       meta.failed_attempts = [
         ...(meta.failed_attempts ?? []),
         ...params.rejected.map((failure) => ({ ...failure, round: round.round })),
+        ...(params.accounting_only_failures ?? []).map((failure) => ({
+          ...failure,
+          round: round.round,
+        })),
       ];
       delete meta.in_flight;
       meta.convergence_scope = params.convergence_scope;
-      meta.convergence_health = {
-        state: params.convergence.converged ? "converged" : "blocked",
-        last_event_at: now(),
-        detail: params.convergence.reason,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        params.convergence.converged ? "converged" : "blocked",
+        params.convergence.reason,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       meta.totals = this.totalsFor(meta);
       // v2.22.0 (B.P3): append per-round cost. Sum of peer.cost.total_cost
       // across this round's peers. Coerced to 0 when adapters didn't
@@ -1056,7 +1255,16 @@ export class SessionStore {
       // so the new round's peer costs are already counted by the merger,
       // but we recompute the round-local sum independently to avoid
       // diff-based drift if a peer's cost changed in a retry loop.
-      const roundCost = params.peers.reduce((sum, peer) => sum + (peer.cost?.total_cost ?? 0), 0);
+      const roundCost =
+        params.peers.reduce((sum, peer) => sum + (peer.cost?.total_cost ?? 0), 0) +
+        params.rejected.reduce((sum, failure) => sum + (failure.cost?.total_cost ?? 0), 0) +
+        (params.accounting_only_failures ?? []).reduce(
+          (sum, failure) => sum + (failure.cost?.total_cost ?? 0),
+          0,
+        ) +
+        (meta.generation_files ?? [])
+          .filter((generation) => generation.round === round.round)
+          .reduce((sum, generation) => sum + (generation.cost?.total_cost ?? 0), 0);
       meta.costs_per_round = [...(meta.costs_per_round ?? []), roundCost];
       await writeJson(this.metaPath(sessionId), meta);
       return round;
@@ -1075,13 +1283,34 @@ export class SessionStore {
         ...(meta.failed_attempts ?? []),
         ...failures.map((failure) => ({ ...failure, round })),
       ];
-      meta.convergence_health = {
-        state: "blocked",
-        last_event_at: now(),
-        detail:
-          failures[0]?.message ??
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        "blocked",
+        failures[0]?.message ??
           "truthfulness_preflight blocked the session before a provider round started.",
-      };
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async recordPreflightCheck(
+    sessionId: string,
+    record: Omit<PreflightCheckRecord, "ts"> & { ts?: string | undefined },
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) return meta;
+      meta.preflight_checks = [
+        ...(meta.preflight_checks ?? []),
+        {
+          ...record,
+          ts: record.ts ?? now(),
+        },
+      ];
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
@@ -1171,11 +1400,60 @@ export class SessionStore {
     }
   }
 
+  private async persistCancelledTerminal(
+    meta: SessionMeta,
+    outcomeReason = "session_cancelled",
+  ): Promise<SessionMeta> {
+    const sessionId = meta.session_id;
+    const ts = now();
+    const requestedReason = meta.control?.reason ?? outcomeReason;
+    meta.outcome = "aborted";
+    meta.outcome_reason = outcomeReason;
+    if (meta.in_flight) {
+      this.accountInterruptedInFlight(meta, `cancelled: ${requestedReason}`);
+    } else {
+      this.accountInterruptedBackgroundGeneration(meta, `cancelled: ${requestedReason}`);
+    }
+    delete meta.in_flight;
+    delete meta.generation_in_flight;
+    meta.control = {
+      status: "cancelled",
+      reason: requestedReason,
+      job_id: meta.control?.job_id,
+      owner_pid: meta.control?.owner_pid,
+      requested_at: meta.control?.requested_at,
+      updated_at: ts,
+    };
+    meta.convergence_health = transitionHealth(meta, "cancelled", outcomeReason, ts);
+    meta.updated_at = ts;
+    await writeJson(this.metaPath(sessionId), meta);
+    try {
+      await this.appendEventRecord({
+        type: "session.cancelled",
+        session_id: sessionId,
+        ts,
+        message: `Session cancelled: ${requestedReason}`,
+        data: { outcome: "aborted", reason: outcomeReason, requested_reason: requestedReason },
+      });
+    } catch {
+      /* event persistence is best-effort; session_doctor will flag gaps */
+    }
+    try {
+      this.saveReport(sessionId, sessionReportMarkdown(meta, this.readEvents(sessionId)));
+    } catch {
+      /* report regeneration is best-effort; meta.json remains authoritative */
+    }
+    return meta;
+  }
+
   async finalize(
     sessionId: string,
     outcome: NonNullable<SessionMeta["outcome"]>,
     reason?: string,
   ): Promise<SessionMeta> {
+    // A terminal transition must be the final durable event. Drain events
+    // emitted before finalize() before acquiring the terminal write lock.
+    await this.flushPendingEvents();
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       if (meta.outcome) {
@@ -1186,6 +1464,28 @@ export class SessionStore {
           `session_already_finalized: session ${sessionId} is finalized as ${meta.outcome}/${meta.outcome_reason ?? "unspecified"}; refusing terminal transition to ${outcome}/${reason ?? "unspecified"}`,
         );
         (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
+      // Cancellation and finalization contend on the same session lock. If a
+      // durable cancellation request won that race, it is the authoritative
+      // terminal intent: never persist the contradictory pair
+      // outcome=converged/control=cancel_requested.
+      if (meta.control?.status === "cancel_requested") {
+        return this.persistCancelledTerminal(meta, "session_cancelled");
+      }
+      if (meta.generation_in_flight) {
+        const generation = meta.generation_in_flight;
+        const err = new Error(
+          `cannot_finalize_generation_in_flight: session ${sessionId} still has ${generation.peer}/round-${generation.round}/${generation.label} in flight. Request cancellation and wait for provider work to settle before finalizing.`,
+        );
+        (err as Error & { code?: string }).code = "cannot_finalize_generation_in_flight";
+        throw err;
+      }
+      if (meta.in_flight) {
+        const err = new Error(
+          `cannot_finalize_in_flight_session: session ${sessionId} still has round ${meta.in_flight.round} in flight. Request cancellation with session_cancel_job and wait for provider work to settle before finalizing.`,
+        );
+        (err as Error & { code?: string }).code = "cannot_finalize_in_flight_session";
         throw err;
       }
       // v3.2.0 (Codex bug report 2026-05-12): when the caller asserts
@@ -1216,18 +1516,17 @@ export class SessionStore {
       }
       meta.outcome = outcome;
       if (reason) meta.outcome_reason = reason;
-      delete meta.in_flight;
       const ts = now();
-      meta.convergence_health = {
-        state:
-          outcome === "converged" ? "converged" : outcome === "max-rounds" ? "blocked" : "stale",
-        last_event_at: ts,
-        detail: reason ?? outcome,
-      };
+      meta.convergence_health = transitionHealth(
+        meta,
+        outcome === "converged" ? "converged" : outcome === "max-rounds" ? "blocked" : "aborted",
+        reason ?? outcome,
+        ts,
+      );
       meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
       try {
-        this.appendEventRecord({
+        await this.appendEventRecord({
           type: "session.finalized",
           session_id: sessionId,
           ts,
@@ -1236,6 +1535,13 @@ export class SessionStore {
         });
       } catch {
         /* event persistence is best-effort; session_doctor will flag gaps */
+      }
+      // Keep the durable report terminally consistent without requiring an
+      // explicit session_report call from the operator.
+      try {
+        this.saveReport(sessionId, sessionReportMarkdown(meta, this.readEvents(sessionId)));
+      } catch {
+        /* report regeneration is best-effort; meta.json remains authoritative */
       }
       return meta;
     });
@@ -1253,25 +1559,40 @@ export class SessionStore {
           `session_already_finalized: cannot request cancellation for ${sessionId} with outcome=${meta.outcome}`,
         );
       }
+      const activeJobId = meta.control?.job_id;
+      if (jobId && activeJobId && jobId !== activeJobId) {
+        const err = new Error(
+          `background_job_mismatch: cancellation requested for job ${jobId}, but session ${sessionId} is owned by job ${activeJobId}`,
+        );
+        (err as Error & { code?: string }).code = "background_job_mismatch";
+        throw err;
+      }
       meta.control = {
         status: "cancel_requested",
         reason,
-        job_id: jobId,
+        // An omitted id targets the one durable owner.  Persisting the
+        // canonical id prevents sibling windows from creating an invisible
+        // cancellation that no owner-side watcher can match.
+        job_id: activeJobId ?? jobId,
+        owner_pid: meta.control?.owner_pid,
         requested_at: now(),
         updated_at: now(),
       };
-      meta.convergence_health = {
-        state: meta.outcome === "converged" ? "converged" : "blocked",
-        last_event_at: now(),
-        detail: `Cancellation requested: ${reason}`,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        "blocked",
+        `Cancellation requested: ${reason}`,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
 
   async markCancelled(sessionId: string, reason = "cancelled"): Promise<SessionMeta> {
+    await this.flushPendingEvents();
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       if (meta.outcome) {
@@ -1282,42 +1603,17 @@ export class SessionStore {
         (err as Error & { code?: string }).code = "session_already_finalized";
         throw err;
       }
-      const ts = now();
-      meta.outcome = "aborted";
-      meta.outcome_reason = reason;
-      delete meta.in_flight;
-      meta.control = {
-        status: "cancelled",
-        reason,
-        job_id: meta.control?.job_id,
-        requested_at: meta.control?.requested_at,
-        updated_at: ts,
-      };
-      meta.convergence_health = {
-        state: "stale",
-        last_event_at: ts,
-        detail: reason,
-      };
-      meta.updated_at = ts;
-      await writeJson(this.metaPath(sessionId), meta);
-      try {
-        this.appendEventRecord({
-          type: "session.cancelled",
-          session_id: sessionId,
-          ts,
-          message: `Session cancelled: ${reason}`,
-          data: { outcome: "aborted", reason },
-        });
-      } catch {
-        /* event persistence is best-effort; session_doctor will flag gaps */
-      }
-      return meta;
+      return this.persistCancelledTerminal(meta, reason);
     });
   }
 
   isCancellationRequested(sessionId: string): boolean {
     const meta = this.read(sessionId);
-    return meta.control?.status === "cancel_requested";
+    return (
+      meta.control?.status === "cancel_requested" ||
+      meta.control?.status === "cancelled" ||
+      (meta.outcome === "aborted" && meta.outcome_reason === "session_cancelled")
+    );
   }
 
   async appendFallbackEvent(
@@ -1670,32 +1966,167 @@ export class SessionStore {
   async recoverInterruptedSessions(activeSessionIds = new Set<string>()): Promise<SessionMeta[]> {
     const recovered: SessionMeta[] = [];
     for (const session of this.list()) {
-      if (session.outcome || activeSessionIds.has(session.session_id) || !session.in_flight)
+      const orphanedBackgroundControl =
+        (session.control?.status === "running" || session.control?.status === "cancel_requested") &&
+        !session.in_flight;
+      if (
+        session.outcome ||
+        activeSessionIds.has(session.session_id) ||
+        (!session.in_flight && !session.generation_in_flight && !orphanedBackgroundControl)
+      )
         continue;
+      let actuallyRecovered = false;
       const updated = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
-        if (current.outcome || activeSessionIds.has(current.session_id) || !current.in_flight) {
+        const currentOrphanedBackgroundControl =
+          (current.control?.status === "running" ||
+            current.control?.status === "cancel_requested") &&
+          !current.in_flight;
+        if (
+          current.outcome ||
+          activeSessionIds.has(current.session_id) ||
+          (!current.in_flight && !current.generation_in_flight && !currentOrphanedBackgroundControl)
+        ) {
           return current;
         }
-        const round = current.in_flight.round;
-        delete current.in_flight;
+        const ownerPid = current.generation_in_flight?.owner_pid ?? current.control?.owner_pid;
+        if (ownerPid && this.processAlive(ownerPid)) return current;
+        const round = current.in_flight?.round;
+        const interruptedGeneration = current.generation_in_flight;
+        if (current.in_flight) {
+          // Once a round exists, provider dispatch may already have happened.
+          // Preserve the conservative unknown-spend accounting on recovery.
+          this.accountInterruptedInFlight(current, "recovered_after_restart");
+          delete current.in_flight;
+          // in_flight is the authoritative broader dispatch envelope. A
+          // generation marker cannot add a second unknown attempt for the same
+          // interrupted interval.
+          delete current.generation_in_flight;
+        } else if (current.generation_in_flight) {
+          this.accountInterruptedBackgroundGeneration(current, "recovered_after_restart");
+          delete current.generation_in_flight;
+        }
+        const previousControl = current.control;
+        const reason =
+          round === undefined
+            ? interruptedGeneration
+              ? `Generation ${interruptedGeneration.peer}/round-${interruptedGeneration.round}/${interruptedGeneration.label} was interrupted before its result was durably accounted.`
+              : previousControl?.status === "cancel_requested"
+                ? `Cancellation was requested${previousControl.reason ? ` (${previousControl.reason})` : ""}, but the background owner exited before a durable round began.`
+                : "The background owner exited before a durable round began. Start a new round to continue from saved session context."
+            : `Round ${round} was interrupted before completion and can be resumed manually.`;
         current.control = {
           status: "recovered_after_restart",
-          reason: `Round ${round} was interrupted before completion and can be resumed manually.`,
+          reason,
+          job_id: previousControl?.job_id,
+          owner_pid: previousControl?.owner_pid,
+          requested_at: previousControl?.requested_at,
           updated_at: now(),
         };
-        current.convergence_health = {
-          state: "stale",
-          last_event_at: now(),
-          detail: `Recovered interrupted round ${round} after MCP restart. Start a new round to continue from saved session context.`,
-        };
-        current.updated_at = now();
+        const transitionedAt = now();
+        current.convergence_health = transitionHealth(
+          current,
+          "stale",
+          round === undefined
+            ? "Recovered an orphaned background job after MCP restart. Start a new round to continue from saved session context."
+            : `Recovered interrupted round ${round} after MCP restart. Start a new round to continue from saved session context.`,
+          transitionedAt,
+        );
+        current.updated_at = transitionedAt;
         await writeJson(this.metaPath(current.session_id), current);
+        actuallyRecovered = true;
         return current;
       });
-      recovered.push(updated);
+      if (actuallyRecovered) recovered.push(updated);
     }
     return recovered;
+  }
+
+  async markBackgroundJobRunning(
+    sessionId: string,
+    owner: { job_id: string; owner_pid: number },
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      // requestCancellation and this transition share the session lock.  If
+      // cancellation wins the race, starting the deferred background job must
+      // not erase it; if running wins, the subsequent cancellation write wins.
+      if (meta.outcome || meta.control?.status === "cancel_requested") return meta;
+      meta.control = {
+        status: "running",
+        job_id: owner.job_id,
+        owner_pid: owner.owner_pid,
+        updated_at: now(),
+      };
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async markBackgroundGenerationInFlight(
+    sessionId: string,
+    generation: BackgroundGenerationInFlight,
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const err = new Error(
+          `session_already_finalized: cannot dispatch generation for ${sessionId} with outcome=${meta.outcome}`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
+      if (meta.control?.status === "cancel_requested") return meta;
+      const existing = meta.generation_in_flight;
+      if (existing) {
+        const err = new Error(
+          `generation_already_in_flight: ${existing.peer}/round-${existing.round}/${existing.label}`,
+        );
+        (err as Error & { code?: string }).code = "generation_already_in_flight";
+        throw err;
+      }
+      const ts = now();
+      meta.generation_in_flight = generation;
+      if (meta.control) meta.control.updated_at = ts;
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async clearBackgroundGenerationInFlight(
+    sessionId: string,
+    peer: PeerId,
+    round: number,
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome || !meta.generation_in_flight) return meta;
+      const before = meta.generation_in_flight;
+      this.settleBackgroundGenerationMarker(meta, peer, round);
+      if (meta.generation_in_flight === before) return meta;
+      const ts = now();
+      if (meta.control) meta.control.updated_at = ts;
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async clearBackgroundJobControl(sessionId: string, jobId: string): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      // Terminal persistence and its generated report are a single immutable
+      // snapshot.  Late process-local cleanup must not mutate meta.json after
+      // that report has been sealed.
+      if (meta.outcome) return meta;
+      if (meta.control?.job_id !== jobId || meta.control.status === "cancel_requested") return meta;
+      delete meta.control;
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
   }
 
   // v2.12.0: walk session events.ndjson and aggregate
@@ -2101,12 +2532,14 @@ export class SessionStore {
                 meta.convergence_health?.state === "blocked" &&
                 meta.rounds.at(-1)?.convergence?.converged === true
               ) {
-                meta.convergence_health = {
-                  state: "converged",
-                  last_event_at: now(),
-                  detail: `v3.6.0 doctor repair: recomputed health from latest round (was "blocked" with outcome="converged" — pre-v3.2.0 corruption artifact)`,
-                };
-                meta.updated_at = now();
+                const transitionedAt = now();
+                meta.convergence_health = transitionHealth(
+                  meta,
+                  "converged",
+                  `v3.6.0 doctor repair: recomputed health from latest round (was "blocked" with outcome="converged" — pre-v3.2.0 corruption artifact)`,
+                  transitionedAt,
+                );
+                meta.updated_at = transitionedAt;
                 await writeJson(this.metaPath(session.session_id), meta);
                 return true;
               }
@@ -2144,6 +2577,9 @@ export class SessionStore {
     let stubSessions = 0;
     let peerCallCostUsd: number | null = null;
     let generationCostUsd: number | null = null;
+    let failedAttemptCostUsd: number | null = null;
+    let unpricedProviderAttempts = 0;
+    let legacyAccountingSessions = 0;
     let totalCostUsd: number | null = null;
     let terminalEventMissingCount = 0;
 
@@ -2168,8 +2604,17 @@ export class SessionStore {
       ).length;
       if (isStubSession(session)) stubSessions += 1;
       else realSessions += 1;
-      peerCallCostUsd = addNullableCost(peerCallCostUsd, sessionPeerCostTotal(session));
-      generationCostUsd = addNullableCost(generationCostUsd, sessionGenerationCostTotal(session));
+      const costBreakdown = sessionCostBreakdown(session);
+      peerCallCostUsd = addNullableCost(peerCallCostUsd, costBreakdown.peer_total);
+      generationCostUsd = addNullableCost(generationCostUsd, costBreakdown.generation_total);
+      failedAttemptCostUsd = addNullableCost(
+        failedAttemptCostUsd,
+        costBreakdown.failed_attempt_total,
+      );
+      unpricedProviderAttempts += costBreakdown.unpriced_failed_attempts;
+      if (costBreakdown.accounting_coverage === "legacy_unknown") {
+        legacyAccountingSessions += 1;
+      }
       const sessionTotalCost = session.totals.cost.total_cost;
       if (sessionTotalCost != null && Number.isFinite(sessionTotalCost)) {
         totalCostUsd = addNullableCost(totalCostUsd, sessionTotalCost);
@@ -2359,6 +2804,9 @@ export class SessionStore {
         total_cost_usd: totalCostUsd,
         peer_call_cost_usd: peerCallCostUsd,
         generation_cost_usd: generationCostUsd,
+        failed_attempt_cost_usd: failedAttemptCostUsd,
+        unpriced_provider_attempts: unpricedProviderAttempts,
+        legacy_accounting_sessions: legacyAccountingSessions,
       },
       findings: {
         open_sessions: openSessions,
@@ -2665,8 +3113,20 @@ export class SessionStore {
         );
       }
 
-      const newSession = await this.init(params.new_task, newCaller, [], undefined);
+      // A contest opens a new deliberative cycle inside the same autos.  The
+      // capability snapshot and review focus are custody metadata, not
+      // disposable runtime decoration, so preserve them unless a higher layer
+      // supplies a freshly probed successor later.
+      const newSession = await this.init(
+        params.new_task,
+        newCaller,
+        original.capability_snapshot,
+        original.review_focus,
+      );
       newSessionId = newSession.session_id;
+      if (params.new_initial_draft !== undefined) {
+        this.saveDraft(newSession.session_id, 0, params.new_initial_draft);
+      }
       // Cross-link successor → original while the original contest right is
       // exclusively held. Lock ordering is original then newly-created child;
       // no other path can hold the child and wait for its not-yet-linked parent.
@@ -2806,8 +3266,8 @@ export class SessionStore {
       current.active_caller_evidence_submission_id = submissionId;
       current.updated_at = submittedAt;
       await writeJson(this.metaPath(sessionId), current);
-      for (const event of attachmentEvents) this.appendEventRecord(event);
-      this.appendEventRecord({
+      for (const event of attachmentEvents) await this.appendEventRecord(event);
+      await this.appendEventRecord({
         type: "session.caller_evidence_submission_activated",
         session_id: sessionId,
         ts: submittedAt,
@@ -2895,7 +3355,7 @@ export class SessionStore {
       current.evidence_files = [...(current.evidence_files ?? []), attachment];
       current.updated_at = attachedAt;
       await writeJson(this.metaPath(sessionId), current);
-      this.appendEventRecord({
+      await this.appendEventRecord({
         type: "session.evidence_attached",
         session_id: sessionId,
         ts: attachedAt,
@@ -2932,12 +3392,14 @@ export class SessionStore {
         ...(meta.operator_escalations ?? []),
         { ts: now(), reason: params.reason, severity: params.severity },
       ];
-      meta.convergence_health = {
-        state: meta.outcome === "converged" ? "converged" : "blocked",
-        last_event_at: now(),
-        detail: `Operator escalation requested: ${params.reason}`,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        meta.outcome === "converged" ? "converged" : "blocked",
+        `Operator escalation requested: ${params.reason}`,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
@@ -2959,20 +3421,21 @@ export class SessionStore {
       const finalized = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
         if (current.outcome) return undefined;
+        if (current.in_flight || current.generation_in_flight) return undefined;
         const ts = now();
         current.outcome = outcome;
         current.outcome_reason = reason;
-        delete current.in_flight;
-        current.convergence_health = {
-          state: "stale",
-          last_event_at: ts,
-          detail: reason,
-          idle_ms: idleFor,
-        };
+        current.convergence_health = transitionHealth(
+          current,
+          outcome === "aborted" ? "aborted" : "blocked",
+          reason,
+          ts,
+          { idle_ms: idleFor },
+        );
         current.updated_at = ts;
         await writeJson(this.metaPath(session.session_id), current);
         try {
-          this.appendEventRecord({
+          await this.appendEventRecord({
             type: "session.finalized",
             session_id: session.session_id,
             ts,
@@ -2981,6 +3444,14 @@ export class SessionStore {
           });
         } catch {
           /* event persistence is best-effort; session_doctor will flag gaps */
+        }
+        try {
+          this.saveReport(
+            session.session_id,
+            sessionReportMarkdown(current, this.readEvents(session.session_id)),
+          );
+        } catch {
+          /* report regeneration is best-effort; meta.json remains authoritative */
         }
         return current;
       });
@@ -3105,6 +3576,8 @@ export class SessionStore {
     for (const session of this.list()) {
       if (!session.in_flight) continue;
       scanned += 1;
+      const ownerPid = session.generation_in_flight?.owner_pid ?? session.control?.owner_pid;
+      if (ownerPid && this.processAlive(ownerPid)) continue;
       const startedIso = session.in_flight.started_at;
       const startedAge = startedIso ? Date.now() - Date.parse(startedIso) : Infinity;
       // v4.1.0: lock-holder freshness is reported by proper-lockfile's
@@ -3135,7 +3608,14 @@ export class SessionStore {
           await this.withSessionLock(session.session_id, async () => {
             const current = this.read(session.session_id);
             if (!current.in_flight) return;
+            const currentOwnerPid =
+              current.generation_in_flight?.owner_pid ?? current.control?.owner_pid;
+            if (currentOwnerPid && this.processAlive(currentOwnerPid)) return;
+            this.accountInterruptedInFlight(current, "stale_in_flight_sweep");
             delete current.in_flight;
+            // in_flight is the broader accounting envelope; never leave a
+            // narrower generation marker behind for a second recovery charge.
+            delete current.generation_in_flight;
             current.updated_at = now();
             await writeJson(this.metaPath(session.session_id), current);
             cleared += 1;

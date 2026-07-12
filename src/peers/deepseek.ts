@@ -89,7 +89,7 @@ function chatText(response: {
 function deepSeekReasoningEffort(
   value: AppConfig["reasoning_effort"][PeerId],
 ): DeepSeekReasoningEffort {
-  return value === "max" || value === "xhigh" ? "max" : "high";
+  return value === "max" || value === "xhigh" || value === "ultra" ? "max" : "high";
 }
 
 function deepSeekThinking(
@@ -268,6 +268,7 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 
@@ -375,6 +376,7 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 }

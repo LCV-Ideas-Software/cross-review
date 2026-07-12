@@ -819,7 +819,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   const evidenceIndex = orchSrcTruth.indexOf("const preflight = evidencePreflight", runUntilIndex);
   const leadGenerationIndex = orchSrcTruth.indexOf(
-    "const generation = await adapters[leadPeer].generate",
+    "const generation = await this.generateWithFailureAccounting",
     runUntilIndex,
   );
   assert.ok(

@@ -68,13 +68,22 @@ environment/registry model override.
 
 Fable 5 can return successful responses with `stop_reason="refusal"`. The
 runtime records those as `provider_refusal` and discards partial refusal output.
+Anthropic does not charge a refusal that occurs before output, even when the
+response reports input usage; a mid-stream refusal is billable for input and
+generated output, and the ledger distinguishes the two cases.
 Its request omits the explicit `thinking` field because adaptive thinking is
 automatic. Anthropic documents Fable 5 as a 30-day-retention model with no zero
 data retention option, so enable it only when that posture is acceptable.
 
-`ultra` is a Codex product/CLI mode, not an OpenAI Responses API
-`reasoning.effort`. Use `max` for `gpt-5.6-sol`. A central config containing
-`reasoning_effort.codex="ultra"` is invalid and is rejected atomically.
+`ultra` is a Codex product/CLI mode, not a literal OpenAI Responses API
+`reasoning.effort`. Cross-review accepts `reasoning_effort.codex="ultra"` as a
+compatibility alias so an otherwise valid central config is not rejected
+atomically, and the OpenAI adapter sends the official `max` value to
+`gpt-5.6-sol`. The other adapters likewise clamp the alias to their strongest
+documented value; no provider receives the string `ultra` on the wire.
+Explicit older OpenAI overrides are normalized by family as well: GPT-5.5,
+5.4 and 5.2 cap at `xhigh`; GPT-5.1 and original GPT-5 cap at `high`, with
+`minimal`/`none` translated where those literals are unsupported.
 
 Environment variables and central `config.json` are snapshotted at MCP process
 startup. After changing either source, reload/restart the editor or MCP host and

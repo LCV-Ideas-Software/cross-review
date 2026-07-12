@@ -56,7 +56,9 @@ The adapter omits the explicit `thinking` field because Fable applies adaptive
 thinking automatically; `output_config.effort` remains the depth control.
 Fable refusals are successful API responses with `stop_reason="refusal"`; the
 runtime discards partial refusal output and records a non-skippable
-`provider_refusal`. Anthropic documents 30-day retention and no zero data
+`provider_refusal`. A refusal before output is zero-cost even though Anthropic
+can report input usage; a mid-stream refusal is billed for the input and output
+already generated. Anthropic documents 30-day retention and no zero data
 retention option for Fable, so operators must accept that posture before using
 the peer.
 
@@ -91,20 +93,41 @@ explicitly want a minimal `disable_search` round-trip.
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
 - OpenAI/Codex: `gpt-5.6-sol` through the Responses API. The API accepts
-  `reasoning.effort=max`; `ultra` is a Codex product/CLI mode and is not valid
-  in cross-review central config or an API request.
+  `reasoning.effort=max`; cross-review accepts the Codex product/CLI term
+  `ultra` only as a config compatibility alias and normalizes it to `max`
+  before the request. The shared legacy `minimal` setting is normalized to
+  GPT-5.6's lowest active API effort, `low`; it is never sent literally.
+  Explicit model overrides are also family-aware: GPT-5.5/5.4/5.2 accept
+  through `xhigh` (`minimal` → `low`, `max`/`ultra` → `xhigh`); GPT-5.1
+  accepts through `high` (`minimal` → `low`, higher shared values → `high`);
+  original GPT-5 accepts `minimal` through `high` (`none` → `minimal`, higher
+  shared values → `high`).
 - Anthropic/Claude: Fable 5 omits the explicit `thinking` object (adaptive
   thinking is automatic) and uses `output_config.effort` for depth.
 - Google/Gemini: high thinking level for the pinned Gemini 3.1 Pro Preview
   model; the adapter keeps the Gemini 3 thinking path explicit because this
   peer is used for complex reasoning and coding review.
-- DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default.
+- DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default;
+  shared-scale `xhigh`, `max`, and `ultra` all normalize to `max`.
 - Grok: the pinned `grok-4.5` model accepts explicit `reasoning.effort` at
   `low`, `medium`, or `high`; unsupported shared-scale values are clamped.
-- Perplexity: the pinned `sonar-reasoning-pro` model accepts an explicit
-  `reasoning_effort` enum (`minimal`/`low`/`medium`/`high`, `high` by default);
-  `clampEffortForPerplexity` narrows the shared effort scale into that range
-  (`none`/`minimal` → `minimal`; `xhigh`/`max` → `high`).
+  For the explicit `grok-4.20-multi-agent` compatibility override, the
+  provider enum is `low`/`medium`/`high`/`xhigh`: shared `none`/`minimal`
+  normalize to `low`, while `max`/`ultra` normalize to `xhigh`.
+- Perplexity: the general `/v1/sonar` request schema accepts an explicit
+  `reasoning_effort` enum (`minimal`/`low`/`medium`/`high`). The specific
+  Sonar Reasoning Pro page does not promise how those levels change model
+  depth, so the field is treated as an endpoint capability rather than a
+  quality guarantee. `clampEffortForPerplexity` narrows the shared scale into
+  that enum (`none`/`minimal` → `minimal`; `xhigh`/`max`/`ultra` → `high`).
+
+The alias is accepted consistently by central `config.json`, environment
+variables and per-call overrides. It is never a provider payload value:
+OpenAI GPT-5.6, Anthropic and DeepSeek receive `max`; Grok 4.5 and Perplexity
+receive `high`; Gemini retains its native high-thinking configuration.
+When an operator explicitly selects an older GPT-5 family, the OpenAI adapter
+uses that family's documented ceiling rather than blindly sending GPT-5.6's
+enum.
 
 ## Official provider references
 

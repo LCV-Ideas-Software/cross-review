@@ -7,6 +7,104 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.04] — 2026-07-12
+
+**Runtime hardgate remediation — truthful evidence, cancellation and financial state.**
+
+### Added
+
+- Added focused RED/GREEN regression suites for grounding, verdict/status
+  traces, consensus judging, cancellation, durable cross-window jobs, health
+  timestamps, preflight persistence and financial reconciliation.
+- Added durable `raw_status`, `parsed_status`, `normalized_status` and decision
+  transformation records, so a provider vote and every runtime reclassification
+  remain distinguishable in reports and artifacts.
+- Added accounting schema v2 with explicit `unpriced_attempts`, failed-attempt
+  artifacts, generation/judge costs, coverage status and fail-closed legacy
+  reconciliation.
+- Added `allow_auto_extension` as the explicit opt-in for legacy automatic
+  round grants. Caller `max_rounds` is otherwise a hard ceiling.
+- Added operator-facing `ultra` reasoning compatibility to env, central config
+  and MCP schemas. Adapters normalize it to each provider's documented native
+  ceiling (`max` for GPT-5.6/Anthropic/DeepSeek, `high` for xAI/Perplexity and
+  Gemini's native high setting) and never transmit an unsupported literal.
+
+### Fixed
+
+- Validates every `evidence_sources` item independently and requires path,
+  SHA-256 and literal quote to correlate within the same attachment. Joining
+  multiple sources or splicing attachment A's digest with attachment B's quote
+  can no longer create either false grounding or false fabrication.
+- Stops interpreting instructions, questions, attributed provider
+  documentation, reviewed-product versions and database dates as local
+  cross-review runtime claims. Workflow/run/session phrases are temporal
+  markers only; the historical gate now requires an explicit cross-review,
+  MCP, `server_info`, `runtime_capabilities` or local-runtime subject. Real
+  unsupported or contradictory runtime claims still fail closed.
+- Aligns the provider JSON Schema with the Zod limits and documents one
+  canonical citation item grammar: attachment, full SHA-256 and final
+  `Artifact quote`, with separate array entries for separate sources.
+- Normalizes the shared OpenAI effort scale by selected GPT-5 family:
+  GPT-5.6 supports through `max`; GPT-5.5/5.4/5.2 through `xhigh`; GPT-5.1
+  through `high`; and original GPT-5 from `minimal` through `high`.
+- Clamps the explicit `grok-4.20-multi-agent` compatibility override to its
+  documented `low|medium|high|xhigh` enum in both review and generation
+  payloads; shared `none`/`minimal` now map to `low` instead of leaking an
+  unsupported literal.
+- Excludes an evidence-ask author before consensus-judge dispatch and before
+  calculating the unanimity denominator. Consensus now requires at least two
+  independent eligible judges, while positive and negative shadow decisions
+  remain observable without mutating checklist state.
+- Persists successful and failed judge attempts, preserves distinct repeated
+  artifacts, separates `would_promote` from actual mutations and includes
+  judge spend in session totals.
+- Threads `AbortSignal` through every provider retry path, makes backoff
+  abort-aware, blocks fallback/moderation/format/judge/relator work after a
+  durable cancellation request and lets an owner process observe cancellation
+  requested from another MCP window.
+- Persists background-job owner identity, synthesizes remote durable job state,
+  validates job identity, preserves pre-round cancellation across windows and
+  prevents a live owner from being reclaimed by restart/idle recovery.
+- Makes cancellation win atomically over a concurrent finalization, keeps
+  `events.ndjson` append-only with the terminal event last, rejects late
+  post-terminal events/results and regenerates reports for every terminal path.
+- Separates `last_activity_at` from `last_state_transition_at` while preserving
+  `last_event_at` as a compatibility alias.
+- Records the real evidence and truthfulness preflight results for execution
+  paths while keeping the explicit preflight tool read-only.
+- Accounts failed, skipped, fallback, moderation, format-recovery, judge and
+  relator/rotator calls. Skipped provider outages remain outside the vote but
+  inside the financial ledger.
+- Preserves Claude Fable 5 usage and cost across controlled `max_tokens`
+  recovery, refusal, network failure and cancellation after provider
+  settlement without double counting or retaining stale unpriced markers.
+  Early refusals remain zero-cost even when Anthropic reports input usage;
+  mid-stream refusals retain the billable input/output cost.
+- Makes persisted per-call and `until_stopped` cost ceilings authoritative for
+  review rounds, recoveries, judges and all lead/rotator generations before
+  dispatch instead of enforcing only the global ceiling after spend.
+- Recovers orphaned in-flight rounds with conservative unknown-attempt records,
+  refuses manual finalization while provider work is active and prevents idle
+  sweeps from erasing an in-flight billing boundary. A top-level durable
+  generation-dispatch marker covers synchronous and background relators until
+  the result/failure and marker settlement are persisted atomically; a job
+  control flag alone never invents spend.
+- Uses unique artifact filenames for repeated generation/failure labels and
+  represents an unavailable cache key as `null` plus a reason instead of an
+  empty hash.
+- Preserves review focus, capability snapshot and seed draft when contesting a
+  verdict, and exposes cancellation/escalation reason limits consistently in
+  both sync and async MCP schemas.
+
+### Security
+
+- Retains strict anti-fabrication, anti-self-review, immutable-terminal and
+  authenticated evidence-authority gates while removing the field-observed
+  false positives that reclassified grounded unanimous READY votes.
+- Cost reports no longer claim reconciliation when a provider attempt is
+  unpriced, belongs to a legacy ledger or was interrupted before a durable
+  result. Unknown coverage is explicit rather than silently treated as zero.
+
 ## [v04.05.03] — 2026-07-11
 
 **Security and hardgate correctness — bounded parsing without false evidence rejection.**

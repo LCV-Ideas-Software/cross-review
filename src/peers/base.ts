@@ -3,6 +3,7 @@ import { decisionQualityFromStatus, parsePeerStatus } from "../core/status.js";
 import type {
   AppConfig,
   Confidence,
+  DecisionTransformation,
   EvidenceAskJudgment,
   GenerationResult,
   PeerCallContext,
@@ -310,6 +311,7 @@ export abstract class BasePeerAdapter {
     usage?: TokenUsage | undefined;
     started: number;
     attempts: number;
+    accounted_prior_attempts?: number | undefined;
     modelReported?: string | undefined;
     // v2.23.0: provider-side parser diagnostics (e.g. Anthropic
     // thinking-only response with no final text block). Merged AFTER
@@ -328,23 +330,53 @@ export abstract class BasePeerAdapter {
             `reported model ${params.modelReported} did not match requested model ${this.model}`,
           ]
         : baseWarnings;
+    const effectiveStatus = modelMatch === false ? null : parsed.status;
+    const decisionTransformations: DecisionTransformation[] = [...parsed.decision_transformations];
+    if (modelMatch === false) {
+      decisionTransformations.push({
+        stage: "model_validation",
+        from: parsed.normalized_status,
+        to: null,
+        rule: "reported_model_mismatch",
+        reasons: ["reported_model_mismatch"],
+        details: {
+          requested_model: this.model,
+          reported_model: params.modelReported ?? null,
+        },
+      });
+    }
+    const cost = estimateCost(this.config, this.id, params.usage);
+    const currentAttemptAccounted =
+      typeof cost.total_cost === "number" && Number.isFinite(cost.total_cost) ? 1 : 0;
+    const unpricedAttempts = Math.max(
+      0,
+      params.attempts - (params.accounted_prior_attempts ?? 0) - currentAttemptAccounted,
+    );
     return {
       peer: this.id,
       provider: this.provider,
       model: this.model,
       model_reported: params.modelReported,
       model_match: modelMatch,
-      status: modelMatch === false ? null : parsed.status,
+      raw_status: parsed.raw_status,
+      parsed_status: parsed.parsed_status,
+      normalized_status: effectiveStatus,
+      decision_transformations: decisionTransformations,
+      status_transformations: decisionTransformations,
+      status: effectiveStatus,
       structured: parsed.structured,
       text: params.text,
       raw: params.raw,
       usage: params.usage,
-      cost: estimateCost(this.config, this.id, params.usage),
+      cost,
       latency_ms: Date.now() - params.started,
       attempts: params.attempts,
+      ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
       parser_warnings: parserWarnings,
       decision_quality:
-        modelMatch === false ? "failed" : decisionQualityFromStatus(parsed.status, parserWarnings),
+        modelMatch === false
+          ? "failed"
+          : decisionQualityFromStatus(effectiveStatus, parserWarnings),
     };
   }
 
@@ -354,6 +386,7 @@ export abstract class BasePeerAdapter {
     usage?: TokenUsage | undefined;
     started: number;
     attempts: number;
+    accounted_prior_attempts?: number | undefined;
     modelReported?: string | undefined;
     // v2.23.0: provider-side parser diagnostics propagated to the
     // GenerationResult so the relator-revision path in the orchestrator
@@ -364,6 +397,13 @@ export abstract class BasePeerAdapter {
   }): GenerationResult {
     const modelMatch = this.modelMatches(params.modelReported);
     const extra = params.extraParserWarnings ?? [];
+    const cost = estimateCost(this.config, this.id, params.usage);
+    const currentAttemptAccounted =
+      typeof cost.total_cost === "number" && Number.isFinite(cost.total_cost) ? 1 : 0;
+    const unpricedAttempts = Math.max(
+      0,
+      params.attempts - (params.accounted_prior_attempts ?? 0) - currentAttemptAccounted,
+    );
     return {
       peer: this.id,
       provider: this.provider,
@@ -373,9 +413,10 @@ export abstract class BasePeerAdapter {
       text: params.text,
       raw: params.raw,
       usage: params.usage,
-      cost: estimateCost(this.config, this.id, params.usage),
+      cost,
       latency_ms: Date.now() - params.started,
       attempts: params.attempts,
+      ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
       parser_warnings: extra.length > 0 ? extra : undefined,
     };
   }
@@ -493,6 +534,7 @@ export abstract class BasePeerAdapter {
       cost: generation.cost,
       latency_ms: generation.latency_ms,
       attempts: generation.attempts,
+      unpriced_attempts: generation.unpriced_attempts,
       parser_warnings: parserWarnings,
     };
   }

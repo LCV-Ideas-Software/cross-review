@@ -1,7 +1,29 @@
 import type { AppConfig, PeerFailure } from "../core/types.js";
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function cancellationError(signal: AbortSignal): Error {
+  const detail =
+    typeof signal.reason === "string" && signal.reason.trim().length > 0
+      ? `: ${signal.reason.trim()}`
+      : "";
+  const error = new Error(`Request was aborted${detail}`);
+  error.name = "AbortError";
+  return error;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(cancellationError(signal));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(cancellationError(signal as AbortSignal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 // v2.4.0 / audit closure (P2.6): full jitter on the exponential backoff.
@@ -38,22 +60,85 @@ function attachPeerFailure(error: unknown, failure: PeerFailure): unknown {
   return wrapped;
 }
 
+function attachSettledBilling(error: Error, result: unknown, attempt: number): Error {
+  if (!result || typeof result !== "object") return error;
+  const record = result as {
+    usage?: unknown;
+    cost?: unknown;
+    unpriced_attempts?: unknown;
+  };
+  const unpriced =
+    typeof record.unpriced_attempts === "number" && record.unpriced_attempts > 0
+      ? Math.floor(record.unpriced_attempts)
+      : 0;
+  for (const [key, value] of [
+    ["usage", record.usage],
+    ["cost", record.cost],
+    ["accounted_attempts", Math.max(0, attempt - unpriced)],
+    // The provider promise returned a complete result before cancellation.
+    // Adapters that aggregate retry usage into their result can use this
+    // marker to avoid merging prior-attempt billing a second time.
+    ["provider_result_settled", true],
+  ] as const) {
+    if (value === undefined) continue;
+    Object.defineProperty(error, key, {
+      value,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return error;
+}
+
 export async function withRetry<T>(
   config: AppConfig,
   run: (attempt: number) => Promise<T>,
   onFailure: (error: unknown, attempt: number, started: number) => PeerFailure,
+  options: { signal?: AbortSignal | undefined } = {},
 ): Promise<T> {
   const started = Date.now();
   let last: PeerFailure | null = null;
   for (let attempt = 1; attempt <= config.retry.max_attempts; attempt++) {
+    if (options.signal?.aborted) {
+      const error = cancellationError(options.signal);
+      const failure = onFailure(error, attempt - 1, started);
+      throw attachPeerFailure(error, {
+        ...failure,
+        failure_class: "cancelled",
+        retryable: false,
+        attempts: attempt - 1,
+      });
+    }
     try {
-      return await run(attempt);
+      const result = await run(attempt);
+      if (options.signal?.aborted) {
+        throw attachSettledBilling(cancellationError(options.signal), result, attempt);
+      }
+      return result;
     } catch (error) {
       last = onFailure(error, attempt, started);
+      if (options.signal?.aborted) {
+        throw attachPeerFailure(error, {
+          ...last,
+          failure_class: "cancelled",
+          retryable: false,
+          attempts: attempt,
+        });
+      }
       if (!last.retryable || attempt >= config.retry.max_attempts)
         throw attachPeerFailure(error, last);
       const wait = last.retry_after_ms ?? backoffWithJitter(attempt, config);
-      await delay(wait);
+      try {
+        await delay(wait, options.signal);
+      } catch (delayError) {
+        const failure = onFailure(delayError, attempt, started);
+        throw attachPeerFailure(delayError, {
+          ...failure,
+          failure_class: "cancelled",
+          retryable: false,
+          attempts: attempt,
+        });
+      }
     }
   }
   throw new Error(last?.message ?? "retry loop exhausted");

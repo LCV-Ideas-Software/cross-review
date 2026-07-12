@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-07-11.
+Data de referência desta apresentação: 2026-07-12.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.3`                            |
-| Data do source/release target | `2026-07-11`                       |
+| Versão preparada pelo source  | `4.5.4`                            |
+| Data do source/release target | `2026-07-12`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -216,9 +216,13 @@ de 30 dias, sem ZDR; recusas `stop_reason="refusal"` bloqueiam como
 `provider_refusal` e seu texto parcial não é aceito como parecer.
 
 Para `gpt-5.6-sol`, `ultra` designa um modo de execução do produto Codex, não
-um `reasoning.effort` da Responses API. O valor correto no cross-review é
-`max`. O `grok-4.5` aceita somente `low`, `medium` e `high`, portanto o
-adaptador limita a escala comum antes de enviá-la.
+um `reasoning.effort` literal da Responses API. O cross-review o aceita como
+alias de compatibilidade na configuração e o adaptador envia o valor oficial
+`max`. O `grok-4.5` aceita somente `low`, `medium` e `high`, portanto o alias é
+limitado a `high` antes do envio. Nenhuma API recebe a string `ultra`.
+Overrides explícitos de GPT-5.5/5.4/5.2 são limitados a `xhigh`; GPT-5.1 e o
+GPT-5 original são limitados a `high`, com tradução dos valores inferiores que
+não existam no enum da família escolhida.
 
 ## Ferramentas MCP
 
@@ -782,6 +786,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.04`      | 2026-07-12    | Remedia grounding e preflights do hardgate, consenso independente, cancelamento multi-janela, ledger financeiro fail-closed, tetos efetivos, health/report terminal e alias `ultra`.   |
 | `v04.05.03`      | 2026-07-11    | Elimina ReDoS e falsos bloqueios do hardgate em citações autenticadas, literais com aspas simples e bumps de versão do artefato.                                                       |
 | `v04.05.02`      | 2026-07-11    | Publica o transporte autenticado de evidência com regressões herméticas que não dependem da configuração central do operador.                                                          |
 | `v04.05.01`      | 2026-07-11    | Restaura transporte autenticado de evidência sem anexo manual, fecha confusão de autoridade, exige painel independente estrito e preserva terminais imutáveis.                         |
@@ -844,9 +849,9 @@ Antes de usar uma revisão como gate:
 
 ## Fontes verificadas para esta apresentação
 
-- Contrato runtime do source target: smokes verificados em 2026-07-11. O
-  `server_info` da janela instalada reportava `4.5.2` antes da publicação e do
-  upgrade de `4.5.3`.
+- Contrato runtime do source target: smokes verificados em 2026-07-12. O
+  `server_info` da janela instalada reportava `4.5.3` antes da publicação e do
+  upgrade de `4.5.4`.
 - `package.json` do repositório local.
 - `README.md`.
 - `CHANGELOG.md`.

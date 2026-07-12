@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { DecisionQuality, PeerStructuredStatus, ReviewStatus } from "./types.js";
+import type {
+  DecisionQuality,
+  DecisionTransformation,
+  PeerStructuredStatus,
+  ReviewStatus,
+} from "./types.js";
 
 const STATUS_VALUES = ["READY", "NOT_READY", "NEEDS_EVIDENCE"] as const satisfies ReviewStatus[];
 const CONFIDENCE_VALUES = ["verified", "inferred", "unknown"] as const;
@@ -13,6 +18,12 @@ const CONFIDENCE_VALUES = ["verified", "inferred", "unknown"] as const;
 // to enumerate multi-step asks but shouldn't degrade into prose either.
 const MAX_SUMMARY_LENGTH = 800;
 const MAX_EVIDENCE_LENGTH = 2500;
+// A citation may use the full hard cap when a decisive raw record genuinely
+// needs it, but the prompt steers peers toward a much smaller literal. The
+// grounding grammar needs only one value-corresponding excerpt, not a file or
+// provider-output dump.
+const TARGET_EVIDENCE_QUOTE_LENGTH = 500;
+const MIN_EVIDENCE_QUOTE_LENGTH = 12;
 const MAX_REQUEST_LENGTH = 1500;
 const MAX_ARRAY_ITEMS = 30;
 // v2.4.0 / audit closure (P1.4): byte-level cap on each candidate JSON
@@ -46,11 +57,23 @@ export const statusJsonSchema = {
   ],
   properties: {
     status: { type: "string", enum: ["READY", "NOT_READY", "NEEDS_EVIDENCE"] },
-    summary: { type: "string" },
+    summary: { type: "string", maxLength: MAX_SUMMARY_LENGTH },
     confidence: { type: "string", enum: ["verified", "inferred", "unknown"] },
-    evidence_sources: { type: "array", items: { type: "string" } },
-    caller_requests: { type: "array", items: { type: "string" } },
-    follow_ups: { type: "array", items: { type: "string" } },
+    evidence_sources: {
+      type: "array",
+      maxItems: MAX_ARRAY_ITEMS,
+      items: { type: "string", maxLength: MAX_EVIDENCE_LENGTH },
+    },
+    caller_requests: {
+      type: "array",
+      maxItems: MAX_ARRAY_ITEMS,
+      items: { type: "string", maxLength: MAX_REQUEST_LENGTH },
+    },
+    follow_ups: {
+      type: "array",
+      maxItems: MAX_ARRAY_ITEMS,
+      items: { type: "string", maxLength: MAX_REQUEST_LENGTH },
+    },
   },
 } as const;
 
@@ -68,18 +91,24 @@ export function statusInstruction(): string {
     // the prior single 800-char cap was tripping mostly on summary (verbose
     // verdicts) while evidence_sources was rarely cited at all.
     "Field length budget: keep `summary` SHORT (max 800 chars) — one tight paragraph stating the verdict and its single dominant reason.",
-    `Use \`evidence_sources\` for the DETAIL: paste the diff hunk, the grep output, the file:line reference, the log line that proves your verdict. Each item up to ${MAX_EVIDENCE_LENGTH} chars; up to ${MAX_ARRAY_ITEMS} items.`,
+    "Use `evidence_sources` only for compact, literal citations that prove the verdict; keep rationale out of citation items.",
+    "Canonical citation format for EACH `evidence_sources` string item:",
+    "After JSON decoding, each item must contain these three lines in this exact order (encode the two line breaks as `\\n` in raw JSON):",
+    'Attachment: <persisted-path>\nsha256=<64 lowercase hex>\nArtifact quote: "<literal text from that same attachment>"',
+    `The \`Artifact quote\` must be at least ${MIN_EVIDENCE_QUOTE_LENGTH} characters and must be the last line at the end of the item; do not append rationale after it.`,
+    `Cite the smallest sufficient literal, normally target at most ${TARGET_EVIDENCE_QUOTE_LENGTH} characters. The hard limit is ${MAX_EVIDENCE_LENGTH} characters for the whole item and ${MAX_ARRAY_ITEMS} items total; do not fill those limits unless the decisive raw record requires it.`,
+    "Multiple sources must be separate `evidence_sources` array items. Never concatenate two attachments or two quotes into one item.",
     `\`caller_requests\` and \`follow_ups\` items up to ${MAX_REQUEST_LENGTH} chars each. Enumerate concrete asks, do not narrate.`,
     // v2.5.0 directive (operator 2026-05-03): explicit anti-verbosity rule.
     // Claude-as-peer was the source of every truncation warning observed
     // (36/36 in the 253-session corpus). Naming the model is intentional —
     // generic "be concise" did not move the needle.
-    "Anti-verbosity rule (applies to ALL peers — Claude especially, which is the historical worst offender for verbosity in this protocol): a long `summary` is a defect, not thoroughness. If the verdict needs more than 800 chars, the surplus belongs in `evidence_sources`, NEVER restate evidence inside `summary`.",
+    "Anti-verbosity and anti-shortcut rule (applies to ALL peers, including Claude): a long `summary` is a defect, not thoroughness, and `evidence_sources` is not a place for surplus narrative. Inspect the artifact, cite the smallest sufficient literal, and state only the verdict in `summary`. Do not dump full files, unbounded logs, or whole peer/provider outputs. Empty or generic assurances prove no review occurred and will be downgraded to NEEDS_EVIDENCE.",
     "You must end with one machine-readable JSON object that matches this shape:",
     JSON.stringify(statusJsonSchema),
     "Do not invent evidence. If evidence is missing, use NEEDS_EVIDENCE.",
     '`confidence:"verified"` is allowed ONLY when `evidence_sources` contains concrete source citations or quotes. Empty or generic `evidence_sources` means the decision is not verified; use `confidence:"inferred"` or NEEDS_EVIDENCE instead.',
-    "READY always requires at least one concrete evidence source, including when confidence is inferred. An empty list, generic assurance, or an otherwise empty code fence is a lazy non-decision and will be downgraded to NEEDS_EVIDENCE.",
+    "READY always requires at least one concrete evidence source, including when confidence is inferred. A filename or digest without its correlated literal quote, an empty list, a generic assurance, or an otherwise empty code fence is a shortcut non-decision and will be downgraded to NEEDS_EVIDENCE.",
     `READY must be lossless and canonical: confidence cannot be unknown, \`summary\` must be exactly ${JSON.stringify(READY_CANONICAL_SUMMARY)}, and both \`caller_requests\` and \`follow_ups\` must be empty. Put all detailed findings and citations in \`evidence_sources\`. Any other READY wording is downgraded to NEEDS_EVIDENCE.`,
     "For READY, return only the machine-readable JSON object (optionally inside the documented status tag or a JSON fence). Narrative prose outside that envelope is ambiguous and will be downgraded to NEEDS_EVIDENCE.",
     "For current runtime/version/model/pricing claims, task framing is not evidence. Cite raw `server_info`, `runtime_capabilities`, `probe_peers`, `capability_snapshot`, provider docs/API output, or attached evidence.",
@@ -255,6 +284,24 @@ const CONCRETE_EVIDENCE_SOURCE_PATTERN =
 
 export const READY_CANONICAL_SUMMARY = "No blocking objections remain.";
 
+function recordDecisionTransformation(
+  transformations: DecisionTransformation[],
+  stage: string,
+  from: ReviewStatus | null,
+  to: ReviewStatus | null,
+  rule: string,
+  details?: Record<string, unknown>,
+): void {
+  transformations.push({
+    stage,
+    from,
+    to,
+    rule,
+    reasons: [rule],
+    ...(details ? { details } : {}),
+  });
+}
+
 function normalizeResponseNarrative(text: string): string {
   return text
     .replace(/```(?:json)?/gi, " ")
@@ -299,6 +346,7 @@ function enforceReadyInvariants(
   structured: PeerStructuredStatus,
   warnings: string[],
   responseNarrative = "",
+  transformations: DecisionTransformation[] = [],
 ): PeerStructuredStatus {
   if (structured.status !== "READY") return structured;
 
@@ -310,6 +358,13 @@ function enforceReadyInvariants(
   );
   if (lossy) {
     warnings.push("ready_rejected_lossy_parse");
+    recordDecisionTransformation(
+      transformations,
+      "ready_invariants",
+      "READY",
+      "NEEDS_EVIDENCE",
+      "ready_rejected_lossy_parse",
+    );
     return {
       ...structured,
       status: "NEEDS_EVIDENCE",
@@ -322,6 +377,13 @@ function enforceReadyInvariants(
 
   if (structured.confidence === "unknown") {
     warnings.push("ready_with_unknown_confidence");
+    recordDecisionTransformation(
+      transformations,
+      "ready_invariants",
+      "READY",
+      "NEEDS_EVIDENCE",
+      "ready_with_unknown_confidence",
+    );
     return {
       ...structured,
       status: "NEEDS_EVIDENCE",
@@ -334,6 +396,13 @@ function enforceReadyInvariants(
 
   if (structured.summary !== READY_CANONICAL_SUMMARY) {
     warnings.push("ready_noncanonical_summary");
+    recordDecisionTransformation(
+      transformations,
+      "ready_invariants",
+      "READY",
+      "NEEDS_EVIDENCE",
+      "ready_noncanonical_summary",
+    );
     return {
       ...structured,
       status: "NEEDS_EVIDENCE",
@@ -346,6 +415,13 @@ function enforceReadyInvariants(
 
   if (responseNarrative.trim().length > 0) {
     warnings.push("ready_with_external_narrative");
+    recordDecisionTransformation(
+      transformations,
+      "ready_invariants",
+      "READY",
+      "NEEDS_EVIDENCE",
+      "ready_with_external_narrative",
+    );
     return {
       ...structured,
       status: "NEEDS_EVIDENCE",
@@ -358,11 +434,25 @@ function enforceReadyInvariants(
 
   if ((structured.caller_requests ?? []).length > 0) {
     warnings.push("ready_with_caller_requests");
+    recordDecisionTransformation(
+      transformations,
+      "ready_invariants",
+      "READY",
+      "NEEDS_EVIDENCE",
+      "ready_with_caller_requests",
+    );
     return { ...structured, status: "NEEDS_EVIDENCE" };
   }
 
   if ((structured.follow_ups ?? []).length > 0) {
     warnings.push("ready_with_follow_ups");
+    recordDecisionTransformation(
+      transformations,
+      "ready_invariants",
+      "READY",
+      "NEEDS_EVIDENCE",
+      "ready_with_follow_ups",
+    );
     return { ...structured, status: "NEEDS_EVIDENCE" };
   }
 
@@ -373,8 +463,14 @@ function enforceTruthfulnessStatus(
   structured: PeerStructuredStatus,
   warnings: string[],
   responseNarrative = "",
+  transformations: DecisionTransformation[] = [],
 ): PeerStructuredStatus {
-  const contradictionChecked = enforceReadyInvariants(structured, warnings, responseNarrative);
+  const contradictionChecked = enforceReadyInvariants(
+    structured,
+    warnings,
+    responseNarrative,
+    transformations,
+  );
   if (contradictionChecked.status !== "READY") return contradictionChecked;
   structured = contradictionChecked;
   if (structured.confidence !== "verified" && structured.status !== "READY") return structured;
@@ -400,6 +496,14 @@ function enforceTruthfulnessStatus(
   warnings.push(evidenceWarning);
   if (structured.status !== "READY") return structured;
   warnings.push("ready_downgraded_to_needs_evidence");
+  recordDecisionTransformation(
+    transformations,
+    "truthfulness",
+    "READY",
+    "NEEDS_EVIDENCE",
+    evidenceWarning,
+    { secondary_rule: "ready_downgraded_to_needs_evidence" },
+  );
   return {
     ...structured,
     status: "NEEDS_EVIDENCE",
@@ -410,14 +514,23 @@ function enforceTruthfulnessStatus(
   };
 }
 
-export function parsePeerStatus(text: string): {
+export interface PeerStatusParseResult {
   status: ReviewStatus | null;
+  raw_status: ReviewStatus | null;
+  parsed_status: ReviewStatus | null;
+  normalized_status: ReviewStatus | null;
   structured: PeerStructuredStatus | null;
   parser_warnings: string[];
-} {
+  decision_transformations: DecisionTransformation[];
+  /** @deprecated Compatibility alias; use decision_transformations. */
+  status_transformations: DecisionTransformation[];
+}
+
+export function parsePeerStatus(text: string): PeerStatusParseResult {
   const warnings: string[] = [];
   const trimmed = text.trim();
   const candidates: Array<{ json: string; source: string }> = [];
+  let observedRawStatus: ReviewStatus | null = null;
 
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
     candidates.push({ json: trimmed, source: "raw_object" });
@@ -457,10 +570,21 @@ export function parsePeerStatus(text: string): {
     }
     if (hasDuplicateJsonProperty(candidate.json)) {
       warnings.push(`status_candidate_rejected_duplicate_property:${candidate.source}`);
-      return { status: null, structured: null, parser_warnings: warnings };
+      return {
+        status: null,
+        raw_status: null,
+        parsed_status: null,
+        normalized_status: null,
+        structured: null,
+        parser_warnings: warnings,
+        decision_transformations: [],
+        status_transformations: [],
+      };
     }
     try {
       const json = JSON.parse(candidate.json) as unknown;
+      const rawStatus = isObject(json) && isReviewStatus(json.status) ? json.status : null;
+      if (rawStatus) observedRawStatus = rawStatus;
       const parsed = statusSchema.safeParse(json);
       const candidateAt = trimmed.lastIndexOf(candidate.json);
       const responseNarrative =
@@ -472,11 +596,22 @@ export function parsePeerStatus(text: string): {
       if (parsed.success) {
         if (candidate.source === "fenced_json") warnings.push("status_json_extracted_from_fence");
         if (candidate.source === "status_tag") warnings.push("status_json_extracted_from_tag");
-        const structured = enforceTruthfulnessStatus(parsed.data, warnings, responseNarrative);
+        const transformations: DecisionTransformation[] = [];
+        const structured = enforceTruthfulnessStatus(
+          parsed.data,
+          warnings,
+          responseNarrative,
+          transformations,
+        );
         return {
           status: structured.status,
+          raw_status: rawStatus,
+          parsed_status: parsed.data.status,
+          normalized_status: structured.status,
           structured,
           parser_warnings: warnings,
+          decision_transformations: transformations,
+          status_transformations: transformations,
         };
       }
 
@@ -488,15 +623,29 @@ export function parsePeerStatus(text: string): {
         if (candidate.source === "status_tag")
           recoveryWarnings.push("status_json_extracted_from_tag");
         recoveryWarnings.push("status_json_recovered_after_schema_warning");
+        const transformations: DecisionTransformation[] = [];
+        recordDecisionTransformation(
+          transformations,
+          "schema_recovery",
+          rawStatus,
+          normalized.status,
+          "status_json_recovered_after_schema_warning",
+        );
         const structured = enforceTruthfulnessStatus(
           normalized,
           recoveryWarnings,
           responseNarrative,
+          transformations,
         );
         return {
           status: structured.status,
+          raw_status: rawStatus,
+          parsed_status: normalized.status,
+          normalized_status: structured.status,
           structured,
           parser_warnings: recoveryWarnings,
+          decision_transformations: transformations,
+          status_transformations: transformations,
         };
       }
 
@@ -504,6 +653,7 @@ export function parsePeerStatus(text: string): {
     } catch {
       const recoveredStatus = extractJsonKeyStatus(candidate.json);
       if (recoveredStatus) {
+        observedRawStatus = recoveredStatus;
         warnings.push(`status_recovery_rejected_incomplete_contract:${candidate.source}`);
       }
     }
@@ -511,10 +661,20 @@ export function parsePeerStatus(text: string): {
 
   const legacy = trimmed.match(/STATUS:\s*(READY|NOT_READY|NEEDS_EVIDENCE)\s*$/);
   if (legacy) {
+    observedRawStatus = legacy[1] as ReviewStatus;
     warnings.push("legacy_status_rejected_incomplete_contract");
   }
 
-  return { status: null, structured: null, parser_warnings: warnings };
+  return {
+    status: null,
+    raw_status: observedRawStatus,
+    parsed_status: null,
+    normalized_status: null,
+    structured: null,
+    parser_warnings: warnings,
+    decision_transformations: [],
+    status_transformations: [],
+  };
 }
 
 export function decisionQualityFromStatus(

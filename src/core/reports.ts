@@ -1,4 +1,10 @@
-import type { EvidenceChecklistItem, SessionEvent, SessionMeta } from "./types.js";
+import type {
+  DecisionTransformation,
+  EvidenceChecklistItem,
+  PeerResult,
+  SessionEvent,
+  SessionMeta,
+} from "./types.js";
 
 function valueOrDash(value: unknown): string {
   if (value == null || value === "") return "-";
@@ -18,12 +24,18 @@ export function sessionCostBreakdown(session: SessionMeta): {
   total: number | null;
   peer_total: number | null;
   generation_total: number | null;
+  failed_attempt_total: number | null;
+  unpriced_failed_attempts: number;
+  reconciled: boolean;
+  accounting_coverage: "v2" | "legacy_unknown";
 } {
   const currency = session.totals.cost.currency ?? "USD";
+  let unpricedFailedAttempts = 0;
   let peerTotal = 0;
   let peerSeen = false;
   for (const round of session.rounds) {
     for (const peer of round.peers) {
+      unpricedFailedAttempts += peer.unpriced_attempts ?? 0;
       const value = peer.cost?.total_cost;
       if (value == null || !Number.isFinite(value)) continue;
       peerSeen = true;
@@ -34,18 +46,45 @@ export function sessionCostBreakdown(session: SessionMeta): {
   let generationTotal = 0;
   let generationSeen = false;
   for (const generation of session.generation_files ?? []) {
+    unpricedFailedAttempts += generation.unpriced_attempts ?? 0;
     const value = generation.cost?.total_cost;
     if (value == null || !Number.isFinite(value)) continue;
     generationSeen = true;
     generationTotal += value;
   }
 
+  let failedAttemptTotal = 0;
+  let failedAttemptSeen = false;
+  for (const failure of session.failed_attempts ?? []) {
+    if (failure.unpriced_attempts != null) {
+      unpricedFailedAttempts += failure.unpriced_attempts;
+    } else if (failure.billing_status === "unknown" && failure.attempts > 0) {
+      unpricedFailedAttempts += failure.attempts;
+    }
+    const value = failure.cost?.total_cost;
+    if (value != null && Number.isFinite(value)) {
+      failedAttemptSeen = true;
+      failedAttemptTotal += value;
+    }
+  }
+
   const total = session.totals.cost.total_cost ?? null;
+  const componentTotal = peerTotal + generationTotal + failedAttemptTotal;
+  const reconciled =
+    session.accounting_schema_version === 2 &&
+    total != null &&
+    unpricedFailedAttempts === 0 &&
+    Math.abs(total - componentTotal) < 0.0000005;
   return {
     currency,
     total,
-    peer_total: peerSeen ? peerTotal : null,
-    generation_total: generationSeen ? generationTotal : null,
+    peer_total: peerSeen || session.accounting_schema_version === 2 ? peerTotal : null,
+    generation_total:
+      generationSeen || session.accounting_schema_version === 2 ? generationTotal : null,
+    failed_attempt_total: failedAttemptSeen ? failedAttemptTotal : 0,
+    unpriced_failed_attempts: unpricedFailedAttempts,
+    reconciled,
+    accounting_coverage: session.accounting_schema_version === 2 ? "v2" : "legacy_unknown",
   };
 }
 
@@ -55,16 +94,28 @@ function costSummaryLines(session: SessionMeta): string[] {
     `- Cost: ${moneyText(breakdown.total, breakdown.currency)}`,
     `- Peer call cost: ${moneyText(breakdown.peer_total, breakdown.currency)}`,
     `- Generation cost: ${moneyText(breakdown.generation_total, breakdown.currency)}`,
+    `- Failed-attempt cost: ${moneyText(breakdown.failed_attempt_total, breakdown.currency)}`,
+    `- Unpriced provider attempts: ${breakdown.unpriced_failed_attempts}`,
   ];
   if (
     breakdown.total != null &&
     breakdown.peer_total != null &&
-    breakdown.generation_total != null
+    breakdown.generation_total != null &&
+    breakdown.failed_attempt_total != null &&
+    breakdown.reconciled
   ) {
     lines.push(
       `- Cost reconciliation: ${moneyText(breakdown.total, breakdown.currency)} = ${moneyAmountText(
         breakdown.peer_total,
-      )} peer + ${moneyAmountText(breakdown.generation_total)} generation`,
+      )} peer + ${moneyAmountText(breakdown.generation_total)} generation + ${moneyAmountText(
+        breakdown.failed_attempt_total,
+      )} failed attempts`,
+    );
+  } else if (breakdown.total != null) {
+    lines.push(
+      breakdown.accounting_coverage === "legacy_unknown"
+        ? "- Cost reconciliation: incomplete (legacy session predates accounting coverage v2; missing historical calls cannot be inferred)."
+        : `- Cost reconciliation: incomplete (${breakdown.unpriced_failed_attempts} provider attempt(s) have no billable usage/cost record).`,
     );
   }
   return lines;
@@ -126,6 +177,34 @@ function unresolvedEvidenceDispositionLines(session: SessionMeta): string[] {
   return lines;
 }
 
+function transformationRules(transformation: DecisionTransformation): string[] {
+  const rules = transformation.reasons?.filter((reason) => reason.trim().length > 0) ?? [];
+  if (transformation.rule && !rules.includes(transformation.rule))
+    rules.unshift(transformation.rule);
+  return rules;
+}
+
+function peerDecisionTraceLines(peer: PeerResult): string[] {
+  const rawStatus = peer.raw_status ?? "-";
+  const parsedStatus = peer.parsed_status ?? peer.status ?? "-";
+  const normalizedStatus = peer.normalized_status ?? peer.status ?? "-";
+  const effectiveStatus = peer.status ?? "NO_STATUS";
+  const lines = [
+    `  - Status chain: raw_status=${rawStatus}; parsed_status=${parsedStatus}; normalized_status=${normalizedStatus}; effective_status=${effectiveStatus}`,
+  ];
+  const transformations = peer.decision_transformations ?? peer.status_transformations ?? [];
+  for (const transformation of transformations) {
+    const rules = transformationRules(transformation);
+    const details = transformation.details
+      ? `; details=${JSON.stringify(transformation.details)}`
+      : "";
+    lines.push(
+      `  - Decision transformation [${transformation.stage}]: ${transformation.from ?? "NO_STATUS"} -> ${transformation.to ?? "NO_STATUS"}; rules=${rules.join(", ") || "-"}${details}`,
+    );
+  }
+  return lines;
+}
+
 export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent[] = []): string {
   const latestRound = session.rounds.at(-1);
   const lines = [
@@ -141,6 +220,13 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
     `- Outcome reason: ${valueOrDash(session.outcome_reason)}`,
     `- Health: ${valueOrDash(session.convergence_health?.state)} - ${valueOrDash(
       session.convergence_health?.detail,
+    )}`,
+    `- Last activity: ${valueOrDash(
+      session.convergence_health?.last_activity_at ?? session.convergence_health?.last_event_at,
+    )}`,
+    `- Last state transition: ${valueOrDash(
+      session.convergence_health?.last_state_transition_at ??
+        session.convergence_health?.last_event_at,
     )}`,
     `- Rounds: ${session.rounds.length}`,
     ...costSummaryLines(session),
@@ -168,6 +254,25 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
     "",
   ];
 
+  for (const round of session.rounds) {
+    lines.push(`### Round ${round.round}`, "");
+    for (const peer of round.peers) {
+      lines.push(
+        `- ${peer.peer}: ${peer.status ?? "NO_STATUS"} (${peer.decision_quality ?? "unknown"}) - ${
+          peer.structured?.summary ?? "no summary"
+        }`,
+      );
+      lines.push(...peerDecisionTraceLines(peer));
+      if (peer.parser_warnings.length) {
+        lines.push(`  - Parser warnings: ${peer.parser_warnings.join("; ")}`);
+      }
+    }
+    for (const failure of round.rejected) {
+      lines.push(`- ${failure.peer}: FAILURE ${failure.failure_class} - ${failure.message}`);
+    }
+    lines.push("");
+  }
+
   lines.push(...evidenceChecklistLines(session));
   lines.push(...unresolvedEvidenceDispositionLines(session));
 
@@ -182,24 +287,6 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
       lines.push(
         `- round ${generation.round} ${generation.peer}/${generation.label}: ${generation.path} (${totalTokens} tokens, ${totalCost})`,
       );
-    }
-    lines.push("");
-  }
-
-  for (const round of session.rounds) {
-    lines.push(`### Round ${round.round}`, "");
-    for (const peer of round.peers) {
-      lines.push(
-        `- ${peer.peer}: ${peer.status ?? "NO_STATUS"} (${peer.decision_quality ?? "unknown"}) - ${
-          peer.structured?.summary ?? "no summary"
-        }`,
-      );
-      if (peer.parser_warnings.length) {
-        lines.push(`  - Parser warnings: ${peer.parser_warnings.join("; ")}`);
-      }
-    }
-    for (const failure of round.rejected) {
-      lines.push(`- ${failure.peer}: FAILURE ${failure.failure_class} - ${failure.message}`);
     }
     lines.push("");
   }

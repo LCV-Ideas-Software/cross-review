@@ -215,6 +215,18 @@ verdict contestation additionally require the explicit persisted petitioner
 token or the operator token; ambiguous legacy ownership fails closed to the
 operator.
 
+The canonical attachment citation is one string array item, in this exact
+order: `Attachment: <persisted-path>`, `sha256=<64 lowercase hex>`, then
+`Artifact quote: "<literal from that same attachment>"`. The three components
+are separated by newlines after JSON decoding (raw JSON encodes them as `\n`),
+and the quote (minimum 12 characters) ends the item.
+Multiple sources are multiple items; concatenating sources defeats
+same-attachment correlation and is invalid. `evidence_sources` remains a
+`string[]` contract for compatibility. Peers should use the smallest sufficient
+literal (normally at most 500 characters), not whole files, logs, or provider
+responses; the schema hard caps the complete item at 2,500 characters and the
+array at 30 items.
+
 These controls attest observable behavior, not a model's private effort. In
 circular mode an unchanged artifact is only a stability signal and requires a
 full independent rotation before convergence; one peer echoing text is not
@@ -226,8 +238,12 @@ operating-system account's trust boundary.
 
 The peer adapters use the strongest official reasoning controls available for each provider because cross-review is correctness-oriented:
 
-- OpenAI runs `gpt-5.6-sol` through the Responses API. Use
-  `reasoning.effort=max`; `ultra` is a Codex product mode, not an API value.
+- OpenAI runs `gpt-5.6-sol` through the Responses API. Its strongest official
+  API value is `reasoning.effort=max`. The shared config also accepts `ultra`
+  as an operator-facing compatibility alias and normalizes it to `max`; the
+  alias is never transmitted to OpenAI. Explicit GPT-5.5/5.4/5.2 overrides
+  cap at `xhigh`, GPT-5.1 and original GPT-5 cap at `high`, and unsupported
+  lower literals are translated to the nearest available family value.
 - Anthropic runs canonical `claude-fable-5`. The request omits the explicit
   `thinking` field because adaptive thinking is automatic and controls depth
   with `output_config.effort`. Fable has 30-day/no-ZDR retention semantics.
@@ -236,8 +252,17 @@ The peer adapters use the strongest official reasoning controls available for ea
   the official multi-round guidance by resending summarized context in each
   stateless request.
 - Grok runs pinned `grok-4.5` with explicit `reasoning.effort` clamped to
-  `low`, `medium`, or `high`.
-- Perplexity runs the pinned `sonar-reasoning-pro` model with an explicit `reasoning_effort` (`minimal`/`low`/`medium`/`high`); the shared effort scale is clamped down into that range.
+  `low`, `medium`, or `high` (`ultra` becomes `high`).
+- Perplexity runs the pinned `sonar-reasoning-pro` model with an explicit
+  `reasoning_effort` (`minimal`/`low`/`medium`/`high`); the shared effort scale
+  is clamped down into that range (`ultra` becomes `high`).
+
+The internal `ReasoningEffort` scale therefore includes the compatibility
+alias `ultra`, but adapters own the provider-specific normalization boundary:
+OpenAI GPT-5.6, Anthropic and DeepSeek use `max`; Grok 4.5 and Perplexity use
+`high`; Gemini keeps its native `ThinkingLevel.HIGH` control and receives no
+shared effort string. Older explicit OpenAI model overrides use their own
+family-specific effort enum instead of the GPT-5.6 enum.
 
 Raw chain-of-thought is not persisted. Session continuity is represented through prompts, structured peer decisions, summaries and artifacts.
 

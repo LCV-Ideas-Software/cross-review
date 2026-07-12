@@ -264,6 +264,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 
@@ -353,6 +354,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) =>
         classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      { signal: context.signal },
     );
   }
 }

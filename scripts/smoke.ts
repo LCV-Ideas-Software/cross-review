@@ -1506,10 +1506,9 @@ assert.match(
   /CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION/,
 );
 
-// v2.5.0: stub-zero-cost (Codex fix #1) means stubs no longer accrue
-// `cost.total_cost`, so a budget-enforcement test that depends on cost
-// arithmetic now needs the explicit escape hatch to make stubs report
-// real estimated cost. Set the env around this assertion only.
+// v4.5.4: the persisted per-call ceiling is now a true pre-dispatch gate.
+// Force real stub pricing so the projected round is blocked before any
+// provider work instead of allowing a post-hoc budget_exceeded outcome.
 process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST = "1";
 const budgetExceeded = await orchestrator.runUntilUnanimous({
   task: "Verify configured budget limit stops non-converged sessions.",
@@ -1522,7 +1521,7 @@ const budgetExceeded = await orchestrator.runUntilUnanimous({
 delete process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST;
 assert.equal(budgetExceeded.converged, false);
 assert.equal(budgetExceeded.session.outcome, "max-rounds");
-assert.equal(budgetExceeded.session.outcome_reason, "budget_exceeded");
+assert.equal(budgetExceeded.session.outcome_reason, "budget_preflight");
 assert.equal(budgetExceeded.rounds, 1);
 
 const untilStoppedNoBudgetConfig = {
@@ -1548,12 +1547,9 @@ assert.equal(untilStoppedNoBudget.session.outcome, "max-rounds");
 assert.equal(untilStoppedNoBudget.session.outcome_reason, "financial_controls_missing");
 assert.equal(untilStoppedNoBudget.rounds, 0);
 
-// v2.5.0: this until_stopped test depends on cost arithmetic to break
-// the otherwise-unbounded loop (until_stopped_max_cost_usd=0.000001).
-// Stub-zero-cost (Codex fix #1) zeros every stub PeerResult.cost,
-// which would prevent the budget_exceeded path from ever firing and
-// turn this assertion into an infinite loop. Force real estimated
-// cost on the stub for the duration of this assertion.
+// v4.5.4: until_stopped also uses its persisted effective ceiling during
+// round preflight. Force real stub pricing so the unbounded loop is refused
+// before dispatch rather than stopped only after overspend.
 process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST = "1";
 const untilStoppedDefaultBudget = await new CrossReviewOrchestrator({
   ...loadConfig(),
@@ -1574,7 +1570,7 @@ const untilStoppedDefaultBudget = await new CrossReviewOrchestrator({
 delete process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST;
 assert.equal(untilStoppedDefaultBudget.converged, false);
 assert.equal(untilStoppedDefaultBudget.session.outcome, "max-rounds");
-assert.equal(untilStoppedDefaultBudget.session.outcome_reason, "budget_exceeded");
+assert.equal(untilStoppedDefaultBudget.session.outcome_reason, "budget_preflight");
 assert.equal(untilStoppedDefaultBudget.rounds, 1);
 
 const recoverySession = await orchestrator.store.init(
@@ -2899,8 +2895,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.5.0: session-start contract directives. statusInstruction() must
-// surface the per-field budget guidance + the Claude-named anti-verbosity
-// rule. The instruction is read by every peer adapter at every round, so
+// surface the per-field budget guidance + the Claude-named anti-verbosity and
+// anti-shortcut rule. The instruction is read by every peer adapter at every round, so
 // the markers anchored here are operator-visible regression boundaries.
 {
   const { statusInstruction } = await import("../src/core/status.js");
@@ -2910,12 +2906,27 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "statusInstruction must mention SHORT summary cap of 800 chars (v2.5.0)",
   );
   assert.ok(
-    /Claude especially/i.test(instruction),
-    "statusInstruction must name Claude in the anti-verbosity rule (v2.5.0)",
+    /including Claude/i.test(instruction),
+    "statusInstruction must name Claude in the anti-verbosity/anti-shortcut rule",
   );
   assert.ok(
     /evidence_sources/.test(instruction),
     "statusInstruction must direct detail to evidence_sources (v2.5.0)",
+  );
+  assert.match(
+    instruction,
+    /Canonical citation format for EACH `evidence_sources` string item:[\s\S]*Attachment: <persisted-path>[\s\S]*sha256=<64 lowercase hex>[\s\S]*Artifact quote: "<literal text from that same attachment>"/,
+    "statusInstruction must expose the exact per-item attachment citation grammar",
+  );
+  assert.match(
+    instruction,
+    /Multiple sources must be separate `evidence_sources` array items/i,
+    "statusInstruction must keep independently grounded sources in separate items",
+  );
+  assert.match(
+    instruction,
+    /smallest sufficient literal, normally target at most 500 characters[\s\S]*hard limit is 2500 characters[\s\S]*30 items total/i,
+    "statusInstruction must prefer compact proof while retaining schema hard limits",
   );
   console.log("[smoke] session_contract_directives_test: PASS");
 }
@@ -3168,6 +3179,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     lead_peer: "codex",
     peers: ["claude"],
     max_rounds: 1,
+    allow_auto_extension: true,
   });
   // Round 1 hits ceiling, gate grants (effectiveMaxRounds: 1 → 2). Round 2
   // hits new ceiling with same blocker fingerprint, gate skips. Loop exits
@@ -7657,9 +7669,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
 // P2.4 anti-drift: consensus event payloads (active-mode
 // `evidence_checklist_addressed` + shadow-mode `shadow_decision`) emit
-// BOTH the legacy `judge_peer` (first peer, backward-compat) AND the
-// new `judge_peers` array + `per_peer_verdict` map. Pre-v2.18.4 only
-// `judge_peer: judge_peers[0]` was emitted, making per-peer accuracy
+// BOTH the legacy `judge_peer` (first ELIGIBLE independent peer,
+// backward-compat) AND the new `judge_peers` array + `per_peer_verdict`
+// map. Using the configured first peer after author-recusal would point
+// at a peer that never judged the item.
 // impossible to compute from the raw event stream. The 3 fields must
 // remain co-emitted at both event sites.
 {
@@ -7669,19 +7682,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     pathModule.resolve(process.cwd(), "src", "core", "orchestrator.ts"),
     "utf8",
   );
-  // (1) Source-level: legacy `judge_peer: params.judge_peers[0]`
+  // (1) Source-level: legacy `judge_peer: primaryJudgePeer`
   // appears at ≥2 sites (active addressed + shadow decision payloads).
-  const legacyCount = (orchSrc.match(/judge_peer:\s*params\.judge_peers\[0\]/g) || []).length;
+  const legacyCount = (orchSrc.match(/judge_peer:\s*primaryJudgePeer/g) || []).length;
   assert.ok(
     legacyCount >= 2,
-    `v2.18.5 / P2.4: legacy 'judge_peer: params.judge_peers[0]' co-emitted at ≥2 event sites for backward compat; found ${legacyCount}`,
+    `v4.5.4: legacy 'judge_peer: primaryJudgePeer' co-emitted at ≥2 event sites; found ${legacyCount}`,
   );
-  // (2) Source-level: new `judge_peers: params.judge_peers` array
+  // (2) Source-level: eligible `judge_peers` array
   // emitted at ≥2 sites (the active addressed + shadow decision events).
-  const newArrayCount = (orchSrc.match(/judge_peers:\s*params\.judge_peers,/g) || []).length;
+  const newArrayCount = (orchSrc.match(/judge_peers:\s*eligibleJudgePeers,/g) || []).length;
   assert.ok(
     newArrayCount >= 2,
-    `v2.18.5 / P2.4: new 'judge_peers: params.judge_peers' array emitted at ≥2 event sites; found ${newArrayCount}`,
+    `v4.5.4: eligible 'judge_peers: eligibleJudgePeers' array emitted at ≥2 event sites; found ${newArrayCount}`,
   );
   // (3) Source-level: `per_peer_verdict: perPeerVerdict` map at ≥2 sites.
   const perPeerCount = (orchSrc.match(/per_peer_verdict:\s*perPeerVerdict/g) || []).length;
@@ -7690,7 +7703,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     `v2.18.5 / P2.4: 'per_peer_verdict: perPeerVerdict' map emitted at ≥2 event sites; found ${perPeerCount}`,
   );
   // (4) Co-emission inside event payloads. The legacy site
-  // `judge_peer: params.judge_peers[0]` appears in 3 places: 2 are
+  // `judge_peer: primaryJudgePeer` appears in event and persistence sites.
   // inside `this.emit({ ... data: { ... judge_peer: ... } })` event
   // payloads (active-mode evidence_checklist_addressed + shadow-mode
   // shadow_decision); 1 is a function-call argument to
@@ -7706,15 +7719,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   let coEmitChecked = 0;
   for (const seg of emitBlocks.slice(1)) {
     const headWindow = seg.slice(0, 2000);
-    if (/judge_peer:\s*params\.judge_peers\[0\]/.test(headWindow)) {
+    if (/judge_peer:\s*primaryJudgePeer/.test(headWindow)) {
       coEmitChecked += 1;
       assert.ok(
-        /judge_peers:\s*params\.judge_peers/.test(headWindow),
-        "v2.18.5 / P2.4: every `this.emit({...judge_peer: params.judge_peers[0]...})` payload also emits `judge_peers: params.judge_peers` (co-emission contract)",
+        /judge_peers:\s*eligibleJudgePeers/.test(headWindow),
+        "v4.5.4: every primaryJudgePeer event also emits the eligible judge panel",
       );
       assert.ok(
         /per_peer_verdict:\s*perPeerVerdict/.test(headWindow),
-        "v2.18.5 / P2.4: every `this.emit({...judge_peer: params.judge_peers[0]...})` payload also emits `per_peer_verdict: perPeerVerdict` (co-emission contract)",
+        "v4.5.4: every primaryJudgePeer event also emits per_peer_verdict",
       );
     }
   }

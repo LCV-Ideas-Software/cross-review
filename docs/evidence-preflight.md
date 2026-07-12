@@ -70,11 +70,15 @@ non-author reviewers. Each qualifying vote must remain `READY`, use
 `confidence="verified"`, and cite the persisted attachment path, SHA-256 and
 literal raw lines that value-correlate every assertion. One reviewer,
 `confidence="inferred"`, or a copied narrative sentence blocks convergence.
-For historical claims, the raw material must itself identify the relevant
+Historical-runtime detection requires an explicit cross-review, MCP,
+`server_info`, `runtime_capabilities`, or local-runtime subject. Words such as
+`workflow`, `run`, `audit`, and `session` identify when something happened;
+they are not by themselves a runtime namespace. Once that explicit runtime
+scope exists, the raw material must itself identify the relevant
 workflow/run/session start; a suggestive attachment filename or a current
-`server_info` snapshot is not temporal provenance. A timestamp elsewhere in the
-artifact cannot temporalize a current-only value: timing and value must occur in
-the same historically scoped record.
+`server_info` snapshot is not temporal provenance. A timestamp elsewhere in
+the artifact cannot temporalize a current-only value: timing and value must
+occur in the same historically scoped record.
 
 From v4.3.7 onward, that declaration is no longer a blank cheque for
 references to separate artifacts. If `task`, `initial_draft`, or the
@@ -102,6 +106,33 @@ material in `initial_draft` or `evidence`. Useful material includes:
 This is the same raw material the R1 evidence-upfront contract already expects.
 The preflight checks whether it is present and internally corresponding; the
 independent panel decides whether peer-submitted material can sustain READY.
+
+### Reviewer citation contract
+
+When a reviewer cites an admitted attachment in `evidence_sources`, each source
+is one string with exactly one attachment identity and one correlated literal:
+
+```text
+Attachment: evidence/review.txt
+sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Artifact quote: "Tests 74 passed (74)"
+```
+
+The block shows one decoded string; raw JSON encodes the two line breaks as
+`\n`.
+
+Use the persisted path, the complete 64-character lowercase SHA-256, and a
+literal of at least 12 characters from that same attachment. `Artifact quote`
+is the last line; rationale does not belong after it. For multiple sources,
+emit multiple array items rather than concatenating them. The field remains
+`string[]` for client compatibility.
+
+The quote should be the smallest sufficient raw excerpt, normally at most 500
+characters. The schema permits up to 2,500 characters for the complete item and
+30 items only as hard safety ceilings—not as output targets. Whole files,
+unbounded logs, peer messages, and provider responses are not acceptable
+substitutes for review. Conversely, a path or digest without the correlated
+literal is not proof that the reviewer inspected the artifact.
 
 ## The `evidence` field
 

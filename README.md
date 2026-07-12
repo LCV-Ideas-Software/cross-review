@@ -24,7 +24,7 @@ npm upgrade -g @lcv-ideas-software/cross-review
 npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. This source prepares **v04.05.03** (package `4.5.3`).
+**Status.** Stable. This source prepares **v04.05.04** (package `4.5.4`).
 The public registry can lag while the publish workflow runs; use the npm badge
 or `npm view @lcv-ideas-software/cross-review version` for registry state and
 `server_info` for the version actually loaded by an MCP window. See
@@ -42,6 +42,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.04`**      | Runtime-hardgate remediation — fix grounding, truthfulness namespaces, consensus judging, multi-window cancellation, accounting, session ceilings, terminal reports and cross-provider `ultra` normalization.                                                               |
 | **`v04.05.03`**      | Security/hardgate patch — remove exponential regex backtracking, trust integrity-checked attachment path/digest metadata, accept correlated single-quoted artifact literals and stop treating source-version bumps as historical runtime claims.                            |
 | **`v04.05.02`**      | Patch release — publish the complete authenticated-evidence transport update with a hermetic clean-runner regression fixture; no operator central configuration is required by the test gate.                                                                               |
 | **`v04.05.01`**      | Patch release — restore authenticated peer evidence transport with append-only active snapshots, combined preflight parity, strict operational records, independent relator/reviewer roles and immutable terminal outcomes; no manual operator attachment is required.      |
@@ -209,9 +210,18 @@ variables. Example overrides (PowerShell):
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "sonar-reasoning-pro", "User")
 ```
 
-`ultra` is a Codex product/CLI execution mode, not a valid OpenAI Responses API
-`reasoning.effort`. Use `max` for `gpt-5.6-sol`; an `ultra` value in central
-`config.json` fails schema validation and causes that file to be rejected.
+`ultra` is a Codex product/CLI execution mode, not a literal OpenAI Responses
+API `reasoning.effort`. Cross-review nevertheless accepts it in central config,
+environment variables and per-call overrides as a compatibility alias, then
+normalizes it inside each provider adapter. For `gpt-5.6-sol`, the wire value is
+the official `max`; `ultra` is never sent to the Responses API. Using `max`
+directly remains equivalent and makes the API value explicit. The shared
+legacy value `minimal` is likewise translated to GPT-5.6's lowest active API
+effort, `low`. Explicit older-model overrides use a family-aware compatibility
+matrix: GPT-5.5/5.4/5.2 map `minimal` to `low` and `max`/`ultra` to `xhigh`;
+GPT-5.1 maps `minimal` to `low` and `xhigh`/`max`/`ultra` to `high`; original
+GPT-5 maps `none` to `minimal` and `xhigh`/`max`/`ultra` to `high`. Supported
+native values pass through unchanged.
 
 Claude Fable 5 is the canonical Anthropic pin. Its request deliberately omits
 the explicit `thinking` field: Fable applies adaptive thinking automatically,
@@ -312,6 +322,31 @@ propagated.
 empty, and no narrative may appear outside the JSON/status envelope. Detail
 belongs in `evidence_sources`. This removes synonym/negation ambiguity: any
 noncanonical READY becomes `NEEDS_EVIDENCE` and cannot converge.
+
+Each attachment-backed `evidence_sources` item has one canonical string format:
+
+```text
+Attachment: evidence/review.txt
+sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Artifact quote: "Tests 74 passed (74)"
+```
+
+This block shows the decoded string; a raw JSON response encodes its two line
+breaks as `\n`.
+
+The path and full 64-character lowercase digest identify the same persisted
+attachment, and `Artifact quote` is a literal from that attachment. The quote
+must be at least 12 characters and must end the item. Cite the smallest
+sufficient literal (normally no more than 500 characters); the hard limits are
+2,500 characters per whole item and 30 items. Multiple sources belong in
+separate array items—never join attachments or append rationale after a quote.
+The wire type deliberately remains `string[]`, so existing string-producing
+clients remain compatible; the runtime does not require citation objects.
+
+These limits are both anti-verbosity and anti-shortcut controls. A peer must
+inspect the artifact and cite the decisive raw value, but must not replace a
+review with a full-file, full-log, or provider-output dump. A bare filename,
+digest, generic assurance, or empty code fence cannot sustain `READY`.
 
 Only the human operator may call the optional `session_attach_evidence`
 authority surface or mutate terminal state and security configuration. Each new

@@ -94,14 +94,21 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   );
   const cancelJobSrc = cancelJobBlock?.[0] ?? "";
   assert.ok(
-    /if \(!jobs\.length\) \{[\s\S]{0,500}?requested:\s*false[\s\S]{0,500}?no_running_job_matched/.test(
+    /if \(!jobs\.length && !durableExecutionActive\) \{[\s\S]{0,500}?requested:\s*false[\s\S]{0,500}?no_running_job_matched/.test(
       cancelJobSrc,
     ),
-    "v4.2.0 / session_cancel_job: no active job must return requested=false/no_running_job_matched.",
+    "v4.5.4 / session_cancel_job: no local or durable active job must return requested=false/no_running_job_matched.",
   );
   assert.ok(
-    !/if \(!jobs\.length\) \{[\s\S]{0,300}?markCancelled/.test(cancelJobSrc),
-    "v4.2.0 / session_cancel_job: no active job must not terminal-abort the whole session.",
+    !/if \(!jobs\.length && !durableExecutionActive\) \{[\s\S]{0,300}?markCancelled/.test(
+      cancelJobSrc,
+    ),
+    "v4.5.4 / session_cancel_job: no local or durable active job must not terminal-abort the whole session.",
+  );
+  assert.ok(
+    cancelJobSrc.includes("durableSessionExecutionActive(session)") &&
+      cancelJobSrc.includes("durable_execution: durableJob"),
+    "v4.5.4 / session_cancel_job: cross-process execution must be detected and surfaced durably.",
   );
 
   const runtimeSmokeSrc = fs.readFileSync(
