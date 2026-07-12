@@ -20,10 +20,13 @@ Restart any terminal, editor, app or MCP host after changing these variables.
 `host-tokens.json` contains seven local caller capabilities: six peer tokens
 and a distinct `operator` token. Put each peer token only in its matching MCP
 host as `CROSS_REVIEW_CALLER_TOKEN`. The operator token is mandatory for
-evidence attachment, judge/checklist mutation, finalization, sweep and token
-rotation; keep it only in a dedicated human-console host. Never put it in a
-model host. Legacy six-token files are migrated in place without rotating the
-existing peer tokens.
+optional `session_attach_evidence` authority promotion, judge/checklist
+mutation, finalization, sweep and token rotation; keep it only in a dedicated
+human-console host. Never put it in a model host. Routine AI evidence does not
+use this token or require a human: the authenticated peer sends raw proof in
+the `evidence` field of a review starter, and the runtime persists it
+automatically as `caller_submitted_unverified`. Legacy six-token files are
+migrated in place without rotating the existing peer tokens.
 
 DeepSeek, Grok and Perplexity do not need separate local MCP caller hosts merely
 to participate as outbound review adapters; their provider API keys are enough.

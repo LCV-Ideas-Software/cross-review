@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.10** (package `4.5.10`).
+**Status.** Stable. The current source/release target is **v04.05.11** (package `4.5.11`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.11`**      | Makes autonomous evidence routing unambiguous in the MCP contract: AI evidence is persisted automatically through review starters, while the optional operator authority-promotion tool cannot be mistaken for a mandatory human upload step.                               |
 | **`v04.05.10`**      | Retries npm attestation propagation independently from package visibility and follows the registry-advertised pathname on the pinned npm registry origin, preventing false-negative post-publish failures without weakening SLSA provenance requirements.                   |
 | **`v04.05.09`**      | Keeps server-authored READY remediation out of peer `caller_requests`, preventing unresolvable evidence-checklist blockers while preserving real peer asks and the complete decision audit trail.                                                                           |
 | **`v04.05.08`**      | Hash-pinned npm 12.0.1 bootstrap across CI/release jobs and trusted default-branch auto-tag checkout with exact successful-CI SHA gating; closes code-scanning alerts 32–38.                                                                                                |
@@ -286,7 +287,8 @@ these environment variables before running real sessions (example):
 - `session_check_convergence`
 - `session_preflight_check`
 - `session_truthfulness_preflight_check`
-- `session_attach_evidence`
+- `session_attach_evidence` — optional operator-only authority promotion; AI
+  callers use the automatic `evidence` field on review starters
 - `session_evidence_checklist_update`
 - `session_evidence_judge_pass`
 - `session_evidence_judge_consensus_pass`
@@ -362,9 +364,12 @@ review with a full-file, full-log, or provider-output dump. A bare filename,
 digest, generic assurance, or empty code fence cannot sustain `READY`.
 
 Only the human operator may call the optional `session_attach_evidence`
-authority surface or mutate terminal state and security configuration. Each new
-attachment records the verified caller, origin, timestamp, byte count and
-SHA-256, emits a durable custody event, and is re-hashed on every read.
+authority-promotion surface or mutate terminal state and security
+configuration. This tool is never required for an ordinary AI-initiated
+review: the runtime tool descriptions and rejected-call remediation direct AI
+callers to the automatically persisted `evidence` field. Each new attachment
+records the verified caller, origin, timestamp, byte count and SHA-256, emits a
+durable custody event, and is re-hashed on every read.
 Tampering fails closed. Peer-attributed material remains reviewable but cannot
 grant operator authority; a generic attachment does not by itself prove an
 unrelated claim.

@@ -7,6 +7,32 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.11] — 2026-07-12
+
+**Autonomous evidence-routing contract fix.** Prevents AI callers from
+mistaking optional operator authority promotion for a mandatory human upload
+step.
+
+### Fixed
+
+- Renames the runtime presentation of `session_attach_evidence` to optional
+  operator evidence promotion and states explicitly that AI callers must use
+  the automatic `evidence` channel instead.
+- Describes `evidence` on `ask_peers`, `session_start_round`,
+  `run_until_unanimous` and `session_start_unanimous` as automatically
+  persisted, SHA-256-addressed `caller_submitted_unverified` material that
+  requires no manual operator attachment.
+- Routes an AI caller that nevertheless selects `session_attach_evidence` back
+  to those automatic channels in the runtime error, without suggesting human
+  intervention or exposing operator authority to a model host.
+- Adds MCP-level regression coverage for the listed tool contracts and the
+  rejected-wrong-surface remediation. The existing durable caller-evidence
+  path, independent corroboration requirements and operator-only authority
+  tier remain unchanged.
+- Records the 4.5.10 field incident accurately: Codex evidence was persisted
+  automatically in two sessions; both review attempts were blocked by budget
+  preflight, not evidence transport or authorization.
+
 ## [v04.05.10] — 2026-07-12
 
 **Registry-attestation propagation fix.** Makes the npmjs post-publish gate

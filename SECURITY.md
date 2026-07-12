@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.10 for package 4.5.10. This
+Current supported source/release target: v04.05.11 for package 4.5.11. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.10 preserves that trust boundary while transporting evidence submitted
+v04.05.11 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or
@@ -53,6 +53,13 @@ session's persisted petitioner. Existing-session review starters require the
 petitioner's capability or the dedicated operator capability, preventing a peer
 from continuing an operator-owned session and acquiring operator evidence
 authority.
+
+Routine AI evidence never requires human attachment. The four review starters
+persist their `evidence` field automatically as integrity-checked
+`caller_submitted_unverified` material. `session_attach_evidence` is only an
+optional operator authority-promotion surface; its runtime contract and
+rejection message redirect model callers to the automatic path rather than
+requesting human intervention.
 Invalid session metadata is quarantined rather than trusted by list/doctor
 operations. The release also retains the dependency advisory floors introduced
 in v04.04.07 and v04.04.08.

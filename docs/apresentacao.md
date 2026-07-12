@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-12: `4.5.10`. O registro pode ficar
+> Estado do source/release target em 2026-07-12: `4.5.11`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -422,7 +422,8 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 
 **Evidência**
 
-- `session_attach_evidence` — anexa evidência à sessão.
+- `session_attach_evidence` — promoção opcional de autoridade, exclusiva do
+  operador; agentes usam `evidence`, persistido automaticamente.
 - `session_evidence_checklist_update` — atualiza a checklist de evidência.
 - `session_evidence_judge_pass` — passada de juiz de evidência.
 - `session_evidence_judge_consensus_pass` — passada de juiz por consenso.
@@ -601,6 +602,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.11`      | Torna inequívoco o transporte autônomo de evidência: agentes usam `evidence`, sem upload humano, e a promoção opcional do operador não é confundida com requisito.                      |
 | `v04.05.10`      | Corrige a corrida entre visibilidade do pacote e propagação da atestação npm com retry delimitado e fetch preso ao registry.                                                            |
 | `v04.05.09`      | Separa remediação interna de pedidos reais dos peers, eliminando o deadlock DEF-10 da checklist sem relaxar grounding, custódia ou bloqueio de evidência não resolvida.                 |
 | `v04.05.08`      | Fecha sete alertas de code scanning com bootstrap npm 12.0.1 pinado por SHA-512 e checkout da branch padrão condicionado ao SHA que passou no CI.                                       |

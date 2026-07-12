@@ -376,6 +376,34 @@ Este verificador comprova presença do predicate SLSA na metadata e no documento
 é apresentado como verificação criptográfica independente de assinatura, PURL ou digest do
 subject.
 
+## 3.10. DEF-12 — contrato MCP induzia agente a pedir upload humano (4.5.10 → 4.5.11)
+
+A sessão `86f41fbd-fe75-4cd4-a7bb-436f813294e9` reproduziu uma interpretação operacional errada,
+mas razoável diante do schema exposto. Um Codex autenticado criou a sessão e chamou duas vezes o
+tool genericamente apresentado como `Attach Evidence`. O runtime validou sua identidade e rejeitou
+`session_attach_evidence` com `operator_authority_required`, pois essa superfície promove evidência
+à autoridade opcional do operador. A restrição existe desde 4.5.0; não foi introduzida pela 4.5.10.
+
+O transporte autônomo não estava quebrado. Logo depois, o mesmo host usou o campo `evidence` em
+`run_until_unanimous`. As sessões `ec55558d-a11b-46a8-bce9-31394d299c16` e
+`5e076838-7e9c-4ff2-9933-147ee5855d2e` persistiram, respectivamente, 41.417 e 40.751 bytes em
+arquivos físicos, com SHA-256, `submitted_by=codex`, manifesto ativo e eventos
+`session.evidence_attached`/`session.caller_evidence_submission_activated`. Os quatro preflights
+passaram. As rodadas não chamaram revisores porque o budget preflight estimou US$ 34,10/US$ 34,07,
+acima do limite de US$ 20 (e limite de sessão US$ 5); o bloqueio não foi evidência nem autorização.
+
+O defeito real era de descoberta e contrato: a descrição runtime do tool privilegiado não dizia
+`operator-only`, seu schema aceitava os identificadores dos peers, e as descrições dos campos
+`evidence` não anunciavam sua persistência automática. Isso levou o agente a escolher a superfície
+errada, fazer duas chamadas inúteis e concluir que precisava do humano.
+
+A 4.5.11 mantém `operator_verified` fora de qualquer model host, mas torna o caminho correto
+inequívoco. `session_attach_evidence` é apresentado como promoção opcional de autoridade; os quatro
+review starters declaram que `evidence` é persistido automaticamente como
+`caller_submitted_unverified`; e uma chamada errada redireciona o agente para esses campos dizendo
+explicitamente que nenhuma ação humana é necessária. O runtime smoke lista os schemas MCP e cobre
+tanto as descrições quanto a remediação da rejeição.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
@@ -409,7 +437,8 @@ DEF-4, DEF-5, DEF-6, DEF-8 e DEF-9 foram corrigidos nas releases posteriores. A 
 de evidência autenticada também eliminou a necessidade de attachment manual do operador em
 revisões normais; a superfície `session_attach_evidence` continua operator-only por desenho de
 segurança. Os novos defeitos confirmados após o adendo foram o DEF-10, fechado na 4.5.9, e o
-DEF-11 de propagação da atestação npm, fechado no source 4.5.10.
+DEF-11 de propagação da atestação npm, fechado na 4.5.10, além do DEF-12 de descoberta do
+transporte autônomo, fechado no source 4.5.11.
 
 1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
    `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm

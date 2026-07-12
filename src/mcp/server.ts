@@ -126,6 +126,13 @@ const ReviewFocusSchema = z
 const SCHEMA_TASK_MAX_CHARS = 32_000;
 const SCHEMA_DRAFT_MAX_CHARS = 200_000;
 const SCHEMA_INITIAL_DRAFT_MAX_CHARS = 200_000;
+const AutomaticCallerEvidenceSchema = z
+  .string()
+  .max(SCHEMA_INITIAL_DRAFT_MAX_CHARS)
+  .optional()
+  .describe(
+    "Raw evidence from the authenticated AI caller. It is persisted automatically as durable, SHA-256-addressed caller_submitted_unverified material and transported to reviewers; no manual operator attachment is required. Do not call session_attach_evidence for this routine path.",
+  );
 
 function textResult(value: unknown, responseFormat = "json") {
   const text =
@@ -770,10 +777,33 @@ function verifyOperatorToolCallerIdentity(
   clientInfo: ClientInfo,
   session_id?: string,
 ): CallerIdentityResult {
-  const identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, session_id);
+  let identity: CallerIdentityResult;
+  try {
+    identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, session_id);
+  } catch (error) {
+    if (site !== "session_attach_evidence" || caller !== "operator") throw error;
+    const routedError = new Error(
+      `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface and the requested operator identity was not verified. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`,
+      { cause: error },
+    );
+    runtime.emit({
+      type: "session.operator_authority_blocked",
+      session_id,
+      message: routedError.message,
+      data: {
+        site,
+        caller,
+        verification_method: "none",
+        client_info_name: clientInfo?.name ?? "unknown",
+      },
+    });
+    throw routedError;
+  }
   if (caller !== "operator") {
     const error = new Error(
-      `operator_authority_required: ${site} mutates authoritative evidence, terminal state, or security configuration and may only be called by the human operator; received caller='${caller}'.`,
+      site === "session_attach_evidence"
+        ? `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface; received caller='${caller}'. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`
+        : `operator_authority_required: ${site} mutates authoritative evidence, terminal state, or security configuration and may only be called by the human operator; received caller='${caller}'.`,
     );
     runtime.emit({
       type: "session.operator_authority_blocked",
@@ -1252,7 +1282,7 @@ export async function main(): Promise<void> {
     {
       title: "Initialize Session",
       description:
-        "Create a durable cross-review session after probing provider availability and model selection. This does not call reviewer models yet.",
+        "Create a durable cross-review session after probing provider availability and model selection. This does not call reviewer models yet. AI callers should submit raw proof through the `evidence` field of the subsequent review starter; the runtime will persist it automatically without session_attach_evidence or human intervention.",
       inputSchema: z.object({
         task: z.string().min(1).describe("Original task or artifact being reviewed."),
         review_focus: ReviewFocusSchema,
@@ -1339,13 +1369,13 @@ export async function main(): Promise<void> {
     {
       title: "Ask Peers",
       description:
-        "Run a real API review round against selected peers. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
+        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
-        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        evidence: AutomaticCallerEvidenceSchema,
         caller: CallerSchema.default("operator"),
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
@@ -1410,13 +1440,13 @@ export async function main(): Promise<void> {
     {
       title: "Start Review Round",
       description:
-        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling.",
+        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
-        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        evidence: AutomaticCallerEvidenceSchema,
         caller: CallerSchema.default("operator"),
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
@@ -1491,7 +1521,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Until Unanimous",
       description:
-        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
+        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
       inputSchema: z.object({
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
@@ -1553,7 +1583,7 @@ export async function main(): Promise<void> {
         // claim; presence alone is never proof. Peer material is persisted,
         // hashed and transported as unverified review evidence without a
         // manual operator attachment step.
-        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1592,7 +1622,7 @@ export async function main(): Promise<void> {
     {
       title: "Start Until Unanimous",
       description:
-        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
+        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -1641,7 +1671,7 @@ export async function main(): Promise<void> {
         // claim; presence alone is never proof. Peer material is persisted,
         // hashed and transported as unverified review evidence without a
         // manual operator attachment step.
-        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2200,9 +2230,9 @@ export async function main(): Promise<void> {
   registerTool(
     "session_attach_evidence",
     {
-      title: "Attach Evidence",
+      title: "Promote Operator Evidence (Optional)",
       description:
-        "Persist a text evidence artifact under a durable session evidence directory and register it in session metadata.",
+        "Optional operator-only authority promotion; AI callers must not use this tool. No human operator action is required for ordinary reviews: pass raw proof through the `evidence` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, and the runtime persists it durably as caller_submitted_unverified material.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         label: z.string().min(1).max(120),

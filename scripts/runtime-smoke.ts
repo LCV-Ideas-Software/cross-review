@@ -158,16 +158,22 @@ type RuntimePreflightAuthorityAttempt = {
   payload?: RuntimePreflightPayload;
   error?: string;
 };
+type EvidenceToolInputSchema = {
+  properties?: { evidence?: { description?: string } };
+};
 
 const POLL_INTERVAL_MS = 250;
 const POLL_TIMEOUT_MS = 60_000;
 const TERMINAL_OUTCOMES = new Set(["converged", "aborted", "max-rounds"]);
 
-async function pollUntilDone(sessionId: string): Promise<PollState> {
+async function pollUntilDoneWithClient(
+  targetClient: Client,
+  sessionId: string,
+): Promise<PollState> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let lastState: PollState | undefined;
   while (Date.now() < deadline) {
-    const state = (await callTool("session_poll", {
+    const state = (await callToolWithClient(targetClient, "session_poll", {
       session_id: sessionId,
       response_format: "json",
     })) as PollState;
@@ -180,6 +186,10 @@ async function pollUntilDone(sessionId: string): Promise<PollState> {
   throw new Error(
     `Timed out polling runtime-smoke session ${sessionId} after ${POLL_TIMEOUT_MS} ms; last_state=${JSON.stringify(lastState)}`,
   );
+}
+
+async function pollUntilDone(sessionId: string): Promise<PollState> {
+  return pollUntilDoneWithClient(client, sessionId);
 }
 
 try {
@@ -286,11 +296,72 @@ try {
   const operatorOwnerAttempts: RuntimePreflightAuthorityAttempt[] = [];
   try {
     await codexClient.connect(codexTransport);
+    const listedTools = await codexClient.listTools();
+    const attachEvidenceTool = listedTools.tools.find(
+      (tool) => tool.name === "session_attach_evidence",
+    );
+    assert.ok(attachEvidenceTool, "runtime must expose session_attach_evidence to operator hosts");
+    assert.match(
+      attachEvidenceTool.description ?? "",
+      /optional[\s\S]*operator-only[\s\S]*no human (?:operator )?action is required[\s\S]*`evidence` field/i,
+      "session_attach_evidence must identify itself as optional operator authority and direct AI callers to automatic evidence transport",
+    );
+    for (const starterName of [
+      "ask_peers",
+      "session_start_round",
+      "run_until_unanimous",
+      "session_start_unanimous",
+    ]) {
+      const starter = listedTools.tools.find((tool) => tool.name === starterName);
+      const schema = starter?.inputSchema as EvidenceToolInputSchema | undefined;
+      assert.match(
+        schema?.properties?.evidence?.description ?? "",
+        /persisted automatically[\s\S]*no manual operator attachment/i,
+        `${starterName}.evidence must advertise automatic durable transport without operator intervention`,
+      );
+    }
     const peerSession = (await callToolWithClient(codexClient, "session_init", {
       task: "Runtime peer preflight: completed implementation with 74 passed.",
       caller: "codex",
       response_format: "json",
     })) as { session_id: string };
+    for (const callerArgs of [{ caller: "codex" }, {}]) {
+      let optionalAuthorityRejection = "";
+      try {
+        await callToolWithClient(codexClient, "session_attach_evidence", {
+          session_id: peerSession.session_id,
+          label: "wrong-surface-regression",
+          content: "COMMAND: npm test\nEXIT_CODE: 0",
+          ...callerArgs,
+          response_format: "json",
+        });
+      } catch (error) {
+        optionalAuthorityRejection = error instanceof Error ? error.message : String(error);
+      }
+      assert.match(
+        optionalAuthorityRejection,
+        /no human (?:operator )?action is required[\s\S]*`evidence` field/i,
+        `a rejected AI attachment attempt ${"caller" in callerArgs ? "with" : "without"} explicit caller must route to automatic evidence transport`,
+      );
+    }
+    let forgedAttachmentCallerRejection = "";
+    try {
+      await callToolWithClient(codexClient, "session_attach_evidence", {
+        session_id: peerSession.session_id,
+        label: "forged-caller-regression",
+        content: "COMMAND: npm test\nEXIT_CODE: 0",
+        caller: "claude",
+        response_format: "json",
+      });
+    } catch (error) {
+      forgedAttachmentCallerRejection = error instanceof Error ? error.message : String(error);
+    }
+    assert.match(forgedAttachmentCallerRejection, /identity_forgery_blocked/i);
+    assert.doesNotMatch(
+      forgedAttachmentCallerRejection,
+      /no human (?:operator )?action is required/i,
+      "an invalid explicit peer identity must expose the authentication failure instead of being misrouted",
+    );
     const peerEvidenceArgs = {
       session_id: peerSession.session_id,
       draft: "Implementation candidate submitted by Codex.",
@@ -308,6 +379,61 @@ try {
       "session_truthfulness_preflight_check",
       peerEvidenceArgs,
     )) as RuntimePreflightPayload;
+
+    const evidenceSentinel = "AUTONOMOUS_EVIDENCE_SENTINEL_4_5_11";
+    const peerRoundStart = (await callToolWithClient(codexClient, "session_start_round", {
+      session_id: peerSession.session_id,
+      task: "Runtime peer preflight: completed implementation with 74 passed.",
+      draft: "Implementation candidate submitted by Codex; npm test reports 74 passed.",
+      evidence: `${evidenceSentinel}\nCOMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 74 passed, 0 failed`,
+      caller: "codex",
+      response_format: "json",
+    })) as { session_id: string };
+    const peerRoundState = await pollUntilDoneWithClient(codexClient, peerRoundStart.session_id);
+    assert.equal(peerRoundState.outcome, "converged");
+    const peerRoundMeta = (await callToolWithClient(codexClient, "session_read", {
+      session_id: peerRoundStart.session_id,
+      response_format: "json",
+    })) as {
+      active_caller_evidence_submission_id?: string;
+      caller_evidence_submissions?: Array<{
+        submission_id: string;
+        submitted_by: string;
+        attachment_paths: string[];
+      }>;
+      evidence_files?: Array<{
+        path: string;
+        attached_by?: string;
+        origin?: string;
+        sha256?: string;
+      }>;
+    };
+    const activeSubmission = peerRoundMeta.caller_evidence_submissions?.find(
+      (submission) =>
+        submission.submission_id === peerRoundMeta.active_caller_evidence_submission_id,
+    );
+    assert.equal(activeSubmission?.submitted_by, "codex");
+    assert.equal(activeSubmission?.attachment_paths.length, 1);
+    const activeAttachment = peerRoundMeta.evidence_files?.find(
+      (attachment) => attachment.path === activeSubmission?.attachment_paths[0],
+    );
+    assert.equal(activeAttachment?.attached_by, "codex");
+    assert.equal(activeAttachment?.origin, "caller_submitted");
+    assert.match(activeAttachment?.sha256 ?? "", /^[a-f0-9]{64}$/);
+    const peerPrompt = fs.readFileSync(
+      path.join(
+        runtimeSmokeDataDir,
+        "sessions",
+        peerRoundStart.session_id,
+        "agent-runs",
+        "round-1-prompt.md",
+      ),
+      "utf8",
+    );
+    assert.ok(
+      peerPrompt.includes(evidenceSentinel),
+      "MCP starter must persist and transport autonomous Codex evidence to the reviewer prompt",
+    );
 
     const operatorOwnerArgs = {
       session_id: negativePreflightSession.session_id,
