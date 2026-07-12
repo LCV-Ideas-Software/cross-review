@@ -394,6 +394,15 @@ operator installation. Publication does not hot-reload an already open MCP
 host; runtime 4.5.5 is confirmed only after the registry upgrade and a full
 window reload followed by a fresh `server_info` call.
 
+One post-release documentation-only close-out commit changed the neutral
+`SECURITY.md` source/release-target sentence into a publication-status sentence.
+CI run
+[29181944333](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181944333)
+correctly rejected that drift at the historical `release_metadata` smoke
+contract. The exact assertion was reproduced locally as RED, the neutral
+wording was restored without changing the published package or tag, and the
+complete `npm test` suite then passed again in 188.6 seconds.
+
 The operator installs only from the published registry:
 
 ```powershell
