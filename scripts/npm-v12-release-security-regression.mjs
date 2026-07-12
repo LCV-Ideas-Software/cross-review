@@ -199,7 +199,7 @@ assert.match(
 );
 assert.doesNotMatch(
   autoTagWorkflow,
-  /^  push:/m,
+  /^ {2}push:/m,
   "auto-tag must not race CI by triggering directly on a main push",
 );
 for (const prerequisite of [
