@@ -4,6 +4,7 @@
 // once across all three adapters. Type-only import preserves the
 // `OpenAI.ChatCompletionCreateParams*` namespace types at compile time.
 import type OpenAI from "openai";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { statusInstruction } from "../core/status.js";
 import type {
   AppConfig,
@@ -23,6 +24,7 @@ import {
   assertChatCompletionTerminal,
   assertChatStreamCompleted,
   observeChatStreamTerminals,
+  withEstimatedTerminalBilling,
 } from "./terminal.js";
 import { userPrompt } from "./text.js";
 
@@ -183,7 +185,7 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "user", content: `${userPrompt(prompt)}\n\n${statusInstruction()}` },
           ],
           response_format: { type: "json_object" },
-          max_tokens: this.config.max_output_tokens,
+          max_tokens: maxOutputTokensForPeer(this.config, this.id),
         };
         // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
         // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.
@@ -203,36 +205,53 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "review",
             "chat.completion.chunk.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
           const completedChoices = new Set<number>();
+          const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage = usageFromChat(chunk.usage) ?? usage;
-            observeChatStreamTerminals(chunk.choices, completedChoices, {
-              context,
-              peer: this.id,
-              provider: this.provider,
-              model: this.model,
-              phase: "review",
-              allowToolCalls: false,
-            });
-            for (const choice of chunk.choices ?? []) {
-              const delta = choice.delta?.content ?? "";
-              stream_buffer.append(delta);
-              tokenStream.append(delta);
+            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+              observeChatStreamTerminals(
+                chunk.choices,
+                completedChoices,
+                {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "review",
+                  allowToolCalls: false,
+                },
+                rejectedTerminals,
+              ),
+            );
+            if (rejectedTerminals.length === 0) {
+              for (const choice of chunk.choices ?? []) {
+                const delta = choice.delta?.content ?? "";
+                stream_buffer.append(delta);
+                tokenStream.append(delta);
+              }
             }
           }
-          assertChatStreamCompleted(completedChoices, {
-            context,
-            peer: this.id,
-            provider: this.provider,
-            model: this.model,
-            phase: "review",
-          });
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+            assertChatStreamCompleted(
+              completedChoices,
+              {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "review",
+              },
+              rejectedTerminals,
+            ),
+          );
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.resultFromText({
@@ -249,25 +268,30 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
-        assertChatCompletionTerminal(response.choices, {
-          context,
-          peer: this.id,
-          provider: this.provider,
-          model: this.model,
-          phase: "review",
-          allowToolCalls: false,
-        });
+        const responseUsage = usageFromChat(response.usage);
+        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
+          assertChatCompletionTerminal(response.choices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+            allowToolCalls: false,
+          }),
+        );
         return this.resultFromText({
           text: chatText(response),
           raw: response,
-          usage: usageFromChat(response.usage),
+          usage: responseUsage,
           started,
           attempts: attempt,
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "review", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
       { signal: context.signal },
     );
   }
@@ -291,7 +315,7 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "system", content: this.systemPrompt(context) },
             { role: "user", content: userPrompt(prompt) },
           ],
-          max_tokens: this.config.max_output_tokens,
+          max_tokens: maxOutputTokensForPeer(this.config, this.id),
         };
         // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
         // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.
@@ -311,36 +335,53 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "generation",
             "chat.completion.chunk.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
           const completedChoices = new Set<number>();
+          const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage = usageFromChat(chunk.usage) ?? usage;
-            observeChatStreamTerminals(chunk.choices, completedChoices, {
-              context,
-              peer: this.id,
-              provider: this.provider,
-              model: this.model,
-              phase: "generation",
-              allowToolCalls: false,
-            });
-            for (const choice of chunk.choices ?? []) {
-              const delta = choice.delta?.content ?? "";
-              stream_buffer.append(delta);
-              tokenStream.append(delta);
+            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+              observeChatStreamTerminals(
+                chunk.choices,
+                completedChoices,
+                {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "generation",
+                  allowToolCalls: false,
+                },
+                rejectedTerminals,
+              ),
+            );
+            if (rejectedTerminals.length === 0) {
+              for (const choice of chunk.choices ?? []) {
+                const delta = choice.delta?.content ?? "";
+                stream_buffer.append(delta);
+                tokenStream.append(delta);
+              }
             }
           }
-          assertChatStreamCompleted(completedChoices, {
-            context,
-            peer: this.id,
-            provider: this.provider,
-            model: this.model,
-            phase: "generation",
-          });
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+            assertChatStreamCompleted(
+              completedChoices,
+              {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "generation",
+              },
+              rejectedTerminals,
+            ),
+          );
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.generationFromText({
@@ -357,25 +398,30 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
-        assertChatCompletionTerminal(response.choices, {
-          context,
-          peer: this.id,
-          provider: this.provider,
-          model: this.model,
-          phase: "generation",
-          allowToolCalls: false,
-        });
+        const responseUsage = usageFromChat(response.usage);
+        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
+          assertChatCompletionTerminal(response.choices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+            allowToolCalls: false,
+          }),
+        );
         return this.generationFromText({
           text: chatText(response),
           raw: response,
-          usage: usageFromChat(response.usage),
+          usage: responseUsage,
           started,
           attempts: attempt,
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "generation", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
       { signal: context.signal },
     );
   }

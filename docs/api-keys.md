@@ -42,6 +42,7 @@ no-fallback pins.
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_REASONING_EFFORT", "high", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.5", "User")
@@ -50,6 +51,22 @@ no-fallback pins.
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE", "low", "User")
 ```
+
+Provider-specific output ceilings can coexist with the legacy global fallback:
+
+```powershell
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MAX_OUTPUT_TOKENS", "25000", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MAX_OUTPUT_TOKENS", "64000", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MAX_OUTPUT_TOKENS", "20000", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MAX_OUTPUT_TOKENS", "20000", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MAX_OUTPUT_TOKENS", "20000", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MAX_OUTPUT_TOKENS", "20000", "User")
+```
+
+The equivalent central-config key is `max_output_tokens_by_peer`. OpenAI's
+25K value follows its initial reasoning-allocation guidance; Anthropic's 64K
+value follows its `xhigh`/`max` task-budget minimum. `server_info` reports the
+effective value for all six peers.
 
 The canonical Claude Fable 5 rate variables are:
 

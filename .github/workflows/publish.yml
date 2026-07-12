@@ -14,9 +14,8 @@ concurrency:
   group: publish-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 env:
-  # StepSecurity Secure Registry auth for `npm ci`/`npm install` per project .npmrc.
-  # Token is the StepSecurity API key with proxy read scope; never used for publish.
-  STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
+  # Pin the npm release toolchain so the gate exercises npm v12 install-time defaults.
+  NPM_CLI_VERSION: "12.0.1"
 jobs:
   gate:
     name: Pre-publish gate (test + metadata)
@@ -48,13 +47,33 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
+      - name: Verify checked out tag identity
+        env:
+          PUBLISH_REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! git show-ref --verify --quiet "refs/tags/$PUBLISH_REF"; then
+            echo "::error::Publish ref '$PUBLISH_REF' is not an existing tag."
+            exit 1
+          fi
+          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$TAG_SHA" != "$HEAD_SHA" ]; then
+            echo "::error::Checked out HEAD $HEAD_SHA does not match tag $PUBLISH_REF at $TAG_SHA."
+            exit 1
+          fi
+          echo "Verified tag $PUBLISH_REF at $TAG_SHA."
       - name: Setup Node.js 24
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
+      - name: Install npm v12 toolchain
+        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm ci --strict-allow-scripts --no-audit --no-fund
+        env:
+          STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
       - name: Pre-publish gate (format + lint + biome + typecheck)
         run: npm --registry=https://registry.npmjs.org run check
       - name: Verify
@@ -126,30 +145,23 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
           scope: "@lcv-ideas-software"
-          cache: npm
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+          package-manager-cache: false
+      - name: Install npm v12 toolchain
+        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
       - name: Verify trusted publishing toolchain
         run: |
           set -euo pipefail
           node --version
-          npm --registry=https://registry.npmjs.org --version
-          node <<'JS'
-          const { execFileSync } = require('node:child_process');
-          const version = execFileSync(
-            'npm',
-            ['--registry=https://registry.npmjs.org', '--version'],
-            { encoding: 'utf8' },
-          ).trim();
-          const [major, minor, patch] = version.split('.').map(Number);
-          if (
-            !Number.isFinite(major) ||
-            major < 11 ||
-            (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))
-          ) {
-            throw new Error(`npm ${version} is too old for trusted publishing; require >=11.5.1`);
-          }
-          JS
+          ACTUAL_NPM_VERSION="$(npm --registry=https://registry.npmjs.org --version)"
+          if [ "$ACTUAL_NPM_VERSION" != "$NPM_CLI_VERSION" ]; then
+            echo "::error::Expected npm $NPM_CLI_VERSION, got $ACTUAL_NPM_VERSION."
+            exit 1
+          fi
+          echo "Verified npm $ACTUAL_NPM_VERSION for Trusted Publishing and npm v12 policy."
+      - name: Install dependencies
+        run: npm ci --strict-allow-scripts --no-audit --no-fund
+        env:
+          STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
       - name: Check npmjs.com package version
         id: npmjs-version
         env:
@@ -221,19 +233,25 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
+      - name: Install npm v12 toolchain
+        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm ci --strict-allow-scripts --no-audit --no-fund
+        env:
+          STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
       - name: Select GitHub Packages registry for publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          umask 077
           npmrc="${RUNNER_TEMP}/npm-github-packages.npmrc"
           {
             echo "@lcv-ideas-software:registry=https://npm.pkg.github.com"
             echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}"
           } > "$npmrc"
+          chmod 600 "$npmrc"
           echo "NPM_CONFIG_USERCONFIG=$npmrc" >> "$GITHUB_ENV"
           npm --registry=https://registry.npmjs.org config get @lcv-ideas-software:registry
       # The `--registry` flag only overrides the DEFAULT registry. This
@@ -285,9 +303,13 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
+      - name: Install npm v12 toolchain
+        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm ci --strict-allow-scripts --no-audit --no-fund
+        env:
+          STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
       - name: Create artifact directory
         run: mkdir -p ./artifacts
       - name: Pack artifact

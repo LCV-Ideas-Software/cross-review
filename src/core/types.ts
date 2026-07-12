@@ -969,6 +969,39 @@ export interface ConvergenceResult {
   blocking_details: string[];
 }
 
+/** Operator-supplied USD rate card for one concrete model or model family. */
+export interface CostRateConfig {
+  input_per_million: number;
+  output_per_million: number;
+  input_extended_per_million?: number | undefined;
+  output_extended_per_million?: number | undefined;
+  cache_read_per_million?: number | undefined;
+  cache_write_per_million?: number | undefined;
+  cache_read_extended_per_million?: number | undefined;
+  cache_write_extended_per_million?: number | undefined;
+  promo_input_per_million?: number | undefined;
+  promo_output_per_million?: number | undefined;
+  promo_input_extended_per_million?: number | undefined;
+  promo_output_extended_per_million?: number | undefined;
+  promo_cache_read_per_million?: number | undefined;
+  promo_cache_write_per_million?: number | undefined;
+  promo_cache_read_extended_per_million?: number | undefined;
+  promo_cache_write_extended_per_million?: number | undefined;
+  promo_expires_at?: string | undefined;
+  threshold_tokens?: number | undefined;
+  request_fee_low_per_1000?: number | undefined;
+  request_fee_medium_per_1000?: number | undefined;
+  request_fee_high_per_1000?: number | undefined;
+  citation_tokens_per_million?: number | undefined;
+  deep_research_reasoning_tokens_per_million?: number | undefined;
+  search_queries_per_1000?: number | undefined;
+}
+
+/** Retained even when incomplete so an unusable model card fails closed. */
+export type ModelCostRateConfig = {
+  [Field in keyof CostRateConfig]?: CostRateConfig[Field] | undefined;
+};
+
 export interface AppConfig {
   version: string;
   data_dir: string;
@@ -1005,7 +1038,14 @@ export interface AppConfig {
     // bytes balances literal evidence needs against provider context limits.
     max_attached_evidence_chars: number;
   };
+  /** Legacy global output ceiling used when a peer has no explicit override. */
   max_output_tokens: number;
+  /**
+   * Provider/model-specific output ceilings. Reasoning-token guidance and
+   * published model caps differ, so one global value cannot safely satisfy
+   * every peer. Missing entries fall back to max_output_tokens.
+   */
+  max_output_tokens_by_peer?: Partial<Record<PeerId, number | undefined>> | undefined;
   // v3.5.0 (CRV2-4): when true (default), run_until_unanimous runs a
   // pure-textual evidence preflight before any paid peer call and fails
   // under-evidenced submissions locally with `needs_evidence_preflight`.
@@ -1032,62 +1072,9 @@ export interface AppConfig {
   // `output_per_million` are required (backward compat with v2.0.0+); every
   // other field is optional. The cost layer's selectRate() chooses the right
   // value per (category, tier, promo-active?) at estimateCost() time.
-  cost_rates: Partial<
-    Record<
-      PeerId,
-      | {
-          input_per_million: number;
-          output_per_million: number;
-          // Extended-tier rates (used when total input tokens exceed
-          // threshold_tokens; e.g., Gemini ≤200K vs >200K).
-          input_extended_per_million?: number | undefined;
-          output_extended_per_million?: number | undefined;
-          // Cache rates (read = cache hit, write = cache creation).
-          // For Anthropic, cache_write reflects 1h TTL pricing per workspace
-          // policy (most common server-default); operators can set a lower
-          // value if they exclusively use 5m TTL.
-          cache_read_per_million?: number | undefined;
-          cache_write_per_million?: number | undefined;
-          cache_read_extended_per_million?: number | undefined;
-          cache_write_extended_per_million?: number | undefined;
-          // Promo rates (limited-time discounts; e.g., DeepSeek v4-pro 75% off
-          // until 2026-05-31). Selection requires promo_expires_at to be present
-          // AND today < promo_expires_at AND the corresponding promo field set.
-          promo_input_per_million?: number | undefined;
-          promo_output_per_million?: number | undefined;
-          promo_input_extended_per_million?: number | undefined;
-          promo_output_extended_per_million?: number | undefined;
-          promo_cache_read_per_million?: number | undefined;
-          promo_cache_write_per_million?: number | undefined;
-          promo_cache_read_extended_per_million?: number | undefined;
-          promo_cache_write_extended_per_million?: number | undefined;
-          promo_expires_at?: string | undefined; // ISO 8601 UTC timestamp
-          // Threshold for extended tier (in tokens). When total input >
-          // threshold, *_extended_per_million fields are used (when set). Null
-          // or undefined means no tier split for this provider.
-          threshold_tokens?: number | undefined;
-          // v3.0.0 (Perplexity 6th peer): Perplexity bills BOTH per-token
-          // AND per-request, where the request fee scales with
-          // `search_context_size` (low/medium/high). Other providers bill
-          // only per-token, so these fields are undefined for them.
-          // Operator configures via
-          // CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_<LOW|MEDIUM|HIGH>_USD_PER_1000_REQUESTS.
-          request_fee_low_per_1000?: number | undefined;
-          request_fee_medium_per_1000?: number | undefined;
-          request_fee_high_per_1000?: number | undefined;
-          // v3.0.0 (Perplexity Sonar Deep Research only): citation_tokens
-          // and search_queries are billed separately from
-          // input/output/reasoning. Other Sonar models (sonar / sonar-pro /
-          // sonar-reasoning-pro) leave these undefined. reasoning_tokens
-          // for Sonar Deep Research are also billed separately from output
-          // (other peers fold reasoning into output billing).
-          citation_tokens_per_million?: number | undefined;
-          deep_research_reasoning_tokens_per_million?: number | undefined;
-          search_queries_per_1000?: number | undefined;
-        }
-      | undefined
-    >
-  >;
+  cost_rates: Partial<Record<PeerId, CostRateConfig | undefined>>;
+  /** All validated central-config cards, not only the active model pin. */
+  model_cost_rates?: Partial<Record<PeerId, Record<string, ModelCostRateConfig>>> | undefined;
   // v2.12.0: judge auto-wire surfaced as first-class config so server_info,
   // dashboard and orchestrator share one source of truth instead of each
   // call site re-reading env vars. The boot notice and the shadow path in

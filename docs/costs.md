@@ -19,7 +19,13 @@ not spend Sonar completion tokens unless the operator explicitly sets
 
 The server records token usage returned by providers. Paid review/generation tools are blocked until explicit budget ceilings and rate cards are configured. This avoids stale hard-coded prices because provider pricing changes frequently.
 
-`CROSS_REVIEW_MAX_OUTPUT_TOKENS` controls the maximum output budget requested from all providers. The default is `20000`; raise or lower it in the MCP host configuration according to the desired quality/cost tradeoff. Invalid, zero or negative values fall back to the default.
+`CROSS_REVIEW_MAX_OUTPUT_TOKENS` remains the global fallback (default
+`20000`). Central `config.json` can set `max_output_tokens_by_peer`, or an MCP
+host can set `CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS`. The effective map is
+shown by `server_info` and is also used by cost preflight. A central-config
+value must be a positive integer; zero, negative or malformed values reject the
+file atomically and surface `CROSS_REVIEW_CONFIG_FILE_INVALID`. Invalid env or
+registry overrides are ignored in favor of the global fallback.
 
 `session_report` and `session_doctor` distinguish total session cost from the
 reviewer peer-call subtotal and the relator/lead generation subtotal. Historical
@@ -32,7 +38,7 @@ artifacts when present.
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
 Current reference values verified against official provider documentation on
-2026-07-10 for the maintained model pins:
+2026-07-12 for the maintained model pins:
 
 | Provider/model                   | Input   | Output | Cached input / cache hit | Extended tier                                                      |
 | -------------------------------- | ------- | ------ | ------------------------ | ------------------------------------------------------------------ |
@@ -40,7 +46,7 @@ Current reference values verified against official provider documentation on
 | Anthropic `claude-fable-5`       | `10`    | `50`   | `1`                      | none                                                               |
 | Gemini `gemini-3.1-pro-preview`  | `2`     | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4` |
 | DeepSeek `deepseek-v4-pro`       | `0.435` | `0.87` | `0.003625`               | none                                                               |
-| xAI `grok-4.5`                   | `2`     | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                |
+| xAI `grok-4.5`                   | `2`     | `6`    | `0.5`                    | no separately published long-context tier                          |
 | Perplexity `sonar-reasoning-pro` | `2`     | `8`    | n/a                      | request fee: low `6`, medium `10`, high `14` per 1000 requests     |
 
 GPT-5.6 Sol reports cache-write tokens separately. Configure OpenAI cache write
@@ -49,6 +55,13 @@ these are 1.25 times the corresponding uncached input rates. Grok 4.5 exposes
 cached-input pricing but no distinct cache-write counter, so do not infer a
 write charge from uncached input tokens.
 
+Gemini's published output rate includes both visible candidate tokens and
+thinking tokens. The runtime therefore adds `thoughtsTokenCount` to the
+billable output bucket while preserving it separately as reasoning telemetry.
+Gemini explicit-cache storage is priced per token-hour and is not represented
+as `cache_write_per_million`; the implicit-cache adapter records cache reads
+only.
+
 Official pricing sources:
 
 - OpenAI: [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol).
@@ -56,10 +69,8 @@ Official pricing sources:
   and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 - Google: [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 - DeepSeek: [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
-- xAI: [Grok 4.5](https://docs.x.ai/developers/grok-4-5) and
+- xAI: [pricing](https://docs.x.ai/developers/pricing) and
   [prompt-cache usage and pricing](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing).
-  The public model page carries the base rates; cached and long-context values
-  are also exposed through xAI's official model-detail surface.
 - Perplexity: [Sonar Reasoning Pro](https://docs.perplexity.ai/docs/sonar/models/sonar-reasoning-pro)
   and [Sonar API pricing](https://docs.perplexity.ai/docs/getting-started/pricing).
 
@@ -109,11 +120,7 @@ overrides can select models with different prices:
       "grok-4.5": {
         "input_per_million": 2,
         "output_per_million": 6,
-        "cache_read_per_million": 0.5,
-        "threshold_tokens": 200000,
-        "input_extended_per_million": 4,
-        "output_extended_per_million": 12,
-        "cache_read_extended_per_million": 1
+        "cache_read_per_million": 0.5
       }
     }
   }
@@ -123,6 +130,41 @@ overrides can select models with different prices:
 If both `cost_rates.<peer>` and `model_cost_rates.<peer>` are present, the
 model-specific entry for the configured peer model wins. Process environment
 and Windows registry rate variables still have higher precedence than the file.
+
+Accounting always resolves the model actually sent by the adapter, including
+explicit overrides and fallbacks. A non-primary effective model must match a
+retained model card (exact Sonar product IDs; documented family matching for
+other providers, selecting the longest matching prefix). If no applicable card
+exists, preflight and fallback fail closed with `unknown-rate`; the runtime
+never borrows the primary model's price. Regular Sonar cards must include the
+active context-tier request fee, and Deep Research cards must include citation,
+reasoning and search-query dimensions, whether primary or fallback. Aggregated
+usage preserves those dimensions and provider totals across every billed
+attempt.
+
+`sonar-deep-research` is account-able after a response but not hard-budgetable
+before dispatch: the official API exposes no caller-controlled ceiling for
+citation tokens, separate reasoning tokens or search-query count. Therefore a
+Deep Research primary/fallback returns
+`CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED` and the paid
+orchestrator fails closed. Its retained card remains useful for exact post-call
+audit data and offline adapter regressions; it is not presented as a guaranteed
+preflight.
+
+Round preflight prices the complete reachable call graph: all configured retry
+attempts for the primary and each declared fallback, followed by the most
+expensive possible format-recovery envelope. It also compares the distinct
+input-moderation path (an initial envelope ending in prompt rejection, plus
+compact-prompt and format-recovery envelopes) and uses the larger estimate.
+Each of those three envelopes
+uses `max_attempts`, because prompt blocking may follow earlier transient
+failures. Recovery-local gates price only the adapter call they are about to
+dispatch.
+
+Perplexity citation-token, separate reasoning-token and search-query rates are
+exclusive to `sonar-deep-research`. Keep them only in that model's rate card;
+the cost engine also checks the active model identity so stale keys cannot
+overcharge `sonar-reasoning-pro`.
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_MAX_SESSION_COST_USD", "20", "User")

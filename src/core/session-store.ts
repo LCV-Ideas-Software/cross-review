@@ -1514,6 +1514,12 @@ export class SessionStore {
           throw err;
         }
       }
+      // A normal background job is terminalized inside this same session
+      // lock. Its later process-local cleanup must remain a no-op so the
+      // report stays immutable, therefore remove the running control before
+      // sealing the terminal snapshot. Cancellation took its dedicated path
+      // above and intentionally persists control=cancelled.
+      delete meta.control;
       meta.outcome = outcome;
       if (reason) meta.outcome_reason = reason;
       const ts = now();
@@ -3422,7 +3428,11 @@ export class SessionStore {
         const current = this.read(session.session_id);
         if (current.outcome) return undefined;
         if (current.in_flight || current.generation_in_flight) return undefined;
+        if (current.control?.status === "cancel_requested") {
+          return this.persistCancelledTerminal(current, "session_cancelled");
+        }
         const ts = now();
+        delete current.control;
         current.outcome = outcome;
         current.outcome_reason = reason;
         current.convergence_health = transitionHealth(

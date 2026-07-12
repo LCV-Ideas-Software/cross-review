@@ -24,8 +24,9 @@
 // v2.27.1 (cold-start hardening): reuse the lazy OpenAI ctor loaded by
 // peers/openai.ts. Type-only import preserves annotations.
 import type OpenAI from "openai";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { pairScopedCacheKey } from "../core/prompt-parts.js";
-import { statusInstruction, statusJsonSchema } from "../core/status.js";
+import { grokStatusJsonSchema, statusInstruction } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -43,7 +44,10 @@ import { withRetry } from "./retry.js";
 import {
   assertResponsesCompletion,
   assertResponsesStreamCompleted,
+  assertResponsesStreamNotRefused,
+  observeResponsesStreamRefusal,
   observeResponsesStreamTerminal,
+  withEstimatedTerminalBilling,
 } from "./terminal.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 
@@ -67,6 +71,7 @@ type GrokStreamEvent = {
   delta?: unknown | undefined;
   response?: {
     status?: string | undefined;
+    incomplete_details?: { reason?: string | undefined } | null | undefined;
     usage?: GrokUsage | null | undefined;
     model?: string | undefined;
     error?:
@@ -88,6 +93,15 @@ type GrokStreamEvent = {
       }
     | null
     | undefined;
+};
+
+type GrokResponseTerminal = {
+  status?: unknown;
+  incomplete_details?: { reason?: unknown } | null | undefined;
+  usage?: GrokUsage | null | undefined;
+  model?: string | undefined;
+  error?: NonNullable<GrokStreamEvent["response"]>["error"];
+  output?: unknown;
 };
 
 const GROK_BASE_URL = "https://api.x.ai/v1";
@@ -246,6 +260,29 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
     return new Ctor({ apiKey, baseURL: GROK_BASE_URL });
   }
 
+  private assertResponseTerminal(
+    response: GrokResponseTerminal,
+    context: PeerCallContext,
+    phase: "review" | "generation",
+  ): void {
+    const usage = usageFromGrok(response.usage);
+    withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+      if (response.error) {
+        throw streamingFailureErrorFromEvent(
+          { type: "response.failed", response: { error: response.error } },
+          "Grok response failed.",
+        );
+      }
+      assertResponsesCompletion(response, {
+        context,
+        peer: this.id,
+        provider: this.provider,
+        model: this.model,
+        phase,
+      });
+    });
+  }
+
   async probe(): Promise<PeerProbeResult> {
     const started = Date.now();
     const authPresent = Boolean(this.config.api_keys.grok);
@@ -320,9 +357,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               type: "json_schema" as const,
               name: "cross_review_status",
               strict: true,
-              schema: statusJsonSchema,
+              schema: grokStatusJsonSchema,
             },
-            verbosity: "low" as const,
           },
           ...(modelAcceptsReasoningEffort(this.model)
             ? {
@@ -337,7 +373,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               }
             : {}),
           store: false,
-          max_output_tokens: this.config.max_output_tokens,
+          max_output_tokens: maxOutputTokensForPeer(this.config, this.id),
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,
@@ -350,40 +386,69 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "review",
             "response.output_text.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let responseCompleted = false;
+          let responseRefused = false;
           const reviewClient = await this.client(context.caller);
           const stream = await reviewClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
           for await (const event of stream as AsyncIterable<GrokStreamEvent>) {
-            responseCompleted = observeResponsesStreamTerminal(event, responseCompleted, {
+            responseRefused = observeResponsesStreamRefusal(event, responseRefused);
+            const eventUsage = usageFromGrok(event.response?.usage);
+            responseCompleted = withEstimatedTerminalBilling(
+              this.config,
+              this.id,
+              this.model,
+              eventUsage,
+              () =>
+                observeResponsesStreamTerminal(event, responseCompleted, {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "review",
+                }),
+            );
+            if (event.type === "response.output_text.delta") {
+              const delta = typeof event.delta === "string" ? event.delta : "";
+              stream_buffer.append(delta);
+              tokenStream.append(delta);
+            } else if (event.type === "response.completed") {
+              usage = eventUsage;
+              modelReported = event.response?.model;
+            } else if (
+              event.type === "response.failed" ||
+              event.type === "error" ||
+              event.type === "response.error"
+            ) {
+              withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+                throw streamingFailureErrorFromEvent(
+                  event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                  "Grok streaming response failed.",
+                );
+              });
+            }
+          }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+            assertResponsesStreamCompleted(responseCompleted, {
               context,
               peer: this.id,
               provider: this.provider,
               model: this.model,
               phase: "review",
             });
-            if (event.type === "response.output_text.delta") {
-              const delta = typeof event.delta === "string" ? event.delta : "";
-              stream_buffer.append(delta);
-              tokenStream.append(delta);
-            } else if (event.type === "response.completed") {
-              usage = usageFromGrok(event.response?.usage);
-              modelReported = event.response?.model;
-            } else if (event.type === "response.failed" || event.type === "response.error") {
-              throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
-            }
-          }
-          assertResponsesStreamCompleted(responseCompleted, {
-            context,
-            peer: this.id,
-            provider: this.provider,
-            model: this.model,
-            phase: "review",
+            assertResponsesStreamNotRefused(responseRefused, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+            });
           });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
@@ -401,13 +466,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
-        assertResponsesCompletion(response as { status?: unknown }, {
-          context,
-          peer: this.id,
-          provider: this.provider,
-          model: this.model,
-          phase: "review",
-        });
+        this.assertResponseTerminal(response as GrokResponseTerminal, context, "review");
         return this.resultFromText({
           text: textFromOpenAIResponse(response),
           raw: response,
@@ -417,8 +476,10 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "review", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
       { signal: context.signal },
     );
   }
@@ -459,7 +520,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               }
             : {}),
           store: false,
-          max_output_tokens: this.config.max_output_tokens,
+          max_output_tokens: maxOutputTokensForPeer(this.config, this.id),
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,
@@ -472,40 +533,69 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "generation",
             "response.output_text.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let responseCompleted = false;
+          let responseRefused = false;
           const generateClient = await this.client(context.caller);
           const stream = await generateClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
           for await (const event of stream as AsyncIterable<GrokStreamEvent>) {
-            responseCompleted = observeResponsesStreamTerminal(event, responseCompleted, {
+            responseRefused = observeResponsesStreamRefusal(event, responseRefused);
+            const eventUsage = usageFromGrok(event.response?.usage);
+            responseCompleted = withEstimatedTerminalBilling(
+              this.config,
+              this.id,
+              this.model,
+              eventUsage,
+              () =>
+                observeResponsesStreamTerminal(event, responseCompleted, {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "generation",
+                }),
+            );
+            if (event.type === "response.output_text.delta") {
+              const delta = typeof event.delta === "string" ? event.delta : "";
+              stream_buffer.append(delta);
+              tokenStream.append(delta);
+            } else if (event.type === "response.completed") {
+              usage = eventUsage;
+              modelReported = event.response?.model;
+            } else if (
+              event.type === "response.failed" ||
+              event.type === "error" ||
+              event.type === "response.error"
+            ) {
+              withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+                throw streamingFailureErrorFromEvent(
+                  event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                  "Grok streaming response failed.",
+                );
+              });
+            }
+          }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+            assertResponsesStreamCompleted(responseCompleted, {
               context,
               peer: this.id,
               provider: this.provider,
               model: this.model,
               phase: "generation",
             });
-            if (event.type === "response.output_text.delta") {
-              const delta = typeof event.delta === "string" ? event.delta : "";
-              stream_buffer.append(delta);
-              tokenStream.append(delta);
-            } else if (event.type === "response.completed") {
-              usage = usageFromGrok(event.response?.usage);
-              modelReported = event.response?.model;
-            } else if (event.type === "response.failed" || event.type === "response.error") {
-              throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
-            }
-          }
-          assertResponsesStreamCompleted(responseCompleted, {
-            context,
-            peer: this.id,
-            provider: this.provider,
-            model: this.model,
-            phase: "generation",
+            assertResponsesStreamNotRefused(responseRefused, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+            });
           });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
@@ -523,13 +613,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
-        assertResponsesCompletion(response as { status?: unknown }, {
-          context,
-          peer: this.id,
-          provider: this.provider,
-          model: this.model,
-          phase: "generation",
-        });
+        this.assertResponseTerminal(response as GrokResponseTerminal, context, "generation");
         return this.generationFromText({
           text: textFromOpenAIResponse(response),
           raw: response,
@@ -539,8 +623,10 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "generation", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
       { signal: context.signal },
     );
   }

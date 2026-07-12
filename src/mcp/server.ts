@@ -14,6 +14,7 @@ import {
   VERSION,
 } from "../core/config.js";
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { sessionReportMarkdown } from "../core/reports.js";
 import type {
   ConvergenceScope,
@@ -1145,6 +1146,9 @@ export async function main(): Promise<void> {
           })(),
           prompt: runtime.config.prompt,
           max_output_tokens: runtime.config.max_output_tokens,
+          max_output_tokens_by_peer: Object.fromEntries(
+            PEERS.map((peer) => [peer, maxOutputTokensForPeer(runtime.config, peer)]),
+          ),
           streaming: runtime.config.streaming,
           // v2.12.0: judge auto-wire is now a first-class observable. Operators
           // checking `server_info` know whether shadow is collecting data,
@@ -1184,7 +1188,8 @@ export async function main(): Promise<void> {
             operator_capability_required: true,
             identities: getHostTokensRecord() ? Object.keys(getHostTokensRecord()?.map ?? {}) : [],
           },
-          codeql_policy: "Default Setup on GitHub; no advanced workflow committed.",
+          codeql_policy:
+            "Repository policy: committed Advanced CodeQL workflow (.github/workflows/codeql.yml, security-extended); avoid duplicate Default Setup.",
           secrets_policy: "API keys are read from Windows environment variables only.",
         },
         response_format,

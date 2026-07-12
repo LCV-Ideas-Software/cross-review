@@ -29,11 +29,12 @@ const MAX_ARRAY_ITEMS = 30;
 // v2.4.0 / audit closure (P1.4): byte-level cap on each candidate JSON
 // payload BEFORE JSON.parse. The legitimate envelope carries status +
 // summary + a handful of optional fields, all bounded by MAX_FIELD_LENGTH.
-// 64 KiB is two orders of magnitude above that and lets pathological
-// inputs (a hostile peer emitting a giant `<cross_review_status>` block)
-// be rejected as malformed before the parser allocates the AST. Mirrors
-// the v1.6.7 P1.4 fix.
-const MAX_PAYLOAD_BYTES = 64 * 1024;
+// The local schema permits 30 evidence items at 2500 chars plus 60 request/
+// follow-up items at 1500 chars. JSON escaping can expand one code unit to six
+// bytes, so a valid worst-case envelope approaches 1 MiB. Keep the byte guard
+// aligned with that published contract while still rejecting unbounded hostile
+// status blocks before JSON.parse allocates their AST.
+const MAX_PAYLOAD_BYTES = 1024 * 1024;
 
 export const statusSchema = z.strictObject({
   status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]),
@@ -73,6 +74,63 @@ export const statusJsonSchema = {
       type: "array",
       maxItems: MAX_ARRAY_ITEMS,
       items: { type: "string", maxLength: MAX_REQUEST_LENGTH },
+    },
+  },
+} as const;
+
+// The Zod schema and statusJsonSchema above are the complete local contract.
+// Provider APIs accept different documented JSON-Schema subsets, so adapters
+// must never treat the canonical schema as a universally portable wire shape.
+// This minimal projection uses only the common structural keywords documented
+// across the schema-capable providers; dimensional limits remain enforced by
+// the prompt, normalization and Zod validation after the response arrives.
+export const portableStatusJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: statusJsonSchema.required,
+  properties: {
+    status: statusJsonSchema.properties.status,
+    summary: { type: "string" },
+    confidence: statusJsonSchema.properties.confidence,
+    evidence_sources: { type: "array", items: { type: "string" } },
+    caller_requests: { type: "array", items: { type: "string" } },
+    follow_ups: { type: "array", items: { type: "string" } },
+  },
+} as const;
+
+// Gemini's published closed keyword list includes maxItems but not maxLength.
+export const geminiStatusJsonSchema = {
+  ...portableStatusJsonSchema,
+  properties: {
+    ...portableStatusJsonSchema.properties,
+    evidence_sources: {
+      type: "array",
+      maxItems: MAX_ARRAY_ITEMS,
+      items: { type: "string" },
+    },
+    caller_requests: {
+      type: "array",
+      maxItems: MAX_ARRAY_ITEMS,
+      items: { type: "string" },
+    },
+    follow_ups: {
+      type: "array",
+      maxItems: MAX_ARRAY_ITEMS,
+      items: { type: "string" },
+    },
+  },
+} as const;
+
+// xAI documents maxItems through 256 and guarantees maxLength through 2048.
+// Keep the concise provider envelope inside those guarantees; the local
+// evidence item cap intentionally remains 2500 for providers that support it.
+export const grokStatusJsonSchema = {
+  ...statusJsonSchema,
+  properties: {
+    ...statusJsonSchema.properties,
+    evidence_sources: {
+      ...statusJsonSchema.properties.evidence_sources,
+      items: { type: "string", maxLength: 2048 },
     },
   },
 } as const;
@@ -122,8 +180,37 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isReviewStatus(value: unknown): value is ReviewStatus {
-  return typeof value === "string" && STATUS_VALUES.includes(value as ReviewStatus);
+function canonicalReviewStatus(value: unknown): ReviewStatus | null {
+  if (typeof value !== "string") return null;
+  const canonical = value.toUpperCase();
+  return STATUS_VALUES.includes(canonical as ReviewStatus) ? (canonical as ReviewStatus) : null;
+}
+
+function canonicalConfidence(value: unknown): PeerStructuredStatus["confidence"] | undefined {
+  if (typeof value !== "string") return undefined;
+  const canonical = value.toLowerCase();
+  return CONFIDENCE_VALUES.includes(canonical as never)
+    ? (canonical as PeerStructuredStatus["confidence"])
+    : undefined;
+}
+
+function canonicalizeStructuredEnumCasing(value: unknown, warnings: string[]): unknown {
+  if (!isObject(value)) return value;
+  const status = canonicalReviewStatus(value.status);
+  const confidence = canonicalConfidence(value.confidence);
+  let changed = false;
+  const canonical = { ...value };
+  if (status && status !== value.status) {
+    canonical.status = status;
+    warnings.push("status_enum_casing_normalized");
+    changed = true;
+  }
+  if (confidence && confidence !== value.confidence) {
+    canonical.confidence = confidence;
+    warnings.push("confidence_enum_casing_normalized");
+    changed = true;
+  }
+  return changed ? canonical : value;
 }
 
 function truncateField(
@@ -163,9 +250,11 @@ function normalizeStructuredStatus(
   value: unknown,
   warnings: string[],
 ): PeerStructuredStatus | null {
-  if (!isObject(value) || !isReviewStatus(value.status)) return null;
+  if (!isObject(value)) return null;
+  const status = canonicalReviewStatus(value.status);
+  if (!status) return null;
 
-  const normalized: PeerStructuredStatus = { status: value.status };
+  const normalized: PeerStructuredStatus = { status };
 
   if (typeof value.summary === "string") {
     normalized.summary = truncateField("summary", value.summary, MAX_SUMMARY_LENGTH, warnings);
@@ -173,11 +262,9 @@ function normalizeStructuredStatus(
     warnings.push("summary_dropped_non_string");
   }
 
-  if (
-    typeof value.confidence === "string" &&
-    CONFIDENCE_VALUES.includes(value.confidence as never)
-  ) {
-    normalized.confidence = value.confidence as PeerStructuredStatus["confidence"];
+  const confidence = canonicalConfidence(value.confidence);
+  if (confidence) {
+    normalized.confidence = confidence;
   } else if (value.confidence !== undefined) {
     warnings.push("confidence_dropped_invalid_value");
   }
@@ -216,8 +303,8 @@ function normalizeStructuredStatus(
 }
 
 function extractJsonKeyStatus(candidate: string): ReviewStatus | null {
-  const match = candidate.match(/"status"\s*:\s*"(READY|NOT_READY|NEEDS_EVIDENCE)"/);
-  return match ? (match[1] as ReviewStatus) : null;
+  const match = candidate.match(/"status"\s*:\s*"(READY|NOT_READY|NEEDS_EVIDENCE)"/i);
+  return canonicalReviewStatus(match?.[1]);
 }
 
 function hasDuplicateJsonProperty(candidate: string): boolean {
@@ -583,9 +670,10 @@ export function parsePeerStatus(text: string): PeerStatusParseResult {
     }
     try {
       const json = JSON.parse(candidate.json) as unknown;
-      const rawStatus = isObject(json) && isReviewStatus(json.status) ? json.status : null;
+      const rawStatus = isObject(json) ? canonicalReviewStatus(json.status) : null;
       if (rawStatus) observedRawStatus = rawStatus;
-      const parsed = statusSchema.safeParse(json);
+      const canonicalJson = canonicalizeStructuredEnumCasing(json, warnings);
+      const parsed = statusSchema.safeParse(canonicalJson);
       const candidateAt = trimmed.lastIndexOf(candidate.json);
       const responseNarrative =
         candidateAt >= 0
@@ -616,7 +704,7 @@ export function parsePeerStatus(text: string): PeerStatusParseResult {
       }
 
       const recoveryWarnings = [...warnings, parsed.error.message.slice(0, 500)];
-      const normalized = normalizeStructuredStatus(json, recoveryWarnings);
+      const normalized = normalizeStructuredStatus(canonicalJson, recoveryWarnings);
       if (normalized) {
         if (candidate.source === "fenced_json")
           recoveryWarnings.push("status_json_extracted_from_fence");

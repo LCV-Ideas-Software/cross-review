@@ -9,7 +9,14 @@ import {
   checkConvergence,
   isSkippableFailure,
 } from "./convergence.js";
-import { estimateCacheSavings, mergeCost, mergeUsage } from "./cost.js";
+import {
+  estimateCacheSavings,
+  estimateCost,
+  mergeCost,
+  mergeUsage,
+  resolveCostRate,
+} from "./cost.js";
+import { maxOutputTokensForPeer } from "./output-budget.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
 import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
 import { SessionStore } from "./session-store.js";
@@ -735,6 +742,142 @@ function normalizeGroundingText(value: string): string {
   return value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function normalizeLiteralGroundingText(value: string): string {
+  return value.replace(/\r\n?/g, "\n");
+}
+
+function decodeControlledCitationEscapes(value: string): string | undefined {
+  let decoded = "";
+  let changed = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char !== "\\") {
+      decoded += char;
+      continue;
+    }
+    const escaped = value[index + 1];
+    if (escaped === undefined) return undefined;
+    const replacements: Record<string, string> = {
+      '"': '"',
+      "\\": "\\",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+    };
+    const replacement = replacements[escaped];
+    if (replacement === undefined) return undefined;
+    decoded += replacement;
+    changed = true;
+    index += 1;
+  }
+  return changed ? decoded : undefined;
+}
+
+function citationPhraseCandidates(phrase: string): string[] {
+  const decoded = decodeControlledCitationEscapes(phrase);
+  return decoded === undefined || decoded === phrase ? [phrase] : [phrase, decoded];
+}
+
+function unifiedDiffPostImageHunks(content: string): string[] {
+  const hunks: string[] = [];
+  let current: string[] | null = null;
+  const finishHunk = (): void => {
+    if (current?.length) hunks.push(current.join("\n"));
+    current = null;
+  };
+  for (const line of content.replace(/\r\n?/g, "\n").split("\n")) {
+    if (/^@@(?:\s|$)/.test(line)) {
+      finishHunk();
+      current = [];
+      continue;
+    }
+    if (/^(?:diff --git |--- |\+\+\+ )/.test(line)) {
+      finishHunk();
+      continue;
+    }
+    if (current === null) continue;
+    if (line.startsWith("+")) {
+      current.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith(" ")) {
+      current.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith("-") || line === "\\ No newline at end of file") continue;
+    // A non-diff line terminates the hunk instead of being admitted as
+    // evidence. This keeps prose following a patch outside the post-image.
+    finishHunk();
+  }
+  finishHunk();
+  return hunks;
+}
+
+function unifiedDiffRemovedHunks(content: string): string[] {
+  const hunks: string[] = [];
+  let current: string[] | null = null;
+  let currentWithMarkers: string[] | null = null;
+  const finishHunk = (): void => {
+    if (current?.length) hunks.push(current.join("\n"));
+    if (currentWithMarkers?.length) hunks.push(currentWithMarkers.join("\n"));
+    current = null;
+    currentWithMarkers = null;
+  };
+  for (const line of content.replace(/\r\n?/g, "\n").split("\n")) {
+    if (/^@@(?:\s|$)/.test(line)) {
+      finishHunk();
+      current = [];
+      currentWithMarkers = [];
+      continue;
+    }
+    if (/^(?:diff --git |--- |\+\+\+ )/.test(line)) {
+      finishHunk();
+      continue;
+    }
+    if (current === null) continue;
+    if (line.startsWith("-")) {
+      current.push(line.slice(1));
+      currentWithMarkers?.push(line);
+      continue;
+    }
+    if (line.startsWith(" ")) {
+      current.push(line.slice(1));
+      currentWithMarkers?.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith("+") || line === "\\ No newline at end of file") continue;
+    finishHunk();
+  }
+  finishHunk();
+  return hunks;
+}
+
+function phraseMatchesCorpus(phrase: string, corpus: string): boolean {
+  const literalCorpus = normalizeLiteralGroundingText(corpus);
+  if (!literalCorpus) return false;
+  return citationPhraseCandidates(phrase).some((candidate) => {
+    const literalCandidate = normalizeLiteralGroundingText(candidate);
+    return literalCandidate.trim().length >= 12 && literalCorpus.includes(literalCandidate);
+  });
+}
+
+function phraseMatchesAttachment(phrase: string, content: string): boolean {
+  const postImageMatches = unifiedDiffPostImageHunks(content).some((hunk) =>
+    phraseMatchesCorpus(phrase, hunk),
+  );
+  if (postImageMatches) return true;
+  if (!phraseMatchesCorpus(phrase, content)) return false;
+
+  // Raw patches are still trusted for headers, metadata, commands and logs,
+  // but code quoted exclusively from a removed hunk is not evidence of the
+  // submitted post-image. Context lines are admitted into both images; a quote
+  // containing them plus an actual addition already matched above.
+  const removedOnly = unifiedDiffRemovedHunks(content).some((hunk) =>
+    phraseMatchesCorpus(phrase, hunk),
+  );
+  return !removedOnly;
+}
+
 function quotedEvidencePhrases(source: string): string[] {
   const explicitMarker = /\b(?:Artifact quote|verbatim|literal quote|quote)\s*:\s*/i.exec(source);
   if (explicitMarker) {
@@ -747,22 +890,29 @@ function quotedEvidencePhrases(source: string): string[] {
     ] as const;
     for (const [open, close] of pairs) {
       if (!wrapped.startsWith(open) || !wrapped.endsWith(close)) continue;
-      const phrase = wrapped.slice(open.length, -close.length).trim();
-      return phrase.length >= 12 ? [phrase] : [];
+      const phrase = wrapped.slice(open.length, -close.length);
+      return phrase.trim().length >= 12 ? [phrase] : [];
     }
     return [];
   }
 
   const phrases: string[] = [];
   for (const match of source.matchAll(/["“]([^"”\r\n]{12,})["”]/g)) {
-    const phrase = match[1]?.trim();
+    const phrase = match[1];
     if (phrase) phrases.push(phrase);
   }
   for (const match of source.matchAll(/`([^`\r\n]{12,})`/g)) {
-    const phrase = match[1]?.trim();
+    const phrase = match[1];
     if (phrase) phrases.push(phrase);
   }
   return phrases;
+}
+
+const GENERIC_READY_ASSURANCE_PATTERN =
+  /\b(?:implementation|code|patch|change|solution|artifact|draft|work|implementa[cç][aã]o|c[oó]digo|mudan[cç]a|solu[cç][aã]o|artefato|rascunho|trabalho)\b[\s\S]{0,48}\b(?:is|are|looks?|appears?|seems?|est[aá]|parece)\b[\s\S]{0,32}\b(?:correct|complete|valid|sound|ready|good|fully\s+tested|works?|corret[oa]|complet[oa]|v[aá]lid[oa]|pront[oa]|bom|boa|totalmente\s+testad[oa]|funciona)\b|\b(?:no|without|sem)\s+(?:blocking\s+|bloqueadores?\s+)?(?:issues?|problems?|defects?|objections?|problemas?|defeitos?|obje[cç][oõ]es?)\b|\b(?:all|todos?)\s+(?:tests?|testes?)\s+(?:pass(?:ed)?|green|passaram|verdes?)\b/i;
+
+function evidenceSourceIsGenericAssurance(source: string): boolean {
+  return GENERIC_READY_ASSURANCE_PATTERN.test(source);
 }
 
 function evidenceSourceHasGroundedAnchor(
@@ -770,25 +920,27 @@ function evidenceSourceHasGroundedAnchor(
   trustedCorpus: string,
   attachmentRefs: ReadonlySet<string>,
 ): boolean {
+  // A verdict cannot prove itself merely because the caller's draft contains
+  // the same generic assurance. Concrete code/prose quotes remain eligible,
+  // while claims such as "implementation is correct and fully tested" must be
+  // tied to independent evidence (for example a path+digest+literal log).
+  if (evidenceSourceIsGenericAssurance(source)) return false;
   const normalizedSource = normalizeGroundingText(source);
   const normalizedCorpus = normalizeGroundingText(trustedCorpus);
   if (!normalizedSource || !normalizedCorpus) return false;
-  if (normalizedSource.length >= 12 && normalizedCorpus.includes(normalizedSource)) return true;
+  const literalSource = normalizeLiteralGroundingText(source).trim();
+  const literalCorpus = normalizeLiteralGroundingText(trustedCorpus);
+  if (literalSource.length >= 12 && literalCorpus.includes(literalSource)) return true;
 
   const quoted = quotedEvidencePhrases(source);
-  if (
-    quoted.some((phrase) => {
-      const normalized = normalizeGroundingText(phrase);
-      return normalized.length >= 12 && normalizedCorpus.includes(normalized);
-    })
-  ) {
+  if (quoted.some((phrase) => phraseMatchesCorpus(phrase, trustedCorpus))) {
     return true;
   }
 
   const urls = source.match(/https?:\/\/[^\s`'"<>]+/gi) ?? [];
   if (
     urls.length > 0 &&
-    urls.every((url) => normalizedCorpus.includes(normalizeGroundingText(url)))
+    urls.every((url) => literalCorpus.includes(normalizeLiteralGroundingText(url)))
   ) {
     return true;
   }
@@ -806,9 +958,7 @@ function evidenceSourceHasGroundedAnchor(
       line.replace(/^\s*(?:Attachment|Artifact quote|Source|Evidence)\s*:\s*/i, "").trim(),
     )
     .filter((line) => line.length >= 16 && !/^https?:\/\//i.test(line));
-  const hasVerbatimLine = candidateLines.some((line) =>
-    normalizedCorpus.includes(normalizeGroundingText(line)),
-  );
+  const hasVerbatimLine = candidateLines.some((line) => phraseMatchesCorpus(line, trustedCorpus));
   return referencesKnownAttachment && hasVerbatimLine;
 }
 
@@ -847,11 +997,9 @@ function evidenceSourceMatchesSingleAttachment(
     normalizedSource.includes(attachment.sha256.toLowerCase());
   if ((!pathMentioned && !labelMentioned) || !digestMentioned) return false;
 
-  const normalizedContent = normalizeGroundingText(attachment.content);
-  return quotedEvidencePhrases(source).some((phrase) => {
-    const normalizedPhrase = normalizeGroundingText(phrase);
-    return normalizedPhrase.length >= 12 && normalizedContent.includes(normalizedPhrase);
-  });
+  return quotedEvidencePhrases(source).some((phrase) =>
+    phraseMatchesAttachment(phrase, attachment.content),
+  );
 }
 
 function evidenceSourceClaimsAttachmentCustody(
@@ -1594,6 +1742,37 @@ function evidenceRefBasename(normalized: string): string | undefined {
   return parts.at(-1);
 }
 
+const EMBEDDED_EVIDENCE_FILE_REF_PATTERN =
+  /^[A-Za-z0-9][A-Za-z0-9._/\\-]*\.(?:output|log|txt|json|ndjson|md|diff|patch|csv)$/i;
+
+function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  const lines = evidenceText.replace(/\r\n?/g, "\n").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const begin = /^\s*BEGIN FILE\s+(.+?)\s*$/i.exec(lines[index] ?? "");
+    const rawRef = begin?.[1]?.trim();
+    if (!rawRef || !EMBEDDED_EVIDENCE_FILE_REF_PATTERN.test(rawRef)) continue;
+    const canonical = normalizeEvidenceRef(rawRef);
+    if (!canonical) continue;
+    let bodyHasContent = false;
+    let paired = false;
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const end = /^\s*END FILE\s+(.+?)\s*$/i.exec(lines[cursor] ?? "");
+      if (end) {
+        paired = normalizeEvidenceRef(end[1] ?? "") === canonical;
+        index = cursor;
+        break;
+      }
+      if ((lines[cursor] ?? "").trim()) bodyHasContent = true;
+    }
+    if (!paired || !bodyHasContent || seen.has(canonical)) continue;
+    seen.add(canonical);
+    refs.push(canonical);
+  }
+  return refs;
+}
+
 function findUnattachedEvidenceReferences(text: string, attachedEvidenceRefs: string[]): string[] {
   const attachedExact = new Set(
     attachedEvidenceRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
@@ -1697,10 +1876,12 @@ export function evidencePreflight(params: {
   const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
   const operatorGrounded =
     claimMatched && assertions.length > 0 && operatorUncorroboratedClaims.length === 0;
-  const unattachedEvidenceReferences = findUnattachedEvidenceReferences(
-    referenceCorpus,
-    params.attachedEvidenceRefs ?? [],
-  );
+  const unattachedEvidenceReferences = findUnattachedEvidenceReferences(referenceCorpus, [
+    ...(params.attachedEvidenceRefs ?? []),
+    ...extractEmbeddedEvidenceRefs(
+      `${params.structuredEvidence ?? ""}\n${params.attachedEvidenceText ?? ""}`,
+    ),
+  ]);
   if (unattachedEvidenceReferences.length > 0) {
     return {
       pass: false,
@@ -1801,7 +1982,8 @@ export type TruthfulnessIssueClass =
   | "unsupported_historical_claim"
   | "fabrication_pattern";
 
-const VERSION_TOKEN_PATTERN = /\bv?(\d+\.\d+\.\d+(?:[-._a-z0-9]+)?)\b/gi;
+const VERSION_TOKEN_SOURCE = String.raw`v?\d+\.\d+\.\d+(?:[-._a-z0-9]+)?`;
+const VERSION_TOKEN_PATTERN = new RegExp(`\\b${VERSION_TOKEN_SOURCE}\\b`, "gi");
 const ISO_DATE_TOKEN_PATTERN = /\b20\d{2}-\d{2}-\d{2}\b/g;
 const CURRENT_STATE_CLAIM_PATTERN =
   /\b(?:current|currently|actual|atual|runtime|production|prod|loaded|carregad[ao]s?|(?:is|are|est[aã]o?|esta|está)\s+(?:running|rodando))\b/i;
@@ -1820,8 +2002,13 @@ const MODEL_CLAIM_ALIASES: Record<PeerId, RegExp> = {
   grok: /\b(?:grok|xai|x\.ai)\b/i,
   perplexity: /\b(?:perplexity|sonar)\b/i,
 };
-const MODEL_TOKEN_PATTERN =
-  /\b(?:gpt|chatgpt|codex|claude|gemini|deepseek|grok|sonar|perplexity)(?:[-._][a-z0-9]+)+\b/gi;
+const MODEL_TOKEN_SOURCE =
+  "(?:gpt|chatgpt|codex|claude|gemini|deepseek|grok|sonar|perplexity)(?:[-._][a-z0-9]+)+";
+const MODEL_TOKEN_PATTERN = new RegExp(`\\b${MODEL_TOKEN_SOURCE}\\b`, "gi");
+const NON_CURRENT_MODEL_TOKEN_PATTERN = new RegExp(
+  `\\b(?:not|rather\\s+than|instead\\s+of|no\\s+longer|formerly|previously|from|nao|não|em\\s+vez\\s+de|anteriormente)\\s+(?:the\\s+|o\\s+|a\\s+)?(${MODEL_TOKEN_SOURCE})\\b`,
+  "gi",
+);
 const MODEL_TOKEN_PREFIXES: Record<PeerId, readonly string[]> = {
   codex: ["gpt-", "gpt.", "chatgpt-", "codex-"],
   claude: ["claude-"],
@@ -1845,13 +2032,24 @@ const OPERATIONAL_STATE_INSTRUCTION_PATTERN =
 const ATTRIBUTED_DOCUMENTATION_CLAIM_PATTERN =
   /\b(?:documentation|docs?|provider documentation|google|openai|anthropic|xai|deepseek|perplexity)\s+(?:documentation\s+)?(?:says?|states?|describes?|calls?|documents?|informa|afirma|declara|descreve)\s*:/i;
 const CROSS_REVIEW_RUNTIME_SCOPE_PATTERN =
-  /\b(?:cross[- ]review|server_info|runtime_capabilities|mcp\s+(?:runtime|server|host|version)|cross[- ]review\s+(?:runtime|server)|loaded\s+(?:cross[- ]review\s+)?runtime|local\s+(?:cross[- ]review\s+)?runtime|runtime\s+local)\b/i;
+  /\b(?:server_info|runtime_capabilities|mcp\s+(?:runtime|server|host|version)|cross[- ]review\s+(?:runtime|server|version|release)|cross[- ]review(?:['’]s)?\s+v?\d|loaded\s+(?:cross[- ]review\s+)?runtime|local\s+(?:cross[- ]review\s+)?runtime|runtime\s+local)\b/i;
+const HISTORICAL_CROSS_REVIEW_RUNTIME_SCOPE_PATTERN =
+  /\b(?:server_info|runtime_capabilities|mcp\s+(?:runtime|server|host|version)|cross[- ]review(?:['’]s)?(?:\s+(?:runtime|server|version|release)|\s+(?:was|estava)\s+(?:running|rodando|na\s+vers[aã]o)|\s+(?:era|was)\s+v?\d|\s+v?\d)|(?:vers[aã]o|release|runtime(?:\s+local)?)\s+(?:do|da)\s+cross[- ]review|loaded\s+(?:cross[- ]review\s+)?runtime|local\s+(?:cross[- ]review\s+)?runtime|runtime\s+local)\b/i;
+const CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN =
+  /\b(?:cross[- ]review\s+(?:runtime|server|uses?|peers?|models?)|server_info|runtime_capabilities|model[_ -]?pin|mcp\s+(?:runtime|server|host))\b/i;
+const HYPOTHETICAL_TRUTHFULNESS_PATTERN =
+  /^\s*(?:if|whether|suppose|assuming|hypothetically|would|could|should|se|caso|supondo|hipoteticamente)\b/i;
+const NON_CURRENT_RUNTIME_VALUE_PATTERN =
+  /\b(?:not|does\s+not\s+(?:run|use)|differs?\s+from|different\s+from|rather\s+than|instead\s+of|no\s+longer|formerly|previously|from|nao|não|difere\s+de|diferente\s+de|em\s+vez\s+de|anteriormente)\b[^;,.!?]{0,48}$/i;
+const OTHER_VERSION_SUBJECT_SUFFIX_PATTERN =
+  /\b(?:npm|node(?:\.js)?|typescript|sdk|api|application|app|product|package|[a-z0-9._-]+-app)\s+(?:runtime\s+)?(?:version\s*)?$/i;
 
 function isNonAssertiveTruthfulnessLine(line: string): boolean {
   return (
     OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(line) ||
     /\?\s*$/.test(line) ||
-    ATTRIBUTED_DOCUMENTATION_CLAIM_PATTERN.test(line)
+    ATTRIBUTED_DOCUMENTATION_CLAIM_PATTERN.test(line) ||
+    HYPOTHETICAL_TRUTHFULNESS_PATTERN.test(line)
   );
 }
 
@@ -1862,7 +2060,7 @@ function isAssertiveCurrentStateClaim(line: string): boolean {
 function historicalRuntimeClaimDetected(line: string): boolean {
   return (
     HISTORICAL_RUNTIME_TIMING_PATTERN.test(line) &&
-    CROSS_REVIEW_RUNTIME_SCOPE_PATTERN.test(line) &&
+    HISTORICAL_CROSS_REVIEW_RUNTIME_SCOPE_PATTERN.test(line) &&
     !isNonAssertiveTruthfulnessLine(line)
   );
 }
@@ -1977,6 +2175,77 @@ function uniqueMatches(pattern: RegExp, text: string): string[] {
   return [...new Set(matches.map((match) => match.trim()).filter(Boolean))];
 }
 
+function uniqueCapturedMatches(pattern: RegExp, text: string): string[] {
+  const stablePattern = new RegExp(pattern.source, pattern.flags);
+  return [
+    ...new Set(
+      [...text.matchAll(stablePattern)]
+        .map((match) => match[1]?.trim())
+        .filter((match): match is string => Boolean(match)),
+    ),
+  ];
+}
+
+function attributionSegment(line: string, valueIndex: number): { local: string; prior: string } {
+  const prefix = line.slice(0, valueIndex);
+  const boundaries = [...prefix.matchAll(/(?:[;,]|\b(?:and|e)\b)/gi)];
+  const boundary = boundaries.at(-1);
+  const start = boundary?.index == null ? 0 : boundary.index + boundary[0].length;
+  return { local: prefix.slice(start), prior: prefix.slice(0, start) };
+}
+
+function partitionCurrentRuntimeVersionClaims(line: string): {
+  asserted: string[];
+  non_current: string[];
+} {
+  const asserted: string[] = [];
+  const nonCurrent: string[] = [];
+  const versionPattern = new RegExp(VERSION_TOKEN_PATTERN.source, VERSION_TOKEN_PATTERN.flags);
+  for (const match of line.matchAll(versionPattern)) {
+    if (match.index == null) continue;
+    const value = normalizeVersionToken(match[0]);
+    const { local, prior } = attributionSegment(line, match.index);
+    if (OTHER_VERSION_SUBJECT_SUFFIX_PATTERN.test(local)) continue;
+    const localRuntimeScope =
+      CROSS_REVIEW_RUNTIME_SCOPE_PATTERN.test(local) ||
+      /\bruntime[_ -]?version\b/i.test(local) ||
+      /\bcross[- ]review(?:['’]s)?\s*$/i.test(local);
+    const inheritedRuntimeScope = CROSS_REVIEW_RUNTIME_SCOPE_PATTERN.test(prior);
+    const localRuntimeRelation =
+      /\b(?:runtime[_ -]?version|version|release|runs?|running|equals?|is|it|ele)\b|[:=]/i.test(
+        local,
+      );
+    if (!localRuntimeScope && !(inheritedRuntimeScope && localRuntimeRelation)) continue;
+    const after = line.slice(match.index + match[0].length, match.index + match[0].length + 48);
+    const denied =
+      NON_CURRENT_RUNTIME_VALUE_PATTERN.test(local) ||
+      /^\s+(?:is|was|esta|está|estava)?\s*(?:not|no\s+longer|nao|não)\s+(?:current|loaded|running|atual|carregad[oa]|rodando)/i.test(
+        after,
+      );
+    (denied ? nonCurrent : asserted).push(value);
+  }
+  return {
+    asserted: [...new Set(asserted)],
+    non_current: [...new Set(nonCurrent)],
+  };
+}
+
+function partitionCurrentModelClaims(
+  candidates: string[],
+  line: string,
+): {
+  asserted: string[];
+  non_current: string[];
+} {
+  const nonCurrent = new Set(
+    uniqueCapturedMatches(NON_CURRENT_MODEL_TOKEN_PATTERN, line).map(normalizeVersionToken),
+  );
+  return {
+    asserted: candidates.filter((candidate) => !nonCurrent.has(candidate)),
+    non_current: candidates.filter((candidate) => nonCurrent.has(candidate)),
+  };
+}
+
 function splitTruthfulnessLines(text: string): string[] {
   return text
     .replace(/\r\n?/g, "\n")
@@ -2047,7 +2316,14 @@ export function truthfulnessPreflight(params: {
       }
     }
 
-    if (isAssertiveCurrentStateClaim(line)) {
+    const historicalOnlyModelClaim =
+      /^\s*(?:previously|formerly|historically|before|anteriormente|antes)\b/i.test(line) &&
+      !isAssertiveCurrentStateClaim(line);
+    if (
+      CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN.test(line) &&
+      !historicalOnlyModelClaim &&
+      !isNonAssertiveTruthfulnessLine(line)
+    ) {
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(line)) continue;
@@ -2060,16 +2336,22 @@ export function truthfulnessPreflight(params: {
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
         const expected = normalizeVersionToken(expectedModel);
-        if (!candidates.includes(expected)) {
+        const claims = partitionCurrentModelClaims(candidates, line);
+        const assertedContradictions = claims.asserted.filter(
+          (candidate) => candidate !== expected,
+        );
+        const expectedExplicitlyDenied = claims.non_current.includes(expected);
+        if (assertedContradictions.length > 0 || expectedExplicitlyDenied) {
           addIssueClass(issueClasses, "runtime_contradiction");
           contradictions.push(
-            `current-state model claim ${candidates.join(", ")} for ${peer} contradicts model_pin ${expectedModel}`,
+            `current-state model claim asserted=${claims.asserted.join(", ") || "none"}; non_current=${claims.non_current.join(", ") || "none"} for ${peer} contradicts model_pin ${expectedModel}`,
           );
         }
       }
     }
 
-    const versions = uniqueMatches(VERSION_TOKEN_PATTERN, line);
+    const runtimeVersionClaims = partitionCurrentRuntimeVersionClaims(line);
+    const versions = [...runtimeVersionClaims.asserted, ...runtimeVersionClaims.non_current];
     const dates = uniqueMatches(ISO_DATE_TOKEN_PATTERN, line);
 
     if (!historicalClaim && !lineCurrentModelClaimMatched && operationalStateClaimDetected(line)) {
@@ -2099,20 +2381,24 @@ export function truthfulnessPreflight(params: {
     if (!versions.length && !dates.length) continue;
 
     if (
-      isAssertiveCurrentStateClaim(line) &&
       CROSS_REVIEW_RUNTIME_SCOPE_PATTERN.test(line) &&
-      !historicalClaim
+      !historicalClaim &&
+      !isNonAssertiveTruthfulnessLine(line)
     ) {
       currentStateClaimMatched = true;
       if (runtimeVersion) {
         const expected = normalizeVersionToken(runtimeVersion);
-        for (const version of versions) {
-          if (normalizeVersionToken(version) !== expected) {
-            addIssueClass(issueClasses, "runtime_contradiction");
-            contradictions.push(
-              `current-state version claim ${version} contradicts runtime_version ${runtimeVersion}`,
-            );
-          }
+        const assertedContradictions = runtimeVersionClaims.asserted.filter(
+          (version) => normalizeVersionToken(version) !== expected,
+        );
+        const expectedExplicitlyDenied = runtimeVersionClaims.non_current.some(
+          (version) => normalizeVersionToken(version) === expected,
+        );
+        if (assertedContradictions.length > 0 || expectedExplicitlyDenied) {
+          addIssueClass(issueClasses, "runtime_contradiction");
+          contradictions.push(
+            `current-state version claim asserted=${runtimeVersionClaims.asserted.join(", ") || "none"}; non_current=${runtimeVersionClaims.non_current.join(", ") || "none"} contradicts runtime_version ${runtimeVersion}`,
+          );
         }
       }
       if (releaseDate) {
@@ -2516,36 +2802,64 @@ function budgetExceeded(session: SessionMeta, limit?: number): boolean {
   return limit != null && total != null && total > limit;
 }
 
-// v2.4.0 / audit closure: estimatedPeerRoundCost now factors in retry
-// and fallback chains. Pre-v2.4.0 the estimate was strictly 1 call per
-// peer, so a round that triggered fallback chains or format recovery
-// could overshoot a budget that preflight had approved. We multiply
-// by `(retry.max_attempts + len(fallback_models))` so the budget gate
-// is conservative against the worst-case retry pattern. The factor is
-// capped at 4 to avoid pessimism in the common case where retries
-// rarely all fire.
-const RETRY_AMPLIFICATION_CAP = 4;
-
-function retryAmplificationFor(config: AppConfig, peer: PeerId): number {
-  const fallbackCount = (config.fallback_models[peer] ?? []).length;
-  const baseAttempts = Math.max(1, config.retry.max_attempts);
-  return Math.min(RETRY_AMPLIFICATION_CAP, baseAttempts + fallbackCount);
-}
-
-function estimatedPeerRoundCost(
+// Price the actual maximum call graph rather than a capped heuristic. A
+// top-level review may exhaust every primary and fallback retry envelope and
+// then run one format-recovery envelope on the successful (potentially most
+// expensive) model. The alternative moderation path can spend one rejected
+// primary attempt, a full compact-prompt retry envelope and a full format
+// recovery envelope. Explicit effective-model estimates are used by the
+// per-recovery gates themselves and therefore cover only that adapter's retry
+// envelope. Prompt blocking can occur after earlier retryable failures, so all
+// three moderation-path envelopes use max_attempts.
+export function estimatedPeerRoundCost(
   config: AppConfig,
   peers: PeerId[],
   prompt: string,
+  effectiveModels: Partial<Record<PeerId, string>> = {},
 ): number | undefined {
   let total = 0;
   for (const peer of peers) {
-    const rate = config.cost_rates[peer];
-    if (!rate) return undefined;
+    const explicitEffectiveModel = effectiveModels[peer];
+    const effectiveModel = explicitEffectiveModel ?? config.models[peer];
     const inputTokens = Math.ceil(prompt.length / 4);
-    const outputTokens = config.max_output_tokens;
-    const amplification = retryAmplificationFor(config, peer);
-    total += (inputTokens / 1_000_000) * rate.input_per_million * amplification;
-    total += (outputTokens / 1_000_000) * rate.output_per_million * amplification;
+    const outputTokens = maxOutputTokensForPeer(config, peer);
+    const maxAttempts = Math.max(1, config.retry.max_attempts);
+    const pricedModels = [effectiveModel];
+    if (explicitEffectiveModel == null) {
+      for (const fallbackModel of config.fallback_models[peer] ?? []) {
+        pricedModels.push(fallbackModel);
+      }
+    }
+    let chainCost = 0;
+    let highestEnvelope = 0;
+    let primaryEnvelope = 0;
+    for (const pricedModel of pricedModels) {
+      if (
+        peer === "perplexity" &&
+        pricedModel.trim().replace(/^models\//i, "") === "sonar-deep-research"
+      ) {
+        return undefined;
+      }
+      const estimate = estimateCost(
+        config,
+        peer,
+        { input_tokens: inputTokens, output_tokens: outputTokens },
+        pricedModel,
+      );
+      if (estimate.total_cost == null) return undefined;
+      if (pricedModel === effectiveModel && primaryEnvelope === 0) {
+        primaryEnvelope = estimate.total_cost;
+      }
+      highestEnvelope = Math.max(highestEnvelope, estimate.total_cost);
+      chainCost += estimate.total_cost * maxAttempts;
+    }
+    if (explicitEffectiveModel != null) {
+      total += chainCost;
+      continue;
+    }
+    const fallbackThenFormatCost = chainCost + highestEnvelope * maxAttempts;
+    const moderationThenFormatCost = primaryEnvelope * (3 * maxAttempts);
+    total += Math.max(fallbackThenFormatCost, moderationThenFormatCost);
   }
   return total;
 }
@@ -3097,8 +3411,8 @@ export class CrossReviewOrchestrator {
     const judgeCostLimit = sessionBudgetLimit(this.config, meta);
     const currentJudgeCost = meta.totals.cost.total_cost ?? 0;
     if (
-      judgeCostLimit != null &&
-      (consensusJudgeEstimate == null || currentJudgeCost + consensusJudgeEstimate > judgeCostLimit)
+      consensusJudgeEstimate == null ||
+      (judgeCostLimit != null && currentJudgeCost + consensusJudgeEstimate > judgeCostLimit)
     ) {
       this.emit({
         type: "session.evidence_judge_pass.budget_blocked",
@@ -3526,8 +3840,8 @@ export class CrossReviewOrchestrator {
     const judgeCostLimit = sessionBudgetLimit(this.config, meta);
     const currentJudgeCost = meta.totals.cost.total_cost ?? 0;
     if (
-      judgeCostLimit != null &&
-      (singleJudgeEstimate == null || currentJudgeCost + singleJudgeEstimate > judgeCostLimit)
+      singleJudgeEstimate == null ||
+      (judgeCostLimit != null && currentJudgeCost + singleJudgeEstimate > judgeCostLimit)
     ) {
       this.emit({
         type: "session.evidence_judge_pass.budget_blocked",
@@ -3942,7 +4256,7 @@ export class CrossReviewOrchestrator {
       const savings = estimateCacheSavings(
         peerResult.peer,
         usage,
-        this.config.cost_rates[peerResult.peer],
+        resolveCostRate(this.config, peerResult.peer, peerResult.model),
       );
       this.emit({
         type: "provider.cache.usage",
@@ -4099,7 +4413,9 @@ export class CrossReviewOrchestrator {
             // emitted a cost alert; fallback + moderation-safe retry were
             // silent. Codex measured the gap empirically (only 2 of 11
             // observed paid recoveries surfaced an alert).
-            const fallbackEstimate = estimatedPeerRoundCost(this.config, [fallback.id], prompt);
+            const fallbackEstimate = estimatedPeerRoundCost(this.config, [fallback.id], prompt, {
+              [fallback.id]: fallback.model,
+            });
             this.emit({
               type: "peer.fallback.cost_alert",
               session_id: context.session_id,
@@ -4131,11 +4447,14 @@ export class CrossReviewOrchestrator {
             const fallbackCostBeforeDispatch =
               priorRoundsCostForFallback + (failure.cost?.total_cost ?? 0);
             if (
-              fallbackEstimate != null &&
-              fallbackSessionLimit != null &&
-              fallbackCostBeforeDispatch + fallbackEstimate > fallbackSessionLimit
+              fallbackEstimate == null ||
+              (fallbackSessionLimit != null &&
+                fallbackCostBeforeDispatch + fallbackEstimate > fallbackSessionLimit)
             ) {
-              const message = `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${fallbackCostBeforeDispatch.toFixed(6)} to $${(fallbackCostBeforeDispatch + fallbackEstimate).toFixed(6)}, exceeding configured limit $${fallbackSessionLimit.toFixed(6)}.`;
+              const message =
+                fallbackEstimate == null
+                  ? `Fallback refused: ${fallback.model} for ${adapter.id} has no complete effective-model rate card.`
+                  : `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${fallbackCostBeforeDispatch.toFixed(6)} to $${(fallbackCostBeforeDispatch + fallbackEstimate).toFixed(6)}, exceeding configured limit $${fallbackSessionLimit?.toFixed(6)}.`;
               this.emit({
                 type: "peer.fallback.budget_blocked",
                 session_id: context.session_id,
@@ -4147,7 +4466,7 @@ export class CrossReviewOrchestrator {
                   to_model: fallback.model,
                   estimated_extra_cost_usd: fallbackEstimate,
                   current_session_cost_usd: fallbackCostBeforeDispatch,
-                  session_limit_usd: fallbackSessionLimit,
+                  session_limit_usd: fallbackSessionLimit ?? null,
                 },
               });
               return {
@@ -4240,7 +4559,7 @@ export class CrossReviewOrchestrator {
         round: context.round,
         peer: adapter.id,
         message:
-          "Provider rejected the prompt; retrying once with a compact sanitized review prompt.",
+          "Provider rejected the prompt; retrying once with a compact context-reduced review prompt.",
         data: { failure_class: failure.failure_class },
       });
       // v2.5.0 fix (Codex audit P3, 2026-05-03): mirror the format_recovery
@@ -4250,13 +4569,14 @@ export class CrossReviewOrchestrator {
         this.config,
         [adapter.id],
         moderationSafePrompt,
+        { [adapter.id]: adapter.model },
       );
       this.emit({
         type: "peer.moderation_recovery.cost_alert",
         session_id: context.session_id,
         round: context.round,
         peer: adapter.id,
-        message: "Moderation-safe retry will make one additional provider call.",
+        message: "Context-reduced prompt retry will make one additional provider call.",
         data: { estimated_extra_cost_usd: moderationRecoveryEstimate },
       });
       // v2.6.1 (Gemini audit replication, 2026-05-03): hard budget gate
@@ -4270,11 +4590,15 @@ export class CrossReviewOrchestrator {
       const moderationCostBeforeDispatch =
         priorRoundsCostForModeration + (failure.cost?.total_cost ?? 0);
       if (
-        moderationRecoveryEstimate != null &&
-        moderationRecoverySessionLimit != null &&
-        moderationCostBeforeDispatch + moderationRecoveryEstimate > moderationRecoverySessionLimit
+        moderationRecoveryEstimate == null ||
+        (moderationRecoverySessionLimit != null &&
+          moderationCostBeforeDispatch + moderationRecoveryEstimate >
+            moderationRecoverySessionLimit)
       ) {
-        const message = `Moderation-safe retry refused: would push session cost from $${moderationCostBeforeDispatch.toFixed(6)} to $${(moderationCostBeforeDispatch + moderationRecoveryEstimate).toFixed(6)}, exceeding configured limit $${moderationRecoverySessionLimit.toFixed(6)}.`;
+        const message =
+          moderationRecoveryEstimate == null
+            ? `Moderation-safe retry refused: ${adapter.model} has no complete effective-model rate card.`
+            : `Moderation-safe retry refused: would push session cost from $${moderationCostBeforeDispatch.toFixed(6)} to $${(moderationCostBeforeDispatch + moderationRecoveryEstimate).toFixed(6)}, exceeding configured limit $${moderationRecoverySessionLimit?.toFixed(6)}.`;
         this.emit({
           type: "peer.moderation_recovery.budget_blocked",
           session_id: context.session_id,
@@ -4284,7 +4608,7 @@ export class CrossReviewOrchestrator {
           data: {
             estimated_extra_cost_usd: moderationRecoveryEstimate,
             current_session_cost_usd: moderationCostBeforeDispatch,
-            session_limit_usd: moderationRecoverySessionLimit,
+            session_limit_usd: moderationRecoverySessionLimit ?? null,
           },
         });
         return {
@@ -4327,7 +4651,7 @@ export class CrossReviewOrchestrator {
               retryFailure.failure_class === "prompt_flagged_by_moderation"
                 ? "prompt_flagged_by_moderation"
                 : retryFailure.failure_class,
-            message: `Prompt was rejected and the compact sanitized retry also failed: ${retryFailure.message}`,
+            message: `Prompt was rejected and the compact context-reduced retry also failed: ${retryFailure.message}`,
             recovery_hint: "reformulate_and_retry",
             reformulation_advice:
               "Compact the prompt, summarize verbose peer content, avoid quoting flagged text, and retry with the same technical intent.",
@@ -4345,13 +4669,15 @@ export class CrossReviewOrchestrator {
   ): Promise<GenerationResult> {
     const session = this.store.read(context.session_id);
     const limit = sessionBudgetLimit(this.config, session);
-    const estimate = estimatedPeerRoundCost(this.config, [adapter.id], prompt);
+    const estimate = estimatedPeerRoundCost(this.config, [adapter.id], prompt, {
+      [adapter.id]: adapter.model,
+    });
     const currentCost = session.totals.cost.total_cost ?? 0;
-    if (limit != null && (estimate == null || currentCost + estimate > limit)) {
+    if (estimate == null || (limit != null && currentCost + estimate > limit)) {
       const message =
         estimate == null
-          ? `generation_budget_preflight: generation by ${adapter.id} cannot be estimated under the persisted session ceiling $${limit.toFixed(6)}.`
-          : `generation_budget_preflight: generation by ${adapter.id} would push session cost from $${currentCost.toFixed(6)} to $${(currentCost + estimate).toFixed(6)}, exceeding persisted ceiling $${limit.toFixed(6)}.`;
+          ? `generation_budget_preflight: generation by ${adapter.id} on ${adapter.model} has no complete effective-model rate card.`
+          : `generation_budget_preflight: generation by ${adapter.id} would push session cost from $${currentCost.toFixed(6)} to $${(currentCost + estimate).toFixed(6)}, exceeding persisted ceiling $${limit?.toFixed(6)}.`;
       const failure = budgetPreflightFailure(adapter.id, adapter.provider, adapter.model, message);
       await this.store.recordPeerFailureAccounting(
         context.session_id,
@@ -4368,7 +4694,7 @@ export class CrossReviewOrchestrator {
         data: {
           current_session_cost_usd: currentCost,
           estimated_extra_cost_usd: estimate ?? null,
-          session_limit_usd: limit,
+          session_limit_usd: limit ?? null,
         },
       });
       await this.store.finalize(context.session_id, "max-rounds", "generation_budget_preflight");
@@ -4804,7 +5130,7 @@ export class CrossReviewOrchestrator {
     const projectedSessionCost =
       preflightEstimate == null ? undefined : currentSessionCost + preflightEstimate;
     const message =
-      preflightEstimate == null && (roundPreflightLimit != null || sessionPreflightLimit != null)
+      preflightEstimate == null
         ? "Budget preflight cannot estimate this round because one or more peers have no configured rate card."
         : roundPreflightLimit != null &&
             preflightEstimate != null &&
@@ -5042,6 +5368,7 @@ export class CrossReviewOrchestrator {
               this.config,
               [adapter.id],
               recoveryPrompt,
+              { [adapter.id]: adapter.model },
             );
             this.emit({
               type: "peer.format_recovery.cost_alert",
@@ -5072,11 +5399,14 @@ export class CrossReviewOrchestrator {
             const currentSessionCostNow =
               priorRoundsCost + settledInitialCost + recoveryCostIncurred;
             if (
-              recoveryEstimate != null &&
-              sessionCostLimit != null &&
-              currentSessionCostNow + recoveryEstimate > sessionCostLimit
+              recoveryEstimate == null ||
+              (sessionCostLimit != null &&
+                currentSessionCostNow + recoveryEstimate > sessionCostLimit)
             ) {
-              const message = `Recovery refused: ${decisionRetry ? "decision retry" : "format recovery"} would push session cost from $${currentSessionCostNow.toFixed(6)} to $${(currentSessionCostNow + recoveryEstimate).toFixed(6)}, exceeding configured limit $${sessionCostLimit.toFixed(6)}.`;
+              const message =
+                recoveryEstimate == null
+                  ? `Recovery refused: ${adapter.model} has no complete effective-model rate card.`
+                  : `Recovery refused: ${decisionRetry ? "decision retry" : "format recovery"} would push session cost from $${currentSessionCostNow.toFixed(6)} to $${(currentSessionCostNow + recoveryEstimate).toFixed(6)}, exceeding configured limit $${sessionCostLimit?.toFixed(6)}.`;
               const failure: PeerFailure = {
                 peer: peerResult.peer,
                 provider: peerResult.provider,
@@ -5098,7 +5428,7 @@ export class CrossReviewOrchestrator {
                 data: {
                   estimated_extra_cost_usd: recoveryEstimate,
                   current_session_cost_usd: currentSessionCostNow,
-                  session_limit_usd: sessionCostLimit,
+                  session_limit_usd: sessionCostLimit ?? null,
                 },
               });
               peers.push(peerResult);

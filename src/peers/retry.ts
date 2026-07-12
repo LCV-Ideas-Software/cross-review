@@ -1,4 +1,71 @@
-import type { AppConfig, PeerFailure } from "../core/types.js";
+import { mergeCost, mergeUsage } from "../core/cost.js";
+import type { AppConfig, CostEstimate, PeerFailure, TokenUsage } from "../core/types.js";
+
+type RetryBilling = {
+  usage?: TokenUsage | undefined;
+  cost?: CostEstimate | undefined;
+  accountedAttempts: number;
+};
+
+function retryBillingFromError(error: unknown): RetryBilling | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as {
+    retry_billing_requires_merge?: unknown;
+    usage?: unknown;
+    cost?: unknown;
+    accounted_attempts?: unknown;
+  };
+  if (record.retry_billing_requires_merge !== true) return undefined;
+  const usage =
+    record.usage && typeof record.usage === "object" ? (record.usage as TokenUsage) : undefined;
+  const cost =
+    record.cost && typeof record.cost === "object" ? (record.cost as CostEstimate) : undefined;
+  const accountedAttempts =
+    typeof record.accounted_attempts === "number" &&
+    Number.isInteger(record.accounted_attempts) &&
+    record.accounted_attempts > 0
+      ? record.accounted_attempts
+      : 0;
+  return { usage, cost, accountedAttempts };
+}
+
+function mergeRetryBillingIntoResult<T>(result: T, prior: readonly RetryBilling[]): T {
+  if (prior.length === 0 || !result || typeof result !== "object") return result;
+  const record = result as T & {
+    usage?: TokenUsage | undefined;
+    cost?: CostEstimate | undefined;
+    unpriced_attempts?: number | undefined;
+  };
+  const usageItems = [...prior.map((item) => item.usage), record.usage];
+  if (usageItems.some(Boolean)) record.usage = mergeUsage(usageItems);
+  const costItems = [...prior.map((item) => item.cost), record.cost];
+  if (costItems.some(Boolean)) record.cost = mergeCost(costItems);
+  const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
+  const unpriced = Math.max(0, (record.unpriced_attempts ?? 0) - priorAccounted);
+  if (unpriced > 0) record.unpriced_attempts = unpriced;
+  else delete record.unpriced_attempts;
+  return result;
+}
+
+function mergeRetryBillingIntoFailure(
+  failure: PeerFailure,
+  prior: readonly RetryBilling[],
+): PeerFailure {
+  if (prior.length === 0) return failure;
+  const usageItems = [...prior.map((item) => item.usage), failure.usage];
+  const costItems = [...prior.map((item) => item.cost), failure.cost];
+  const usage = usageItems.some(Boolean) ? mergeUsage(usageItems) : undefined;
+  const cost = costItems.some(Boolean) ? mergeCost(costItems) : undefined;
+  const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
+  const unpriced = Math.max(0, (failure.unpriced_attempts ?? 0) - priorAccounted);
+  return {
+    ...failure,
+    ...(usage ? { usage } : {}),
+    ...(cost ? { cost } : {}),
+    billing_status: unpriced > 0 ? "unknown" : usage || cost ? "reported" : failure.billing_status,
+    ...(unpriced > 0 ? { unpriced_attempts: unpriced } : { unpriced_attempts: undefined }),
+  };
+}
 
 function cancellationError(signal: AbortSignal): Error {
   const detail =
@@ -90,6 +157,14 @@ function attachSettledBilling(error: Error, result: unknown, attempt: number): E
   return error;
 }
 
+function hasSettledProviderResult(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { provider_result_settled?: unknown }).provider_result_settled === true
+  );
+}
+
 export async function withRetry<T>(
   config: AppConfig,
   run: (attempt: number) => Promise<T>,
@@ -98,12 +173,14 @@ export async function withRetry<T>(
 ): Promise<T> {
   const started = Date.now();
   let last: PeerFailure | null = null;
+  const priorRetryBilling: RetryBilling[] = [];
   for (let attempt = 1; attempt <= config.retry.max_attempts; attempt++) {
     if (options.signal?.aborted) {
       const error = cancellationError(options.signal);
       const failure = onFailure(error, attempt - 1, started);
+      const billedFailure = mergeRetryBillingIntoFailure(failure, priorRetryBilling);
       throw attachPeerFailure(error, {
-        ...failure,
+        ...billedFailure,
         failure_class: "cancelled",
         retryable: false,
         attempts: attempt - 1,
@@ -111,29 +188,40 @@ export async function withRetry<T>(
     }
     try {
       const result = await run(attempt);
+      const resultWithRetryBilling = mergeRetryBillingIntoResult(result, priorRetryBilling);
       if (options.signal?.aborted) {
-        throw attachSettledBilling(cancellationError(options.signal), result, attempt);
+        throw attachSettledBilling(
+          cancellationError(options.signal),
+          resultWithRetryBilling,
+          attempt,
+        );
       }
-      return result;
+      return resultWithRetryBilling;
     } catch (error) {
       last = onFailure(error, attempt, started);
       if (options.signal?.aborted) {
+        const billedFailure = hasSettledProviderResult(error)
+          ? last
+          : mergeRetryBillingIntoFailure(last, priorRetryBilling);
         throw attachPeerFailure(error, {
-          ...last,
+          ...billedFailure,
           failure_class: "cancelled",
           retryable: false,
           attempts: attempt,
         });
       }
-      if (!last.retryable || attempt >= config.retry.max_attempts)
-        throw attachPeerFailure(error, last);
+      if (!last.retryable || attempt >= config.retry.max_attempts) {
+        throw attachPeerFailure(error, mergeRetryBillingIntoFailure(last, priorRetryBilling));
+      }
+      const currentRetryBilling = retryBillingFromError(error);
+      if (currentRetryBilling) priorRetryBilling.push(currentRetryBilling);
       const wait = last.retry_after_ms ?? backoffWithJitter(attempt, config);
       try {
         await delay(wait, options.signal);
       } catch (delayError) {
         const failure = onFailure(delayError, attempt, started);
         throw attachPeerFailure(delayError, {
-          ...failure,
+          ...mergeRetryBillingIntoFailure(failure, priorRetryBilling),
           failure_class: "cancelled",
           retryable: false,
           attempts: attempt,

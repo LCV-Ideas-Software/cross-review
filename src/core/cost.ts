@@ -11,11 +11,82 @@
 // vars are absent, selectRate() gracefully degrades to the input rate
 // (zero savings) instead of synthesizing prices from a static file.
 
-import type { AppConfig, CostEstimate, PeerId, TokenUsage } from "./types.js";
+import type {
+  AppConfig,
+  CostEstimate,
+  CostRateConfig,
+  ModelCostRateConfig,
+  PeerId,
+  TokenUsage,
+} from "./types.js";
 
 // v2.26.0: pricing categories and rate selection.
 type CostRate = NonNullable<AppConfig["cost_rates"]["codex"]>;
 type RateCategory = "input" | "output" | "cache_read" | "cache_write";
+
+function normalizeModelId(model: string): string {
+  return model.trim().replace(/^models\//i, "");
+}
+
+function completeRate(card: ModelCostRateConfig | undefined): CostRateConfig | undefined {
+  if (
+    !card ||
+    typeof card.input_per_million !== "number" ||
+    typeof card.output_per_million !== "number"
+  ) {
+    return undefined;
+  }
+  return card as CostRateConfig;
+}
+
+/**
+ * Resolve pricing against the model that will actually be sent on the wire.
+ * The active pin keeps the generic env/registry card as highest precedence.
+ * A different model (for example an explicit fallback adapter) must have its
+ * own retained central-config card; borrowing the primary model's rates would
+ * make a budget preflight look authoritative while pricing the wrong product.
+ */
+export function resolveCostRate(
+  config: AppConfig,
+  peer: PeerId,
+  effectiveModel?: string,
+): CostRateConfig | undefined {
+  const configuredModel = config.models?.[peer];
+  const primaryRate = config.cost_rates?.[peer];
+  if (!effectiveModel && !configuredModel) return primaryRate;
+  const effective = normalizeModelId(effectiveModel ?? configuredModel ?? "");
+  const configured = normalizeModelId(configuredModel ?? "");
+  if (effective === configured && primaryRate) return primaryRate;
+
+  const cards = config.model_cost_rates?.[peer];
+  if (cards) {
+    const exact = Object.entries(cards).find(
+      ([model]) => normalizeModelId(model) === effective,
+    )?.[1];
+    const exactRate = completeRate(exact);
+    if (exactRate) return exactRate;
+    if (exact) return undefined;
+
+    // Perplexity's documented Sonar ids are distinct billable products:
+    // `sonar` is never a family card for `sonar-*`.
+    if (peer !== "perplexity") {
+      const familyMatches = Object.entries(cards)
+        .filter(([family]) => effective.startsWith(`${normalizeModelId(family)}-`))
+        .sort(([left], [right]) => normalizeModelId(right).length - normalizeModelId(left).length);
+      if (familyMatches.length > 0) return completeRate(familyMatches[0]?.[1]);
+    }
+  }
+
+  // No explicit override: a constructed config that only retained a model
+  // card may still price its primary pin. Effective overrides fail closed.
+  if (effective === configured) {
+    const primaryCard = cards
+      ? Object.entries(cards).find(([model]) => normalizeModelId(model) === configured)?.[1]
+      : undefined;
+    return completeRate(primaryCard);
+  }
+  return undefined;
+}
 
 /**
  * v2.26.0: select the right per-million USD rate for a given (category,
@@ -113,6 +184,10 @@ export function selectRate(
 
 export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
   const total: TokenUsage = {};
+  let citationTokensSeen = false;
+  let searchQueriesSeen = false;
+  let searchPerformedSeen = false;
+  let providerTotalSeen = false;
   for (const item of items) {
     if (!item) continue;
     total.input_tokens = (total.input_tokens ?? 0) + (item.input_tokens ?? 0);
@@ -125,12 +200,38 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
     // cache scopes or modes).
     total.cache_read_tokens = (total.cache_read_tokens ?? 0) + (item.cache_read_tokens ?? 0);
     total.cache_write_tokens = (total.cache_write_tokens ?? 0) + (item.cache_write_tokens ?? 0);
+    if (item.citation_tokens !== undefined) {
+      total.citation_tokens = (total.citation_tokens ?? 0) + item.citation_tokens;
+      citationTokensSeen = true;
+    }
+    if (item.num_search_queries !== undefined) {
+      total.num_search_queries = (total.num_search_queries ?? 0) + item.num_search_queries;
+      searchQueriesSeen = true;
+    }
+    if (item.search_performed !== undefined) {
+      total.search_performed = (total.search_performed ?? false) || item.search_performed;
+      searchPerformedSeen = true;
+    }
+    if (item.provider_reported_total_cost_usd !== undefined) {
+      total.provider_reported_total_cost_usd =
+        (total.provider_reported_total_cost_usd ?? 0) + item.provider_reported_total_cost_usd;
+      providerTotalSeen = true;
+    }
   }
+  if (!citationTokensSeen) delete total.citation_tokens;
+  if (!searchQueriesSeen) delete total.num_search_queries;
+  if (!searchPerformedSeen) delete total.search_performed;
+  if (!providerTotalSeen) delete total.provider_reported_total_cost_usd;
   return total;
 }
 
-export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage): CostEstimate {
-  const rate = config.cost_rates[peer];
+export function estimateCost(
+  config: AppConfig,
+  peer: PeerId,
+  usage?: TokenUsage,
+  effectiveModel?: string,
+): CostEstimate {
+  const rate = resolveCostRate(config, peer, effectiveModel);
   if (!usage || !rate) {
     return { currency: "USD", estimated: false, source: "unknown-rate" };
   }
@@ -177,7 +278,9 @@ export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage
   // v4.5.0 docs correction: Perplexity charges the context-tier request
   // fee even when search_performed=false. Keep that usage flag as
   // observability only; never use it to suppress billed cost.
-  if (peer === "perplexity") {
+  const normalizedEffectiveModel = normalizeModelId(effectiveModel ?? config.models?.[peer] ?? "");
+  const perplexityRequestFeeModels = new Set(["sonar", "sonar-pro", "sonar-reasoning-pro"]);
+  if (peer === "perplexity" && perplexityRequestFeeModels.has(normalizedEffectiveModel)) {
     const size = config.perplexity?.search_context_size ?? "low";
     const requestFeePer1000 =
       size === "high"
@@ -189,16 +292,14 @@ export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage
       requestCost = requestFeePer1000 / 1000;
     }
   }
-  if (peer === "perplexity") {
+  if (peer === "perplexity" && normalizedEffectiveModel === "sonar-deep-research") {
     const citationTokens = usage.citation_tokens ?? 0;
     if (citationTokens > 0 && typeof rate.citation_tokens_per_million === "number") {
       citationTokensCost = (citationTokens / 1_000_000) * rate.citation_tokens_per_million;
     }
-    // sonar-deep-research bills reasoning_tokens at a separate rate
-    // from output. Other Perplexity models fold reasoning into output
-    // (the field is undefined). usage.reasoning_tokens is reused —
-    // there's no separate field — and only the presence of the rate
-    // config decides whether to bill separately.
+    // sonar-deep-research bills reasoning_tokens at a separate rate from
+    // output. Model identity is an explicit gate: stale or overly broad rate
+    // cards must never make Reasoning Pro inherit Deep Research dimensions.
     const reasoningTokens = usage.reasoning_tokens ?? 0;
     if (
       reasoningTokens > 0 &&
@@ -260,6 +361,10 @@ export function estimateCost(config: AppConfig, peer: PeerId, usage?: TokenUsage
 export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate {
   let known = false;
   let total = 0;
+  let input = 0;
+  let output = 0;
+  let inputKnown = false;
+  let outputKnown = false;
   let cacheRead = 0;
   let cacheWrite = 0;
   let savings = 0;
@@ -273,12 +378,21 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   let citationTokens = 0;
   let deepResearchReasoningTokens = 0;
   let searchQueries = 0;
+  const tiers = new Set<NonNullable<CostEstimate["tier_used"]>>();
   for (const cost of costs) {
     if (cost?.total_cost == null) {
       // continue to inspect savings even when total is missing
     } else {
       known = true;
       total += cost.total_cost;
+    }
+    if (cost?.input_cost != null) {
+      input += cost.input_cost;
+      inputKnown = true;
+    }
+    if (cost?.output_cost != null) {
+      output += cost.output_cost;
+      outputKnown = true;
     }
     if (cost?.cache_read_cost != null) cacheRead += cost.cache_read_cost;
     if (cost?.cache_write_cost != null) cacheWrite += cost.cache_write_cost;
@@ -295,6 +409,7 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
       deepResearchReasoningTokens += cost.deep_research_reasoning_tokens_cost;
     }
     if (cost?.search_queries_cost != null) searchQueries += cost.search_queries_cost;
+    if (cost?.tier_used) tiers.add(cost.tier_used);
   }
   if (!known) {
     return { currency: "USD", estimated: false, source: "unknown-rate" };
@@ -305,6 +420,8 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
     estimated: true,
     source: "configured-rate",
   };
+  if (inputKnown) merged.input_cost = input;
+  if (outputKnown) merged.output_cost = output;
   if (cacheRead > 0) merged.cache_read_cost = cacheRead;
   if (cacheWrite > 0) merged.cache_write_cost = cacheWrite;
   if (savingsKnown && savings > 0) merged.cache_savings_usd = savings;
@@ -315,6 +432,7 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
     merged.deep_research_reasoning_tokens_cost = deepResearchReasoningTokens;
   }
   if (searchQueries > 0) merged.search_queries_cost = searchQueries;
+  if (tiers.size === 1) merged.tier_used = [...tiers][0];
   return merged;
 }
 

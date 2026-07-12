@@ -11,7 +11,9 @@ This API-only `cross-review` implementation is intentionally independent from th
    model APIs where available; it never auto-selects an off-policy model.
 5. Session store: writes durable JSON and Markdown artifacts under `<data_dir>/sessions`.
 6. Session events: writes durable `events.ndjson` streams per session for long-running work.
-7. Token streaming: writes count-based `peer.token.delta` and `peer.token.completed` events when provider streaming is enabled.
+7. Token streaming: writes attempt-scoped `peer.token.delta`,
+   `peer.token.discarded` and `peer.token.completed` events when provider
+   streaming is enabled.
 8. Reports: writes `session-report.md` with convergence, failures, decision quality, peer-vs-generation cost split, evidence checklist status and recent events.
 9. Observability: writes one NDJSON log per process under `<data_dir>/logs`.
 10. Dashboard: local read-only HTTP UI for sessions, events, reports, probes and metrics.
@@ -57,6 +59,14 @@ When token streaming is active, adapters use provider-native streaming APIs:
 The streaming path is not a separate fake progress channel. The same streamed
 text is accumulated and then parsed into the existing review or generation
 result.
+
+Every delta is marked `provisional: true` and carries the provider-attempt
+number. Consumers commit text only after the matching
+`peer.token.completed` (`committed: true`). Any truncation, filtered terminal,
+network failure, cancellation or retry cancels the buffer timer, drops pending
+text and emits `peer.token.discarded` for that attempt before another attempt
+can become authoritative. This preserves live observability without letting a
+stale partial READY prefix masquerade as the final verdict.
 
 ## Terminal Events and Audit Reports
 
@@ -247,7 +257,8 @@ The peer adapters use the strongest official reasoning controls available for ea
 - Anthropic runs canonical `claude-fable-5`. The request omits the explicit
   `thinking` field because adaptive thinking is automatic and controls depth
   with `output_config.effort`. Fable has 30-day/no-ZDR retention semantics.
-- Gemini enables thinking configuration for the pinned Gemini 3.x model.
+- Gemini maps the shared configured effort to the pinned Gemini 3.x model's
+  native `LOW`, `MEDIUM`, or `HIGH` thinking level.
 - DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows
   the official multi-round guidance by resending summarized context in each
   stateless request.
@@ -260,9 +271,70 @@ The peer adapters use the strongest official reasoning controls available for ea
 The internal `ReasoningEffort` scale therefore includes the compatibility
 alias `ultra`, but adapters own the provider-specific normalization boundary:
 OpenAI GPT-5.6, Anthropic and DeepSeek use `max`; Grok 4.5 and Perplexity use
-`high`; Gemini keeps its native `ThinkingLevel.HIGH` control and receives no
-shared effort string. Older explicit OpenAI model overrides use their own
+`high`; Gemini maps the shared setting to its native `ThinkingLevel` enum and
+receives no shared effort string. Older explicit OpenAI model overrides use their own
 family-specific effort enum instead of the GPT-5.6 enum.
+
+## Provider Structured-Output Boundaries
+
+The complete review-result contract remains local: Zod, normalization and the
+prompt enforce all enum, item-count and length limits. Adapters transmit only
+the JSON Schema subset documented by each provider:
+
+- OpenAI receives the complete strict schema.
+- Anthropic receives the official SDK helper's lowered schema; unsupported
+  dimensional constraints are enforced locally, and documented enum casing
+  variation is canonicalized only when it is an exact case-insensitive match.
+- Gemini retains documented `maxItems` constraints but omits undocumented
+  `maxLength` keywords.
+- DeepSeek uses documented JSON Object mode plus local validation; it does not
+  receive a JSON Schema wrapper.
+- xAI retains documented limits, with evidence-item `maxLength` constrained to
+  the guaranteed 2,048-character range, and omits undocumented
+  `text.verbosity`.
+- Perplexity receives the minimal documented Sonar JSON Schema wrapper without
+  undocumented dimensional constraints or OpenAI-only streaming options.
+
+One canonical schema is therefore never assumed to be a universal wire
+contract.
+
+## Output-Limit Recovery
+
+Terminal output remains fail-closed. The runtime performs exactly one
+controlled same-model recovery for OpenAI `response.incomplete` with
+`incomplete_details.reason=max_output_tokens` and Gemini `MAX_TOKENS` when the
+original effort can be reduced. Claude Fable 5 `max_tokens` receives the same
+single recovery only from `high`/`xhigh`/`max`; `low` and `medium` do not retry,
+because medium would increase or repeat effort. The second request keeps the
+same prompt and output ceiling, records discarded partial streaming output,
+and preserves per-attempt usage and cost. A second truncation ends the call.
+DeepSeek `length`, generic xAI incomplete responses and Perplexity finish
+reasons remain non-retryable because their public contracts do not distinguish
+every cause safely.
+
+`content_filter`, Gemini candidate `SAFETY`, refusals and other filtered output
+terminals never enter generic retry, fallback or moderation-safe prompt
+recovery. Only an explicit provider rejection of the input prompt, such as
+Gemini `promptFeedback.blockReason`, can use the separate compact-input
+recovery path, and its extra call remains subject to budget preflight.
+
+Rejected terminals are still billable evidence. Adapters attach any
+provider-reported usage and effective-model cost before throwing; the retry
+layer merges billed failed attempts into a later success or final failure.
+DeepSeek streaming defers rejection until it has drained the documented final
+`choices: []` usage chunk. Responses API `status=failed` keeps
+`response.error`; SSE `type=error` reads official top-level fields; and output
+refusals (`output[].content[].type=refusal` or
+`response.refusal.delta/done`) terminate without format recovery.
+
+Truthfulness attribution is syntactic, not line-wide. “Cross-review runtime”,
+“cross-review server”, `server_info`, `runtime_capabilities`, `model_pin` and
+MCP runtime/server subjects belong to the local runtime namespace. A phrase
+such as “cross-review submission/session” does not transfer an application's
+model, version or date into that namespace. Separately, a generic assurance
+copied from the artifact cannot prove its own READY verdict; concrete document
+or code literals remain reviewable, while correctness/test claims require
+independent value-corresponding evidence.
 
 Raw chain-of-thought is not persisted. Session continuity is represented through prompts, structured peer decisions, summaries and artifacts.
 

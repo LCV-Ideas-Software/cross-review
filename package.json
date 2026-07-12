@@ -1,8 +1,9 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.5.5",
+  "version": "4.5.6",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
+  "packageManager": "npm@12.0.1",
   "main": "dist/src/mcp/server.js",
   "bin": {
     "cross-review": "dist/src/mcp/server.js",
@@ -31,6 +32,8 @@
     "eval:fixtures": "tsx scripts/eval-fixtures.ts",
     "provider-refresh-smoke": "tsx scripts/provider-refresh-smoke.ts",
     "provider-terminal-smoke": "tsx scripts/provider-terminal-smoke.ts",
+    "npm-v12-release-security-regression": "node scripts/npm-v12-release-security-regression.mjs",
+    "v4.5.6-runtime-contract-regression": "tsx scripts/v4.5.6-runtime-contract-regression.ts",
     "status-citation-contract-smoke": "tsx scripts/status-citation-contract-smoke.ts",
     "v4.5.4-grounding-regression": "tsx scripts/v4.5.4-grounding-regression.ts",
     "v4.5.4-judge-cost-regression": "tsx scripts/v4.5.4-judge-cost-regression.ts",
@@ -44,7 +47,7 @@
     "runtime-default-smoke": "tsx scripts/runtime-default-smoke.ts",
     "api-streaming-smoke": "tsx scripts/api-streaming-smoke.ts",
     "release:verify-registry": "node scripts/verify-registry-dist.mjs",
-    "test": "npm --registry=https://registry.npmjs.org run build && npm --registry=https://registry.npmjs.org run provider-refresh-smoke && npm --registry=https://registry.npmjs.org run provider-terminal-smoke && npm --registry=https://registry.npmjs.org run status-citation-contract-smoke && npm --registry=https://registry.npmjs.org run v4.5.4-grounding-regression && npm --registry=https://registry.npmjs.org run v4.5.4-judge-cost-regression && npm --registry=https://registry.npmjs.org run v4.5.4-cancellation-regression && npm --registry=https://registry.npmjs.org run v4.5.4-durable-jobs-regression && npm --registry=https://registry.npmjs.org run v4.5.4-health-activity-regression && npm --registry=https://registry.npmjs.org run v4.5.4-accounting-preflight-regression && npm --registry=https://registry.npmjs.org run main-guard-smoke && npm --registry=https://registry.npmjs.org run evidence-preflight-smoke && npm --registry=https://registry.npmjs.org run evidence-transport-regression && npm --registry=https://registry.npmjs.org run evidence-custody-smoke && npm --registry=https://registry.npmjs.org run truthfulness-preflight-smoke && npm --registry=https://registry.npmjs.org run source-contract-smoke && npm --registry=https://registry.npmjs.org run smoke && npm --registry=https://registry.npmjs.org run runtime-smoke",
+    "test": "npm --registry=https://registry.npmjs.org run build && npm --registry=https://registry.npmjs.org run npm-v12-release-security-regression && npm --registry=https://registry.npmjs.org run v4.5.6-runtime-contract-regression && npm --registry=https://registry.npmjs.org run provider-refresh-smoke && npm --registry=https://registry.npmjs.org run provider-terminal-smoke && npm --registry=https://registry.npmjs.org run status-citation-contract-smoke && npm --registry=https://registry.npmjs.org run v4.5.4-grounding-regression && npm --registry=https://registry.npmjs.org run v4.5.4-judge-cost-regression && npm --registry=https://registry.npmjs.org run v4.5.4-cancellation-regression && npm --registry=https://registry.npmjs.org run v4.5.4-durable-jobs-regression && npm --registry=https://registry.npmjs.org run v4.5.4-health-activity-regression && npm --registry=https://registry.npmjs.org run v4.5.4-accounting-preflight-regression && npm --registry=https://registry.npmjs.org run main-guard-smoke && npm --registry=https://registry.npmjs.org run evidence-preflight-smoke && npm --registry=https://registry.npmjs.org run evidence-transport-regression && npm --registry=https://registry.npmjs.org run evidence-custody-smoke && npm --registry=https://registry.npmjs.org run truthfulness-preflight-smoke && npm --registry=https://registry.npmjs.org run source-contract-smoke && npm --registry=https://registry.npmjs.org run smoke && npm --registry=https://registry.npmjs.org run runtime-smoke",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -68,6 +71,12 @@
   "overrides": {
     "ip-address": ">=10.1.1",
     "hono": ">=4.12.25"
+  },
+  "allowScripts": {
+    "@google/genai@2.11.0": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "protobufjs@7.6.4": true
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

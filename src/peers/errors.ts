@@ -226,16 +226,27 @@ export function classifyProviderError(
     /\b(?:aborterror|(?:operation|request|call)\s+(?:was\s+)?(?:aborted|cancelled)|session_cancelled)\b/i.test(
       message,
     );
+  const errorRecord =
+    error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
   const providerRefusal =
-    provider.toLowerCase() === "anthropic" &&
-    (/\banthropic_refusal\b|\brefusal\b/i.test(providerSignals) ||
-      /\bstop_reason\b[^a-z0-9_]+refusal\b/i.test(message) ||
-      /\bclaude fable 5 refusal\b/i.test(message));
+    errorRecord?.code === "provider_output_refusal" ||
+    (provider.toLowerCase() === "anthropic" &&
+      (/\banthropic_refusal\b|\brefusal\b/i.test(providerSignals) ||
+        /\bstop_reason\b[^a-z0-9_]+refusal\b/i.test(message) ||
+        /\bclaude fable 5 refusal\b/i.test(message)));
+  const providerTerminalRejected = errorRecord?.code === "provider_terminal_state_rejected";
+  const retryableDeepSeekInsufficientResource =
+    providerTerminalRejected &&
+    provider.toLowerCase() === "deepseek" &&
+    errorRecord?.terminal_state === "finish_reason=insufficient_system_resource";
+  const providerPromptBlocked = errorRecord?.code === "provider_prompt_blocked";
   const moderation =
-    /\b(?:invalid_prompt|content_policy_violation|policy_violation)\b/i.test(providerSignals) ||
-    /\b(?:invalid_prompt|prompt[_\s-]?flagged|moderation|moderated|safety policy|safety system|usage policy|responsibleaipolicyviolation|content[_\s-]?filter|blocked by policy|policy violation|could not be processed|input was rejected)\b/i.test(
-      message,
-    );
+    providerPromptBlocked ||
+    (!providerTerminalRejected &&
+      (/\b(?:invalid_prompt|content_policy_violation|policy_violation)\b/i.test(providerSignals) ||
+        /\b(?:invalid_prompt|prompt[_\s-]?flagged|moderation|moderated|safety policy|safety system|usage policy|responsibleaipolicyviolation|content[_\s-]?filter|blocked by policy|policy violation|could not be processed|input was rejected)\b/i.test(
+          message,
+        )));
   const timeout =
     /\b(?:timeout|vector_store_timeout)\b/i.test(providerSignals) ||
     /\b(?:timeout|aborted|aborterror)\b/i.test(message);
@@ -252,8 +263,12 @@ export function classifyProviderError(
   const retryableAnthropicMaxTokens =
     /\banthropic_max_tokens_retryable\b/i.test(providerSignals) ||
     /\banthropic_max_tokens_retryable\b/i.test(message);
-  const errorRecord =
-    error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
+  const retryableOpenAIMaxOutputTokens =
+    /\bopenai_max_output_tokens_retryable\b/i.test(providerSignals) ||
+    /\bopenai_max_output_tokens_retryable\b/i.test(message);
+  const retryableGeminiMaxTokens =
+    /\bgemini_max_tokens_retryable\b/i.test(providerSignals) ||
+    /\bgemini_max_tokens_retryable\b/i.test(message);
   const billedUsage =
     errorRecord?.usage && typeof errorRecord.usage === "object"
       ? (errorRecord.usage as TokenUsage)
@@ -328,6 +343,8 @@ export function classifyProviderError(
     failure_class: failureClass,
     message,
     retryable:
+      (!providerTerminalRejected || retryableDeepSeekInsufficientResource) &&
+      !providerPromptBlocked &&
       !cancelled &&
       !auth &&
       !providerRefusal &&
@@ -336,10 +353,13 @@ export function classifyProviderError(
         network ||
         gateway5xx ||
         providerOverloaded ||
-        retryableAnthropicMaxTokens),
+        retryableAnthropicMaxTokens ||
+        retryableOpenAIMaxOutputTokens ||
+        retryableGeminiMaxTokens ||
+        retryableDeepSeekInsufficientResource),
     recovery_hint: providerRefusal
       ? "reformulate_and_retry"
-      : rateLimited || providerOverloaded
+      : rateLimited || providerOverloaded || retryableDeepSeekInsufficientResource
         ? "wait_and_retry"
         : moderation
           ? "reformulate_and_retry"

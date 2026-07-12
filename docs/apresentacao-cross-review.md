@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.5`                            |
+| Versão preparada pelo source  | `4.5.6`                            |
 | Data do source/release target | `2026-07-12`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -316,7 +316,7 @@ existe para impedir que uma sessão paga avance com afirmações sem base.
 ### Instalação global via npm
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 Esse comando usa somente o pacote publicado. Não instale o runtime globalmente
@@ -327,7 +327,7 @@ efetiva com `server_info` depois de recarregar a janela MCP.
 ### Instalação via GitHub Packages
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 Dependendo do ambiente, GitHub Packages pode exigir autenticação npm
@@ -786,6 +786,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.06`      | 2026-07-12    | Corrige contratos wire dos seis providers, budgets por peer, recovery OpenAI/Gemini, grounding de diffs/escapes, namespaces, terminais e contabilidade por modelo.                     |
 | `v04.05.05`      | 2026-07-12    | Follow-up de publicação: fixtures de cancelamento, health e contabilidade herméticas em runner limpo, com prova contra falso verde; produção continua fail-closed sem rates.           |
 | `v04.05.04`      | 2026-07-12    | Remedia grounding e preflights do hardgate, consenso independente, cancelamento multi-janela, ledger financeiro fail-closed, tetos efetivos, health/report terminal e alias `ultra`.   |
 | `v04.05.03`      | 2026-07-11    | Elimina ReDoS e falsos bloqueios do hardgate em citações autenticadas, literais com aspas simples e bumps de versão do artefato.                                                       |
@@ -851,8 +852,8 @@ Antes de usar uma revisão como gate:
 ## Fontes verificadas para esta apresentação
 
 - Contrato runtime do source target: smokes verificados em 2026-07-12. O
-  `server_info` da janela instalada reportava `4.5.3` antes da publicação e do
-  upgrade de `4.5.5`.
+  `server_info` da janela instalada reportava `4.5.5` antes da publicação e do
+  upgrade de `4.5.6`.
 - `package.json` do repositório local.
 - `README.md`.
 - `CHANGELOG.md`.

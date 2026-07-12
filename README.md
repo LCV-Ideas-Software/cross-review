@@ -19,12 +19,19 @@
 **Upgrade from the published registry.**
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 # or using the GitHub Packages mirror:
-npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
-**Status.** Stable. The current release is **v04.05.05** (package `4.5.5`).
+npm 12 global operations evaluate the whole global dependency tree, not this
+package's project policy in isolation. The command therefore disables every
+install-time script and keeps Git and remote-URL dependencies blocked. The
+published package has no install lifecycle and is tested in this mode. Never add
+`--dangerously-allow-all-scripts`, and do not install a locally built source
+tree or tarball as a substitute for the published registry release.
+
+**Status.** Stable. The current release is **v04.05.06** (package `4.5.6`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -42,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.06`**      | Six-provider contract remediation — provider-specific wire schemas and output budgets, controlled OpenAI/Gemini truncation recovery, safe citation/diff correlation, runtime namespace fixes, corrected FinOps, and npm 12/OIDC release hardening.                          |
 | **`v04.05.05`**      | Clean-runner publish follow-up — make cancellation, health and accounting regression fixtures independent from private operator rate cards and reject false-green preflight coverage; production financial gates remain fail-closed.                                        |
 | **`v04.05.04`**      | Runtime-hardgate remediation — fix grounding, truthfulness namespaces, consensus judging, multi-window cancellation, accounting, session ceilings, terminal reports and cross-provider `ultra` normalization.                                                               |
 | **`v04.05.03`**      | Security/hardgate patch — remove exponential regex backtracking, trust integrity-checked attachment path/digest metadata, accept correlated single-quoted artifact literals and stop treating source-version bumps as historical runtime claims.                            |
@@ -184,7 +192,7 @@ Run the MCP host only from the package published by the registry; do not point a
 production host at this checkout:
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 For local smoke tests (no-cost):

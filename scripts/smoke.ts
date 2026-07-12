@@ -61,7 +61,7 @@ process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
 // because the operator dir already had >24h-old orphans). CI matches this
 // because it runs without the env. Always force a unique tmpdir.
 process.env.CROSS_REVIEW_DATA_DIR = smokeTmpDir(`smoke-${process.pid}`);
-process.env.CROSS_REVIEW_OPENAI_FALLBACK_MODELS ??= "stub-codex-fallback";
+process.env.CROSS_REVIEW_OPENAI_FALLBACK_MODELS = "stub-codex-fallback";
 // v2.14.0 (item 5): GROK joined the quinteto — its rate envs use the
 // canonical `CROSS_REVIEW_GROK_*` prefix (see config.ts COST_RATE_ENV_PREFIX).
 // v3.0.0: Perplexity joined the sexteto — its rate envs use the
@@ -156,7 +156,20 @@ if (previousLogLevel == null) {
   process.env.CROSS_REVIEW_LOG_LEVEL = previousLogLevel;
 }
 
-const config = loadConfig();
+const loadedConfig = loadConfig();
+const codexSmokeRate = loadedConfig.cost_rates.codex;
+assert.ok(codexSmokeRate);
+const config = {
+  ...loadedConfig,
+  model_cost_rates: {
+    ...loadedConfig.model_cost_rates,
+    codex: {
+      ...loadedConfig.model_cost_rates?.codex,
+      "stub-codex-fallback": codexSmokeRate,
+    },
+  },
+};
+delete process.env.CROSS_REVIEW_OPENAI_FALLBACK_MODELS;
 assert.equal(
   config.max_output_tokens,
   previousMaxOutputTokens && Number.parseInt(previousMaxOutputTokens, 10) > 0
@@ -287,25 +300,46 @@ assert.ok(
 console.log("[smoke] persistence_redaction_boundary_test: PASS");
 
 const adapterExpectations: Array<{ file: string; field: string }> = [
-  { file: "src/peers/openai.ts", field: "max_output_tokens: this.config.max_output_tokens" },
+  {
+    file: "src/peers/openai.ts",
+    field: "max_output_tokens: maxOutputTokensForPeer(this.config, this.id)",
+  },
   { file: "src/peers/openai.ts", field: "response.output_text.delta" },
-  { file: "src/peers/anthropic.ts", field: "max_tokens: this.config.max_output_tokens" },
+  {
+    file: "src/peers/anthropic.ts",
+    field: "max_tokens: maxOutputTokensForPeer(this.config, this.id)",
+  },
   { file: "src/peers/anthropic.ts", field: "thinking: anthropicThinking()" },
   { file: "src/peers/anthropic.ts", field: 'type: "adaptive"' },
   { file: "src/peers/anthropic.ts", field: "messages.stream" },
-  { file: "src/peers/gemini.ts", field: "maxOutputTokens: this.config.max_output_tokens" },
+  {
+    file: "src/peers/gemini.ts",
+    field: "maxOutputTokens: maxOutputTokensForPeer(this.config, this.id)",
+  },
   // v2.27.1: geminiThinkingConfig now takes the lazy-loaded ThinkingLevel
   // enum as a 2nd arg so the SDK module is not pulled at server boot.
-  { file: "src/peers/gemini.ts", field: "thinkingConfig: geminiThinkingConfig(this.model," },
+  { file: "src/peers/gemini.ts", field: "thinkingConfig: geminiThinkingConfig(" },
+  { file: "src/peers/gemini.ts", field: "reviewClient.ThinkingLevel" },
   // v2.27.1: ThinkingLevel.HIGH is now read off the lazy-loaded enum
   // instance passed in via the function arg (ThinkingLevelEnum.HIGH).
   { file: "src/peers/gemini.ts", field: "ThinkingLevelEnum.HIGH" },
   { file: "src/peers/gemini.ts", field: "generateContentStream" },
-  { file: "src/peers/deepseek.ts", field: "max_tokens: this.config.max_output_tokens" },
+  {
+    file: "src/peers/deepseek.ts",
+    field: "max_tokens: maxOutputTokensForPeer(this.config, this.id)",
+  },
   { file: "src/peers/deepseek.ts", field: 'type: "enabled"' },
   { file: "src/peers/deepseek.ts", field: "reasoning_effort:" },
   { file: "src/peers/deepseek.ts", field: "...deepSeekThinking(this.config" },
   { file: "src/peers/deepseek.ts", field: "stream: true" },
+  {
+    file: "src/peers/grok.ts",
+    field: "max_output_tokens: maxOutputTokensForPeer(this.config, this.id)",
+  },
+  {
+    file: "src/peers/perplexity.ts",
+    field: "max_tokens: maxOutputTokensForPeer(this.config, this.id)",
+  },
   { file: "src/mcp/server.ts", field: "token_streaming: runtime.config.streaming.tokens" },
 ];
 
@@ -893,8 +927,10 @@ assert.equal(
   );
   const openAiStreamRateLimitError = streamingFailureErrorFromEvent(
     {
-      type: "response.error",
-      error: { code: "rate_limit_exceeded", message: "stream rejected" },
+      type: "error",
+      code: "rate_limit_exceeded",
+      message: "stream rejected",
+      param: null,
     },
     "OpenAI streaming response failed.",
   );
@@ -3375,7 +3411,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
 // v2.6.1: smoke harness for all 3 hard-budget gates. The challenge with
 // stub-driven smoke is that the stub's actual output is small (~80 chars)
-// while `estimatedPeerRoundCost` uses `max_output_tokens` (default 20K),
+// while `estimatedPeerRoundCost` uses each peer's effective output budget
+// (or the legacy global default of 20K when no override exists),
 // so there's no clean per-call budget window where preflight passes but
 // the gate fires deterministically. Workaround: prime the session's
 // `totals.cost.total_cost` to a value just below the session limit by
@@ -3384,22 +3421,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // for the fallback/moderation gates), so prior-rounds priming makes the
 // gate condition `priming + estimate > limit` deterministically true.
 
-// v2.6.1: format_recovery_hard_budget_gate_test. Gate fires when
-// `priorRoundsCost + currentPeerFirstCallCost + recoveryEstimate >
-// max_session_cost_usd` AND preflight passes. The challenge: preflight
-// uses `prior + preflightEstimate ≤ limit` with the SAME limit, so any
-// estimate gap between preflight and recovery determines whether the
-// gate is exercisable in stub-driven smoke.
-//
-// Setup: huge draft (15 KiB filler) so the review prompt and the
-// decision-retry prompt are similar in size — `input_recovery /
-// input_review ≈ 0.97`, which makes the gap (preflightEstimate -
-// recoveryEstimate) tiny. The actual first-call cost is purely the
-// input portion of the (huge) prompt × rate, no amplification, so it
-// dominates the gap. FORCE_EMPTY_REVIEW makes stub return "" → status
-// null → format-recovery branch with decisionRetry=true. With
-// max_session_cost_usd = 100: preflight (0 + ~96.5) ≤ 100 ✓ passes;
-// gate (0 + ~16.5 first-call + ~96 recoveryEstimate) > 100 ✓ fires.
+// v4.5.6: the preflight now prices the complete call graph, including the
+// maximum format-recovery path. A budget that cannot cover that envelope must
+// stop before provider dispatch; the older post-first-call fixture is no
+// longer reachable by design.
 {
   process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST = "1";
   const fmtBudgetEvents: string[] = [];
@@ -3416,16 +3441,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     fmtBudgetEvents.push(event.type),
   );
   const hugeDraft = `FORCE_EMPTY_REVIEW ${"x".repeat(15000)}`;
-  await fmtBudgetOrch.askPeers({
+  const fmtBudgetResult = await fmtBudgetOrch.askPeers({
     task: "format-recovery hard budget gate smoke",
     draft: hugeDraft,
     caller: "operator",
     peers: ["codex"],
   });
   delete process.env.CROSS_REVIEW_STUB_FORCE_REAL_COST;
-  assert.ok(
-    fmtBudgetEvents.includes("peer.format_recovery.budget_blocked"),
-    `format-recovery hard budget gate must emit budget_blocked, events=${fmtBudgetEvents.filter((e) => e.startsWith("peer.")).join(",")}`,
+  assert.equal(fmtBudgetResult.session.outcome_reason, "budget_preflight");
+  assert.equal(fmtBudgetResult.round.rejected.at(-1)?.failure_class, "budget_preflight");
+  assert.equal(
+    fmtBudgetEvents.some((event) => event === "peer.call.started"),
+    false,
+    "complete call-graph preflight must block before provider dispatch",
   );
   console.log("[smoke] format_recovery_hard_budget_gate_test: PASS");
 }
@@ -6836,7 +6864,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
     const configSrc = fs.readFileSync("src/core/config.ts", "utf8");
     assert.ok(
-      /LAST_FILE_CONFIG_RESULT\s*=\s*applyFileConfigToEnv\(dataDir,\s*envValue\)/.test(configSrc),
+      /(?:LAST_FILE_CONFIG_RESULT\s*=\s*applyFileConfigToEnv\(dataDir,\s*envValue\)|const\s+fileConfigResult\s*=\s*applyFileConfigToEnv\(dataDir,\s*envValue\)[\s\S]{0,120}?LAST_FILE_CONFIG_RESULT\s*=\s*fileConfigResult)/.test(
+        configSrc,
+      ),
       "v3.1.0: loadConfig() must invoke applyFileConfigToEnv(dataDir, envValue) and capture the result",
     );
     assert.ok(

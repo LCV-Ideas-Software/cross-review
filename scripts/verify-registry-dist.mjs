@@ -80,6 +80,39 @@ for (const key of ["shasum", "integrity", "tarball"]) {
   }
 }
 
+const attestations = dist.attestations;
+if (!attestations || typeof attestations !== "object") {
+  throw new Error(`npm registry dist metadata for ${spec} is missing dist.attestations`);
+}
+if (
+  typeof attestations.url !== "string" ||
+  !attestations.url.startsWith(`${NPM_REGISTRY_URL}/-/npm/v1/attestations/`)
+) {
+  throw new Error(`npm registry dist metadata for ${spec} has an invalid attestation URL`);
+}
+if (attestations.provenance?.predicateType !== "https://slsa.dev/provenance/v1") {
+  throw new Error(`npm registry dist metadata for ${spec} is missing SLSA provenance v1`);
+}
+
+const attestationResponse = await globalThis.fetch(attestations.url, {
+  headers: {
+    accept: "application/json",
+  },
+  signal: globalThis.AbortSignal.timeout(FETCH_TIMEOUT_MS),
+});
+if (!attestationResponse.ok) {
+  throw new Error(
+    `npm attestation lookup failed for ${spec}: HTTP ${attestationResponse.status} ${attestationResponse.statusText}`,
+  );
+}
+const attestationDocument = await attestationResponse.json();
+const hasSlsaProvenance = attestationDocument.attestations?.some(
+  (attestation) => attestation?.predicateType === "https://slsa.dev/provenance/v1",
+);
+if (!hasSlsaProvenance) {
+  throw new Error(`npm attestation document for ${spec} is missing SLSA provenance v1`);
+}
+
 globalThis.console.log(
   JSON.stringify(
     {
@@ -87,6 +120,8 @@ globalThis.console.log(
       shasum: dist.shasum,
       integrity: dist.integrity,
       tarball: dist.tarball,
+      attestationUrl: attestations.url,
+      provenancePredicateType: attestations.provenance.predicateType,
     },
     null,
     2,

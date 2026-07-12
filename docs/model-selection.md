@@ -104,9 +104,8 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   shared values → `high`).
 - Anthropic/Claude: Fable 5 omits the explicit `thinking` object (adaptive
   thinking is automatic) and uses `output_config.effort` for depth.
-- Google/Gemini: high thinking level for the pinned Gemini 3.1 Pro Preview
-  model; the adapter keeps the Gemini 3 thinking path explicit because this
-  peer is used for complex reasoning and coding review.
+- Google/Gemini: the configured shared effort maps to native `LOW`, `MEDIUM`,
+  or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default;
   shared-scale `xhigh`, `max`, and `ultra` all normalize to `max`.
 - Grok: the pinned `grok-4.5` model accepts explicit `reasoning.effort` at
@@ -124,10 +123,21 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
 The alias is accepted consistently by central `config.json`, environment
 variables and per-call overrides. It is never a provider payload value:
 OpenAI GPT-5.6, Anthropic and DeepSeek receive `max`; Grok 4.5 and Perplexity
-receive `high`; Gemini retains its native high-thinking configuration.
+receive `high`; Gemini maps the configured setting to its native thinking enum.
 When an operator explicitly selects an older GPT-5 family, the OpenAI adapter
 uses that family's documented ceiling rather than blindly sending GPT-5.6's
 enum.
+
+## Per-peer output budgets
+
+The legacy `max_output_tokens` value remains the fallback. Use
+`max_output_tokens_by_peer` when official reasoning guidance or model ceilings
+differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
+64,000 for Claude Fable 5 at `max`, and 20,000 for the other four peers. These
+values follow the official OpenAI allocation guidance and Anthropic task-budget
+minimum without assuming an undocumented Grok 4.5 ceiling. `server_info`
+returns the effective six-peer map used by both provider payloads and budget
+preflight.
 
 ## Official provider references
 

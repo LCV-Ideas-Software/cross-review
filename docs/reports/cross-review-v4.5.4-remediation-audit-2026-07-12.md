@@ -406,7 +406,7 @@ complete `npm test` suite then passed again in 188.6 seconds.
 The operator installs only from the published registry:
 
 ```powershell
-npm upgrade -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 No local-source global installation, `npm link` or manual evidence attachment

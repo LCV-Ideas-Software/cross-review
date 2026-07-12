@@ -1,4 +1,11 @@
-import type { PeerCallContext, PeerId } from "../core/types.js";
+import { estimateCost } from "../core/cost.js";
+import type {
+  AppConfig,
+  CostEstimate,
+  PeerCallContext,
+  PeerId,
+  TokenUsage,
+} from "../core/types.js";
 
 export type ProviderPhase = "review" | "generation";
 
@@ -25,6 +32,90 @@ export class ProviderTerminalStateError extends Error {
     );
     this.name = "ProviderTerminalStateError";
   }
+}
+
+export class ProviderPromptBlockedError extends Error {
+  readonly code = "provider_prompt_blocked";
+
+  constructor(
+    readonly provider: string,
+    readonly model: string,
+    readonly protocol: "gemini",
+    readonly block_reason: string,
+  ) {
+    super(
+      `${provider} ${protocol} input prompt was blocked for ${model}: ${block_reason}. ` +
+        "No response candidate was produced; the prompt must be reformulated.",
+    );
+    this.name = "ProviderPromptBlockedError";
+  }
+}
+
+export class ProviderOutputRefusalError extends Error {
+  readonly code = "provider_output_refusal";
+
+  constructor(
+    readonly provider: string,
+    readonly model: string,
+    readonly protocol: "responses",
+  ) {
+    super(`${provider} ${protocol} output refusal from ${model}.`);
+    this.name = "ProviderOutputRefusalError";
+  }
+}
+
+/**
+ * Preserve provider-reported accounting when a terminal validator rejects a
+ * response before the normal result builder can run. The error classifier
+ * consumes these non-enumerable fields and reconciles the attempt exactly as
+ * it does for model-specific output-limit errors.
+ */
+export function withTerminalBilling<T>(
+  billing: {
+    usage?: TokenUsage | undefined;
+    cost?: CostEstimate | undefined;
+    accounted_attempts?: number | undefined;
+  },
+  check: () => T,
+): T {
+  try {
+    return check();
+  } catch (error) {
+    if (!error || typeof error !== "object") throw error;
+    if (billing.usage !== undefined || billing.cost !== undefined) {
+      Object.defineProperty(error, "retry_billing_requires_merge", {
+        configurable: true,
+        enumerable: false,
+        value: true,
+      });
+    }
+    for (const [key, value] of [
+      ["usage", billing.usage],
+      ["cost", billing.cost],
+      ["accounted_attempts", billing.accounted_attempts],
+    ] as const) {
+      if (value === undefined || key in error) continue;
+      Object.defineProperty(error, key, {
+        configurable: true,
+        enumerable: false,
+        value,
+      });
+    }
+    throw error;
+  }
+}
+
+export function withEstimatedTerminalBilling<T>(
+  config: AppConfig,
+  peer: PeerId,
+  effectiveModel: string,
+  usage: TokenUsage | undefined,
+  check: () => T,
+): T {
+  const cost = usage ? estimateCost(config, peer, usage, effectiveModel) : undefined;
+  const accountedAttempts =
+    typeof cost?.total_cost === "number" && Number.isFinite(cost.total_cost) ? 1 : 0;
+  return withTerminalBilling({ usage, cost, accounted_attempts: accountedAttempts }, check);
 }
 
 function rejectTerminal(
@@ -57,12 +148,83 @@ function rejectTerminal(
   );
 }
 
+function rejectPrompt(
+  params: TerminalContext & {
+    protocol: ProviderPromptBlockedError["protocol"];
+    blockReason: string;
+  },
+): never {
+  params.context.emit({
+    type: "provider.prompt_rejected",
+    session_id: params.context.session_id,
+    round: params.context.round,
+    peer: params.peer,
+    message: `${params.provider} rejected the input prompt before producing candidates.`,
+    data: {
+      provider: params.provider,
+      configured_model: params.model,
+      phase: params.phase,
+      protocol: params.protocol,
+      block_reason: params.blockReason,
+      moderation_recovery_eligible: params.phase === "review",
+      usable_output: false,
+    },
+  });
+  throw new ProviderPromptBlockedError(
+    params.provider,
+    params.model,
+    params.protocol,
+    params.blockReason,
+  );
+}
+
+function rejectOutputRefusal(params: TerminalContext): never {
+  params.context.emit({
+    type: "provider.refusal",
+    session_id: params.context.session_id,
+    round: params.context.round,
+    peer: params.peer,
+    message: `${params.provider} returned a Responses API output refusal.`,
+    data: {
+      provider: params.provider,
+      configured_model: params.model,
+      phase: params.phase,
+      protocol: "responses",
+      retryable: false,
+      usable_output: false,
+    },
+  });
+  throw new ProviderOutputRefusalError(params.provider, params.model, "responses");
+}
+
 function normalized(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
 }
 
+function hasResponsesOutputRefusal(output: unknown): boolean {
+  if (!Array.isArray(output)) return false;
+  return output.some((item) => {
+    if (!item || typeof item !== "object") return false;
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) return false;
+    return content.some(
+      (part) =>
+        part !== null &&
+        typeof part === "object" &&
+        normalized((part as { type?: unknown }).type) === "refusal",
+    );
+  });
+}
+
 export function assertResponsesCompletion(
-  response: { status?: unknown } | null | undefined,
+  response:
+    | {
+        status?: unknown;
+        incomplete_details?: { reason?: unknown } | null | undefined;
+        output?: unknown;
+      }
+    | null
+    | undefined,
   params: TerminalContext,
 ): void {
   const status = normalized(response?.status);
@@ -70,25 +232,47 @@ export function assertResponsesCompletion(
   // explicitly reports the completed terminal. A plausible READY prefix with
   // a missing status is indistinguishable from a truncated/unterminated body.
   if (status !== "completed") {
+    const incompleteReason = normalized(response?.incomplete_details?.reason);
     rejectTerminal({
       ...params,
       protocol: "responses",
-      terminalState: `status=${status ?? "missing"}`,
+      terminalState: `status=${status ?? "missing"}${incompleteReason ? ` reason=${incompleteReason}` : ""}`,
     });
   }
+  if (hasResponsesOutputRefusal(response?.output)) rejectOutputRefusal(params);
+}
+
+export function observeResponsesStreamRefusal(
+  event: { type?: unknown },
+  refused: boolean,
+): boolean {
+  const eventType = normalized(event.type);
+  return refused || eventType === "response.refusal.delta" || eventType === "response.refusal.done";
+}
+
+export function assertResponsesStreamNotRefused(refused: boolean, params: TerminalContext): void {
+  if (!refused) return;
+  rejectOutputRefusal(params);
 }
 
 export function observeResponsesStreamTerminal(
-  event: { type?: unknown; response?: { status?: unknown } | null },
+  event: {
+    type?: unknown;
+    response?: {
+      status?: unknown;
+      incomplete_details?: { reason?: unknown } | null | undefined;
+    } | null;
+  },
   completed: boolean,
   params: TerminalContext,
 ): boolean {
   const eventType = normalized(event.type);
   if (eventType === "response.incomplete") {
+    const incompleteReason = normalized(event.response?.incomplete_details?.reason);
     rejectTerminal({
       ...params,
       protocol: "responses",
-      terminalState: "event=response.incomplete",
+      terminalState: `event=response.incomplete${incompleteReason ? ` reason=${incompleteReason}` : ""}`,
     });
   }
   if (eventType !== "response.completed") return completed;
@@ -141,6 +325,7 @@ export function observeChatStreamTerminals(
   choices: readonly ChatChoiceLike[] | null | undefined,
   completedChoices: Set<number>,
   params: TerminalContext & { allowToolCalls?: boolean },
+  rejectedTerminals?: string[],
 ): void {
   for (const [position, choice] of (choices ?? []).entries()) {
     const reason = normalized(choice.finish_reason);
@@ -148,6 +333,10 @@ export function observeChatStreamTerminals(
     // finish_reason is terminal; stream finalization below requires one.
     if (!reason) continue;
     if (!allowedChatTerminal(reason, params.allowToolCalls === true)) {
+      if (rejectedTerminals) {
+        rejectedTerminals.push(`finish_reason=${reason}`);
+        continue;
+      }
       rejectTerminal({
         ...params,
         protocol: "chat_completions",
@@ -162,7 +351,16 @@ export function observeChatStreamTerminals(
 export function assertChatStreamCompleted(
   completedChoices: ReadonlySet<number>,
   params: TerminalContext,
+  rejectedTerminals: readonly string[] = [],
 ): void {
+  const rejected = rejectedTerminals[0];
+  if (rejected) {
+    rejectTerminal({
+      ...params,
+      protocol: "chat_completions",
+      terminalState: rejected,
+    });
+  }
   if (completedChoices.size > 0) return;
   rejectTerminal({
     ...params,
@@ -183,11 +381,17 @@ type GeminiResponseLike = {
 
 function assertGeminiPromptNotBlocked(response: GeminiResponseLike, params: TerminalContext): void {
   const blockReason = normalized(response.promptFeedback?.blockReason);
-  if (!blockReason || blockReason === "block_reason_unspecified") return;
-  rejectTerminal({
+  if (
+    !blockReason ||
+    blockReason === "block_reason_unspecified" ||
+    blockReason === "blocked_reason_unspecified"
+  ) {
+    return;
+  }
+  rejectPrompt({
     ...params,
     protocol: "gemini",
-    terminalState: `promptFeedback.blockReason=${blockReason}`,
+    blockReason,
   });
 }
 

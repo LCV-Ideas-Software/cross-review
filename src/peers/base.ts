@@ -3,6 +3,7 @@ import { decisionQualityFromStatus, parsePeerStatus } from "../core/status.js";
 import type {
   AppConfig,
   Confidence,
+  CostEstimate,
   DecisionTransformation,
   EvidenceAskJudgment,
   GenerationResult,
@@ -109,7 +110,8 @@ export function appendStreamText(peer: string, buffer: string, delta: string): s
 export class TokenEventBuffer {
   private buffered = "";
   private flushTimer: NodeJS.Timeout | null = null;
-  private completed = false;
+  private closed = false;
+  private observedChars = 0;
 
   constructor(
     private readonly flushDelta: (delta: string) => void,
@@ -117,10 +119,12 @@ export class TokenEventBuffer {
     private readonly charsThreshold: number,
     private readonly msThreshold: number,
     private readonly verbose: boolean,
+    private readonly emitDiscarded: (chars: number, reason: string) => void = () => undefined,
   ) {}
 
   append(delta: string): void {
-    if (!delta || this.completed) return;
+    if (!delta || this.closed) return;
+    this.observedChars += delta.length;
     if (this.verbose) {
       this.flushDelta(delta);
       return;
@@ -160,13 +164,30 @@ export class TokenEventBuffer {
   // late-arriving append (e.g. from a delayed event handler) is a no-op
   // rather than re-emitting after completion.
   complete(chars: number): void {
-    if (this.completed) return;
-    this.completed = true;
+    if (this.closed) return;
+    this.closed = true;
     try {
       this.flushPending();
     } finally {
       this.emitCompleted(chars);
     }
+  }
+
+  // v4.5.6: token deltas are provisional until the provider reaches a
+  // healthy terminal. A failed/truncated attempt must cancel its timer,
+  // drop any pending text, and emit an explicit rollback marker before a
+  // retry starts. Already-flushed verbose/coalesced deltas remain auditable
+  // through the shared attempt id and this discard event; consumers must
+  // only commit an attempt after peer.token.completed.
+  discard(reason: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.buffered = "";
+    this.emitDiscarded(this.observedChars, reason);
   }
 }
 
@@ -181,6 +202,16 @@ export abstract class BasePeerAdapter {
   abstract generate(prompt: string, context: PeerCallContext): Promise<GenerationResult>;
 
   protected constructor(protected readonly config: AppConfig) {}
+
+  private readonly activeTokenBuffers = new Map<string, TokenEventBuffer>();
+
+  private tokenBufferKey(
+    context: PeerCallContext,
+    phase: "review" | "generation",
+    attempt: number,
+  ): string {
+    return `${context.session_id}:${context.round}:${phase}:${attempt}`;
+  }
 
   private modelMatches(reported?: string): boolean | undefined {
     if (!reported) return undefined;
@@ -222,7 +253,12 @@ export abstract class BasePeerAdapter {
 
   protected emitTokenDelta(
     context: PeerCallContext,
-    params: { phase: "review" | "generation"; delta: string; source?: string },
+    params: {
+      phase: "review" | "generation";
+      delta: string;
+      attempt: number;
+      source?: string;
+    },
   ): void {
     if (!this.shouldStreamTokens(context) || !params.delta) return;
     const data: Record<string, unknown> = {
@@ -231,6 +267,8 @@ export abstract class BasePeerAdapter {
       model: this.model,
       source: params.source ?? "text",
       chars: params.delta.length,
+      attempt: params.attempt,
+      provisional: true,
     };
     if (this.config.streaming.include_text) {
       data.delta = redact(params.delta);
@@ -247,7 +285,7 @@ export abstract class BasePeerAdapter {
 
   protected emitTokenCompleted(
     context: PeerCallContext,
-    params: { phase: "review" | "generation"; chars: number },
+    params: { phase: "review" | "generation"; chars: number; attempt: number },
   ): void {
     if (!this.shouldStreamTokens(context)) return;
     context.emit({
@@ -261,6 +299,31 @@ export abstract class BasePeerAdapter {
         provider: this.provider,
         model: this.model,
         chars: params.chars,
+        attempt: params.attempt,
+        committed: true,
+      },
+    });
+  }
+
+  protected emitTokenDiscarded(
+    context: PeerCallContext,
+    params: { phase: "review" | "generation"; chars: number; attempt: number; reason: string },
+  ): void {
+    if (!this.shouldStreamTokens(context)) return;
+    context.emit({
+      type: "peer.token.discarded",
+      session_id: context.session_id,
+      round: context.round,
+      peer: this.id,
+      message: `${this.id} discarded provisional token output from attempt ${params.attempt}.`,
+      data: {
+        phase: params.phase,
+        provider: this.provider,
+        model: this.model,
+        chars: params.chars,
+        attempt: params.attempt,
+        committed: false,
+        reason: params.reason,
       },
     });
   }
@@ -274,9 +337,20 @@ export abstract class BasePeerAdapter {
     context: PeerCallContext,
     phase: "review" | "generation",
     source = "text",
+    attempt = 1,
   ): TokenEventBuffer {
-    const flushDelta = (delta: string) => this.emitTokenDelta(context, { phase, delta, source });
-    const emitCompleted = (chars: number) => this.emitTokenCompleted(context, { phase, chars });
+    const key = this.tokenBufferKey(context, phase, attempt);
+    const flushDelta = (delta: string) =>
+      this.emitTokenDelta(context, { phase, delta, source, attempt });
+    const close = () => this.activeTokenBuffers.delete(key);
+    const emitCompleted = (chars: number) => {
+      close();
+      this.emitTokenCompleted(context, { phase, chars, attempt });
+    };
+    const emitDiscarded = (chars: number, reason: string) => {
+      close();
+      this.emitTokenDiscarded(context, { phase, chars, attempt, reason });
+    };
     // v2.6.0 R1 (Gemini catch): renamed to charsThreshold for clarity
     // (we measure UTF-16 code units, not UTF-8 bytes). The legacy env
     // var name is preserved for op compatibility but read into the
@@ -302,16 +376,37 @@ export abstract class BasePeerAdapter {
       Number.parseInt(process.env.CROSS_REVIEW_TOKEN_DELTA_MS_THRESHOLD ?? "", 10) || 250,
     );
     const verbose = process.env.CROSS_REVIEW_TOKEN_DELTA_VERBOSE === "1";
-    return new TokenEventBuffer(flushDelta, emitCompleted, charsThreshold, msThreshold, verbose);
+    const buffer = new TokenEventBuffer(
+      flushDelta,
+      emitCompleted,
+      charsThreshold,
+      msThreshold,
+      verbose,
+      emitDiscarded,
+    );
+    this.activeTokenBuffers.set(key, buffer);
+    return buffer;
+  }
+
+  protected discardTokenEventBuffer(
+    context: PeerCallContext,
+    phase: "review" | "generation",
+    attempt: number,
+    reason = "attempt_failed",
+  ): void {
+    this.activeTokenBuffers.get(this.tokenBufferKey(context, phase, attempt))?.discard(reason);
   }
 
   protected resultFromText(params: {
     text: string;
     raw: unknown;
     usage?: TokenUsage | undefined;
+    /** Per-attempt cost ledger merged by an adapter recovery path. */
+    costOverride?: CostEstimate | undefined;
     started: number;
     attempts: number;
     accounted_prior_attempts?: number | undefined;
+    accountedAttemptsOverride?: number | undefined;
     modelReported?: string | undefined;
     // v2.23.0: provider-side parser diagnostics (e.g. Anthropic
     // thinking-only response with no final text block). Merged AFTER
@@ -345,13 +440,14 @@ export abstract class BasePeerAdapter {
         },
       });
     }
-    const cost = estimateCost(this.config, this.id, params.usage);
+    const cost =
+      params.costOverride ?? estimateCost(this.config, this.id, params.usage, this.model);
     const currentAttemptAccounted =
       typeof cost.total_cost === "number" && Number.isFinite(cost.total_cost) ? 1 : 0;
-    const unpricedAttempts = Math.max(
-      0,
-      params.attempts - (params.accounted_prior_attempts ?? 0) - currentAttemptAccounted,
-    );
+    const accountedAttempts =
+      params.accountedAttemptsOverride ??
+      (params.accounted_prior_attempts ?? 0) + currentAttemptAccounted;
+    const unpricedAttempts = Math.max(0, params.attempts - accountedAttempts);
     return {
       peer: this.id,
       provider: this.provider,
@@ -384,9 +480,12 @@ export abstract class BasePeerAdapter {
     text: string;
     raw: unknown;
     usage?: TokenUsage | undefined;
+    /** Per-attempt cost ledger merged by an adapter recovery path. */
+    costOverride?: CostEstimate | undefined;
     started: number;
     attempts: number;
     accounted_prior_attempts?: number | undefined;
+    accountedAttemptsOverride?: number | undefined;
     modelReported?: string | undefined;
     // v2.23.0: provider-side parser diagnostics propagated to the
     // GenerationResult so the relator-revision path in the orchestrator
@@ -397,13 +496,14 @@ export abstract class BasePeerAdapter {
   }): GenerationResult {
     const modelMatch = this.modelMatches(params.modelReported);
     const extra = params.extraParserWarnings ?? [];
-    const cost = estimateCost(this.config, this.id, params.usage);
+    const cost =
+      params.costOverride ?? estimateCost(this.config, this.id, params.usage, this.model);
     const currentAttemptAccounted =
       typeof cost.total_cost === "number" && Number.isFinite(cost.total_cost) ? 1 : 0;
-    const unpricedAttempts = Math.max(
-      0,
-      params.attempts - (params.accounted_prior_attempts ?? 0) - currentAttemptAccounted,
-    );
+    const accountedAttempts =
+      params.accountedAttemptsOverride ??
+      (params.accounted_prior_attempts ?? 0) + currentAttemptAccounted;
+    const unpricedAttempts = Math.max(0, params.attempts - accountedAttempts);
     return {
       peer: this.id,
       provider: this.provider,

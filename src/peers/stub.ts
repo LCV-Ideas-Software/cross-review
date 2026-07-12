@@ -66,7 +66,7 @@ export class StubAdapter extends BasePeerAdapter implements PeerAdapter {
   ) {
     super(config);
     this.provider = PROVIDERS[id];
-    this.model = modelOverride ?? `stub-${id}`;
+    this.model = modelOverride ?? config.models[id];
   }
 
   private streamStubText(context: PeerCallContext, phase: "review" | "generation", text: string) {

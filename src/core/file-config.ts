@@ -84,6 +84,11 @@ const PerPeerReasoningSchema = z
 
 const PerPeerBoolSchema = z.object(perPeerOptionalShape(z.boolean())).strict().optional();
 
+const PerPeerPositiveIntSchema = z
+  .object(perPeerOptionalShape(z.number().int().positive()))
+  .strict()
+  .optional();
+
 // Per-peer cost-rate sub-schema. Mirrors AppConfig.cost_rates[peer]
 // from src/core/types.ts (18 optional fields). All numbers; operator
 // chooses which apply per provider (e.g., Anthropic has cache, Gemini
@@ -207,6 +212,7 @@ export const FileConfigSchema = z
     stub: z.boolean().optional(),
     dashboard_port: z.number().int().positive().optional(),
     max_output_tokens: z.number().int().positive().optional(),
+    max_output_tokens_by_peer: PerPeerPositiveIntSchema,
     models: PerPeerStringSchema,
     // v3.7.3 (operator no-fallback directive 2026-05-14): the user's
     // explicit, per-peer list of models accepted as fallback. Default
@@ -287,17 +293,22 @@ function normalizeModelId(model: string): string {
 function selectConfiguredModelRate(
   ratesByModel: Record<string, Record<string, unknown>>,
   configuredModel: string | undefined,
+  peer?: PeerId,
 ): Record<string, unknown> | undefined {
   if (!configuredModel) return undefined;
   const normalized = normalizeModelId(configuredModel);
   if (ratesByModel[normalized]) return ratesByModel[normalized];
-  for (const [modelFamily, rate] of Object.entries(ratesByModel)) {
-    const normalizedFamily = normalizeModelId(modelFamily);
-    if (normalized === normalizedFamily || normalized.startsWith(`${normalizedFamily}-`)) {
-      return rate;
-    }
+  for (const [model, rate] of Object.entries(ratesByModel)) {
+    if (normalizeModelId(model) === normalized) return rate;
   }
-  return undefined;
+  // Every documented Perplexity Sonar id is a distinct billable product.
+  // In particular, a `sonar` card must never capture `sonar-pro` or
+  // `sonar-reasoning-pro` merely because their ids share a prefix.
+  if (peer === "perplexity") return undefined;
+  const familyMatches = Object.entries(ratesByModel)
+    .filter(([modelFamily]) => normalized.startsWith(`${normalizeModelId(modelFamily)}-`))
+    .sort(([left], [right]) => normalizeModelId(right).length - normalizeModelId(left).length);
+  return familyMatches[0]?.[1];
 }
 
 // Flatten the structured FileConfig into a flat map of env-var-name →
@@ -318,6 +329,14 @@ export function flattenFileConfigToEnvMap(
   if (config.stub != null) set("CROSS_REVIEW_STUB", config.stub ? "true" : "false");
   set("CROSS_REVIEW_DASHBOARD_PORT", config.dashboard_port);
   set("CROSS_REVIEW_MAX_OUTPUT_TOKENS", config.max_output_tokens);
+  if (config.max_output_tokens_by_peer) {
+    for (const [peer, maxTokens] of Object.entries(config.max_output_tokens_by_peer) as [
+      PeerId,
+      number | undefined,
+    ][]) {
+      if (maxTokens != null) set(`${PEER_TO_ENV_PREFIX[peer]}_MAX_OUTPUT_TOKENS`, maxTokens);
+    }
+  }
 
   // Per-peer model / reasoning / fallback / enabled.
   if (config.models) {
@@ -368,7 +387,7 @@ export function flattenFileConfigToEnvMap(
       if (!ratesByModel) continue;
       const prefix = PEER_TO_ENV_PREFIX[peer];
       const configuredModel = envValue?.(`${prefix}_MODEL`) ?? config.models?.[peer];
-      const modelRate = selectConfiguredModelRate(ratesByModel, configuredModel);
+      const modelRate = selectConfiguredModelRate(ratesByModel, configuredModel, peer);
       if (!modelRate) continue;
       flattenCostRate(out, prefix, modelRate);
     }
@@ -502,6 +521,8 @@ export interface ApplyFileConfigResult {
   loaded_mtime_ms?: number | undefined;
   loaded_sha256?: string | undefined;
   parse_error?: string | undefined;
+  /** Validated cards retained for runtime fallback/model-override pricing. */
+  model_cost_rates?: FileConfig["model_cost_rates"] | undefined;
 }
 
 export interface ConfigFileFingerprint {
@@ -635,5 +656,6 @@ export function applyFileConfigToEnv(
     file_exists: true,
     loaded_mtime_ms: loadedMtimeMs,
     loaded_sha256: loadedSha256,
+    model_cost_rates: validated.data.model_cost_rates,
   };
 }

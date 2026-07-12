@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-12: `4.5.5`. O registro pode ficar
+> Estado do source/release target em 2026-07-12: `4.5.6`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -456,7 +456,7 @@ grava ainda um log NDJSON por processo sob `<data_dir>/logs`.
 ### Instalação via npm
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 Use somente o pacote publicado pelo registro; não instale o runtime globalmente
@@ -466,7 +466,7 @@ recarregue a janela MCP e confirme a versão efetiva em `server_info`.
 Alternativamente, pelo espelho do GitHub Packages:
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 A instalação disponibiliza dois binários: `cross-review` (o servidor MCP) e
@@ -601,6 +601,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.06`      | Contratos wire por provider, budgets por peer, recovery controlado OpenAI/Gemini, grounding de diff/escapes, namespace runtime, terminais e FinOps corrigidos.                          |
 | `v04.05.05`      | Follow-up de publicação: fixtures de cancelamento, health e contabilidade herméticas em runner limpo, com prova contra falso verde; produção permanece fail-closed sem rates.           |
 | `v04.05.04`      | Corrige grounding, preflights, consenso, cancelamento multi-janela, contabilidade e tetos efetivos; expõe a cadeia de decisão e aceita `ultra` como alias normalizado por provider.     |
 | `v04.05.03`      | Corrige ReDoS e falsos bloqueios do hardgate em citações autenticadas, aspas simples correlacionadas e bumps de versão do artefato.                                                     |

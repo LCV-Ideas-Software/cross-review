@@ -209,6 +209,98 @@ stable, and ready for scaled production use." ... preflight_issue_classes:
 
 ---
 
+## 3.5. Adendo 4.5.5 (2026-07-12) — reteste pós-fix e defeitos residuais
+
+Retestado com duas sessões na 4.5.5 (`04691dd6` via loop unânime; `741b69bc` via round único
+controlado, sem relator entre rounds). **Progresso real e mensurável**, mas ainda sem convergência.
+
+### O que a 4.5.4/4.5.5 comprovadamente corrigiu
+
+- **DEF-5 parcial:** votos READY agora SOBREVIVEM ao parser quando 100% dos quotes citados são
+  substrings exatas (ou whitespace-normalizadas) do attachment. Provas: deepseek (2 sessões) e
+  perplexity (`741b69bc`) mantiveram `raw:READY → final:READY`, `parser_warnings: []`.
+- **DEF-6 parcial:** a citação verbatim das docs Google na evidência (§5) **não abortou mais** o
+  round 1 — docs atribuídas deixaram de ser tratadas como claim de runtime na entrada do caller.
+- **Transparência nova (excelente):** `raw_status`/`parsed_status`/`normalized_status` são
+  persistidos por peer — a demoção agora é auditável de primeira classe, sem ler o `text` cru.
+
+### Defeitos residuais observados na 4.5.5
+
+**DEF-8 — Validação de citação all-or-nothing + sem des-escape de aspas (novo, causa dominante).**
+Um ÚNICO item imperfeito em `evidence_sources` anula o voto READY inteiro
+(`ready_evidence_sources_ungrounded`). Medição na sessão `741b69bc`: gemini 3 itens/1 ruim →
+demovido; grok **15 itens/2 ruins** (13 verbatim perfeitos!) → demovido. E os itens ruins têm
+padrão único: são os quotes da §5 (docs Gemini) que **contêm aspas internas** — os peers os
+serializam com `\"` escapado no JSON, o validador compara sem des-escapar → nunca casa.
+Correções sugeridas: (a) des-escapar `\"`→`"` (e normalizar aspas tipográficas) antes da
+correlação; (b) política proporcional — voto cai apenas se a MAIORIA dos itens for
+incorrelacionável, descartando itens ruins individualmente (ou ao menos reportá-los por índice
+para o peer corrigir no round seguinte).
+
+**DEF-6 residual — texto gerado pelo relator ainda dispara truthfulness.** Na sessão `04691dd6`
+(loop unânime), o round 2 abortou com `current-state model claim gemini-3.5 for gemini contradicts
+model_pin gemini-3.1-pro-preview` — a REVISÃO gerada pelo relator (lead peer) mencionou o modelo
+da aplicação em frase com palavra de estado-corrente. O texto de relator não passa pelo
+saneamento que o caller pode fazer no próprio draft; enquanto o scanner não distinguir
+"modelo da aplicação sob review" de "model_pin do peer", o modo loop-unânime fica inviável para
+qualquer review que envolva modelos Gemini da aplicação. Workaround validado: `session_start_round`
+(caller controla 100% do texto entre rounds).
+
+**DEF-9 — codex `provider_error: response.incomplete` (transiente).** Sessão `04691dd6`:
+`openai responses terminal state rejected for gpt-5.6-sol: event=response.incomplete. Partial,
+truncated, filtered, or unterminated output is not a usable response.` — reasoning effort `max` +
+`max_output_tokens 20000` truncou. O peer foi rejeitado sem retry no mesmo round. Sugestão:
+retry automático 1x no mesmo modelo para essa classe (política do workspace: nunca downgrade).
+
+### Resultado de mérito da última sessão (`741b69bc`, round 1)
+
+| Peer       | raw           | final          | Observação                                |
+| ---------- | ------------- | -------------- | ----------------------------------------- |
+| deepseek   | READY         | **READY**      | citações 100% verbatim                    |
+| perplexity | READY         | **READY**      | citações 100% verbatim                    |
+| gemini     | READY         | NEEDS_EVIDENCE | 1/3 itens com `\"` (DEF-8)                |
+| grok       | READY         | NEEDS_EVIDENCE | 2/15 itens com `\"` (DEF-8)               |
+| codex      | **NOT_READY** | NOT_READY      | **finding de mérito procedente** (abaixo) |
+
+**Finding do codex (procedente, vira patch na calculadora):** o DELETE de retenção de
+`ai_usage_logs` (oraculo.ts:93) está dentro do `logAiUsage` fire-and-forget (IIFE não-awaitada,
+não registrada em `context.waitUntil`), diferente do prune de observabilidade (que usa
+`waitUntil`). Em Workers/Pages, trabalho não-awaitado após a resposta não tem garantia de
+execução — a retenção fica best-effort. Correção pedida: retornar a Promise do insert+prune e
+registrá-la em `context.waitUntil` (ou await explícito). Primeiro finding de mérito real de toda a
+jornada — e só emergiu quando a instrução de citação byte-a-byte liberou os peers para focar em
+substância. Nota: 4 dos 5 peers votantes aprovaram o mérito; o veredito de convergência oficial
+segue bloqueado pelos defeitos acima.
+
+---
+
+## 3.6. Fechamento preparado para 4.5.6 (2026-07-12)
+
+A remediação preserva as sessões acima como evidência histórica e não abriu uma nova rodada paga.
+Os três defeitos residuais ganharam regressões offline:
+
+- **DEF-8:** uma camada controlada de escape JSON é desserializada antes da correlação. A política
+  all-or-nothing foi mantida por segurança; a proposta de aceitar maioria de fontes foi rejeitada.
+  Matching posterior continua literal em case e whitespace, e código removido não fundamenta READY
+  nem quando citado com o marcador `-` do diff.
+- **DEF-6 residual:** somente alegações explicitamente vinculadas a cross-review/MCP,
+  `server_info`, `runtime_capabilities` ou `model_pin` são comparadas aos pins locais. “Reviewer” ou
+  “peer model” da aplicação sob revisão não pertence automaticamente ao namespace do servidor.
+- **DEF-9:** GPT-5.6 Sol pode fazer exatamente uma recuperação no mesmo modelo, prompt e teto,
+  reduzindo `high`/`xhigh`/`max` para `medium`; usage e custo da tentativa truncada permanecem no
+  ledger. Safety/content filter e esforço já baixo/médio continuam fail-closed sem retry.
+
+A revisão independente do diff encontrou e a mesma bateria cobre ainda: distinção oficial entre
+Gemini `promptFeedback.blockReason` (entrada) e `Candidate.finishReason=SAFETY` (saída), orçamento
+por peer compatível com consumidores de patch, envelope de status válido acima de 64 KiB,
+streaming provisional/commit/discard por tentativa e precificação do modelo efetivamente chamado
+em adapters e fallbacks. A rodada final de auditoria acrescentou: bloqueio de READY
+auto-referencial genérico, call graph integral no hardgate, fail-closed de Sonar Deep Research sem
+teto oficial e preservação de billing/erros/recusas nos terminais oficiais dos seis adapters. O
+relatório forense de 2026-07-12 contém a matriz oficial e a auditoria das 36 horas.
+
+---
+
 ## 4. Análise consolidada
 
 O pipeline anti-alucinação tem **quatro camadas** em série, cada uma com poder de veto absoluto e,

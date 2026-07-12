@@ -7,6 +7,142 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.06] — 2026-07-12
+
+**Six-provider wire-contract and field-forensics remediation.** This release
+closes the residual 4.5.5 failures observed in real hardgate sessions without
+weakening fabricated-evidence or terminal-safety gates.
+
+### Added
+
+- Added provider-specific output budgets through
+  `max_output_tokens_by_peer` and
+  `CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS`. `server_info` exposes the
+  effective six-peer map and budget preflight uses the same values as the wire.
+- Added one controlled same-model, medium-effort recovery for the officially
+  unambiguous OpenAI `max_output_tokens` and Gemini `MAX_TOKENS` terminals.
+  Token deltas are provisional and attempt-scoped; a failed attempt cancels
+  pending timers and emits `peer.token.discarded`, while only
+  `peer.token.completed` commits the stream. Every attempt retains its own
+  usage and cost.
+- Added a 22-case offline runtime-contract regression covering exact provider
+  payloads, schema subsets, output recoveries, safety terminals, evidence
+  transport, model namespaces, terminal state and FinOps behavior.
+- Added a detailed 36-hour field-forensics and official-provider audit report.
+- Added a deterministic npm 12 release-security regression covering reviewed
+  dependency scripts, registry-only lock resolution, OIDC, tag identity,
+  secret scope, cache exclusion and published provenance.
+
+### Fixed
+
+- Uses Anthropic's official JSON Schema lowering helper, removing unsupported
+  `maxItems` and `maxLength` constraints before calling Claude Fable 5 while
+  preserving the full local contract.
+- Sends Gemini, xAI and Perplexity only their documented schema/parameter
+  subsets. Gemini no longer receives `maxLength`; xAI omits undocumented
+  verbosity and stays inside its guaranteed length range; Sonar omits
+  undocumented dimensional constraints, schema name and OpenAI stream options.
+- Makes central `reasoning_effort.gemini` operative and maps it to native
+  `LOW`, `MEDIUM` or `HIGH` thinking instead of always forcing high.
+- Canonicalizes only exact case-insensitive structured enum values documented
+  by Anthropic; unrelated values remain invalid.
+- Correlates one controlled JSON-escape layer and the safe post-image of
+  unified-diff hunks. Literal matching preserves case and whitespace; removed
+  code cannot prove current state even when cited with the raw `-` marker, and
+  the all-or-nothing fabricated-source policy remains intact.
+- Carries paired, non-empty `BEGIN FILE`/`END FILE` evidence references across
+  rounds without promoting caller evidence to operator authority.
+- Restricts runtime/model-pin contradictions to syntactically attributed
+  cross-review runtime/server metadata. Merely saying “cross-review
+  submission/session” no longer makes an application's model, version or date
+  a claim about the local MCP runtime.
+- Treats canonical `server_info`, `runtime_capabilities`, `runtime_version` and
+  `model_pin` statements as current metadata even without a redundant
+  “current” adjective; explicit negation cannot smuggle the expected value into
+  a false claim, while independently attributed npm/application versions stay
+  outside the runtime namespace.
+- Removes stale `control=running` atomically before normal terminal outcomes;
+  cancellation retains its explicit cancelled control.
+- Prices Gemini visible output plus thinking tokens, calculates recovery costs
+  per attempt, preserves input/output cost breakdowns, and resolves every
+  adapter/fallback against the model actually sent on the wire. Unknown
+  effective models fail closed instead of borrowing a primary card;
+  Perplexity request/Deep Research dimensions are required for primary and
+  fallback cards, and overlapping family cards select the longest matching
+  prefix consistently in loader and runtime.
+- Fails closed before Sonar Deep Research dispatch: citation, reasoning and
+  search-query quantities are provider-controlled with no documented request
+  caps. Cards still support exact post-call accounting, but the runtime no
+  longer presents an input/output-only estimate as a hard preflight.
+- Preserves per-attempt Anthropic recovery pricing instead of repricing merged
+  usage through a possibly different long-context tier.
+- Distinguishes Gemini input rejection (`promptFeedback.blockReason`) from
+  candidate output filtering (`Candidate.finishReason=SAFETY`), raises the
+  status-envelope guard to cover the schema's maximum valid payload, keeps the
+  new per-peer output map patch-compatible, and suppresses Anthropic effort
+  recovery when medium would repeat or increase the requested effort.
+- Preserves provider-reported usage and effective-model cost when any of the
+  six adapters rejects an unusable terminal. DeepSeek drains the official
+  post-terminal `choices: []` usage chunk; retryable billed failures are merged
+  into a later success or final failure instead of becoming phantom unpriced
+  attempts.
+- Retries DeepSeek's documented `insufficient_system_resource` interruption
+  inside the existing bounded envelope, discarding partial output and retaining
+  usage; `length` and `content_filter` remain non-retryable terminals.
+- Makes retry accounting cancellation-safe: post-settle cancellation cannot
+  merge a prior attempt twice, pre-dispatch cancellation cannot lose it, and a
+  partially unpriced ledger remains `billing_status=unknown`.
+- Handles official Responses failures and SSE errors without flattening their
+  signal: every non-null non-stream `response.error` is preserved before
+  terminal-status validation (including xAI `incomplete` envelopes), while
+  stream `type=error` reads top-level code/message/param fields in OpenAI and
+  xAI.
+- Pins the release toolchain to npm 12.0.1, enforces the reviewed
+  `allowScripts` policy with strict failure on new scripts, and keeps Git and
+  remote-URL dependencies disabled.
+- Documents scoped-registry-safe `npm upgrade -g` commands that disable
+  install scripts and keep Git/remote dependencies blocked across npm 12's
+  whole global tree; `@latest` and local source/tarball installs remain
+  prohibited.
+- Prices the complete worst-case round call graph: every retry envelope on the
+  primary and declared fallbacks, plus the maximum format-recovery or
+  moderation-recovery path. The round hardgate no longer relies on a four-call
+  heuristic cap.
+- Preserves `estimateCost` compatibility with minimal/legacy test consumers by
+  resolving the default model inside the function instead of dereferencing a
+  missing `config.models` in a default parameter; explicit unknown model
+  overrides still fail closed.
+- Makes confirmed offline stubs report the configured model pin by default, so
+  FinOps preflight tests use the same effective-model identity as production;
+  explicit fallback stubs retain their separate model identity and rate card.
+- Makes `server_info.codeql_policy` and the security baseline reflect the
+  committed Advanced CodeQL workflow instead of falsely claiming Default Setup
+  and an absent workflow.
+
+### Security
+
+- Output `content_filter`, Gemini candidate `SAFETY` and other rejected terminal
+  states can no longer masquerade as input-prompt moderation and trigger
+  another paid call, fallback or context-reduced prompt retry. Gemini
+  `promptFeedback.blockReason` remains a distinct input-prompt signal.
+- OpenAI Responses `output[].content[].type=refusal` and
+  `response.refusal.delta/done` are explicit non-usable refusal terminals, not
+  malformed JSON eligible for paid format recovery; their billing is retained.
+- DeepSeek `length`, generic xAI incomplete and undocumented Sonar finish
+  reasons remain fail-closed; the runtime does not infer a retry cause absent
+  an official contract.
+- Attachment-custody claims still require strict path + full SHA-256 +
+  same-attachment literal correlation; authenticated evidence authority,
+  anti-self-review and immutable terminal controls remain enforced.
+- A generic assurance copied from the draft (for example “implementation is
+  correct and fully tested”) cannot ground its own READY vote; it must cite
+  independent, value-corresponding evidence.
+- npmjs publishing remains tokenless through Trusted Publishing/OIDC. Release
+  jobs disable package-manager caches, expose the StepSecurity read token only
+  to `npm ci`, verify the real tag points to the checked-out commit, protect the
+  temporary GitHub Packages credential file and require registry-visible SLSA
+  provenance after publication.
+
 ## [v04.05.05] — 2026-07-12
 
 **Clean-runner publish follow-up.** The v04.05.04 tag passed repository CI but

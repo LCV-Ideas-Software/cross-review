@@ -382,8 +382,8 @@ import type { PeerResult } from "../src/core/types.js";
   } as const;
   for (const peer of Object.keys(modelPins) as Array<keyof typeof modelPins>) {
     const contradicted = truthfulnessPreflight({
-      task: `Check the currently loaded ${peer} model.`,
-      initialDraft: `The currently loaded ${peer} model is ${wrongModels[peer]}.`,
+      task: `Check the currently loaded cross-review runtime ${peer} model.`,
+      initialDraft: `The currently loaded cross-review runtime ${peer} model is ${wrongModels[peer]}.`,
       runtimeFacts: { model_pins: modelPins },
       attachmentsPresent: false,
     });
@@ -395,8 +395,8 @@ import type { PeerResult } from "../src/core/types.js";
     assert.ok(contradicted.issue_classes.includes("runtime_contradiction"));
 
     const matching = truthfulnessPreflight({
-      task: `Check the currently loaded ${peer} model.`,
-      initialDraft: `The currently loaded ${peer} model is ${modelPins[peer]}.`,
+      task: `Check the currently loaded cross-review runtime ${peer} model.`,
+      initialDraft: `The currently loaded cross-review runtime ${peer} model is ${modelPins[peer]}.`,
       runtimeFacts: { model_pins: modelPins },
       attachmentsPresent: false,
     });

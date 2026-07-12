@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.05 for package 4.5.5. This
+Current supported source/release target: v04.05.06 for package 4.5.6. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.05 preserves that trust boundary while transporting evidence submitted
+v04.05.06 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or
@@ -41,6 +41,15 @@ authority.
 Invalid session metadata is quarantined rather than trusted by list/doctor
 operations. The release also retains the dependency advisory floors introduced
 in v04.04.07 and v04.04.08.
+
+Package publication uses npm Trusted Publishing/OIDC from the protected
+`npm-production` GitHub environment, not a long-lived npm publish token. The
+release workflow pins npm 12, disables dependency caches, limits the
+StepSecurity read credential to install steps, rejects unreviewed dependency
+scripts and verifies registry-visible SLSA provenance. The published package
+has no install-time lifecycle script of its own; operators must not bypass npm
+12 policy with `--dangerously-allow-all-scripts` or replace a registry upgrade
+with a locally built source installation.
 
 READY is a canonical envelope, not a free-form natural-language classification:
 its summary is fixed, requests/follow-ups are empty and outside prose is
