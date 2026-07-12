@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.6`                            |
+| Versão preparada pelo source  | `4.5.7`                            |
 | Data do source/release target | `2026-07-12`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -768,7 +768,9 @@ O repositório usa workflows para:
 
 - CI em push e pull request para `main`;
 - CodeQL em push, PR, agendamento e workflow manual;
-- publicação em tag `v*` ou dispatch manual;
+- auto-tag somente após CI verde de um push em `main` e publicação pela tag
+  verificada;
+- publicação manual somente por dispatch explícito de uma tag existente;
 - Pages, Scorecard, Socket, dependency review e automerge de Dependabot.
 
 O gate de CI executa:
@@ -777,6 +779,7 @@ O gate de CI executa:
 - ESLint;
 - Biome;
 - TypeScript typecheck;
+- política npm 12 e encadeamento CI → tag;
 - smoke tests com stub confirmado.
 
 O gate de publicação executa `npm run check`, `npm test`, valida metadata e
@@ -786,6 +789,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.07`      | 2026-07-12    | Embarca a remediação dos seis providers com CI antes da tag, npm 12.0.1, scripts estritos, cache desativado e token StepSecurity restrito ao install.                                  |
 | `v04.05.06`      | 2026-07-12    | Corrige contratos wire dos seis providers, budgets por peer, recovery OpenAI/Gemini, grounding de diffs/escapes, namespaces, terminais e contabilidade por modelo.                     |
 | `v04.05.05`      | 2026-07-12    | Follow-up de publicação: fixtures de cancelamento, health e contabilidade herméticas em runner limpo, com prova contra falso verde; produção continua fail-closed sem rates.           |
 | `v04.05.04`      | 2026-07-12    | Remedia grounding e preflights do hardgate, consenso independente, cancelamento multi-janela, ledger financeiro fail-closed, tetos efetivos, health/report terminal e alias `ultra`.   |
@@ -853,7 +857,7 @@ Antes de usar uma revisão como gate:
 
 - Contrato runtime do source target: smokes verificados em 2026-07-12. O
   `server_info` da janela instalada reportava `4.5.5` antes da publicação e do
-  upgrade de `4.5.6`.
+  upgrade de `4.5.7`.
 - `package.json` do repositório local.
 - `README.md`.
 - `CHANGELOG.md`.

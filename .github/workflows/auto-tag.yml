@@ -4,21 +4,27 @@ name: Auto-tag on version bump
 # shape and may include prerelease labels; the display tag is derived from the
 # numeric base version.
 #
-# GitHub does not start a second workflow from a tag push created with
-# GITHUB_TOKEN, so this workflow explicitly dispatches publish.yml on the tag
-# ref. The npm-production environment allows v* tag refs, not main.
+# The tag is created only after the CI workflow has completed successfully for
+# a push to main. GitHub does not start a second workflow from a tag push
+# created with GITHUB_TOKEN, so this workflow explicitly dispatches publish.yml
+# on the tag ref. The npm-production environment allows v* tag refs, not main.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: auto-tag-${{ github.ref }}
+  group: auto-tag-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 jobs:
   auto-tag:
     name: Create org-standard tag from package.json version
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -29,9 +35,10 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Checkout main with full history
+      - name: Checkout CI-verified main commit with full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
       - name: Read package.json version and compute display tag
         id: version

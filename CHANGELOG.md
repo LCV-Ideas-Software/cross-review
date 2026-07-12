@@ -7,6 +7,30 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.07] — 2026-07-12
+
+**npm 12 CI alignment.** Embeds the release-pipeline correction discovered by
+the first 4.5.6 main run instead of leaving the workflow fix outside the tagged
+release.
+
+### Fixed
+
+- Pins the ordinary CI workflow to the same audited npm 12.0.1 toolchain used
+  by publishing, disables the package-manager cache, runs
+  `npm ci --strict-allow-scripts`, and scopes the StepSecurity read token to the
+  dependency-install step. This prevents the npm version bundled with Node 24
+  from misclassifying registry tarballs as disabled remote dependencies under
+  the npm 12 `.npmrc` policy (`EALLOWREMOTE`).
+- Makes auto-tagging depend on a successful `CI` `workflow_run` for a push to
+  `main`, checks out that exact verified SHA and only then dispatches publishing.
+  The CI also verifies the active npm version and runs the focused release-policy
+  regression before broader checks.
+- The 4.5.6 publish run was cancelled only after its registry publish commands
+  had started: npmjs confirms 4.5.6 with SLSA provenance, while artifact
+  verification and the GitHub Release were skipped. Package 4.5.7 supersedes
+  that partial release and is the complete target containing both the
+  six-provider remediation below and this CI correction.
+
 ## [v04.05.06] — 2026-07-12
 
 **Six-provider wire-contract and field-forensics remediation.** This release

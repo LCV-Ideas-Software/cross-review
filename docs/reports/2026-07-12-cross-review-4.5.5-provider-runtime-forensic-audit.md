@@ -3,7 +3,7 @@
 Data: 2026-07-12
 Escopo: runtime 4.5.5, seis APIs de IA, sessões e logs das 36 horas anteriores,
 configuração central, custos, mecanismos anti-fabricação e preparação da
-correção 4.5.6.
+correção final 4.5.7 (contratos introduzidos no source 4.5.6).
 
 ## Resumo executivo
 
@@ -272,7 +272,7 @@ honestamente como hardgate. O preflight dos demais modelos cobre todas as
 tentativas do primary/fallback e o maior caminho de format/moderation recovery,
 sem o antigo cap heurístico de quatro chamadas.
 
-Recomendação de configuração 4.5.6:
+Recomendação de configuração 4.5.7:
 
 - manter o fallback global em 20.000;
 - Codex: 25.000;
@@ -387,7 +387,7 @@ ou revogada. Essa alteração de conta não foi inferida nem executada por códi
 - A nova chave `max_output_tokens_by_peer` não deve ser inserida na config
   central enquanto um host 4.5.5 puder recarregá-la: o schema estrito antigo
   rejeitaria atomicamente o arquivo. A mudança operacional deve ocorrer após a
-  publicação/upgrade para 4.5.6 e antes do reload dessa nova janela.
+  publicação/upgrade para 4.5.7 e antes do reload dessa nova janela.
 
 ## Referências oficiais
 
@@ -429,13 +429,15 @@ ou revogada. Essa alteração de conta não foi inferida nem executada por códi
   source contracts: todos verdes;
 - smoke amplo fail-fast: 122 eventos e `ok: true` após atualizar os fixtures
   antigos para o call graph FinOps completo;
-- runtime smoke stdio: `ok: true`, runtime 4.5.6, seis peers stub, preflights,
+- runtime smoke stdio: `ok: true`, runtime 4.5.7, seis peers stub, preflights,
   identidade, cancelamento e convergência exercitados;
 - `npm run check`, `git diff --check` e todos os workflows pelo `actionlint`:
   exit 0;
 - `npm audit --omit=dev`: 0 vulnerabilidades em todos os níveis;
-- `npm pack --dry-run`: pacote 4.5.6, 185 entradas, 911.869 bytes compactado,
-  4.207.849 bytes desempacotado.
+- `npm pack --dry-run --ignore-scripts`: pacote 4.5.7, 185 entradas, cerca de
+  914 kB compactados e 4,21 MB desempacotados. O relatório integra o
+  próprio pacote, portanto o integrity autorreferente não é congelado aqui; o
+  valor autoritativo do registry será registrado após a publicação.
 
 O comando agregado `npm test` é fail-fast. As primeiras execuções revelaram
 drift de fixtures históricas (namespace português, cartões de stubs e tetos
@@ -447,4 +449,22 @@ validação.
 
 ### Publicação
 
-A preencher após commit, workflows verdes e publicação do pacote 4.5.6.
+O primeiro push criou `v04.05.06`, mas o CI usava o npm embarcado no Node 24 e
+falhou na instalação com `EALLOWREMOTE` sob a política npm 12. O cancelamento do
+publish run `29204032723` chegou depois dos comandos de publicação: o npmjs
+registra 4.5.6 em `2026-07-12T18:33:54.523Z`, com provenance SLSA, integrity
+`sha512-WklDb7JYeu5x3GFBt8E9pdDmhCdyRswcYtlLcD4dmZ2eU/ccWrnAeGM7Uew63IF3vOXfQd0lETCyA9vYY0B80A==`
+e shasum `9147bdbd8fdc8cd2b81021993e730c2ab69e8973`. A etapa equivalente do GitHub
+Packages também registrou o pacote antes do cancelamento, mas as verificações
+posteriores e a criação do GitHub Release foram puladas. Trata-se, portanto, de
+uma publicação parcial, não de uma publicação evitada.
+
+A correção alinha o CI comum ao npm 12.0.1, confirma em runtime qual executável
+`npm` ficou ativo, desativa cache, exige scripts estritamente aprovados e limita
+o token StepSecurity ao install. O auto-tag deixou de competir com o CI em todo
+push: agora recebe `workflow_run` apenas do CI concluído em `main`, exige
+`conclusion == success` para evento `push`, faz checkout do `head_sha` validado e
+só então cria a tag e despacha a publicação. Um contrato automatizado protege
+essas propriedades. A 4.5.7 substitui a 4.5.6 como entrega completa.
+
+A preencher após workflows verdes e publicação do pacote 4.5.7.

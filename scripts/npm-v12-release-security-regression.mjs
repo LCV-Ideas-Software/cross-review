@@ -9,6 +9,8 @@ const read = (file) => readFile(path.join(root, file), "utf8");
 const [
   packageJson,
   packageLock,
+  ciWorkflow,
+  autoTagWorkflow,
   publishWorkflow,
   npmrc,
   registryVerifier,
@@ -21,6 +23,8 @@ const [
 ] = await Promise.all([
   read("package.json").then(JSON.parse),
   read("package-lock.json").then(JSON.parse),
+  read(".github/workflows/ci.yml"),
+  read(".github/workflows/auto-tag.yml"),
   read(".github/workflows/publish.yml"),
   read(".npmrc"),
   read("scripts/verify-registry-dist.mjs"),
@@ -145,6 +149,70 @@ assert.doesNotMatch(
   /dangerously-allow-all-scripts/,
   "release automation must never bypass the npm install-script policy",
 );
+
+assert.match(
+  ciWorkflow,
+  /NPM_CLI_VERSION:\s*["']12\.0\.1["']/,
+  "ordinary CI must pin the same audited npm v12 toolchain as release jobs",
+);
+assert.match(
+  ciWorkflow,
+  /package-manager-cache:\s*false/,
+  "ordinary CI must explicitly disable package-manager caching",
+);
+assert.match(
+  ciWorkflow,
+  /Install npm v12 toolchain[\s\S]*?npm[^\n]*install --global "npm@\$NPM_CLI_VERSION" --ignore-scripts/,
+  "ordinary CI must activate npm v12 without running install scripts",
+);
+assert.match(
+  ciWorkflow,
+  /Verify npm v12 toolchain[\s\S]*?ACTUAL_NPM_VERSION=.*npm[^\n]*--version[\s\S]*?ACTUAL_NPM_VERSION.*NPM_CLI_VERSION/,
+  "ordinary CI must verify the npm executable version before dependency installation",
+);
+assert.match(
+  ciWorkflow,
+  /npm ci --strict-allow-scripts --no-audit --no-fund/,
+  "ordinary CI must fail closed when an unreviewed dependency script appears",
+);
+assert.equal(
+  (ciWorkflow.match(/STEPSECURITY_NPM_TOKEN:\s*\$\{\{ secrets\.STEPSECURITY_NPM_TOKEN \}\}/g) ?? [])
+    .length,
+  1,
+  "ordinary CI must expose the StepSecurity read token only to npm ci",
+);
+assert.doesNotMatch(
+  ciWorkflow,
+  /dangerously-allow-all-scripts/,
+  "ordinary CI must never bypass the npm install-script policy",
+);
+assert.match(
+  ciWorkflow,
+  /run npm-v12-release-security-regression/,
+  "ordinary CI must run the workflow-policy regression before broader checks",
+);
+
+assert.match(
+  autoTagWorkflow,
+  /workflow_run:\s*[\s\S]*?workflows:\s*\[CI\][\s\S]*?types:\s*\[completed\][\s\S]*?branches:\s*\[main\]/,
+  "auto-tag must wait for the CI workflow to complete on main",
+);
+assert.doesNotMatch(
+  autoTagWorkflow,
+  /^  push:/m,
+  "auto-tag must not race CI by triggering directly on a main push",
+);
+for (const prerequisite of [
+  "github.event.workflow_run.conclusion == 'success'",
+  "github.event.workflow_run.event == 'push'",
+  "github.event.workflow_run.head_branch == 'main'",
+  "ref: ${{ github.event.workflow_run.head_sha }}",
+]) {
+  assert.ok(
+    autoTagWorkflow.includes(prerequisite),
+    `auto-tag must enforce the verified workflow_run prerequisite: ${prerequisite}`,
+  );
+}
 
 for (const policy of ["strict-allow-scripts=true", "allow-git=none", "allow-remote=none"]) {
   assert.match(npmrc, new RegExp(`^${policy}$`, "m"), `.npmrc must enforce ${policy}`);
