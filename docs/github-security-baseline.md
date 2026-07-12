@@ -29,14 +29,18 @@ environment `npm-production`, and the `npm publish` action. After OIDC is
 verified, npm publishing access should be set to **Require two-factor
 authentication and disallow tokens**, while the Trusted Publisher remains
 authorized. The workflow grants `id-token: write`, uses a GitHub-hosted runner,
-disables package-manager caches, pins npm 12, and verifies the published SLSA
-provenance. The read-only `STEPSECURITY_NPM_TOKEN` is scoped only to dependency
-installation steps.
+disables package-manager caches, pins npm 12 by exact version and registry
+tarball SHA-512, verifies the CLI before execution, and verifies the published
+SLSA provenance. The read-only `STEPSECURITY_NPM_TOKEN` is scoped only to
+dependency installation steps.
 
-Pushes to `main` auto-create an organization-standard display tag such as
-`vXX.XX.XX` from `package.json`; the tag then creates a normal GitHub Release
-and publishes `@lcv-ideas-software/cross-review` to npmjs.com and GitHub
-Packages. The API-first package is separate from the archived CLI package
+A successful CI run for a push to `main` may auto-create an
+organization-standard display tag such as `vXX.XX.XX` from `package.json`. The
+privileged auto-tag workflow uses the trusted default-branch event checkout,
+compares it with the successful run SHA and skips every repository-reading or
+publishing step on a mismatch. The verified tag then creates a normal GitHub Release and publishes
+`@lcv-ideas-software/cross-review` to npmjs.com and GitHub Packages. The
+API-first package is separate from the archived CLI package
 `@lcv-ideas-software/cross-review-v1`.
 
 CodeQL Advanced Setup is committed for GitHub Actions and

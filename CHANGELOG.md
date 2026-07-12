@@ -7,6 +7,28 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.08] — 2026-07-12
+
+**Hash-pinned release bootstrap and trusted auto-tag checkout.** Closes the
+seven code-scanning alerts opened by the 4.5.7 workflow changes without
+weakening the CI-before-tag gate.
+
+### Fixed
+
+- Replaces five `npm install --global npm@12.0.1` bootstrap calls with one
+  repository-local composite action. It downloads only the exact npm 12.0.1
+  registry tarball, verifies its pinned SHA-512 before extraction or execution,
+  confirms the extracted CLI version and activates it without running any npm
+  install lifecycle. This closes Scorecard alerts 32–35 and 37.
+- Removes the dynamic `workflow_run.head_sha` checkout from the privileged
+  auto-tag job. The workflow uses GitHub's trusted default-branch event
+  checkout, immediately compares that HEAD with the SHA from the successful CI run and gates every
+  repository-reading, tagging and publishing step on an exact match. This
+  closes Scorecard alert 36 and CodeQL alert 38 while preserving race safety.
+- Extends the release-security regression to lock the exact npm tarball digest,
+  the five shared bootstrap consumers, the absence of global npm installs, the
+  trusted checkout and the verified-SHA step gates.
+
 ## [v04.05.07] — 2026-07-12
 
 **npm 12 CI alignment.** Embeds the release-pipeline correction discovered by

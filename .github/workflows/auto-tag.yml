@@ -38,9 +38,23 @@ jobs:
       - name: Checkout CI-verified main commit with full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+      - name: Verify checked out main still matches successful CI
+        id: verified
+        env:
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          if [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "A newer main commit ($CHECKED_OUT_SHA) replaced CI-verified $VERIFIED_SHA; this run will not tag."
+            exit 0
+          fi
+          echo "matches=true" >> "$GITHUB_OUTPUT"
+          echo "Verified main at successful CI commit $VERIFIED_SHA."
       - name: Read package.json version and compute display tag
+        if: steps.verified.outputs.matches == 'true'
         id: version
         shell: bash
         run: |
@@ -61,6 +75,7 @@ jobs:
           echo "legacy_tag=$LEGACY_TAG" >> "$GITHUB_OUTPUT"
           echo "Detected package version: $VERSION -> display tag: $TAG"
       - name: Check if tag already exists
+        if: steps.verified.outputs.matches == 'true'
         id: check
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -78,7 +93,7 @@ jobs:
             echo "Tag ${TAG} does not exist; it will be created."
           fi
       - name: Create and push tag
-        if: steps.check.outputs.exists == 'false'
+        if: steps.verified.outputs.matches == 'true' && steps.check.outputs.exists == 'false'
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -89,7 +104,7 @@ jobs:
           git push origin "${TAG}"
           echo "Created and pushed lightweight tag ${TAG}."
       - name: Dispatch publish workflow
-        if: steps.check.outputs.exists == 'false'
+        if: steps.verified.outputs.matches == 'true' && steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}

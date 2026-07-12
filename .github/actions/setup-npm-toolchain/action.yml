@@ -1,0 +1,56 @@
+name: Setup hash-verified npm toolchain
+description: Bootstrap the audited npm CLI from an exact registry tarball after SHA-512 verification.
+inputs:
+  version:
+    description: Exact npm CLI version.
+    required: true
+  sha512:
+    description: Lowercase hexadecimal SHA-512 digest of the npm tarball.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Download, verify and activate npm
+      shell: bash
+      env:
+        NPM_CLI_VERSION: ${{ inputs.version }}
+        NPM_CLI_SHA512: ${{ inputs.sha512 }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! "$NPM_CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::Invalid npm CLI version: $NPM_CLI_VERSION"
+          exit 1
+        fi
+        if [[ ! "$NPM_CLI_SHA512" =~ ^[a-f0-9]{128}$ ]]; then
+          echo "::error::Invalid npm CLI SHA-512 digest."
+          exit 1
+        fi
+
+        archive="$RUNNER_TEMP/npm-$NPM_CLI_VERSION.tgz"
+        toolchain_dir="$RUNNER_TEMP/npm-toolchain-$NPM_CLI_VERSION"
+        wrapper_dir="$RUNNER_TEMP/npm-toolchain-bin"
+        registry_url="https://registry.npmjs.org/npm/-/npm-$NPM_CLI_VERSION.tgz"
+
+        curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+          --output "$archive" "$registry_url"
+        printf '%s  %s\n' "$NPM_CLI_SHA512" "$archive" | sha512sum --check --strict
+
+        mkdir -p "$toolchain_dir" "$wrapper_dir"
+        tar -xzf "$archive" -C "$toolchain_dir"
+        npm_cli="$toolchain_dir/package/bin/npm-cli.js"
+        if [ ! -f "$npm_cli" ]; then
+          echo "::error::Verified npm archive does not contain package/bin/npm-cli.js."
+          exit 1
+        fi
+
+        actual_version="$(node "$npm_cli" --version)"
+        if [ "$actual_version" != "$NPM_CLI_VERSION" ]; then
+          echo "::error::Expected npm $NPM_CLI_VERSION, got $actual_version."
+          exit 1
+        fi
+
+        ln -s "$npm_cli" "$wrapper_dir/npm"
+        echo "$wrapper_dir" >> "$GITHUB_PATH"
+        echo "NPM_CLI_PATH=$npm_cli" >> "$GITHUB_ENV"
+        echo "Activated hash-verified npm $actual_version."

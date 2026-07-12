@@ -8,6 +8,7 @@ permissions:
   contents: read
 env:
   NPM_CLI_VERSION: "12.0.1"
+  NPM_CLI_SHA512: "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140"
 jobs:
   verify:
     name: Build, lint and smoke
@@ -25,8 +26,11 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Install npm v12 toolchain
-        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
+      - name: Setup hash-verified npm v12 toolchain
+        uses: ./.github/actions/setup-npm-toolchain
+        with:
+          version: ${{ env.NPM_CLI_VERSION }}
+          sha512: ${{ env.NPM_CLI_SHA512 }}
       - name: Verify npm v12 toolchain
         shell: bash
         run: |

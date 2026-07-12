@@ -16,6 +16,7 @@ concurrency:
 env:
   # Pin the npm release toolchain so the gate exercises npm v12 install-time defaults.
   NPM_CLI_VERSION: "12.0.1"
+  NPM_CLI_SHA512: "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140"
 jobs:
   gate:
     name: Pre-publish gate (test + metadata)
@@ -68,8 +69,11 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Install npm v12 toolchain
-        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
+      - name: Setup hash-verified npm v12 toolchain
+        uses: ./.github/actions/setup-npm-toolchain
+        with:
+          version: ${{ env.NPM_CLI_VERSION }}
+          sha512: ${{ env.NPM_CLI_SHA512 }}
       - name: Install dependencies
         run: npm ci --strict-allow-scripts --no-audit --no-fund
         env:
@@ -146,8 +150,11 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           scope: "@lcv-ideas-software"
           package-manager-cache: false
-      - name: Install npm v12 toolchain
-        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
+      - name: Setup hash-verified npm v12 toolchain
+        uses: ./.github/actions/setup-npm-toolchain
+        with:
+          version: ${{ env.NPM_CLI_VERSION }}
+          sha512: ${{ env.NPM_CLI_SHA512 }}
       - name: Verify trusted publishing toolchain
         run: |
           set -euo pipefail
@@ -234,8 +241,11 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Install npm v12 toolchain
-        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
+      - name: Setup hash-verified npm v12 toolchain
+        uses: ./.github/actions/setup-npm-toolchain
+        with:
+          version: ${{ env.NPM_CLI_VERSION }}
+          sha512: ${{ env.NPM_CLI_SHA512 }}
       - name: Install dependencies
         run: npm ci --strict-allow-scripts --no-audit --no-fund
         env:
@@ -304,8 +314,11 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Install npm v12 toolchain
-        run: npm --registry=https://registry.npmjs.org install --global "npm@$NPM_CLI_VERSION" --ignore-scripts --no-audit --no-fund
+      - name: Setup hash-verified npm v12 toolchain
+        uses: ./.github/actions/setup-npm-toolchain
+        with:
+          version: ${{ env.NPM_CLI_VERSION }}
+          sha512: ${{ env.NPM_CLI_SHA512 }}
       - name: Install dependencies
         run: npm ci --strict-allow-scripts --no-audit --no-fund
         env:

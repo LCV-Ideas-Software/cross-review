@@ -93,6 +93,44 @@ O mapa de effort do 4.5.5 omitia Gemini, apesar de o arquivo central já aceitar
 arquivo → env existia, mas `loadConfig()` não lia a variável e o adapter fixava
 `ThinkingLevel.HIGH`.
 
+### Estado pós-publicação da configuração central
+
+Depois da publicação da 4.5.7, o arquivo central foi atualizado sem instalar
+artefato local e validado diretamente pelo schema do source 4.5.7. O resultado
+offline foi:
+
+| Campo                          | Valor                                                              |
+| ------------------------------ | ------------------------------------------------------------------ |
+| SHA-256 atual do arquivo       | `f526bbdc87648631dcb0eab98cc43da4b7b0062d8e5523773b7b977b96376023` |
+| Schema 4.5.7                   | válido                                                             |
+| Campos aplicados               | `70`                                                               |
+| Campos sobrescritos por env    | `0`                                                                |
+| Controles financeiros ausentes | `0`                                                                |
+| `cost_rates` genérico          | removido                                                           |
+| Cards em `model_cost_rates`    | seis peers                                                         |
+| Output Codex / Claude / demais | `25000` / `64000` / `20000`                                        |
+| Probe Perplexity               | `auth_only`                                                        |
+| Cache Anthropic                | TTL `1h`, desativado                                               |
+
+Os cards por modelo removem o tier longo não publicado do Grok, o cache-write
+por token inexistente do Gemini e as dimensões exclusivas de Deep Research do
+card ativo `sonar-reasoning-pro`. O card `sonar-deep-research` foi preservado
+apenas para contabilidade pós-resposta; ele permanece fora de primary e
+fallback porque suas dimensões controladas pelo provedor não permitem hardgate
+financeiro conservador antes da chamada.
+
+Uma consulta nova a `server_info` confirmou que a janela continua executando
+4.5.5. Esse processo mantém o snapshot anterior
+`87f809f2bd9cba20147c707d3a33be0745907889d0e9a3968c8a3090db1a9c0b`, expõe o
+hash atual acima como `current_sha256`, declara `reload_required=true` e bloqueia
+chamadas pagas com `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED`. A configuração 4.5.7
+só se tornará efetiva depois de o operador executar o upgrade global publicado
+e recarregar a janela.
+
+O pacote 4.5.7 foi posteriormente instalado pelo operador, mas a janela não foi
+recarregada. Portanto, o runtime observado continua corretamente em 4.5.5; o
+próximo reload foi reservado para a versão 4.5.8.
+
 ## Auditoria das últimas 36 horas
 
 Janela forense aproximada: desde `2026-07-11T02:48:41Z`.
@@ -384,10 +422,12 @@ ou revogada. Essa alteração de conta não foi inferida nem executada por códi
 - DeepSeek/Grok/Perplexity continuam fail-closed em terminais ambíguos. A única
   exceção DeepSeek é `insufficient_system_resource`, que a API oficial define
   como interrupção por recurso insuficiente do sistema de inferência.
-- A nova chave `max_output_tokens_by_peer` não deve ser inserida na config
-  central enquanto um host 4.5.5 puder recarregá-la: o schema estrito antigo
-  rejeitaria atomicamente o arquivo. A mudança operacional deve ocorrer após a
-  publicação/upgrade para 4.5.7 e antes do reload dessa nova janela.
+- A nova chave `max_output_tokens_by_peer` não deve ser carregada por um host
+  4.5.5: o schema estrito antigo a rejeitaria atomicamente. A 4.5.7 foi
+  publicada antes da alteração; como o host atual não suporta live reload, ele
+  preservou o snapshot anterior, marcou reload obrigatório e bloqueou chamadas
+  pagas. O operador deve fazer o upgrade global publicado antes de recarregar a
+  janela.
 
 ## Referências oficiais
 
@@ -415,6 +455,10 @@ ou revogada. Essa alteração de conta não foi inferida nem executada por códi
 - [npm 12 configuration](https://docs.npmjs.com/cli/v12/using-npm/config/)
 - [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
+- [GitHub Actions `workflow_run`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
+- [GitHub Actions secure use](https://docs.github.com/en/actions/reference/security/secure-use)
+- [OpenSSF Scorecard — Pinned Dependencies](https://github.com/ossf/scorecard/blob/main/docs/checks.md#pinned-dependencies)
+- [OpenSSF npm package-manager best practices](https://github.com/ossf/package-manager-best-practices/blob/main/published/npm.md)
 
 ## Evidência de release
 
@@ -467,4 +511,72 @@ push: agora recebe `workflow_run` apenas do CI concluído em `main`, exige
 só então cria a tag e despacha a publicação. Um contrato automatizado protege
 essas propriedades. A 4.5.7 substitui a 4.5.6 como entrega completa.
 
-A preencher após workflows verdes e publicação do pacote 4.5.7.
+Fechamento da entrega 4.5.7:
+
+- commit e tag: `cddd72a082e840cad3208ce653449524b6c8c5f6` = `v04.05.07`;
+- [CI 29204616990](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29204616990):
+  verde, incluindo npm 12.0.1 efetivo, política de release, formatação, lint,
+  Biome, typecheck e smoke;
+- [auto-tag 29204660252](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29204660252):
+  verde e disparado por `workflow_run` somente depois do CI;
+- [publish 29204668442](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29204668442):
+  quatro jobs verdes — gate agregado, npmjs, GitHub Packages e GitHub Release;
+- CodeQL avançado `29204617014`, CodeQL default setup `29204616646` e Socket
+  `29204616978`: verdes no mesmo SHA;
+- npmjs publicou 4.5.7 como `latest` em `2026-07-12T18:53:50.676Z`, com shasum
+  `50a329c9663070f007c58a17cb6887e75da23a82`, integrity
+  `sha512-58CDvnqq2EWlkuvF19FObsbB3dDVgdkORexMx/745peiT1/UIH8ykKyj1rU/GpTU+jKF2IXkxAULpArGS5zNRQ==`
+  e attestation SLSA provenance v1;
+- [GitHub Release v04.05.07](https://github.com/LCV-Ideas-Software/cross-review/releases/tag/v04.05.07):
+  publicada, imutável, não draft e não prerelease; o asset tem 914.021 bytes e
+  digest
+  `sha256:d55eea25641efbff8c2f91c2ea28100f4b2c1ace0be9262e04ca8b1847c3a8c7`.
+
+Todos os workflows associados ao SHA/tag final alcançaram estado terminal
+`success`. Nenhuma instalação global local e nenhuma chamada paga aos seis
+provedores foram realizadas nesta entrega.
+
+## Adendo: sete alertas de code scanning e target 4.5.8
+
+Depois da publicação 4.5.7, o GitHub abriu sete findings que se reduzem a duas
+causas:
+
+| Alertas | Scanner   | Causa                                                             |
+| ------- | --------- | ----------------------------------------------------------------- |
+| `32–35` | Scorecard | quatro bootstraps globais do npm no workflow de publicação        |
+| `37`    | Scorecard | o mesmo bootstrap global no CI comum                              |
+| `36`    | Scorecard | checkout dinâmico de `workflow_run.head_sha` em workflow gravável |
+| `38`    | CodeQL    | o mesmo checkout event-controlled no auto-tag                     |
+
+O Scorecard considera qualquer `npm install` em workflow não pinado, exceto os
+caminhos reconhecidos pelo scanner, ainda que o argumento contenha uma versão
+SemVer exata. O risco material também existe: a versão fixa não autentica o
+conteúdo do tarball antes de executar o novo CLI. A regressão foi primeiro
+alterada para exigir SHA-512 e ausência de `npm install --global`; ela falhou no
+estado anterior com `release jobs must pin the npm v12 tarball by SHA-512`.
+
+A correção substitui as cinco ocorrências por uma composite action local que:
+
+1. aceita apenas versão `X.Y.Z` e digest SHA-512 hexadecimal de 128 caracteres;
+2. baixa a URL exata `npm-12.0.1.tgz` do registry oficial;
+3. verifica SHA-512 antes de extrair ou executar;
+4. confirma que o CLI extraído reporta 12.0.1;
+5. ativa um wrapper temporário, sem instalação global nem lifecycle npm.
+
+O digest pinado corresponde ao integrity oficial
+`sha512-L5T9i/YAQWQWqTS/xZxJkei/9zcu99hCeE4qi41IyBVV7mRQad3qc2JfuOktwmH+qwGI/V2rbCL+/UYxb1+RQA==`.
+
+Para o auto-tag, o checkout deixou de aceitar `head_sha` no campo `ref`. O
+workflow usa o checkout padrão confiável da branch default, passa o SHA do
+evento somente por `env`, compara-o imediatamente com `git rev-parse HEAD` e
+condiciona as quatro etapas que leem, tagueiam ou publicam conteúdo ao output
+`matches=true`. Se outro push avançar `main`, a execução antiga termina sem
+criar tag; o CI do commit novo iniciará a próxima tentativa.
+
+Validação local dirigida: reprodução vermelha, regressão npm/release verde e
+`actionlint` verde. O check integrado passou sem warnings após a correção de
+estilo, o runtime smoke retornou `ok: true` e versão 4.5.8, a configuração
+central continuou válida com 70 campos/zero overrides/zero controles ausentes e
+o dry-run empacotou 185 entradas, cerca de 917 kB compactados e 4,22 MB
+desempacotados. A confirmação de fechamento dos sete findings será registrada
+após as análises GitHub do target 4.5.8.

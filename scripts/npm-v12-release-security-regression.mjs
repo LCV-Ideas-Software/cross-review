@@ -11,6 +11,7 @@ const [
   packageLock,
   ciWorkflow,
   autoTagWorkflow,
+  npmToolchainAction,
   publishWorkflow,
   npmrc,
   registryVerifier,
@@ -25,6 +26,7 @@ const [
   read("package-lock.json").then(JSON.parse),
   read(".github/workflows/ci.yml"),
   read(".github/workflows/auto-tag.yml"),
+  read(".github/actions/setup-npm-toolchain/action.yml"),
   read(".github/workflows/publish.yml"),
   read(".npmrc"),
   read("scripts/verify-registry-dist.mjs"),
@@ -42,6 +44,9 @@ const expectedAllowScripts = {
   "fsevents@2.3.3": true,
   "protobufjs@7.6.4": true,
 };
+const expectedNpmCliVersion = "12.0.1";
+const expectedNpmCliSha512 =
+  "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140";
 
 assert.deepEqual(
   packageJson.allowScripts,
@@ -129,15 +134,60 @@ assert.equal(
   "all four release jobs must explicitly disable package-manager caching",
 );
 
+for (const [workflow, label] of [
+  [ciWorkflow, "ordinary CI"],
+  [publishWorkflow, "release jobs"],
+]) {
+  assert.ok(
+    workflow.includes(`NPM_CLI_VERSION: "${expectedNpmCliVersion}"`),
+    `${label} must pin the audited npm CLI version exactly`,
+  );
+  assert.ok(
+    workflow.includes(`NPM_CLI_SHA512: "${expectedNpmCliSha512}"`),
+    `${label} must pin the audited npm tarball digest exactly`,
+  );
+}
+
+assert.match(
+  npmToolchainAction,
+  /registry_url="https:\/\/registry\.npmjs\.org\/npm\/-\/npm-\$NPM_CLI_VERSION\.tgz"/,
+  "the npm bootstrap must fetch only the exact-version official registry tarball",
+);
+assert.match(
+  npmToolchainAction,
+  /sha512sum --check --strict/,
+  "the npm bootstrap must verify SHA-512 before extracting or executing the CLI",
+);
+assert.match(
+  npmToolchainAction,
+  /actual_version="\$\(node "\$npm_cli" --version\)"/,
+  "the npm bootstrap must verify the extracted CLI version",
+);
+assert.doesNotMatch(
+  npmToolchainAction,
+  /npm[^\n]*install/,
+  "the hash-verified npm bootstrap must not recursively invoke npm install",
+);
+
 assert.match(
   publishWorkflow,
   /NPM_CLI_VERSION:\s*["']12\.0\.1["']/,
   "release jobs must pin the audited npm v12 toolchain",
 );
+assert.match(
+  publishWorkflow,
+  /NPM_CLI_SHA512:\s*["'][a-f0-9]{128}["']/,
+  "release jobs must pin the npm v12 tarball by SHA-512",
+);
 assert.equal(
-  (publishWorkflow.match(/Install npm v12 toolchain/g) ?? []).length,
+  (publishWorkflow.match(/uses:\s*\.\/\.github\/actions\/setup-npm-toolchain/g) ?? []).length,
   4,
-  "every release job must activate the audited npm v12 toolchain before npm ci",
+  "every release job must activate the hash-verified npm v12 toolchain before npm ci",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /npm[^\n]*install --global/,
+  "release jobs must not bootstrap executable tooling through an unhashed npm install",
 );
 assert.equal(
   (publishWorkflow.match(/npm ci --strict-allow-scripts --no-audit --no-fund/g) ?? []).length,
@@ -157,13 +207,23 @@ assert.match(
 );
 assert.match(
   ciWorkflow,
+  /NPM_CLI_SHA512:\s*["'][a-f0-9]{128}["']/,
+  "ordinary CI must pin the npm v12 tarball by SHA-512",
+);
+assert.match(
+  ciWorkflow,
   /package-manager-cache:\s*false/,
   "ordinary CI must explicitly disable package-manager caching",
 );
 assert.match(
   ciWorkflow,
-  /Install npm v12 toolchain[\s\S]*?npm[^\n]*install --global "npm@\$NPM_CLI_VERSION" --ignore-scripts/,
-  "ordinary CI must activate npm v12 without running install scripts",
+  /uses:\s*\.\/\.github\/actions\/setup-npm-toolchain/,
+  "ordinary CI must activate the hash-verified npm v12 toolchain",
+);
+assert.doesNotMatch(
+  ciWorkflow,
+  /npm[^\n]*install --global/,
+  "ordinary CI must not bootstrap executable tooling through an unhashed npm install",
 );
 assert.match(
   ciWorkflow,
@@ -206,13 +266,33 @@ for (const prerequisite of [
   "github.event.workflow_run.conclusion == 'success'",
   "github.event.workflow_run.event == 'push'",
   "github.event.workflow_run.head_branch == 'main'",
-  "ref: ${{ github.event.workflow_run.head_sha }}",
+  `VERIFIED_SHA: \${{ github.event.workflow_run.head_sha }}`,
+  'CHECKED_OUT_SHA="$(git rev-parse HEAD)"',
 ]) {
   assert.ok(
     autoTagWorkflow.includes(prerequisite),
     `auto-tag must enforce the verified workflow_run prerequisite: ${prerequisite}`,
   );
 }
+const privilegedCheckoutBlock = autoTagWorkflow.match(
+  /- name: Checkout CI-verified main commit with full history[\s\S]*?(?=\n\s+- name: Verify checked out main still matches successful CI)/,
+)?.[0];
+assert.ok(privilegedCheckoutBlock, "auto-tag must retain an explicit trusted checkout step");
+assert.doesNotMatch(
+  privilegedCheckoutBlock,
+  /^\s*ref:/m,
+  "workflow_run checkout must use GitHub's trusted default-branch event ref, not an event-controlled ref",
+);
+assert.doesNotMatch(
+  autoTagWorkflow,
+  /ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha\s*\}\}/,
+  "privileged workflow_run jobs must never checkout a dynamic event SHA",
+);
+assert.equal(
+  (autoTagWorkflow.match(/if:\s*steps\.verified\.outputs\.matches == 'true'/g) ?? []).length,
+  4,
+  "every step that reads, tags or publishes repository content must require the verified main SHA",
+);
 
 for (const policy of ["strict-allow-scripts=true", "allow-git=none", "allow-remote=none"]) {
   assert.match(npmrc, new RegExp(`^${policy}$`, "m"), `.npmrc must enforce ${policy}`);
