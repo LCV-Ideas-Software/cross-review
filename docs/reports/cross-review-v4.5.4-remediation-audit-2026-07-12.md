@@ -365,11 +365,34 @@ health passes 8/8 and accounting passes 18/18 with a real stub reviewer result.
 Production financial gates remain unchanged and still fail closed without real
 rate cards.
 
-The source must be committed directly to `main` with a signed commit. The
-auto-tag workflow should create `v04.05.05`; the publish workflow must pass its
-pre-publish gate, publish npmjs and GitHub Packages with provenance, and create
-the GitHub Release. Final commit SHA, workflow URLs and registry integrity are
-recorded after those external steps complete.
+Release completion evidence:
+
+- signed release commit:
+  `dc748cf8e1e1f5f6cbb46a0b960c3697354e8c5e`, synchronized directly to
+  `main`;
+- lightweight tag `v04.05.05` points exactly to that commit;
+- all seven workflows for the tagged SHA completed successfully:
+  [Publish 29181796998](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181796998),
+  [Auto-tag 29181789688](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181789688),
+  [CI 29181789710](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181789710),
+  [repository CodeQL 29181789666](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181789666),
+  [dynamic CodeQL 29181789493](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181789493),
+  [OpenSSF Scorecard 29181789676](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181789676)
+  and
+  [Socket Security 29181789682](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181789682);
+- npmjs published `@lcv-ideas-software/cross-review@4.5.5` with `latest=4.5.5`,
+  shasum `05c993b23f91e8f4504a128cb75eb0854cd41ebf` and integrity
+  `sha512-qw1jA/1NyzNu8WXSJ+MWIxZMP4Z2MaMgXCcxQXJopOSuuOHlcMgLlGEbnD0hBa9qQH0FI9u+OaTY56HrXCNrzg==`;
+- GitHub Packages publication completed successfully; and
+- the immutable
+  [GitHub Release v04.05.05](https://github.com/LCV-Ideas-Software/cross-review/releases/tag/v04.05.05)
+  contains `lcv-ideas-software-cross-review-4.5.5.tgz` with SHA-256
+  `62bb93d66af18f68cc7bf86a0dd43533c15a1f7a4f06fca01a6d584583169bcf`.
+
+The MCP window used for the investigation still reported runtime 4.5.3 before
+operator installation. Publication does not hot-reload an already open MCP
+host; runtime 4.5.5 is confirmed only after the registry upgrade and a full
+window reload followed by a fresh `server_info` call.
 
 The operator installs only from the published registry:
 

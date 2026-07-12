@@ -2,7 +2,9 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.05 for package 4.5.5. Registry publication state is verified independently through npm; the current main branch remains supported for security fixes while a publish workflow is in flight.
+Current supported release: v04.05.05 for package 4.5.5. Registry publication
+state is verified independently through npm; the current `main` branch remains
+supported for security fixes after publication.
 
 v04.05.05 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted

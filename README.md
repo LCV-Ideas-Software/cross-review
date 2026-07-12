@@ -24,10 +24,10 @@ npm upgrade -g @lcv-ideas-software/cross-review
 npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. This source prepares **v04.05.05** (package `4.5.5`).
-The public registry can lag while the publish workflow runs; use the npm badge
-or `npm view @lcv-ideas-software/cross-review version` for registry state and
-`server_info` for the version actually loaded by an MCP window. See
+**Status.** Stable. The current release is **v04.05.05** (package `4.5.5`).
+Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
+registry state and `server_info` for the version actually loaded by an MCP
+window. See
 [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
