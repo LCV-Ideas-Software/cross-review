@@ -7,6 +7,30 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.10] — 2026-07-12
+
+**Registry-attestation propagation fix.** Makes the npmjs post-publish gate
+resilient to the independently propagated provenance document while retaining
+strict, bounded, registry-pinned verification.
+
+### Fixed
+
+- Retries transient network failures and HTTP 404/408/425/429/5xx responses
+  from the attestation URL, incomplete JSON and a document whose SLSA predicate
+  is still propagating, all within a bounded 12-attempt window. Permanent HTTP
+  failures still fail immediately; missing SLSA provenance v1 fails closed
+  after the bounded propagation window.
+- Follows the attestation pathname supplied by npm package metadata while
+  assigning it to a URL already pinned to the configured npm registry origin.
+  This follows the official npm/Pacote pathname contract without relying on an
+  undocumented literal endpoint, while also blocking protocol-relative paths
+  and redirects from producing metadata-driven cross-origin fetches.
+- Adds deterministic behavioral regressions reproducing the 4.5.9 release race
+  and adjacent states: package metadata is visible while the attestation lookup
+  returns 404, incomplete JSON or a document without SLSA before the required
+  provenance document appears. The same regression locks the complete 5xx
+  range, protocol-relative origin pin and redirect rejection.
+
 ## [v04.05.09] — 2026-07-12
 
 **Evidence-checklist provenance fix.** Prevents server-authored verdict

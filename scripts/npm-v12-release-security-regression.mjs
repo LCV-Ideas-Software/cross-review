@@ -313,6 +313,116 @@ assert.match(
   /https:\/\/slsa\.dev\/provenance\/v1/,
   "post-publish verification must require SLSA provenance v1",
 );
+
+// npm publishes package metadata and its provenance document through separate
+// registry surfaces. A newly visible version can therefore advertise an
+// attestation URL briefly returning 404. The verifier must retry that bounded
+// propagation window without weakening any provenance assertion.
+const originalFetch = globalThis.fetch;
+const originalSetTimeout = globalThis.setTimeout;
+const originalPackageName = globalThis.process.env.PACKAGE_NAME;
+const originalPackageVersion = globalThis.process.env.PACKAGE_VERSION;
+const regressionPackageName = "@lcv-ideas-software/registry-verifier-regression";
+const regressionPackageVersion = "0.0.0-test";
+const regressionAttestationUrl =
+  "https://registry.npmjs.org//attacker.invalid/attestations/registry-verifier-regression@0.0.0-test";
+const advertisedAttestationUrl =
+  "https://metadata-redirect.invalid//attacker.invalid/attestations/registry-verifier-regression@0.0.0-test";
+
+globalThis.process.env.PACKAGE_NAME = regressionPackageName;
+globalThis.process.env.PACKAGE_VERSION = regressionPackageVersion;
+globalThis.setTimeout = (callback, _delay, ...args) => {
+  globalThis.queueMicrotask(() => callback(...args));
+  return 0;
+};
+
+const slsaAttestationResponse = () =>
+  globalThis.Response.json({
+    attestations: [{ predicateType: "https://slsa.dev/provenance/v1" }],
+  });
+
+async function runRegistryVerifierScenario(scenario, attestationResponseFactories) {
+  let attestationLookupCount = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === regressionAttestationUrl) {
+      assert.equal(
+        init?.redirect,
+        "error",
+        "attestation lookup must reject redirects instead of following them cross-origin",
+      );
+      const responseFactory =
+        attestationResponseFactories[
+          Math.min(attestationLookupCount, attestationResponseFactories.length - 1)
+        ];
+      attestationLookupCount += 1;
+      return responseFactory();
+    }
+    return globalThis.Response.json({
+      dist: {
+        shasum: "0000000000000000000000000000000000000000",
+        integrity: "sha512-regression",
+        tarball:
+          "https://registry.npmjs.org/@lcv-ideas-software/registry-verifier-regression/-/registry-verifier-regression-0.0.0-test.tgz",
+        attestations: {
+          url: advertisedAttestationUrl,
+          provenance: { predicateType: "https://slsa.dev/provenance/v1" },
+        },
+      },
+    });
+  };
+  await import(`./verify-registry-dist.mjs?eventual-consistency=${scenario}`);
+  return attestationLookupCount;
+}
+
+try {
+  assert.equal(
+    await runRegistryVerifierScenario("http-404", [
+      () => new globalThis.Response(null, { status: 404, statusText: "Not Found" }),
+      slsaAttestationResponse,
+    ]),
+    2,
+    "post-publish verification must retry a transient 404 from the advertised attestation URL",
+  );
+  assert.equal(
+    await runRegistryVerifierScenario("http-599", [
+      () => new globalThis.Response(null, { status: 599, statusText: "Transient Failure" }),
+      slsaAttestationResponse,
+    ]),
+    2,
+    "post-publish verification must retry the complete transient 5xx status range",
+  );
+  assert.equal(
+    await runRegistryVerifierScenario("predicate-propagation", [
+      () =>
+        globalThis.Response.json({
+          attestations: [{ predicateType: "https://npmjs.com/package/v1" }],
+        }),
+      slsaAttestationResponse,
+    ]),
+    2,
+    "post-publish verification must retry a document whose SLSA predicate is still propagating",
+  );
+  assert.equal(
+    await runRegistryVerifierScenario("json-propagation", [
+      () =>
+        new globalThis.Response("{", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      slsaAttestationResponse,
+    ]),
+    2,
+    "post-publish verification must retry a transient incomplete attestation document",
+  );
+} finally {
+  globalThis.fetch = originalFetch;
+  globalThis.setTimeout = originalSetTimeout;
+  if (originalPackageName === undefined) delete globalThis.process.env.PACKAGE_NAME;
+  else globalThis.process.env.PACKAGE_NAME = originalPackageName;
+  if (originalPackageVersion === undefined) delete globalThis.process.env.PACKAGE_VERSION;
+  else globalThis.process.env.PACKAGE_VERSION = originalPackageVersion;
+}
 assert.doesNotMatch(
   securityBaseline,
   /Package publishing requires the `NPM_TOKEN` secret/,

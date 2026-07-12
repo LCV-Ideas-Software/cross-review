@@ -344,6 +344,38 @@ posterior não pode apagar um pedido genuíno anterior. A correção registra re
 e não altera sessões terminais. Assim, sessões antigas comprovadamente contaminadas deixam de
 exigir intervenção manual sem que pedidos reais sejam satisfeitos por inferência.
 
+## 3.9. DEF-11 — propagação independente da atestação npm (4.5.9 → 4.5.10)
+
+O run de publicação `29209138113` comprovou que o pacote 4.5.9 foi publicado corretamente no
+npmjs.com por Trusted Publishing/OIDC, com provenance, mas o gate pós-publicação produziu um falso
+negativo. O `npm publish` terminou às `21:13:01Z`; a versão passou a aparecer na metadata pública
+às `21:13:11Z`; aproximadamente 0,4 segundo depois, o URL já anunciado em
+`dist.attestations.url` ainda respondeu `HTTP 404`. O verificador abortava no primeiro erro. Mais
+tarde, sem qualquer nova publicação, o mesmo URL respondeu `200` com SLSA provenance v1. O rerun
+idempotente detectou a versão existente, não republicou o pacote, verificou a atestação e fechou o
+run e a GitHub Release em verde.
+
+A [documentação oficial de provenance](https://docs.npmjs.com/generating-provenance-statements/) e
+a [implementação oficial do npm/Pacote](https://github.com/npm/pacote/blob/3b5c462a96326fe7c88dc46312122ea720194179/lib/registry.js#L228-L239)
+confirmam que o consumidor deve seguir o URL de atestação anunciado pela metadata; o Pacote utiliza
+seu pathname preso novamente ao host do registry. O caminho literal interno não é documentado como
+contrato público estável. A 4.5.10 remove essa suposição e acrescenta retry delimitado para `404`,
+erros de rede/timeout, rate limit, falhas HTTP transitórias, JSON incompleto e documento cujo
+predicate SLSA ainda não propagou. Erros permanentes, metadata estruturalmente inválida e ausência
+persistente de SLSA provenance v1 continuam falhando fechados. Regressões comportamentais
+reproduzem as sequências metadata visível → primeiro lookup 404/JSON incompleto/predicate ausente →
+segundo lookup 200 com SLSA.
+
+A adaptação não copia cegamente a construção `new URL(pathname, registry)`: um pathname iniciado
+por `//` seria reinterpretado pela semântica WHATWG como host protocol-relative. A URL é criada já
+presa ao registry, recebe o pathname por atribuição, tem o origin reafirmado e usa
+`redirect: "error"`. A regressão inclui pathname `//attacker.invalid/...` e exige que o fetch
+permaneça no npm registry sem seguir redirects.
+
+Este verificador comprova presença do predicate SLSA na metadata e no documento publicado; ele não
+é apresentado como verificação criptográfica independente de assinatura, PURL ou digest do
+subject.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
@@ -376,7 +408,8 @@ Esta lista preserva a priorização original e não representa o backlog vigente
 DEF-4, DEF-5, DEF-6, DEF-8 e DEF-9 foram corrigidos nas releases posteriores. A rota automática
 de evidência autenticada também eliminou a necessidade de attachment manual do operador em
 revisões normais; a superfície `session_attach_evidence` continua operator-only por desenho de
-segurança. O único novo defeito confirmado após o adendo foi o DEF-10, fechado no source 4.5.9.
+segurança. Os novos defeitos confirmados após o adendo foram o DEF-10, fechado na 4.5.9, e o
+DEF-11 de propagação da atestação npm, fechado no source 4.5.10.
 
 1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
    `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm

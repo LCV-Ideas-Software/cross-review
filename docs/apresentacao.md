@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-12: `4.5.9`. O registro pode ficar
+> Estado do source/release target em 2026-07-12: `4.5.10`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -601,6 +601,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.10`      | Corrige a corrida entre visibilidade do pacote e propagação da atestação npm com retry delimitado e fetch preso ao registry.                                                            |
 | `v04.05.09`      | Separa remediação interna de pedidos reais dos peers, eliminando o deadlock DEF-10 da checklist sem relaxar grounding, custódia ou bloqueio de evidência não resolvida.                 |
 | `v04.05.08`      | Fecha sete alertas de code scanning com bootstrap npm 12.0.1 pinado por SHA-512 e checkout da branch padrão condicionado ao SHA que passou no CI.                                       |
 | `v04.05.07`      | Embarca a remediação dos seis providers com CI antes da tag, npm 12.0.1, scripts estritos, cache desativado e token StepSecurity restrito ao install.                                   |

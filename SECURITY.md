@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.09 for package 4.5.9. This
+Current supported source/release target: v04.05.10 for package 4.5.10. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.09 preserves that trust boundary while transporting evidence submitted
+v04.05.10 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or
@@ -65,6 +65,14 @@ scripts and verifies registry-visible SLSA provenance. The published package
 has no install-time lifecycle script of its own; operators must not bypass npm
 12 policy with `--dangerously-allow-all-scripts` or replace a registry upgrade
 with a locally built source installation.
+
+The post-publish verifier treats package visibility and the advertised
+attestation document as independently propagated registry surfaces. It retries
+only bounded transient failures, pins the advertised pathname back to the npm
+registry origin, rejects redirects and still requires SLSA provenance v1.
+Protocol-relative paths cannot replace that origin. This gate verifies
+registry-visible metadata and predicate presence; it does not claim independent
+cryptographic verification of the attestation signature or subject digest.
 
 READY is a canonical envelope, not a free-form natural-language classification:
 its summary is fixed, requests/follow-ups are empty and outside prose is

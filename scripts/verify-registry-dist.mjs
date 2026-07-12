@@ -1,5 +1,9 @@
 const NPM_REGISTRY_URL = "https://registry.npmjs.org";
 const FETCH_TIMEOUT_MS = 30_000;
+const ATTESTATION_MAX_ATTEMPTS = 12;
+const ATTESTATION_RETRY_DELAY_MS = 10_000;
+const RETRYABLE_ATTESTATION_STATUSES = new Set([404, 408, 425, 429]);
+const SLSA_PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 
 // v4.0.8: package name + version are mandatory inputs supplied by the
 // caller via PACKAGE_NAME and PACKAGE_VERSION env vars. This script no
@@ -84,34 +88,103 @@ const attestations = dist.attestations;
 if (!attestations || typeof attestations !== "object") {
   throw new Error(`npm registry dist metadata for ${spec} is missing dist.attestations`);
 }
-if (
-  typeof attestations.url !== "string" ||
-  !attestations.url.startsWith(`${NPM_REGISTRY_URL}/-/npm/v1/attestations/`)
-) {
+if (typeof attestations.url !== "string") {
   throw new Error(`npm registry dist metadata for ${spec} has an invalid attestation URL`);
 }
-if (attestations.provenance?.predicateType !== "https://slsa.dev/provenance/v1") {
+let attestationUrl;
+try {
+  // Follow npm/pacote's registry-provided-pathname contract, but assign the
+  // pathname onto an already pinned registry URL. Passing a `//host/path`
+  // pathname to the URL constructor would otherwise reinterpret it as a
+  // protocol-relative cross-origin URL.
+  const attestationPath = new URL(attestations.url).pathname;
+  const pinnedAttestationUrl = new URL(`${NPM_REGISTRY_URL}/`);
+  pinnedAttestationUrl.pathname = attestationPath;
+  if (pinnedAttestationUrl.origin !== new URL(NPM_REGISTRY_URL).origin) {
+    throw new Error("attestation URL escaped the configured registry origin");
+  }
+  attestationUrl = pinnedAttestationUrl.href;
+} catch (error) {
+  throw new Error(`npm registry dist metadata for ${spec} has an invalid attestation URL`, {
+    cause: error,
+  });
+}
+if (attestations.provenance?.predicateType !== SLSA_PROVENANCE_PREDICATE) {
   throw new Error(`npm registry dist metadata for ${spec} is missing SLSA provenance v1`);
 }
 
-const attestationResponse = await globalThis.fetch(attestations.url, {
-  headers: {
-    accept: "application/json",
-  },
-  signal: globalThis.AbortSignal.timeout(FETCH_TIMEOUT_MS),
-});
-if (!attestationResponse.ok) {
+const sleep = (delayMs) =>
+  new Promise((resolve) => {
+    globalThis.setTimeout(resolve, delayMs);
+  });
+
+async function fetchAttestationDocument(url) {
+  let lastError;
+  for (let attempt = 1; attempt <= ATTESTATION_MAX_ATTEMPTS; attempt += 1) {
+    let response;
+    try {
+      response = await globalThis.fetch(url, {
+        headers: {
+          accept: "application/json",
+        },
+        redirect: "error",
+        signal: globalThis.AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const wrapped = error instanceof Error ? error : new Error(String(error));
+      lastError = new Error(`npm attestation lookup for ${spec} failed: ${wrapped.message}`, {
+        cause: error,
+      });
+    }
+
+    if (response?.ok) {
+      try {
+        const document = await response.json();
+        const hasSlsaProvenance = document.attestations?.some(
+          (attestation) => attestation?.predicateType === SLSA_PROVENANCE_PREDICATE,
+        );
+        if (hasSlsaProvenance) return document;
+        lastError = new Error(`npm attestation document for ${spec} is missing SLSA provenance v1`);
+      } catch (error) {
+        const wrapped = error instanceof Error ? error : new Error(String(error));
+        lastError = new Error(
+          `npm attestation document for ${spec} could not be parsed: ${wrapped.message}`,
+          { cause: error },
+        );
+      }
+    }
+
+    const retryableHttpStatus =
+      response &&
+      (RETRYABLE_ATTESTATION_STATUSES.has(response.status) ||
+        (response.status >= 500 && response.status <= 599));
+    if (response && !response.ok && !retryableHttpStatus) {
+      throw new Error(
+        `npm attestation lookup failed for ${spec}: HTTP ${response.status} ${response.statusText}`,
+      );
+    }
+
+    if (response && !response.ok) {
+      lastError = new Error(
+        `npm attestation lookup failed for ${spec}: HTTP ${response.status} ${response.statusText}`,
+      );
+    }
+
+    if (attempt < ATTESTATION_MAX_ATTEMPTS) {
+      globalThis.console.warn(
+        `npm attestation lookup attempt ${attempt}/${ATTESTATION_MAX_ATTEMPTS} failed; retrying in ${ATTESTATION_RETRY_DELAY_MS} ms.`,
+      );
+      await sleep(ATTESTATION_RETRY_DELAY_MS);
+    }
+  }
+
   throw new Error(
-    `npm attestation lookup failed for ${spec}: HTTP ${attestationResponse.status} ${attestationResponse.statusText}`,
+    `npm attestation lookup for ${spec} failed after ${ATTESTATION_MAX_ATTEMPTS} attempts: ${lastError?.message ?? "unknown error"}`,
+    { cause: lastError },
   );
 }
-const attestationDocument = await attestationResponse.json();
-const hasSlsaProvenance = attestationDocument.attestations?.some(
-  (attestation) => attestation?.predicateType === "https://slsa.dev/provenance/v1",
-);
-if (!hasSlsaProvenance) {
-  throw new Error(`npm attestation document for ${spec} is missing SLSA provenance v1`);
-}
+
+await fetchAttestationDocument(attestationUrl);
 
 globalThis.console.log(
   JSON.stringify(
@@ -120,7 +193,7 @@ globalThis.console.log(
       shasum: dist.shasum,
       integrity: dist.integrity,
       tarball: dist.tarball,
-      attestationUrl: attestations.url,
+      attestationUrl,
       provenancePredicateType: attestations.provenance.predicateType,
     },
     null,
