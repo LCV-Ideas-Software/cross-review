@@ -578,5 +578,33 @@ Validação local dirigida: reprodução vermelha, regressão npm/release verde 
 estilo, o runtime smoke retornou `ok: true` e versão 4.5.8, a configuração
 central continuou válida com 70 campos/zero overrides/zero controles ausentes e
 o dry-run empacotou 185 entradas, cerca de 917 kB compactados e 4,22 MB
-desempacotados. A confirmação de fechamento dos sete findings será registrada
-após as análises GitHub do target 4.5.8.
+desempacotados.
+
+Fechamento remoto da 4.5.8:
+
+- commit e tag: `1cc3bb83fd12fb13a09b4acfba7c3b9ce1f961d0` = `v04.05.08`;
+- [CI 29205474027](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29205474027):
+  verde, incluindo o bootstrap SHA-512 real no runner Ubuntu, check e smoke;
+- CodeQL avançado `29205474005`, CodeQL default setup `29205473700`, Scorecard
+  `29205474038` e Socket `29205473999`: verdes;
+- [auto-tag 29205513498](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29205513498):
+  verde com checkout/default branch e SHA do CI correspondentes;
+- [publish 29205522124](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29205522124):
+  gate, npmjs, GitHub Packages e GitHub Release verdes;
+- alertas 32–38: `state=fixed`, `dismissed_at=null`; code scanning aberto: 0;
+- Dependabot aberto: 0; secret scanning aberto: 0;
+- `npm audit` completo e `--omit=dev`: 0 em info, low, moderate, high e
+  critical;
+- 12/12 check-runs do SHA da release: `completed/success`.
+
+O npmjs publicou 4.5.8 como `latest` em `2026-07-12T19:20:03.672Z`, com
+shasum `2846cc6fe4c5bd4d06209ad75360fef6264f1418`, integrity
+`sha512-n8F4Wm9qe9ahL5DECG/weL05e30rCdASeYHnacBjHPF93nUzB1cgK5cwbJepiAv75WOHyetzEm3R0mLGQBHHKQ==`
+e attestation SLSA provenance v1. A
+[GitHub Release v04.05.08](https://github.com/LCV-Ideas-Software/cross-review/releases/tag/v04.05.08)
+é imutável, não draft e não prerelease; o asset tem 917.386 bytes e digest
+`sha256:4f6892233e7ed6bfaa41947bfe4a956b35be8d0f858219d6f840181f96e52095`.
+
+Após todos os workflows ficarem verdes, nenhuma nova ocorrência foi encontrada
+em code scanning/CodeQL/Scorecard/Socket, Dependabot, secret scanning ou npm
+audit. O runtime da janela não foi recarregado durante esse fechamento.
