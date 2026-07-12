@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-12: `4.5.4`. O registro pode ficar
+> Estado do source/release target em 2026-07-12: `4.5.5`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -601,6 +601,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.05`      | Follow-up de publicação: fixtures de cancelamento, health e contabilidade herméticas em runner limpo, com prova contra falso verde; produção permanece fail-closed sem rates.           |
 | `v04.05.04`      | Corrige grounding, preflights, consenso, cancelamento multi-janela, contabilidade e tetos efetivos; expõe a cadeia de decisão e aceita `ultra` como alias normalizado por provider.     |
 | `v04.05.03`      | Corrige ReDoS e falsos bloqueios do hardgate em citações autenticadas, aspas simples correlacionadas e bumps de versão do artefato.                                                     |
 | `v04.05.02`      | Publicação do transporte automático de evidência com fixture de regressão hermético, independente da configuração central do operador.                                                  |

@@ -47,6 +47,24 @@ function testConfig(label: string): AppConfig {
     ...base,
     data_dir: tempDataDir(label),
     stub: true,
+    // These regressions exercise cancellation/round boundaries, not the
+    // operator's private financial configuration. Keep the fixture hermetic
+    // on clean CI runners while production continues to fail closed when real
+    // rate cards are absent.
+    cost_rates: {
+      codex: { input_per_million: 0, output_per_million: 0 },
+      claude: { input_per_million: 0, output_per_million: 0 },
+      gemini: { input_per_million: 0, output_per_million: 0 },
+      deepseek: { input_per_million: 0, output_per_million: 0 },
+      grok: { input_per_million: 0, output_per_million: 0 },
+      perplexity: {
+        input_per_million: 0,
+        output_per_million: 0,
+        request_fee_low_per_1000: 0,
+        request_fee_medium_per_1000: 0,
+        request_fee_high_per_1000: 0,
+      },
+    },
     evidence_preflight_enabled: false,
     truthfulness_preflight_enabled: false,
     fallback_models: {

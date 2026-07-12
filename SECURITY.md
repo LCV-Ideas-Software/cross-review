@@ -2,9 +2,9 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.04 for package 4.5.4. Registry publication state is verified independently through npm; the current main branch remains supported for security fixes while a publish workflow is in flight.
+Current supported source/release target: v04.05.05 for package 4.5.5. Registry publication state is verified independently through npm; the current main branch remains supported for security fixes while a publish workflow is in flight.
 
-v04.05.04 preserves that trust boundary while transporting evidence submitted
+v04.05.05 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or

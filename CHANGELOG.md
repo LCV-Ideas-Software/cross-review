@@ -7,6 +7,25 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.05] — 2026-07-12
+
+**Clean-runner publish follow-up.** The v04.05.04 tag passed repository CI but
+its publish-only verification exposed regression fixtures that inherited the
+operator's private rate cards before any registry package was created.
+
+### Fixed
+
+- Gives the cancellation, health/terminal-ordering and accounting/preflight
+  regression suites complete synthetic zero-cost rate cards, matching the
+  existing evidence and judge fixtures. They no longer inherit private operator
+  pricing from Windows environment or registry state and now exercise the
+  intended behavior identically on a clean Linux runner.
+- Makes the accounting preflight regression prove that a reviewer result was
+  actually produced. This prevents a missing-rate `budget_preflight` rejection
+  from looking green merely because the two gate records were persisted.
+- Preserves the production financial hard gate unchanged: real sessions still
+  stop before paid calls when required operator rate cards are absent.
+
 ## [v04.05.04] — 2026-07-12
 
 **Runtime hardgate remediation — truthful evidence, cancellation and financial state.**

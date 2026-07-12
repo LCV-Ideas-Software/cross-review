@@ -24,7 +24,7 @@ npm upgrade -g @lcv-ideas-software/cross-review
 npm upgrade -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
 ```
 
-**Status.** Stable. This source prepares **v04.05.04** (package `4.5.4`).
+**Status.** Stable. This source prepares **v04.05.05** (package `4.5.5`).
 The public registry can lag while the publish workflow runs; use the npm badge
 or `npm view @lcv-ideas-software/cross-review version` for registry state and
 `server_info` for the version actually loaded by an MCP window. See
@@ -42,6 +42,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.05`**      | Clean-runner publish follow-up — make cancellation, health and accounting regression fixtures independent from private operator rate cards and reject false-green preflight coverage; production financial gates remain fail-closed.                                        |
 | **`v04.05.04`**      | Runtime-hardgate remediation — fix grounding, truthfulness namespaces, consensus judging, multi-window cancellation, accounting, session ceilings, terminal reports and cross-provider `ultra` normalization.                                                               |
 | **`v04.05.03`**      | Security/hardgate patch — remove exponential regex backtracking, trust integrity-checked attachment path/digest metadata, accept correlated single-quoted artifact literals and stop treating source-version bumps as historical runtime claims.                            |
 | **`v04.05.02`**      | Patch release — publish the complete authenticated-evidence transport update with a hermetic clean-runner regression fixture; no operator central configuration is required by the test gate.                                                                               |

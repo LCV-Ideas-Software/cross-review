@@ -30,6 +30,23 @@ function config(label: string): AppConfig {
     ...base,
     data_dir: dataDir,
     stub: true,
+    // Accounting/preflight regressions must prove their own dispatch behavior
+    // without inheriting private operator pricing. Production remains fail
+    // closed when real provider rate cards are absent.
+    cost_rates: {
+      codex: { input_per_million: 0, output_per_million: 0 },
+      claude: { input_per_million: 0, output_per_million: 0 },
+      gemini: { input_per_million: 0, output_per_million: 0 },
+      deepseek: { input_per_million: 0, output_per_million: 0 },
+      grok: { input_per_million: 0, output_per_million: 0 },
+      perplexity: {
+        input_per_million: 0,
+        output_per_million: 0,
+        request_fee_low_per_1000: 0,
+        request_fee_medium_per_1000: 0,
+        request_fee_high_per_1000: 0,
+      },
+    },
     evidence_preflight_enabled: true,
     truthfulness_preflight_enabled: true,
     evidence_judge_autowire: {
@@ -97,13 +114,18 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       assert.equal(explicit.pass, true);
       assert.deepEqual(orchestrator.store.read(session.session_id).preflight_checks ?? [], []);
 
-      await orchestrator.askPeers({
+      const output = await orchestrator.askPeers({
         session_id: session.session_id,
         task: session.task,
         draft: "Static implementation note with no operational claim.",
         caller: "operator",
         peers: ["claude"],
       });
+      assert.equal(
+        output.round.peers.length,
+        1,
+        "the durable preflight assertions are meaningful only when a reviewer round runs",
+      );
       const checks = orchestrator.store.read(session.session_id).preflight_checks ?? [];
       assert.deepEqual(checks.map((check) => `${check.gate}:${check.phase}:${check.pass}`).sort(), [
         "evidence:review_round:true",

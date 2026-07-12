@@ -1,8 +1,8 @@
-# Cross-review v4.5.4 — Remediation and Release Audit
+# Cross-review v4.5.4 Remediation / v4.5.5 Release Audit
 
 Date: 2026-07-12, America/Sao_Paulo  
 Repository: `LCV-Ideas-Software/cross-review`  
-Source target: `4.5.4` / `v04.05.04`  
+Source target: `4.5.5` / `v04.05.05`
 Runtime observed during diagnosis: `4.5.3`  
 Method: root-cause analysis, focused RED/GREEN regressions, integrated smoke,
 runtime smoke, source-contract audit and official-provider documentation review
@@ -338,17 +338,35 @@ not reasons to hide or relabel the current results.
 
 ## Release close-out
 
-Local pre-publish evidence on the 4.5.4 metadata:
+Local pre-publish evidence on the 4.5.5 metadata:
 
 - `npm run check`: PASS (Prettier, ESLint, Biome and TypeScript);
-- `npm test`: PASS in 184 seconds, including build, every focused v4.5.4
+- `npm test`: PASS in 181.5 seconds, including build, every focused v4.5.4
   regression, evidence/custody/truthfulness contracts, the complete historical
   smoke and the built MCP runtime smoke;
 - `git diff --check`: PASS; and
 - no global install, `npm link` or source-built package installation was used.
 
+The v04.05.04 tag passed repository CI, but its publish-only clean-runner gate
+correctly stopped before registry publication because the cancellation fixture
+inherited private operator rate cards. The failed run is GitHub Actions
+`29181202703` on signed commit
+`e8f6bd8ca34558487866f99d327b59dc2211cc2e`; no `4.5.4` npm package was
+published and the immutable `v04.05.04` tag was not moved.
+
+The same missing-rate environment was reproduced locally: cancellation was RED
+at 10/13. A systematic audit of every `npm test` script then found two further
+environment-dependent fixtures. Health had one paid stub path, while accounting
+could report 18/18 even though its reviewer round was rejected before dispatch.
+The accounting case first received a reviewer-result assertion and reproduced
+RED (`round.peers.length` was 0); only then were complete synthetic zero-cost
+rate cards added. Under the clean-runner simulation, cancellation passes 13/13,
+health passes 8/8 and accounting passes 18/18 with a real stub reviewer result.
+Production financial gates remain unchanged and still fail closed without real
+rate cards.
+
 The source must be committed directly to `main` with a signed commit. The
-auto-tag workflow should create `v04.05.04`; the publish workflow must pass its
+auto-tag workflow should create `v04.05.05`; the publish workflow must pass its
 pre-publish gate, publish npmjs and GitHub Packages with provenance, and create
 the GitHub Release. Final commit SHA, workflow URLs and registry integrity are
 recorded after those external steps complete.
