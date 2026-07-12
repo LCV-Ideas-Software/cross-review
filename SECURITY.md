@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.11 for package 4.5.11. This
+Current supported source/release target: v04.05.12 for package 4.5.12. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.11 preserves that trust boundary while transporting evidence submitted
+v04.05.12 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or
@@ -19,6 +19,14 @@ reconciliation when coverage is unknown. Operator-only mutations still require
 a distinct capability token, incomplete or unhealthy provider terminal states
 fail closed, and unsupported operational claims, model-pin contradictions and
 unresolved evidence cannot converge.
+
+Requester reverification is item-scoped: when citations carry checklist IDs,
+the broker evaluates only the sources routed to that item. The ID never proves
+satisfaction by itself. Concrete values, commands, execution records,
+file/line material and bilingual semantic concepts still have to correspond to
+the original ask. Evidence routed to one item cannot close another, partial
+release-document proof remains unresolved, and synthetic adapter injection is
+rejected outside explicitly confirmed stub/test mode.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored

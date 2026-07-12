@@ -14,7 +14,8 @@ import {
 } from "../src/core/orchestrator.js";
 import { sessionReportMarkdown } from "../src/core/reports.js";
 import { extractChecklistCommands } from "../src/core/session-store.js";
-import type { PeerId, PeerResult } from "../src/core/types.js";
+import type { PeerAdapter, PeerId, PeerResult } from "../src/core/types.js";
+import { StubAdapter } from "../src/peers/stub.js";
 
 // Regression coverage for the v4.5.0 evidence dead-end reported by a Codex
 // caller. These cases intentionally describe the desired contract:
@@ -509,6 +510,351 @@ const regressions: Regression[] = [
         "open",
         "an ask whose requested value/domain is absent from evidence_sources must remain unresolved",
       );
+    },
+  },
+  {
+    name: "requester reverification accepts alternative line evidence and ignores e.g. abbreviation",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("requester-alternative-and-abbreviation-correlation"),
+      );
+      const session = await orchestrator.initSession(
+        "Requester reverification field-regression fixture.",
+        "codex",
+      );
+      const flowAsk =
+        "Attach the current state of the code sections under review (generateValidated, executeOneAnalysisStep, isRetryableTransportError) with line numbers, or a git diff for the patch, to allow static verification of the flow proof.";
+      const validationAsk =
+        "Provide raw vitest output (e.g., terminal log) showing 281 passed tests and exit code 0 for the same code version.";
+      const unrelatedAsk =
+        "Provide the deployment rollback log for rollback_id=rollback-unrelated-451.";
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 2, [
+        { peer: "deepseek", ask: flowAsk },
+        { peer: "deepseek", ask: validationAsk },
+        { peer: "deepseek", ask: unrelatedAsk },
+      ]);
+      await orchestrator.store.runEvidenceChecklistAddressDetection(session.session_id, 3);
+
+      const promoted = await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+        session.session_id,
+        {
+          round: 7,
+          peer: "deepseek",
+          evidence_sources: [
+            [
+              "Attachment: evidence/caller-structured-evidence.txt",
+              `sha256=${PANEL_EVIDENCE_SHA}`,
+              'Artifact quote: "d92c514fe23ae202 FLOW400_EXACT: analisar.ts:480 wraps the provider error as GeminiStepAttemptError category transport with cause; analisar.ts:1965 evaluates isRetryableTransportError(error.cause); analisar.ts:294 excludes HTTP 400; analisar.partitioned.test.ts:397,407,409 prove status 400, one provider call, retryable false."',
+            ].join("\n"),
+            [
+              "Attachment: evidence/caller-structured-evidence.txt",
+              `sha256=${PANEL_EVIDENCE_SHA}`,
+              'Artifact quote: "9fef850cd87a2caf VALIDATION_EXACT: Process exit code: 0 | Vitest v4.1.10 | Test Files 50 passed (50) | Tests 281 passed (281) | Duration 13.37s"',
+            ].join("\n"),
+          ],
+        },
+      );
+      const checklist = orchestrator.store.read(session.session_id).evidence_checklist ?? [];
+
+      assert.deepEqual(
+        promoted.map(({ item }) => item.ask),
+        [flowAsk, validationAsk],
+        "the requester's strictly grounded alternatives must close both historical asks",
+      );
+      const byAsk = new Map(checklist.map((item) => [item.ask, item]));
+      assert.deepEqual(
+        [flowAsk, validationAsk].map((ask) => ({
+          status: byAsk.get(ask)?.status,
+          method: byAsk.get(ask)?.address_method,
+        })),
+        [
+          { status: "addressed", method: "requester_reverified" },
+          { status: "addressed", method: "requester_reverified" },
+        ],
+        "both not_resurfaced asks must become requester_reverified instead of blocking unanimity",
+      );
+      assert.equal(
+        byAsk.get(unrelatedAsk)?.status,
+        "not_resurfaced",
+        "sources routed to two checklist IDs must not cross-contaminate a third ask from the same peer",
+      );
+    },
+  },
+  {
+    name: "requester reverification handles diff-grep alternatives and routed Portuguese asks",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("requester-observed-language-classes"),
+      );
+      const session = await orchestrator.initSession(
+        "Requester reverification observed-language fixture.",
+        "codex",
+      );
+      const versionAsk =
+        "Cite diff/grep lines showing version bump to v02.22.03 and updates to changelog, README, SECURITY, and methodology docs.";
+      const identityAsk =
+        "Forneça evidência de que a injeção de identidade no servidor e validação canônica são testadas, com nomes específicos dos testes e saída bruta de aprovação.";
+      const redactionAsk =
+        "Forneça saída de grep ou conteúdo de arquivo demonstrando a implementação de redação de segredos e as asserções de teste de regressão correspondentes.";
+      const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [
+          { peer: "claude", ask: versionAsk },
+          { peer: "deepseek", ask: identityAsk },
+          { peer: "deepseek", ask: redactionAsk },
+        ],
+      );
+      const identityItem = checklist.find((item) => item.ask === identityAsk);
+      const redactionItem = checklist.find((item) => item.ask === redactionAsk);
+      assert.ok(identityItem && redactionItem);
+      const partialVersion =
+        await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+          session.session_id,
+          {
+            round: 2,
+            peer: "claude",
+            evidence_sources: [
+              'Artifact quote: "VERSION_PARTIAL: astrologo-frontend/package.json:3 current v02.22.03."',
+            ],
+          },
+        );
+      const irrelevantDeepSeek =
+        await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+          session.session_id,
+          {
+            round: 2,
+            peer: "deepseek",
+            evidence_sources: [
+              `Artifact quote: "${identityItem.id} IRRELEVANT: settings.ts:10 changes the visual theme."`,
+              `Artifact quote: "${identityItem.id} VALIDATION: Process exit code: 0 | Tests 281 passed (281)."`,
+              `Artifact quote: "${redactionItem.id} IRRELEVANT: settings.ts:10 changes the visual theme."`,
+            ],
+          },
+        );
+      assert.deepEqual(partialVersion, []);
+      assert.deepEqual(irrelevantDeepSeek, []);
+      const versionPromoted =
+        await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+          session.session_id,
+          {
+            round: 2,
+            peer: "claude",
+            evidence_sources: [
+              'Artifact quote: "VERSION_EXACT: astrologo-frontend/package.json:3 version=2.22.3; README.md:18,24 current v02.22.03; SECURITY.md:5 supported v02.22.03; CHANGELOG.md:5 release section; docs/METODOLOGIA_MAPAS_AVANCADOS.md:148 documents v02.22.03."',
+            ],
+          },
+        );
+      const deepseekPromoted =
+        await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+          session.session_id,
+          {
+            round: 2,
+            peer: "deepseek",
+            evidence_sources: [
+              `Artifact quote: "${identityItem.id} IDENTITY_EXACT: analisar.ts:511-573 injects server-owned identity before canonical validation; analisar.partitioned.test.ts:326-370 proves the canonical result."`,
+              `Artifact quote: "${identityItem.id} VALIDATION_EXACT: Process exit code: 0 | Tests 281 passed (281)."`,
+              `Artifact quote: "${redactionItem.id} DIAGNOSTIC_EXACT: analisar.ts:219-271 redacts credentials; analisar.partitioned.test.ts:390-415 contains the regression assertions."`,
+            ],
+          },
+        );
+
+      assert.deepEqual(
+        [...versionPromoted, ...deepseekPromoted].map(({ item }) => item.ask),
+        [versionAsk, identityAsk, redactionAsk],
+      );
+    },
+  },
+  {
+    name: "requester reverification requires every explicitly conjunctive code symbol",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("requester-conjunctive-code-symbols"),
+      );
+      const session = await orchestrator.initSession(
+        "Requester reverification conjunctive-symbol fixture.",
+        "codex",
+      );
+      const ask =
+        "Provide all code sections generateValidated, executeOneAnalysisStep, and isRetryableTransportError with line numbers.";
+      const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [{ peer: "deepseek", ask }],
+      );
+      const item = checklist[0];
+      assert.ok(item);
+
+      const promoted = await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+        session.session_id,
+        {
+          round: 2,
+          peer: "deepseek",
+          evidence_sources: [
+            `Artifact quote: "${item.id} PARTIAL_EXACT: analisar.ts:480 shows generateValidated."`,
+          ],
+        },
+      );
+
+      assert.deepEqual(promoted, []);
+      assert.equal(
+        orchestrator.store.read(session.session_id).evidence_checklist?.[0]?.status ?? "open",
+        "open",
+      );
+    },
+  },
+  {
+    name: "direct review rounds surface outstanding checklist IDs to reviewers",
+    run: async () => {
+      const config = regressionConfig("direct-round-checklist-routing");
+      const orchestrator = new CrossReviewOrchestrator(config);
+      const session = await orchestrator.initSession(
+        "Direct review checklist-routing fixture.",
+        "codex",
+      );
+      const ask = "Provide raw npm test output showing Tests 74 passed (74).";
+      const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [{ peer: "claude", ask }],
+      );
+
+      const result = await orchestrator.askPeers({
+        session_id: session.session_id,
+        task: session.task,
+        draft: "Implementation candidate under review.",
+        caller: "codex",
+        peers: ["claude"],
+      });
+      const prompt = fs.readFileSync(
+        path.join(config.data_dir, "sessions", session.session_id, result.round.prompt_file),
+        "utf8",
+      );
+
+      assert.match(prompt, /## Outstanding Evidence Asks/);
+      assert.ok(
+        prompt.includes(`Checklist-Item: ${checklist[0]?.id}`),
+        "ask_peers/session_start_round must route every unresolved checklist id without caller intervention",
+      );
+      assert.ok(prompt.includes(ask));
+    },
+  },
+  {
+    name: "five grounded READY peers close routed historical asks and converge",
+    run: async () => {
+      const config = regressionConfig("requester-five-peer-e2e");
+      const events: string[] = [];
+      const votingPeers: PeerId[] = ["claude", "gemini", "deepseek", "grok", "perplexity"];
+      let flowLine = "";
+      let validationLine = "";
+      const adapters = {} as Record<PeerId, PeerAdapter>;
+      const callCounts = new Map<PeerId, number>();
+      for (const peer of ["codex", ...votingPeers] as PeerId[]) {
+        const adapter = new StubAdapter(config, peer);
+        adapter.call = async (prompt) => {
+          callCounts.set(peer, (callCounts.get(peer) ?? 0) + 1);
+          const attachment = prompt.match(
+            /### caller-structured-evidence — `([^`]+)`[^\n]*\nIntegrity: sha256=`([a-f0-9]{64})`/i,
+          );
+          assert.ok(attachment, `${peer} must receive the persisted caller evidence identity`);
+          const [, attachmentPath, attachmentSha] = attachment;
+          const source = (line: string) =>
+            [
+              `Attachment: ${attachmentPath}`,
+              `sha256=${attachmentSha}`,
+              `Artifact quote: "${line}"`,
+            ].join("\n");
+          return readyPeer(peer, "verified", [source(flowLine), source(validationLine)]);
+        };
+        adapters[peer] = adapter;
+      }
+      assert.throws(
+        () => new CrossReviewOrchestrator({ ...config, stub: false }, undefined, () => adapters),
+        /injected_adapter_factory_forbidden/,
+        "stub=false must reject injected adapters before probes or paid review calls",
+      );
+      const orchestrator = new CrossReviewOrchestrator(
+        config,
+        (event) => events.push(event.type),
+        () => adapters,
+      );
+      const session = await orchestrator.initSession(
+        "Five-peer requester reverification integration fixture.",
+        "codex",
+      );
+      const flowAsk =
+        "Attach the current state of the code sections under review (generateValidated, executeOneAnalysisStep, isRetryableTransportError) with line numbers, or a git diff for the patch, to allow static verification of the flow proof.";
+      const validationAsk =
+        "Provide raw vitest output (e.g., terminal log) showing 281 passed tests and exit code 0 for the same code version.";
+      await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [],
+        rejected: [],
+        convergence: checkConvergence(
+          ["claude", "gemini", "deepseek", "grok", "perplexity"],
+          "READY",
+          [],
+          [],
+        ),
+        convergence_scope: {
+          petitioner: "codex",
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude", "gemini", "deepseek", "grok", "perplexity"],
+          reviewer_peers: ["claude", "gemini", "deepseek", "grok", "perplexity"],
+        },
+        started_at: new Date().toISOString(),
+      });
+      const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [
+          { peer: "deepseek", ask: flowAsk },
+          { peer: "deepseek", ask: validationAsk },
+        ],
+      );
+      const flowItem = checklist.find((item) => item.ask === flowAsk);
+      const validationItem = checklist.find((item) => item.ask === validationAsk);
+      assert.equal(flowItem?.id, "d92c514fe23ae202");
+      assert.equal(validationItem?.id, "9fef850cd87a2caf");
+      flowLine =
+        `${flowItem.id} FLOW400_EXACT: analisar.ts:480 wraps the provider error as GeminiStepAttemptError category transport with cause; ` +
+        "analisar.ts:1965 evaluates isRetryableTransportError(error.cause); analisar.ts:294 excludes HTTP 400; " +
+        "analisar.partitioned.test.ts:397,407,409 prove status 400, one provider call, retryable false.";
+      validationLine = `${validationItem.id} VALIDATION_EXACT: Process exit code: 0 | Vitest v4.1.10 | Test Files 50 passed (50) | Tests 281 passed (281) | Duration 13.37s`;
+      await orchestrator.store.runEvidenceChecklistAddressDetection(session.session_id, 2);
+      assert.ok(
+        (orchestrator.store.read(session.session_id).evidence_checklist ?? []).every(
+          (item) => item.status === "not_resurfaced",
+        ),
+      );
+
+      const result = await orchestrator.askPeers({
+        session_id: session.session_id,
+        task: session.task,
+        draft: "Implementation candidate under review.",
+        evidence: [flowLine, validationLine].join("\n"),
+        caller: "codex",
+        peers: votingPeers,
+      });
+      const persisted = orchestrator.store.read(session.session_id);
+
+      assert.equal(result.round.peers.length, 5);
+      assert.ok(result.round.peers.every((peer) => peer.status === "READY"));
+      assert.ok(
+        (persisted.evidence_checklist ?? []).every(
+          (item) => item.status === "addressed" && item.address_method === "requester_reverified",
+        ),
+      );
+      assert.ok(events.includes("session.evidence_checklist_requester_reverified"));
+      assert.equal(callCounts.get("codex") ?? 0, 0);
+      assert.deepEqual(
+        votingPeers.map((peer) => callCounts.get(peer) ?? 0),
+        [1, 1, 1, 1, 1],
+      );
+      assert.equal(result.converged, true);
+      assert.equal(result.round.convergence.converged, true);
     },
   },
   {

@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.11`                           |
+| Versão preparada pelo source  | `4.5.12`                           |
 | Data do source/release target | `2026-07-12`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -792,6 +792,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.12`      | 2026-07-12    | Corrige a convergência do Evidence Broker, roteia IDs pendentes automaticamente e mantém evidência irrelevante ou parcial bloqueada.                                                   |
 | `v04.05.11`      | 2026-07-12    | Expõe no contrato MCP que evidência de agentes é persistida automaticamente, sem intervenção humana, e separa a promoção opcional de autoridade.                                       |
 | `v04.05.10`      | 2026-07-12    | Tolera a propagação independente da atestação npm com retry delimitado e URL presa ao registry, mantendo SLSA provenance v1 obrigatório.                                               |
 | `v04.05.09`      | 2026-07-12    | Elimina o deadlock DEF-10 mantendo remediação interna fora de `caller_requests`, sem afrouxar asks reais, grounding, custódia ou convergência.                                         |
@@ -864,7 +865,7 @@ Antes de usar uma revisão como gate:
 
 - Contrato runtime do source target: smokes verificados em 2026-07-12. O
   runtime 4.5.8 foi confirmado após o reload daquela auditoria; o source/release
-  target atual é 4.5.11. `server_info` continua sendo a autoridade para cada
+  target atual é 4.5.12. `server_info` continua sendo a autoridade para cada
   janela depois do upgrade e reload.
 - `package.json` do repositório local.
 - `README.md`.

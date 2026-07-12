@@ -417,6 +417,7 @@ function buildReviewPrompt(
     ...sessionContractDirectives(),
     ...reviewFocusBlock(meta, config, reviewFocus),
     ...(attachments ? attachedEvidenceBlock(attachments) : []),
+    ...evidenceChecklistBlock(meta),
     "## Original Task",
     safePromptText(meta.task, config.prompt.max_task_chars),
     "",
@@ -3129,6 +3130,16 @@ interface PeerCallOutcome {
   failure?: PeerFailure | undefined;
 }
 
+type PeerAdapterFactory = typeof createAdapters;
+
+function injectedAdapterFactoryAllowed(config: AppConfig): boolean {
+  return (
+    config.stub &&
+    (process.env.NODE_ENV === "test" ||
+      /^(1|true|yes|on)$/i.test(process.env.CROSS_REVIEW_STUB_CONFIRMED ?? ""))
+  );
+}
+
 // v2.14.0 (operator directive 2026-05-04): per-peer enable/disable error.
 // Thrown when a caller passes an explicit `lead_peer` or `peers` entry
 // that references a peer disabled via `CROSS_REVIEW_PEER_<NAME>=off`.
@@ -3165,13 +3176,21 @@ function enabledPeersFromConfig(config: AppConfig): PeerId[] {
 export class CrossReviewOrchestrator {
   readonly store: SessionStore;
   adapters: Record<PeerId, PeerAdapter>;
+  private readonly injectedAdapterFactory: boolean;
 
   constructor(
     readonly config: AppConfig,
     private readonly emit: (event: RuntimeEvent) => void = emitNoop,
+    private readonly adapterFactory: PeerAdapterFactory = createAdapters,
   ) {
+    this.injectedAdapterFactory = adapterFactory !== createAdapters;
+    if (this.injectedAdapterFactory && !injectedAdapterFactoryAllowed(config)) {
+      throw new Error(
+        "injected_adapter_factory_forbidden: a non-default adapter factory is test-only and requires confirmed stub mode; stub=false can never use injected adapters.",
+      );
+    }
     this.store = new SessionStore(config);
-    this.adapters = createAdapters(config);
+    this.adapters = this.adapterFactory(config);
     // v2.14.0 (operator directive 2026-05-04): minimum-2-peers fail-fast
     // at boot so a misconfigured workspace cannot silently degrade to a
     // self-review or single-peer review. Throws before adapters are used.
@@ -3334,7 +3353,7 @@ export class CrossReviewOrchestrator {
 
   async probeAll(): Promise<PeerProbeResult[]> {
     await resolveBestModels(this.config);
-    const adapters = createAdapters(this.config);
+    const adapters = this.adapterFactory(this.config);
     return Promise.all(selectAdapters(adapters).map((adapter) => adapter.probe()));
   }
 
@@ -4307,7 +4326,7 @@ export class CrossReviewOrchestrator {
     const models = this.config.fallback_models[adapter.id] ?? [];
     return models
       .filter((model) => model && model !== adapter.model)
-      .map((model) => createAdapters(this.config, { [adapter.id]: model })[adapter.id]);
+      .map((model) => this.adapterFactory(this.config, { [adapter.id]: model })[adapter.id]);
   }
 
   private async recordFallback(
@@ -4998,7 +5017,7 @@ export class CrossReviewOrchestrator {
     const startedAt = now();
     const quorumPeers = resolveQuorumPeers(session, selectedPeers);
     const isRecoveryRound = quorumPeers.length > selectedPeers.length;
-    const adapters = createAdapters(this.config);
+    const adapters = this.adapterFactory(this.config);
     const convergenceScope: ConvergenceScope = {
       petitioner,
       caller: petitioner,
@@ -5622,7 +5641,7 @@ export class CrossReviewOrchestrator {
             await this.store.savePeerFailure(session.session_id, roundNumber, failure);
           }
         }
-        if (!this.config.stub && peerResult.status === "READY") {
+        if ((!this.config.stub || this.injectedAdapterFactory) && peerResult.status === "READY") {
           const trustedAttachments = trustedEvidenceAttachments(attachments);
           const submittedAttachments = callerSubmittedEvidenceAttachments(attachments);
           const grounding = groundReadyPeerEvidence(peerResult, {
@@ -5651,6 +5670,7 @@ export class CrossReviewOrchestrator {
           }
         } else if (
           this.config.stub &&
+          !this.injectedAdapterFactory &&
           peerResult.status === "READY" &&
           peerResult.structured?.confidence === "verified"
         ) {
@@ -5730,7 +5750,7 @@ export class CrossReviewOrchestrator {
       recovery_converged: isRecoveryRound && quorumConvergence.converged,
       quorum_peers: quorumPeers,
     };
-    if (!this.config.stub) {
+    if (!this.config.stub || this.injectedAdapterFactory) {
       const readyPeers = new Set(peerConvergence.ready_peers);
       for (const peer of peerEvidenceCorroborators) {
         if (!readyPeers.has(peer)) continue;
@@ -5833,9 +5853,10 @@ export class CrossReviewOrchestrator {
     // statuses surface a `peer_resurfaced_terminal` event for visibility
     // but the status itself is not auto-changed (operator-owned).
     // Always runs, even when evidenceAsks is empty: a round with zero
-    // NEEDS_EVIDENCE means EVERY prior open item needs to be promoted
-    // to addressed. Skipping the call when evidenceAsks is empty would
-    // miss exactly the case the inference is designed for.
+    // NEEDS_EVIDENCE means every prior open item must at least record that
+    // it was not resurfaced. This soft state remains convergence-blocking
+    // until strict requester reverification, a judge, or the operator closes
+    // it. Skipping the call would miss exactly the silence inference.
     if ((this.store.read(session.session_id).evidence_checklist ?? []).length > 0) {
       const addressDetection = await this.store.runEvidenceChecklistAddressDetection(
         session.session_id,
@@ -6958,7 +6979,7 @@ export class CrossReviewOrchestrator {
       draft: input.initial_draft,
       evidence: input.evidence,
     });
-    const adapters = createAdapters(this.config);
+    const adapters = this.adapterFactory(this.config);
     let draft = input.initial_draft;
 
     // v3.5.0 (CRV2-1 + CRV2-6): persist requested-vs-effective budget +

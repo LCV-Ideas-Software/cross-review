@@ -7,6 +7,38 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.12] — 2026-07-12
+
+**Evidence Broker convergence fix.** Prevents grounded requester rechecks from
+leaving historical `not_resurfaced` items stuck after a unanimous READY round,
+without allowing an item id or irrelevant evidence to manufacture satisfaction.
+
+### Fixed
+
+- Routes every unresolved checklist id into direct `ask_peers` and
+  `session_start_round` prompts, so callers do not need to reconstruct or
+  inject the broker state manually.
+- Scopes requester-reverification citations by `Checklist-Item` id before
+  correlating them, preventing evidence for one ask from closing another ask
+  owned by the same peer. Legacy sources without ids retain fail-closed
+  compatibility when no routed source is present.
+- Treats `e.g.`/`i.e.` as abbreviations rather than file anchors, recognizes
+  line-or-diff and diff-or-grep evidence alternatives, and excludes ordered-list
+  markers from value matching.
+- Adds bilingual semantic correlation for identity/injection/canonicalization,
+  redaction/secrets/assertions and required release documents. Routed but
+  irrelevant file/test output, partial document proof and explicitly
+  conjunctive code-symbol proof remain blocked.
+- Adds a five-peer offline integration regression that traverses persisted
+  evidence, real path/SHA-256/literal-quote grounding, requester reverification,
+  the durable event and final convergence from `not_resurfaced`. The adapter
+  injection seam is restricted to confirmed stub/test mode; `stub=false`
+  rejects it before probes or calls.
+- Records the 4.5.11 field incidents: session
+  `b5a73952-8236-4cdf-8e34-880624f663f4` spent seven rounds while two historical
+  asks remained stuck, and `a78aa17c-93f6-4825-89f9-b8abe1ec76d8` exposed the
+  same matcher class across additional natural-language asks.
+
 ## [v04.05.11] — 2026-07-12
 
 **Autonomous evidence-routing contract fix.** Prevents AI callers from

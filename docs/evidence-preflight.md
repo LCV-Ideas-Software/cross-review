@@ -162,6 +162,13 @@ from other peers or terminal operator dispositions are untouched.
 `Checklist-Item` identifies which ask is being revisited but is never proof by
 itself; the cited bytes must still answer a concrete value, command or
 verifiable semantic anchor from that ask.
+When one or more cited sources use checklist IDs, each item is correlated only
+against the sources carrying its own ID; routed evidence cannot bleed into a
+different ask from the same peer. The matcher recognizes common natural-language
+evidence alternatives such as file/line versus diff and diff versus grep, while
+keeping explicit conjunctions, execution claims and named release documents
+fail-closed. Direct review-round prompts include every unresolved ID
+automatically, so this routing requires no operator or caller-side reconstruction.
 The same operator-only gate covers evidence-checklist mutations, terminal-state
 mutations and security configuration.
 

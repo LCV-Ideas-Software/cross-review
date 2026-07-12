@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.11** (package `4.5.11`).
+**Status.** Stable. The current source/release target is **v04.05.12** (package `4.5.12`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.12`**      | Fixes Evidence Broker convergence: direct rounds receive unresolved checklist IDs, grounded same-requester rechecks close the correct item, natural-language alternatives no longer deadlock, and irrelevant or partial evidence still fails closed.                        |
 | **`v04.05.11`**      | Makes autonomous evidence routing unambiguous in the MCP contract: AI evidence is persisted automatically through review starters, while the optional operator authority-promotion tool cannot be mistaken for a mandatory human upload step.                               |
 | **`v04.05.10`**      | Retries npm attestation propagation independently from package visibility and follows the registry-advertised pathname on the pinned npm registry origin, preventing false-negative post-publish failures without weakening SLSA provenance requirements.                   |
 | **`v04.05.09`**      | Keeps server-authored READY remediation out of peer `caller_requests`, preventing unresolvable evidence-checklist blockers while preserving real peer asks and the complete decision audit trail.                                                                           |

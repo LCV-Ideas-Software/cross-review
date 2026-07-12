@@ -122,21 +122,115 @@ export function extractChecklistCommands(ask: string): string[] {
   );
 }
 
+const CHECKLIST_FALSE_FILE_ANCHORS = new Set(["e.g", "i.e"]);
+
+function checklistEvidenceHasFileLineRecord(corpus: string): boolean {
+  return /\b[\w./-]+\.[a-z0-9]+:\d+(?:(?:,|-)\d+)*\b/i.test(corpus);
+}
+
+function checklistCodeSymbols(ask: string): string[] {
+  return [
+    ...(ask.match(/\b[a-z][a-z0-9]*(?:[A-Z][A-Za-z0-9]*)+\b/g) ?? []),
+    ...(ask.match(/\b[a-z][a-z0-9]*_[a-z0-9_]+\b/gi) ?? []),
+  ].map((value) => value.normalize("NFKC").toLowerCase());
+}
+
+const CHECKLIST_SEMANTIC_CONCEPTS: ReadonlyArray<{
+  ask: RegExp;
+  evidence: RegExp;
+}> = [
+  {
+    ask: /\b(?:identity|identidade)\b/i,
+    evidence: /\b(?:identity|identidade|schemaid|fragmentid|inputhash)\b/i,
+  },
+  {
+    ask: /\b(?:inject(?:ion|ed|s)?|inje[cç][aã]o)\b/i,
+    evidence: /\b(?:inject(?:ion|ed|s)?|inje[cç][aã]o)\b/i,
+  },
+  { ask: /\bcan[oô]nic(?:al|a|o)?\b/i, evidence: /\bcan[oô]nic(?:al|a|o)?\b/i },
+  {
+    ask: /\b(?:redact(?:ion|ed|s)?|reda[cç][aã]o)\b/i,
+    evidence: /\b(?:redact(?:ion|ed|s)?|reda[cç][aã]o)\b/i,
+  },
+  {
+    ask: /\b(?:secrets?|segredos?)\b/i,
+    evidence: /\b(?:secrets?|segredos?|credentials?|api[_-]?keys?|authorization)\b/i,
+  },
+  {
+    ask: /\b(?:assertions?|asser[cç][oõ]es)\b/i,
+    evidence: /\b(?:assertions?|asser[cç][oõ]es|tests?)\b/i,
+  },
+  { ask: /\breadme(?:\.md)?\b/i, evidence: /\breadme(?:\.md)?\b/i },
+  { ask: /\bsecurity(?:\.md)?\b/i, evidence: /\bsecurity(?:\.md)?\b/i },
+  { ask: /\bchangelog(?:\.md)?\b/i, evidence: /\bchangelog(?:\.md)?\b/i },
+  {
+    ask: /methodolog(?:y|ical)|metodologia/i,
+    evidence: /methodolog(?:y|ical)|metodologia/i,
+  },
+];
+
+function checklistEvidenceSourcesForItem(
+  item: EvidenceChecklistItem,
+  evidenceSources: readonly string[],
+  knownItemIds: readonly string[],
+): { sources: string[]; explicitly_routed: boolean } {
+  const sources = evidenceSources.map((source) => source.trim()).filter(Boolean);
+  const sourceMentionsId = (source: string, id: string): boolean =>
+    new RegExp(`(?:^|[^a-f0-9])${id}(?:[^a-f0-9]|$)`, "i").test(source);
+  const routed = sources.filter((source) => sourceMentionsId(source, item.id));
+  if (routed.length > 0) return { sources: routed, explicitly_routed: true };
+  const anotherKnownItemWasRouted = sources.some((source) =>
+    knownItemIds.some((id) => sourceMentionsId(source, id)),
+  );
+  return {
+    sources: anotherKnownItemWasRouted ? [] : sources,
+    explicitly_routed: false,
+  };
+}
+
 function checklistAskCorroborated(
   item: EvidenceChecklistItem,
   evidenceSources: readonly string[],
+  knownItemIds: readonly string[],
 ): boolean {
-  const corpus = evidenceSources.join("\n").normalize("NFKC").toLowerCase();
+  const scopedEvidence = checklistEvidenceSourcesForItem(item, evidenceSources, knownItemIds);
+  const corpus = scopedEvidence.sources.join("\n").normalize("NFKC").toLowerCase();
   if (!corpus.trim()) return false;
   const ask = item.ask.normalize("NFKC").toLowerCase();
+  // Ordered-list markers describe the request structure, not values that the
+  // evidence must repeat. Keep substantive numbers such as 281, 422 or 80s.
+  const anchorAsk = ask.replace(/(^|\n)\s*\d+[.)]\s*/g, "$1");
   const valueAnchors = [
-    ...(ask.match(/https?:\/\/[^\s)\]}>'"]+/gi) ?? []),
-    ...(ask.match(/\b[a-f0-9]{12,64}\b/gi) ?? []),
-    ...(ask.match(/\b[a-z][a-z0-9_-]*_id\s*[:=#]\s*[a-z0-9._-]+\b/gi) ?? []),
-    ...(ask.match(/\b\d+(?:\.\d+)*\b/g) ?? []),
-    ...(ask.match(/\b[\w./-]+\.\w+(?::\d+)?\b/gi) ?? []),
+    ...(anchorAsk.match(/https?:\/\/[^\s)\]}>'"]+/gi) ?? []),
+    ...(anchorAsk.match(/\b[a-f0-9]{12,64}\b/gi) ?? []),
+    ...(anchorAsk.match(/\b[a-z][a-z0-9_-]*_id\s*[:=#]\s*[a-z0-9._-]+\b/gi) ?? []),
+    ...(anchorAsk.match(/\b\d+(?:\.\d+)*\b/g) ?? []),
+    ...(anchorAsk.match(/\b[\w./-]+\.\w+(?::\d+)?\b/gi) ?? []).filter(
+      (value) => !CHECKLIST_FALSE_FILE_ANCHORS.has(value.toLowerCase()),
+    ),
   ].map((value) => value.replace(/\s+/g, " ").trim());
-  const commands = extractChecklistCommands(ask);
+  const commands = extractChecklistCommands(anchorAsk);
+  const codeSymbols = checklistCodeSymbols(item.ask);
+  const requestedConcepts = CHECKLIST_SEMANTIC_CONCEPTS.filter(({ ask: pattern }) =>
+    pattern.test(ask),
+  );
+  const requestsLineEvidence =
+    /\b(?:line numbers?|file\s*:\s*line|linhas?(?:\s+de\s+c[oó]digo)?|arquivo\s*:\s*linha)\b/i.test(
+      ask,
+    );
+  const requestsGrepEvidence = /\bgrep(?:\s+lines?|\s+output|\s+sa[ií]da)?\b/i.test(ask);
+  const requestsDiffEvidence = /\b(?:git\s+diff|diff|patch)\b/i.test(ask);
+  const lineOrDiffAlternative =
+    (requestsLineEvidence || requestsGrepEvidence) &&
+    requestsDiffEvidence &&
+    (/\b(?:or|ou)\b/i.test(ask) ||
+      /\b(?:diff|patch)\s*\/\s*grep\b|\bgrep\s*\/\s*(?:diff|patch)\b/i.test(ask));
+  const hasLineEvidence = checklistEvidenceHasFileLineRecord(corpus);
+  const hasDiffEvidence = checklistEvidenceHasDiffRecord(corpus);
+  const satisfiedByLineAlternative = lineOrDiffAlternative && hasLineEvidence;
+  const requiredCommands = satisfiedByLineAlternative
+    ? commands.filter((command) => !/^git diff(?:\s|$)/i.test(command.replace(/\s+/g, " ")))
+    : commands;
   const semanticAnchors = [
     [/(?:exit[_ ]code)/i, /exit[_ ]code/i],
     [/\btests?\b/i, /\btests?\b/i],
@@ -144,24 +238,61 @@ function checklistAskCorroborated(
     [/\b(?:workflow|pipeline|github actions?)\b/i, /\b(?:workflow|pipeline|github actions?)\b/i],
     [/\b(?:diff|patch)\b/i, /\b(?:diff|patch)\b/i],
   ] as const;
-  const requestedSemantics = semanticAnchors.filter(([askPattern]) => askPattern.test(ask));
+  const requestedSemantics = semanticAnchors.filter(
+    ([askPattern]) =>
+      askPattern.test(ask) && !(satisfiedByLineAlternative && askPattern.source.includes("diff")),
+  );
+  const requestsExecutionRecord =
+    requiredCommands.length > 0 ||
+    /(?:exit[_ ]code)/i.test(ask) ||
+    /\btests?\b/i.test(ask) ||
+    (/\b(?:execut(?:e|ed|ion)|run|ran|output|resultado|sa[ií]da|executad[oa])\b/i.test(ask) &&
+      !requestsGrepEvidence);
+  const requestsImplementationRecord =
+    /\b(?:code|implementation|implementa[cç][aã]o|arquivo|file|assertions?|asser[cç][oõ]es|schema|contract|validation|valida[cç][aã]o|identity|identidade|injection|inje[cç][aã]o|redact|reda[cç][aã]o)\b/i.test(
+      ask,
+    );
+  const routedConcreteRecord =
+    scopedEvidence.explicitly_routed &&
+    (!requestsExecutionRecord || checklistEvidenceHasExecutionRecord(corpus)) &&
+    (!requestsImplementationRecord || hasLineEvidence || hasDiffEvidence) &&
+    (hasLineEvidence ||
+      hasDiffEvidence ||
+      checklistEvidenceHasExecutionRecord(corpus) ||
+      checklistEvidenceHasOperationalRecord(corpus));
   // A Checklist-Item id routes a recheck to the right ask; it is not proof
   // that the cited material answers that ask. Auto-close only when the ask
   // itself supplied a concrete value, command, or verifiable semantic anchor.
   const hasAskDerivedAnchor =
-    valueAnchors.length > 0 || commands.length > 0 || requestedSemantics.length > 0;
-  if (!hasAskDerivedAnchor) return false;
+    valueAnchors.length > 0 ||
+    requiredCommands.length > 0 ||
+    requestedSemantics.length > 0 ||
+    codeSymbols.length > 0 ||
+    requestsLineEvidence ||
+    requestsGrepEvidence;
+  if (!hasAskDerivedAnchor && !routedConcreteRecord) return false;
   if (!valueAnchors.every((value) => corpus.includes(value))) return false;
-  if (!commands.every((command) => corpus.includes(command.replace(/\s+/g, " ").toLowerCase()))) {
+  if (
+    !requiredCommands.every((command) =>
+      corpus.includes(command.replace(/\s+/g, " ").toLowerCase()),
+    )
+  ) {
     return false;
   }
   if (!requestedSemantics.every(([, evidencePattern]) => evidencePattern.test(corpus)))
     return false;
-  const requestsExecutionRecord =
-    commands.length > 0 ||
-    /(?:exit[_ ]code)/i.test(ask) ||
-    /\btests?\b/i.test(ask) ||
-    /\b(?:execut(?:e|ed|ion)|run|ran|output|resultado|sa[ií]da|executad[oa])\b/i.test(ask);
+  if (!requestedConcepts.every(({ evidence }) => evidence.test(corpus))) return false;
+  if (codeSymbols.length > 0) {
+    const everySymbolRequired = /\b(?:all|every|each|todos?|todas?|cada)\b/i.test(ask);
+    const symbolsMatch = everySymbolRequired
+      ? codeSymbols.every((symbol) => corpus.includes(symbol))
+      : codeSymbols.some((symbol) => corpus.includes(symbol));
+    if (!symbolsMatch) return false;
+  }
+  if (lineOrDiffAlternative && !hasLineEvidence && !hasDiffEvidence) return false;
+  if (requestsLineEvidence && !lineOrDiffAlternative && !hasLineEvidence) return false;
+  if (requestsGrepEvidence && !lineOrDiffAlternative && !hasLineEvidence && !hasDiffEvidence)
+    return false;
   if (requestsExecutionRecord && !checklistEvidenceHasExecutionRecord(corpus)) return false;
   if (
     /\b(?:deploy|deployment|rollback|workflow|pipeline|github actions?)\b/i.test(ask) &&
@@ -169,7 +300,7 @@ function checklistAskCorroborated(
   ) {
     return false;
   }
-  if (/\b(?:diff|patch)\b/i.test(ask) && !checklistEvidenceHasDiffRecord(corpus)) return false;
+  if (requestsDiffEvidence && !lineOrDiffAlternative && !hasDiffEvidence) return false;
   return true;
 }
 
@@ -1998,7 +2129,14 @@ export class SessionStore {
         ) {
           continue;
         }
-        if (!checklistAskCorroborated(item, evidenceSources)) continue;
+        if (
+          !checklistAskCorroborated(
+            item,
+            evidenceSources,
+            checklist.map((candidate) => candidate.id),
+          )
+        )
+          continue;
         const entry: EvidenceStatusHistoryEntry = {
           ts,
           item_id: item.id,

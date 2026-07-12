@@ -404,6 +404,49 @@ review starters declaram que `evidence` é persistido automaticamente como
 explicitamente que nenhuma ação humana é necessária. O runtime smoke lista os schemas MCP e cobre
 tanto as descrições quanto a remediação da rejeição.
 
+## 3.11. DEF-13 — Evidence Broker mantinha asks satisfeitos em `not_resurfaced` (4.5.11 → 4.5.12)
+
+A sessão `b5a73952-8236-4cdf-8e34-880624f663f4` confirmou um defeito determinístico no correlator
+do Evidence Broker. O DeepSeek abriu dois pedidos na rodada 2. Ambos passaram de `open` para
+`not_resurfaced` na rodada 3. Nas rodadas 4, 6 e 7, Claude, Gemini, DeepSeek, Grok e Perplexity
+retornaram `READY/verified`, sem warnings; path, SHA-256 e quotes foram validados byte a byte. Mesmo
+assim, as rodadas continuaram bloqueadas pelos mesmos dois itens. A sessão consumiu sete rodadas,
+241.207 tokens e custo configurado estimado de US$ 1,4204596.
+
+O correlator transformava linguagem natural em uma conjunção incorreta. No primeiro pedido,
+“file/line **ou** git diff” exigia também a expressão `git diff`; no segundo, a abreviação `e.g.` era
+extraída como se fosse um caminho de arquivo obrigatório. Além disso, embora a documentação dissesse
+que `Checklist-Item` roteia a rechecagem, a implementação unia todas as fontes do peer num único
+corpus e não usava o ID. Isso criava falsos negativos e risco simétrico de uma fonte fechar outro
+item do mesmo autor.
+
+A sessão imediatamente posterior `a78aa17c-93f6-4825-89f9-b8abe1ec76d8` reproduziu a classe em
+mais linguagem real: `diff/grep`, documentos de release sem extensão, termos em português sobre
+injeção/validação e redação de segredos, além de enumeração numerada do Perplexity. Cinco itens ficaram
+`not_resurfaced`; na rodada 3, os cinco peers estavam READY, mas o broker continuou bloqueando. A
+análise também distinguiu asks realmente provados de alegações narrativas: READY e ID não bastam se
+os bytes citados forem irrelevantes, parciais ou apenas afirmarem que uma rodada anterior teria
+provado algo.
+
+A 4.5.12 corrige o ciclo sem afrouxar o mecanismo anti-enganação:
+
+- `ask_peers`/`session_start_round` passam a injetar automaticamente todos os IDs pendentes;
+- quando há IDs nas fontes, cada item usa apenas as fontes que carregam seu próprio ID;
+- `e.g.`/`i.e.`, alternativas line/diff e diff/grep e marcadores de lista são tratados conforme o
+  papel sintático, não como prova obrigatória;
+- conceitos bilíngues e documentos explicitamente pedidos precisam aparecer na evidência;
+- ID com file:line/teste irrelevante, documento parcial, comando apenas documentado ou conjunção
+  explicitamente incompleta continuam bloqueados;
+- uma regressão E2E offline percorre cinco READY, attachment real, path, SHA-256, quote literal,
+  `requester_reverified`, evento durável e convergência a partir de `not_resurfaced`.
+
+Durante a criação desse E2E, duas versões iniciais do fixture usaram `stub=false`, mas `askPeers`
+recriava adapters internamente e ignorava a substituição feita no construtor. Isso produziu duas
+rodadas reais não pretendidas, dez chamadas, 65.501 tokens e custo externo estimado em cerca de
+US$ 1,06; o rate card zero do fixture deixou o ledger local incorretamente em US$ 0. A seam final é
+injetada em todos os pontos de criação, só é aceita com stub/teste confirmado, rejeita `stub=false`
+antes de probes/calls e verifica cinco chamadas locais exatas, zero chamadas Codex e zero retries.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
@@ -437,8 +480,8 @@ DEF-4, DEF-5, DEF-6, DEF-8 e DEF-9 foram corrigidos nas releases posteriores. A 
 de evidência autenticada também eliminou a necessidade de attachment manual do operador em
 revisões normais; a superfície `session_attach_evidence` continua operator-only por desenho de
 segurança. Os novos defeitos confirmados após o adendo foram o DEF-10, fechado na 4.5.9, e o
-DEF-11 de propagação da atestação npm, fechado na 4.5.10, além do DEF-12 de descoberta do
-transporte autônomo, fechado no source 4.5.11.
+DEF-11 de propagação da atestação npm, fechado na 4.5.10, DEF-12 de descoberta do transporte
+autônomo, fechado na 4.5.11, e DEF-13 de convergência do Evidence Broker, fechado no source 4.5.12.
 
 1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
    `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm
