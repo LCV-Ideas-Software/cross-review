@@ -309,6 +309,16 @@ const codeScanningGateBlock = autoTagWorkflow.match(
   /- name: Wait for CodeQL and require zero open alerts[\s\S]*?(?=\n\s+- name: Read package\.json version)/,
 )?.[0];
 assert.ok(codeScanningGateBlock, "auto-tag must retain an explicit code-scanning gate step");
+assert.match(
+  codeScanningGateBlock,
+  /--jq '\.\[\] \| \.commit_sha \+ " " \+ \.category' \| grep -F "\$VERIFIED_SHA "/,
+  "auto-tag must project each analysis object before filtering categories by the exact SHA",
+);
+assert.equal(
+  (codeScanningGateBlock.match(/!= "\$VERIFIED_SHA"/g) ?? []).length,
+  3,
+  "auto-tag must compare the processed-analysis ref and both sides of the alert query with VERIFIED_SHA",
+);
 assert.ok(
   codeScanningGateBlock.indexOf('alert_main_before="$(git ls-remote --heads origin') <
     codeScanningGateBlock.indexOf("code-scanning/alerts?state=open") &&

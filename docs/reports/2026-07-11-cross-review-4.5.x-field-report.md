@@ -472,6 +472,13 @@ nomeia explicitamente o SHA imutável cujos CI, análises processadas e snapshot
 sem alertas passaram. Uma regressão de política verifica permissões, espera,
 endpoint, bracket do ref e identidade exata da tag.
 
+Na primeira execução do auto-tag para o commit `e698801`, o gate bloqueou a
+publicação antes da tag porque o filtro `gh --jq` omitia o operador `|` entre a
+iteração do array e a projeção do objeto. O log registrou `expected an object but
+got: array`; nenhuma publicação 4.5.13 ocorreu. O filtro foi corrigido e a
+regressão passou a exigir explicitamente a projeção por objeto, o grep do SHA e
+as três comparações que prendem análise e alerta ao `VERIFIED_SHA`.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto

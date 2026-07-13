@@ -89,7 +89,7 @@ jobs:
               echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for CodeQL; refusing to tag stale $VERIFIED_SHA."
               exit 1
             fi
-            processed_categories="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?ref=refs/heads/main&per_page=100" --jq '.[].commit_sha + " " + .category' | grep -F "$VERIFIED_SHA " || true)"
+            processed_categories="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?ref=refs/heads/main&per_page=100" --jq '.[] | .commit_sha + " " + .category' | grep -F "$VERIFIED_SHA " || true)"
             if grep -Fq "/language:actions" <<<"$processed_categories" && grep -Fq "/language:javascript-typescript" <<<"$processed_categories"; then
               echo "Both CodeQL categories are processed for $VERIFIED_SHA."
               break
