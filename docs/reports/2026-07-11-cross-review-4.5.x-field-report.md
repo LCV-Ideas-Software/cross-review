@@ -606,6 +606,20 @@ cada pedido de diffs, comandos e testes. A 4.5.14 não falsifica convergência
 retroativa. Uma rodada nova pode receber evidência pelo canal automático do
 caller, sem upload humano; cada ask só fecha com prova realmente correlacionada.
 
+## 3.14. Fechamento de release — tag protegido 4.5.14 e alvo 4.5.15
+
+O auto-tag criou `v04.05.14` no SHA `1553c1af` enquanto a auditoria final do
+Dependabot ainda concluía. O Publish foi cancelado durante a instalação do gate,
+antes de npmjs.com, GitHub Packages ou GitHub Release; a consulta ao npm retornou
+404 para 4.5.14. A regra imutável de tags recusou a exclusão, corretamente. O
+alvo publicável passou então a 4.5.15, sem mover nem sobrescrever o tag antigo.
+
+A correção final remove somente a dica `packageManager` do manifest. O
+Dependabot deixa de tentar ativar npm 12 pelo Corepack/StepSecurity e usa o npm
+11 documentado de sua imagem; CI e Publish continuam responsáveis pelo npm
+12.0.1, baixado diretamente e conferido pelo SHA-512 fixo. Nenhum modelo, wire
+schema, rate card ou chave da configuração central mudou neste fechamento.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto

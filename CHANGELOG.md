@@ -7,6 +7,26 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.15] — 2026-07-12
+
+**Release completion after the protected 4.5.14 tag.** The 4.5.14 publish run
+was cancelled before registry publication when the final Dependabot audit found
+that its npm updater still redirected Corepack through the private dependency
+proxy. Repository rules correctly prevented deleting or moving that tag, so
+4.5.15 is the first publishable artifact containing the complete continuity and
+dependency-automation fixes below.
+
+### Fixed
+
+- Keeps `packageManager` absent from the package manifest so Dependabot uses its
+  documented npm 11 resolver instead of attempting to bootstrap npm 12 through
+  StepSecurity, whose metadata endpoint does not expose Corepack's required
+  `dist.tarball` field. CI and Publish continue to download npm 12.0.1 directly,
+  verify the pinned SHA-512 and enforce the npm 12 policy.
+- Preserves the four-ecosystem Dependabot coverage, pip-compile source+hash lock,
+  grouped Python updates, real consumer checks and concurrent-base merge retry
+  introduced in the protected 4.5.14 source tag.
+
 ## [v04.05.14] — 2026-07-12
 
 **Durable Evidence Broker continuity fix.** Prevents immutable evidence from
