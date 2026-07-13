@@ -56,6 +56,12 @@ const expectedNpmCliVersion = "12.0.1";
 const expectedNpmCliSha512 =
   "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140";
 
+assert.equal(
+  packageJson.packageManager,
+  undefined,
+  "packageManager must stay workflow-pinned: Dependabot's supported npm must not bootstrap through the private registry",
+);
+
 assert.deepEqual(
   packageJson.allowScripts,
   expectedAllowScripts,

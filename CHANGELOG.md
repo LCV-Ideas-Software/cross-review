@@ -54,9 +54,11 @@ metadata and health state.
   npm registry shape, `replaces-base` is omitted when `.npmrc` already defines
   the global registry; this prevents Corepack from trying to bootstrap the npm
   CLI through a dependency proxy that does not expose the required
-  `dist.tarball` metadata. npm 12 remains pinned and hash-verified by the project
-  regression because GitHub's documented Dependabot contract currently stops
-  at npm 11.
+  `dist.tarball` metadata. The manifest also omits the `packageManager` Corepack
+  hint after the remote updater proved that Dependabot otherwise redirects even
+  without `replaces-base`; CI and Publish still bootstrap npm 12.0.1 and verify
+  its pinned SHA-512 independently. Dependabot therefore resolves with its
+  supported npm 11 while the product's build/release contract remains npm 12.
 - Adds the missing pip-compile source manifest, groups compatible Python tool
   updates and regenerates the Python 3.12 lock with hashes. This prevents a
   direct `socketsecurity` bump from omitting a newly introduced transitive

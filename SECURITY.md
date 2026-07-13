@@ -54,15 +54,18 @@ npm, GitHub Actions, pip/pip-compile and pre-commit. The committed `.npmrc`
 declares the authenticated StepSecurity proxy as npm's global dependency
 registry; following GitHub's documented configuration shape, the Dependabot
 credential does not also set `replaces-base`, which would incorrectly redirect
-Corepack's npm CLI bootstrap through that proxy. Ordinary CI installs the Python
-tool lock with `--require-hashes` under the centrally pinned Python 3.12 and
-executes the pre-commit hooks, so those bot updates are not auto-merged on
+Corepack's npm CLI bootstrap through that proxy. `package.json` intentionally
+does not carry a `packageManager` Corepack hint: Dependabot uses its supported
+npm 11 resolver, while CI and Publish independently bootstrap npm 12.0.1 from
+the npm registry tarball and verify its pinned SHA-512. This preserves the
+audited npm 12 build/release toolchain without making Dependabot install an
+unsupported CLI through the private dependency proxy. Ordinary CI installs the
+Python tool lock with `--require-hashes` under the centrally pinned Python 3.12
+and executes the pre-commit hooks, so those bot updates are not auto-merged on
 skipped consumer checks. `socketsecurity-requirements.in` is the direct
 pip-compile source; its generated `.txt` companion must contain the full pinned,
 hashed transitive closure. Compatible Python updates are grouped to avoid a
-burst of lockfile PRs racing each other. The separately bootstrapped npm 12 CLI
-and SHA-512 pin remain under the release-policy regression because npm 12 is not
-yet in GitHub's documented Dependabot support range.
+burst of lockfile PRs racing each other.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored

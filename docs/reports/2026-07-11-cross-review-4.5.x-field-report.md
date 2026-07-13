@@ -569,13 +569,17 @@ remove `day` dos schedules `daily` (a chave é semanal segundo o contrato
 oficial). A primeira execução remota demonstrou que combinar esse `.npmrc` com
 `replaces-base: true` redirecionava também o bootstrap do próprio npm pelo
 Corepack; o proxy respondia sem `dist.tarball` e abortava antes da resolução das
-dependências. A configuração final segue a alternativa oficial para registry
-global em `.npmrc`: mantém a credencial do Dependabot, mas omite
-`replaces-base`. O CI instala o lock Python com hashes sob o pin 3.12 e executa
-os hooks pre-commit reais. A mesma primeira análise remota abriu o alerta CodeQL
-40 na regressão textual da URL do registry; a expressão sem âncoras foi removida
-em favor de comparação literal, enquanto o parser YAML continua responsável
-pela associação estrutural, sem dismiss ou supressão.
+dependências. Omitir `replaces-base` não bastou: a segunda execução mostrou que
+o experimento `enable-private-registry-for-corepack` do próprio Dependabot ainda
+redirecionava a CLI quando encontrava `packageManager: npm@12.0.1`. A configuração
+final mantém `.npmrc` e a credencial StepSecurity para resolver dependências,
+mas remove do manifest apenas a dica Corepack. O Dependabot usa o npm 11.17
+embutido/documentado; CI e Publish continuam baixando npm 12.0.1 diretamente,
+validando o SHA-512 antes de executar. O CI instala o lock Python com hashes sob
+o pin 3.12 e executa os hooks pre-commit reais. A mesma primeira análise remota
+abriu o alerta CodeQL 40 na regressão textual da URL do registry; a expressão
+sem âncoras foi removida em favor de comparação literal, enquanto o parser YAML
+continua responsável pela associação estrutural, sem dismiss ou supressão.
 
 Essa ativação abriu doze PRs de manutenção em paralelo. Nove foram validados e
 incorporados automaticamente; os PRs 112 e 116 tiveram todos os checks de
