@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -700,6 +701,74 @@ const regressions: Regression[] = [
       assert.equal(
         orchestrator.store.read(session.session_id).evidence_checklist?.[0]?.status ?? "open",
         "open",
+      );
+    },
+  },
+  {
+    name: "requester code-symbol extraction is bounded on repeated uppercase backtracking input",
+    run: async () => {
+      const probe = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "--eval",
+          [
+            'import { extractChecklistCodeSymbols } from "./src/core/session-store.ts";',
+            'const adversarial = "a" + "A".repeat(100_000) + "_";',
+            "if (extractChecklistCodeSymbols(adversarial).length !== 0) process.exit(2);",
+          ].join("\n"),
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 2_000,
+          windowsHide: true,
+        },
+      );
+      assert.equal(
+        probe.error,
+        undefined,
+        `production symbol extraction exceeded its 2s adversarial deadline: ${probe.error?.message}`,
+      );
+      assert.equal(
+        probe.status,
+        0,
+        `production symbol extraction probe failed: ${probe.stderr || probe.stdout}`,
+      );
+
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("requester-linear-code-symbol-extraction"),
+      );
+      const session = await orchestrator.initSession(
+        "Requester reverification linear code-symbol fixture.",
+        "codex",
+      );
+      const ask = "Provide generateValidated with line numbers.";
+      const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [{ peer: "deepseek", ask }],
+      );
+      const item = checklist[0];
+      assert.ok(item);
+
+      const promoted = await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+        session.session_id,
+        {
+          round: 2,
+          peer: "deepseek",
+          evidence_sources: [
+            `Artifact quote: "${item.id} SOURCE_EXACT: analisar.ts:480 shows generateValidated."`,
+          ],
+        },
+      );
+
+      assert.deepEqual(
+        promoted.map(({ item: promotedItem }) => promotedItem.ask),
+        [ask],
+        "the bounded extractor must preserve requested camelCase symbol correlation",
       );
     },
   },

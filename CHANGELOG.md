@@ -7,6 +7,28 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.13] — 2026-07-12
+
+**ReDoS recurrence fix and fail-closed publication gate.** Closes
+code-scanning alert 39 and prevents a successful CodeQL workflow that uploaded
+findings from being mistaken for a clean security result.
+
+### Security
+
+- Replaces the ambiguous nested-quantifier camelCase matcher with a linear
+  identifier scan plus an explicit uppercase filter. This preserves checklist
+  code-symbol correlation while eliminating exponential backtracking on long
+  repeated-uppercase input.
+- Adds an adversarial 100,000-character regression for the Evidence Broker
+  symbol path.
+- Makes auto-tag wait for CodeQL on the exact CI-verified SHA and query the
+  default branch's actual open code-scanning alerts. A failed, missing or
+  incomplete CodeQL run, or any open alert, now blocks the tag and npm publish.
+  The moving-main alert query is bracketed by SHA checks, and the tag explicitly
+  names the immutable SHA whose CI and processed analyses passed.
+- Records that alert 39 repeated the `js/redos` class already fixed in alert
+  31, and codifies full-diff regex-complexity review as a release invariant.
+
 ## [v04.05.12] — 2026-07-12
 
 **Evidence Broker convergence fix.** Prevents grounded requester rechecks from

@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.12 for package 4.5.12. This
+Current supported source/release target: v04.05.13 for package 4.5.13. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.12 preserves that trust boundary while transporting evidence submitted
+v04.05.13 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or
@@ -27,6 +27,12 @@ file/line material and bilingual semantic concepts still have to correspond to
 the original ask. Evidence routed to one item cannot close another, partial
 release-document proof remains unresolved, and synthetic adapter injection is
 rejected outside explicitly confirmed stub/test mode.
+
+Release automation waits for the CodeQL workflow on the exact CI-verified SHA
+and separately requires the default branch to have zero open code-scanning
+alerts before creating a tag. Workflow success alone is not treated as proof
+that the uploaded analysis is finding-free. Regex changes over untrusted text
+must use bounded or linear matching and include adversarial long-input coverage.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored

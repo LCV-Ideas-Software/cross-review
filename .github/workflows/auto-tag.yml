@@ -29,6 +29,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      security-events: read
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -53,6 +54,73 @@ jobs:
           fi
           echo "matches=true" >> "$GITHUB_OUTPUT"
           echo "Verified main at successful CI commit $VERIFIED_SHA."
+      - name: Wait for CodeQL and require zero open alerts
+        if: steps.verified.outputs.matches == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          codeql_state="missing"
+          for attempt in {1..60}; do
+            codeql_state="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$VERIFIED_SHA" --event push --limit 1 --json status,conclusion --jq '.[0] | if . == null then "missing" else "\(.status):\(.conclusion // "")" end')"
+            if [ "$codeql_state" = "completed:success" ]; then
+              echo "CodeQL completed successfully for $VERIFIED_SHA."
+              break
+            fi
+            if [[ "$codeql_state" == completed:* ]]; then
+              echo "::error::CodeQL finished as $codeql_state for $VERIFIED_SHA; refusing to tag."
+              exit 1
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "::error::CodeQL did not complete successfully for $VERIFIED_SHA (last state: $codeql_state); refusing to tag."
+              exit 1
+            fi
+            echo "Waiting for CodeQL on $VERIFIED_SHA ($attempt/60; state: $codeql_state)."
+            sleep 5
+          done
+
+          # Workflow completion and alert processing are distinct states. Wait
+          # until both configured CodeQL categories for this exact SHA are
+          # visible before consulting the resulting alert set.
+          for attempt in {1..12}; do
+            remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+            if [ "$remote_main_sha" != "$VERIFIED_SHA" ]; then
+              echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for CodeQL; refusing to tag stale $VERIFIED_SHA."
+              exit 1
+            fi
+            processed_categories="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?ref=refs/heads/main&per_page=100" --jq '.[].commit_sha + " " + .category' | grep -F "$VERIFIED_SHA " || true)"
+            if grep -Fq "/language:actions" <<<"$processed_categories" && grep -Fq "/language:javascript-typescript" <<<"$processed_categories"; then
+              echo "Both CodeQL categories are processed for $VERIFIED_SHA."
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "::error::CodeQL analyses were not visible for both categories on $VERIFIED_SHA; refusing to tag."
+              exit 1
+            fi
+            echo "Waiting for processed CodeQL analyses on $VERIFIED_SHA ($attempt/12)."
+            sleep 5
+          done
+
+          # A successful workflow may have uploaded findings. Publication
+          # requires the processed default-branch alert set itself to be empty.
+          # Bracket this moving-ref query so its result belongs to VERIFIED_SHA.
+          alert_main_before="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$alert_main_before" != "$VERIFIED_SHA" ]; then
+            echo "::error::main advanced to ${alert_main_before:-missing} before the alert query; refusing to tag stale $VERIFIED_SHA."
+            exit 1
+          fi
+          open_alerts="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100" --jq '.[].number')"
+          alert_main_after="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$alert_main_after" != "$VERIFIED_SHA" ]; then
+            echo "::error::main advanced to ${alert_main_after:-missing} during the alert query; refusing to use a mixed security snapshot."
+            exit 1
+          fi
+          if [ -n "$open_alerts" ]; then
+            echo "::error::Open code-scanning alert(s) block publication: $(echo "$open_alerts" | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "Code-scanning gate passed: zero open default-branch alerts."
       - name: Read package.json version and compute display tag
         if: steps.verified.outputs.matches == 'true'
         id: version
@@ -96,12 +164,20 @@ jobs:
         if: steps.verified.outputs.matches == 'true' && steps.check.outputs.exists == 'false'
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$remote_main_sha" != "$VERIFIED_SHA" ]; then
+            echo "::error::main advanced to ${remote_main_sha:-missing} before tag creation; refusing to tag stale $VERIFIED_SHA."
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${TAG}" HEAD
-          git push origin "${TAG}"
+          # Release identity is the immutable SHA whose CI, processed CodeQL
+          # analyses and bracketed zero-alert snapshot passed above.
+          git tag "${TAG}" "${VERIFIED_SHA}"
+          git push origin "refs/tags/${TAG}:refs/tags/${TAG}"
           echo "Created and pushed lightweight tag ${TAG}."
       - name: Dispatch publish workflow
         if: steps.verified.outputs.matches == 'true' && steps.check.outputs.exists == 'false'

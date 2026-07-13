@@ -288,9 +288,51 @@ assert.doesNotMatch(
   /ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha\s*\}\}/,
   "privileged workflow_run jobs must never checkout a dynamic event SHA",
 );
+for (const codeScanningGate of [
+  "security-events: read",
+  "Wait for CodeQL and require zero open alerts",
+  'gh run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$VERIFIED_SHA"',
+  "code-scanning/analyses?ref=refs/heads/main&per_page=100",
+  "code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100",
+]) {
+  assert.ok(
+    autoTagWorkflow.includes(codeScanningGate),
+    `auto-tag must block publication until CodeQL completes with zero open alerts: ${codeScanningGate}`,
+  );
+}
+assert.equal(
+  (autoTagWorkflow.match(/git ls-remote --heads origin "refs\/heads\/main"/g) ?? []).length,
+  4,
+  "auto-tag must revalidate main while processing CodeQL, bracket the alert query, and check freshness before tagging",
+);
+const codeScanningGateBlock = autoTagWorkflow.match(
+  /- name: Wait for CodeQL and require zero open alerts[\s\S]*?(?=\n\s+- name: Read package\.json version)/,
+)?.[0];
+assert.ok(codeScanningGateBlock, "auto-tag must retain an explicit code-scanning gate step");
+assert.ok(
+  codeScanningGateBlock.indexOf('alert_main_before="$(git ls-remote --heads origin') <
+    codeScanningGateBlock.indexOf("code-scanning/alerts?state=open") &&
+    codeScanningGateBlock.indexOf('alert_main_after="$(git ls-remote --heads origin') >
+      codeScanningGateBlock.indexOf("code-scanning/alerts?state=open"),
+  "auto-tag must bracket the moving-main alert query with the exact verified SHA",
+);
+const createTagBlock = autoTagWorkflow.match(
+  /- name: Create and push tag[\s\S]*?(?=\n\s+- name: Dispatch publish workflow)/,
+)?.[0];
+assert.ok(createTagBlock, "auto-tag must retain an explicit tag-creation step");
+assert.ok(
+  createTagBlock.indexOf('git ls-remote --heads origin "refs/heads/main"') <
+    createTagBlock.search(/git tag "\$\{TAG\}" "\$\{VERIFIED_SHA\}"/),
+  "auto-tag must revalidate remote main immediately before creating the tag",
+);
+assert.match(
+  createTagBlock,
+  /git push origin "refs\/tags\/\$\{TAG\}:refs\/tags\/\$\{TAG\}"/,
+  "auto-tag must publish the tag that explicitly names the fully verified SHA",
+);
 assert.equal(
   (autoTagWorkflow.match(/if:\s*steps\.verified\.outputs\.matches == 'true'/g) ?? []).length,
-  4,
+  5,
   "every step that reads, tags or publishes repository content must require the verified main SHA",
 );
 

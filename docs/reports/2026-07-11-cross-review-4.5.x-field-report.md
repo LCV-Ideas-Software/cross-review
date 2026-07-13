@@ -447,6 +447,31 @@ US$ 1,06; o rate card zero do fixture deixou o ledger local incorretamente em US
 injetada em todos os pontos de criação, só é aceita com stub/teste confirmado, rejeita `stub=false`
 antes de probes/calls e verifica cinco chamadas locais exatas, zero chamadas Codex e zero retries.
 
+## 3.12. DEF-14 — recorrência ReDoS e publicação antes da leitura dos achados (4.5.12 → 4.5.13)
+
+O CodeQL da 4.5.12 abriu o alerta 39 em `src/core/session-store.ts`, no matcher
+camelCase usado para correlacionar símbolos pedidos pelo Evidence Broker. A
+repetição externa aceitava o mesmo `A` que a repetição interna, permitindo
+partições exponenciais de uma sequência longa. A classe `js/redos` era a mesma
+do alerta 31, corrigido na 4.5.3 no matcher de opções Git; portanto, não se trata
+de uma classe inédita, mas de uma recorrência metodológica.
+
+O problema chegou ao npm porque `auto-tag.yml` aguardava apenas o CI funcional.
+O workflow CodeQL pode terminar com `success` depois de carregar achados, e a
+automação confundia sucesso do upload/análise com ausência de vulnerabilidades.
+A tag `v04.05.12` e o publish ocorreram antes da auditoria explícita do conjunto
+de alertas.
+
+A 4.5.13 substitui o matcher por uma varredura linear de identificadores e um
+filtro explícito de maiúscula, com regressão adversarial de 100.000 caracteres.
+Também torna a publicação fail-closed: o auto-tag espera o CodeQL `push` do SHA
+exato que passou no CI e consulta os alertas reais da branch padrão. CodeQL
+ausente, incompleto, falho ou qualquer alerta aberto impede tag e publicação.
+A consulta ao ref móvel é cercada por verificações de SHA antes e depois; a tag
+nomeia explicitamente o SHA imutável cujos CI, análises processadas e snapshot
+sem alertas passaram. Uma regressão de política verifica permissões, espera,
+endpoint, bracket do ref e identidade exata da tag.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
@@ -481,7 +506,8 @@ de evidência autenticada também eliminou a necessidade de attachment manual do
 revisões normais; a superfície `session_attach_evidence` continua operator-only por desenho de
 segurança. Os novos defeitos confirmados após o adendo foram o DEF-10, fechado na 4.5.9, e o
 DEF-11 de propagação da atestação npm, fechado na 4.5.10, DEF-12 de descoberta do transporte
-autônomo, fechado na 4.5.11, e DEF-13 de convergência do Evidence Broker, fechado no source 4.5.12.
+autônomo, fechado na 4.5.11, DEF-13 de convergência do Evidence Broker, fechado
+na 4.5.12, e DEF-14 de recorrência ReDoS/publicação prematura, fechado no source 4.5.13.
 
 1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
    `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm

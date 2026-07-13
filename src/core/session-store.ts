@@ -128,11 +128,13 @@ function checklistEvidenceHasFileLineRecord(corpus: string): boolean {
   return /\b[\w./-]+\.[a-z0-9]+:\d+(?:(?:,|-)\d+)*\b/i.test(corpus);
 }
 
-function checklistCodeSymbols(ask: string): string[] {
-  return [
-    ...(ask.match(/\b[a-z][a-z0-9]*(?:[A-Z][A-Za-z0-9]*)+\b/g) ?? []),
-    ...(ask.match(/\b[a-z][a-z0-9]*_[a-z0-9_]+\b/gi) ?? []),
-  ].map((value) => value.normalize("NFKC").toLowerCase());
+export function extractChecklistCodeSymbols(ask: string): string[] {
+  const camelCaseSymbols = (ask.match(/\b[a-z][A-Za-z0-9]*\b/g) ?? []).filter((value) =>
+    /[A-Z]/.test(value.slice(1)),
+  );
+  return [...camelCaseSymbols, ...(ask.match(/\b[a-z][a-z0-9]*_[a-z0-9_]+\b/gi) ?? [])].map(
+    (value) => value.normalize("NFKC").toLowerCase(),
+  );
 }
 
 const CHECKLIST_SEMANTIC_CONCEPTS: ReadonlyArray<{
@@ -210,7 +212,7 @@ function checklistAskCorroborated(
     ),
   ].map((value) => value.replace(/\s+/g, " ").trim());
   const commands = extractChecklistCommands(anchorAsk);
-  const codeSymbols = checklistCodeSymbols(item.ask);
+  const codeSymbols = extractChecklistCodeSymbols(item.ask);
   const requestedConcepts = CHECKLIST_SEMANTIC_CONCEPTS.filter(({ ask: pattern }) =>
     pattern.test(ask),
   );
