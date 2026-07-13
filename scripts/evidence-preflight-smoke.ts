@@ -170,6 +170,74 @@ const commandRecord = evidencePreflight({
 });
 assert.equal(commandRecord.pass, true, "COMMAND/EXIT_CODE blocks must remain correlated");
 
+const gitWorkingDirectoryCommandRecord = evidencePreflight({
+  task: "Review completed work: git diff --check is clean.",
+  initialDraft:
+    "COMMAND: git -C astrologo-app diff --check\nEXIT_CODE: 0\nSTDOUT: <empty>\nSTDERR: <empty>",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  gitWorkingDirectoryCommandRecord.pass,
+  true,
+  "git global -C must not hide a successful git diff --check execution record",
+);
+
+for (const [label, record] of [
+  [
+    "non-zero exit",
+    "COMMAND: git -C astrologo-app diff --check\nEXIT_CODE: 1\nSTDOUT: <empty>\nSTDERR: whitespace error",
+  ],
+  [
+    "missing exit code",
+    "COMMAND: git -C astrologo-app diff --check\nSTDOUT: <empty>\nSTDERR: <empty>",
+  ],
+  [
+    "different subcommand option",
+    "COMMAND: git -C astrologo-app diff --stat\nEXIT_CODE: 0\nSTDOUT: 2 files changed",
+  ],
+  [
+    "pathspec named --check",
+    "COMMAND: git diff -- --check\nEXIT_CODE: 0\nSTDOUT: <empty>\nSTDERR: <empty>",
+  ],
+  [
+    "working-directory pathspec named --check",
+    "COMMAND: git -C astrologo-app diff -- --check\nEXIT_CODE: 0\nSTDOUT: <empty>\nSTDERR: <empty>",
+  ],
+  [
+    "narrowed pathspec",
+    "COMMAND: git diff --check -- README.md\nEXIT_CODE: 0\nSTDOUT: <empty>\nSTDERR: <empty>",
+  ],
+  [
+    "no-index comparison",
+    "COMMAND: git diff --no-index --check README.md SECURITY.md\nEXIT_CODE: 0\nSTDOUT: <empty>\nSTDERR: <empty>",
+  ],
+  [
+    "echoed command text",
+    "COMMAND: echo git -C astrologo-app diff --check\nEXIT_CODE: 0\nSTDOUT: git -C astrologo-app diff --check",
+  ],
+  [
+    "masked failure",
+    "COMMAND: git -C astrologo-app diff --check || true\nEXIT_CODE: 0\nSTDOUT: <empty>",
+  ],
+  [
+    "PowerShell pipeline",
+    "COMMAND: git -C astrologo-app diff --check | Out-Null\nEXIT_CODE: 0\nSTDOUT: <empty>",
+  ],
+  [
+    "composed follow-up",
+    "COMMAND: git -C astrologo-app diff --check && echo clean\nEXIT_CODE: 0\nSTDOUT: clean",
+  ],
+] as const) {
+  const result = evidencePreflight({
+    task: "Review completed work: git diff --check is clean.",
+    initialDraft: record,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(result.pass, false, `${label} must not prove git diff --check is clean`);
+}
+
 const crossCommandFalsePositive = evidencePreflight({
   task: "Review completed work: npm run lint passed.",
   initialDraft:
@@ -408,6 +476,11 @@ for (const status of ["open", "not_resurfaced"] as const) {
   const gated = blockConvergenceForUnresolvedEvidence(unanimous, [checklistItem(status)]);
   assert.equal(gated.converged, false, `${status} evidence must block convergence`);
   assert.match(gated.reason, /unresolved_evidence/);
+  assert.deepEqual(
+    gated.ready_peers.filter((peer) => gated.needs_evidence_peers.includes(peer)),
+    [],
+    `${status} evidence must not leave the same peer in READY and NEEDS_EVIDENCE`,
+  );
 }
 for (const status of ["addressed", "satisfied", "deferred", "rejected"] as const) {
   const gated = blockConvergenceForUnresolvedEvidence(unanimous, [checklistItem(status)]);

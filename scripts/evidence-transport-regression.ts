@@ -514,6 +514,203 @@ const regressions: Regression[] = [
     },
   },
   {
+    name: "generic evidence remains available beside a source routed to another checklist item",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("requester-mixed-routed-and-generic-sources"),
+      );
+      const session = await orchestrator.initSession(
+        "Requester mixed-routing regression fixture.",
+        "codex",
+      );
+      const testAsk = "Provide raw npm test output proving Tests 74 passed (74).";
+      const rollbackAsk =
+        "Provide the migration rollback log for deployment rollback_id=rollback-991.";
+      const unrelatedAsk =
+        "Provide the migration rollback log for deployment rollback_id=rollback-unrelated-451.";
+      const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [
+          { peer: "claude", ask: testAsk },
+          { peer: "claude", ask: rollbackAsk },
+          { peer: "claude", ask: unrelatedAsk },
+        ],
+      );
+      const testItem = checklist.find((item) => item.ask === testAsk);
+      assert.ok(testItem);
+
+      const promoted = await orchestrator.store.markEvidenceItemsAddressedByRequesterReverification(
+        session.session_id,
+        {
+          round: 2,
+          peer: "claude",
+          evidence_sources: [
+            [
+              `Checklist-Item: ${testItem.id}`,
+              `Attachment: ${PANEL_EVIDENCE_PATH}`,
+              `sha256=${PANEL_EVIDENCE_SHA}`,
+              'Artifact quote: "COMMAND: npm test | EXIT_CODE: 0 | Tests 74 passed (74)"',
+            ].join("\n"),
+            [
+              `Attachment: ${PANEL_EVIDENCE_PATH}`,
+              `sha256=${PANEL_EVIDENCE_SHA}`,
+              'Artifact quote: "ROLLBACK_EXACT: rollback_id=rollback-991 | status: success | deployment rollback completed"',
+            ].join("\n"),
+          ],
+        },
+      );
+
+      assert.deepEqual(
+        promoted.map(({ item }) => item.ask),
+        [testAsk, rollbackAsk],
+        "an ID-routed source must not discard a separate generic source that answers another ask",
+      );
+      const byAsk = new Map(
+        (orchestrator.store.read(session.session_id).evidence_checklist ?? []).map((item) => [
+          item.ask,
+          item,
+        ]),
+      );
+      assert.equal(byAsk.get(unrelatedAsk)?.status ?? "open", "open");
+    },
+  },
+  {
+    name: "checklist references resurface their ancestor instead of creating recursive blockers",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("checklist-reference-deduplication"),
+      );
+      const session = await orchestrator.initSession(
+        "Checklist reference deduplication fixture.",
+        "codex",
+      );
+      const original = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [{ peer: "perplexity", ask: "Provide raw git diff --check output and exit code." }],
+      );
+      const item = original[0];
+      assert.ok(item);
+
+      const samePeer = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        2,
+        [
+          {
+            peer: "perplexity",
+            ask: `Checklist-Item: ${item.id} — The same request remains required.`,
+          },
+        ],
+      );
+      assert.equal(samePeer.length, 1);
+      assert.equal(samePeer[0]?.id, item.id);
+      assert.equal(samePeer[0]?.last_round, 2);
+      assert.equal(samePeer[0]?.round_count, 2);
+
+      const crossPeer = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        3,
+        [
+          {
+            peer: "deepseek",
+            ask: `Checklist-Item: ${item.id} — The same raw transcript remains required.`,
+          },
+          {
+            peer: "perplexity",
+            ask: `Checklist-Item: ${item.id} — The same request remains required, and also provide rollback_id=rollback-new-991.`,
+          },
+        ],
+      );
+      assert.equal(
+        crossPeer.length,
+        3,
+        "cross-peer references and same-owner references with a new requirement must not be silently discarded",
+      );
+      assert.ok(crossPeer.some((entry) => entry.id !== item.id && entry.peer === "deepseek"));
+      assert.ok(crossPeer.some((entry) => entry.ask.includes("rollback-new-991")));
+
+      const legacyMeta = orchestrator.store.read(session.session_id);
+      legacyMeta.evidence_checklist = [
+        ...(legacyMeta.evidence_checklist ?? []),
+        {
+          id: "feedfacefeedface",
+          peer: "perplexity",
+          first_round: 4,
+          last_round: 4,
+          round_count: 1,
+          ask: `Checklist-Item: ${item.id} — The same request remains required.`,
+          first_seen_at: "2026-07-13T00:00:00.000Z",
+          last_seen_at: "2026-07-13T00:00:00.000Z",
+          status: "not_resurfaced",
+        },
+        {
+          id: "cafebabecafebabe",
+          peer: "perplexity",
+          first_round: 5,
+          last_round: 5,
+          round_count: 1,
+          ask: "Checklist-Item: feedfacefeedface — The same request remains required.",
+          first_seen_at: "2026-07-13T00:01:00.000Z",
+          last_seen_at: "2026-07-13T00:01:00.000Z",
+          status: "not_resurfaced",
+        },
+        {
+          id: "deaddeaddeaddead",
+          peer: "deepseek",
+          first_round: 4,
+          last_round: 4,
+          round_count: 1,
+          ask: `Checklist-Item: ${item.id} — The same request remains required.`,
+          first_seen_at: "2026-07-13T00:02:00.000Z",
+          last_seen_at: "2026-07-13T00:02:00.000Z",
+          status: "not_resurfaced",
+        },
+        {
+          id: "1111111111111111",
+          peer: "perplexity",
+          first_round: 6,
+          last_round: 6,
+          round_count: 1,
+          ask: "Checklist-Item: 2222222222222222 — The same cyclic request remains required.",
+          first_seen_at: "2026-07-13T00:03:00.000Z",
+          last_seen_at: "2026-07-13T00:03:00.000Z",
+          status: "not_resurfaced",
+        },
+        {
+          id: "2222222222222222",
+          peer: "perplexity",
+          first_round: 6,
+          last_round: 6,
+          round_count: 1,
+          ask: "Checklist-Item: 1111111111111111 — The same cyclic request remains required.",
+          first_seen_at: "2026-07-13T00:04:00.000Z",
+          last_seen_at: "2026-07-13T00:04:00.000Z",
+          status: "not_resurfaced",
+        },
+      ];
+      fs.writeFileSync(
+        path.join(orchestrator.store.sessionDir(session.session_id), "meta.json"),
+        `${JSON.stringify(legacyMeta, null, 2)}\n`,
+        "utf8",
+      );
+      const collapsed = await orchestrator.store.collapseReferencedEvidenceChecklistAliases(
+        session.session_id,
+      );
+      assert.deepEqual(
+        collapsed.map((entry) => entry.alias_item_id),
+        ["feedfacefeedface", "cafebabecafebabe"],
+      );
+      assert.ok(collapsed.every((entry) => entry.merged_into_item_id === item.id));
+      const repaired = orchestrator.store.read(session.session_id);
+      assert.equal(repaired.evidence_checklist?.length, 6);
+      assert.equal(repaired.evidence_checklist_alias_collapses?.length, 2);
+      assert.ok(repaired.evidence_checklist?.some((entry) => entry.id === "deaddeaddeaddead"));
+      assert.ok(repaired.evidence_checklist?.some((entry) => entry.id === "1111111111111111"));
+      assert.ok(repaired.evidence_checklist?.some((entry) => entry.id === "2222222222222222"));
+    },
+  },
+  {
     name: "requester reverification accepts alternative line evidence and ignores e.g. abbreviation",
     run: async () => {
       const orchestrator = new CrossReviewOrchestrator(
@@ -924,6 +1121,261 @@ const regressions: Regression[] = [
       );
       assert.equal(result.converged, true);
       assert.equal(result.round.convergence.converged, true);
+    },
+  },
+  {
+    name: "post-round checklist promotion is persisted before final convergence is returned",
+    run: async () => {
+      const base = regressionConfig("post-round-convergence-persistence");
+      const config = {
+        ...base,
+        evidence_judge_autowire: {
+          ...base.evidence_judge_autowire,
+          mode: "active" as const,
+          active: true,
+          peer: "codex" as const,
+          consensus_peers: [],
+        },
+      };
+      const orchestrator = new CrossReviewOrchestrator(config);
+      const session = await orchestrator.initSession(
+        "Review a design fixture without operational claims.",
+        "operator",
+      );
+      const initialChecklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [{ peer: "claude", ask: "Provide the exact design invariant and its rationale." }],
+      );
+      const initialItem = initialChecklist[0];
+      assert.ok(initialItem);
+      let appendObservedReconciledChecklist = false;
+      let concurrentOperatorMutationError: unknown;
+      const appendRound = orchestrator.store.appendRound.bind(orchestrator.store);
+      orchestrator.store.appendRound = async (...args) => {
+        appendObservedReconciledChecklist =
+          orchestrator.store
+            .read(session.session_id)
+            .evidence_checklist?.every((item) => item.status === "addressed") === true;
+        assert.equal(
+          appendObservedReconciledChecklist,
+          true,
+          "the durable round must not be appended before checklist/judge reconciliation",
+        );
+        const appended = await appendRound(...args);
+        try {
+          await orchestrator.store.setEvidenceChecklistItemStatus(
+            session.session_id,
+            initialItem.id,
+            "open",
+          );
+        } catch (error) {
+          concurrentOperatorMutationError = error;
+        }
+        return appended;
+      };
+
+      const result = await orchestrator.askPeers({
+        session_id: session.session_id,
+        task: session.task,
+        draft: "FORCE_JUDGE_SATISFIED: the exact invariant and rationale are present.",
+        caller: "operator",
+        peers: ["claude", "codex"],
+      });
+      const persisted = orchestrator.store.read(session.session_id);
+      const latest = persisted.rounds.at(-1);
+
+      assert.equal(result.converged, true);
+      assert.equal(result.round.convergence.converged, true);
+      assert.equal(latest?.convergence.converged, true);
+      assert.equal(persisted.outcome, "converged");
+      assert.equal(persisted.convergence_health?.state, "converged");
+      assert.equal(appendObservedReconciledChecklist, true);
+      assert.match(
+        concurrentOperatorMutationError instanceof Error
+          ? concurrentOperatorMutationError.message
+          : String(concurrentOperatorMutationError),
+        /evidence_checklist_update_in_flight/,
+        "the converged append-to-finalize interval must retain the in-flight reservation",
+      );
+      assert.ok(
+        persisted.evidence_checklist?.every((item) => item.status === "addressed"),
+        "the persisted checklist and convergence must describe the same post-judge state",
+      );
+    },
+  },
+  {
+    name: "unresolved historical asks persist one coherent blocked state after READY votes",
+    run: async () => {
+      const config = regressionConfig("blocked-convergence-persistence");
+      const events: string[] = [];
+      const orchestrator = new CrossReviewOrchestrator(config, (event) => events.push(event.type));
+      const session = await orchestrator.initSession(
+        "Review a design fixture without operational claims.",
+        "codex",
+      );
+      await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [],
+        rejected: [],
+        convergence: checkConvergence(["claude"], "READY", [], []),
+        convergence_scope: {
+          petitioner: "codex",
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude"],
+          reviewer_peers: ["claude"],
+        },
+        started_at: new Date().toISOString(),
+      });
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
+        {
+          peer: "claude",
+          ask: "Provide design-invariant-id=invariant-991 and its exact rationale.",
+        },
+      ]);
+
+      const result = await orchestrator.askPeers({
+        session_id: session.session_id,
+        task: session.task,
+        draft: "Current design continuation does not contain the requested invariant.",
+        caller: "codex",
+        peers: ["claude"],
+      });
+      const persisted = orchestrator.store.read(session.session_id);
+      const latest = persisted.rounds.at(-1)?.convergence;
+      assert.equal(result.converged, false);
+      assert.equal(result.round.convergence.converged, false);
+      assert.equal(latest?.converged, false);
+      assert.equal(persisted.convergence_health?.state, "blocked");
+      assert.deepEqual(
+        latest?.ready_peers.filter((peer) => latest.needs_evidence_peers.includes(peer)),
+        [],
+      );
+      assert.ok(events.includes("session.evidence_checklist_blocks_convergence"));
+    },
+  },
+  {
+    name: "interrupted rounds roll back journaled evidence-broker mutations",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("interrupted-broker-rollback"),
+      );
+      const session = await orchestrator.initSession(
+        "Interrupted evidence broker transaction fixture.",
+        "codex",
+      );
+      const scope = {
+        petitioner: "codex" as const,
+        caller: "codex" as const,
+        caller_status: "READY" as const,
+        expected_peers: ["claude" as const],
+        reviewer_peers: ["claude" as const],
+      };
+      await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [],
+        rejected: [],
+        convergence: checkConvergence(["claude"], "READY", [], []),
+        convergence_scope: scope,
+        started_at: new Date().toISOString(),
+      });
+      const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [{ peer: "claude", ask: "Provide the exact rollback transcript." }],
+      );
+      const original = checklist[0];
+      assert.ok(original);
+      await orchestrator.store.markInFlight(session.session_id, {
+        round: 2,
+        peers: ["claude"],
+        started_at: new Date().toISOString(),
+        scope,
+      });
+      await assert.rejects(
+        orchestrator.store.setEvidenceChecklistItemStatus(
+          session.session_id,
+          original.id,
+          "satisfied",
+        ),
+        /evidence_checklist_update_in_flight/,
+        "an operator mutation must not enter the interval covered by the runtime rollback journal",
+      );
+      await orchestrator.store.runEvidenceChecklistAddressDetection(session.session_id, 2);
+      assert.equal(
+        orchestrator.store.read(session.session_id).evidence_checklist?.[0]?.status,
+        "not_resurfaced",
+      );
+
+      await orchestrator.store.recoverInterruptedSessions();
+      const recovered = orchestrator.store.read(session.session_id);
+      assert.equal(recovered.in_flight, undefined);
+      assert.equal(recovered.evidence_checklist?.[0]?.id, original.id);
+      assert.equal(
+        recovered.evidence_checklist?.[0]?.status,
+        undefined,
+        "an interrupted, non-appended round must not retain its broker state transition",
+      );
+      assert.deepEqual(
+        recovered.evidence_status_history ?? [],
+        [],
+        "an interrupted round must roll back its broker history together with checklist state",
+      );
+      assert.ok(
+        orchestrator.store
+          .readEvents(session.session_id)
+          .some((event) => event.type === "session.evidence_broker_transaction_rolled_back"),
+        "recovery must append an explicit compensation event for broker transitions it rolled back",
+      );
+    },
+  },
+  {
+    name: "appendRound gates convergence from the checklist inside its durable lock",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        regressionConfig("append-round-checklist-atomic-gate"),
+      );
+      const session = await orchestrator.initSession(
+        "Atomic checklist convergence fixture.",
+        "codex",
+      );
+      const scope = {
+        petitioner: "codex" as const,
+        caller: "codex" as const,
+        caller_status: "READY" as const,
+        expected_peers: ["claude" as const],
+        reviewer_peers: ["claude" as const],
+      };
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 0, [
+        { peer: "claude", ask: "Provide release-proof-id=proof-atomic-991." },
+      ]);
+      await orchestrator.store.markInFlight(session.session_id, {
+        round: 1,
+        peers: ["claude"],
+        started_at: new Date().toISOString(),
+        scope,
+      });
+      const ready = readyPeer("claude", "verified", ["design-only fixture"]);
+      const staleReady = checkConvergence(["claude"], "READY", [ready], []);
+      assert.equal(staleReady.converged, true);
+
+      const round = await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [ready],
+        rejected: [],
+        convergence: staleReady,
+        convergence_scope: scope,
+        started_at: new Date().toISOString(),
+      });
+      const persisted = orchestrator.store.read(session.session_id);
+      assert.equal(round.convergence.converged, false);
+      assert.match(round.convergence.reason, /unresolved_evidence/);
+      assert.equal(persisted.rounds.at(-1)?.convergence.converged, false);
+      assert.equal(persisted.convergence_health?.state, "blocked");
     },
   },
   {
@@ -1515,6 +1967,12 @@ const regressions: Regression[] = [
         1,
         "one reviewer keeps the first peer-submitted-evidence round non-terminal for the retry fixture",
       );
+      await orchestrator.store.appendEvidenceChecklistItems(first.session.session_id, 1, [
+        {
+          peer: "claude",
+          ask: "Provide the raw npm run test transcript proving the current snapshot.",
+        },
+      ]);
 
       const second = await orchestrator.askPeers({
         session_id: first.session.session_id,
@@ -1549,6 +2007,131 @@ const regressions: Regression[] = [
       assert.deepEqual(
         orchestrator.store.readEvidenceAttachments(second.session.session_id, 200_000),
         [],
+      );
+    },
+  },
+  {
+    name: "restart replays snapshot-scoped grounded READY evidence without reinjecting old blobs",
+    run: async () => {
+      const config = regressionConfig("historical-reverification-replay");
+      const firstRuntime = new CrossReviewOrchestrator(config);
+      const session = await firstRuntime.initSession(
+        "Historical requester reverification replay fixture.",
+        "codex",
+      );
+      await firstRuntime.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [],
+        rejected: [],
+        convergence: checkConvergence(["claude"], "READY", [], []),
+        convergence_scope: {
+          petitioner: "codex",
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude"],
+          reviewer_peers: ["claude"],
+        },
+        started_at: new Date().toISOString(),
+      });
+      const checklist = await firstRuntime.store.appendEvidenceChecklistItems(
+        session.session_id,
+        1,
+        [{ peer: "claude", ask: "Provide raw npm test output proving Tests 74 passed (74)." }],
+      );
+      const item = checklist[0];
+      assert.ok(item);
+      const evidenceContent = [
+        "HISTORICAL_REPLAY_SENTINEL",
+        "COMMAND: npm test",
+        "EXIT_CODE: 0",
+        "Tests 74 passed (74)",
+      ].join("\n");
+      const submission = await firstRuntime.store.attachCallerEvidenceSubmission(
+        session.session_id,
+        {
+          submitted_by: "codex",
+          artifact_text: "Round 2 artifact",
+          items: [
+            {
+              label: "round-2-evidence",
+              content: evidenceContent,
+              content_type: "text/plain; charset=utf-8",
+              extension: "txt",
+            },
+          ],
+        },
+      );
+      const attachmentPath = submission.submission.attachment_paths[0];
+      const attachment = submission.meta.evidence_files?.find(
+        (candidate) => candidate.path === attachmentPath && "sha256" in candidate,
+      );
+      assert.ok(attachment && "sha256" in attachment);
+      const source = [
+        `Checklist-Item: ${item.id}`,
+        `Attachment: ${attachmentPath}`,
+        `sha256=${attachment.sha256}`,
+        "COMMAND: npm test",
+        "EXIT_CODE: 0",
+        'Artifact quote: "Tests 74 passed (74)"',
+      ].join("\n");
+      const historicalPeer = {
+        ...readyPeer("claude", "verified", [source]),
+        raw_status: "READY" as const,
+        parsed_status: "READY" as const,
+        normalized_status: "READY" as const,
+      };
+      await firstRuntime.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-2-prompt.md",
+        peers: [historicalPeer],
+        rejected: [],
+        convergence: checkConvergence(["claude"], "READY", [historicalPeer], []),
+        convergence_scope: {
+          petitioner: "codex",
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude"],
+          reviewer_peers: ["claude"],
+        },
+        started_at: new Date().toISOString(),
+      });
+
+      const events: string[] = [];
+      const restarted = new CrossReviewOrchestrator(config, (event) => events.push(event.type));
+      let replayObservedAtomicReservation = false;
+      const collapseAliases = restarted.store.collapseReferencedEvidenceChecklistAliases.bind(
+        restarted.store,
+      );
+      restarted.store.collapseReferencedEvidenceChecklistAliases = async (...args) => {
+        replayObservedAtomicReservation =
+          restarted.store.read(session.session_id).in_flight?.round === 3;
+        return collapseAliases(...args);
+      };
+      const result = await restarted.askPeers({
+        session_id: session.session_id,
+        task: session.task,
+        draft: "Current design-only continuation with no operational claim.",
+        caller: "codex",
+        peers: ["claude"],
+      });
+      const persisted = restarted.store.read(session.session_id);
+      assert.equal(persisted.evidence_checklist?.[0]?.status, "addressed");
+      assert.equal(persisted.evidence_checklist?.[0]?.address_method, "requester_reverified");
+      assert.ok(events.includes("session.evidence_checklist_historical_reverification_replayed"));
+      assert.equal(
+        replayObservedAtomicReservation,
+        true,
+        "session resume repairs must run only after markInFlight wins the atomic round reservation",
+      );
+      const prompt = fs.readFileSync(
+        path.join(restarted.store.sessionDir(result.session.session_id), result.round.prompt_file),
+        "utf8",
+      );
+      assert.doesNotMatch(
+        prompt,
+        /HISTORICAL_REPLAY_SENTINEL/,
+        "historical bytes are replayed locally and must not become stale current-review context",
       );
     },
   },

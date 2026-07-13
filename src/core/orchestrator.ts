@@ -452,6 +452,8 @@ function evidenceChecklistBlock(meta: SessionMeta): string[] {
     "## Outstanding Evidence Asks (running checklist across all rounds)",
     "Each line below is a `caller_request` returned by a peer in NEEDS_EVIDENCE state.",
     "Address every outstanding ask in the revised version below — concrete file:line references, grep output, diff hunks, MD5 hashes, log lines. R1 NEEDS_EVIDENCE indicates missing upfront evidence in the original draft (a draft defect per session-start contract rule #1); any same ask resurfacing in R2+ is additionally a revision defect.",
+    "If you own an item and vote READY, explicitly include its exact `Checklist-Item: <id>` in the evidence_sources entry whose path, SHA-256 and literal quote answer that item. A generic READY does not withdraw prior asks.",
+    "If an owned item is still missing, return NEEDS_EVIDENCE and begin the corresponding caller_request with its existing `Checklist-Item: <id>`; do not reformulate it into a new blocker. Items owned by another peer are context, not requests you should duplicate.",
     "",
   ];
   for (const item of unresolved) {
@@ -1572,6 +1574,90 @@ function normalizeOperationalCommand(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function commandLineFromEvidenceBlock(block: string): string {
+  const firstLine = block.replace(/\r\n?/g, "\n").split("\n", 1)[0] ?? "";
+  return firstLine.replace(/^\s*(?:COMMAND\s*:|[$>]\s*)/i, "").trim();
+}
+
+function shellLikeTokens(value: string): string[] {
+  return (value.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((token) =>
+    token.replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2"),
+  );
+}
+
+function hasUnquotedCommandComposition(value: string): boolean {
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "|" || char === "&" || char === ";" || char === "`") return true;
+    if (char === "$" && value[index + 1] === "(") return true;
+  }
+  return false;
+}
+
+function gitCommandIdentity(value: string): { subcommand: string; args: string[] } | undefined {
+  const tokens = shellLikeTokens(value);
+  const gitIndex = tokens.findIndex((token) => /(?:^|[\\/])git(?:\.exe)?$/i.test(token));
+  if (gitIndex !== 0) return undefined;
+  const optionsWithSeparateValue = new Set([
+    "-c",
+    "-C",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--html-path",
+    "--info-path",
+    "--man-path",
+    "--namespace",
+    "--super-prefix",
+    "--work-tree",
+  ]);
+  let index = gitIndex + 1;
+  while (index < tokens.length) {
+    const token = tokens[index] ?? "";
+    if (optionsWithSeparateValue.has(token)) {
+      index += 2;
+      continue;
+    }
+    if (token.startsWith("--") && token.includes("=")) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      index += 1;
+      continue;
+    }
+    return {
+      subcommand: token.toLowerCase(),
+      args: tokens.slice(index + 1).map((arg) => arg.toLowerCase()),
+    };
+  }
+  return undefined;
+}
+
+function operationalCommandMatches(block: string, assertedCommand: string): boolean {
+  const commandLine = commandLineFromEvidenceBlock(block);
+  const normalizedLine = normalizeOperationalCommand(commandLine);
+  if (assertedCommand === "git diff --check") {
+    if (hasUnquotedCommandComposition(commandLine)) return false;
+    const identity = gitCommandIdentity(commandLine);
+    if (identity?.subcommand !== "diff") return false;
+    // The asserted command is global: refs, pathspecs, --no-index and any
+    // other diff argument narrow or change its meaning. Only Git global
+    // options (already stripped before the subcommand) may vary.
+    return identity.args.length === 1 && identity.args[0] === "--check";
+  }
+  return normalizedLine.includes(assertedCommand);
+}
+
 function extractEvidenceOperationalAssertions(text: string): EvidenceOperationalAssertion[] {
   const assertions: EvidenceOperationalAssertion[] = [];
   const seen = new Set<string>();
@@ -1777,7 +1863,7 @@ function evidenceCorroboratesOperationalAssertion(
       .split(/(?=^\s*(?:COMMAND\s*:|[$>]\s+\S))/gim)
       .filter((block) => /^\s*(?:COMMAND\s*:|[$>]\s+\S)/im.test(block));
     const matchingBlocks = explicitBlocks.filter((block) =>
-      normalizeOperationalCommand(block).includes(assertion.command),
+      operationalCommandMatches(block, assertion.command),
     );
     if (matchingBlocks.length > 0) {
       return matchingBlocks.every((block) => {
@@ -1790,6 +1876,12 @@ function evidenceCorroboratesOperationalAssertion(
           !evidenceHasExplicitFailureSignal(block)
         );
       });
+    }
+    if (assertion.command === "git diff --check") {
+      // A global cleanliness assertion requires the explicit command record
+      // parsed above. The legacy inline substring fallback cannot distinguish
+      // refs/pathspecs or --no-index and is therefore unsafe for this command.
+      return false;
     }
     return evidenceHasInlineCommandSuccess(assertion.command, evidenceText);
   }
@@ -3203,6 +3295,7 @@ export class CrossReviewOrchestrator {
   private safeReadEvidenceAttachments(
     sessionId: string,
     callerSubmissionId?: string,
+    includeHistoricalCallerSubmissions = false,
   ): ReturnType<SessionStore["readEvidenceAttachments"]> {
     try {
       return reviewableEvidenceAttachments(
@@ -3210,6 +3303,7 @@ export class CrossReviewOrchestrator {
           sessionId,
           this.config.prompt.max_attached_evidence_chars,
           callerSubmissionId,
+          includeHistoricalCallerSubmissions,
         ),
       );
     } catch (error) {
@@ -3222,6 +3316,64 @@ export class CrossReviewOrchestrator {
       });
       return [];
     }
+  }
+
+  private async replayHistoricalRequesterReverification(session: SessionMeta): Promise<string[]> {
+    if (!unresolvedEvidenceItems(session).length) return [];
+    const attachments = callerSubmittedEvidenceAttachments(
+      this.safeReadEvidenceAttachments(
+        session.session_id,
+        session.active_caller_evidence_submission_id,
+        true,
+      ),
+    );
+    if (!attachments.length) return [];
+    const promotedIds: string[] = [];
+    for (const round of session.rounds) {
+      for (const peer of round.peers) {
+        const sources = peer.structured?.evidence_sources ?? [];
+        if (
+          peer.status !== "READY" ||
+          peer.structured?.status !== "READY" ||
+          peer.structured.confidence !== "verified" ||
+          peer.decision_quality !== "clean" ||
+          peer.model_match === false ||
+          (peer.structured.caller_requests?.length ?? 0) > 0 ||
+          (peer.structured.follow_ups?.length ?? 0) > 0 ||
+          !sources.length ||
+          (peer.raw_status !== undefined && peer.raw_status !== "READY") ||
+          (peer.parsed_status !== undefined && peer.parsed_status !== "READY") ||
+          (peer.normalized_status !== undefined && peer.normalized_status !== "READY") ||
+          !sources.every((source) =>
+            attachments.some((attachment) =>
+              evidenceSourceMatchesSingleAttachment(source, attachment),
+            ),
+          )
+        ) {
+          continue;
+        }
+        const promoted = await this.store.markEvidenceItemsAddressedByRequesterReverification(
+          session.session_id,
+          { round: round.round, peer: peer.peer, evidence_sources: sources },
+        );
+        if (!promoted.length) continue;
+        promotedIds.push(...promoted.map(({ item }) => item.id));
+        this.emit({
+          type: "session.evidence_checklist_historical_reverification_replayed",
+          session_id: session.session_id,
+          round: round.round,
+          peer: peer.peer,
+          message: `${peer.peer} historical grounded READY reverified ${promoted.length} prior evidence ask(s) without a new provider call.`,
+          data: {
+            peer: peer.peer,
+            source_round: round.round,
+            ids: promoted.map(({ item }) => item.id),
+            address_method: "requester_reverified",
+          },
+        });
+      }
+    }
+    return [...new Set(promotedIds)];
   }
 
   private async persistCallerSubmittedEvidence(params: {
@@ -4931,6 +5083,11 @@ export class CrossReviewOrchestrator {
     // identical to pre-v3.7.0 behavior, zero regression on that path.
     if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
+    if (existingSession?.in_flight) {
+      throw new Error(
+        `session ${existingSession.session_id} already has an in-flight round (round=${existingSession.in_flight.round}, started_at=${existingSession.in_flight.started_at}); refusing to mutate broker state before the concurrent-round guard.`,
+      );
+    }
     const persistedPetitioner = existingSession
       ? (existingSession.convergence_scope?.petitioner ?? existingSession.caller)
       : undefined;
@@ -4987,7 +5144,64 @@ export class CrossReviewOrchestrator {
             normalizeReviewFocus(input.review_focus, this.config),
           )
         : await this.initSession(input.task, effectivePetitioner, input.review_focus);
+    if (input.evidence?.trim() && actingPeer !== "operator" && actingPeer !== effectivePetitioner) {
+      throw new Error(
+        `caller_evidence_submission_forbidden: acting peer ${actingPeer} cannot inject structured evidence into petitioner ${effectivePetitioner}'s session`,
+      );
+    }
+    const petitioner = effectivePetitioner;
+    const roundNumber = session.rounds.length + 1;
+    const startedAt = now();
+    const quorumPeers = resolveQuorumPeers(session, selectedPeers);
+    const isRecoveryRound = quorumPeers.length > selectedPeers.length;
+    const adapters = this.adapterFactory(this.config);
+    const convergenceScope: ConvergenceScope = {
+      petitioner,
+      caller: petitioner,
+      acting_peer: actingPeer,
+      caller_status: callerStatus,
+      expected_peers: quorumPeers,
+      reviewer_peers: selectedPeers,
+      ...(input.lead_peer ? { lead_peer: input.lead_peer } : {}),
+      ...(input.lead_peer
+        ? {
+            lead_peer_role: "relator_non_voting" as const,
+            voting_peers: selectedPeers,
+            quorum_basis: "all_non_lead_panel_peers_ready" as const,
+            anti_self_review_exclusion_reason:
+              "lead_peer_authored_or_revised_artifact_under_review" as const,
+          }
+        : {}),
+    };
+    // This lock-backed reservation is the first mutation after session
+    // creation. Every broker repair, evidence snapshot and preflight below is
+    // therefore owned by exactly one round and covered by its rollback journal.
+    await this.store.markInFlight(session.session_id, {
+      round: roundNumber,
+      peers: selectedPeers,
+      started_at: startedAt,
+      scope: convergenceScope,
+    });
     if (existingSession) {
+      const collapsedAliases = await this.store.collapseReferencedEvidenceChecklistAliases(
+        session.session_id,
+      );
+      if (collapsedAliases.length > 0) {
+        this.emit({
+          type: "session.evidence_checklist_aliases_collapsed",
+          session_id: session.session_id,
+          message: `${collapsedAliases.length} recursive checklist alias(es) were collapsed before resuming the session.`,
+          data: {
+            count: collapsedAliases.length,
+            aliases: collapsedAliases.map((entry) => ({
+              alias_item_id: entry.alias_item_id,
+              referenced_item_ids: entry.referenced_item_ids,
+              merged_into_item_id: entry.merged_into_item_id,
+            })),
+          },
+        });
+        session = this.store.read(session.session_id);
+      }
       const reclassificationProofs = runtimeGeneratedEvidenceChecklistProofs(session);
       const reclassified = await this.store.reclassifyRuntimeGeneratedEvidenceChecklistItems(
         session.session_id,
@@ -5011,44 +5225,10 @@ export class CrossReviewOrchestrator {
         });
         session = this.store.read(session.session_id);
       }
-    }
-    const petitioner = effectivePetitioner;
-    const roundNumber = session.rounds.length + 1;
-    const startedAt = now();
-    const quorumPeers = resolveQuorumPeers(session, selectedPeers);
-    const isRecoveryRound = quorumPeers.length > selectedPeers.length;
-    const adapters = this.adapterFactory(this.config);
-    const convergenceScope: ConvergenceScope = {
-      petitioner,
-      caller: petitioner,
-      acting_peer: actingPeer,
-      caller_status: callerStatus,
-      expected_peers: quorumPeers,
-      reviewer_peers: selectedPeers,
-      ...(input.lead_peer ? { lead_peer: input.lead_peer } : {}),
-      // v3.5.0 (CRV2-3-meta): make the relator-non-voting semantics
-      // explicit in the durable record. The lead_peer authors/revises
-      // the artifact and is DELIBERATELY excluded from the voting
-      // colegiado (`reviewer_peers` / `voting_peers`) — voting on its
-      // own revision would violate the anti-self-review HARD GATE. These
-      // fields document that intentional exclusion so a reader does not
-      // misread the relator's absence from the vote as a missing-vote
-      // bug. Populated only when a lead_peer exists (ship-mode relator
-      // lottery); absent on direct ask_peers calls with no relator.
-      ...(input.lead_peer
-        ? {
-            lead_peer_role: "relator_non_voting" as const,
-            voting_peers: selectedPeers,
-            quorum_basis: "all_non_lead_panel_peers_ready" as const,
-            anti_self_review_exclusion_reason:
-              "lead_peer_authored_or_revised_artifact_under_review" as const,
-          }
-        : {}),
-    };
-    if (input.evidence?.trim() && actingPeer !== "operator" && actingPeer !== effectivePetitioner) {
-      throw new Error(
-        `caller_evidence_submission_forbidden: acting peer ${actingPeer} cannot inject structured evidence into petitioner ${effectivePetitioner}'s session`,
-      );
+      const replayedIds = await this.replayHistoricalRequesterReverification(session);
+      if (replayedIds.length > 0) {
+        session = this.store.read(session.session_id);
+      }
     }
     const callerSubmissionId = await this.persistCallerSubmittedEvidence({
       sessionId: session.session_id,
@@ -5221,13 +5401,6 @@ export class CrossReviewOrchestrator {
       input.review_focus,
     );
     const promptFile = this.store.savePrompt(session.session_id, roundNumber, prompt);
-    await this.store.markInFlight(session.session_id, {
-      round: roundNumber,
-      peers: selectedPeers,
-      started_at: startedAt,
-      scope: convergenceScope,
-    });
-
     this.emit({
       type: "round.started",
       session_id: session.session_id,
@@ -5798,32 +5971,6 @@ export class CrossReviewOrchestrator {
         corroborating_peers: [...peerEvidenceCorroborators],
       },
     );
-    const convergence = blockConvergenceForUnresolvedEvidence(
-      evidencePanelConvergence,
-      this.store.read(session.session_id).evidence_checklist ?? [],
-    );
-    const round = await this.store.appendRound(session.session_id, {
-      caller_status: callerStatus,
-      draft_file: draftFile,
-      prompt_file: promptFile,
-      peers,
-      rejected,
-      accounting_only_failures: skipped,
-      convergence,
-      // v3.7.3: surface skipped-for-unavailability peers in the durable
-      // convergence_scope so the degraded panel is auditable. Only added
-      // when a skip actually occurred — the zero-skip path persists the
-      // exact pre-v3.7.3 scope object.
-      convergence_scope:
-        skipped.length > 0
-          ? { ...convergenceScope, skipped_peers: skipped.map((failure) => failure.peer) }
-          : convergenceScope,
-      started_at: startedAt,
-    });
-    // v2.22.0 (B.P3): emit `session.budget_warning` if cumulative cost
-    // crossed 75% of the session ceiling on this round. One-shot;
-    // subsequent rounds in the same session won't re-emit.
-    await this.checkBudgetWarning(session.session_id, round.round);
     // v2.7.0 Evidence Broker: aggregate NEEDS_EVIDENCE asks from this
     // round into the session-level checklist. Each peer that returned
     // NEEDS_EVIDENCE with `caller_requests` contributes its asks; the
@@ -5833,13 +5980,13 @@ export class CrossReviewOrchestrator {
     if (evidenceAsks.length > 0) {
       const checklist = await this.store.appendEvidenceChecklistItems(
         session.session_id,
-        round.round,
+        roundNumber,
         evidenceAsks,
       );
       this.emit({
         type: "session.evidence_checklist_updated",
         session_id: session.session_id,
-        round: round.round,
+        round: roundNumber,
         message: `Evidence checklist now has ${checklist.length} item(s) across ${new Set(checklist.map((c) => c.peer)).size} peer(s).`,
         data: { items_total: checklist.length },
       });
@@ -5860,7 +6007,7 @@ export class CrossReviewOrchestrator {
     if ((this.store.read(session.session_id).evidence_checklist ?? []).length > 0) {
       const addressDetection = await this.store.runEvidenceChecklistAddressDetection(
         session.session_id,
-        round.round,
+        roundNumber,
       );
       if (addressDetection.not_resurfaced.length > 0) {
         // v3.5.0 (CRV2-2): event renamed + message corrected. The prior
@@ -5870,8 +6017,8 @@ export class CrossReviewOrchestrator {
         this.emit({
           type: "session.evidence_checklist_not_resurfaced",
           session_id: session.session_id,
-          round: round.round,
-          message: `${addressDetection.not_resurfaced.length} ask(s) marked not_resurfaced (peer did not re-ask in round ${round.round}; not proof of satisfaction).`,
+          round: roundNumber,
+          message: `${addressDetection.not_resurfaced.length} ask(s) marked not_resurfaced (peer did not re-ask in round ${roundNumber}; not proof of satisfaction).`,
           data: {
             ids: addressDetection.not_resurfaced.map((item) => item.id),
             count: addressDetection.not_resurfaced.length,
@@ -5882,8 +6029,8 @@ export class CrossReviewOrchestrator {
         this.emit({
           type: "session.evidence_checklist_reopened",
           session_id: session.session_id,
-          round: round.round,
-          message: `${addressDetection.reopened.length} ask(s) reverted to open (peer resurfaced in round ${round.round}).`,
+          round: roundNumber,
+          message: `${addressDetection.reopened.length} ask(s) reverted to open (peer resurfaced in round ${roundNumber}).`,
           data: {
             ids: addressDetection.reopened.map((item) => item.id),
             count: addressDetection.reopened.length,
@@ -5894,7 +6041,7 @@ export class CrossReviewOrchestrator {
         this.emit({
           type: "session.evidence_checklist_peer_resurfaced_terminal",
           session_id: session.session_id,
-          round: round.round,
+          round: roundNumber,
           message: `${addressDetection.peer_resurfaced_terminal.length} ask(s) resurfaced by peer despite operator-terminal status (status preserved).`,
           data: {
             items: addressDetection.peer_resurfaced_terminal.map((item) => ({
@@ -5916,6 +6063,21 @@ export class CrossReviewOrchestrator {
     // otherwise a no-op so a typo never crashes a paying review round.
     const autowire = this.config.evidence_judge_autowire;
     if (this.isCancelled(session.session_id, input.signal)) {
+      const round = await this.store.appendRound(session.session_id, {
+        caller_status: callerStatus,
+        draft_file: draftFile,
+        prompt_file: promptFile,
+        peers,
+        rejected,
+        accounting_only_failures: skipped,
+        convergence: cancelledConvergence(selectedPeers),
+        convergence_scope:
+          skipped.length > 0
+            ? { ...convergenceScope, skipped_peers: skipped.map((failure) => failure.peer) }
+            : convergenceScope,
+        started_at: startedAt,
+      });
+      await this.checkBudgetWarning(session.session_id, round.round);
       const updated = await this.store.markCancelled(session.session_id, "session_cancelled");
       return { session: updated, round, converged: false };
     }
@@ -5956,7 +6118,7 @@ export class CrossReviewOrchestrator {
             session_id: session.session_id,
             judge_peers: consensusEnabled,
             draft: input.draft,
-            round: round.round,
+            round: roundNumber,
             mode: autowire.mode,
             // v2.18.4 / Codex audit 2026-05-07 P1.3: thread the round
             // input AbortSignal so session_cancel_job aborts the
@@ -5969,7 +6131,7 @@ export class CrossReviewOrchestrator {
           this.emit({
             type: "session.evidence_judge_pass.autowire_failed",
             session_id: session.session_id,
-            round: round.round,
+            round: roundNumber,
             message: `Autowire ${autowire.mode} consensus pass failed: ${message}`,
             data: {
               mode: autowire.mode,
@@ -5983,7 +6145,7 @@ export class CrossReviewOrchestrator {
         this.emit({
           type: "session.evidence_judge_pass.autowire_skipped",
           session_id: session.session_id,
-          round: round.round,
+          round: roundNumber,
           message:
             autowire.peer !== undefined && !judgeRespectsExplicitPeers(autowire.peer)
               ? `Autowire single-peer judge "${autowire.peer}" is NOT in this session's explicit peers list (selected=[${selectedPeers.join(",")}]); ${autowire.mode} pass skipped to honor caller intent (v3.2.0).`
@@ -6010,7 +6172,7 @@ export class CrossReviewOrchestrator {
             session_id: session.session_id,
             judge_peer: autowire.peer,
             draft: input.draft,
-            round: round.round,
+            round: roundNumber,
             mode: autowire.mode,
             // v2.18.4 / Codex audit 2026-05-07 P1.3: same threading as
             // consensus path above for parity.
@@ -6021,7 +6183,7 @@ export class CrossReviewOrchestrator {
           this.emit({
             type: "session.evidence_judge_pass.autowire_failed",
             session_id: session.session_id,
-            round: round.round,
+            round: roundNumber,
             message: `Autowire ${autowire.mode} pass failed: ${message}`,
             data: { mode: autowire.mode, judge_peer: autowire.peer, error: message },
           });
@@ -6031,20 +6193,47 @@ export class CrossReviewOrchestrator {
       this.emit({
         type: "session.evidence_judge_pass.autowire_skipped",
         session_id: session.session_id,
-        round: round.round,
+        round: roundNumber,
         message: `Autowire mode "${autowire.mode}" is not recognized; valid values are "off", "shadow" and "active". Skipped.`,
         data: { mode: autowire.mode },
       });
     }
     let updated = this.store.read(session.session_id);
-    const finalConvergence = blockConvergenceForUnresolvedEvidence(
-      convergence,
+    const reconciledConvergence = blockConvergenceForUnresolvedEvidence(
+      evidencePanelConvergence,
       updated.evidence_checklist ?? [],
     );
+    // Persist the round only after every broker mutation and optional judge
+    // pass has completed. A crash before this point leaves the existing
+    // in-flight recovery marker fail-closed instead of a durable round whose
+    // convergence disagrees with its checklist.
+    const round = await this.store.appendRound(session.session_id, {
+      caller_status: callerStatus,
+      draft_file: draftFile,
+      prompt_file: promptFile,
+      peers,
+      rejected,
+      accounting_only_failures: skipped,
+      convergence: reconciledConvergence,
+      convergence_scope:
+        skipped.length > 0
+          ? { ...convergenceScope, skipped_peers: skipped.map((failure) => failure.peer) }
+          : convergenceScope,
+      started_at: startedAt,
+      hold_in_flight_for_finalize: reconciledConvergence.converged,
+    });
+    // appendRound re-applies the unresolved-evidence gate while holding the
+    // session lock. Its value is authoritative if any future in-lock broker
+    // reconciliation differs from the optimistic pre-append snapshot.
+    const finalConvergence = round.convergence;
+    // v2.22.0 (B.P3): totals and costs_per_round are now durable; the
+    // warning therefore evaluates the same fully reconciled round.
+    await this.checkBudgetWarning(session.session_id, round.round);
+    updated = this.store.read(session.session_id);
     const unresolvedEvidence = unresolvedEvidenceItems(updated);
-    if (convergence.converged && !finalConvergence.converged) {
+    if (evidencePanelConvergence.converged && !finalConvergence.converged) {
       this.emit({
-        type: "session.evidence_checklist_unresolved_on_finalize",
+        type: "session.evidence_checklist_blocks_convergence",
         session_id: session.session_id,
         round: round.round,
         message: `${unresolvedEvidence.length} unresolved evidence item(s) block convergence; open/not_resurfaced is not proof of satisfaction.`,
@@ -6076,7 +6265,9 @@ export class CrossReviewOrchestrator {
     await this.store.flushPendingEvents();
     if (finalConvergence.converged) {
       this.store.saveFinal(session.session_id, input.draft);
-      const baseReason = convergence.recovery_converged ? "recovered_unanimity" : "unanimous_ready";
+      const baseReason = finalConvergence.recovery_converged
+        ? "recovered_unanimity"
+        : "unanimous_ready";
       updated = await this.store.finalize(session.session_id, "converged", baseReason);
     }
     this.store.saveReport(

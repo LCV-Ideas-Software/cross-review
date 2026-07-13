@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.13 for package 4.5.13. This
+Current supported source/release target: v04.05.14 for package 4.5.14. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.13 preserves that trust boundary while transporting evidence submitted
+v04.05.14 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or
@@ -21,18 +21,42 @@ fail closed, and unsupported operational claims, model-pin contradictions and
 unresolved evidence cannot converge.
 
 Requester reverification is item-scoped: when citations carry checklist IDs,
-the broker evaluates only the sources routed to that item. The ID never proves
-satisfaction by itself. Concrete values, commands, execution records,
+the broker evaluates the sources routed to that item plus separate generic
+sources; a source routed to another item is excluded without poisoning generic
+evidence. The ID never proves satisfaction by itself. Concrete values, commands, execution records,
 file/line material and bilingual semantic concepts still have to correspond to
 the original ask. Evidence routed to one item cannot close another, partial
 release-document proof remains unresolved, and synthetic adapter injection is
 rejected outside explicitly confirmed stub/test mode.
+
+Historical caller blobs never re-enter a later prompt, preflight or READY
+grounding corpus. On resume, only a previously persisted clean/verified READY
+source whose path, SHA-256 and literal quote still match an immutable caller
+attachment can be replayed locally through the current item correlator. This
+uses no provider call and cannot prove a new operational claim. Checklist alias
+repair is limited to acyclic, older, same-owner strict restatements; cross-peer
+requests and requests containing new requirements remain blocking.
+
+Every review round acquires its durable reservation before evidence or broker
+mutation. Its journal restores checklist/history when an unappended round is
+interrupted and appends an explicit compensation event; an appended converged
+round keeps the reservation until terminal finalization, preventing concurrent
+operator changes from reopening the checklist between those transitions.
 
 Release automation waits for the CodeQL workflow on the exact CI-verified SHA
 and separately requires the default branch to have zero open code-scanning
 alerts before creating a tag. Workflow success alone is not treated as proof
 that the uploaded analysis is finding-free. Regex changes over untrusted text
 must use bounded or linear matching and include adversarial long-input coverage.
+
+Dependabot covers every package ecosystem represented by a committed manifest:
+npm, GitHub Actions, pip/pip-compile and pre-commit. npm resolution replaces the
+public ecosystem base with the authenticated StepSecurity proxy. Ordinary CI
+installs the Python tool lock with `--require-hashes` under the centrally pinned
+Python 3.12 and executes the pre-commit hooks, so those bot updates are not
+auto-merged on skipped consumer checks. The separately bootstrapped npm 12 CLI and SHA-512 pin remain
+under the release-policy regression because npm 12 is not yet in GitHub's
+documented Dependabot support range.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored

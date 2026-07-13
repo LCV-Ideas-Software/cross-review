@@ -21,6 +21,9 @@ const [
   presentationShort,
   codeqlWorkflow,
   serverSource,
+  dependabotConfig,
+  pythonVersion,
+  socketWorkflow,
 ] = await Promise.all([
   read("package.json").then(JSON.parse),
   read("package-lock.json").then(JSON.parse),
@@ -36,6 +39,9 @@ const [
   read("docs/apresentacao.md"),
   read(".github/workflows/codeql.yml"),
   read("src/mcp/server.ts"),
+  read(".github/dependabot.yml"),
+  read(".python-version"),
+  read(".github/workflows/socket.yml"),
 ]);
 
 const expectedAllowScripts = {
@@ -74,6 +80,47 @@ assert.deepEqual(
   foreignResolved,
   [],
   "npm v12 blocks git and remote-URL dependencies; the lockfile must use approved registries only",
+);
+
+assert.match(
+  dependabotConfig,
+  /stepsecurity-javascript:[\s\S]*?type:\s*npm-registry[\s\S]*?url:\s*https:\/\/registry\.stepsecurity\.io\/javascript[\s\S]*?replaces-base:\s*true/,
+  "Dependabot npm updates must fail closed through the StepSecurity base-registry replacement",
+);
+for (const ecosystem of ["npm", "github-actions", "pip", "pre-commit"]) {
+  assert.match(
+    dependabotConfig,
+    new RegExp(`package-ecosystem:\\s*["']?${ecosystem}["']?`),
+    `Dependabot must cover the repository's ${ecosystem} ecosystem`,
+  );
+}
+assert.match(
+  ciWorkflow,
+  /pip install[^\n]*--require-hashes[^\n]*socketsecurity-requirements\.txt/,
+  "CI must install the Dependabot-managed Python lock with hash verification",
+);
+assert.match(
+  ciWorkflow,
+  /python -m pre_commit run --all-files --show-diff-on-failure/,
+  "CI must execute every Dependabot-managed pre-commit hook update",
+);
+assert.match(
+  ciWorkflow,
+  /python scripts\/validate-dependabot-config\.py/,
+  "CI must parse and semantically validate dependabot.yml",
+);
+assert.equal(pythonVersion.trim(), "3.12", "the Python security-tool lock is resolved for 3.12");
+for (const workflow of [ciWorkflow, socketWorkflow]) {
+  assert.match(
+    workflow,
+    /python-version-file:\s*["']?\.python-version["']?/,
+    "Python consumers must use the centrally pinned lock version",
+  );
+}
+assert.doesNotMatch(
+  dependabotConfig,
+  /interval:\s*["']?daily["']?\s*\r?\n\s*day:/,
+  "Dependabot daily schedules must not carry the weekly-only day option",
 );
 
 assert.match(

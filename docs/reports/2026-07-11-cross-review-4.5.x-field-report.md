@@ -1,6 +1,6 @@
 # Cross-Review 4.5.x — Relatório de Campo (Field Report)
 
-**Data:** 2026-07-11 / 2026-07-12
+**Data:** 2026-07-11 / 2026-07-12 / 2026-07-13 UTC
 **Autor:** Claude (caller=claude, host claude-code) — sessão de trabalho da calculadora-app
 **Contexto:** hardgate pré/pós-ship do workspace exigiu submeter dois ships da calculadora-app
 (v04.02.00 e o retro-review de v04.02.01, commit `8eee516`) ao cross-review. Durante a execução,
@@ -479,6 +479,110 @@ got: array`; nenhuma publicação 4.5.13 ocorreu. O filtro foi corrigido e a
 regressão passou a exigir explicitamente a projeção por objeto, o grep do SHA e
 as três comparações que prendem análise e alerta ao `VERIFIED_SHA`.
 
+## 3.13. DEF-15 — perda de continuidade e divergência do Evidence Broker (4.5.13 → 4.5.14)
+
+A sessão `39cb7669-99c3-4ecd-a635-95103c105390`, executada no runtime 4.5.13,
+terminou a sexta rodada com Claude, Gemini, DeepSeek, Grok e Perplexity em
+`raw_status=READY`, `parsed_status=READY`, `normalized_status=READY`,
+`decision_quality=clean`, `confidence=verified` e sem `caller_requests` ou
+`follow_ups`. Mesmo assim, o resultado formal permaneceu bloqueado por 18 itens
+`not_resurfaced`. O objeto de convergência colocou DeepSeek, Grok e Perplexity
+simultaneamente em `ready_peers` e `needs_evidence_peers`.
+
+A auditoria dos seis rounds mostrou que a unanimidade final, isoladamente, não
+provava os 18 itens. O anexo ativo da rodada 6 tinha apenas 476 bytes e duas
+linhas de resumo; os diffs, transcrições e testes específicos estavam em
+submissões anteriores, inclusive arquivos de 36.467 e 30.886 bytes. Os peers
+recebiam somente o snapshot ativo. Os blobs continuavam duráveis no disco e no
+manifesto, mas o broker 4.5.13 não reavaliava as respostas READY da rodada que
+efetivamente os havia recebido depois que o correlator foi corrigido. Exigir
+novo upload manual recriaria a falha de produto já rejeitada no DEF-12; reinserir
+todos os blobs no prompt atual, por outro lado, permitiria empréstimo stale e
+aumentaria novamente o custo das APIs.
+
+Quatro defeitos adicionais amplificaram o ciclo:
+
+- o preflight reconhecia `git diff --check`, mas não a identidade equivalente
+  `git -C astrologo-app diff --check`; a saída vazia não era a causa, pois o
+  registro já continha `EXIT_CODE: 0` e `STDOUT: <empty>`;
+- uma única fonte contendo qualquer ID conhecido fazia o roteador descartar
+  todas as fontes genéricas separadas ao avaliar os demais itens do peer;
+- a deduplicação por hash de `peer + texto integral` transformava pedidos que
+  começavam com `Checklist-Item: <id>` em novos IDs. As 19 entradas eram
+  principalmente reapresentações de quatro grupos de prova;
+- a rodada era persistida antes da agregação, address detection e judge. O
+  `finalConvergence` calculado depois não era gravado de volta, permitindo
+  divergência entre a resposta, `rounds[-1].convergence` e
+  `convergence_health`.
+
+A recomendação do relatório externo de fechar automaticamente todo pedido
+antigo quando o peer retorna READY foi deliberadamente rejeitada. Um Claude
+preguiçoso poderia abandonar o próprio pedido sem verificar os bytes. Na
+4.5.14, `open` e `not_resurfaced` continuam bloqueantes; silêncio, READY
+genérico e o ID isolado continuam sem provar satisfação.
+
+O source 4.5.14 corrige a continuidade sem reduzir os mecanismos
+anti-enganação:
+
+- o snapshot ativo permanece a única fonte do preflight, prompt e grounding da
+  rodada atual. Ao retomar uma sessão, o broker pode reprocessar localmente um
+  READY histórico `clean/verified` contra o path, SHA-256 e quote literal do
+  snapshot daquela resposta. Os bytes antigos não voltam ao prompt, não
+  autorizam alegação nova e o replay não faz chamada de provedor;
+- fontes sem ID continuam elegíveis para correlação estrita de outro item,
+  enquanto fontes explicitamente roteadas a um ID alheio permanecem excluídas;
+- somente uma referência estrita de “mesmo item”, do mesmo peer e para um
+  ancestral mais antigo, ressurge/colapsa o ancestral. Referências cross-peer,
+  ciclos e um ID seguido de exigência nova continuam first-class e bloqueantes.
+  Reparos seguros de sessões 4.5.13 registram
+  `evidence_checklist_alias_collapses` mais evento de auditoria;
+- o matcher de comandos compara a identidade Git depois das opções globais.
+  `git -C <dir> diff --check` com exit zero e streams explicitamente vazios
+  passa; exit ausente/não zero, `diff --stat`, mero `echo`, `|| true`, `&&` e
+  pipelines continuam falhando. `--check` depois do terminador `--` é pathspec,
+  não opção; `--no-index`, refs e pathspecs estreitados também não provam a
+  alegação global;
+- `ready_peers` e `needs_evidence_peers` tornam-se disjuntos no estado formal,
+  sem apagar o voto bruto; o prompt exige que o proprietário associe cada
+  retirada a seu ID e a uma fonte literal correspondente;
+- o `in_flight` guarda o snapshot journaled de checklist/history anterior à
+  rodada e é adquirido antes de reparo, evidência ou preflight; recuperação,
+  sweep stale ou cancelamento sem append restaura esse baseline e registra um
+  evento compensatório. O `appendRound` reaplica o gate sob o mesmo lock da
+  gravação e mantém a reserva até a finalização convergida. Seu resultado é a
+  autoridade para rodada, health, resposta e outcome, eliminando gaps de crash,
+  concorrência pré-round e append-to-finalize da primeira implementação.
+
+As regressões offline reproduzem o comando real da sessão e seus negativos,
+fontes mistas ID/generic, aliases seguros/cross-peer/cíclicos, replay local
+após reinício sem reinjeção de blobs, isolamento do snapshot atual, disjunção
+dos conjuntos derivados e igualdade do estado bloqueado ou promovido após
+serialização e leitura da sessão. Nenhum schema wire das seis APIs,
+modelo, rate card ou chave da configuração central precisou mudar para este
+fix.
+
+A auditoria final de manutenção de dependências encontrou quatro ecossistemas
+reais no repositório: npm, GitHub Actions, o lock pip/pip-compile usado pelo
+Socket e os hooks pre-commit. A configuração Dependabot 4.5.14 cobre os quatro,
+declara o proxy StepSecurity como substituto fail-closed do base registry e
+remove `day` dos schedules `daily` (a chave é semanal segundo o contrato
+oficial). O CI instala o lock Python com hashes sob o pin 3.12 e executa os
+hooks pre-commit reais.
+O pin npm 12 + SHA-512 continua sob regressão própria: a documentação oficial
+do Dependabot enumera apenas npm 7–11, portanto não se atribui cobertura não
+documentada ao bot.
+
+Um dry-run da lógica final 4.5.14 sobre uma cópia integral da sessão 39cb, sem
+chamadas de API e sem alterar os autos originais, não colapsou nem promoveu item
+algum. As reformulações antigas continham autoria cross-peer ou exigências
+adicionais e, portanto, não eram aliases estritos seguros. Isso corrige uma
+conclusão excessiva do relatório externo: a sobreposição dos conjuntos e os
+falsos negativos de transporte/correlação eram bugs, mas as duas linhas
+genéricas da rodada 6 e as citações da rodada 5 não satisfaziam estritamente
+cada pedido de diffs, comandos e testes. A 4.5.14 não falsifica convergência
+retroativa. Uma rodada nova pode receber evidência pelo canal automático do
+caller, sem upload humano; cada ask só fecha com prova realmente correlacionada.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
@@ -514,7 +618,8 @@ revisões normais; a superfície `session_attach_evidence` continua operator-onl
 segurança. Os novos defeitos confirmados após o adendo foram o DEF-10, fechado na 4.5.9, e o
 DEF-11 de propagação da atestação npm, fechado na 4.5.10, DEF-12 de descoberta do transporte
 autônomo, fechado na 4.5.11, DEF-13 de convergência do Evidence Broker, fechado
-na 4.5.12, e DEF-14 de recorrência ReDoS/publicação prematura, fechado no source 4.5.13.
+na 4.5.12, DEF-14 de recorrência ReDoS/publicação prematura, fechado no source 4.5.13,
+e DEF-15 de continuidade/persistência do Evidence Broker, fechado no source 4.5.14.
 
 1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
    `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm

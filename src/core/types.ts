@@ -376,6 +376,15 @@ export interface InFlightRound {
   peers: PeerId[];
   started_at: string;
   status: "running";
+  /** Journal baseline for broker mutations made before the round is appended.
+   * `null` preserves the distinction between an absent field and an empty
+   * collection so interrupted recovery can restore the exact prior state. */
+  evidence_broker_snapshot?:
+    | {
+        evidence_checklist: EvidenceChecklistItem[] | null;
+        evidence_status_history: EvidenceStatusHistoryEntry[] | null;
+      }
+    | undefined;
 }
 
 export interface ConvergenceScope {
@@ -609,6 +618,22 @@ export interface EvidenceChecklistRuntimeReclassification {
 
 export type EvidenceChecklistRuntimeReclassificationLog =
   EvidenceChecklistRuntimeReclassification[];
+
+/** Audit record for an unresolved legacy alias removed only when the same peer
+ * strictly restated the same older checklist item. The round response remains
+ * the immutable source of the alias wording. */
+export interface EvidenceChecklistAliasCollapse {
+  ts: string;
+  alias_item_id: string;
+  peer: PeerId;
+  ask: string;
+  first_round: number;
+  last_round: number;
+  previous_status: "open" | "not_resurfaced";
+  referenced_item_ids: string[];
+  merged_into_item_id?: string | undefined;
+  reason: "checklist_item_reference_alias";
+}
 
 export interface GenerationArtifact {
   ts: string;
@@ -878,6 +903,7 @@ export interface SessionMeta {
   active_caller_evidence_submission_id?: string | undefined;
   evidence_checklist?: EvidenceChecklistItem[] | undefined;
   evidence_checklist_runtime_reclassifications?: EvidenceChecklistRuntimeReclassificationLog;
+  evidence_checklist_alias_collapses?: EvidenceChecklistAliasCollapse[] | undefined;
   // v2.8.0: durable audit trail for every status transition on an
   // evidence checklist item (auto + operator). Newest entries appended.
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;

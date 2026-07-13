@@ -7,6 +7,58 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.14] — 2026-07-12
+
+**Durable Evidence Broker continuity fix.** Prevents immutable evidence from
+disappearing between rounds, recursive checklist aliases from multiplying and
+post-reconciliation convergence from diverging across the response, session
+metadata and health state.
+
+### Fixed
+
+- Keeps the active caller snapshot as the only evidence authority for current
+  preflight, prompt and grounding. On session resume, the broker can locally
+  replay a prior clean/verified READY source against its original immutable
+  path, SHA-256 and literal quote; old bytes never re-enter the current prompt
+  and cannot authorize a new operational claim.
+- Scopes each `Checklist-Item` id only to the source that contains it. Separate
+  generic path/SHA-256/literal-quote sources remain available for strict
+  semantic correlation with other asks instead of being discarded globally.
+- Folds only strict `same item` aliases from the same peer into an older
+  durable ancestor. Cross-peer references and an ID followed by a new
+  requirement remain first-class blockers. Active legacy sessions collapse
+  only older, acyclic, same-owner aliases with a dedicated audit log and event.
+- Recognizes `git -C <worktree> diff --check` as the same command identity as
+  `git diff --check` only when a correlated execution record carries exit code
+  zero. Missing/non-zero exits, `diff --stat` and echoed command text remain
+  rejected; explicitly captured empty stdout/stderr is valid. A `--check`
+  token after Git's `--` pathspec terminator, `--no-index`, refs and narrowed
+  pathspecs are never accepted as proof of the global command.
+- Makes formal `ready_peers` and `needs_evidence_peers` mutually exclusive
+  while preserving raw peer verdicts. A generic READY or a silent reviewer
+  still cannot satisfy its historical evidence asks.
+- Delays the single durable `appendRound` until checklist aggregation, address
+  detection and optional judge promotion finish. The in-flight journal retains
+  the exact pre-round checklist/history and rolls broker mutations back if the
+  round is interrupted before append, with a compensating audit event. The
+  lock-backed reservation is acquired before any broker/evidence mutation;
+  `appendRound` reapplies the evidence gate under that lock and keeps the
+  reservation through converged finalization. The appended convergence,
+  returned result, terminal outcome and runtime health therefore describe the
+  same state without pre-round or append-to-finalize TOCTOU windows.
+- Extends Dependabot from npm/GitHub Actions to every manifest ecosystem in the
+  repository (`pip` and `pre-commit` included), makes the StepSecurity proxy a
+  fail-closed base-registry replacement, removes the weekly-only `day` key from
+  daily schedules and executes the hash-locked Python 3.12 tools plus actual
+  pre-commit hooks in ordinary CI. npm 12 remains pinned and hash-verified by the project
+  regression because GitHub's documented Dependabot contract currently stops
+  at npm 11.
+- Adds field regressions derived from session
+  `39cb7669-99c3-4ecd-a635-95103c105390`, including cumulative immutable
+  evidence replay across a runtime restart, mixed routed/generic sources,
+  safe alias chains/cycles/cross-owner cases, silent `git -C`, masked-command
+  negatives, disjoint derived states and post-judge serialization.
+
 ## [v04.05.13] — 2026-07-12
 
 **ReDoS recurrence fix and fail-closed publication gate.** Closes

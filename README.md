@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.13** (package `4.5.13`).
+**Status.** Stable. The current source/release target is **v04.05.14** (package `4.5.14`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.14`**      | Restores Evidence Broker continuity safely: clean grounded historical READY sources are replayed locally without stale prompt reuse, strict same-owner aliases collapse, `git -C ... diff --check` is recognized and final convergence is persisted consistently.           |
 | **`v04.05.13`**      | Eliminates a repeated ReDoS class in Evidence Broker symbol extraction and makes publication wait for CodeQL on the exact SHA plus zero actual open code-scanning alerts.                                                                                                   |
 | **`v04.05.12`**      | Fixes Evidence Broker convergence: direct rounds receive unresolved checklist IDs, grounded same-requester rechecks close the correct item, natural-language alternatives no longer deadlock, and irrelevant or partial evidence still fails closed.                        |
 | **`v04.05.11`**      | Makes autonomous evidence routing unambiguous in the MCP contract: AI evidence is persisted automatically through review starters, while the optional operator authority-promotion tool cannot be mistaken for a mandatory human upload step.                               |

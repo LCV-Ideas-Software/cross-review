@@ -13,6 +13,10 @@ registries:
     type: npm-registry
     url: https://registry.stepsecurity.io/javascript
     token: ${{ secrets.DEPENDABOT_STEPSECURITY_NPM_TOKEN }}
+    # This proxy is the repository's default dependency registry, not an
+    # additional source. Fail closed instead of allowing Dependabot to bypass
+    # StepSecurity through the public ecosystem base registry.
+    replaces-base: true
 
 updates:
   - package-ecosystem: npm
@@ -21,7 +25,6 @@ updates:
       - stepsecurity-javascript
     schedule:
       interval: "daily"
-      day: "thursday"
       time: "01:00"
       timezone: "America/Los_Angeles"
     open-pull-requests-limit: 10
@@ -47,7 +50,6 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
-      day: "thursday"
       time: "01:00"
       timezone: "America/Los_Angeles"
     open-pull-requests-limit: 10
@@ -60,4 +62,30 @@ updates:
       - github-actions
     commit-message:
       prefix: "chore(actions)"
+      include: scope
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "01:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(python-deps)"
+      include: scope
+
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "01:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(pre-commit)"
       include: scope

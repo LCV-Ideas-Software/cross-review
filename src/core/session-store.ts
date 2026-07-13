@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import lockfile from "proper-lockfile";
 import { redact, redactJsonValue, safeErrorMessage } from "../security/redact.js";
+import { blockConvergenceForUnresolvedEvidence } from "./convergence.js";
 import { mergeCost, mergeUsage } from "./cost.js";
 import { sessionCostBreakdown, sessionReportMarkdown } from "./reports.js";
 import type {
@@ -14,6 +15,7 @@ import type {
   ConvergenceScope,
   EvidenceAttachment,
   EvidenceAttachmentOrigin,
+  EvidenceChecklistAliasCollapse,
   EvidenceChecklistItem,
   EvidenceChecklistRuntimeReclassification,
   EvidenceChecklistStatus,
@@ -49,6 +51,47 @@ export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+interface EvidenceBrokerRollback {
+  round: number;
+  restored_item_ids: string[];
+  discarded_history_entries: number;
+}
+
+function restoreInterruptedEvidenceBrokerSnapshot(
+  meta: SessionMeta,
+): EvidenceBrokerRollback | undefined {
+  const snapshot = meta.in_flight?.evidence_broker_snapshot;
+  if (!snapshot || !meta.in_flight) return undefined;
+  const currentHistoryLength = meta.evidence_status_history?.length ?? 0;
+  const baselineHistoryLength = snapshot.evidence_status_history?.length ?? 0;
+  const rollback: EvidenceBrokerRollback = {
+    round: meta.in_flight.round,
+    restored_item_ids: (snapshot.evidence_checklist ?? []).map((item) => item.id),
+    discarded_history_entries: Math.max(0, currentHistoryLength - baselineHistoryLength),
+  };
+  if (snapshot.evidence_checklist === null) {
+    delete meta.evidence_checklist;
+  } else {
+    meta.evidence_checklist = structuredClone(snapshot.evidence_checklist);
+  }
+  if (snapshot.evidence_status_history === null) {
+    delete meta.evidence_status_history;
+  } else {
+    meta.evidence_status_history = structuredClone(snapshot.evidence_status_history);
+  }
+  return rollback;
+}
+
+function inFlightRoundAlreadyAppended(meta: SessionMeta): boolean {
+  const inFlight = meta.in_flight;
+  const latestRound = meta.rounds.at(-1);
+  return (
+    inFlight !== undefined &&
+    inFlight.evidence_broker_snapshot === undefined &&
+    latestRound?.round === inFlight.round
+  );
 }
 
 function latestTimestamp(...values: Array<string | undefined>): string {
@@ -180,13 +223,16 @@ function checklistEvidenceSourcesForItem(
   const sourceMentionsId = (source: string, id: string): boolean =>
     new RegExp(`(?:^|[^a-f0-9])${id}(?:[^a-f0-9]|$)`, "i").test(source);
   const routed = sources.filter((source) => sourceMentionsId(source, item.id));
-  if (routed.length > 0) return { sources: routed, explicitly_routed: true };
-  const anotherKnownItemWasRouted = sources.some((source) =>
-    knownItemIds.some((id) => sourceMentionsId(source, id)),
+  const generic = sources.filter(
+    (source) => !knownItemIds.some((id) => sourceMentionsId(source, id)),
   );
   return {
-    sources: anotherKnownItemWasRouted ? [] : sources,
-    explicitly_routed: false,
+    // An ID scopes only the source that contains it. A separate generic
+    // source remains eligible for semantic/value correlation with other
+    // asks; otherwise one routed citation poisons every unrelated source in
+    // the same READY envelope (field regression 39cb..., round 5).
+    sources: [...routed, ...generic],
+    explicitly_routed: routed.length > 0,
   };
 }
 
@@ -304,6 +350,31 @@ function checklistAskCorroborated(
   }
   if (requestsDiffEvidence && !lineOrDiffAlternative && !hasDiffEvidence) return false;
   return true;
+}
+
+function strictChecklistAliasTarget(
+  ask: string,
+  peer: PeerId,
+  candidates: readonly EvidenceChecklistItem[],
+  beforeRound: number,
+): EvidenceChecklistItem | undefined {
+  for (const candidate of candidates) {
+    if (candidate.peer !== peer || candidate.first_round >= beforeRound) continue;
+    const marker = new RegExp(
+      `^\\s*Checklist-Item\\s*:\\s*${candidate.id}\\b(?:\\s*\\([^)]*\\))?\\s*(?:[—:;-]\\s*)?`,
+      "i",
+    );
+    const remainder = ask.replace(marker, "").trim();
+    if (remainder === ask.trim()) continue;
+    if (
+      /^(?:(?:(?:the|this)\s+)?same(?:\s+(?:request|item|evidence|proof|transcript|output|hunks?))?\s+(?:remains?|is|are)\s+(?:required|needed|outstanding)|idem|as\s+above)\.?$/i.test(
+        remainder,
+      )
+    ) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function sessionMetaShapeError(value: unknown): string | undefined {
@@ -926,6 +997,14 @@ export class SessionStore {
         peers: params.peers,
         started_at: params.started_at,
         status: "running",
+        evidence_broker_snapshot: {
+          evidence_checklist:
+            meta.evidence_checklist === undefined ? null : structuredClone(meta.evidence_checklist),
+          evidence_status_history:
+            meta.evidence_status_history === undefined
+              ? null
+              : structuredClone(meta.evidence_status_history),
+        },
       };
       meta.convergence_scope = params.scope;
       const transitionedAt = now();
@@ -998,7 +1077,10 @@ export class SessionStore {
     const file = this.eventsPath(sessionId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const meta = this.read(sessionId);
-    const terminalEvent = event.type === "session.finalized" || event.type === "session.cancelled";
+    const terminalEvent =
+      event.type === "session.finalized" ||
+      event.type === "session.cancelled" ||
+      event.type === "session.evidence_broker_transaction_rolled_back";
     if (meta.outcome && !terminalEvent) {
       const error = new Error(
         `post_terminal_event_rejected: ${event.type} cannot be appended after outcome=${meta.outcome}`,
@@ -1333,6 +1415,7 @@ export class SessionStore {
       convergence: ConvergenceResult;
       convergence_scope: ConvergenceScope;
       started_at: string;
+      hold_in_flight_for_finalize?: boolean | undefined;
     },
   ): Promise<ReviewRound> {
     return this.withSessionLock(sessionId, async () => {
@@ -1352,6 +1435,10 @@ export class SessionStore {
         (err as Error & { code?: string }).code = "session_already_finalized";
         throw err;
       }
+      const durableConvergence = blockConvergenceForUnresolvedEvidence(
+        params.convergence,
+        meta.evidence_checklist ?? [],
+      );
       const round: ReviewRound = {
         round: meta.rounds.length + 1,
         started_at: params.started_at,
@@ -1361,7 +1448,7 @@ export class SessionStore {
         prompt_file: params.prompt_file,
         peers: params.peers,
         rejected: params.rejected,
-        convergence: params.convergence,
+        convergence: durableConvergence,
       };
       meta.rounds.push(round);
       meta.failed_attempts = [
@@ -1372,13 +1459,25 @@ export class SessionStore {
           round: round.round,
         })),
       ];
-      delete meta.in_flight;
+      if (
+        params.hold_in_flight_for_finalize === true &&
+        durableConvergence.converged &&
+        meta.in_flight?.round === round.round
+      ) {
+        // The broker mutation is committed with this round, but the round
+        // reservation remains until finalize seals the terminal outcome. This
+        // closes the append-to-finalize operator-update race without allowing
+        // recovery to roll back an already appended round.
+        delete meta.in_flight.evidence_broker_snapshot;
+      } else {
+        delete meta.in_flight;
+      }
       meta.convergence_scope = params.convergence_scope;
       const transitionedAt = now();
       meta.convergence_health = transitionHealth(
         meta,
-        params.convergence.converged ? "converged" : "blocked",
-        params.convergence.reason,
+        durableConvergence.converged ? "converged" : "blocked",
+        durableConvergence.reason,
         transitionedAt,
       );
       meta.updated_at = transitionedAt;
@@ -1541,15 +1640,19 @@ export class SessionStore {
     const sessionId = meta.session_id;
     const ts = now();
     const requestedReason = meta.control?.reason ?? outcomeReason;
-    meta.outcome = "aborted";
-    meta.outcome_reason = outcomeReason;
+    let brokerRollback: EvidenceBrokerRollback | undefined;
     if (meta.in_flight) {
-      this.accountInterruptedInFlight(meta, `cancelled: ${requestedReason}`);
+      if (!inFlightRoundAlreadyAppended(meta)) {
+        this.accountInterruptedInFlight(meta, `cancelled: ${requestedReason}`);
+        brokerRollback = restoreInterruptedEvidenceBrokerSnapshot(meta);
+      }
     } else {
       this.accountInterruptedBackgroundGeneration(meta, `cancelled: ${requestedReason}`);
     }
     delete meta.in_flight;
     delete meta.generation_in_flight;
+    meta.outcome = "aborted";
+    meta.outcome_reason = outcomeReason;
     meta.control = {
       status: "cancelled",
       reason: requestedReason,
@@ -1561,6 +1664,15 @@ export class SessionStore {
     meta.convergence_health = transitionHealth(meta, "cancelled", outcomeReason, ts);
     meta.updated_at = ts;
     await writeJson(this.metaPath(sessionId), meta);
+    if (brokerRollback) {
+      await this.appendEventRecord({
+        type: "session.evidence_broker_transaction_rolled_back",
+        session_id: sessionId,
+        round: brokerRollback.round,
+        message: `Evidence Broker mutations from non-appended round ${brokerRollback.round} were rolled back during cancellation.`,
+        data: { ...brokerRollback, cause: "cancelled_before_append" },
+      });
+    }
     try {
       await this.appendEventRecord({
         type: "session.cancelled",
@@ -1615,7 +1727,13 @@ export class SessionStore {
         (err as Error & { code?: string }).code = "cannot_finalize_generation_in_flight";
         throw err;
       }
-      if (meta.in_flight) {
+      const latestRound = meta.rounds.at(-1);
+      const completingReservedConvergedRound =
+        outcome === "converged" &&
+        meta.in_flight !== undefined &&
+        meta.in_flight.round === latestRound?.round &&
+        latestRound.convergence.converged;
+      if (meta.in_flight && !completingReservedConvergedRound) {
         const err = new Error(
           `cannot_finalize_in_flight_session: session ${sessionId} still has round ${meta.in_flight.round} in flight. Request cancellation with session_cancel_job and wait for provider work to settle before finalizing.`,
         );
@@ -1648,6 +1766,7 @@ export class SessionStore {
           throw err;
         }
       }
+      if (completingReservedConvergedRound) delete meta.in_flight;
       // A normal background job is terminalized inside this same session
       // lock. Its later process-local cleanup must remain a no-op so the
       // report stays immutable, therefore remove the running control before
@@ -1789,6 +1908,19 @@ export class SessionStore {
       for (const { peer, ask } of incoming) {
         const trimmed = ask.trim();
         if (!trimmed) continue;
+        const aliasTarget = strictChecklistAliasTarget(trimmed, peer, checklist, round);
+        if (aliasTarget) {
+          // Only an explicit same-owner, older, strict "same item" alias is
+          // folded. Cross-peer references and requests that append a new
+          // requirement remain first-class blockers; dropping them would let
+          // one peer erase another peer's independent concern.
+          if (round > aliasTarget.last_round) {
+            aliasTarget.last_round = round;
+            aliasTarget.last_seen_at = ts;
+            aliasTarget.round_count += 1;
+          }
+          continue;
+        }
         const id = crypto
           .createHash("sha256")
           .update(`${peer}:${trimmed}`)
@@ -1882,6 +2014,78 @@ export class SessionStore {
       meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
       return removed;
+    });
+  }
+
+  async collapseReferencedEvidenceChecklistAliases(
+    sessionId: string,
+  ): Promise<EvidenceChecklistAliasCollapse[]> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) return [];
+      const checklist = meta.evidence_checklist ?? [];
+      const unresolved = (item: EvidenceChecklistItem): boolean => {
+        const status = item.status ?? "open";
+        return status === "open" || status === "not_resurfaced";
+      };
+      const collapsed: EvidenceChecklistAliasCollapse[] = [];
+      const removedIds = new Set<string>();
+      const ts = now();
+      const directTarget = new Map<string, EvidenceChecklistItem>();
+      for (const alias of checklist) {
+        if (!unresolved(alias)) continue;
+        const target = strictChecklistAliasTarget(
+          alias.ask,
+          alias.peer,
+          checklist.filter(unresolved),
+          alias.first_round,
+        );
+        if (target) directTarget.set(alias.id, target);
+      }
+      const survivingTarget = (alias: EvidenceChecklistItem): EvidenceChecklistItem | undefined => {
+        const visited = new Set([alias.id]);
+        let target = directTarget.get(alias.id);
+        while (target && directTarget.has(target.id)) {
+          if (visited.has(target.id)) return undefined;
+          visited.add(target.id);
+          target = directTarget.get(target.id);
+        }
+        return target;
+      };
+      for (const alias of checklist) {
+        const previousStatus = alias.status ?? "open";
+        if (previousStatus !== "open" && previousStatus !== "not_resurfaced") continue;
+        const sameOwnerTarget = survivingTarget(alias);
+        if (!sameOwnerTarget) continue;
+        sameOwnerTarget.last_round = Math.max(sameOwnerTarget.last_round, alias.last_round);
+        sameOwnerTarget.last_seen_at =
+          sameOwnerTarget.last_seen_at > alias.last_seen_at
+            ? sameOwnerTarget.last_seen_at
+            : alias.last_seen_at;
+        sameOwnerTarget.round_count += alias.round_count;
+        removedIds.add(alias.id);
+        collapsed.push({
+          ts,
+          alias_item_id: alias.id,
+          peer: alias.peer,
+          ask: alias.ask,
+          first_round: alias.first_round,
+          last_round: alias.last_round,
+          previous_status: previousStatus,
+          referenced_item_ids: [directTarget.get(alias.id)?.id ?? sameOwnerTarget.id],
+          merged_into_item_id: sameOwnerTarget.id,
+          reason: "checklist_item_reference_alias",
+        });
+      }
+      if (!collapsed.length) return [];
+      meta.evidence_checklist = checklist.filter((item) => !removedIds.has(item.id));
+      meta.evidence_checklist_alias_collapses = [
+        ...(meta.evidence_checklist_alias_collapses ?? []),
+        ...collapsed,
+      ];
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return collapsed;
     });
   }
 
@@ -2022,6 +2226,11 @@ export class SessionStore {
   ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry }> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.in_flight && (options.by ?? "operator") === "operator") {
+        throw new Error(
+          `evidence_checklist_update_in_flight: round ${meta.in_flight.round} is still running; retry after it completes or is recovered`,
+        );
+      }
       const checklist = meta.evidence_checklist ?? [];
       const item = checklist.find((entry) => entry.id === itemId);
       if (!item) {
@@ -2194,10 +2403,14 @@ export class SessionStore {
         if (ownerPid && this.processAlive(ownerPid)) return current;
         const round = current.in_flight?.round;
         const interruptedGeneration = current.generation_in_flight;
+        let brokerRollback: EvidenceBrokerRollback | undefined;
         if (current.in_flight) {
           // Once a round exists, provider dispatch may already have happened.
           // Preserve the conservative unknown-spend accounting on recovery.
-          this.accountInterruptedInFlight(current, "recovered_after_restart");
+          if (!inFlightRoundAlreadyAppended(current)) {
+            this.accountInterruptedInFlight(current, "recovered_after_restart");
+            brokerRollback = restoreInterruptedEvidenceBrokerSnapshot(current);
+          }
           delete current.in_flight;
           // in_flight is the authoritative broader dispatch envelope. A
           // generation marker cannot add a second unknown attempt for the same
@@ -2235,6 +2448,15 @@ export class SessionStore {
         );
         current.updated_at = transitionedAt;
         await writeJson(this.metaPath(current.session_id), current);
+        if (brokerRollback) {
+          await this.appendEventRecord({
+            type: "session.evidence_broker_transaction_rolled_back",
+            session_id: current.session_id,
+            round: brokerRollback.round,
+            message: `Evidence Broker mutations from interrupted round ${brokerRollback.round} were rolled back during recovery.`,
+            data: { ...brokerRollback, cause: "recovered_after_restart" },
+          });
+        }
         actuallyRecovered = true;
         return current;
       });
@@ -3161,8 +3383,11 @@ export class SessionStore {
   // Reads each attachment from disk, applies a per-file cap (60% of the
   // total cap to leave room for at least 1 other attachment + headers),
   // accumulates into a total-cap, and returns whatever fits. The active
-  // automatic caller snapshot is read first; superseded caller submissions
-  // remain durable audit history but cannot poison or starve a correction.
+  // automatic caller snapshot is read first. Superseded caller submissions
+  // remain audit-only by default. The orchestrator may read them locally to
+  // replay a previously grounded requester verdict against the corrected
+  // checklist matcher, but they never re-enter a later peer prompt or current
+  // evidence/truthfulness/grounding corpus.
   // Other custody channels retain their historical order. Files that cannot be read
   // (deleted, permission denied) are skipped silently — the caller
   // sees only the metadata that survived. This closes the recurring
@@ -3175,6 +3400,7 @@ export class SessionStore {
     sessionId: string,
     totalCapChars: number,
     callerSubmissionId?: string,
+    includeHistoricalCallerSubmissions = false,
   ): ResolvedEvidenceAttachment[] {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
     let meta: SessionMeta;
@@ -3211,7 +3437,29 @@ export class SessionStore {
       const nonCallerSubmissionFiles = allFiles.filter(
         (file) => currentEvidenceAttachment(file)?.origin !== "caller_submitted",
       );
-      files = [...activeFiles, ...nonCallerSubmissionFiles];
+      const activePaths = new Set(activeSubmission.attachment_paths);
+      const selectedCallerPaths = new Set(activePaths);
+      const historicalCallerFiles = includeHistoricalCallerSubmissions
+        ? [...(meta.caller_evidence_submissions ?? [])]
+            .reverse()
+            .filter((submission) => submission.submission_id !== activeSubmissionId)
+            .flatMap((submission) => submission.attachment_paths)
+            .filter((attachmentPath) => {
+              if (selectedCallerPaths.has(attachmentPath)) return false;
+              selectedCallerPaths.add(attachmentPath);
+              return true;
+            })
+            .map((attachmentPath) => {
+              const file = byPath.get(attachmentPath);
+              if (!file) {
+                throw new Error(
+                  `evidence_integrity_unavailable: historical caller submission references ${attachmentPath}`,
+                );
+              }
+              return file;
+            })
+        : [];
+      files = [...activeFiles, ...historicalCallerFiles, ...nonCallerSubmissionFiles];
     }
     const perFileCap = Math.max(2_000, Math.floor(totalCapChars * 0.6));
     const result: ResolvedEvidenceAttachment[] = [];
@@ -3816,13 +4064,28 @@ export class SessionStore {
             const currentOwnerPid =
               current.generation_in_flight?.owner_pid ?? current.control?.owner_pid;
             if (currentOwnerPid && this.processAlive(currentOwnerPid)) return;
-            this.accountInterruptedInFlight(current, "stale_in_flight_sweep");
+            const appendedReservation = inFlightRoundAlreadyAppended(current);
+            if (!appendedReservation) {
+              this.accountInterruptedInFlight(current, "stale_in_flight_sweep");
+            }
+            const brokerRollback = appendedReservation
+              ? undefined
+              : restoreInterruptedEvidenceBrokerSnapshot(current);
             delete current.in_flight;
             // in_flight is the broader accounting envelope; never leave a
             // narrower generation marker behind for a second recovery charge.
             delete current.generation_in_flight;
             current.updated_at = now();
             await writeJson(this.metaPath(session.session_id), current);
+            if (brokerRollback) {
+              await this.appendEventRecord({
+                type: "session.evidence_broker_transaction_rolled_back",
+                session_id: current.session_id,
+                round: brokerRollback.round,
+                message: `Evidence Broker mutations from stale round ${brokerRollback.round} were rolled back during the startup sweep.`,
+                data: { ...brokerRollback, cause: "stale_in_flight_sweep" },
+              });
+            }
             cleared += 1;
           });
         } catch {

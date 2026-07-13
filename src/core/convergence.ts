@@ -115,6 +115,7 @@ export function blockConvergenceForUnresolvedEvidence(
   });
   if (!unresolved.length) return convergence;
   const evidencePeers = [...new Set(unresolved.map((item) => item.peer))];
+  const evidencePeerSet = new Set(evidencePeers);
   return {
     ...convergence,
     converged: false,
@@ -122,6 +123,11 @@ export function blockConvergenceForUnresolvedEvidence(
     latest_round_converged: false,
     session_quorum_converged: false,
     recovery_converged: false,
+    // Derived decision sets are mutually exclusive. The immutable peer
+    // responses still preserve the raw READY vote, while formal convergence
+    // correctly classifies an owner with unresolved evidence as
+    // NEEDS_EVIDENCE instead of simultaneously READY and NEEDS_EVIDENCE.
+    ready_peers: convergence.ready_peers.filter((peer) => !evidencePeerSet.has(peer)),
     needs_evidence_peers: [...new Set([...convergence.needs_evidence_peers, ...evidencePeers])],
     blocking_details: [
       ...convergence.blocking_details,

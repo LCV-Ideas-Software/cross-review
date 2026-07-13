@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-12: `4.5.13`. O registro pode ficar
+> Estado do source/release target em 2026-07-12: `4.5.14`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -602,6 +602,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.14`      | Reprocessa localmente fontes READY históricas estritamente grounded sem reutilizá-las no prompt atual, colapsa aliases seguros e persiste a convergência reconciliada.                  |
 | `v04.05.13`      | Remove a recorrência ReDoS do matcher de símbolos e impede tag/publicação enquanto CodeQL do SHA exato não concluir com zero alertas abertos.                                           |
 | `v04.05.12`      | Corrige a convergência do Evidence Broker, roteia IDs pendentes automaticamente e preserva o bloqueio de evidência irrelevante ou parcial.                                              |
 | `v04.05.11`      | Torna inequívoco o transporte autônomo de evidência: agentes usam `evidence`, sem upload humano, e a promoção opcional do operador não é confundida com requisito.                      |
