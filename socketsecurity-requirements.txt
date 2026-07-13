@@ -301,9 +301,9 @@ socketdev==3.3.0 \
     --hash=sha256:3d60bd4ac3201e9d581b1fe02bf2e6aef1b90c13ae75d15a8664aa9ef966734e \
     --hash=sha256:513c045ce42bdd6cc2bb66a527f5863e0c399e56dbdcb1832cd5d94a5fb1a5e4
     # via socketsecurity
-socketsecurity==2.2.90 \
-    --hash=sha256:a06798d2d8c24465fd75b53105cb6ad1022d37c2c4771a85a0fb2466bce3d11d \
-    --hash=sha256:a535eaabfd0bc0c78d1dcdeb84859e0bd811fbd9f2f8aa96d1169d586f07e991
+socketsecurity==2.4.20 \
+    --hash=sha256:005665d5227b67e5c95c033e8dc4c8ca7d8db1d2c9b6725dbf73c5b74b81cdc0 \
+    --hash=sha256:b55a7ce6017261b16dcf75c350f5f76fe7f61b8a6939b7179c06345f9838517d
     # direct CI tool
 soupsieve==2.8.4 \
     --hash=sha256:e121fd02e975c695e4e9e8774a5ee35d74714b59307868dcc5319ad2d9e3328e \
