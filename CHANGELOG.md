@@ -26,6 +26,9 @@ dependency-automation fixes below.
 - Preserves the four-ecosystem Dependabot coverage, pip-compile source+hash lock,
   grouped Python updates, real consumer checks and concurrent-base merge retry
   introduced in the protected 4.5.14 source tag.
+- Makes Auto-tag detect a `dependabot.yml` change and wait for all four dynamic
+  ecosystem updater jobs on the exact SHA. A failed or missing updater now
+  blocks tagging instead of racing the final dependency audit.
 
 ## [v04.05.14] — 2026-07-12
 

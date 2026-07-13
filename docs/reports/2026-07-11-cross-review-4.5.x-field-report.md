@@ -619,6 +619,10 @@ Dependabot deixa de tentar ativar npm 12 pelo Corepack/StepSecurity e usa o npm
 11 documentado de sua imagem; CI e Publish continuam responsáveis pelo npm
 12.0.1, baixado diretamente e conferido pelo SHA-512 fixo. Nenhum modelo, wire
 schema, rate card ou chave da configuração central mudou neste fechamento.
+O Auto-tag também passou a detectar mudança em `dependabot.yml` e aguardar os
+quatro updater jobs dinâmicos do mesmo SHA; resultado ausente, pendente ou
+vermelho bloqueia o tag. Isso elimina a corrida que chegou a criar o tag 4.5.14
+antes de a falha do updater npm ficar visível.
 
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 

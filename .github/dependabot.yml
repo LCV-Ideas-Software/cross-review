@@ -1,6 +1,8 @@
 version: 2
 
 # StepSecurity Secure Registry auth (matches project .npmrc).
+# `package.json` deliberately has no Corepack `packageManager` hint: Dependabot
+# uses its supported bundled npm, while CI/Publish pin and verify npm 12.0.1.
 # Dependabot needs its own auth context — Actions secrets do not
 # propagate to the Dependabot service. The `DEPENDABOT_STEPSECURITY_NPM_TOKEN`
 # org secret carries the same proxy token used by CI workflows via the

@@ -67,6 +67,11 @@ pip-compile source; its generated `.txt` companion must contain the full pinned,
 hashed transitive closure. Compatible Python updates are grouped to avoid a
 burst of lockfile PRs racing each other.
 
+When `.github/dependabot.yml` changes, Auto-tag waits for the four dynamic
+Dependabot ecosystem jobs attached to the same SHA and requires every one to
+complete successfully. Missing, pending or failed updater jobs block tag
+creation and publication just like CI, CodeQL or an open scanning alert.
+
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored
 evidence request. This prevents an internal format correction from creating an

@@ -121,6 +121,49 @@ jobs:
             exit 1
           fi
           echo "Code-scanning gate passed: zero open default-branch alerts."
+      - name: Require triggered Dependabot updates to pass
+        if: steps.verified.outputs.matches == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # Ordinary product commits do not start Dependabot update jobs. A
+          # dependabot.yml change does, and every configured ecosystem must
+          # finish successfully before that configuration can be released.
+          if ! git diff-tree --no-commit-id --name-only -r "$VERIFIED_SHA" | grep -Fxq ".github/dependabot.yml"; then
+            echo "dependabot.yml did not change; no update-job gate is required for this SHA."
+            exit 0
+          fi
+
+          for attempt in {1..60}; do
+            remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+            if [ "$remote_main_sha" != "$VERIFIED_SHA" ]; then
+              echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for Dependabot; refusing to tag stale $VERIFIED_SHA."
+              exit 1
+            fi
+
+            runs_json="$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$VERIFIED_SHA" --limit 100 --json databaseId,workflowName,name,status,conclusion)"
+            dependabot_json="$(jq '[.[] | select(.workflowName == "Dependabot Updates")]' <<<"$runs_json")"
+            run_count="$(jq 'length' <<<"$dependabot_json")"
+            if [ "$run_count" -ge 4 ] && jq -e 'all(.[]; .status == "completed")' <<<"$dependabot_json" >/dev/null; then
+              if ! jq -e 'all(.[]; .conclusion == "success")' <<<"$dependabot_json" >/dev/null; then
+                echo "::error::One or more Dependabot update jobs failed for $VERIFIED_SHA; refusing to tag."
+                jq -r '.[] | [.databaseId, .name, .status, .conclusion] | @tsv' <<<"$dependabot_json"
+                exit 1
+              fi
+              echo "Dependabot gate passed: ${run_count} update jobs completed successfully for $VERIFIED_SHA."
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 60 ]; then
+              echo "::error::Dependabot did not produce and complete all four ecosystem jobs for $VERIFIED_SHA."
+              jq -r '.[] | [.databaseId, .name, .status, .conclusion] | @tsv' <<<"$dependabot_json"
+              exit 1
+            fi
+            echo "Waiting for four successful Dependabot ecosystem jobs on $VERIFIED_SHA (${attempt}/60; observed: ${run_count})."
+            sleep 5
+          done
       - name: Read package.json version and compute display tag
         if: steps.verified.outputs.matches == 'true'
         id: version

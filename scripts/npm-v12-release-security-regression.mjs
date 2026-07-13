@@ -122,6 +122,12 @@ assert.ok(
     dependabotAutomergeWorkflow.includes("for attempt in {1..6}"),
   "Dependabot automerge must retry GitHub's transient concurrent base-update race",
 );
+assert.ok(
+  autoTagWorkflow.includes("Require triggered Dependabot updates to pass") &&
+    autoTagWorkflow.includes('select(.workflowName == "Dependabot Updates")') &&
+    autoTagWorkflow.includes('grep -Fxq ".github/dependabot.yml"'),
+  "auto-tag must gate a Dependabot configuration change on all triggered ecosystem update jobs",
+);
 assert.match(
   ciWorkflow,
   /pip install[^\n]*--require-hashes[^\n]*socketsecurity-requirements\.txt/,
@@ -377,11 +383,11 @@ for (const codeScanningGate of [
 }
 assert.equal(
   (autoTagWorkflow.match(/git ls-remote --heads origin "refs\/heads\/main"/g) ?? []).length,
-  4,
-  "auto-tag must revalidate main while processing CodeQL, bracket the alert query, and check freshness before tagging",
+  5,
+  "auto-tag must revalidate main during CodeQL and Dependabot gates, bracket the alert query, and check freshness before tagging",
 );
 const codeScanningGateBlock = autoTagWorkflow.match(
-  /- name: Wait for CodeQL and require zero open alerts[\s\S]*?(?=\n\s+- name: Read package\.json version)/,
+  /- name: Wait for CodeQL and require zero open alerts[\s\S]*?(?=\n\s+- name: Require triggered Dependabot updates to pass)/,
 )?.[0];
 assert.ok(codeScanningGateBlock, "auto-tag must retain an explicit code-scanning gate step");
 assert.match(
@@ -401,6 +407,15 @@ assert.ok(
       codeScanningGateBlock.indexOf("code-scanning/alerts?state=open"),
   "auto-tag must bracket the moving-main alert query with the exact verified SHA",
 );
+const dependabotGateBlock = autoTagWorkflow.match(
+  /- name: Require triggered Dependabot updates to pass[\s\S]*?(?=\n\s+- name: Read package\.json version)/,
+)?.[0];
+assert.ok(dependabotGateBlock, "auto-tag must retain an explicit Dependabot update gate step");
+assert.equal(
+  (dependabotGateBlock.match(/!= "\$VERIFIED_SHA"/g) ?? []).length,
+  1,
+  "the Dependabot gate must stop if main advances away from the verified SHA",
+);
 const createTagBlock = autoTagWorkflow.match(
   /- name: Create and push tag[\s\S]*?(?=\n\s+- name: Dispatch publish workflow)/,
 )?.[0];
@@ -417,7 +432,7 @@ assert.match(
 );
 assert.equal(
   (autoTagWorkflow.match(/if:\s*steps\.verified\.outputs\.matches == 'true'/g) ?? []).length,
-  5,
+  6,
   "every step that reads, tags or publishes repository content must require the verified main SHA",
 );
 
