@@ -66,6 +66,10 @@ jobs:
         run: npm --registry=https://registry.npmjs.org run biome
       - name: Typecheck
         run: npm --registry=https://registry.npmjs.org run typecheck
+      - name: Poll and cancellation runtime regression
+        run: |
+          npm --registry=https://registry.npmjs.org run build
+          npm --registry=https://registry.npmjs.org run v4.5.16-poll-cancel-regression
       - name: Smoke tests
         run: npm --registry=https://registry.npmjs.org run smoke
         env:

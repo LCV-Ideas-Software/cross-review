@@ -624,6 +624,82 @@ quatro updater jobs dinâmicos do mesmo SHA; resultado ausente, pendente ou
 vermelho bloqueia o tag. Isso elimina a corrida que chegou a criar o tag 4.5.14
 antes de a falha do updater npm ficar visível.
 
+## 3.15. Adendo 4.5.16 (2026-07-13) — poll excessivo, Markdown e cancelamento tardio
+
+**Sessão observada:** `50e68ea8-8da3-4132-99b4-552a0399b72a`
+
+**Runtime:** `4.5.15`
+
+**Janela UTC:** 2026-07-13T08:42:07.513Z a 2026-07-13T09:03:07.360Z
+
+**Classificação:** três defeitos de contrato/observabilidade; nenhuma falha de
+provider comprovada.
+
+### DEF-16A — amplificação do `session_poll`
+
+Enquanto a primeira rodada ainda não tinha histórico completo, o poll media
+1.122 caracteres. Após a primeira rodada, passou a 39.373. Durante a segunda
+rodada, cada resposta repetida tinha **43.326 caracteres**; **34.783** eram o
+`latest_round` completo, com os cinco peers, inclusive 14.848 caracteres de
+`text` e 14.690 de `structured`. A ferramenta transportava novamente o
+resultado anterior quando o caller precisava apenas acompanhar o trabalho
+ativo, o que levou a truncamento na superfície cliente.
+
+A 4.5.16 faz `detail="summary"` ser o padrão: conserva progresso, status,
+verdicts, resumos limitados e convergência, mas exclui `text`, `raw` e
+`structured` integrais. `detail="full"` e `session_read` preservam a rota
+forense explícita. O contrato também separa
+`active_round_number` — rodada atualmente em execução — de
+`latest_completed_round_number` — rodada mais recente já anexada.
+
+### DEF-16B — `response_format="markdown"` ignorado
+
+O poll JSON de 09:01:49.581Z e o poll solicitado como Markdown de
+09:01:57.681Z tinham os mesmos 43.326 caracteres e o mesmo SHA-256
+`499e628472bc3ca11b767c11b7a4d6854a58b8ee589a59b1470fd291c7fb98af`.
+Ambos começavam por `{` e eram byte a byte idênticos. A 4.5.16 aplica o
+renderer Markdown compartilhado aos objetos retornados pela superfície MCP e
+neutraliza HTML de strings provenientes de callers, peers ou persistência.
+
+### DEF-16C — corrida terminal descrita como job inexistente
+
+O último poll ainda observou a rodada 2 ativa às 09:02:36.993Z. Perplexity, o
+último peer, concluiu e confirmou o stream às 09:02:56.242Z; a rodada foi
+registrada como concluída às 09:02:56.489Z. O cancelamento foi processado às
+09:03:07.360Z, **10,871 segundos depois**, e respondeu somente
+`requested=false / no_running_job_matched`.
+
+Essa linha do tempo confirma uma corrida normal em que o job terminou entre o
+poll e o cancelamento, não corrupção de concorrência. A 4.5.16 persiste status
+compacto dos jobs sob a sessão, reconcilia a observação entre hosts/restarts e
+faz a resposta tardia ser idempotente e informativa:
+`job_already_terminal` inclui `terminal_job` e `final_state`;
+`session_already_terminal` inclui o mesmo estado final compacto.
+
+### Disposição dos providers e responsabilidade da segunda rodada
+
+Os cinco peers da rodada 2 emitiram `peer.token.completed` com
+`committed=true`: Grok (4.791 caracteres), Gemini (2.203), DeepSeek (2.314),
+Claude (3.508) e Perplexity (4.530). Não houve falha comprovada nas chamadas ou
+no streaming dos providers. A segunda rodada foi iniciada indevidamente pelo
+caller; não foi criada automaticamente pelo cross-review e não é classificada
+como defeito da ferramenta.
+
+### Resultado preparado para 4.5.16
+
+- poll operacional limitado por padrão, com detalhe forense opt-in;
+- nomes distintos para rodada ativa e última rodada concluída;
+- Markdown real e HTML-neutralizado;
+- status de job durável entre processos e reinícios;
+- cancelamento terminal idempotente com estado final;
+- ownership durável publicado antes do dispatch e settlement reconciliado sem
+  recriar controle órfão;
+- regressão hermética em stub, sem chamadas pagas ou dependência da config
+  central.
+
+Nenhum modelo, wire schema de provider, rate card ou chave da configuração
+central muda neste patch.
+
 ## 4. Análise consolidada histórica (4.5.0–4.5.3)
 
 O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
@@ -661,6 +737,8 @@ DEF-11 de propagação da atestação npm, fechado na 4.5.10, DEF-12 de descober
 autônomo, fechado na 4.5.11, DEF-13 de convergência do Evidence Broker, fechado
 na 4.5.12, DEF-14 de recorrência ReDoS/publicação prematura, fechado no source 4.5.13,
 e DEF-15 de continuidade/persistência do Evidence Broker, fechado no source 4.5.14.
+O DEF-16 de polling/cancelamento foi reproduzido na 4.5.15 e fechado no source
+4.5.16.
 
 1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
    `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm

@@ -2,12 +2,12 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.15 for package 4.5.15. This
+Current supported source/release target: v04.05.16 for package 4.5.16. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.15 preserves that trust boundary while transporting evidence submitted
+v04.05.16 preserves that trust boundary while transporting evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or
@@ -19,6 +19,17 @@ reconciliation when coverage is unknown. Operator-only mutations still require
 a distinct capability token, incomplete or unhealthy provider terminal states
 fail closed, and unsupported operational claims, model-pin contradictions and
 unresolved evidence cannot converge.
+
+Routine polling now minimizes disclosure by default. `session_poll` with
+`detail="summary"` excludes complete prior-round peer `text`, `raw` and
+`structured` fields; `detail="full"` and `session_read` remain explicit
+forensic surfaces inside the same trusted local-account boundary. Markdown
+responses neutralize HTML from caller, peer and persisted strings before
+rendering. Compact background-job status is persisted under the contained
+session directory so sibling/restarted hosts can report terminal state, but
+that operational record grants no additional mutation authority:
+`session_cancel_job` still requires the petitioner capability or operator
+token, and a late request is an idempotent no-op with a compact `final_state`.
 
 Requester reverification is item-scoped: when citations carry checklist IDs,
 the broker evaluates the sources routed to that item plus separate generic

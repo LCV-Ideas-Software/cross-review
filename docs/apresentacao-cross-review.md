@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-07-12.
+Data de referência desta apresentação: 2026-07-13.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.15`                           |
-| Data do source/release target | `2026-07-12`                       |
+| Versão preparada pelo source  | `4.5.16`                           |
+| Data do source/release target | `2026-07-13`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -240,9 +240,9 @@ A superfície MCP da release expõe as seguintes ferramentas:
 | `session_start_round`                   | Inicia rodada em background e devolve `session_id`/`job_id`.                                                |
 | `run_until_unanimous`                   | Gera/revisa até unanimidade, limite de rodadas ou bloqueio.                                                 |
 | `session_start_unanimous`               | Versão background do fluxo até unanimidade.                                                                 |
-| `session_cancel_job`                    | Solicita cancelamento cooperativo de job em execução.                                                       |
+| `session_cancel_job`                    | Cancela job ativo ou devolve de modo idempotente o estado terminal/final já persistido.                     |
 | `session_recover_interrupted`           | Recupera sessões interrompidas.                                                                             |
-| `session_poll`                          | Consulta progresso de job em background.                                                                    |
+| `session_poll`                          | Consulta resumo limitado por padrão; `detail="full"` habilita a visão forense completa.                     |
 | `session_events`                        | Lê eventos duráveis da sessão.                                                                              |
 | `session_metrics`                       | Retorna métricas agregadas ou de uma sessão.                                                                |
 | `session_doctor`                        | Audita sessões abertas, travadas ou inconsistentes; histórico terminal fica em totals por padrão.           |
@@ -286,6 +286,14 @@ Exemplo de uso conceitual:
 Use `session_start_round` quando a chamada pode demorar mais que o timeout do
 host MCP. O servidor retorna um job e a sessão pode ser acompanhada com
 `session_poll` e `session_events`.
+
+No poll, `active_round_number` é a rodada ainda em execução e
+`latest_completed_round_number` é a rodada mais recente já persistida. O
+padrão `detail="summary"` conserva status, verdicts, resumos limitados e
+convergência sem repetir `text`, `raw` e `structured` integrais dos peers;
+`detail="full"` ou `session_read` são usados somente quando a investigação
+forense exige os corpos completos. `response_format="markdown"` produz
+Markdown real em toda a superfície compatível, com HTML externo neutralizado.
 
 ### Refinamento até unanimidade
 
@@ -725,13 +733,21 @@ ferramentas background:
 
 Depois consulte:
 
-- `session_poll` para progresso;
+- `session_poll` para progresso limitado por padrão ou `detail="full"` para
+  inspeção forense;
 - `session_events` para stream durável;
 - `session_metrics` para custo e contadores;
 - `session_report` para relatório final.
 
 O timeout HTTP padrão por provedor é 30 minutos. O host MCP deve ter timeout
 suficiente ou usar jobs assíncronos.
+
+O status compacto de cada job é persistido na sessão e reconciliado entre
+processos. Assim, uma janela irmã ou um runtime reiniciado distingue trabalho
+terminal de um ID desconhecido. Se o cancelamento chegar após a conclusão, a
+resposta é um no-op explícito: `job_already_terminal` ou
+`session_already_terminal`, com `terminal_job` quando aplicável e
+`final_state` em ambos os casos.
 
 ### Estados finais
 
@@ -792,6 +808,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.16`      | 2026-07-13    | Compacta o poll padrão, separa rodada ativa/concluída, entrega Markdown real seguro e persiste estado terminal de jobs para cancelamento tardio explícito entre hosts.                 |
 | `v04.05.15`      | 2026-07-12    | Publica a continuidade do Evidence Broker com updater npm suportado, npm 12 verificado nos workflows e lock pip-compile íntegro.                                                       |
 | `v04.05.14`      | 2026-07-12    | Restaura continuidade segura do Evidence Broker por replay local grounded, aliases estritos, `git -C ... diff --check` e persistência reconciliada.                                    |
 | `v04.05.13`      | 2026-07-12    | Elimina recorrência ReDoS no matcher de símbolos e bloqueia publicação até CodeQL do SHA exato concluir com zero alertas efetivamente abertos.                                         |
@@ -866,9 +883,9 @@ Antes de usar uma revisão como gate:
 
 ## Fontes verificadas para esta apresentação
 
-- Contrato runtime do source target: smokes verificados em 2026-07-12. O
+- Contrato runtime do source target: regressões preparadas em 2026-07-13. O
   runtime 4.5.8 foi confirmado após o reload daquela auditoria; o source/release
-  target atual é 4.5.15. `server_info` continua sendo a autoridade para cada
+  target atual é 4.5.16. `server_info` continua sendo a autoridade para cada
   janela depois do upgrade e reload.
 - `package.json` do repositório local.
 - `README.md`.

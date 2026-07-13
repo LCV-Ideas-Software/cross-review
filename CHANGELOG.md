@@ -7,6 +7,50 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.16] — 2026-07-13
+
+**Compact polling and race-safe background-job observability.** This patch
+closes three runtime contract defects reproduced in session
+`50e68ea8-8da3-4132-99b4-552a0399b72a`: repeated polls transported the
+complete prior round, Markdown requests returned JSON, and a cancellation that
+arrived after job settlement reported only `no_running_job_matched`.
+
+### Fixed
+
+- Makes `session_poll` default to `detail="summary"`, retaining progress,
+  peer verdicts, compact summaries and convergence state while excluding full
+  peer `text`, `raw` and `structured` payloads. `detail="full"` remains
+  available for explicit forensic inspection.
+- Separates the round currently executing from completed history:
+  `active_round_number` identifies live work and
+  `latest_completed_round_number` identifies the newest appended round.
+- Honors `response_format="markdown"` with real Markdown across object-returning
+  MCP tools. Persisted/caller/peer strings are HTML-neutralized before Markdown
+  rendering so untrusted markup is displayed as text.
+- Persists compact background-job status under each durable session. Polling
+  and cancellation can therefore reconcile running and terminal jobs across
+  sibling MCP hosts and runtime restarts instead of depending on one process's
+  memory.
+- Makes late cancellation idempotent and explicit. Settled jobs return
+  `requested=false`, `job_already_terminal`, the terminal job summary and
+  `final_state`; an already terminal session returns
+  `session_already_terminal` with the same compact final-state contract.
+- Closes the start/settlement TOCTOU windows around durable job ownership,
+  bounds process-local terminal-job retention and suppresses false
+  `append_event_persist_failed` noise when an authenticated post-terminal
+  operation is correctly rejected by the immutable session chain.
+
+### Field evidence
+
+- During the affected second round, each poll carried 43,326 characters;
+  34,783 belonged to the complete prior `latest_round`.
+- The JSON poll and the poll requested as Markdown were byte-identical.
+- The round completed 10.871 seconds before cancellation, proving an ordinary
+  settlement race rather than provider or state corruption.
+- All five providers completed and committed their streamed responses. The
+  second round itself was initiated unnecessarily by the caller, not by the
+  cross-review runtime.
+
 ## [v04.05.15] — 2026-07-12
 
 **Release completion after the protected 4.5.14 tag.** The 4.5.14 publish run

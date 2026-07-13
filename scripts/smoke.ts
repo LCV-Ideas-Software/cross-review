@@ -8597,20 +8597,30 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 //     deferred `setTimeout` block, not a `setImmediate`.
 {
   const serverSrc = fs.readFileSync("src/mcp/server.ts", "utf8");
+  const bootStart = serverSrc.indexOf("await server.connect(new StdioServerTransport())");
+  const bootEnd = serverSrc.indexOf(
+    "\n}\n\n// v2.15.0: shadow copy of `peers/grok.ts:GROK_REASONING_EFFORT_MODELS`",
+    bootStart,
+  );
+  assert.ok(
+    bootStart > 0 && bootEnd > bootStart,
+    "v2.27.1 / startup_sweeps_use_setTimeout: smoke must locate the main() boot path",
+  );
+  const bootPath = serverSrc.slice(bootStart, bootEnd);
   assert.ok(
     /const\s+STARTUP_SWEEP_DELAY_MS\s*=\s*30_000/.test(serverSrc),
     "v2.27.1 / startup_sweeps_use_setTimeout: STARTUP_SWEEP_DELAY_MS must be declared = 30_000",
   );
   assert.ok(
-    !/\bsetImmediate\s*\(/.test(serverSrc),
+    !/\bsetImmediate\s*\(/.test(bootPath),
     "v2.27.1 / startup_sweeps_use_setTimeout: setImmediate(...) must not appear in server.ts boot path",
   );
-  const setTimeoutMatches = serverSrc.match(/setTimeout\(\s*\(\)\s*=>\s*\{/g) ?? [];
+  const setTimeoutMatches = bootPath.match(/setTimeout\(\s*\(\)\s*=>\s*\{/g) ?? [];
   assert.ok(
     setTimeoutMatches.length >= 6,
     `v2.27.1 / startup_sweeps_use_setTimeout: expected ≥6 setTimeout(() => { boot sweeps; found ${setTimeoutMatches.length}`,
   );
-  const delaySuffixMatches = serverSrc.match(/\}\s*,\s*STARTUP_SWEEP_DELAY_MS\s*\)\s*;/g) ?? [];
+  const delaySuffixMatches = bootPath.match(/\}\s*,\s*STARTUP_SWEEP_DELAY_MS\s*\)\s*;/g) ?? [];
   assert.ok(
     delaySuffixMatches.length >= 6,
     `v2.27.1 / startup_sweeps_use_setTimeout: expected ≥6 closures ending with }, STARTUP_SWEEP_DELAY_MS); found ${delaySuffixMatches.length}`,
@@ -8625,13 +8635,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "abortStaleSessions",
     "pruneOldSessions",
   ]) {
-    const sweepIdx = serverSrc.indexOf(`store.${sweep}(`);
+    const sweepIdx = bootPath.indexOf(`store.${sweep}(`);
     assert.ok(
       sweepIdx > 0,
       `v2.27.1 / startup_sweeps_use_setTimeout: ${sweep} must still be invoked from boot path`,
     );
     // Look for the closest preceding setTimeout( above this index.
-    const preceding = serverSrc.slice(Math.max(0, sweepIdx - 600), sweepIdx);
+    const preceding = bootPath.slice(Math.max(0, sweepIdx - 600), sweepIdx);
     assert.ok(
       /setTimeout\(\s*\(\)\s*=>\s*\{[\s\S]*$/.test(preceding),
       `v2.27.1 / startup_sweeps_use_setTimeout: ${sweep} call site must sit inside a setTimeout(() => { ... }) block`,

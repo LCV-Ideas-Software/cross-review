@@ -86,7 +86,7 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 {
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   const cancelJobBlock = serverSrc.match(
-    /"session_cancel_job"[\s\S]{0,2600}?registerTool\(\s*"session_recover_interrupted"/,
+    /"session_cancel_job"[\s\S]{0,9000}?registerTool\(\s*"session_recover_interrupted"/,
   );
   assert.ok(
     cancelJobBlock,
@@ -94,10 +94,10 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   );
   const cancelJobSrc = cancelJobBlock?.[0] ?? "";
   assert.ok(
-    /if \(!jobs\.length && !durableExecutionActive\) \{[\s\S]{0,500}?requested:\s*false[\s\S]{0,500}?no_running_job_matched/.test(
+    /if \(!jobs\.length && !durableExecutionActive\) \{[\s\S]{0,300}?cancellationNoopPayload/.test(
       cancelJobSrc,
-    ),
-    "v4.5.4 / session_cancel_job: no local or durable active job must return requested=false/no_running_job_matched.",
+    ) && serverSrc.includes('"job_already_terminal"'),
+    "v4.5.16 / session_cancel_job: settled work must return the compact terminal/no-active contract.",
   );
   assert.ok(
     !/if \(!jobs\.length && !durableExecutionActive\) \{[\s\S]{0,300}?markCancelled/.test(
@@ -107,8 +107,51 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   );
   assert.ok(
     cancelJobSrc.includes("durableSessionExecutionActive(session)") &&
-      cancelJobSrc.includes("durable_execution: durableJob"),
+      cancelJobSrc.includes("durable_execution: durableJob") &&
+      cancelJobSrc.includes("require_active_execution: true") &&
+      cancelJobSrc.includes("readBackgroundJobStatuses(session_id)") &&
+      cancelJobSrc.includes("mergeObservedJobs"),
     "v4.5.4 / session_cancel_job: cross-process execution must be detected and surfaced durably.",
+  );
+
+  const sessionStoreSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "session-store.ts"),
+    "utf8",
+  );
+  assert.ok(
+    serverSrc.includes("writeBackgroundJobStatus(job)") &&
+      sessionStoreSrc.includes("readBackgroundJobStatuses(sessionId") &&
+      sessionStoreSrc.includes('path.join(this.sessionDir(sessionId), "background-jobs")') &&
+      sessionStoreSrc.includes("background_job_recovered_after_restart"),
+    "v4.5.16 / background jobs: job status must survive a sibling host or runtime restart.",
+  );
+  assert.ok(
+    sessionStoreSrc.includes("background_job_already_running") &&
+      serverSrc.includes("unsettledTerminalJob") &&
+      serverSrc.includes('markCancelled(session_id, "session_cancelled")') &&
+      serverSrc.includes("remained active after startup cleanup"),
+    "v4.5.16 / background jobs: concurrent owners and failed settlements must remain recoverable.",
+  );
+  assert.ok(
+    serverSrc.includes('SessionPollDetailSchema = z.enum(["summary", "full"])') &&
+      serverSrc.includes(
+        'detail === "full" ? (session.in_flight ?? null) : inFlightSummary(session)',
+      ) &&
+      serverSrc.includes("latest_completed_round_number") &&
+      serverSrc.includes(
+        'jobs: detail === "full" ? localJobs : jobs.map((job) => terminalJobSummary(job))',
+      ),
+    "v4.5.16 / session_poll: default polling must remain compact and distinguish active from completed rounds.",
+  );
+  assert.ok(
+    sessionStoreSrc.includes("expectedPostTerminalAuditEvents.has(event.type)") &&
+      sessionStoreSrc.includes('"session.identity_verified"'),
+    "v4.5.16 / terminal audit: only explicitly allowlisted auth events may suppress an expected immutable-chain append.",
+  );
+  const ciSrc = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+  assert.ok(
+    ciSrc.includes("run v4.5.16-poll-cancel-regression"),
+    "v4.5.16 / CI: the focused runtime regression must pass before tagging.",
   );
 
   const runtimeSmokeSrc = fs.readFileSync(

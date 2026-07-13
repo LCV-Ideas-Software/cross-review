@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-12: `4.5.15`. O registro pode ficar
+> Estado do source/release target em 2026-07-13: `4.5.16`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -402,11 +402,13 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_start_round` — inicia uma rodada (em segundo plano).
 - `run_until_unanimous` — roda rodadas até a unanimidade (bloqueante).
 - `session_start_unanimous` — roda até a unanimidade (em segundo plano).
-- `session_cancel_job` — solicita o cancelamento cooperativo de um trabalho.
+- `session_cancel_job` — solicita cancelamento cooperativo; se o job ou a
+  sessão já terminou, responde idempotentemente com o estado terminal.
 
 **Acompanhamento**
 
-- `session_poll` — sonda o estado de uma sessão.
+- `session_poll` — sonda o estado com `detail="summary"` limitado por
+  padrão; `detail="full"` é a opção forense explícita.
 - `session_events` — lê o fluxo de eventos.
 - `session_metrics` — métricas da sessão.
 - `session_doctor` — diagnóstico e modo de reparo opcional; histórico terminal
@@ -419,6 +421,15 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_preflight_check` — executa os mesmos gates de evidência e veracidade
   da rodada real, sem chamar provedores.
 - `session_truthfulness_preflight_check` — alias legado do preflight combinado.
+
+`session_poll` não retransmite por padrão os corpos completos `text`, `raw`
+e `structured` dos peers de rodadas anteriores.
+`active_round_number` indica a rodada em execução e
+`latest_completed_round_number` a rodada mais recente já gravada. Respostas
+com `response_format="markdown"` são Markdown real, com HTML de conteúdo
+externo neutralizado. O status compacto de jobs é durável entre hosts/restarts;
+um cancelamento tardio retorna `job_already_terminal` ou
+`session_already_terminal`, acompanhado de `final_state`.
 
 **Evidência**
 
@@ -602,6 +613,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.16`      | Limita o polling padrão, distingue rodada ativa de concluída, entrega Markdown real seguro e torna estado/cancelamento de jobs durável e explícito entre hosts.                         |
 | `v04.05.15`      | Publica a continuidade do Evidence Broker com hardgate Dependabot completo: npm suportado no updater, npm 12 no build/release e lock pip-compile íntegro.                               |
 | `v04.05.14`      | Reprocessa localmente fontes READY históricas estritamente grounded sem reutilizá-las no prompt atual, colapsa aliases seguros e persiste a convergência reconciliada.                  |
 | `v04.05.13`      | Remove a recorrência ReDoS do matcher de símbolos e impede tag/publicação enquanto CodeQL do SHA exato não concluir com zero alertas abertos.                                           |

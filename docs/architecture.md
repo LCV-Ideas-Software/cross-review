@@ -9,7 +9,8 @@ This API-only `cross-review` implementation is intentionally independent from th
 3. Peer adapters: call official provider APIs and client libraries.
 4. Model selection: validates the canonical no-downgrade pin against official
    model APIs where available; it never auto-selects an off-policy model.
-5. Session store: writes durable JSON and Markdown artifacts under `<data_dir>/sessions`.
+5. Session store: writes durable JSON and Markdown artifacts plus compact
+   background-job status under `<data_dir>/sessions`.
 6. Session events: writes durable `events.ndjson` streams per session for long-running work.
 7. Token streaming: writes attempt-scoped `peer.token.delta`,
    `peer.token.discarded` and `peer.token.completed` events when provider
@@ -41,6 +42,26 @@ background in-process job and return immediately. Use `session_poll`,
 `session_events`, `session_metrics` and `session_report` to follow progress
 without blocking the client request. `session_cancel_job` requests cooperative
 cancellation and forwards `AbortSignal` to provider client calls where supported.
+
+`session_poll` defaults to `detail="summary"`. It exposes bounded progress,
+verdict and convergence data without retransmitting complete prior-round peer
+`text`, `raw` or `structured` bodies. `detail="full"` and
+`session_read` are the explicit forensic paths. The poll distinguishes
+`active_round_number` (work currently executing) from
+`latest_completed_round_number` (the newest round already appended); an
+active round can therefore be newer than the latest completed one.
+
+Background-job observations are written as compact per-job records inside the
+contained session directory and reconciled with process-local state. This lets
+sibling MCP hosts and restarted runtimes distinguish terminal work from an
+unknown job id. A cancellation that loses the race to settlement is an
+idempotent no-op: `job_already_terminal` or
+`session_already_terminal` is returned with `final_state` instead of an
+ambiguous missing-running-job result.
+
+Object-returning tools honor `response_format="markdown"` through a shared
+Markdown renderer. Caller-, peer- and persistence-controlled strings are
+HTML-neutralized before rendering; JSON remains the default wire text.
 
 ## Streaming Model
 

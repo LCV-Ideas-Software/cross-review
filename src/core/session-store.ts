@@ -9,6 +9,7 @@ import { sessionCostBreakdown, sessionReportMarkdown } from "./reports.js";
 import type {
   AppConfig,
   BackgroundGenerationInFlight,
+  BackgroundJobStatus,
   CallerEvidenceSubmission,
   ConvergenceHealth,
   ConvergenceResult,
@@ -685,6 +686,68 @@ export class SessionStore {
     return path.join(this.sessionDir(sessionId), "events.ndjson");
   }
 
+  backgroundJobsDir(sessionId: string): string {
+    return path.join(this.sessionDir(sessionId), "background-jobs");
+  }
+
+  private backgroundJobPath(sessionId: string, jobId: string): string {
+    this.assertSessionId(jobId);
+    return path.join(this.backgroundJobsDir(sessionId), `${jobId.toLowerCase()}.json`);
+  }
+
+  async writeBackgroundJobStatus(job: BackgroundJobStatus): Promise<void> {
+    this.assertSessionId(job.session_id);
+    await writeJson(this.backgroundJobPath(job.session_id, job.job_id), job);
+  }
+
+  readBackgroundJobStatus(sessionId: string, jobId: string): BackgroundJobStatus | undefined {
+    const file = this.backgroundJobPath(sessionId, jobId);
+    if (!fs.existsSync(file)) return undefined;
+    const job = this.readBackgroundJobStatusFile(file, sessionId);
+    return job?.job_id === jobId ? job : undefined;
+  }
+
+  private readBackgroundJobStatusFile(
+    file: string,
+    sessionId: string,
+  ): BackgroundJobStatus | undefined {
+    try {
+      const value = readJson<unknown>(file);
+      if (!value || typeof value !== "object") return undefined;
+      const job = value as Partial<BackgroundJobStatus>;
+      if (
+        typeof job.job_id !== "string" ||
+        typeof job.session_id !== "string" ||
+        job.session_id !== sessionId ||
+        !["ask_peers", "run_until_unanimous", "durable_session_round"].includes(job.kind ?? "") ||
+        !["running", "completed", "failed", "cancelled"].includes(job.status ?? "") ||
+        typeof job.started_at !== "string"
+      ) {
+        return undefined;
+      }
+      return job as BackgroundJobStatus;
+    } catch {
+      // Operational job history is advisory. A corrupt entry must not make
+      // the authoritative session unreadable; session_doctor/logs retain the
+      // durable meta and event-chain diagnostics.
+      return undefined;
+    }
+  }
+
+  readBackgroundJobStatuses(sessionId: string): BackgroundJobStatus[] {
+    const dir = this.backgroundJobsDir(sessionId);
+    if (!fs.existsSync(dir)) return [];
+    const statuses: BackgroundJobStatus[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^[a-f0-9-]{36}\.json$/i.test(entry.name)) continue;
+      const job = this.readBackgroundJobStatusFile(path.join(dir, entry.name), sessionId);
+      if (job) statuses.push(job);
+    }
+    return statuses.sort((a, b) =>
+      (a.completed_at ?? a.started_at).localeCompare(b.completed_at ?? b.started_at),
+    );
+  }
+
   assertSessionId(sessionId: string): void {
     if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(sessionId)) {
       throw new Error(`invalid session_id: ${sessionId}`);
@@ -948,6 +1011,7 @@ export class SessionStore {
       budget_warning_emitted: false,
     };
     fs.mkdirSync(path.join(this.sessionDir(session_id), "agent-runs"), { recursive: true });
+    fs.mkdirSync(this.backgroundJobsDir(session_id), { recursive: true });
     await writeJson(this.metaPath(session_id), meta);
     fs.writeFileSync(path.join(this.sessionDir(session_id), "task.md"), redact(task), "utf8");
     if (reviewFocus) {
@@ -1134,6 +1198,23 @@ export class SessionStore {
           await this.appendEventRecord(event);
         });
       } catch (error) {
+        // Terminal session chains are immutable. Authentication/authority
+        // audit events emitted while serving an idempotent post-terminal MCP
+        // request still belong in the global runtime log, so their local
+        // append is an expected no-op. Do not suppress any other event type:
+        // a late peer/round/provider event is a real ordering defect.
+        const expectedPostTerminalAuditEvents = new Set([
+          "session.identity_verified",
+          "session.identity_forgery_blocked",
+          "session.session_authority_blocked",
+          "session.operator_authority_blocked",
+        ]);
+        if (
+          (error as Error & { code?: string }).code === "post_terminal_event_rejected" &&
+          expectedPostTerminalAuditEvents.has(event.type)
+        ) {
+          return;
+        }
         // Event persistence must never break provider calls or MCP responses.
         console.error(
           JSON.stringify({
@@ -1810,13 +1891,16 @@ export class SessionStore {
     sessionId: string,
     reason = "requester_requested",
     jobId?: string,
+    options: { require_active_execution?: boolean } = {},
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       if (meta.outcome) {
-        throw new Error(
+        const err = new Error(
           `session_already_finalized: cannot request cancellation for ${sessionId} with outcome=${meta.outcome}`,
         );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
       }
       const activeJobId = meta.control?.job_id;
       if (jobId && activeJobId && jobId !== activeJobId) {
@@ -1826,6 +1910,19 @@ export class SessionStore {
         (err as Error & { code?: string }).code = "background_job_mismatch";
         throw err;
       }
+      const executionActive =
+        Boolean(meta.in_flight) ||
+        Boolean(meta.generation_in_flight) ||
+        meta.control?.status === "running" ||
+        meta.control?.status === "cancel_requested";
+      if (options.require_active_execution && !executionActive) {
+        const err = new Error(
+          `no_active_execution: session ${sessionId} has no in-flight round, generation, or running background job`,
+        );
+        (err as Error & { code?: string }).code = "no_active_execution";
+        throw err;
+      }
+      if (meta.control?.status === "cancel_requested") return meta;
       meta.control = {
         status: "cancel_requested",
         reason,
@@ -2429,15 +2526,29 @@ export class SessionStore {
                 ? `Cancellation was requested${previousControl.reason ? ` (${previousControl.reason})` : ""}, but the background owner exited before a durable round began.`
                 : "The background owner exited before a durable round began. Start a new round to continue from saved session context."
             : `Round ${round} was interrupted before completion and can be resumed manually.`;
+        const transitionedAt = now();
+        if (previousControl?.job_id) {
+          const interruptedJob = this.readBackgroundJobStatus(
+            current.session_id,
+            previousControl.job_id,
+          );
+          if (interruptedJob?.status === "running") {
+            await this.writeBackgroundJobStatus({
+              ...interruptedJob,
+              status: previousControl.status === "cancel_requested" ? "cancelled" : "failed",
+              completed_at: transitionedAt,
+              error: `background_job_recovered_after_restart: ${reason}`,
+            });
+          }
+        }
         current.control = {
           status: "recovered_after_restart",
           reason,
           job_id: previousControl?.job_id,
           owner_pid: previousControl?.owner_pid,
           requested_at: previousControl?.requested_at,
-          updated_at: now(),
+          updated_at: transitionedAt,
         };
-        const transitionedAt = now();
         current.convergence_health = transitionHealth(
           current,
           "stale",
@@ -2475,6 +2586,14 @@ export class SessionStore {
       // cancellation wins the race, starting the deferred background job must
       // not erase it; if running wins, the subsequent cancellation write wins.
       if (meta.outcome || meta.control?.status === "cancel_requested") return meta;
+      if (meta.control?.status === "running") {
+        if (meta.control.job_id === owner.job_id) return meta;
+        const err = new Error(
+          `background_job_already_running: session ${sessionId} is owned by job ${meta.control.job_id ?? "unknown"}; refusing owner ${owner.job_id}`,
+        );
+        (err as Error & { code?: string }).code = "background_job_already_running";
+        throw err;
+      }
       meta.control = {
         status: "running",
         job_id: owner.job_id,

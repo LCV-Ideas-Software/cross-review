@@ -681,6 +681,24 @@ export interface SessionControl {
   updated_at: string;
 }
 
+export type BackgroundJobKind = "ask_peers" | "run_until_unanimous" | "durable_session_round";
+
+/**
+ * Compact operational state persisted outside terminal session metadata so a
+ * sibling/restarted MCP host can distinguish a finished job from an unknown
+ * id without reopening the immutable session event chain.
+ */
+export interface BackgroundJobStatus {
+  job_id: string;
+  kind: BackgroundJobKind;
+  session_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  started_at: string;
+  completed_at?: string | undefined;
+  error?: string | undefined;
+  result_summary?: Record<string, unknown> | undefined;
+}
+
 export interface RuntimeCapabilities {
   stable_release: boolean;
   api_only: boolean;

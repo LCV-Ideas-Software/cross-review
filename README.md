@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.15** (package `4.5.15`).
+**Status.** Stable. The current source/release target is **v04.05.16** (package `4.5.16`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.16`**      | Makes background observation compact and race-safe: summary polling by default, explicit forensic detail, real HTML-neutralized Markdown, durable cross-host job status and idempotent late-cancellation results with final state.                                          |
 | **`v04.05.15`**      | Ships the Evidence Broker continuity fix with the complete Dependabot hardgate: supported npm resolver, npm 12 build/release pin, pip-compile source+hash lock, grouped Python updates and concurrent-base merge retry.                                                     |
 | **`v04.05.14`**      | Restores Evidence Broker continuity safely: clean grounded historical READY sources are replayed locally without stale prompt reuse, strict same-owner aliases collapse, `git -C ... diff --check` is recognized and final convergence is persisted consistently.           |
 | **`v04.05.13`**      | Eliminates a repeated ReDoS class in Evidence Broker symbol extraction and makes publication wait for CodeQL on the exact SHA plus zero actual open code-scanning alerts.                                                                                                   |
@@ -302,6 +303,26 @@ these environment variables before running real sessions (example):
 - `regenerate_caller_tokens`
 - `session_sweep`
 - `session_finalize`
+
+`session_poll` uses `detail="summary"` by default. The compact response keeps
+operational progress, verdicts, bounded peer summaries and convergence data,
+but omits complete prior-round peer `text`, `raw` and `structured`
+payloads. Use `detail="full"` or `session_read` only for deliberate forensic
+inspection. `active_round_number` names the round executing now, whereas
+`latest_completed_round_number` names the newest round already appended to
+durable history; during a live round these values can differ.
+
+Every tool that accepts `response_format="markdown"` returns actual Markdown,
+not a JSON object serialized inside a text block. Strings from callers, peers
+and persisted sessions are HTML-neutralized before rendering.
+
+`session_cancel_job` is idempotent around settlement races. A late request
+for a known completed, failed or cancelled job returns `requested=false`,
+`reason="job_already_terminal"`, `terminal_job` and `final_state`. When
+the session itself is already terminal, the reason is
+`session_already_terminal`. Compact job status is persisted per session so a
+sibling MCP host or a restarted runtime can return the same answer without
+requiring process-local memory.
 
 `session_doctor` separates real and stub sessions, flags terminal outcomes that
 lack terminal events, and reports peer-call cost separately from generation

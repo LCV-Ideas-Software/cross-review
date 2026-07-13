@@ -17,8 +17,11 @@ import { CrossReviewOrchestrator } from "../core/orchestrator.js";
 import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { sessionReportMarkdown } from "../core/reports.js";
 import type {
+  BackgroundJobKind,
+  BackgroundJobStatus,
   ConvergenceScope,
   PeerId,
+  ReviewRound,
   RuntimeCapabilities,
   RuntimeEvent,
   SessionMeta,
@@ -40,6 +43,7 @@ const SessionListOutcomeFilterSchema = z
   .enum(["all", "open", "converged", "aborted", "max-rounds"])
   .default("all");
 const SessionListDetailSchema = z.enum(["summary", "full"]).default("summary");
+const SessionPollDetailSchema = z.enum(["summary", "full"]).default("summary");
 const SESSION_LIST_DEFAULT_LIMIT = 25;
 const SESSION_LIST_MAX_LIMIT = 100;
 // v2.15.0 (item 2): per-call reasoning_effort overrides. Optional partial
@@ -134,10 +138,67 @@ const AutomaticCallerEvidenceSchema = z
     "Raw evidence from the authenticated AI caller. It is persisted automatically as durable, SHA-256-addressed caller_submitted_unverified material and transported to reviewers; no manual operator attachment is required. Do not call session_attach_evidence for this routine path.",
   );
 
-function textResult(value: unknown, responseFormat = "json") {
+function markdownEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\\/g, "\\\\")
+    .replace(/([`*_{}[\]()#+.!|>-])/g, "\\$1");
+}
+
+function markdownScalar(value: unknown): string | null {
+  if (value === null) return "`null`";
+  if (value === undefined) return "`undefined`";
+  if (typeof value === "boolean" || typeof value === "number" || typeof value === "bigint") {
+    return `\`${String(value)}\``;
+  }
+  if (typeof value !== "string") return null;
+  if (!value.includes("\n")) return value.length ? markdownEscape(value) : "_empty_";
+  return null;
+}
+
+function markdownLines(value: unknown, depth = 0): string[] {
+  const scalar = markdownScalar(value);
+  if (scalar !== null) return [scalar];
+  if (typeof value === "string") {
+    return value.split(/\r?\n/).map((line) => `> ${markdownEscape(line)}`);
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) return ["_none_"];
+    return value.flatMap((item, index) => {
+      const itemScalar = markdownScalar(item);
+      if (itemScalar !== null) return [`- ${itemScalar}`];
+      const heading = "#".repeat(Math.min(6, depth + 3));
+      return [`${heading} Item ${index + 1}`, "", ...markdownLines(item, depth + 1), ""];
+    });
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (!entries.length) return ["_none_"];
+    return entries.flatMap(([key, item]) => {
+      const itemScalar = markdownScalar(item);
+      if (itemScalar !== null) return [`- **${markdownEscape(key)}:** ${itemScalar}`];
+      const heading = "#".repeat(Math.min(6, depth + 2));
+      return [`${heading} ${markdownEscape(key)}`, "", ...markdownLines(item, depth + 1), ""];
+    });
+  }
+  return [markdownEscape(String(value))];
+}
+
+export function markdownResult(value: unknown): string {
+  return markdownLines(value)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function textResult(value: unknown, responseFormat = "json") {
   const text =
-    responseFormat === "markdown" && typeof value === "string"
-      ? value
+    responseFormat === "markdown"
+      ? typeof value === "string"
+        ? value
+        : markdownResult(value)
       : JSON.stringify(value, null, 2);
   return { content: [{ type: "text" as const, text }] };
 }
@@ -523,21 +584,18 @@ export function buildResponseNotices<
   return notices;
 }
 
-type JobKind = "ask_peers" | "run_until_unanimous" | "durable_session_round";
-export type JobStatus = {
-  job_id: string;
-  kind: JobKind;
-  session_id: string;
-  status: "running" | "completed" | "failed" | "cancelled";
-  started_at: string;
-  completed_at?: string | undefined;
-  error?: string | undefined;
-  result_summary?: Record<string, unknown> | undefined;
-};
+type JobKind = BackgroundJobKind;
+export type JobStatus = BackgroundJobStatus;
 
 type DurableSessionState = Pick<
   SessionMeta,
-  "session_id" | "outcome" | "outcome_reason" | "in_flight" | "generation_in_flight" | "control"
+  | "session_id"
+  | "updated_at"
+  | "outcome"
+  | "outcome_reason"
+  | "in_flight"
+  | "generation_in_flight"
+  | "control"
 >;
 
 export type DurableJobStatus = JobStatus & {
@@ -567,11 +625,13 @@ export function durableSessionCancellationWon(
   session: DurableSessionState,
   signalAborted = false,
 ): boolean {
-  return (
-    signalAborted ||
-    (session.outcome === "aborted" && session.outcome_reason === "session_cancelled") ||
-    session.control?.status === "cancelled"
-  );
+  if (session.outcome) {
+    return (
+      (session.outcome === "aborted" && session.outcome_reason === "session_cancelled") ||
+      session.control?.status === "cancelled"
+    );
+  }
+  return signalAborted || session.control?.status === "cancelled";
 }
 
 /**
@@ -597,6 +657,13 @@ export function synthesizeDurableJob(
   const controlActive =
     session.control?.status === "running" || session.control?.status === "cancel_requested";
   if (!session.in_flight && !session.generation_in_flight && !controlActive) return null;
+  const durableJobId = session.control?.job_id;
+  const matchingJob = durableJobId
+    ? localJobs.find((job) => job.job_id === durableJobId)
+    : undefined;
+  if (matchingJob && !matchingJob.error?.startsWith("background_job_settlement_failed")) {
+    return null;
+  }
   return {
     job_id: session.control?.job_id ?? session.session_id,
     kind: "durable_session_round",
@@ -616,6 +683,312 @@ export function synthesizeDurableJob(
     control_status: session.control?.status ?? null,
     cancellation_requested: session.control?.status === "cancel_requested",
   };
+}
+
+type SessionPollDetail = z.infer<typeof SessionPollDetailSchema>;
+
+export function summarizeReviewRoundForPoll(round: ReviewRound) {
+  return {
+    round: round.round,
+    started_at: round.started_at,
+    completed_at: round.completed_at ?? null,
+    caller_status: round.caller_status,
+    peers: round.peers.slice(0, PEERS.length).map((peer) => ({
+      peer: peer.peer,
+      provider: textPreview(peer.provider, 100),
+      model: textPreview(peer.model, 200),
+      model_reported: peer.model_reported ? textPreview(peer.model_reported, 200) : null,
+      model_match: peer.model_match ?? null,
+      status: peer.status,
+      raw_status: peer.raw_status ?? null,
+      parsed_status: peer.parsed_status ?? null,
+      normalized_status: peer.normalized_status ?? null,
+      summary: textPreview(peer.structured?.summary ?? peer.text),
+      parser_warnings: peer.parser_warnings.slice(0, 3).map((warning) => textPreview(warning)),
+      latency_ms: peer.latency_ms,
+      attempts: peer.attempts,
+    })),
+    rejected: round.rejected.slice(0, PEERS.length).map((failure) => ({
+      peer: failure.peer,
+      provider: textPreview(failure.provider, 100),
+      model: failure.model ? textPreview(failure.model, 200) : null,
+      failure_class: failure.failure_class,
+      message: textPreview(failure.message),
+      retryable: failure.retryable,
+      attempts: failure.attempts,
+      latency_ms: failure.latency_ms,
+    })),
+    convergence: {
+      converged: round.convergence.converged,
+      reason: textPreview(round.convergence.reason, 500),
+      latest_round_converged: round.convergence.latest_round_converged ?? null,
+      session_quorum_converged: round.convergence.session_quorum_converged ?? null,
+      recovery_converged: round.convergence.recovery_converged ?? null,
+      ready_peers: round.convergence.ready_peers.slice(0, PEERS.length),
+      not_ready_peers: round.convergence.not_ready_peers.slice(0, PEERS.length),
+      needs_evidence_peers: round.convergence.needs_evidence_peers.slice(0, PEERS.length),
+      rejected_peers: round.convergence.rejected_peers.slice(0, PEERS.length),
+      skipped_peers: round.convergence.skipped_peers.slice(0, PEERS.length),
+      blocking_details: round.convergence.blocking_details
+        .slice(0, 4)
+        .map((detail) => textPreview(detail)),
+    },
+  };
+}
+
+function isDurableJobStatus(job: JobStatus): job is DurableJobStatus {
+  return job.kind === "durable_session_round" && "source" in job;
+}
+
+function terminalJobSummary(job: JobStatus) {
+  const resultSummary = job.result_summary;
+  return {
+    job_id: job.job_id,
+    kind: job.kind,
+    session_id: job.session_id,
+    status: job.status,
+    started_at: job.started_at,
+    completed_at: job.completed_at ?? null,
+    error: job.error ? textPreview(job.error, 500) : null,
+    result_summary: resultSummary
+      ? {
+          session_id:
+            typeof resultSummary.session_id === "string"
+              ? textPreview(resultSummary.session_id, 100)
+              : null,
+          outcome:
+            typeof resultSummary.outcome === "string"
+              ? textPreview(resultSummary.outcome, 100)
+              : null,
+          converged: typeof resultSummary.converged === "boolean" ? resultSummary.converged : null,
+          rounds: typeof resultSummary.rounds === "number" ? resultSummary.rounds : null,
+        }
+      : null,
+    ...(isDurableJobStatus(job)
+      ? {
+          source: job.source,
+          round: job.round,
+          peers: job.peers.slice(0, PEERS.length),
+          control_status: job.control_status,
+          cancellation_requested: job.cancellation_requested,
+        }
+      : {}),
+  };
+}
+
+function inFlightSummary(session: SessionMeta) {
+  const round = session.in_flight;
+  if (!round) return null;
+  return {
+    round: round.round,
+    peers: round.peers.slice(0, PEERS.length),
+    started_at: round.started_at,
+    status: round.status,
+  };
+}
+
+function healthSummary(session: SessionMeta) {
+  const health = session.convergence_health;
+  if (!health) return null;
+  return {
+    state: health.state,
+    last_event_at: health.last_event_at,
+    last_activity_at: health.last_activity_at,
+    last_state_transition_at: health.last_state_transition_at,
+    detail: textPreview(health.detail, 500),
+    idle_ms: health.idle_ms,
+  };
+}
+
+function controlSummary(session: SessionMeta) {
+  const control = session.control;
+  if (!control) return null;
+  return {
+    status: control.status,
+    reason: control.reason ? textPreview(control.reason, 300) : undefined,
+    job_id: control.job_id,
+    owner_pid: control.owner_pid,
+    requested_at: control.requested_at,
+    updated_at: control.updated_at,
+  };
+}
+
+function generationInFlightSummary(session: SessionMeta) {
+  const generation = session.generation_in_flight;
+  if (!generation) return null;
+  return {
+    peer: generation.peer,
+    provider: textPreview(generation.provider, 100),
+    model: textPreview(generation.model, 200),
+    label: textPreview(generation.label, 300),
+    round: generation.round,
+    started_at: generation.started_at,
+    owner_pid: generation.owner_pid,
+  };
+}
+
+export function compactSessionFinalState(session: SessionMeta) {
+  const latestRound = session.rounds.at(-1);
+  return {
+    session_outcome: session.outcome ?? null,
+    outcome_reason: session.outcome_reason ?? null,
+    health_state: session.convergence_health?.state ?? null,
+    rounds: session.rounds.length,
+    latest_round_number: latestRound?.round ?? null,
+    latest_round_converged: latestRound?.convergence.converged ?? null,
+    in_flight: Boolean(session.in_flight),
+    generation_in_flight: Boolean(session.generation_in_flight),
+    control_status: session.control?.status ?? null,
+    updated_at: session.updated_at,
+  };
+}
+
+export function compactJobsForPoll(
+  localJobs: readonly JobStatus[],
+  durableJob: DurableJobStatus | null,
+  activeJobId?: string,
+): Array<JobStatus | DurableJobStatus> {
+  const running = localJobs
+    .filter((job) => job.status === "running")
+    .sort((a, b) => a.started_at.localeCompare(b.started_at));
+  const activeRunning = activeJobId
+    ? running.find((job) => job.job_id === activeJobId)
+    : running.at(-1);
+  const latestTerminal = localJobs
+    .filter((job) => job.status !== "running")
+    .sort((a, b) => (a.completed_at ?? a.started_at).localeCompare(b.completed_at ?? b.started_at))
+    .at(-1);
+  const selected: Array<JobStatus | DurableJobStatus> = activeRunning ? [activeRunning] : [];
+  if (latestTerminal && !selected.some((job) => job.job_id === latestTerminal.job_id)) {
+    selected.push(latestTerminal);
+  }
+  if (durableJob && !selected.some((job) => job.job_id === durableJob.job_id)) {
+    selected.push(durableJob);
+  } else if (durableJob) {
+    const duplicateIndex = selected.findIndex((job) => job.job_id === durableJob.job_id);
+    const duplicate = selected[duplicateIndex];
+    if (duplicate?.error?.includes("background_job_settlement_failed")) {
+      selected.splice(duplicateIndex, 1, { ...durableJob, error: duplicate.error });
+    }
+  }
+  return selected;
+}
+
+export function mergeObservedJobs(
+  durableJobs: readonly JobStatus[],
+  processLocalJobs: readonly JobStatus[],
+): JobStatus[] {
+  const byId = new Map(durableJobs.map((job) => [job.job_id, job]));
+  for (const job of processLocalJobs) byId.set(job.job_id, job);
+  return [...byId.values()].sort((a, b) => a.started_at.localeCompare(b.started_at));
+}
+
+export function reconcileObservedJobs(
+  session: DurableSessionState,
+  observedJobs: readonly JobStatus[],
+  processLocalRunningJobIds: ReadonlySet<string> = new Set(),
+): JobStatus[] {
+  const activeControlJobId =
+    session.control?.status === "running" || session.control?.status === "cancel_requested"
+      ? session.control.job_id
+      : undefined;
+  return observedJobs.map((job) =>
+    job.status === "running" &&
+    !processLocalRunningJobIds.has(job.job_id) &&
+    ((activeControlJobId !== undefined && job.job_id !== activeControlJobId) ||
+      (session.control?.status === "recovered_after_restart" &&
+        session.control.job_id === job.job_id))
+      ? {
+          ...job,
+          status: "failed",
+          completed_at: session.updated_at,
+          error: "background_job_interrupted_or_settled_without_terminal_status",
+        }
+      : job,
+  );
+}
+
+export function cancellationNoopPayload(
+  session: SessionMeta,
+  localJobs: readonly JobStatus[],
+  requestedJobId?: string,
+) {
+  const terminalJobs = localJobs
+    .filter(
+      (job) =>
+        job.status !== "running" && (requestedJobId === undefined || job.job_id === requestedJobId),
+    )
+    .sort((a, b) => (a.completed_at ?? a.started_at).localeCompare(b.completed_at ?? b.started_at));
+  const terminalJob = terminalJobs.at(-1);
+  const reason = terminalJob
+    ? "job_already_terminal"
+    : session.outcome
+      ? "session_already_terminal"
+      : "no_running_job_matched";
+  const message = terminalJob
+    ? `Background job ${terminalJob.job_id} already finished with status=${terminalJob.status}; no cancellation was requested.`
+    : session.outcome
+      ? `Session ${session.session_id} is already terminal with outcome=${session.outcome}; no cancellation was requested.`
+      : `No active background job matched session ${session.session_id}${requestedJobId ? ` and job ${requestedJobId}` : ""}.`;
+  return {
+    session_id: session.session_id,
+    requested: false,
+    reason,
+    message,
+    matched_jobs: terminalJob ? [terminalJobSummary(terminalJob)] : [],
+    terminal_job: terminalJob ? terminalJobSummary(terminalJob) : null,
+    final_state: compactSessionFinalState(session),
+  };
+}
+
+export function sessionPollPayload(
+  session: SessionMeta,
+  localJobs: readonly JobStatus[],
+  detail: SessionPollDetail,
+  notices: readonly string[],
+) {
+  const durableJob = synthesizeDurableJob(session, localJobs);
+  const jobs = compactJobsForPoll(localJobs, durableJob, session.control?.job_id);
+  const latestRound = session.rounds.at(-1);
+  const healthState = session.convergence_health?.state;
+  const needsAttention =
+    !session.outcome &&
+    !jobs.some((job) => job.status === "running") &&
+    (healthState === "stale" || healthState === "blocked");
+  return {
+    session_id: session.session_id,
+    outcome: session.outcome,
+    outcome_reason:
+      detail === "full"
+        ? session.outcome_reason
+        : session.outcome_reason
+          ? textPreview(session.outcome_reason, 500)
+          : undefined,
+    health: detail === "full" ? (session.convergence_health ?? null) : healthSummary(session),
+    in_flight: detail === "full" ? (session.in_flight ?? null) : inFlightSummary(session),
+    generation_in_flight:
+      detail === "full"
+        ? (session.generation_in_flight ?? null)
+        : generationInFlightSummary(session),
+    active_round_number: session.in_flight?.round ?? session.generation_in_flight?.round ?? null,
+    rounds: session.rounds.length,
+    latest_completed_round_number: latestRound?.round ?? null,
+    latest_round:
+      latestRound === undefined
+        ? null
+        : detail === "full"
+          ? latestRound
+          : summarizeReviewRoundForPoll(latestRound),
+    latest_round_detail: detail,
+    jobs: detail === "full" ? localJobs : jobs.map((job) => terminalJobSummary(job)),
+    control: detail === "full" ? (session.control ?? null) : controlSummary(session),
+    needs_attention: needsAttention,
+    notices: notices.slice(0, 8).map((notice) => textPreview(notice, 500)),
+  };
+}
+
+export function sessionPollMarkdown(payload: ReturnType<typeof sessionPollPayload>): string {
+  return ["# cross-review session poll", "", markdownResult(payload)].join("\n");
 }
 
 /**
@@ -962,12 +1335,12 @@ function summarizeJobResult(result: unknown): Record<string, unknown> {
   return {};
 }
 
-function startJob(
+async function startJob(
   runtime: Runtime,
   kind: JobKind,
   sessionId: string,
   run: (signal: AbortSignal) => Promise<unknown>,
-): JobStatus {
+): Promise<JobStatus> {
   const controller = new AbortController();
   const job: JobStatus = {
     job_id: crypto.randomUUID(),
@@ -976,37 +1349,125 @@ function startJob(
     status: "running",
     started_at: now(),
   };
+  let persisted: SessionMeta;
+  persisted = await runtime.orchestrator.store.markBackgroundJobRunning(sessionId, {
+    job_id: job.job_id,
+    owner_pid: process.pid,
+  });
+  if (
+    persisted.outcome ||
+    persisted.control?.status !== "running" ||
+    persisted.control.job_id !== job.job_id
+  ) {
+    if (persisted.control?.status === "cancel_requested" && !persisted.outcome) {
+      await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+    }
+    const error = new Error(
+      persisted.outcome
+        ? `session_already_finalized: cannot start background job for ${sessionId} with outcome=${persisted.outcome}`
+        : `background_job_owner_not_acquired: session ${sessionId} did not persist owner ${job.job_id}`,
+    );
+    if (persisted.control?.status === "cancel_requested") error.name = "AbortError";
+    throw error;
+  }
+  try {
+    await runtime.orchestrator.store.writeBackgroundJobStatus(job);
+  } catch (error) {
+    try {
+      const cleared = await runtime.orchestrator.store.clearBackgroundJobControl(
+        sessionId,
+        job.job_id,
+      );
+      if (cleared.control?.status === "cancel_requested" && cleared.control.job_id === job.job_id) {
+        await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+      } else if (
+        !cleared.outcome &&
+        cleared.control?.status === "running" &&
+        cleared.control.job_id === job.job_id
+      ) {
+        throw new Error(`durable owner ${job.job_id} remained active after startup cleanup`, {
+          cause: error,
+        });
+      }
+    } catch (cleanupError) {
+      throw new Error(
+        `background_job_status_persist_failed: ${safeErrorMessage(error)}; ` +
+          `background_job_settlement_failed: ${safeErrorMessage(cleanupError)}`,
+        { cause: cleanupError },
+      );
+    }
+    throw new Error(`background_job_status_persist_failed: ${safeErrorMessage(error)}`, {
+      cause: error,
+    });
+  }
+  // Publish the process-local job only after its durable owner marker exists.
+  // A sibling process can now either see the durable synthetic job or this
+  // local job, never an uncancellable local-only "running" state.
   runtime.jobs.set(job.job_id, job);
   pruneCompletedJobs(runtime.jobs);
   runtime.controllers.set(job.job_id, controller);
   const stopDurableCancellationWatch = watchDurableCancellation(job, controller, () =>
     runtime.orchestrator.store.read(sessionId),
   );
-  void Promise.resolve()
-    .then(async () => {
-      const persisted = await runtime.orchestrator.store.markBackgroundJobRunning(sessionId, {
-        job_id: job.job_id,
-        owner_pid: process.pid,
-      });
-      throwIfDurableCancellationRequested(job, controller, persisted);
-      return run(controller.signal);
-    })
+  let preDispatchError: unknown;
+  try {
+    // Re-read after the watcher's immediate observation to close the window
+    // where a sibling persisted cancellation after markBackgroundJobRunning.
+    persisted = runtime.orchestrator.store.read(sessionId);
+    throwIfDurableCancellationRequested(job, controller, persisted);
+  } catch (error) {
+    preDispatchError = error;
+  }
+
+  const execution = preDispatchError
+    ? Promise.reject(preDispatchError)
+    : Promise.resolve().then(() => run(controller.signal));
+  void execution
     .then(async (result) => {
-      const persisted = runtime.orchestrator.store.read(sessionId);
-      const cancellationWon = durableSessionCancellationWon(persisted, controller.signal.aborted);
-      job.status = cancellationWon ? "cancelled" : "completed";
-      job.completed_at = now();
-      job.result_summary = summarizeJobResult(result);
-      runtime.controllers.delete(job.job_id);
-      if (cancellationWon) {
-        try {
+      let cancellationWon = false;
+      let settlementError: unknown;
+      try {
+        const persisted = runtime.orchestrator.store.read(sessionId);
+        cancellationWon = durableSessionCancellationWon(persisted, controller.signal.aborted);
+        if (cancellationWon) {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
-        } catch {
-          // The job status remains visible even if a session write fails.
+        } else {
+          const settled = await runtime.orchestrator.store.clearBackgroundJobControl(
+            sessionId,
+            job.job_id,
+          );
+          cancellationWon = durableSessionCancellationWon(settled, controller.signal.aborted);
+          if (cancellationWon) {
+            await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+          }
         }
-      } else {
-        await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
+      } catch (error) {
+        settlementError = error;
       }
+      job.status = settlementError
+        ? cancellationWon
+          ? "cancelled"
+          : "failed"
+        : cancellationWon
+          ? "cancelled"
+          : "completed";
+      job.completed_at = now();
+      if (settlementError) {
+        job.error = `background_job_settlement_failed: ${safeErrorMessage(settlementError)}`;
+      } else {
+        job.result_summary = summarizeJobResult(result);
+      }
+      try {
+        await runtime.orchestrator.store.writeBackgroundJobStatus(job);
+      } catch (historyError) {
+        job.error = [
+          job.error,
+          `background_job_status_persist_failed: ${safeErrorMessage(historyError)}`,
+        ]
+          .filter(Boolean)
+          .join("; ");
+      }
+      runtime.controllers.delete(job.job_id);
     })
     .catch(async (error) => {
       let persisted: SessionMeta | undefined;
@@ -1018,27 +1479,31 @@ function startJob(
       const cancellationWon = persisted
         ? durableSessionCancellationWon(persisted, controller.signal.aborted)
         : controller.signal.aborted;
-      job.status = cancellationWon ? "cancelled" : "failed";
-      job.completed_at = now();
-      job.error = safeErrorMessage(error);
-      runtime.controllers.delete(job.job_id);
+      let settlementError: unknown;
       try {
         if (cancellationWon) {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
-        } else if (!shouldEscalateBackgroundJobFailure(persisted)) {
-          // The routine already sealed its own terminal failure snapshot.
-          // Process-local bookkeeping must not mutate meta/report afterward.
-          return;
-        } else {
+        } else if (shouldEscalateBackgroundJobFailure(persisted)) {
           await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
           await runtime.orchestrator.store.escalateToOperator(sessionId, {
-            reason: `Background job failed: ${job.error}`,
+            reason: `Background job failed: ${safeErrorMessage(error)}`,
             severity: "critical",
           });
         }
-      } catch {
-        // Job state remains available even if the session cannot be updated.
+      } catch (cleanupError) {
+        settlementError = cleanupError;
       }
+      job.status = cancellationWon ? "cancelled" : "failed";
+      job.completed_at = now();
+      job.error = settlementError
+        ? `${safeErrorMessage(error)}; background_job_settlement_failed: ${safeErrorMessage(settlementError)}`
+        : safeErrorMessage(error);
+      try {
+        await runtime.orchestrator.store.writeBackgroundJobStatus(job);
+      } catch (historyError) {
+        job.error = `${job.error}; background_job_status_persist_failed: ${safeErrorMessage(historyError)}`;
+      }
+      runtime.controllers.delete(job.job_id);
     })
     .finally(stopDurableCancellationWatch);
   return job;
@@ -1497,7 +1962,7 @@ export async function main(): Promise<void> {
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
         : await runtime.orchestrator.initSession(locked.task, locked.caller, locked.review_focus);
-      const job = startJob(runtime, "ask_peers", session.session_id, (signal) =>
+      const job = await startJob(runtime, "ask_peers", session.session_id, (signal) =>
         runtime.orchestrator.askPeers({ ...locked, session_id: session.session_id, signal }),
       );
       return textResult(
@@ -1714,7 +2179,7 @@ export async function main(): Promise<void> {
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
         : await runtime.orchestrator.initSession(locked.task, initCaller, locked.review_focus);
-      const job = startJob(runtime, "run_until_unanimous", session.session_id, (signal) =>
+      const job = await startJob(runtime, "run_until_unanimous", session.session_id, (signal) =>
         runtime.orchestrator.runUntilUnanimous({
           ...locked,
           session_id: session.session_id,
@@ -1764,28 +2229,84 @@ export async function main(): Promise<void> {
         server.server.getClientVersion(),
         session_id,
       );
-      const jobs = [...runtime.jobs.values()].filter(
-        (job) =>
-          job.session_id === session_id &&
-          job.status === "running" &&
-          (!job_id || job.job_id === job_id),
+      const processLocalJobs = [...runtime.jobs.values()].filter(
+        (job) => job.session_id === session_id,
       );
+      const persistedJobs = job_id
+        ? [runtime.orchestrator.store.readBackgroundJobStatus(session_id, job_id)].filter(
+            (job): job is JobStatus => job !== undefined,
+          )
+        : runtime.orchestrator.store.readBackgroundJobStatuses(session_id);
       const session = runtime.orchestrator.store.read(session_id);
+      const sessionJobs = reconcileObservedJobs(
+        session,
+        mergeObservedJobs(persistedJobs, processLocalJobs),
+        new Set(
+          processLocalJobs.filter((job) => job.status === "running").map((job) => job.job_id),
+        ),
+      );
+      const explicitTerminalJob = job_id
+        ? sessionJobs.find((job) => job.job_id === job_id && job.status !== "running")
+        : undefined;
+      const unsettledTerminalJob = sessionJobs.find(
+        (job) =>
+          job.job_id === session.control?.job_id &&
+          job.status !== "running" &&
+          job.error?.includes("background_job_settlement_failed"),
+      );
+      const requestedJobStillDurablyActive =
+        explicitTerminalJob !== undefined &&
+        durableSessionExecutionActive(session) &&
+        session.control?.job_id === explicitTerminalJob.job_id;
+      if (explicitTerminalJob && !requestedJobStillDurablyActive) {
+        return textResult(cancellationNoopPayload(session, sessionJobs, job_id), response_format);
+      }
+      const jobs = sessionJobs.filter(
+        (job) => job.status === "running" && (!job_id || job.job_id === job_id),
+      );
       const durableExecutionActive = durableSessionExecutionActive(session);
       if (!jobs.length && !durableExecutionActive) {
-        return textResult(
-          {
-            session_id,
-            requested: false,
-            reason: "no_running_job_matched",
-            matched_jobs: [],
-          },
-          response_format,
-        );
+        return textResult(cancellationNoopPayload(session, sessionJobs, job_id), response_format);
       }
-      const meta = await runtime.orchestrator.store.requestCancellation(session_id, reason, job_id);
-      for (const job of jobs) {
+      let meta: SessionMeta;
+      try {
+        meta = await runtime.orchestrator.store.requestCancellation(session_id, reason, job_id, {
+          require_active_execution: true,
+        });
+      } catch (error) {
+        const code = (error as Error & { code?: string }).code;
+        if (code !== "session_already_finalized" && code !== "no_active_execution") throw error;
+        // The executor settled after the optimistic snapshot but before the
+        // store acquired its lock. Let its same-process terminal bookkeeping
+        // run, then report the authoritative no-op instead of recreating an
+        // orphan cancel_requested control.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const current = runtime.orchestrator.store.read(session_id);
+        const refreshedJobs = reconcileObservedJobs(
+          current,
+          mergeObservedJobs(
+            job_id
+              ? [runtime.orchestrator.store.readBackgroundJobStatus(session_id, job_id)].filter(
+                  (job): job is JobStatus => job !== undefined,
+                )
+              : runtime.orchestrator.store.readBackgroundJobStatuses(session_id),
+            [...runtime.jobs.values()].filter((job) => job.session_id === session_id),
+          ),
+          new Set(
+            [...runtime.jobs.values()]
+              .filter((job) => job.session_id === session_id && job.status === "running")
+              .map((job) => job.job_id),
+          ),
+        );
+        return textResult(cancellationNoopPayload(current, refreshedJobs, job_id), response_format);
+      }
+      for (const job of processLocalJobs.filter(
+        (candidate) => candidate.status === "running" && (!job_id || candidate.job_id === job_id),
+      )) {
         runtime.controllers.get(job.job_id)?.abort(reason);
+      }
+      if (unsettledTerminalJob && session.control?.job_id === unsettledTerminalJob.job_id) {
+        meta = await runtime.orchestrator.store.markCancelled(session_id, "session_cancelled");
       }
       const durableJob = synthesizeDurableJob(meta, jobs);
       return textResult(
@@ -1844,9 +2365,10 @@ export async function main(): Promise<void> {
     {
       title: "Poll Session",
       description:
-        "Return durable session state and background job status without waiting for provider calls to finish.",
+        "Return durable session state and background job status without waiting for provider calls to finish. Default detail=summary keeps prior-round peer text/raw payloads out of polling responses; use detail=full or session_read only when full forensic data is required.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
+        detail: SessionPollDetailSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1856,11 +2378,22 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, response_format }) => {
+    async ({ session_id, detail, response_format }) => {
       const session = runtime.orchestrator.store.read(session_id);
-      const localJobs = [...runtime.jobs.values()].filter((job) => job.session_id === session_id);
+      const localJobs = reconcileObservedJobs(
+        session,
+        mergeObservedJobs(
+          runtime.orchestrator.store.readBackgroundJobStatuses(session_id),
+          [...runtime.jobs.values()].filter((job) => job.session_id === session_id),
+        ),
+        new Set(
+          [...runtime.jobs.values()]
+            .filter((job) => job.session_id === session_id && job.status === "running")
+            .map((job) => job.job_id),
+        ),
+      );
       const durableJob = synthesizeDurableJob(session, localJobs);
-      const jobs = durableJob ? [...localJobs, durableJob] : localJobs;
+      const jobs = compactJobsForPoll(localJobs, durableJob, session.control?.job_id);
       // v3.6.0 (B1, logs+sessions study): `needs_attention` — derived
       // convenience flag. The 169-session corpus showed 28 non-terminal
       // sessions (5 open + 9 stale + 14 blocked), many abandoned by the
@@ -1894,22 +2427,10 @@ export async function main(): Promise<void> {
             `running job — finalize, contest, continue, or cancel it. The 24h stale-session sweep is only a backstop.`,
         );
       }
-      return textResult(
-        {
-          session_id,
-          outcome: session.outcome,
-          health: session.convergence_health,
-          in_flight: session.in_flight,
-          generation_in_flight: session.generation_in_flight,
-          rounds: session.rounds.length,
-          latest_round: session.rounds.at(-1) ?? null,
-          jobs,
-          control: session.control,
-          needs_attention: needsAttention,
-          notices,
-        },
-        response_format,
-      );
+      const payload = sessionPollPayload(session, localJobs, detail, notices);
+      return response_format === "markdown"
+        ? textResult(sessionPollMarkdown(payload), "markdown")
+        : textResult(payload, "json");
     },
   );
 
