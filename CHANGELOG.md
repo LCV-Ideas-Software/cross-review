@@ -47,12 +47,27 @@ metadata and health state.
   returned result, terminal outcome and runtime health therefore describe the
   same state without pre-round or append-to-finalize TOCTOU windows.
 - Extends Dependabot from npm/GitHub Actions to every manifest ecosystem in the
-  repository (`pip` and `pre-commit` included), makes the StepSecurity proxy a
-  fail-closed base-registry replacement, removes the weekly-only `day` key from
-  daily schedules and executes the hash-locked Python 3.12 tools plus actual
-  pre-commit hooks in ordinary CI. npm 12 remains pinned and hash-verified by the project
+  repository (`pip` and `pre-commit` included), authenticates the global
+  StepSecurity registry declared by `.npmrc`, removes the weekly-only `day` key
+  from daily schedules and executes the hash-locked Python 3.12 tools plus
+  actual pre-commit hooks in ordinary CI. In accordance with GitHub's documented
+  npm registry shape, `replaces-base` is omitted when `.npmrc` already defines
+  the global registry; this prevents Corepack from trying to bootstrap the npm
+  CLI through a dependency proxy that does not expose the required
+  `dist.tarball` metadata. npm 12 remains pinned and hash-verified by the project
   regression because GitHub's documented Dependabot contract currently stops
   at npm 11.
+- Adds the missing pip-compile source manifest, groups compatible Python tool
+  updates and regenerates the Python 3.12 lock with hashes. This prevents a
+  direct `socketsecurity` bump from omitting a newly introduced transitive
+  package, as happened with Brotli in PR 113.
+- Retries only GitHub's transient `Base branch was modified` response while
+  preserving the exact checked Dependabot head. Concurrent green dependency
+  PRs no longer leave red automerge runs solely because another PR reached
+  `main` first.
+- Replaces the unanchored registry-URL regex introduced by that regression with
+  literal assertions while the semantic YAML parser enforces the actual
+  relationship, closing CodeQL alert 40 without suppressing the query.
 - Adds field regressions derived from session
   `39cb7669-99c3-4ecd-a635-95103c105390`, including cumulative immutable
   evidence replay across a runtime restart, mixed routed/generic sources,

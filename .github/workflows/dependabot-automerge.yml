@@ -141,8 +141,31 @@ jobs:
             exit 0
           fi
           # --match-head-commit is an atomic backstop for the sub-second window
-          # between the check above and the merge call itself.
-          gh pr merge "$PR_URL" --squash --delete-branch --match-head-commit "$HEAD_SHA"
+          # between the check above and the merge call itself. Several green
+          # Dependabot PRs may reach this point together; GitHub transiently
+          # rejects all but one with "Base branch was modified". Retry only
+          # that base-race response while rechecking the exact validated head.
+          for attempt in {1..6}; do
+            current_head="$(gh pr view "$PR_URL" --json headRefOid --jq '.headRefOid')"
+            if [ "$current_head" != "$HEAD_SHA" ]; then
+              echo "::notice::Head advanced from ${HEAD_SHA} to ${current_head} during merge retries; deferring to the fresh automerge run."
+              exit 0
+            fi
+
+            if merge_output="$(gh pr merge "$PR_URL" --squash --delete-branch --match-head-commit "$HEAD_SHA" 2>&1)"; then
+              printf '%s\n' "$merge_output"
+              exit 0
+            fi
+            if ! grep -Fq "Base branch was modified" <<<"$merge_output"; then
+              printf '%s\n' "$merge_output" >&2
+              exit 1
+            fi
+            echo "::notice::Base changed during merge attempt ${attempt}/6; retrying the same validated head."
+            sleep $((attempt * 3))
+          done
+
+          echo "::error::Base kept changing after six merge attempts; refusing to merge an unverified head."
+          exit 1
     timeout-minutes: 30
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

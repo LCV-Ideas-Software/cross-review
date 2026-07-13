@@ -50,13 +50,19 @@ that the uploaded analysis is finding-free. Regex changes over untrusted text
 must use bounded or linear matching and include adversarial long-input coverage.
 
 Dependabot covers every package ecosystem represented by a committed manifest:
-npm, GitHub Actions, pip/pip-compile and pre-commit. npm resolution replaces the
-public ecosystem base with the authenticated StepSecurity proxy. Ordinary CI
-installs the Python tool lock with `--require-hashes` under the centrally pinned
-Python 3.12 and executes the pre-commit hooks, so those bot updates are not
-auto-merged on skipped consumer checks. The separately bootstrapped npm 12 CLI and SHA-512 pin remain
-under the release-policy regression because npm 12 is not yet in GitHub's
-documented Dependabot support range.
+npm, GitHub Actions, pip/pip-compile and pre-commit. The committed `.npmrc`
+declares the authenticated StepSecurity proxy as npm's global dependency
+registry; following GitHub's documented configuration shape, the Dependabot
+credential does not also set `replaces-base`, which would incorrectly redirect
+Corepack's npm CLI bootstrap through that proxy. Ordinary CI installs the Python
+tool lock with `--require-hashes` under the centrally pinned Python 3.12 and
+executes the pre-commit hooks, so those bot updates are not auto-merged on
+skipped consumer checks. `socketsecurity-requirements.in` is the direct
+pip-compile source; its generated `.txt` companion must contain the full pinned,
+hashed transitive closure. Compatible Python updates are grouped to avoid a
+burst of lockfile PRs racing each other. The separately bootstrapped npm 12 CLI
+and SHA-512 pin remain under the release-policy regression because npm 12 is not
+yet in GitHub's documented Dependabot support range.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored

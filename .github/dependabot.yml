@@ -13,10 +13,9 @@ registries:
     type: npm-registry
     url: https://registry.stepsecurity.io/javascript
     token: ${{ secrets.DEPENDABOT_STEPSECURITY_NPM_TOKEN }}
-    # This proxy is the repository's default dependency registry, not an
-    # additional source. Fail closed instead of allowing Dependabot to bypass
-    # StepSecurity through the public ecosystem base registry.
-    replaces-base: true
+    # `.npmrc` already declares this as the global registry. GitHub's npm
+    # guidance requires omitting `replaces-base` in that configuration shape;
+    # otherwise Corepack also tries to obtain the npm CLI through the proxy.
 
 updates:
   - package-ecosystem: npm
@@ -73,6 +72,13 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - dependencies
+    groups:
+      python-tools:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
     commit-message:
       prefix: "chore(python-deps)"
       include: scope

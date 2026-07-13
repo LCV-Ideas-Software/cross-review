@@ -24,6 +24,7 @@ const [
   dependabotConfig,
   pythonVersion,
   socketWorkflow,
+  dependabotAutomergeWorkflow,
 ] = await Promise.all([
   read("package.json").then(JSON.parse),
   read("package-lock.json").then(JSON.parse),
@@ -42,6 +43,7 @@ const [
   read(".github/dependabot.yml"),
   read(".python-version"),
   read(".github/workflows/socket.yml"),
+  read(".github/workflows/dependabot-automerge.yml"),
 ]);
 
 const expectedAllowScripts = {
@@ -82,10 +84,20 @@ assert.deepEqual(
   "npm v12 blocks git and remote-URL dependencies; the lockfile must use approved registries only",
 );
 
-assert.match(
+assert.ok(
+  dependabotConfig.includes("stepsecurity-javascript:") &&
+    dependabotConfig.includes("url: https://registry.stepsecurity.io/javascript"),
+  "Dependabot npm updates must authenticate to the StepSecurity registry declared in .npmrc",
+);
+assert.doesNotMatch(
   dependabotConfig,
-  /stepsecurity-javascript:[\s\S]*?type:\s*npm-registry[\s\S]*?url:\s*https:\/\/registry\.stepsecurity\.io\/javascript[\s\S]*?replaces-base:\s*true/,
-  "Dependabot npm updates must fail closed through the StepSecurity base-registry replacement",
+  /replaces-base:/,
+  "a global registry already exists in .npmrc, so Dependabot must not redirect Corepack with replaces-base",
+);
+assert.match(
+  npmrc,
+  /^registry=https:\/\/registry\.stepsecurity\.io\/javascript$/m,
+  ".npmrc must keep StepSecurity as the global npm dependency registry",
 );
 for (const ecosystem of ["npm", "github-actions", "pip", "pre-commit"]) {
   assert.match(
@@ -94,6 +106,16 @@ for (const ecosystem of ["npm", "github-actions", "pip", "pre-commit"]) {
     `Dependabot must cover the repository's ${ecosystem} ecosystem`,
   );
 }
+assert.ok(
+  dependabotConfig.includes("python-tools:") &&
+    dependabotConfig.includes('patterns:\n          - "*"'),
+  "Dependabot must group Python tool updates instead of racing independent lockfile merges",
+);
+assert.ok(
+  dependabotAutomergeWorkflow.includes("Base branch was modified") &&
+    dependabotAutomergeWorkflow.includes("for attempt in {1..6}"),
+  "Dependabot automerge must retry GitHub's transient concurrent base-update race",
+);
 assert.match(
   ciWorkflow,
   /pip install[^\n]*--require-hashes[^\n]*socketsecurity-requirements\.txt/,

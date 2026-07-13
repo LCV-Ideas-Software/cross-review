@@ -564,10 +564,29 @@ fix.
 A auditoria final de manutenção de dependências encontrou quatro ecossistemas
 reais no repositório: npm, GitHub Actions, o lock pip/pip-compile usado pelo
 Socket e os hooks pre-commit. A configuração Dependabot 4.5.14 cobre os quatro,
-declara o proxy StepSecurity como substituto fail-closed do base registry e
+autentica o proxy StepSecurity já declarado como registry global no `.npmrc` e
 remove `day` dos schedules `daily` (a chave é semanal segundo o contrato
-oficial). O CI instala o lock Python com hashes sob o pin 3.12 e executa os
-hooks pre-commit reais.
+oficial). A primeira execução remota demonstrou que combinar esse `.npmrc` com
+`replaces-base: true` redirecionava também o bootstrap do próprio npm pelo
+Corepack; o proxy respondia sem `dist.tarball` e abortava antes da resolução das
+dependências. A configuração final segue a alternativa oficial para registry
+global em `.npmrc`: mantém a credencial do Dependabot, mas omite
+`replaces-base`. O CI instala o lock Python com hashes sob o pin 3.12 e executa
+os hooks pre-commit reais. A mesma primeira análise remota abriu o alerta CodeQL
+40 na regressão textual da URL do registry; a expressão sem âncoras foi removida
+em favor de comparação literal, enquanto o parser YAML continua responsável
+pela associação estrutural, sem dismiss ou supressão.
+
+Essa ativação abriu doze PRs de manutenção em paralelo. Nove foram validados e
+incorporados automaticamente; os PRs 112 e 116 tiveram todos os checks de
+conteúdo verdes, mas o job de automerge terminou vermelho porque outro PR mudou
+a base entre a leitura e o merge. O workflow agora repete apenas a resposta
+transiente `Base branch was modified`, sempre com `--match-head-commit` no mesmo
+SHA já validado. O PR 113 demonstrou uma segunda lacuna: sem o
+`socketsecurity-requirements.in`, o Dependabot trocou o pin direto para 2.4.20,
+mas não recompilou o novo transitivo `brotli>=1.0.9`; `--require-hashes` abortou
+corretamente. A 4.5.14 inclui o par `.in`/`.txt`, agrupa updates Python
+compatíveis e recompila a closure integral com pip-compile 7.5.3/Python 3.12.
 O pin npm 12 + SHA-512 continua sob regressão própria: a documentação oficial
 do Dependabot enumera apenas npm 7–11, portanto não se atribui cobertura não
 documentada ao bot.

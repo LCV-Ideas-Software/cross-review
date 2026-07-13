@@ -1,0 +1,4 @@
+# Direct Python tools used by CI. Regenerate the hash-locked companion with:
+# uv tool run --python 3.12 pip-tools==7.5.3 pip-compile --generate-hashes --output-file socketsecurity-requirements.txt socketsecurity-requirements.in
+pre-commit==4.6.0
+socketsecurity==2.4.20
