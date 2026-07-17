@@ -4,7 +4,7 @@ Direct dependencies declared by this repository:
 
 | Component                 | Version  | License           | Scope       | Source                                                  |
 | ------------------------- | -------- | ----------------- | ----------- | ------------------------------------------------------- |
-| @anthropic-ai/sdk         | ^0.111.0 | MIT               | runtime     | https://www.npmjs.com/package/@anthropic-ai/sdk         |
+| @anthropic-ai/sdk         | ^0.112.1 | MIT               | runtime     | https://www.npmjs.com/package/@anthropic-ai/sdk         |
 | @google/genai             | ^2.11.0  | Apache-2.0        | runtime     | https://www.npmjs.com/package/@google/genai             |
 | @modelcontextprotocol/sdk | ^1.29.0  | MIT               | runtime     | https://www.npmjs.com/package/@modelcontextprotocol/sdk |
 | openai                    | ^6.46.0  | Apache-2.0        | runtime     | https://www.npmjs.com/package/openai                    |

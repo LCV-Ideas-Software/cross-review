@@ -2,12 +2,18 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.16 for package 4.5.16. This
+Current supported source/release target: v04.05.17 for package 4.5.17. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.16 preserves that trust boundary while transporting evidence submitted
+v04.05.17 preserves the 4.5.16 runtime trust boundary while publishing the
+reviewed provider SDK maintenance. npm 12 still fails closed on dependency
+lifecycle changes: Google Gen AI 2.12.0 is authorized only by exact package and
+version after verifying its registry-declared no-op `preinstall`; wildcard
+script permission and broad bypasses remain forbidden.
+
+The 4.5.16 controls preserved here transport evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
 unverified; no manual operator attachment is required for admission or

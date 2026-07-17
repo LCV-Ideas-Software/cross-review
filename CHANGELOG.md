@@ -7,6 +7,40 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.17] — 2026-07-17
+
+**Provider SDK maintenance with exact install-script review.** This patch
+publishes the accumulated dependency maintenance since 4.5.16 and restores the
+strict npm 12 installation gate for the current Google Gen AI SDK.
+
+### Changed
+
+- Raises the published Anthropic SDK range from `^0.111.0` to `^0.112.1`.
+  Anthropic classifies the intervening SDK feature as MCP Tunnels support; the
+  Messages API surface used by cross-review remains compatible.
+- Validates cross-review with Google Gen AI SDK 2.12.0, OpenAI SDK 6.48.0 and
+  protobufjs 8.7.1. The OpenAI updates include streaming and header-normalizing
+  fixes relevant to provider transport, while the Google additions do not
+  change the `generateContent` surfaces currently used by cross-review.
+- Carries forward the post-4.5.16 Dependabot maintenance for TypeScript linting,
+  Biome, Socket Security, CodeQL and the Node setup action.
+
+### Security
+
+- Reviews the registry-published `@google/genai@2.12.0` lifecycle and updates
+  `allowScripts` to that exact version. Its sole install lifecycle remains the
+  literal no-op `preinstall` declared by the official package.
+- Keeps `strict-allow-scripts`, `allow-git=none` and `allow-remote=none`
+  fail-closed. No wildcard permission or
+  `--dangerously-allow-all-scripts` bypass is introduced.
+
+### Fixed
+
+- Makes the Windows parent-process smoke honor the runtime's documented
+  best-effort contract. A sandbox or host that denies `tasklist` access may
+  safely return a null executable basename instead of producing a false test
+  failure.
+
 ## [v04.05.16] — 2026-07-13
 
 **Compact polling and race-safe background-job observability.** This patch

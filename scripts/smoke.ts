@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7442,10 +7443,18 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "parent_exe_basename is null or sane string",
   );
   if (process.platform === "win32" && snap.parent_pid) {
-    assert.ok(
-      typeof snap.parent_exe_basename === "string" && snap.parent_exe_basename.length > 0,
-      `v2.18.2 Tier 5: on Windows with valid parent_pid=${snap.parent_pid}, parent_exe_basename should be populated`,
+    const tasklistProbe = spawnSync(
+      "tasklist",
+      ["/FI", `PID eq ${snap.parent_pid}`, "/FO", "CSV", "/NH"],
+      { encoding: "utf8", timeout: 500, windowsHide: true },
     );
+    const tasklistStdout = String(tasklistProbe.stdout || "").trim();
+    if (tasklistProbe.status === 0 && tasklistStdout.startsWith('"')) {
+      assert.ok(
+        typeof snap.parent_exe_basename === "string" && snap.parent_exe_basename.length > 0,
+        `v2.18.2 Tier 5: when tasklist exposes parent_pid=${snap.parent_pid}, parent_exe_basename should be populated`,
+      );
+    }
   }
   // Anti-drift: source-level guards.
   const callerTokensSrc = (await import("node:fs")).readFileSync(
