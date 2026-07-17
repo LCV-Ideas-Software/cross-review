@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-17: `4.5.22`. O registro pode ficar
+> Estado do source/release target em 2026-07-17: `4.5.23`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -616,6 +616,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                              |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.23`      | Aceita a resposta unitária de `npm view --json` no npm 12 somente com um objeto de metadata; vazia, múltipla ou inválida falha fechada antes do lock íntegro e da auditoria obrigatória.           |
 | `v04.05.22`      | Decodifica o envelope DSSE do npm e vincula a provenance SLSA ao workflow, à tag protegida e ao commit; a auditoria criptográfica posterior permanece obrigatória.                                 |
 | `v04.05.21`      | Alinha a fixture de telemetria de config durável à semântica JSON: propriedade opcional não configurada é omitida do snapshot persistido e de seu SHA-256 canônico.                                |
 | `v04.05.20`      | Restaura fixture CI determinística do contrato budget/cache: Gemini recebe rate explícito e settlement conhecido não retém marcador de gasto desconhecido; o gate financeiro continua fail-closed. |

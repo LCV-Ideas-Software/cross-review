@@ -7,7 +7,7 @@ function fail(message) {
   throw new Error(`Cannot create published-package signature-audit lock: ${message}`);
 }
 
-function readJson(file, label) {
+function readJson(file, label, { allowSingleItemArray = false } = {}) {
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
@@ -17,7 +17,18 @@ function readJson(file, label) {
     );
   }
   try {
-    const value = JSON.parse(text);
+    let value = JSON.parse(text);
+    if (allowSingleItemArray && Array.isArray(value)) {
+      if (
+        value.length !== 1 ||
+        !value[0] ||
+        typeof value[0] !== "object" ||
+        Array.isArray(value[0])
+      ) {
+        fail(`${label} must contain exactly one metadata object`);
+      }
+      value = value[0];
+    }
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       fail(`${label} must contain a JSON object`);
     }
@@ -90,7 +101,12 @@ const packageVersion = requiredArgument("--package-version");
 
 const sourcePackage = readJson(sourcePackageJsonPath, "source package.json");
 const sourceLock = readJson(sourcePackageLockPath, "source package-lock.json");
-const registryMetadata = readJson(registryMetadataPath, "npm registry metadata");
+// npm v12's `npm view --json` always serializes its output as an array. This
+// workflow requests one immutable package version, so unwrap exactly one
+// object here and fail closed for every other response shape.
+const registryMetadata = readJson(registryMetadataPath, "npm registry metadata", {
+  allowSingleItemArray: true,
+});
 
 if (sourcePackage.name !== packageName || sourcePackage.version !== packageVersion) {
   fail("source package identity does not match the protected release identity");

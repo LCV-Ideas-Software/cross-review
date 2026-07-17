@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -366,6 +368,102 @@ assert.match(
   /published-package-runtime-contract\.json/,
   "signature-audit lock generator must emit the expected published runtime contract",
 );
+
+// npm v12 changed `npm view --json` to always return an array. The publish
+// workflow asks for one exact package version, so its registry metadata must
+// accept exactly one item and reject every other array shape.
+const signatureAuditFixtureRoot = await mkdtemp(
+  path.join(os.tmpdir(), "cross-review-signature-audit-lock-"),
+);
+try {
+  const packageName = "@lcv-ideas-software/signature-audit-fixture";
+  const packageVersion = "1.0.0";
+  const sourcePackage = {
+    name: packageName,
+    version: packageVersion,
+    dependencies: {},
+  };
+  const sourceLock = {
+    name: packageName,
+    version: packageVersion,
+    lockfileVersion: 3,
+    requires: true,
+    packages: {
+      "": sourcePackage,
+    },
+  };
+  const registryMetadata = {
+    name: packageName,
+    version: packageVersion,
+    dependencies: {},
+    dist: {
+      tarball:
+        "https://registry.npmjs.org/@lcv-ideas-software/signature-audit-fixture/-/signature-audit-fixture-1.0.0.tgz",
+      integrity: `sha512-${Buffer.alloc(64).toString("base64")}`,
+    },
+  };
+  const sourcePackagePath = path.join(signatureAuditFixtureRoot, "package.json");
+  const sourceLockPath = path.join(signatureAuditFixtureRoot, "package-lock.json");
+  const registryMetadataPath = path.join(signatureAuditFixtureRoot, "registry-metadata.json");
+  await Promise.all([
+    writeFile(sourcePackagePath, `${JSON.stringify(sourcePackage)}\n`, "utf8"),
+    writeFile(sourceLockPath, `${JSON.stringify(sourceLock)}\n`, "utf8"),
+    writeFile(registryMetadataPath, `${JSON.stringify([registryMetadata])}\n`, "utf8"),
+  ]);
+  // mkdtemp guarantees a private directory; use its result as the generator
+  // output so the fixture never writes into the repository.
+  const generatedOutputDirectory = await mkdtemp(path.join(signatureAuditFixtureRoot, "out-"));
+  const generatorArgs = [
+    path.join(root, "scripts", "create-signature-audit-lock.mjs"),
+    "--source-package-json",
+    sourcePackagePath,
+    "--source-package-lock",
+    sourceLockPath,
+    "--registry-metadata",
+    registryMetadataPath,
+    "--output-directory",
+    generatedOutputDirectory,
+    "--package-name",
+    packageName,
+    "--package-version",
+    packageVersion,
+  ];
+  assert.doesNotThrow(
+    () => execFileSync(process.execPath, generatorArgs, { stdio: "pipe" }),
+    "signature-audit lock generation must accept npm v12's one-item JSON array",
+  );
+  const generatedLock = JSON.parse(
+    await readFile(path.join(generatedOutputDirectory, "package-lock.json"), "utf8"),
+  );
+  assert.equal(
+    generatedLock.packages[`node_modules/${packageName}`]?.version,
+    packageVersion,
+    "the lock generated from npm v12 metadata must pin the requested package version",
+  );
+  assert.equal(
+    generatedLock.packages[`node_modules/${packageName}`]?.integrity,
+    registryMetadata.dist.integrity,
+    "the lock generated from npm v12 metadata must preserve the registry integrity pin",
+  );
+  for (const invalidNpmViewResponse of [
+    [],
+    [registryMetadata, registryMetadata],
+    [null],
+    [[registryMetadata]],
+  ]) {
+    await writeFile(registryMetadataPath, `${JSON.stringify(invalidNpmViewResponse)}\n`, "utf8");
+    assert.throws(
+      () => execFileSync(process.execPath, generatorArgs, { stdio: "pipe" }),
+      (error) => {
+        assert.match(String(error.stderr), /exactly one metadata object/);
+        return true;
+      },
+      "signature-audit lock generation must reject every ambiguous npm view JSON array",
+    );
+  }
+} finally {
+  await rm(signatureAuditFixtureRoot, { recursive: true, force: true });
+}
 const publishedPackageRuntimeContractVerifier = await read(
   "scripts/verify-published-package-runtime-contract.mjs",
 );

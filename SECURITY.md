@@ -2,15 +2,18 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.22 for package 4.5.22. This
+Current supported source/release target: v04.05.23 for package 4.5.23. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.22 decodes npm's published Sigstore DSSE envelope before binding SLSA
-provenance to the release workflow, protected tag, and immutable source commit.
-The cryptographic `npm audit signatures` gate remains mandatory. It preserves
-the v04.05.21 durable telemetry fixture, the v04.05.20 deterministic
+v04.05.23 normalizes the one-item JSON array that npm v12 returns from
+`npm view --json` for an exact package version before creating the immutable
+audit lock. Empty, multiple, and malformed array responses still fail closed. The
+cryptographic `npm audit signatures` gate remains mandatory. It preserves the
+v04.05.22 decoding of npm's published Sigstore DSSE envelope before binding
+SLSA provenance to the release workflow, protected tag, and immutable source
+commit; the v04.05.21 durable telemetry fixture; the v04.05.20 deterministic
 budget/cache fixture, the v04.05.19 release-gate hardening and the 4.5.18 runtime
 trust-boundary controls: the release gate does not weaken artifact verification;
 the post-publish audit

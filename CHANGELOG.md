@@ -7,6 +7,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.23] — 2026-07-17
+
+**npm v12 registry metadata is normalized without weakening the audit gate.**
+
+### Fixed
+
+- Accepts the one-item JSON array returned by npm v12 `npm view --json` for an
+  exact package version before creating the integrity-bound temporary audit
+  lock. Empty, multiple, and malformed responses still fail closed; the
+  cryptographic `npm audit signatures` gate remains mandatory.
+
 ## [v04.05.22] — 2026-07-17
 
 **npm provenance verification follows the registry DSSE envelope contract.**
