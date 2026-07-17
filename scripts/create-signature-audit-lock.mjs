@@ -66,6 +66,10 @@ function sameJson(left, right) {
   return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function packagePath(name) {
   if (name.startsWith("@")) {
     const parts = name.split("/");
@@ -165,12 +169,10 @@ if (Buffer.from(dist.integrity.slice("sha512-".length), "base64").length !== 64)
   fail("npm registry dist.integrity has an invalid sha512 digest length");
 }
 
-const {
-  name: _name,
-  version: _version,
-  devDependencies: _devDependencies,
-  ...publishedEntry
-} = structuredClone(sourceRoot);
+const publishedEntry = cloneJson(sourceRoot);
+delete publishedEntry.name;
+delete publishedEntry.version;
+delete publishedEntry.devDependencies;
 publishedEntry.version = packageVersion;
 publishedEntry.resolved = tarballUrl.href;
 publishedEntry.integrity = dist.integrity;
@@ -184,14 +186,14 @@ const auditPackage = {
   },
 };
 if (sourcePackage.overrides !== undefined) {
-  auditPackage.overrides = structuredClone(sourcePackage.overrides);
+  auditPackage.overrides = cloneJson(sourcePackage.overrides);
 }
 const auditLock = {
   name: auditPackage.name,
   version: auditPackage.version,
   lockfileVersion: 3,
   requires: true,
-  packages: structuredClone(sourceLock.packages),
+  packages: cloneJson(sourceLock.packages),
 };
 auditLock.packages[""] = auditPackage;
 auditLock.packages[packagePath(packageName)] = publishedEntry;
