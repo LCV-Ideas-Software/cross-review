@@ -7,6 +7,18 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.20] — 2026-07-17
+
+**Reproducible pre-publish budget/cache regression under CI defaults.**
+
+### Fixed
+
+- Completes the isolated Gemini rate fixture used by the budget/cache release
+  regression and clears its superseded unknown-spend marker after replacing the
+  stub result with a known settlement. The financial gate remains fail-closed
+  for genuinely unpriced provider work; the valid persistence and cache-label
+  contract now runs before publication.
+
 ## [v04.05.19] — 2026-07-17
 
 **Release-gate hardening without weakening provenance verification.**

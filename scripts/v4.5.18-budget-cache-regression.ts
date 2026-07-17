@@ -51,6 +51,7 @@ function fixtureConfig(label: string): AppConfig {
     cost_rates: {
       ...base.cost_rates,
       claude: { input_per_million: 1, output_per_million: 1 },
+      gemini: { input_per_million: 1, output_per_million: 1 },
     },
   };
 }
@@ -174,6 +175,10 @@ const regressions: Regression[] = [
         source: "configured-rate",
         total_cost: 6,
       };
+      // The fixture replaces the stub's unknown-rate result with a known
+      // settlement. Keep the accounting state consistent with that cost so
+      // the unknown-spend fail-closed guard tests real unknown spend only.
+      delete settled.unpriced_attempts;
       await orchestrator.store.saveInFlightPeerResult(sessionId, 1, settled);
 
       let calls = 0;

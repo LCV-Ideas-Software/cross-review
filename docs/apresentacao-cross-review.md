@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.19`                           |
+| Versão preparada pelo source  | `4.5.20`                           |
 | Data do source/release target | `2026-07-17`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -808,6 +808,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                      |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.20`      | 2026-07-17    | Restaura fixture CI determinística do contrato budget/cache: Gemini recebe rate explícito e settlement conhecido não retém marcador de gasto desconhecido; o gate financeiro continua fail-closed.            |
 | `v04.05.19`      | 2026-07-17    | Corrige o Auto-tag/Scorecard com lock temporário íntegro, `npm ci`, contrato do tarball e `npm audit signatures`; visibilidade sem pipe remoto.                                                               |
 | `v04.05.18`      | 2026-07-17    | Fecha a auditoria de sessões 4.5.16–4.5.17 com grounding simétrico, persistência imediata por peer, preflights terminais auditáveis, judges limitados, telemetria completa e relatórios compactos acionáveis. |
 | `v04.05.17`      | 2026-07-17    | Publica a manutenção acumulada dos SDKs e mantém scripts de dependências bloqueados por padrão, com autorização exata do lifecycle no-op do Google Gen AI 2.12.0.                                             |
@@ -888,7 +889,7 @@ Antes de usar uma revisão como gate:
 
 - Contrato runtime do source target: regressões preparadas em 2026-07-17. O
   runtime 4.5.8 foi confirmado após o reload daquela auditoria; o source/release
-  target atual é 4.5.19. `server_info` continua sendo a autoridade para cada
+  target atual é 4.5.20. `server_info` continua sendo a autoridade para cada
   janela depois do upgrade e reload.
 - `package.json` do repositório local.
 - `README.md`.

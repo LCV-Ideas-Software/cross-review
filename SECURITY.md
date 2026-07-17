@@ -2,13 +2,16 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.19 for package 4.5.19. This
+Current supported source/release target: v04.05.20 for package 4.5.20. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.19 preserves the 4.5.18 runtime trust-boundary controls and hardens the
-release gate without weakening artifact verification: the post-publish audit
+v04.05.20 restores a deterministic pre-publish budget/cache fixture without
+weakening the fail-closed financial gate for unpriced provider work. It also
+preserves the v04.05.19 release-gate hardening and the 4.5.18 runtime
+trust-boundary controls: the release gate does not weaken artifact verification;
+the post-publish audit
 uses an integrity-bound lock and `npm ci`, validates the installed package
 contract, then verifies npm registry signatures and provenance. The preceding
 4.5.18 release extends the runtime trust boundary symmetrically to factual
