@@ -148,8 +148,7 @@ function markdownEscape(value: string): string {
 }
 
 function markdownScalar(value: unknown): string | null {
-  if (value === null) return "`null`";
-  if (value === undefined) return "`undefined`";
+  if (value == null) return "`null`";
   if (typeof value === "boolean" || typeof value === "number" || typeof value === "bigint") {
     return `\`${String(value)}\``;
   }
@@ -174,7 +173,12 @@ function markdownLines(value: unknown, depth = 0): string[] {
     });
   }
   if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
+    // Match JSON object semantics: optional fields that are absent at runtime
+    // are omitted instead of leaking the JavaScript implementation detail
+    // `undefined` into user-facing Markdown (notably session_poll health data).
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([, item]) => item !== undefined,
+    );
     if (!entries.length) return ["_none_"];
     return entries.flatMap(([key, item]) => {
       const itemScalar = markdownScalar(item);
@@ -217,7 +221,7 @@ function matchesSessionListOutcome(meta: SessionMeta, outcomeFilter: SessionList
   return meta.outcome === outcomeFilter;
 }
 
-function summarizeSessionForList(meta: SessionMeta) {
+export function summarizeSessionForList(meta: SessionMeta) {
   return {
     session_id: meta.session_id,
     version: meta.version,
@@ -232,7 +236,9 @@ function summarizeSessionForList(meta: SessionMeta) {
     in_flight: Boolean(meta.in_flight),
     generation_in_flight: Boolean(meta.generation_in_flight),
     open_evidence_items:
-      meta.evidence_checklist?.filter((item) => item.status === "open").length ?? 0,
+      meta.evidence_checklist?.filter((item) => (item.status ?? "open") === "open").length ?? 0,
+    not_resurfaced_evidence_items:
+      meta.evidence_checklist?.filter((item) => item.status === "not_resurfaced").length ?? 0,
     lead_peer: meta.convergence_scope?.lead_peer ?? null,
     voting_peers:
       meta.convergence_scope?.voting_peers ?? meta.convergence_scope?.reviewer_peers ?? [],
@@ -1658,6 +1664,8 @@ export async function main(): Promise<void> {
             peer: runtime.config.evidence_judge_autowire.peer ?? null,
             active: runtime.config.evidence_judge_autowire.active,
             max_items_per_pass: runtime.config.evidence_judge_autowire.max_items_per_pass,
+            max_output_tokens: runtime.config.evidence_judge_autowire.max_output_tokens,
+            reasoning_effort: runtime.config.evidence_judge_autowire.reasoning_effort ?? "medium",
             configured_mode_raw: runtime.config.evidence_judge_autowire.configured_mode_raw,
             configured_peer_raw: runtime.config.evidence_judge_autowire.configured_peer_raw,
             consensus_peers: runtime.config.evidence_judge_autowire.consensus_peers,
@@ -3318,6 +3326,14 @@ export async function main(): Promise<void> {
   setTimeout(() => {
     void (async () => {
       try {
+        const pendingProviderSweep =
+          await runtime.orchestrator.store.clearStalePendingProviderCalls();
+        if (pendingProviderSweep.scanned > 0) {
+          console.error(
+            "[cross-review] startup pending-provider-call sweep:",
+            JSON.stringify(pendingProviderSweep),
+          );
+        }
         const inFlightSweep = await runtime.orchestrator.store.clearStaleInFlight();
         if (inFlightSweep.scanned > 0) {
           console.error("[cross-review] startup in_flight sweep:", JSON.stringify(inFlightSweep));

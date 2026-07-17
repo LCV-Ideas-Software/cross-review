@@ -485,6 +485,9 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
         const cacheKey = cacheKeyFor({ id: this.id }, this.config, context.caller);
         const body = {
           model: this.model,
+          // Pin the standard tier so project-level Priority Processing cannot
+          // silently change the pricing contract used by the local ledger.
+          service_tier: "default" as const,
           input: [
             { role: "system" as const, content: this.systemPrompt(context) },
             {
@@ -506,7 +509,8 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           },
           store: false,
           // OpenAI Responses API uses max_output_tokens, not Chat Completions max_tokens.
-          max_output_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_output_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           // GPT-5.6 replaced prompt_cache_retention with request-wide
           // prompt_cache_options; older families keep the legacy policy.
           ...promptCacheFields(this.config, this.model, cacheKey),
@@ -701,6 +705,9 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
         const cacheKey = cacheKeyFor({ id: this.id }, this.config, context.caller);
         const body = {
           model: this.model,
+          // Pin the standard tier so project-level Priority Processing cannot
+          // silently change the pricing contract used by the local ledger.
+          service_tier: "default" as const,
           input: [
             { role: "system" as const, content: this.systemPrompt(context) },
             { role: "user" as const, content: userPrompt(prompt) },
@@ -709,7 +716,8 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
             effort: outputLimitRecoveryTriggered ? "medium" : requestedEffort,
           },
           store: false,
-          max_output_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_output_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           ...promptCacheFields(this.config, this.model, cacheKey),
         };
         if (this.shouldStreamTokens(context)) {

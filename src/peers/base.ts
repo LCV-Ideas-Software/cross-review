@@ -569,7 +569,7 @@ export abstract class BasePeerAdapter {
       '{ "satisfied": <true|false>, "confidence": "<verified|inferred|unknown>", "rationale": "<one or two sentences>" }',
       "",
       "Rules:",
-      '- "satisfied": true ONLY if the draft contains concrete evidence that answers the ask (file:line, grep output, diff, MD5, log line, etc.).',
+      '- "satisfied": true ONLY if the draft contains concrete evidence that answers the ask (file:line, grep output, diff, SHA-256, log line, etc.).',
       '- "confidence": "verified" ONLY if you traced the evidence in the draft itself; "inferred" if plausible but you could not directly trace it; "unknown" if you cannot tell.',
       "- The runtime promotes the ask to addressed only when satisfied=true AND confidence=verified. Anything else leaves the ask open.",
       '- "rationale": brief, verbatim citation if possible (e.g. "Draft includes the literal `git diff --stat` output requested by the ask").',

@@ -782,3 +782,16 @@ recebeu **aprovação de mérito unânime** dos 4 peers votantes (codex, gemini,
 todos READY, "No blocking objections remain", com evidência corroborada), com o relator grok
 não-votante. O outcome oficial `aborted` reflete defeitos do servidor (DEF-5/DEF-6), não o veredito
 técnico dos peers.
+
+## 7. Continuação da auditoria — sessões 4.5.16/4.5.17 e remediação 4.5.18
+
+A auditoria integral das sessões posteriores à publicação da 4.5.16, incluindo
+o inventário das cinco sessões encontradas, os defeitos DEF-17 a DEF-25, a
+revalidação oficial das seis APIs, as regressões TDD e o plano de release
+4.5.18, está registrada em
+[2026-07-17-cross-review-4.5.16-4.5.17-session-audit.md](./2026-07-17-cross-review-4.5.16-4.5.17-session-audit.md).
+
+Não havia sessão 4.5.17 no corpus. A única sessão convergida do período
+comprovou operação sem upload ou finalização humana; os defeitos residuais
+concentravam-se em grounding de vetos, durabilidade pré-barreira/preflight,
+gasto e telemetria dos judges e relatório operacional.

@@ -207,10 +207,14 @@ operator decision, not a peer-requested workaround.
 
 ## Outcome when it trips
 
-- the session remains open with blocked convergence health so the authenticated
-  caller can resubmit corrected inline or structured evidence;
-- the corrected submission becomes the active snapshot without requiring an
-  operator to attach, approve, delete or rewrite prior evidence;
+- `run_until_unanimous`/`session_start_unanimous` persist the caller draft and
+  active evidence snapshot before the gate, then finalize the rejected loop as
+  `outcome="aborted"` and `outcome_reason="needs_evidence_preflight"` instead
+  of leaving a zero-round session stale-open;
+- direct `ask_peers` records a local rejected round and leaves that explicitly
+  iterative session open for the caller's corrected next round;
+- in either route, the authenticated caller can correct the material without
+  requiring an operator to attach, approve, delete or rewrite evidence;
 - event emitted: `session.evidence_preflight_failed` with
   `completed_work_claim_matched`, `evidence_marker_found`,
   `structured_evidence_supplied`, `attachments_present`, and
@@ -218,7 +222,9 @@ operator decision, not a peer-requested workaround.
 - **zero paid peer calls** were made.
 
 Re-submit value-corresponding raw evidence inline or through `evidence` using
-the same authenticated peer. No operator intervention is required.
+the same authenticated peer. A loop starter creates a corrected durable
+session; a direct session can accept its corrected next round. No operator
+intervention is required.
 
 ## Truthfulness preflight (v4.2.x)
 
@@ -247,9 +253,13 @@ A submission with no completed-work claim is authority-neutral. It may pass as
 a design review, but receives `evidence_authority="none"`; absence of a claim or
 evidence is never labeled `operator_verified`.
 
-When it trips on caller input, the session remains blocked and open for a
-corrected authenticated submission. Unsafe lead-generated output may still
-abort the automated loop. The event
+When it trips on caller input, an automated unanimous loop preserves the
+rejected draft and evidence, then finalizes the session with
+`outcome="aborted"` and
+`outcome_reason="needs_truthfulness_preflight"`. Direct `ask_peers` records the
+local rejection and remains available for a corrected next round. In either
+case the authenticated caller can submit corrected material without operator
+action. Unsafe lead-generated output also aborts the automated loop. The event
 `session.truthfulness_preflight_failed` includes:
 
 - `issue_classes` — one or more of `runtime_contradiction`,
@@ -260,6 +270,44 @@ abort the automated loop. The event
   whether evidence and live runtime facts were visible to the local gate;
 - `contradictions` and `unsupported_claims` with the concrete text that blocked
   the session.
+
+## Automatic evidence judges
+
+The optional Evidence Broker judge can run automatically after review rounds;
+normal operation never requires a human to invoke a judge tool or upload an
+attachment. Configure it centrally with:
+
+```json
+{
+  "evidence_judge_autowire": {
+    "mode": "off",
+    "peer": "codex",
+    "consensus_peers": ["codex", "claude", "gemini"],
+    "max_items_per_pass": 4,
+    "max_output_tokens": 2048,
+    "reasoning_effort": "medium"
+  }
+}
+```
+
+The equivalent host environment overrides are
+`CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS` and
+`CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT`. Explicit environment values
+take precedence over the central JSON fields. At the environment layer, an
+invalid or sub-256 output cap falls back to `2048`, and an invalid effort falls
+back to `medium`. Central JSON is strict: an out-of-contract field rejects the
+file atomically instead of falling back silently.
+
+`off` is the safe default. `shadow` records decisions without mutating the
+checklist; `active` may apply a qualifying decision. The author of an ask is
+excluded from judging that item. The output cap is independent of the regular
+peer cap and must be at least 256 tokens. Budget preflight includes the paid
+review round already in flight before it dispatches any judge. The judge effort
+is deliberately independent from the reviewers' global `max` setting so a
+compact classification does not spend its output allowance on excessive
+reasoning. If any in-flight attempt is unpriced, the judge fails closed instead
+of treating the unknown amount as zero. Newly created asks are not sent to paid
+judges until a later submission could actually contain responsive evidence.
 
 From v4.2.4, preflight blocks that happen before a peer round is appended are
 also visible in `meta.failed_attempts` with `failure_class =

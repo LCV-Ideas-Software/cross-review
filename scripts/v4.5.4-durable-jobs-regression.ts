@@ -97,6 +97,13 @@ function seedPersistedGenerationDispatch(
   fs.writeFileSync(store.metaPath(targetSessionId), JSON.stringify(meta), "utf8");
 }
 
+function seedDeadInFlightOwner(store: SessionStore, targetSessionId: string): void {
+  const meta = store.read(targetSessionId);
+  if (!meta.in_flight) throw new Error("fixture requires an in-flight round");
+  meta.in_flight.owner_pid = 2_147_483_647;
+  fs.writeFileSync(store.metaPath(targetSessionId), JSON.stringify(meta), "utf8");
+}
+
 const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
   {
     name: "durable-in-flight-is-active-without-a-process-local-job",
@@ -496,6 +503,132 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     },
   },
   {
+    name: "stale-in-flight-sweep-never-steals-a-live-pending-provider-reservation",
+    run: async () => {
+      const dataDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "cross-review-v454-live-reservation-sweep-"),
+      );
+      try {
+        const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const session = await store.init("live evidence judge stale timestamp", "operator", []);
+        await store.markInFlight(session.session_id, {
+          round: 1,
+          peers: ["claude"],
+          started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+          scope: {
+            petitioner: "operator",
+            caller: "operator",
+            acting_peer: "operator",
+            caller_status: "READY",
+            expected_peers: ["claude"],
+            reviewer_peers: ["claude"],
+          },
+        });
+        await store.reservePendingProviderCall(session.session_id, {
+          peer: "claude",
+          provider: "anthropic",
+          model: "claude-fable-5",
+          label: "evidence_judge/single",
+          round: 1,
+          call_kind: "evidence_judge",
+        });
+
+        const result = await store.clearStaleInFlight();
+        const meta = store.read(session.session_id);
+        assert.equal(
+          result.cleared,
+          0,
+          "a live reserved provider call must keep the enclosing round durable",
+        );
+        assert.ok(meta.in_flight);
+        assert.equal(meta.pending_provider_call_reservations?.length, 1);
+        assert.equal(meta.failed_attempts?.length ?? 0, 0);
+      } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "stale-in-flight-sweep-never-steals-a-live-direct-review-owner",
+    run: async () => {
+      const dataDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "cross-review-v454-live-primary-sweep-"),
+      );
+      try {
+        const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const session = await store.init("live primary review stale timestamp", "operator", []);
+        await store.markInFlight(session.session_id, {
+          round: 1,
+          peers: ["claude"],
+          started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+          scope: {
+            petitioner: "operator",
+            caller: "operator",
+            acting_peer: "operator",
+            caller_status: "READY",
+            expected_peers: ["claude"],
+            reviewer_peers: ["claude"],
+          },
+        });
+
+        const recovered = await store.recoverInterruptedSessions(new Set());
+        assert.deepEqual(recovered, [], "a live direct review owner must not be recovered");
+        const result = await store.clearStaleInFlight();
+        const meta = store.read(session.session_id);
+        assert.equal(result.cleared, 0, "a live direct review owner must keep its round durable");
+        assert.ok(meta.in_flight);
+        assert.equal(meta.failed_attempts?.length ?? 0, 0);
+      } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "stale-in-flight-sweep-never-steals-a-live-format-recovery-reservation",
+    run: async () => {
+      const dataDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "cross-review-v454-live-format-sweep-"),
+      );
+      try {
+        const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const session = await store.init("live format recovery stale timestamp", "operator", []);
+        await store.markInFlight(session.session_id, {
+          round: 1,
+          peers: ["claude"],
+          started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+          scope: {
+            petitioner: "operator",
+            caller: "operator",
+            acting_peer: "operator",
+            caller_status: "READY",
+            expected_peers: ["claude"],
+            reviewer_peers: ["claude"],
+          },
+        });
+        await store.reserveInFlightProviderCall(session.session_id, 1, {
+          peer: "claude",
+          provider: "anthropic",
+          model: "claude-fable-5",
+          label: "format-recovery",
+        });
+        const beforeSweep = store.read(session.session_id);
+        if (!beforeSweep.in_flight) throw new Error("fixture requires an in-flight round");
+        delete beforeSweep.in_flight.owner_pid;
+        assert.equal(beforeSweep.in_flight.provider_call_reservations?.[0]?.owner_pid, process.pid);
+        fs.writeFileSync(store.metaPath(session.session_id), JSON.stringify(beforeSweep), "utf8");
+
+        const result = await store.clearStaleInFlight();
+        const meta = store.read(session.session_id);
+        assert.equal(result.cleared, 0, "a live format recovery must keep its round durable");
+        assert.ok(meta.in_flight);
+        assert.equal(meta.in_flight?.provider_call_reservations?.length, 1);
+        assert.equal(meta.failed_attempts?.length ?? 0, 0);
+      } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
     name: "poll-can-synthesize-remote-in-flight-job-state",
     run: () => {
       assert.equal(typeof api.synthesizeDurableJob, "function");
@@ -593,6 +726,10 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
             reviewer_peers: ["claude", "gemini"],
           },
         });
+        const legacy = store.read(session.session_id);
+        if (!legacy.in_flight) throw new Error("fixture requires an in-flight round");
+        delete legacy.in_flight.owner_pid;
+        fs.writeFileSync(store.metaPath(session.session_id), JSON.stringify(legacy), "utf8");
         await store.recoverInterruptedSessions(new Set());
         const meta = store.read(session.session_id);
         assert.equal(meta.in_flight, undefined);
@@ -628,6 +765,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
             reviewer_peers: ["claude", "gemini"],
           },
         });
+        seedDeadInFlightOwner(store, session.session_id);
         const result = await store.clearStaleInFlight();
         assert.equal(result.cleared, 1);
         const meta = store.read(session.session_id);

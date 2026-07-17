@@ -373,7 +373,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               }
             : {}),
           store: false,
-          max_output_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_output_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,
@@ -520,7 +521,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               }
             : {}),
           store: false,
-          max_output_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_output_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,

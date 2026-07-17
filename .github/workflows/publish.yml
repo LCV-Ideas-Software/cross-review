@@ -3,15 +3,10 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag/ref to publish, for example v02.03.00"
-        required: false
-        default: ""
 permissions:
   contents: read
 concurrency:
-  group: publish-${{ github.event.inputs.tag || github.ref_name }}
+  group: publish-${{ github.ref_name }}
   cancel-in-progress: false
 env:
   # Pin the npm release toolchain so the gate exercises npm v12 install-time defaults.
@@ -21,10 +16,15 @@ jobs:
   gate:
     name: Pre-publish gate (test + metadata)
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: read
     outputs:
       name: ${{ steps.meta.outputs.name }}
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.hardgate.outputs.sha }}
       display_tag: ${{ steps.meta.outputs.display_tag }}
       dist_tag: ${{ steps.meta.outputs.dist_tag }}
     steps:
@@ -35,9 +35,24 @@ jobs:
 
       - name: Validate publish ref
         env:
-          PUBLISH_REF: ${{ github.event.inputs.tag || github.ref_name }}
+          PUBLISH_REF: ${{ github.ref_name }}
+          PUBLISH_EVENT_REF: ${{ github.ref }}
+          PUBLISH_REF_TYPE: ${{ github.ref_type }}
+          PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          if [ "$PUBLISH_REF_TYPE" != "tag" ]; then
+            echo "::error::Publish must be triggered on a tag ref, got type '$PUBLISH_REF_TYPE'."
+            exit 1
+          fi
+          if [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ]; then
+            echo "::error::Publish event ref '$PUBLISH_EVENT_REF' does not match short tag '$PUBLISH_REF'."
+            exit 1
+          fi
+          if [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
+            echo "::error::Publish tag '$PUBLISH_REF' is not protected by a GitHub ruleset or tag protection rule."
+            exit 1
+          fi
           if [[ ! "$PUBLISH_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Publish ref must be a version tag (for example v02.03.00), got '$PUBLISH_REF'."
             exit 1
@@ -46,11 +61,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
           fetch-depth: 0
       - name: Verify checked out tag identity
         env:
-          PUBLISH_REF: ${{ github.event.inputs.tag || github.ref_name }}
+          PUBLISH_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if ! git show-ref --verify --quiet "refs/tags/$PUBLISH_REF"; then
@@ -64,6 +79,176 @@ jobs:
             exit 1
           fi
           echo "Verified tag $PUBLISH_REF at $TAG_SHA."
+      - name: Revalidate tag SHA against current main and all required workflows
+        id: prerequisite_gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
+          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
+            echo "::error::Tag $PUBLISH_REF points to $TAG_SHA, but current main is $MAIN_SHA."
+            exit 1
+          fi
+
+          changed_files="$(git diff-tree --no-commit-id --name-only -r "$TAG_SHA")"
+          required_workflows=("CI" "CodeQL" "Socket Security")
+          scorecard_required=false
+          if grep -Eq '^(\.github/workflows/|\.github/dependabot\.yml$|socketsecurity-requirements\.txt$|SECURITY\.md$)' <<<"$changed_files"; then
+            required_workflows+=("OpenSSF Scorecard")
+            scorecard_required=true
+          fi
+          if grep -Eq '^(\.github/workflows/pages\.yml$|site/)' <<<"$changed_files"; then
+            required_workflows+=("Pages")
+          fi
+
+          # Do not trust the workflow that created or supplied the tag. Query
+          # every branch-push workflow required by the tagged main commit.
+          runs_json="[]"
+          for attempt in {1..60}; do
+            remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+            if [ "$remote_main_sha" != "$TAG_SHA" ]; then
+              echo "::error::main advanced to ${remote_main_sha:-missing} while the publish gate was waiting; refusing stale tag $PUBLISH_REF."
+              exit 1
+            fi
+
+            runs_json="$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$TAG_SHA" --event push --limit 100 --json databaseId,workflowName,name,status,conclusion,url)"
+            all_ready=true
+            for workflow_name in "${required_workflows[@]}"; do
+              workflow_state="$(jq -r --arg workflow "$workflow_name" '
+                [.[] | select(.workflowName == $workflow)]
+                | sort_by(.databaseId)
+                | last
+                | if . == null then "missing" else "\(.status):\(.conclusion // "")" end
+              ' <<<"$runs_json")"
+              if [ "$workflow_state" = "completed:success" ]; then
+                continue
+              fi
+              if [[ "$workflow_state" == completed:* ]]; then
+                echo "::error::$workflow_name finished as $workflow_state for $TAG_SHA; refusing publication."
+                jq -r --arg workflow "$workflow_name" '.[] | select(.workflowName == $workflow) | [.databaseId, .name, .status, .conclusion, .url] | @tsv' <<<"$runs_json"
+                exit 1
+              fi
+              all_ready=false
+              echo "Waiting for $workflow_name on $TAG_SHA (state: $workflow_state)."
+            done
+
+            if [ "$all_ready" = true ]; then
+              echo "All applicable push workflows completed successfully for $TAG_SHA: ${required_workflows[*]}."
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "::error::Not all applicable workflows completed successfully for $TAG_SHA."
+              exit 1
+            fi
+            sleep 5
+          done
+
+          # A dependabot.yml push starts four independent ecosystem update
+          # jobs. They are not ordinary push workflows, but they are still a
+          # required consequence of that release commit.
+          if grep -Fxq ".github/dependabot.yml" <<<"$changed_files"; then
+            for attempt in {1..60}; do
+              remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+              if [ "$remote_main_sha" != "$TAG_SHA" ]; then
+                echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for Dependabot; refusing stale tag $PUBLISH_REF."
+                exit 1
+              fi
+              dependabot_json="$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$TAG_SHA" --limit 100 --json databaseId,workflowName,name,status,conclusion,url --jq '[.[] | select(.workflowName == "Dependabot Updates")]')"
+              dependabot_count="$(jq 'length' <<<"$dependabot_json")"
+              if [ "$dependabot_count" -ge 4 ] && jq -e 'all(.[]; .status == "completed")' <<<"$dependabot_json" >/dev/null; then
+                if ! jq -e 'all(.[]; .conclusion == "success")' <<<"$dependabot_json" >/dev/null; then
+                  echo "::error::One or more Dependabot update jobs failed for $TAG_SHA; refusing publication."
+                  jq -r '.[] | [.databaseId, .name, .status, .conclusion, .url] | @tsv' <<<"$dependabot_json"
+                  exit 1
+                fi
+                echo "All ${dependabot_count} Dependabot update jobs completed successfully for $TAG_SHA."
+                break
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                echo "::error::Dependabot did not produce and complete all four ecosystem jobs for $TAG_SHA."
+                exit 1
+              fi
+              echo "Waiting for four successful Dependabot update jobs on $TAG_SHA (${attempt}/60; observed: ${dependabot_count})."
+              sleep 5
+            done
+          fi
+
+          # A successful CodeQL workflow only proves upload completion. Wait
+          # for both configured analyses for this exact SHA, then bracket the
+          # moving-main alert query so a mixed security snapshot cannot pass.
+          for attempt in {1..12}; do
+            remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+            if [ "$remote_main_sha" != "$TAG_SHA" ]; then
+              echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for CodeQL analyses."
+              exit 1
+            fi
+            processed_categories="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?ref=refs/heads/main&per_page=100" --jq '.[] | .commit_sha + " " + .category' | grep -F "$TAG_SHA " || true)"
+            if grep -Fq "/language:actions" <<<"$processed_categories" && grep -Fq "/language:javascript-typescript" <<<"$processed_categories"; then
+              echo "Both CodeQL categories are processed for $TAG_SHA."
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "::error::CodeQL analyses were not visible for both categories on $TAG_SHA."
+              exit 1
+            fi
+            echo "Waiting for processed CodeQL analyses on $TAG_SHA ($attempt/12)."
+            sleep 5
+          done
+
+          # Scorecard uploads three independent SARIF categories. Its workflow
+          # can finish before all of them are processed, so wait for all three
+          # categories for this exact release SHA before querying alerts.
+          if [ "$scorecard_required" = true ]; then
+            for attempt in {1..12}; do
+              remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+              if [ "$remote_main_sha" != "$TAG_SHA" ]; then
+                echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for Scorecard SARIF analyses."
+                exit 1
+              fi
+              processed_scorecard_categories="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?ref=refs/heads/main&per_page=100" --jq '.[] | .commit_sha + " " + .category' | grep -F "$TAG_SHA " || true)"
+              if grep -Fq "supply-chain/local" <<<"$processed_scorecard_categories" && \
+                grep -Fq "supply-chain/online-scm" <<<"$processed_scorecard_categories" && \
+                grep -Fq "supply-chain/branch-protection" <<<"$processed_scorecard_categories"; then
+                echo "All three OpenSSF Scorecard SARIF categories are processed for $TAG_SHA."
+                break
+              fi
+              if [ "$attempt" -eq 12 ]; then
+                echo "::error::OpenSSF Scorecard SARIF analyses were not visible for supply-chain/local, supply-chain/online-scm, and supply-chain/branch-protection on $TAG_SHA."
+                exit 1
+              fi
+              echo "Waiting for all three processed OpenSSF Scorecard SARIF categories on $TAG_SHA ($attempt/12)."
+              sleep 5
+            done
+          fi
+
+          alert_main_before="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$alert_main_before" != "$TAG_SHA" ]; then
+            echo "::error::main advanced to ${alert_main_before:-missing} before the code-scanning alert query."
+            exit 1
+          fi
+          open_alerts="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100" --jq '.[].number')"
+          alert_main_after="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$alert_main_after" != "$TAG_SHA" ]; then
+            echo "::error::main advanced to ${alert_main_after:-missing} during the code-scanning alert query."
+            exit 1
+          fi
+          if [ -n "$open_alerts" ]; then
+            echo "::error::Open code-scanning alert(s) block publication: $(echo "$open_alerts" | tr '\n' ' ')"
+            exit 1
+          fi
+          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
+          final_tag_sha="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          final_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$final_tag_sha" != "$TAG_SHA" ] || [ "$final_main_sha" != "$TAG_SHA" ]; then
+            echo "::error::Release identity changed while the hard gate was running (tag=$final_tag_sha main=${final_main_sha:-missing}, expected=$TAG_SHA)."
+            exit 1
+          fi
+          echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
+          echo "Independent release gate passed for $PUBLISH_REF at $TAG_SHA with zero open code-scanning alerts."
       - name: Setup Node.js 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -87,11 +272,32 @@ jobs:
           # v2.4.0 / P1.1 fail-fast: stub activation requires explicit
           # confirmation. The smoke harness is a legitimate stub consumer.
           CROSS_REVIEW_STUB_CONFIRMED: "1"
+      - name: Revalidate protected release identity after local validation
+        id: hardgate
+        env:
+          PUBLISH_REF: ${{ github.ref_name }}
+          PUBLISH_EVENT_REF: ${{ github.ref }}
+          PUBLISH_REF_TYPE: ${{ github.ref_type }}
+          PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH_REF_TYPE" != "tag" ] || [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ] || [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
+            echo "::error::Protected tag trigger identity changed or is invalid after local validation."
+            exit 1
+          fi
+          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
+          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$TAG_SHA" != "$CHECKED_OUT_SHA" ] || [ "$TAG_SHA" != "$MAIN_SHA" ]; then
+            echo "::error::Release identity changed after local validation (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
+            exit 1
+          fi
+          echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
+          echo "Protected release identity remains $PUBLISH_REF at $TAG_SHA."
       - name: Resolve release metadata
         id: meta
         shell: bash
-        env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
@@ -100,13 +306,11 @@ jobs:
           if [[ "$VERSION" == *-* ]]; then
             DISPLAY_TAG="${DISPLAY_TAG}-${VERSION#*-}"
           fi
-          TAG="$INPUT_TAG"
-          if [ -z "$TAG" ] && [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            echo "::error::Release metadata must be resolved from a tag ref, got '$GITHUB_REF'."
+            exit 1
           fi
-          if [ -z "$TAG" ]; then
-            TAG="$DISPLAY_TAG"
-          fi
+          TAG="${GITHUB_REF#refs/tags/}"
           if [ "$TAG" != "$DISPLAY_TAG" ]; then
             echo "::error::Publish tag '$TAG' does not match package.json version '$VERSION' (expected '$DISPLAY_TAG')."
             exit 1
@@ -141,7 +345,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
       - name: Setup Node.js 24 for npmjs
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -182,6 +387,21 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is not published on npmjs.com yet."
           fi
+      - name: Revalidate release tag identity before npmjs publication
+        env:
+          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
+          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
+          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ] || [ "$MAIN_SHA" != "$VERIFIED_SHA" ]; then
+            echo "::error::Release identity no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
+            exit 1
+          fi
+          echo "Revalidated release tag $PUBLISH_REF at immutable commit $VERIFIED_SHA."
       - name: Publish (public, with provenance)
         if: steps.npmjs-version.outputs.exists != 'true'
         env:
@@ -216,7 +436,35 @@ jobs:
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          EXPECTED_GIT_SHA: ${{ needs.gate.outputs.sha }}
+          EXPECTED_GIT_TAG: refs/tags/${{ needs.gate.outputs.tag }}
+          EXPECTED_GIT_REPOSITORY: https://github.com/LCV-Ideas-Software/cross-review
+          EXPECTED_GITHUB_WORKFLOW_PATH: .github/workflows/publish.yml
         run: npm --registry=https://registry.npmjs.org run release:verify-registry
+      - name: Cryptographically audit npm registry signatures and provenance
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+          PACKAGE_NAME: ${{ needs.gate.outputs.name }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          audit_dir="$(mktemp -d)"
+          trap 'rm -rf "$audit_dir"' EXIT
+          cd "$audit_dir"
+          npm --registry=https://registry.npmjs.org init --yes >/dev/null
+          npm --registry=https://registry.npmjs.org install --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none "${PACKAGE_NAME}@${PACKAGE_VERSION}"
+          for attempt in {1..12}; do
+            if npm --registry=https://registry.npmjs.org audit signatures; then
+              echo "Registry signatures and provenance verified for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+              exit 0
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "::error::Registry signature/provenance audit failed for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+              exit 1
+            fi
+            echo "Signature/provenance audit attempt ${attempt}/12 failed; retrying after registry propagation."
+            sleep 10
+          done
     timeout-minutes: 60
   publish-gh-packages:
     name: Publish to GitHub Packages
@@ -235,7 +483,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
       - name: Setup Node.js 24 for GitHub Packages
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -285,6 +534,21 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is not published on GitHub Packages yet."
           fi
+      - name: Revalidate release tag identity before GitHub Packages publication
+        env:
+          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
+          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
+          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ] || [ "$MAIN_SHA" != "$VERIFIED_SHA" ]; then
+            echo "::error::Release identity no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
+            exit 1
+          fi
+          echo "Revalidated release tag $PUBLISH_REF at immutable commit $VERIFIED_SHA."
       - name: Publish (public, with provenance)
         if: steps.gh-packages-version.outputs.exists != 'true'
         env:
@@ -307,7 +571,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
       - name: Setup Node.js 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -365,6 +629,21 @@ jobs:
             echo "$NOTES"
             echo "RELEASE_NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
+      - name: Revalidate release tag identity before creating GitHub Release
+        env:
+          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
+          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
+          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
+          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ] || [ "$MAIN_SHA" != "$VERIFIED_SHA" ]; then
+            echo "::error::Release identity no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
+            exit 1
+          fi
+          echo "Revalidated release tag $PUBLISH_REF at immutable commit $VERIFIED_SHA."
       - name: Create or update release (idempotent)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

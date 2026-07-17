@@ -7,7 +7,8 @@ name: Auto-tag on version bump
 # The tag is created only after the CI workflow has completed successfully for
 # a push to main. GitHub does not start a second workflow from a tag push
 # created with GITHUB_TOKEN, so this workflow explicitly dispatches publish.yml
-# on the tag ref. The npm-production environment allows v* tag refs, not main.
+# *on that tag ref*. Publish accepts no tag input and validates github.ref,
+# github.ref_type, and github.ref_protected before it can write externally.
 on:
   workflow_run:
     workflows: [CI]
@@ -252,6 +253,6 @@ jobs:
             echo "Waiting for tag ${TAG} to become visible on origin (${attempt}/10)."
             sleep 2
           done
-          gh workflow run publish.yml --ref "${TAG}" -f tag="${TAG}"
-          echo "Dispatched publish.yml for ${TAG}; it will publish packages and create the GitHub Release."
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "${TAG}"
+          echo "Dispatched publish.yml on protected tag ref ${TAG}; it will publish packages and create the GitHub Release."
     timeout-minutes: 15

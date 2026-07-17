@@ -139,6 +139,8 @@ const EvidenceJudgeAutowireSchema = z
     peer: PeerSchema.optional(),
     consensus_peers: z.array(PeerSchema).optional(),
     max_items_per_pass: z.number().int().positive().optional(),
+    max_output_tokens: z.number().int().min(256).optional(),
+    reasoning_effort: ReasoningEffortValueSchema.optional(),
   })
   .strict()
   .optional();
@@ -418,6 +420,14 @@ export function flattenFileConfigToEnvMap(
     set(
       "CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS",
       config.evidence_judge_autowire.max_items_per_pass,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS",
+      config.evidence_judge_autowire.max_output_tokens,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT",
+      config.evidence_judge_autowire.reasoning_effort,
     );
   }
   if (config.cache) {

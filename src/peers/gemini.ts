@@ -376,7 +376,8 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           config: {
             responseMimeType: "application/json",
             responseJsonSchema: geminiStatusJsonSchema,
-            maxOutputTokens: maxOutputTokensForPeer(this.config, this.id),
+            maxOutputTokens:
+              context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
             thinkingConfig: geminiThinkingConfig(
               this.model,
               reviewClient.ThinkingLevel,
@@ -551,7 +552,8 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           model: this.model,
           contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt)}`,
           config: {
-            maxOutputTokens: maxOutputTokensForPeer(this.config, this.id),
+            maxOutputTokens:
+              context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
             thinkingConfig: geminiThinkingConfig(
               this.model,
               generateClient.ThinkingLevel,

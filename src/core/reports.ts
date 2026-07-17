@@ -19,6 +19,35 @@ function moneyAmountText(value: number): string {
   return `$${value.toFixed(6)}`;
 }
 
+function unsettledPrimaryPeerCallCount(session: SessionMeta): number {
+  const inFlight = session.in_flight;
+  if (!inFlight) return 0;
+  const settledPrimaryPeers = new Set(
+    (inFlight.provider_settlements ?? [])
+      .filter((settlement) => settlement.reservation_id === undefined)
+      .map((settlement) => settlement.peer),
+  );
+  return new Set(inFlight.peers.filter((peer) => !settledPrimaryPeers.has(peer))).size;
+}
+
+function providerAttemptRecorded(session: SessionMeta): boolean {
+  if (
+    session.rounds.some(
+      (round) => round.peers.length > 0 || round.rejected.some((failure) => failure.attempts > 0),
+    )
+  ) {
+    return true;
+  }
+  if ((session.in_flight?.provider_settlements?.length ?? 0) > 0) return true;
+  if ((session.in_flight?.provider_call_reservations?.length ?? 0) > 0) return true;
+  if ((session.pending_provider_call_reservations?.length ?? 0) > 0) return true;
+  if ((session.interrupted_provider_settlements?.length ?? 0) > 0) return true;
+  if (session.generation_in_flight) return true;
+  if (unsettledPrimaryPeerCallCount(session) > 0) return true;
+  if ((session.generation_files?.length ?? 0) > 0) return true;
+  return (session.failed_attempts ?? []).some((failure) => failure.attempts > 0);
+}
+
 export function sessionCostBreakdown(session: SessionMeta): {
   currency: string;
   total: number | null;
@@ -38,6 +67,37 @@ export function sessionCostBreakdown(session: SessionMeta): {
       unpricedFailedAttempts += peer.unpriced_attempts ?? 0;
       const value = peer.cost?.total_cost;
       if (value == null || !Number.isFinite(value)) continue;
+      peerSeen = true;
+      peerTotal += value;
+    }
+  }
+  const providerSettlements = [
+    ...(session.in_flight?.provider_settlements ?? []),
+    ...(session.interrupted_provider_settlements ?? []),
+  ];
+  const pendingProviderReservations = [
+    ...(session.in_flight?.provider_call_reservations ?? []),
+    ...(session.pending_provider_call_reservations ?? []),
+  ];
+  // Reservations, the generation marker, and primary peers without a
+  // settlement are written before dispatch and cleared atomically with
+  // settlement. Until then each represents a paid provider attempt with no
+  // durable billable result, so reports must fail closed rather than claim a
+  // reconciled zero or partial total.
+  const pendingProviderAttempts =
+    pendingProviderReservations.length +
+    (session.generation_in_flight ? 1 : 0) +
+    unsettledPrimaryPeerCallCount(session);
+  unpricedFailedAttempts += pendingProviderAttempts;
+  for (const settlement of providerSettlements) {
+    if (settlement.unpriced_attempts != null) {
+      unpricedFailedAttempts += settlement.unpriced_attempts;
+    } else if (settlement.billing_status === "unknown" && settlement.attempts > 0) {
+      unpricedFailedAttempts += settlement.attempts;
+    }
+    const value = settlement.cost?.total_cost;
+    if (value == null || !Number.isFinite(value)) continue;
+    if (settlement.kind === "result") {
       peerSeen = true;
       peerTotal += value;
     }
@@ -67,8 +127,23 @@ export function sessionCostBreakdown(session: SessionMeta): {
       failedAttemptTotal += value;
     }
   }
+  for (const settlement of providerSettlements) {
+    if (settlement.kind !== "failure") continue;
+    const value = settlement.cost?.total_cost;
+    if (value != null && Number.isFinite(value)) {
+      failedAttemptSeen = true;
+      failedAttemptTotal += value;
+    }
+  }
 
-  const total = session.totals.cost.total_cost ?? null;
+  // Accounting-v2 explicitly covers every provider path. When it contains no
+  // successful call, generation, or failed provider attempt, an absent stored
+  // total is an exact zero rather than unknown legacy history.
+  const total =
+    pendingProviderAttempts > 0
+      ? null
+      : (session.totals.cost.total_cost ??
+        (session.accounting_schema_version === 2 && !providerAttemptRecorded(session) ? 0 : null));
   const componentTotal = peerTotal + generationTotal + failedAttemptTotal;
   const reconciled =
     session.accounting_schema_version === 2 &&
@@ -224,6 +299,25 @@ function peerDecisionTraceLines(peer: PeerResult): string[] {
   return lines;
 }
 
+function peerRequestLines(peer: PeerResult): string[] {
+  const callerRequests = peer.structured?.caller_requests ?? [];
+  const followUps = peer.structured?.follow_ups ?? [];
+  const lines: string[] = [];
+  for (const request of callerRequests.slice(0, 20)) {
+    lines.push(`  - Caller request: ${request.replace(/\s+/g, " ").trim()}`);
+  }
+  if (callerRequests.length > 20) {
+    lines.push(`  - ... ${callerRequests.length - 20} additional caller request(s) omitted.`);
+  }
+  for (const followUp of followUps.slice(0, 20)) {
+    lines.push(`  - Follow-up: ${followUp.replace(/\s+/g, " ").trim()}`);
+  }
+  if (followUps.length > 20) {
+    lines.push(`  - ... ${followUps.length - 20} additional follow-up(s) omitted.`);
+  }
+  return lines;
+}
+
 export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent[] = []): string {
   const latestRound = session.rounds.at(-1);
   const lines = [
@@ -285,6 +379,7 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
       if (peer.parser_warnings.length) {
         lines.push(`  - Parser warnings: ${peer.parser_warnings.join("; ")}`);
       }
+      lines.push(...peerRequestLines(peer));
     }
     for (const failure of round.rejected) {
       lines.push(`- ${failure.peer}: FAILURE ${failure.failure_class} - ${failure.message}`);
@@ -295,6 +390,21 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
   lines.push(...evidenceChecklistLines(session));
   lines.push(...runtimeReclassificationLines(session));
   lines.push(...unresolvedEvidenceDispositionLines(session));
+
+  if (session.interrupted_provider_settlements?.length) {
+    lines.push("## Recovered Provider Settlements", "");
+    for (const settlement of session.interrupted_provider_settlements) {
+      const totalTokens = settlement.usage?.total_tokens ?? "-";
+      const totalCost =
+        settlement.cost?.total_cost == null
+          ? "unknown"
+          : `$${settlement.cost.total_cost.toFixed(6)} ${settlement.cost.currency}`;
+      lines.push(
+        `- interrupted round ${settlement.round} ${settlement.peer}/${settlement.kind}: ${settlement.artifact_path} (${totalTokens} tokens, ${totalCost})`,
+      );
+    }
+    lines.push("");
+  }
 
   if (session.generation_files?.length) {
     lines.push("## Generations", "");
@@ -312,8 +422,22 @@ export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent
   }
 
   if (events.length) {
+    const streamingEventCount = events.filter((event) => event.type === "peer.token.delta").length;
+    const timelineEvents = events.filter((event) => event.type !== "peer.token.delta");
+    const displayedEvents = timelineEvents.slice(-100);
+    const omittedTimelineEvents = timelineEvents.length - displayedEvents.length;
     lines.push("## Events", "");
-    for (const event of events.slice(-100)) {
+    if (streamingEventCount > 0) {
+      lines.push(
+        `- ${streamingEventCount} streaming token event(s) suppressed from the default timeline.`,
+      );
+    }
+    if (omittedTimelineEvents > 0) {
+      lines.push(
+        `- Timeline truncated: showing latest ${displayedEvents.length} of ${timelineEvents.length} non-streaming event(s); ${omittedTimelineEvents} older event(s) omitted.`,
+      );
+    }
+    for (const event of displayedEvents) {
       lines.push(
         `- ${event.seq}. ${event.ts ?? ""} ${event.type}${
           event.peer ? `/${event.peer}` : ""

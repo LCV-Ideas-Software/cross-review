@@ -185,7 +185,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "user", content: `${userPrompt(prompt)}\n\n${statusInstruction()}` },
           ],
           response_format: { type: "json_object" },
-          max_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
         // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.
@@ -315,7 +316,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "system", content: this.systemPrompt(context) },
             { role: "user", content: userPrompt(prompt) },
           ],
-          max_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
         // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.

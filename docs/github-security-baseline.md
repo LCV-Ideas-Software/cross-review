@@ -38,7 +38,14 @@ A successful CI run for a push to `main` may auto-create an
 organization-standard display tag such as `vXX.XX.XX` from `package.json`. The
 privileged auto-tag workflow uses the trusted default-branch event checkout,
 compares it with the successful run SHA and skips every repository-reading or
-publishing step on a mismatch. The verified tag then creates a normal GitHub Release and publishes
+publishing step on a mismatch. GitHub documents that a tag pushed with the
+repository `GITHUB_TOKEN` does not trigger a second workflow, so Auto-tag
+dispatches `publish.yml` on that actual tag ref with no tag input. Publish
+requires `github.ref_type=tag`, the canonical `refs/tags/<name>` ref and a
+protected tag, then checks tag = checkout = current `main` both after local
+validation and before each external write. The active `v*` tag ruleset has no
+bypass and blocks deletion and non-fast-forward update. The verified tag then
+creates a normal GitHub Release and publishes
 `@lcv-ideas-software/cross-review` to npmjs.com and GitHub Packages. The
 API-first package is separate from the archived CLI package
 `@lcv-ideas-software/cross-review-v1`.

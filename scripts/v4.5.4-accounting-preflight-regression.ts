@@ -798,6 +798,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         assert.equal(calls, 0);
         const meta = orchestrator.store.read(session.session_id);
         assert.equal(meta.outcome, "max-rounds");
+        assert.equal(meta.outcome_reason, "generation_budget_preflight");
         assert.equal(meta.failed_attempts?.[0]?.failure_class, "budget_preflight");
       } finally {
         AnthropicAdapter.prototype.generate = originalGenerate;

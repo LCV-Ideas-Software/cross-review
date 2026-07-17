@@ -17,6 +17,36 @@ const packageName = globalThis.process.env.PACKAGE_NAME || globalThis.process.en
 const packageVersion =
   globalThis.process.env.PACKAGE_VERSION || globalThis.process.env.npm_package_version;
 
+function requiredEnv(name) {
+  const value = globalThis.process.env[name];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${name} env var is required for fail-closed provenance verification.`);
+  }
+  return value;
+}
+
+// The registry's summary metadata proves only that an attestation was
+// advertised. Bind the full SLSA statement to the immutable release identity
+// that the publish gate approved before accepting it.
+const expectedGitSha = requiredEnv("EXPECTED_GIT_SHA");
+const expectedGitTag = requiredEnv("EXPECTED_GIT_TAG");
+const expectedGitRepository = requiredEnv("EXPECTED_GIT_REPOSITORY");
+const expectedGithubWorkflowPath = requiredEnv("EXPECTED_GITHUB_WORKFLOW_PATH");
+
+if (!/^[a-f0-9]{40}$/i.test(expectedGitSha)) {
+  throw new Error("EXPECTED_GIT_SHA must be a 40-character Git commit SHA.");
+}
+if (!expectedGitTag.startsWith("refs/tags/")) {
+  throw new Error("EXPECTED_GIT_TAG must be a fully qualified Git tag ref.");
+}
+if (!expectedGitRepository.startsWith("https://github.com/")) {
+  throw new Error("EXPECTED_GIT_REPOSITORY must be an HTTPS GitHub repository URL.");
+}
+if (!expectedGithubWorkflowPath.startsWith(".github/workflows/")) {
+  throw new Error("EXPECTED_GITHUB_WORKFLOW_PATH must name a repository workflow file.");
+}
+const expectedGitDependencyUri = `git+${expectedGitRepository}@${expectedGitTag}`;
+
 if (!packageName || typeof packageName !== "string") {
   throw new Error(
     "PACKAGE_NAME env var is required (or invoke via `npm run release:verify-registry` so npm injects npm_package_name).",
@@ -118,6 +148,47 @@ const sleep = (delayMs) =>
     globalThis.setTimeout(resolve, delayMs);
   });
 
+function expectedSlsaProvenance(document) {
+  if (!Array.isArray(document?.attestations)) {
+    throw new Error(`npm attestation document for ${spec} is missing an attestations array`);
+  }
+
+  const slsaAttestations = document.attestations.filter(
+    (attestation) => attestation?.predicateType === SLSA_PROVENANCE_PREDICATE,
+  );
+  if (slsaAttestations.length === 0) {
+    throw new Error(`npm attestation document for ${spec} is missing SLSA provenance v1`);
+  }
+
+  const workflowMatched = slsaAttestations.filter((attestation) => {
+    const workflow = attestation?.predicate?.buildDefinition?.externalParameters?.workflow;
+    return (
+      workflow?.ref === expectedGitTag &&
+      workflow?.repository === expectedGitRepository &&
+      workflow?.path === expectedGithubWorkflowPath
+    );
+  });
+  if (workflowMatched.length === 0) {
+    throw new Error(
+      `npm attestation document for ${spec} has no SLSA provenance from ${expectedGitRepository}/${expectedGithubWorkflowPath}@${expectedGitTag}`,
+    );
+  }
+
+  const expectedAttestation = workflowMatched.find((attestation) =>
+    attestation.predicate.buildDefinition.resolvedDependencies?.some(
+      (dependency) =>
+        dependency?.uri === expectedGitDependencyUri &&
+        dependency?.digest?.gitCommit === expectedGitSha,
+    ),
+  );
+  if (!expectedAttestation) {
+    throw new Error(
+      `npm attestation document for ${spec} has no SLSA provenance dependency ${expectedGitDependencyUri} at expected git commit ${expectedGitSha}`,
+    );
+  }
+  return expectedAttestation;
+}
+
 async function fetchAttestationDocument(url) {
   let lastError;
   for (let attempt = 1; attempt <= ATTESTATION_MAX_ATTEMPTS; attempt += 1) {
@@ -140,11 +211,7 @@ async function fetchAttestationDocument(url) {
     if (response?.ok) {
       try {
         const document = await response.json();
-        const hasSlsaProvenance = document.attestations?.some(
-          (attestation) => attestation?.predicateType === SLSA_PROVENANCE_PREDICATE,
-        );
-        if (hasSlsaProvenance) return document;
-        lastError = new Error(`npm attestation document for ${spec} is missing SLSA provenance v1`);
+        return { document, provenance: expectedSlsaProvenance(document) };
       } catch (error) {
         const wrapped = error instanceof Error ? error : new Error(String(error));
         lastError = new Error(
@@ -184,7 +251,8 @@ async function fetchAttestationDocument(url) {
   );
 }
 
-await fetchAttestationDocument(attestationUrl);
+const { provenance } = await fetchAttestationDocument(attestationUrl);
+const provenanceWorkflow = provenance.predicate.buildDefinition.externalParameters.workflow;
 
 globalThis.console.log(
   JSON.stringify(
@@ -195,6 +263,8 @@ globalThis.console.log(
       tarball: dist.tarball,
       attestationUrl,
       provenancePredicateType: attestations.provenance.predicateType,
+      provenanceGitCommit: expectedGitSha,
+      provenanceWorkflow,
     },
     null,
     2,

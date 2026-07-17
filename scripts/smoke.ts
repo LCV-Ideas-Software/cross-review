@@ -48,6 +48,16 @@ import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { StubAdapter } from "../src/peers/stub.js";
 import { redact, redactJsonValue } from "../src/security/redact.js";
 
+function persistDeadInFlightOwner(orchestrator: CrossReviewOrchestrator, sessionId: string): void {
+  const meta = orchestrator.store.read(sessionId);
+  if (!meta.in_flight) throw new Error("smoke fixture requires an in-flight round");
+  meta.in_flight.owner_pid = 2_147_483_647;
+  for (const reservation of meta.in_flight.provider_call_reservations ?? []) {
+    reservation.owner_pid = 2_147_483_647;
+  }
+  fs.writeFileSync(orchestrator.store.metaPath(sessionId), JSON.stringify(meta), "utf8");
+}
+
 process.env.CROSS_REVIEW_STUB = "1";
 // v2.4.0 / audit closure (P1.1): stub activation requires explicit
 // double-confirmation. The smoke suite is the canonical legitimate
@@ -300,22 +310,31 @@ assert.ok(
 );
 console.log("[smoke] persistence_redaction_boundary_test: PASS");
 
-const adapterExpectations: Array<{ file: string; field: string }> = [
+// Evidence judges may override the output cap for a single paid call. Every
+// provider must still retain the peer-specific configurable value as its
+// ordinary fallback; accept formatting differences without weakening that
+// source contract.
+const configurableOutputBudgetField = (wireField: string): RegExp =>
+  new RegExp(
+    `${wireField}:\\s*(?:context\\.max_output_tokens_override\\s*\\?\\?\\s*)?maxOutputTokensForPeer\\(this\\.config,\\s*this\\.id\\)`,
+  );
+
+const adapterExpectations: Array<{ file: string; field: string | RegExp }> = [
   {
     file: "src/peers/openai.ts",
-    field: "max_output_tokens: maxOutputTokensForPeer(this.config, this.id)",
+    field: configurableOutputBudgetField("max_output_tokens"),
   },
   { file: "src/peers/openai.ts", field: "response.output_text.delta" },
   {
     file: "src/peers/anthropic.ts",
-    field: "max_tokens: maxOutputTokensForPeer(this.config, this.id)",
+    field: configurableOutputBudgetField("max_tokens"),
   },
   { file: "src/peers/anthropic.ts", field: "thinking: anthropicThinking()" },
   { file: "src/peers/anthropic.ts", field: 'type: "adaptive"' },
   { file: "src/peers/anthropic.ts", field: "messages.stream" },
   {
     file: "src/peers/gemini.ts",
-    field: "maxOutputTokens: maxOutputTokensForPeer(this.config, this.id)",
+    field: configurableOutputBudgetField("maxOutputTokens"),
   },
   // v2.27.1: geminiThinkingConfig now takes the lazy-loaded ThinkingLevel
   // enum as a 2nd arg so the SDK module is not pulled at server boot.
@@ -327,7 +346,7 @@ const adapterExpectations: Array<{ file: string; field: string }> = [
   { file: "src/peers/gemini.ts", field: "generateContentStream" },
   {
     file: "src/peers/deepseek.ts",
-    field: "max_tokens: maxOutputTokensForPeer(this.config, this.id)",
+    field: configurableOutputBudgetField("max_tokens"),
   },
   { file: "src/peers/deepseek.ts", field: 'type: "enabled"' },
   { file: "src/peers/deepseek.ts", field: "reasoning_effort:" },
@@ -335,18 +354,19 @@ const adapterExpectations: Array<{ file: string; field: string }> = [
   { file: "src/peers/deepseek.ts", field: "stream: true" },
   {
     file: "src/peers/grok.ts",
-    field: "max_output_tokens: maxOutputTokensForPeer(this.config, this.id)",
+    field: configurableOutputBudgetField("max_output_tokens"),
   },
   {
     file: "src/peers/perplexity.ts",
-    field: "max_tokens: maxOutputTokensForPeer(this.config, this.id)",
+    field: configurableOutputBudgetField("max_tokens"),
   },
   { file: "src/mcp/server.ts", field: "token_streaming: runtime.config.streaming.tokens" },
 ];
 
 for (const { file, field } of adapterExpectations) {
   const source = fs.readFileSync(file, "utf8");
-  assert.ok(source.includes(field), `${file} must use configurable ${field}`);
+  const configuredField = typeof field === "string" ? source.includes(field) : field.test(source);
+  assert.ok(configuredField, `${file} must use configurable ${field}`);
   assert.ok(!source.includes("4096"), `${file} must not keep the old 4096 output limit`);
   assert.ok(!source.includes("12000"), `${file} must not keep the temporary OpenAI limit`);
 }
@@ -1626,6 +1646,9 @@ await orchestrator.store.markInFlight(recoverySession.session_id, {
     reviewer_peers: ["codex"],
   },
 });
+// Recovery applies only after a process restart. Persist an impossible live
+// owner to model the process that started this round having died.
+persistDeadInFlightOwner(orchestrator, recoverySession.session_id);
 const recoveredInterrupted = await orchestrator.store.recoverInterruptedSessions();
 assert.equal(
   recoveredInterrupted.some((session) => session.session_id === recoverySession.session_id),
@@ -4353,22 +4376,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       caller: "operator",
       peers: ["claude", "codex"],
     });
-    const seedItemId = r1.session.evidence_checklist?.[0]?.id;
-    assert.ok(seedItemId, "R1 must produce 1 checklist item");
-    // R2 with FORCE_JUDGE_SATISFIED draft. The peer review path will see
-    // FORCE_NEEDS_EVIDENCE absent → claude returns READY → no NEEDS_EVIDENCE.
-    // Address detection promotes the R1 item to addressed (last_round=1 < 2).
-    // Then shadow judge fires on remaining open items; in this case there are
-    // none open after address detection promotes the lone seed item, so the
-    // pass exits with zero shadow_decisions but still emits started+completed.
-    // To force a shadow decision on a real open item, R2 must keep the same
-    // ask alive: send draft with both FORCE_NEEDS_EVIDENCE (peer raises ask
-    // again, blocks resurfacing-promotion) and FORCE_JUDGE_SATISFIED (judge
-    // says verified-satisfied). The shadow path then records would_promote.
+    const seedItemId = r1.session.evidence_checklist?.find((item) => item.peer === "claude")?.id;
+    assert.ok(seedItemId, "R1 must produce a Claude-owned checklist item");
+    // R2 intentionally does not reassert the ask. A reasserted ask has
+    // last_round === current round and must not trigger a paid judge call on
+    // the unchanged draft. The historical item becomes not_resurfaced, which
+    // remains eligible for a shadow decision without mutating its state.
     await orch.askPeers({
       session_id: r1.session.session_id,
       task: "Judge autowire SHADOW smoke",
-      draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
+      draft: "FORCE_JUDGE_SATISFIED",
       caller: "operator",
       peers: ["claude", "codex"],
     });
@@ -4383,15 +4400,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       shadowForSeed.length >= 1,
       `shadow_decision event must fire for seed item with would_promote=true (got ${shadowForSeed.length})`,
     );
-    // Item status MUST remain open (mutation suppressed in shadow mode).
+    // Shadow mode must not promote the historical item beyond the honest
+    // not_resurfaced state produced by address detection.
     const after = orch.store.read(r1.session.session_id);
     const persisted = after.evidence_checklist?.find((entry) => entry.id === seedItemId);
     assert.equal(
-      persisted?.status ?? "open",
-      "open",
+      persisted?.status,
+      "not_resurfaced",
       "shadow mode must NOT promote the item to addressed",
     );
-    assert.equal(persisted?.address_method, undefined, "shadow mode must NOT set address_method");
+    assert.equal(
+      persisted?.address_method,
+      "resurfacing",
+      "shadow mode must preserve the address-detection method",
+    );
     assert.equal(persisted?.judge_rationale, undefined, "shadow mode must NOT set judge_rationale");
     // session.evidence_judge_pass.started + completed both fire.
     assert.ok(events.includes("session.evidence_judge_pass.started"));
@@ -4903,7 +4925,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     await rollupOrch.askPeers({
       session_id: r1.session.session_id,
       task: "Shadow rollup smoke R2",
-      draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
+      draft: "FORCE_JUDGE_SATISFIED",
       caller: "operator",
       peers: ["claude", "codex"],
     });
@@ -5449,14 +5471,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       void holder.orch?.store.appendEvent(event);
     });
     holder.orch = prOrch;
-    // R1: produce a NEEDS_EVIDENCE ask. R2: ask resurfaces (so far ground
-    // truth = "resurfaced"). R3: judge fires shadow on the still-open
-    // item with FORCE_JUDGE_SATISFIED (would_promote=true), and R3 also
-    // resurfaces the ask via FORCE_NEEDS_EVIDENCE — but maxRound=R3 means
-    // we have NO subsequent round to observe whether the ask resurfaced
-    // AFTER the judge ran, so it goes to "no ground truth" bucket.
-    // Adjust: drive a 4th round with a clean draft so the ask is NOT
-    // resurfaced after the judge — that gives a TP classification.
+    // R1 creates the ask. R2 leaves it historical/not_resurfaced and judges
+    // it in shadow mode. R3 is the observation round: the ask remains absent
+    // after a would_promote decision, yielding a true-positive classification.
     const r1 = await prOrch.askPeers({
       task: "Precision report smoke",
       draft: "FORCE_NEEDS_EVIDENCE",
@@ -5467,7 +5484,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     await prOrch.askPeers({
       session_id: sessionId,
       task: "Precision report smoke",
-      draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
+      draft: "FORCE_JUDGE_SATISFIED",
       caller: "operator",
       peers: ["claude", "codex"],
     });
@@ -5549,22 +5566,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     });
     const seedItemId = r1.session.evidence_checklist?.[0]?.id;
     assert.ok(seedItemId, "R1 must produce 1 evidence checklist item");
-    // R2: FORCE_JUDGE_SATISFIED → judge says verified-satisfied.
-    // Active mode → markEvidenceItemAddressedByJudge promotes to
-    // status="addressed" with address_method="judge".
+    // R2 does not reassert the ask, so its historical not_resurfaced state is
+    // eligible for judgment. Active mode then promotes the verified-satisfied
+    // Claude-owned item to status="addressed" with address_method="judge".
     await acOrch.askPeers({
       session_id: r1.session.session_id,
       task: "Active mode autowire smoke",
-      draft: "FORCE_NEEDS_EVIDENCE FORCE_JUDGE_SATISFIED",
+      draft: "FORCE_JUDGE_SATISFIED",
       caller: "operator",
       peers: ["claude", "codex"],
     });
     const after = acOrch.store.read(r1.session.session_id);
     const persisted = after.evidence_checklist?.find((e) => e.id === seedItemId);
-    // The R2 item could have been auto-promoted by resurfacing-inference
-    // OR by the judge in active mode. Either way the status is addressed.
-    // To prove it was the JUDGE specifically (active mode mutation), we
-    // check that address_method === "judge" for at least one item.
+    // To prove active-mode judge mutation, require address_method === "judge"
+    // for at least one eligible item.
     const judgePromoted = (after.evidence_checklist ?? []).some(
       (item) => item.status === "addressed" && item.address_method === "judge",
     );
@@ -6693,6 +6708,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE",
     "CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER",
     "CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_CONSENSUS_PEERS",
+    "CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS",
+    "CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT",
   ];
   const restore: Record<string, string | undefined> = {};
   for (const k of KEYS_UNDER_TEST) {
@@ -6729,6 +6746,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         mode: "shadow" as const,
         peer: "codex",
         consensus_peers: ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"],
+        max_output_tokens: 1536,
+        reasoning_effort: "low" as const,
       },
     };
     const filePath = resolveConfigFilePath(tmpDir);
@@ -6744,6 +6763,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       assert.equal(process.env.CROSS_REVIEW_PEER_PERPLEXITY, "on");
       assert.equal(process.env.CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD, "4096");
       assert.equal(process.env.CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE, "shadow");
+      assert.equal(process.env.CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS, "1536");
+      assert.equal(process.env.CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT, "low");
+      const loaded = loadConfig();
+      assert.equal(loaded.evidence_judge_autowire.max_output_tokens, 1536);
+      assert.equal(loaded.evidence_judge_autowire.reasoning_effort, "low");
     }
     // (c) env override wins over file
     for (const k of KEYS_UNDER_TEST) delete process.env[k];
@@ -7706,14 +7730,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] clamp_effort_for_model_anti_drift_test: PASS");
 }
 
-// P2.4 anti-drift: consensus event payloads (active-mode
-// `evidence_checklist_addressed` + shadow-mode `shadow_decision`) emit
-// BOTH the legacy `judge_peer` (first ELIGIBLE independent peer,
-// backward-compat) AND the new `judge_peers` array + `per_peer_verdict`
-// map. Using the configured first peer after author-recusal would point
-// at a peer that never judged the item.
-// impossible to compute from the raw event stream. The 3 fields must
-// remain co-emitted at both event sites.
+// P2.4 anti-drift: consensus events preserve the legacy `judge_peer` only
+// for a real active-mode promotion. Shadow consensus is observational and
+// must never invent individual authorship; it emits the complete eligible
+// panel plus its per-peer verdict map instead.
 {
   const fsModule = await import("node:fs");
   const pathModule = await import("node:path");
@@ -7721,58 +7741,72 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     pathModule.resolve(process.cwd(), "src", "core", "orchestrator.ts"),
     "utf8",
   );
-  // (1) Source-level: legacy `judge_peer: primaryJudgePeer`
-  // appears at ≥2 sites (active addressed + shadow decision payloads).
+  // (1) The legacy scalar remains at the active persistence and event sites.
   const legacyCount = (orchSrc.match(/judge_peer:\s*primaryJudgePeer/g) || []).length;
   assert.ok(
     legacyCount >= 2,
-    `v4.5.4: legacy 'judge_peer: primaryJudgePeer' co-emitted at ≥2 event sites; found ${legacyCount}`,
+    `v4.5.18: legacy 'judge_peer: primaryJudgePeer' must remain at the active persistence and event sites; found ${legacyCount}`,
   );
-  // (2) Source-level: eligible `judge_peers` array
-  // emitted at ≥2 sites (the active addressed + shadow decision events).
+  // (2) The eligible judge panel is emitted for both active and shadow
+  // consensus events.
   const newArrayCount = (orchSrc.match(/judge_peers:\s*eligibleJudgePeers,/g) || []).length;
   assert.ok(
     newArrayCount >= 2,
     `v4.5.4: eligible 'judge_peers: eligibleJudgePeers' array emitted at ≥2 event sites; found ${newArrayCount}`,
   );
-  // (3) Source-level: `per_peer_verdict: perPeerVerdict` map at ≥2 sites.
+  // (3) The per-peer verdict map likewise reaches both event forms.
   const perPeerCount = (orchSrc.match(/per_peer_verdict:\s*perPeerVerdict/g) || []).length;
   assert.ok(
     perPeerCount >= 2,
     `v2.18.5 / P2.4: 'per_peer_verdict: perPeerVerdict' map emitted at ≥2 event sites; found ${perPeerCount}`,
   );
-  // (4) Co-emission inside event payloads. The legacy site
-  // `judge_peer: primaryJudgePeer` appears in event and persistence sites.
-  // inside `this.emit({ ... data: { ... judge_peer: ... } })` event
-  // payloads (active-mode evidence_checklist_addressed + shadow-mode
-  // shadow_decision); 1 is a function-call argument to
-  // `markEvidenceItemAddressedByJudge` which only accepts the legacy
-  // field for persistence — NOT an event, so the co-emission contract
-  // doesn't apply there. We split the source by `this.emit(` boundaries
-  // and check only the emit blocks containing the legacy site.
+  // (4) Inspect individual emit blocks. Active promotion co-emits the legacy
+  // scalar and rich panel; shadow consensus emits only rich panel data, so
+  // observers cannot mistake a synthetic first judge for an author.
   const emitBlocks = orchSrc.split(/this\.emit\(\{/);
-  // Drop the head (text before the first emit). For each remaining
-  // segment, the block content runs until the matching `\}\)\s*;` which
-  // closes the emit call. We pick a generous window and only inspect
-  // the head portion likely containing the payload.
-  let coEmitChecked = 0;
+  let activeCoEmitChecked = 0;
+  let shadowConsensusChecked = 0;
   for (const seg of emitBlocks.slice(1)) {
     const headWindow = seg.slice(0, 2000);
-    if (/judge_peer:\s*primaryJudgePeer/.test(headWindow)) {
-      coEmitChecked += 1;
+    if (
+      /type: "session\.evidence_checklist_addressed"/.test(headWindow) &&
+      /judge_peer:\s*primaryJudgePeer/.test(headWindow)
+    ) {
+      activeCoEmitChecked += 1;
       assert.ok(
         /judge_peers:\s*eligibleJudgePeers/.test(headWindow),
-        "v4.5.4: every primaryJudgePeer event also emits the eligible judge panel",
+        "v4.5.18: active consensus promotion must emit the eligible judge panel",
       );
       assert.ok(
         /per_peer_verdict:\s*perPeerVerdict/.test(headWindow),
-        "v4.5.4: every primaryJudgePeer event also emits per_peer_verdict",
+        "v4.5.18: active consensus promotion must emit per_peer_verdict",
+      );
+    }
+    if (
+      /type: "session\.evidence_judge_pass\.shadow_decision"/.test(headWindow) &&
+      /judge_peers:\s*eligibleJudgePeers/.test(headWindow) &&
+      /per_peer_verdict:\s*perPeerVerdict/.test(headWindow)
+    ) {
+      shadowConsensusChecked += 1;
+      assert.doesNotMatch(
+        headWindow,
+        /\bjudge_peer\s*:/,
+        "v4.5.18: shadow consensus must not invent an individual judge_peer",
+      );
+      assert.doesNotMatch(
+        headWindow,
+        /\n\s*peer\s*:/,
+        "v4.5.18: shadow consensus must not attribute the event to one judge",
       );
     }
   }
   assert.ok(
-    coEmitChecked >= 2,
-    `v2.18.5 / P2.4: at least 2 emit blocks contain the legacy judge_peer site (active addressed + shadow decision); checked ${coEmitChecked}`,
+    activeCoEmitChecked >= 1,
+    `v4.5.18: active consensus promotion must co-emit legacy and rich attribution; checked ${activeCoEmitChecked}`,
+  );
+  assert.ok(
+    shadowConsensusChecked >= 1,
+    `v4.5.18: shadow consensus must emit a panel-level attribution event; checked ${shadowConsensusChecked}`,
   );
   console.log("[smoke] consensus_event_per_peer_attribution_anti_drift_test: PASS");
 }

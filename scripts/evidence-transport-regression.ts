@@ -68,6 +68,16 @@ function regressionConfig(prefix: string) {
   };
 }
 
+function persistDeadInFlightOwner(orchestrator: CrossReviewOrchestrator, sessionId: string): void {
+  const meta = orchestrator.store.read(sessionId);
+  if (!meta.in_flight) throw new Error("fixture requires an in-flight round");
+  meta.in_flight.owner_pid = 2_147_483_647;
+  for (const reservation of meta.in_flight.provider_call_reservations ?? []) {
+    reservation.owner_pid = 2_147_483_647;
+  }
+  fs.writeFileSync(orchestrator.store.metaPath(sessionId), JSON.stringify(meta), "utf8");
+}
+
 type Regression = {
   name: string;
   run: () => void | Promise<void>;
@@ -1142,6 +1152,24 @@ const regressions: Regression[] = [
         "Review a design fixture without operational claims.",
         "operator",
       );
+      // The ask must belong to a completed historical round. Autowire must
+      // never spend a judge call on an ask raised by the round currently
+      // reviewing the same unchanged draft.
+      await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        prompt_file: "agent-runs/round-1-prompt.md",
+        peers: [],
+        rejected: [],
+        convergence: checkConvergence(["claude", "codex"], "READY", [], []),
+        convergence_scope: {
+          petitioner: "operator",
+          caller: "operator",
+          caller_status: "READY",
+          expected_peers: ["claude", "codex"],
+          reviewer_peers: ["claude", "codex"],
+        },
+        started_at: new Date().toISOString(),
+      });
       const initialChecklist = await orchestrator.store.appendEvidenceChecklistItems(
         session.session_id,
         1,
@@ -1310,6 +1338,10 @@ const regressions: Regression[] = [
         "not_resurfaced",
       );
 
+      // recoverInterruptedSessions models a new process after a crash. The
+      // active test process is deliberately marked dead so recovery does not
+      // steal a genuinely live round in production.
+      persistDeadInFlightOwner(orchestrator, session.session_id);
       await orchestrator.store.recoverInterruptedSessions();
       const recovered = orchestrator.store.read(session.session_id);
       assert.equal(recovered.in_flight, undefined);

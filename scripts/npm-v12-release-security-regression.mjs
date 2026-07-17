@@ -195,12 +195,140 @@ assert.equal(
 assert.match(
   publishWorkflow,
   /git show-ref --verify --quiet "refs\/tags\/\$PUBLISH_REF"/,
-  "manual publishing must verify that the requested ref is a real tag",
+  "tag-triggered publishing must verify that the requested ref is a real tag",
 );
+assert.match(
+  publishWorkflow,
+  /workflow_dispatch:/,
+  "auto-tag needs GitHub's documented workflow_dispatch exception because a GITHUB_TOKEN tag push does not start a second workflow",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /github\.event\.inputs\.tag/,
+  "publication must never let an input tag replace the dispatch event's actual ref",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /workflow_dispatch:\s*\r?\n\s+inputs:/,
+  "publication dispatch must not accept any ref-like input; github.ref is the sole release identity",
+);
+for (const triggerIdentityContract of [
+  "PUBLISH_REF: $" + "{{ github.ref_name }}",
+  "PUBLISH_REF_TYPE: $" + "{{ github.ref_type }}",
+  "PUBLISH_REF_PROTECTED: $" + "{{ github.ref_protected }}",
+  'if [ "$PUBLISH_REF_TYPE" != "tag" ]',
+  'if [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ]',
+  'if [ "$PUBLISH_REF_PROTECTED" != "true" ]',
+]) {
+  assert.ok(
+    publishWorkflow.includes(triggerIdentityContract),
+    `publish workflow must bind its trigger and protected tag identity: ${triggerIdentityContract}`,
+  );
+}
 assert.match(
   publishWorkflow,
   /TAG_SHA=.*refs\/tags\/\$PUBLISH_REF\^\{commit\}/,
   "publishing must verify that the tag commit equals the checked out commit",
+);
+assert.match(
+  publishWorkflow,
+  /gate:[\s\S]*?permissions:[\s\S]*?actions:\s*read[\s\S]*?security-events:\s*read/,
+  "the publish gate must be authorized to independently verify Actions and CodeQL state",
+);
+assert.match(
+  publishWorkflow,
+  /Revalidate tag SHA against current main and all required workflows/,
+  "publish.yml must independently reject a valid-looking tag that bypassed auto-tag",
+);
+assert.match(
+  publishWorkflow,
+  /sha:\s*\$\{\{\s*steps\.hardgate\.outputs\.sha\s*\}\}/,
+  "the verified release commit must be exported as an immutable gate output",
+);
+assert.ok(
+  (publishWorkflow.match(/ref:\s*\$\{\{\s*needs\.gate\.outputs\.sha\s*\}\}/g) ?? []).length >= 3,
+  "every downstream publish/release checkout must use the verified commit SHA, not a mutable tag name",
+);
+assert.match(
+  publishWorkflow,
+  /Revalidate release tag identity/,
+  "release jobs must revalidate that the public tag still names the verified commit",
+);
+assert.equal(
+  (publishWorkflow.match(/- name: Revalidate release tag identity before/g) ?? []).length,
+  3,
+  "both package publications and GitHub Release creation must revalidate the mutable tag immediately before their external write",
+);
+const downstreamRevalidationBlocks = [
+  ...publishWorkflow.matchAll(
+    /- name: Revalidate release tag identity before[^\n]*\n[\s\S]*?(?=\n\s+- name: (?:Publish|Create)|\n\s+timeout-minutes:)/g,
+  ),
+].map((match) => match[0]);
+assert.equal(
+  downstreamRevalidationBlocks.length,
+  3,
+  "every external-write job must retain one bounded tag/main revalidation block",
+);
+for (const block of downstreamRevalidationBlocks) {
+  assert.match(
+    block,
+    /MAIN_SHA="\$\(git ls-remote --heads origin "refs\/heads\/main" \| awk '\{print \$1\}'\)"/,
+    "a downstream release write must reject a main advancement after the gate",
+  );
+  assert.match(
+    block,
+    /\[ "\$MAIN_SHA" != "\$VERIFIED_SHA" \]/,
+    "a downstream release write must compare current main to the gate SHA",
+  );
+}
+assert.match(
+  publishWorkflow,
+  /Revalidate protected release identity after local validation[\s\S]*?echo "sha=\$TAG_SHA"/,
+  "the gate must revalidate protected tag/main identity after its own check and test steps",
+);
+for (const releasePrerequisite of [
+  'MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"',
+  'if [ "$TAG_SHA" != "$MAIN_SHA" ]',
+  '"CI"',
+  '"CodeQL"',
+  '"Socket Security"',
+  '"OpenSSF Scorecard"',
+  '"Pages"',
+  "code-scanning/analyses?ref=refs/heads/main&per_page=100",
+  "code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100",
+  "supply-chain/local",
+  "supply-chain/online-scm",
+  "supply-chain/branch-protection",
+]) {
+  assert.ok(
+    publishWorkflow.includes(releasePrerequisite),
+    `publish.yml must independently enforce release prerequisite: ${releasePrerequisite}`,
+  );
+}
+assert.match(
+  publishWorkflow,
+  /scorecard_required=true[\s\S]*?All three OpenSSF Scorecard SARIF categories are processed for \$TAG_SHA[\s\S]*?code-scanning\/alerts/,
+  "when Scorecard applies, all three of its processed SARIF categories must precede the alert query",
+);
+assert.match(
+  publishWorkflow,
+  /npm --registry=https:\/\/registry\.npmjs\.org audit signatures/,
+  "post-publish verification must cryptographically audit registry signatures and provenance",
+);
+assert.match(
+  publishWorkflow,
+  /npm --registry=https:\/\/registry\.npmjs\.org install --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}"/,
+  "signature audit must install the exact published package under npm v12 fail-closed dependency controls",
+);
+assert.match(
+  publishWorkflow,
+  /npm --registry=https:\/\/registry\.npmjs\.org init --yes/,
+  "the isolated signature-audit fixture must not inherit a registry from runner configuration",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /npm install --package-lock-only[\s\S]{0,500}npm audit signatures/,
+  "npm audit signatures requires installed dependencies, not a package-lock-only fixture",
 );
 assert.match(
   publishWorkflow,
@@ -416,9 +544,7 @@ assert.equal(
   1,
   "the Dependabot gate must stop if main advances away from the verified SHA",
 );
-const createTagBlock = autoTagWorkflow.match(
-  /- name: Create and push tag[\s\S]*?(?=\n\s+- name: Dispatch publish workflow)/,
-)?.[0];
+const createTagBlock = autoTagWorkflow.match(/- name: Create and push tag[\s\S]*?$/)?.[0];
 assert.ok(createTagBlock, "auto-tag must retain an explicit tag-creation step");
 assert.ok(
   createTagBlock.indexOf('git ls-remote --heads origin "refs/heads/main"') <
@@ -429,6 +555,16 @@ assert.match(
   createTagBlock,
   /git push origin "refs\/tags\/\$\{TAG\}:refs\/tags\/\$\{TAG\}"/,
   "auto-tag must publish the tag that explicitly names the fully verified SHA",
+);
+assert.match(
+  autoTagWorkflow,
+  /gh workflow run publish\.yml(?: --repo "\$GITHUB_REPOSITORY")? --ref "\$\{TAG\}"/,
+  "auto-tag must dispatch publish.yml on the tag ref because GITHUB_TOKEN tag pushes do not trigger a second workflow",
+);
+assert.doesNotMatch(
+  autoTagWorkflow,
+  /gh workflow run publish\.yml[^\n]*\s-f\s+tag=/,
+  "auto-tag must not supply a second tag input that could diverge from the dispatch ref",
 );
 assert.equal(
   (autoTagWorkflow.match(/if:\s*steps\.verified\.outputs\.matches == 'true'/g) ?? []).length,
@@ -455,6 +591,31 @@ assert.match(
   /https:\/\/slsa\.dev\/provenance\/v1/,
   "post-publish verification must require SLSA provenance v1",
 );
+for (const provenanceContract of [
+  "EXPECTED_GIT_SHA",
+  "EXPECTED_GIT_TAG",
+  "EXPECTED_GIT_REPOSITORY",
+  "EXPECTED_GITHUB_WORKFLOW_PATH",
+  "predicate?.buildDefinition?.externalParameters?.workflow",
+  "resolvedDependencies?.some",
+  "dependency?.digest?.gitCommit === expectedGitSha",
+]) {
+  assert.ok(
+    registryVerifier.includes(provenanceContract),
+    `registry verifier must bind provenance to the expected release identity: ${provenanceContract}`,
+  );
+}
+for (const workflowProvenanceEnv of [
+  "EXPECTED_GIT_SHA: $" + "{{ needs.gate.outputs.sha }}",
+  "EXPECTED_GIT_TAG: refs/tags/$" + "{{ needs.gate.outputs.tag }}",
+  "EXPECTED_GIT_REPOSITORY: https://github.com/LCV-Ideas-Software/cross-review",
+  "EXPECTED_GITHUB_WORKFLOW_PATH: .github/workflows/publish.yml",
+]) {
+  assert.ok(
+    publishWorkflow.includes(workflowProvenanceEnv),
+    `publish workflow must provide registry provenance verifier input: ${workflowProvenanceEnv}`,
+  );
+}
 
 // npm publishes package metadata and its provenance document through separate
 // registry surfaces. A newly visible version can therefore advertise an
@@ -464,8 +625,16 @@ const originalFetch = globalThis.fetch;
 const originalSetTimeout = globalThis.setTimeout;
 const originalPackageName = globalThis.process.env.PACKAGE_NAME;
 const originalPackageVersion = globalThis.process.env.PACKAGE_VERSION;
+const originalExpectedGitSha = globalThis.process.env.EXPECTED_GIT_SHA;
+const originalExpectedGitTag = globalThis.process.env.EXPECTED_GIT_TAG;
+const originalExpectedGitRepository = globalThis.process.env.EXPECTED_GIT_REPOSITORY;
+const originalExpectedGithubWorkflowPath = globalThis.process.env.EXPECTED_GITHUB_WORKFLOW_PATH;
 const regressionPackageName = "@lcv-ideas-software/registry-verifier-regression";
 const regressionPackageVersion = "0.0.0-test";
+const regressionGitSha = "0123456789abcdef0123456789abcdef01234567";
+const regressionGitTag = "refs/tags/v00.00.00-test";
+const regressionGitRepository = "https://github.com/LCV-Ideas-Software/cross-review";
+const regressionGithubWorkflowPath = ".github/workflows/publish.yml";
 const regressionAttestationUrl =
   "https://registry.npmjs.org//attacker.invalid/attestations/registry-verifier-regression@0.0.0-test";
 const advertisedAttestationUrl =
@@ -473,14 +642,39 @@ const advertisedAttestationUrl =
 
 globalThis.process.env.PACKAGE_NAME = regressionPackageName;
 globalThis.process.env.PACKAGE_VERSION = regressionPackageVersion;
+globalThis.process.env.EXPECTED_GIT_SHA = regressionGitSha;
+globalThis.process.env.EXPECTED_GIT_TAG = regressionGitTag;
+globalThis.process.env.EXPECTED_GIT_REPOSITORY = regressionGitRepository;
+globalThis.process.env.EXPECTED_GITHUB_WORKFLOW_PATH = regressionGithubWorkflowPath;
 globalThis.setTimeout = (callback, _delay, ...args) => {
   globalThis.queueMicrotask(() => callback(...args));
   return 0;
 };
 
-const slsaAttestationResponse = () =>
+const slsaAttestationResponse = ({ gitSha = regressionGitSha } = {}) =>
   globalThis.Response.json({
-    attestations: [{ predicateType: "https://slsa.dev/provenance/v1" }],
+    attestations: [
+      {
+        predicateType: "https://slsa.dev/provenance/v1",
+        predicate: {
+          buildDefinition: {
+            externalParameters: {
+              workflow: {
+                ref: regressionGitTag,
+                repository: regressionGitRepository,
+                path: regressionGithubWorkflowPath,
+              },
+            },
+            resolvedDependencies: [
+              {
+                uri: `git+${regressionGitRepository}@${regressionGitTag}`,
+                digest: { gitCommit: gitSha },
+              },
+            ],
+          },
+        },
+      },
+    ],
   });
 
 async function runRegistryVerifierScenario(scenario, attestationResponseFactories) {
@@ -557,6 +751,14 @@ try {
     2,
     "post-publish verification must retry a transient incomplete attestation document",
   );
+  await assert.rejects(
+    () =>
+      runRegistryVerifierScenario("wrong-git-sha", [
+        () => slsaAttestationResponse({ gitSha: "fedcba9876543210fedcba9876543210fedcba98" }),
+      ]),
+    /expected git commit 0123456789abcdef0123456789abcdef01234567/,
+    "post-publish verification must reject provenance for a different source commit",
+  );
 } finally {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalSetTimeout;
@@ -564,6 +766,18 @@ try {
   else globalThis.process.env.PACKAGE_NAME = originalPackageName;
   if (originalPackageVersion === undefined) delete globalThis.process.env.PACKAGE_VERSION;
   else globalThis.process.env.PACKAGE_VERSION = originalPackageVersion;
+  if (originalExpectedGitSha === undefined) delete globalThis.process.env.EXPECTED_GIT_SHA;
+  else globalThis.process.env.EXPECTED_GIT_SHA = originalExpectedGitSha;
+  if (originalExpectedGitTag === undefined) delete globalThis.process.env.EXPECTED_GIT_TAG;
+  else globalThis.process.env.EXPECTED_GIT_TAG = originalExpectedGitTag;
+  if (originalExpectedGitRepository === undefined)
+    delete globalThis.process.env.EXPECTED_GIT_REPOSITORY;
+  else globalThis.process.env.EXPECTED_GIT_REPOSITORY = originalExpectedGitRepository;
+  if (originalExpectedGithubWorkflowPath === undefined) {
+    delete globalThis.process.env.EXPECTED_GITHUB_WORKFLOW_PATH;
+  } else {
+    globalThis.process.env.EXPECTED_GITHUB_WORKFLOW_PATH = originalExpectedGithubWorkflowPath;
+  }
 }
 assert.doesNotMatch(
   securityBaseline,

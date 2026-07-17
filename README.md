@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.17** (package `4.5.17`).
+**Status.** Stable. The current source/release target is **v04.05.18** (package `4.5.18`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.18`**      | Closes the 4.5.16–4.5.17 session-audit findings: symmetric grounding for blocking verdicts, per-peer write-through durability, terminal preflight audit trails, bounded evidence judges, complete cache/config telemetry and action-oriented compact reports.               |
 | **`v04.05.17`**      | Publishes the accumulated provider/toolchain maintenance, raises the Anthropic SDK range and keeps npm 12 dependency scripts fail-closed with an exact, reviewed Google Gen AI 2.12.0 no-op lifecycle permission.                                                           |
 | **`v04.05.16`**      | Makes background observation compact and race-safe: summary polling by default, explicit forensic detail, real HTML-neutralized Markdown, durable cross-host job status and idempotent late-cancellation results with final state.                                          |
 | **`v04.05.15`**      | Ships the Evidence Broker continuity fix with the complete Dependabot hardgate: supported npm resolver, npm 12 build/release pin, pip-compile source+hash lock, grouped Python updates and concurrent-base merge retry.                                                     |
@@ -260,6 +261,16 @@ current SHA-256/mtime, and `reload_required`. `live_reload_supported` is
 `false`: after editing `config.json` or host environment variables, restart or
 reload the MCP host/window. A stale or invalid central config blocks paid calls
 instead of silently spending under fallback defaults.
+
+Evidence judges have independent compact controls:
+`evidence_judge_autowire.max_output_tokens` defaults to `2048` and
+`evidence_judge_autowire.reasoning_effort` defaults to `medium`. Unknown
+in-flight provider cost blocks judge dispatch rather than being treated as
+zero. Their environment-variable equivalents are
+`CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS` and
+`CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT`; as with the other central
+settings, an explicit host environment value takes precedence over
+`config.json`.
 
 Financial and budget controls are required for paid provider calls. Configure
 these environment variables before running real sessions (example):

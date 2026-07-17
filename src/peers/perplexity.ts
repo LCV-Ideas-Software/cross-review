@@ -422,7 +422,8 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             type: "json_schema",
             json_schema: { schema: portableStatusJsonSchema },
           } as unknown as NonNullable<OpenAI.ChatCompletionCreateParams["response_format"]>,
-          max_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         if (this.shouldStreamTokens(context)) {
           const streamPayload: PerplexityChatStreamPayload = {
@@ -565,11 +566,10 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           "relator",
           context.reasoning_effort_override,
         );
-        // v3.0.0 R1 fix (codex catch): the relator role ALWAYS forces
-        // disable_search:true on the wire (synthesis task, not external
-        // lookup). search_performed is unconditionally false so the
-        // cost layer's request-fee accounting does not charge for a
-        // search that did not run.
+        // The relator role always forces disable_search:true on the wire
+        // because synthesis does not need an external lookup. The
+        // resulting search_performed=false is latency/search telemetry;
+        // Perplexity's published request fee still applies.
         const searchPerformed = sonarOptions.disable_search !== true;
         const payload: PerplexityChatPayload = {
           ...sonarOptions,
@@ -578,7 +578,8 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "system", content: this.systemPrompt(context) },
             { role: "user", content: userPrompt(prompt) },
           ],
-          max_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         if (this.shouldStreamTokens(context)) {
           const streamPayload: PerplexityChatStreamPayload = {

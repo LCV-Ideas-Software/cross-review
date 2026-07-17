@@ -32,7 +32,10 @@ import type {
   PeerReliabilityReport,
   PeerReliabilityStats,
   PeerResult,
+  PendingProviderCallReservation,
   PreflightCheckRecord,
+  ProviderCallReservation,
+  ProviderCallSettlement,
   ResolvedEvidenceAttachment,
   ReviewRound,
   ReviewStatus,
@@ -52,6 +55,42 @@ export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function effectiveConfigSnapshot(config: AppConfig): Record<string, unknown> {
+  return redactJsonValue({
+    models: config.models,
+    fallback_models: config.fallback_models,
+    model_selection: config.model_selection,
+    peer_enabled: config.peer_enabled,
+    reasoning_effort: config.reasoning_effort,
+    retry: config.retry,
+    budget: config.budget,
+    prompt: config.prompt,
+    max_output_tokens: config.max_output_tokens,
+    max_output_tokens_by_peer: config.max_output_tokens_by_peer,
+    truthfulness_preflight_enabled: config.truthfulness_preflight_enabled,
+    evidence_preflight_enabled: config.evidence_preflight_enabled,
+    streaming: config.streaming,
+    evidence_judge_autowire: config.evidence_judge_autowire,
+    cache: config.cache,
+    perplexity: config.perplexity,
+    cost_rates: config.cost_rates,
+    model_cost_rates: config.model_cost_rates,
+  }) as Record<string, unknown>;
 }
 
 interface EvidenceBrokerRollback {
@@ -172,13 +211,46 @@ function checklistEvidenceHasFileLineRecord(corpus: string): boolean {
   return /\b[\w./-]+\.[a-z0-9]+:\d+(?:(?:,|-)\d+)*\b/i.test(corpus);
 }
 
+function isAsciiLetterCode(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isAsciiWordCode(code: number): boolean {
+  return isAsciiLetterCode(code) || (code >= 48 && code <= 57) || code === 95;
+}
+
 export function extractChecklistCodeSymbols(ask: string): string[] {
-  const camelCaseSymbols = (ask.match(/\b[a-z][A-Za-z0-9]*\b/g) ?? []).filter((value) =>
-    /[A-Z]/.test(value.slice(1)),
-  );
-  return [...camelCaseSymbols, ...(ask.match(/\b[a-z][a-z0-9]*_[a-z0-9_]+\b/gi) ?? [])].map(
-    (value) => value.normalize("NFKC").toLowerCase(),
-  );
+  const symbols: string[] = [];
+  let start = 0;
+  while (start < ask.length) {
+    const firstCode = ask.charCodeAt(start);
+    if (!isAsciiWordCode(firstCode)) {
+      start += 1;
+      continue;
+    }
+
+    let end = start + 1;
+    let firstUnderscore = firstCode === 95 ? 0 : -1;
+    let hasUppercaseAfterFirst = false;
+    while (end < ask.length) {
+      const code = ask.charCodeAt(end);
+      if (!isAsciiWordCode(code)) break;
+      if (code === 95 && firstUnderscore === -1) firstUnderscore = end - start;
+      if (code >= 65 && code <= 90) hasUppercaseAfterFirst = true;
+      end += 1;
+    }
+
+    const tokenLength = end - start;
+    const isCamelCase =
+      firstCode >= 97 && firstCode <= 122 && firstUnderscore === -1 && hasUppercaseAfterFirst;
+    const isSnakeCase =
+      isAsciiLetterCode(firstCode) && firstUnderscore > 0 && firstUnderscore < tokenLength - 1;
+    if (isCamelCase || isSnakeCase) {
+      symbols.push(ask.slice(start, end).normalize("NFKC").toLowerCase());
+    }
+    start = end;
+  }
+  return symbols;
 }
 
 const CHECKLIST_SEMANTIC_CONCEPTS: ReadonlyArray<{
@@ -477,6 +549,35 @@ function sessionMetaShapeError(value: unknown): string | undefined {
   }
   if (!Array.isArray(meta.capability_snapshot)) return "capability_snapshot must be an array";
   if (!Array.isArray(meta.rounds)) return "rounds must be an array";
+  if (meta.in_flight !== undefined) {
+    if (
+      meta.in_flight === null ||
+      typeof meta.in_flight !== "object" ||
+      Array.isArray(meta.in_flight)
+    ) {
+      return "in_flight must be an object";
+    }
+    const settlements = (meta.in_flight as Record<string, unknown>).provider_settlements;
+    if (settlements !== undefined && !Array.isArray(settlements)) {
+      return "in_flight.provider_settlements must be an array";
+    }
+    const reservations = (meta.in_flight as Record<string, unknown>).provider_call_reservations;
+    if (reservations !== undefined && !Array.isArray(reservations)) {
+      return "in_flight.provider_call_reservations must be an array";
+    }
+  }
+  if (
+    meta.interrupted_provider_settlements !== undefined &&
+    !Array.isArray(meta.interrupted_provider_settlements)
+  ) {
+    return "interrupted_provider_settlements must be an array";
+  }
+  if (
+    meta.pending_provider_call_reservations !== undefined &&
+    !Array.isArray(meta.pending_provider_call_reservations)
+  ) {
+    return "pending_provider_call_reservations must be an array";
+  }
   if (meta.totals === null || typeof meta.totals !== "object" || Array.isArray(meta.totals)) {
     return "totals must be an object";
   }
@@ -485,9 +586,17 @@ function sessionMetaShapeError(value: unknown): string | undefined {
 
 function isStubSession(session: SessionMeta): boolean {
   const peerCosts = session.rounds.flatMap((round) => round.peers.map((peer) => peer.cost));
+  const interruptedSettlementCosts = (session.interrupted_provider_settlements ?? []).map(
+    (settlement) => settlement.cost,
+  );
   const generationCosts = (session.generation_files ?? []).map((generation) => generation.cost);
   const failureCosts = (session.failed_attempts ?? []).map((failure) => failure.cost);
-  const costs = [...peerCosts, ...generationCosts, ...failureCosts].filter(Boolean);
+  const costs = [
+    ...peerCosts,
+    ...interruptedSettlementCosts,
+    ...generationCosts,
+    ...failureCosts,
+  ].filter(Boolean);
   if (costs.length > 0) return costs.every((cost) => cost?.source === "stub");
   return session.capability_snapshot.some(
     (probe) => probe.provider.startsWith("stub-") || probe.model.startsWith("stub-"),
@@ -790,16 +899,22 @@ export class SessionStore {
 
   private totalsFor(meta: SessionMeta): SessionMeta["totals"] {
     const peerResults = meta.rounds.flatMap((round) => round.peers);
+    const providerSettlements = [
+      ...(meta.in_flight?.provider_settlements ?? []),
+      ...(meta.interrupted_provider_settlements ?? []),
+    ];
     const generations = meta.generation_files ?? [];
     const failedAttempts = meta.failed_attempts ?? [];
     return {
       usage: mergeUsage([
         ...peerResults.map((peer) => peer.usage),
+        ...providerSettlements.map((settlement) => settlement.usage),
         ...generations.map((generation) => generation.usage),
         ...failedAttempts.map((failure) => failure.usage),
       ]),
       cost: mergeCost([
         ...peerResults.map((peer) => peer.cost),
+        ...providerSettlements.map((settlement) => settlement.cost),
         ...generations.map((generation) => generation.cost),
         ...failedAttempts.map((failure) => failure.cost),
       ]),
@@ -809,8 +924,25 @@ export class SessionStore {
   private accountInterruptedInFlight(meta: SessionMeta, reason: string): void {
     const inFlight = meta.in_flight;
     if (!inFlight) return;
+    const settlements = inFlight.provider_settlements ?? [];
+    const reservations = inFlight.provider_call_reservations ?? [];
+    const settledPeers = new Set(
+      settlements
+        .filter((settlement) => settlement.reservation_id === undefined)
+        .map((settlement) => settlement.peer),
+    );
+    if (settlements.length > 0) {
+      const existingArtifacts = new Set(
+        (meta.interrupted_provider_settlements ?? []).map((settlement) => settlement.artifact_path),
+      );
+      meta.interrupted_provider_settlements = [
+        ...(meta.interrupted_provider_settlements ?? []),
+        ...settlements.filter((settlement) => !existingArtifacts.has(settlement.artifact_path)),
+      ];
+    }
     const elapsed = Math.max(0, Date.now() - Date.parse(inFlight.started_at));
-    const unknownAttempts = inFlight.peers.map((peer) => {
+    const unresolvedPeers = inFlight.peers.filter((peer) => !settledPeers.has(peer));
+    const unknownInitialAttempts = unresolvedPeers.map((peer) => {
       const snapshot = meta.capability_snapshot.find((entry) => entry.peer === peer);
       return {
         peer,
@@ -829,7 +961,32 @@ export class SessionStore {
         round: inFlight.round,
       };
     });
-    meta.failed_attempts = [...(meta.failed_attempts ?? []), ...unknownAttempts];
+    const unknownReservedAttempts = reservations.map((reservation) => ({
+      peer: reservation.peer,
+      provider: reservation.provider,
+      model: reservation.model,
+      failure_class: "provider_error" as const,
+      message:
+        `possible_provider_attempt_interrupted: ${reason}; ` +
+        `round ${inFlight.round} ${reservation.label} call ${reservation.id} ended without a durable provider result. ` +
+        "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+      retryable: false,
+      attempts: 1,
+      latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+      billing_status: "unknown" as const,
+      unpriced_attempts: 1,
+      round: inFlight.round,
+    }));
+    meta.failed_attempts = [
+      ...(meta.failed_attempts ?? []),
+      ...unknownInitialAttempts,
+      ...unknownReservedAttempts,
+    ];
+    // Moving settlements and consuming unresolved peer reservations is
+    // idempotent. A second recovery path cannot count either category twice.
+    inFlight.provider_settlements = [];
+    inFlight.provider_call_reservations = [];
+    inFlight.peers = [];
     meta.totals = this.totalsFor(meta);
   }
 
@@ -860,6 +1017,110 @@ export class SessionStore {
     };
     meta.failed_attempts = [...(meta.failed_attempts ?? []), unknownAttempt];
     meta.totals = this.totalsFor(meta);
+  }
+
+  private ownerPidIsAlive(ownerPid: number | undefined): boolean {
+    return (
+      typeof ownerPid === "number" &&
+      Number.isInteger(ownerPid) &&
+      ownerPid > 0 &&
+      this.processAlive(ownerPid)
+    );
+  }
+
+  private pendingProviderCallOwnerIsAlive(reservation: PendingProviderCallReservation): boolean {
+    return this.ownerPidIsAlive(reservation.owner_pid);
+  }
+
+  private inFlightOwnerIsAlive(session: SessionMeta): boolean {
+    const ownerPids = [
+      session.in_flight?.owner_pid,
+      session.generation_in_flight?.owner_pid,
+      session.control?.owner_pid,
+      ...(session.in_flight?.provider_call_reservations ?? []).map(
+        (reservation) => reservation.owner_pid,
+      ),
+    ];
+    return ownerPids.some((ownerPid) => this.ownerPidIsAlive(ownerPid));
+  }
+
+  private accountInterruptedPendingProviderCalls(
+    meta: SessionMeta,
+    reason: string,
+    shouldAccount: (reservation: PendingProviderCallReservation) => boolean = () => true,
+  ): number {
+    const reservations = meta.pending_provider_call_reservations ?? [];
+    const interruptedReservations = reservations.filter(shouldAccount);
+    if (!interruptedReservations.length) return 0;
+    const unknownAttempts = interruptedReservations.map((reservation) => {
+      const elapsed = Math.max(0, Date.now() - Date.parse(reservation.started_at));
+      return {
+        peer: reservation.peer,
+        provider: reservation.provider,
+        model: reservation.model,
+        failure_class: "provider_error" as const,
+        message:
+          `possible_provider_attempt_interrupted: ${reason}; ` +
+          `${reservation.call_kind}/${reservation.label} call ${reservation.id} ended without a durable result. ` +
+          "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+        retryable: false,
+        attempts: 1,
+        latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+        billing_status: "unknown" as const,
+        unpriced_attempts: 1,
+        round: reservation.round,
+      };
+    });
+    meta.failed_attempts = [...(meta.failed_attempts ?? []), ...unknownAttempts];
+    meta.pending_provider_call_reservations = reservations.filter(
+      (reservation) => !interruptedReservations.includes(reservation),
+    );
+    meta.totals = this.totalsFor(meta);
+    return interruptedReservations.length;
+  }
+
+  private sealRecoveredAppendedConvergence(meta: SessionMeta): ReviewRound | undefined {
+    const latestRound = meta.rounds.at(-1);
+    if (
+      !inFlightRoundAlreadyAppended(meta) ||
+      latestRound?.convergence.converged !== true ||
+      meta.control?.status === "cancel_requested" ||
+      (meta.pending_provider_call_reservations?.length ?? 0) > 0
+    ) {
+      return undefined;
+    }
+    delete meta.in_flight;
+    delete meta.generation_in_flight;
+    delete meta.control;
+    meta.outcome = "converged";
+    meta.outcome_reason = latestRound.convergence.recovery_converged
+      ? "recovered_unanimity"
+      : "unanimous_ready";
+    const transitionedAt = now();
+    meta.convergence_health = transitionHealth(
+      meta,
+      "converged",
+      meta.outcome_reason,
+      transitionedAt,
+    );
+    meta.updated_at = transitionedAt;
+    return latestRound;
+  }
+
+  private restoreFinalArtifactFromRound(meta: SessionMeta, round: ReviewRound): void {
+    if (!round.draft_file) return;
+    const source = this.safeResolveContainedExistingPath(
+      this.sessionDir(meta.session_id),
+      round.draft_file,
+    );
+    if (!source || !fs.existsSync(source)) return;
+    try {
+      this.saveFinal(meta.session_id, fs.readFileSync(source, "utf8"));
+    } catch {
+      // The round draft remains the authoritative durable fallback. The
+      // terminal outcome must not be reopened merely because a convenience
+      // final.md mirror could not be recreated during restart recovery.
+    }
   }
 
   private settleBackgroundGenerationMarker(meta: SessionMeta, peer: PeerId, round: number): void {
@@ -980,6 +1241,11 @@ export class SessionStore {
   ): Promise<SessionMeta> {
     const session_id = crypto.randomUUID();
     const initializedAt = now();
+    const configSnapshot = effectiveConfigSnapshot(this.config);
+    const configSnapshotSha256 = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(canonicalJsonValue(configSnapshot)))
+      .digest("hex");
     // v2.22.0 (B.P3): snapshot the cost ceiling at session_init time so
     // budget pressure analysis is decoupled from later env-var mutation.
     // null when the operator runs without a session-level cost cap.
@@ -988,6 +1254,8 @@ export class SessionStore {
       session_id,
       version: this.config.version,
       accounting_schema_version: 2,
+      effective_config_snapshot: configSnapshot,
+      effective_config_sha256: configSnapshotSha256,
       created_at: initializedAt,
       updated_at: initializedAt,
       task,
@@ -1061,6 +1329,7 @@ export class SessionStore {
         peers: params.peers,
         started_at: params.started_at,
         status: "running",
+        owner_pid: process.pid,
         evidence_broker_snapshot: {
           evidence_checklist:
             meta.evidence_checklist === undefined ? null : structuredClone(meta.evidence_checklist),
@@ -1349,6 +1618,7 @@ export class SessionStore {
     round: number,
     result: GenerationResult,
     label = "generation",
+    pendingReservationId?: string,
   ): Promise<string> {
     const baseFile = path.join(
       this.sessionDir(sessionId),
@@ -1384,6 +1654,7 @@ export class SessionStore {
         unpriced_attempts: result.unpriced_attempts,
       };
       meta.generation_files = [...(meta.generation_files ?? []), artifact];
+      this.consumePendingProviderCallReservation(meta, pendingReservationId, result.peer, round);
       // The result and marker settlement share one meta.json replacement: a
       // crash can leave the marker (fail closed) or the accounted result, but
       // never clear the marker while losing the result.
@@ -1445,11 +1716,242 @@ export class SessionStore {
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
+  async reserveInFlightProviderCall(
+    sessionId: string,
+    round: number,
+    params: Omit<ProviderCallReservation, "id" | "started_at" | "owner_pid">,
+  ): Promise<string> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const error = new Error(
+          `post_terminal_provider_reservation: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (error as Error & { code?: string }).code = "post_terminal_provider_reservation";
+        throw error;
+      }
+      const inFlight = meta.in_flight;
+      if (!inFlight || inFlight.round !== round || !inFlight.peers.includes(params.peer)) {
+        const error = new Error(
+          `provider_reservation_without_matching_in_flight: ${params.peer}/round-${round}`,
+        );
+        (error as Error & { code?: string }).code =
+          "provider_reservation_without_matching_in_flight";
+        throw error;
+      }
+      const reservation: ProviderCallReservation = {
+        id: crypto.randomUUID(),
+        ...params,
+        started_at: now(),
+        owner_pid: process.pid,
+      };
+      inFlight.provider_call_reservations = [
+        ...(inFlight.provider_call_reservations ?? []),
+        reservation,
+      ];
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return reservation.id;
+    });
+  }
+
+  async reservePendingProviderCall(
+    sessionId: string,
+    params: Omit<PendingProviderCallReservation, "id" | "started_at" | "owner_pid">,
+  ): Promise<string> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const error = new Error(
+          `post_terminal_provider_reservation: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (error as Error & { code?: string }).code = "post_terminal_provider_reservation";
+        throw error;
+      }
+      if (meta.control?.status === "cancel_requested") {
+        const error = new Error(
+          `provider_reservation_cancelled: refusing to dispatch ${params.call_kind}/${params.label} after cancellation was requested`,
+        );
+        (error as Error & { code?: string }).code = "provider_reservation_cancelled";
+        throw error;
+      }
+      const reservation: PendingProviderCallReservation = {
+        id: crypto.randomUUID(),
+        ...params,
+        started_at: now(),
+        owner_pid: process.pid,
+      };
+      meta.pending_provider_call_reservations = [
+        ...(meta.pending_provider_call_reservations ?? []),
+        reservation,
+      ];
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return reservation.id;
+    });
+  }
+
+  private consumePendingProviderCallReservation(
+    meta: SessionMeta,
+    reservationId: string | undefined,
+    peer: PeerId,
+    round: number,
+  ): void {
+    if (reservationId === undefined) return;
+    const reservation = (meta.pending_provider_call_reservations ?? []).find(
+      (candidate) => candidate.id === reservationId,
+    );
+    if (!reservation || reservation.peer !== peer || reservation.round !== round) {
+      const error = new Error(
+        `provider_settlement_without_matching_pending_reservation: ${peer}/round-${round}/${reservationId}`,
+      );
+      (error as Error & { code?: string }).code =
+        "provider_settlement_without_matching_pending_reservation";
+      throw error;
+    }
+    meta.pending_provider_call_reservations = (
+      meta.pending_provider_call_reservations ?? []
+    ).filter((candidate) => candidate.id !== reservationId);
+  }
+
+  private async recordInFlightProviderSettlement(
+    sessionId: string,
+    settlement: ProviderCallSettlement,
+    reservationId?: string,
+  ): Promise<void> {
+    await this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const error = new Error(
+          `post_terminal_provider_settlement: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (error as Error & { code?: string }).code = "post_terminal_provider_settlement";
+        throw error;
+      }
+      const inFlight = meta.in_flight;
+      if (
+        !inFlight ||
+        inFlight.round !== settlement.round ||
+        !inFlight.peers.includes(settlement.peer)
+      ) {
+        const error = new Error(
+          `provider_settlement_without_matching_in_flight: ${settlement.peer}/round-${settlement.round}`,
+        );
+        (error as Error & { code?: string }).code =
+          "provider_settlement_without_matching_in_flight";
+        throw error;
+      }
+      if (reservationId !== undefined) {
+        const reservation = (inFlight.provider_call_reservations ?? []).find(
+          (candidate) => candidate.id === reservationId,
+        );
+        if (!reservation || reservation.peer !== settlement.peer) {
+          const error = new Error(
+            `provider_settlement_without_matching_reservation: ${settlement.peer}/round-${settlement.round}/${reservationId}`,
+          );
+          (error as Error & { code?: string }).code =
+            "provider_settlement_without_matching_reservation";
+          throw error;
+        }
+        settlement.reservation_id = reservationId;
+        inFlight.provider_call_reservations = (inFlight.provider_call_reservations ?? []).filter(
+          (candidate) => candidate.id !== reservationId,
+        );
+      }
+      inFlight.provider_settlements = [
+        ...(inFlight.provider_settlements ?? []).filter(
+          (existing) => existing.artifact_path !== settlement.artifact_path,
+        ),
+        settlement,
+      ];
+      meta.totals = this.totalsFor(meta);
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+    });
+  }
+
+  async saveInFlightPeerResult(
+    sessionId: string,
+    round: number,
+    result: PeerResult,
+    label = "provider-response",
+    reservationId?: string,
+  ): Promise<string> {
+    const artifactPath = await this.savePeerResult(sessionId, round, result, label);
+    await this.recordInFlightProviderSettlement(
+      sessionId,
+      {
+        round,
+        peer: result.peer,
+        provider: result.provider,
+        model: result.model,
+        kind: "result",
+        artifact_path: artifactPath,
+        settled_at: now(),
+        status: result.status,
+        usage: result.usage,
+        cost: result.cost,
+        attempts: result.attempts,
+        latency_ms: result.latency_ms,
+        billing_status:
+          (result.unpriced_attempts ?? 0) > 0
+            ? "unknown"
+            : result.cost?.total_cost != null
+              ? "reported"
+              : result.attempts > 0
+                ? "unknown"
+                : undefined,
+        unpriced_attempts: result.unpriced_attempts,
+      },
+      reservationId,
+    );
+    return artifactPath;
+  }
+
+  async saveInFlightPeerFailure(
+    sessionId: string,
+    round: number,
+    failure: PeerFailure,
+    label = "provider-failure",
+    reservationId?: string,
+  ): Promise<string> {
+    const artifactPath = await this.savePeerFailure(sessionId, round, failure, label);
+    await this.recordInFlightProviderSettlement(
+      sessionId,
+      {
+        round,
+        peer: failure.peer,
+        provider: failure.provider,
+        model: failure.model ?? this.config.models[failure.peer],
+        kind: "failure",
+        artifact_path: artifactPath,
+        settled_at: now(),
+        usage: failure.usage,
+        cost: failure.cost,
+        attempts: failure.attempts,
+        latency_ms: failure.latency_ms,
+        billing_status:
+          (failure.unpriced_attempts ?? 0) > 0
+            ? "unknown"
+            : (failure.billing_status ??
+              (failure.cost?.total_cost != null
+                ? "reported"
+                : failure.attempts > 0
+                  ? "unknown"
+                  : undefined)),
+        unpriced_attempts: failure.unpriced_attempts,
+      },
+      reservationId,
+    );
+    return artifactPath;
+  }
+
   async recordPeerFailureAccounting(
     sessionId: string,
     round: number,
     failure: PeerFailure,
     label = "failure",
+    pendingReservationId?: string,
   ): Promise<string> {
     const artifact = await this.savePeerFailure(sessionId, round, failure, label);
     await this.withSessionLock(sessionId, async () => {
@@ -1465,6 +1967,7 @@ export class SessionStore {
         throw err;
       }
       meta.failed_attempts = [...(meta.failed_attempts ?? []), { ...failure, round }];
+      this.consumePendingProviderCallReservation(meta, pendingReservationId, failure.peer, round);
       // Provider failure accounting and dispatch-marker settlement are one
       // durable transition for the same reason as successful generations.
       this.settleBackgroundGenerationMarker(meta, failure.peer, round);
@@ -1550,6 +2053,12 @@ export class SessionStore {
         // closes the append-to-finalize operator-update race without allowing
         // recovery to roll back an already appended round.
         delete meta.in_flight.evidence_broker_snapshot;
+        // Provider settlements have now been promoted into round.peers /
+        // failed_attempts. Retaining them in the reservation would double
+        // count usage and cost until finalize clears in_flight.
+        delete meta.in_flight.provider_settlements;
+        delete meta.in_flight.provider_call_reservations;
+        meta.in_flight.peers = [];
       } else {
         delete meta.in_flight;
       }
@@ -1730,6 +2239,7 @@ export class SessionStore {
     } else {
       this.accountInterruptedBackgroundGeneration(meta, `cancelled: ${requestedReason}`);
     }
+    this.accountInterruptedPendingProviderCalls(meta, `cancelled: ${requestedReason}`);
     delete meta.in_flight;
     delete meta.generation_in_flight;
     meta.outcome = "aborted";
@@ -1806,6 +2316,13 @@ export class SessionStore {
           `cannot_finalize_generation_in_flight: session ${sessionId} still has ${generation.peer}/round-${generation.round}/${generation.label} in flight. Request cancellation and wait for provider work to settle before finalizing.`,
         );
         (err as Error & { code?: string }).code = "cannot_finalize_generation_in_flight";
+        throw err;
+      }
+      if ((meta.pending_provider_call_reservations?.length ?? 0) > 0) {
+        const err = new Error(
+          `cannot_finalize_provider_calls_in_flight: session ${sessionId} still has ${meta.pending_provider_call_reservations?.length} paid provider call reservation(s) in flight. Request cancellation and wait for provider work to settle before finalizing.`,
+        );
+        (err as Error & { code?: string }).code = "cannot_finalize_provider_calls_in_flight";
         throw err;
       }
       const latestRound = meta.rounds.at(-1);
@@ -1913,6 +2430,7 @@ export class SessionStore {
       const executionActive =
         Boolean(meta.in_flight) ||
         Boolean(meta.generation_in_flight) ||
+        (meta.pending_provider_call_reservations?.length ?? 0) > 0 ||
         meta.control?.status === "running" ||
         meta.control?.status === "cancel_requested";
       if (options.require_active_execution && !executionActive) {
@@ -2362,11 +2880,12 @@ export class SessionStore {
     });
   }
 
-  // v2.9.0: runtime-judge promotion path. Promotes an `open` item to
-  // `addressed` ONLY — never touches terminal operator statuses, never
-  // moves anything other than open. Atomic under the session lock.
-  // Returns null when the item is not currently `open` (already
-  // addressed, terminal, or missing) so the caller can skip emit.
+  // v2.9.0: runtime-judge promotion path. Promotes an unresolved `open` or
+  // `not_resurfaced` item to `addressed`, but never touches terminal
+  // operator statuses. `not_resurfaced` means the peer did not repeat the
+  // ask; it is not a terminal disposition. Atomic under the session lock.
+  // Returns null when the item is already addressed, terminal, or missing so
+  // the caller can skip emit.
   async markEvidenceItemAddressedByJudge(
     sessionId: string,
     itemId: string,
@@ -2374,14 +2893,20 @@ export class SessionStore {
   ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry } | null> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      // Cancellation can win after a judge completes its last optimistic
+      // isCancelled check but before this promotion acquires the session lock.
+      // Do not mutate checklist state in a session that is now terminal or
+      // has a durable cancellation request; the orchestrator will seal the
+      // cancellation after paid-call settlement.
+      if (meta.outcome || meta.control?.status === "cancel_requested") return null;
       const checklist = meta.evidence_checklist ?? [];
       const item = checklist.find((entry) => entry.id === itemId);
       if (!item) return null;
       const status: EvidenceChecklistStatus = item.status ?? "open";
-      // Single allowed transition: open → addressed (judge). Terminal
-      // statuses (satisfied/deferred/rejected) and already-addressed
+      // Allowed runtime transitions: open|not_resurfaced → addressed (judge).
+      // Terminal statuses (satisfied/deferred/rejected) and already-addressed
       // items are NOT auto-mutated here.
-      if (status !== "open") return null;
+      if (status !== "open" && status !== "not_resurfaced") return null;
       const ts = now();
       const rationale = params.rationale.trim().slice(0, 800);
       item.status = "addressed";
@@ -2391,7 +2916,7 @@ export class SessionStore {
       const entry: EvidenceStatusHistoryEntry = {
         ts,
         item_id: itemId,
-        from: "open",
+        from: status,
         to: "addressed",
         by: "runtime",
         round: params.round,
@@ -2473,31 +2998,65 @@ export class SessionStore {
   async recoverInterruptedSessions(activeSessionIds = new Set<string>()): Promise<SessionMeta[]> {
     const recovered: SessionMeta[] = [];
     for (const session of this.list()) {
+      const pendingProviderCalls = (session.pending_provider_call_reservations?.length ?? 0) > 0;
+      const livePendingProviderCall = (session.pending_provider_call_reservations ?? []).some(
+        (reservation) => this.pendingProviderCallOwnerIsAlive(reservation),
+      );
+      const liveInFlightOwner = this.inFlightOwnerIsAlive(session);
       const orphanedBackgroundControl =
         (session.control?.status === "running" || session.control?.status === "cancel_requested") &&
         !session.in_flight;
       if (
         session.outcome ||
         activeSessionIds.has(session.session_id) ||
-        (!session.in_flight && !session.generation_in_flight && !orphanedBackgroundControl)
+        livePendingProviderCall ||
+        liveInFlightOwner ||
+        (!session.in_flight &&
+          !session.generation_in_flight &&
+          !pendingProviderCalls &&
+          !orphanedBackgroundControl)
       )
         continue;
       let actuallyRecovered = false;
+      let recoveredConvergedRound: ReviewRound | undefined;
       const updated = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
         const currentOrphanedBackgroundControl =
           (current.control?.status === "running" ||
             current.control?.status === "cancel_requested") &&
           !current.in_flight;
+        const currentPendingProviderCalls =
+          (current.pending_provider_call_reservations?.length ?? 0) > 0;
+        const currentLivePendingProviderCall = (
+          current.pending_provider_call_reservations ?? []
+        ).some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation));
+        const currentLiveInFlightOwner = this.inFlightOwnerIsAlive(current);
         if (
           current.outcome ||
           activeSessionIds.has(current.session_id) ||
-          (!current.in_flight && !current.generation_in_flight && !currentOrphanedBackgroundControl)
+          currentLivePendingProviderCall ||
+          currentLiveInFlightOwner ||
+          (!current.in_flight &&
+            !current.generation_in_flight &&
+            !currentPendingProviderCalls &&
+            !currentOrphanedBackgroundControl)
         ) {
           return current;
         }
-        const ownerPid = current.generation_in_flight?.owner_pid ?? current.control?.owner_pid;
-        if (ownerPid && this.processAlive(ownerPid)) return current;
+        const recoveredRound = this.sealRecoveredAppendedConvergence(current);
+        if (recoveredRound) {
+          // appendRound durably committed unanimity before the process died.
+          // Re-seal that exact terminal snapshot instead of reopening a round
+          // that has no outstanding provider work and no human action pending.
+          recoveredConvergedRound = recoveredRound;
+          actuallyRecovered = true;
+          await writeJson(this.metaPath(current.session_id), current);
+          return current;
+        }
+        // A dead owner has not durably acknowledged a requested cancellation.
+        // Do not invent a clean terminal cancellation: retain the established
+        // recovery path below, which records the interrupted owner and makes
+        // the session safely resumable from its durable snapshot.
         const round = current.in_flight?.round;
         const interruptedGeneration = current.generation_in_flight;
         let brokerRollback: EvidenceBrokerRollback | undefined;
@@ -2517,6 +3076,7 @@ export class SessionStore {
           this.accountInterruptedBackgroundGeneration(current, "recovered_after_restart");
           delete current.generation_in_flight;
         }
+        this.accountInterruptedPendingProviderCalls(current, "recovered_after_restart");
         const previousControl = current.control;
         const reason =
           round === undefined
@@ -2571,6 +3131,35 @@ export class SessionStore {
         actuallyRecovered = true;
         return current;
       });
+      if (actuallyRecovered && recoveredConvergedRound) {
+        this.restoreFinalArtifactFromRound(updated, recoveredConvergedRound);
+        try {
+          await this.appendEvent({
+            type: "session.finalized",
+            session_id: updated.session_id,
+            ts: updated.updated_at,
+            message:
+              "Session finalized as converged: recovered appended unanimous round after restart",
+            data: {
+              outcome: "converged",
+              reason: updated.outcome_reason ?? "unanimous_ready",
+              recovered_after_restart: true,
+              round: recoveredConvergedRound.round,
+            },
+          });
+        } catch {
+          /* event persistence is best-effort; session_doctor will flag gaps */
+        }
+        try {
+          const reported = this.read(updated.session_id);
+          this.saveReport(
+            reported.session_id,
+            sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+          );
+        } catch {
+          /* report regeneration is best-effort; meta.json remains authoritative */
+        }
+      }
       if (actuallyRecovered) recovered.push(updated);
     }
     return recovered;
@@ -4128,6 +4717,92 @@ export class SessionStore {
     return { scanned, removed };
   }
 
+  /**
+   * Reconcile non-review provider calls (currently initial generations and
+   * evidence judges) after a host crash. These calls do not always own an
+   * `in_flight` review round, so clearStaleInFlight cannot see them. A live
+   * owner is an explicit stop signal: another MCP host may still be settling
+   * the same provider call and its result must retain the reservation.
+   */
+  async clearStalePendingProviderCalls(): Promise<{ scanned: number; cleared: number }> {
+    let scanned = 0;
+    let cleared = 0;
+    for (const session of this.list()) {
+      const pending = session.pending_provider_call_reservations ?? [];
+      if (session.outcome || pending.length === 0) continue;
+      scanned += 1;
+      if (pending.some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation))) {
+        continue;
+      }
+      try {
+        let recovered: SessionMeta | undefined;
+        await this.withSessionLock(session.session_id, async () => {
+          const current = this.read(session.session_id);
+          const currentPending = current.pending_provider_call_reservations ?? [];
+          if (
+            current.outcome ||
+            currentPending.length === 0 ||
+            currentPending.some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation))
+          ) {
+            return;
+          }
+          if (current.control?.status === "cancel_requested") {
+            recovered = await this.persistCancelledTerminal(current, "session_cancelled");
+            cleared += 1;
+            return;
+          }
+          const reconciled = this.accountInterruptedPendingProviderCalls(
+            current,
+            "startup_pending_provider_call_sweep",
+          );
+          if (reconciled === 0) return;
+          const transitionedAt = now();
+          current.control = {
+            status: "recovered_after_restart",
+            reason:
+              `${reconciled} paid provider call(s) were interrupted after their dispatch ` +
+              "marker was persisted; billing is conservatively marked unknown.",
+            job_id: current.control?.job_id,
+            owner_pid: current.control?.owner_pid,
+            requested_at: current.control?.requested_at,
+            updated_at: transitionedAt,
+          };
+          current.convergence_health = transitionHealth(
+            current,
+            "stale",
+            "Recovered outstanding paid provider call reservations after MCP restart.",
+            transitionedAt,
+          );
+          current.updated_at = transitionedAt;
+          await writeJson(this.metaPath(current.session_id), current);
+          recovered = current;
+          cleared += 1;
+        });
+        if (recovered && !recovered.outcome) {
+          await this.appendEvent({
+            type: "session.pending_provider_calls_recovered",
+            session_id: recovered.session_id,
+            ts: recovered.updated_at,
+            message:
+              "Startup sweep reconciled paid provider calls whose owning process was no longer alive.",
+            data: {
+              pending_provider_calls_recovered: true,
+              billing_status: "unknown",
+            },
+          });
+          const reported = this.read(recovered.session_id);
+          this.saveReport(
+            reported.session_id,
+            sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+          );
+        }
+      } catch {
+        /* best-effort; a later startup or explicit recovery can retry safely */
+      }
+    }
+    return { scanned, cleared };
+  }
+
   // v2.4.0 / audit closure (P3.11): clear stale meta.in_flight at boot.
   // `markInFlight` sets meta.in_flight before each round and clearInFlight
   // is supposed to clear it on resolve/reject. If the host crashes
@@ -4139,8 +4814,9 @@ export class SessionStore {
   // after a day. Conditions to clear:
   //   - holder pid (lock holder, if any) is dead, OR
   //   - in_flight.started_at is older than HEARTBEAT_STALE_AFTER_MS.
-  // Sessions still actively running on a live PID are skipped. Idempotent
-  // + best-effort. Returns counts for telemetry.
+  // Sessions still actively running on a live PID, or with a live reserved
+  // provider call, are skipped. Idempotent + best-effort. Returns counts for
+  // telemetry.
   async clearStaleInFlight(): Promise<{ scanned: number; cleared: number }> {
     const HEARTBEAT_STALE_AFTER_MS = 30 * 60 * 1000; // 30 minutes
     let scanned = 0;
@@ -4148,8 +4824,11 @@ export class SessionStore {
     for (const session of this.list()) {
       if (!session.in_flight) continue;
       scanned += 1;
-      const ownerPid = session.generation_in_flight?.owner_pid ?? session.control?.owner_pid;
-      if (ownerPid && this.processAlive(ownerPid)) continue;
+      const livePendingProviderCall = (session.pending_provider_call_reservations ?? []).some(
+        (reservation) => this.pendingProviderCallOwnerIsAlive(reservation),
+      );
+      if (livePendingProviderCall) continue;
+      if (this.inFlightOwnerIsAlive(session)) continue;
       const startedIso = session.in_flight.started_at;
       const startedAge = startedIso ? Date.now() - Date.parse(startedIso) : Infinity;
       // v4.1.0: lock-holder freshness is reported by proper-lockfile's
@@ -4170,19 +4849,40 @@ export class SessionStore {
       }
       // Fallback heartbeat staleness signal when no active lock and
       // started_at indicates the in_flight marker itself is stale.
-      if (!holderAlive && Number.isFinite(startedAge) && startedAge <= HEARTBEAT_STALE_AFTER_MS) {
+      const appendedConvergenceAwaitingSeal =
+        inFlightRoundAlreadyAppended(session) &&
+        session.rounds.at(-1)?.convergence.converged === true &&
+        (session.pending_provider_call_reservations?.length ?? 0) === 0;
+      if (
+        !holderAlive &&
+        Number.isFinite(startedAge) &&
+        startedAge <= HEARTBEAT_STALE_AFTER_MS &&
+        !appendedConvergenceAwaitingSeal
+      ) {
         // No live holder but started_at is recent; do nothing yet (lock
         // may have been released cleanly; let normal finalize handle it).
         continue;
       }
       if (!holderAlive || startedAge > HEARTBEAT_STALE_AFTER_MS) {
         try {
+          let recoveredConvergedRound: ReviewRound | undefined;
+          let recoveredConvergedSession: SessionMeta | undefined;
           await this.withSessionLock(session.session_id, async () => {
             const current = this.read(session.session_id);
             if (!current.in_flight) return;
-            const currentOwnerPid =
-              current.generation_in_flight?.owner_pid ?? current.control?.owner_pid;
-            if (currentOwnerPid && this.processAlive(currentOwnerPid)) return;
+            const currentLivePendingProviderCall = (
+              current.pending_provider_call_reservations ?? []
+            ).some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation));
+            if (currentLivePendingProviderCall) return;
+            if (this.inFlightOwnerIsAlive(current)) return;
+            const recoveredRound = this.sealRecoveredAppendedConvergence(current);
+            if (recoveredRound) {
+              recoveredConvergedRound = recoveredRound;
+              recoveredConvergedSession = current;
+              await writeJson(this.metaPath(current.session_id), current);
+              cleared += 1;
+              return;
+            }
             const appendedReservation = inFlightRoundAlreadyAppended(current);
             if (!appendedReservation) {
               this.accountInterruptedInFlight(current, "stale_in_flight_sweep");
@@ -4207,6 +4907,35 @@ export class SessionStore {
             }
             cleared += 1;
           });
+          if (recoveredConvergedSession && recoveredConvergedRound) {
+            this.restoreFinalArtifactFromRound(recoveredConvergedSession, recoveredConvergedRound);
+            try {
+              await this.appendEvent({
+                type: "session.finalized",
+                session_id: recoveredConvergedSession.session_id,
+                ts: recoveredConvergedSession.updated_at,
+                message:
+                  "Session finalized as converged: startup sweep recovered appended unanimous round",
+                data: {
+                  outcome: "converged",
+                  reason: recoveredConvergedSession.outcome_reason ?? "unanimous_ready",
+                  recovered_after_restart: true,
+                  round: recoveredConvergedRound.round,
+                },
+              });
+            } catch {
+              /* event persistence is best-effort; session_doctor will flag gaps */
+            }
+            try {
+              const reported = this.read(recoveredConvergedSession.session_id);
+              this.saveReport(
+                reported.session_id,
+                sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+              );
+            } catch {
+              /* report regeneration is best-effort; meta.json remains authoritative */
+            }
+          }
         } catch {
           /* best-effort */
         }

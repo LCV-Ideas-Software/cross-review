@@ -515,7 +515,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         const statusOutputFormat = await loadAnthropicStatusOutputFormat();
         const body = {
           model: this.model,
-          max_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           system: buildSystemBlock(systemText, this.config),
           messages: [
             {
@@ -667,7 +668,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         );
         const body = {
           model: this.model,
-          max_tokens: maxOutputTokensForPeer(this.config, this.id),
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           system: buildSystemBlock(this.systemPrompt(context), this.config),
           messages: [{ role: "user" as const, content: userPrompt(prompt) }],
           ...anthropicThinkingFields(this.model),

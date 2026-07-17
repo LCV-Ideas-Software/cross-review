@@ -38,7 +38,7 @@ artifacts when present.
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
 Current reference values verified against official provider documentation on
-2026-07-12 for the maintained model pins:
+2026-07-17 for the maintained model pins:
 
 | Provider/model                   | Input   | Output | Cached input / cache hit | Extended tier                                                      |
 | -------------------------------- | ------- | ------ | ------------------------ | ------------------------------------------------------------------ |
@@ -46,7 +46,7 @@ Current reference values verified against official provider documentation on
 | Anthropic `claude-fable-5`       | `10`    | `50`   | `1`                      | none                                                               |
 | Gemini `gemini-3.1-pro-preview`  | `2`     | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4` |
 | DeepSeek `deepseek-v4-pro`       | `0.435` | `0.87` | `0.003625`               | none                                                               |
-| xAI `grok-4.5`                   | `2`     | `6`    | `0.5`                    | no separately published long-context tier                          |
+| xAI `grok-4.5`                   | `2`     | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                |
 | Perplexity `sonar-reasoning-pro` | `2`     | `8`    | n/a                      | request fee: low `6`, medium `10`, high `14` per 1000 requests     |
 
 GPT-5.6 Sol reports cache-write tokens separately. Configure OpenAI cache write
@@ -54,6 +54,13 @@ at `6.25` USD/million in the base tier and `12.5` above the 272K threshold;
 these are 1.25 times the corresponding uncached input rates. Grok 4.5 exposes
 cached-input pricing but no distinct cache-write counter, so do not infer a
 write charge from uncached input tokens.
+
+OpenAI requests explicitly pin `service_tier: "default"`. This prevents a
+project-level Priority processing setting from silently changing the service
+tier and price basis, so the OpenAI rate cards configured here must use the
+official Standard/default rates. The response's actual `service_tier` remains
+provider telemetry; it does not authorize substituting a different price table
+without matching configured rates.
 
 Gemini's published output rate includes both visible candidate tokens and
 thinking tokens. The runtime therefore adds `thoughtsTokenCount` to the
@@ -64,12 +71,15 @@ only.
 
 Official pricing sources:
 
-- OpenAI: [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol).
+- OpenAI: [API pricing](https://developers.openai.com/api/docs/pricing),
+  [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol) and
+  [Priority processing](https://developers.openai.com/api/docs/guides/priority-processing#configuring-priority-processing).
 - Anthropic: [Fable 5 model, retention and base pricing](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5)
   and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 - Google: [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 - DeepSeek: [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
-- xAI: [pricing](https://docs.x.ai/developers/pricing) and
+- xAI: [Grok 4.5](https://docs.x.ai/developers/models/grok-4.5),
+  [pricing](https://docs.x.ai/developers/pricing) and
   [prompt-cache usage and pricing](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing).
 - Perplexity: [Sonar Reasoning Pro](https://docs.perplexity.ai/docs/sonar/models/sonar-reasoning-pro)
   and [Sonar API pricing](https://docs.perplexity.ai/docs/getting-started/pricing).
@@ -120,7 +130,11 @@ overrides can select models with different prices:
       "grok-4.5": {
         "input_per_million": 2,
         "output_per_million": 6,
-        "cache_read_per_million": 0.5
+        "cache_read_per_million": 0.5,
+        "threshold_tokens": 200000,
+        "input_extended_per_million": 4,
+        "output_extended_per_million": 12,
+        "cache_read_extended_per_million": 1
       }
     }
   }

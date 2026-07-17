@@ -2,16 +2,33 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.17 for package 4.5.17. This
+Current supported source/release target: v04.05.18 for package 4.5.18. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.17 preserves the 4.5.16 runtime trust boundary while publishing the
-reviewed provider SDK maintenance. npm 12 still fails closed on dependency
-lifecycle changes: Google Gen AI 2.12.0 is authorized only by exact package and
-version after verifying its registry-declared no-op `preinstall`; wildcard
-script permission and broad bypasses remain forbidden.
+v04.05.18 extends the runtime trust boundary symmetrically to factual
+`NOT_READY` and `NEEDS_EVIDENCE` verdicts: missing or fabricated blocker
+evidence cannot remain a clean veto. Raw provider results are persisted as each
+call finishes, caller drafts survive preflight rejection, and terminal
+preflight outcomes no longer remain stale-open. npm 12 still fails closed on
+dependency lifecycle changes; wildcard script permission and broad bypasses
+remain forbidden.
+
+Publishing is independently fail-closed even when invoked from a tag or manual
+dispatch: the tag must still equal the current `main` SHA, all applicable
+workflows and both CodeQL categories must be green for that SHA, and the
+default-branch alert set must be empty. The documented `workflow_dispatch`
+bridge is retained only because a tag push made with `GITHUB_TOKEN` does not
+start a second workflow. It has no tag input: the actual event must be the
+protected `refs/tags/v*` ref (`github.ref`, `github.ref_type` and
+`github.ref_protected` are all checked), and tag, checkout and current `main`
+are revalidated after local tests and immediately before each external write.
+The active `v*` tag ruleset prohibits deletion and non-fast-forward updates
+without bypass, so the ref cannot be silently retargeted between those checks.
+After trusted OIDC publication, the workflow installs the exact registry
+version with scripts/Git/remote dependencies disabled and runs `npm audit
+signatures` to verify registry signatures and provenance attestations.
 
 The 4.5.16 controls preserved here transport evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted

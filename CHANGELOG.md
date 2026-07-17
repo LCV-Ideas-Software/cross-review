@@ -7,6 +7,136 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.18] — 2026-07-17
+
+**Session-audit remediation and symmetric anti-deception controls.** This patch
+closes the defects observed in the five durable sessions run by 4.5.16; the
+audited corpus contained no session run by 4.5.17. No paid review round was
+opened during remediation.
+
+### Fixed
+
+- Applies citation grounding and fabrication checks to factual blocking
+  verdicts as well as `READY`. An unsupported or falsely sourced `NOT_READY`
+  becomes `NEEDS_EVIDENCE` instead of remaining a clean veto; malformed sources
+  supplied with `NEEDS_EVIDENCE` are also visible as non-clean. The downgrade
+  carries a deduplicated, actionable citation request into the Evidence Broker.
+- Requires a factual blocking claim to correlate with the specific grounded
+  source it cites. A byte-exact but unrelated quote can no longer keep a
+  `NOT_READY` veto clean merely because both source and quote are authentic.
+- Persists each raw provider response or terminal failure immediately when that
+  peer finishes, before waiting for slower peers, and emits
+  `peer.call.completed`. Each settlement also enters the in-flight metadata
+  ledger: restart/cancellation preserves its exact usage and cost and marks
+  only genuinely unresolved peers as unknown. Paid decision/format recovery
+  calls receive their own pre-dispatch reservation and per-call settlement, so
+  a crash cannot erase or merge away the second charge.
+- Saves the caller draft before truthfulness/evidence preflight and finalizes a
+  rejected preflight as an auditable `aborted` session. Inputs no longer
+  disappear or remain open until the stale-session sweep.
+- Includes the paid review round already in flight in evidence-judge budget
+  checks without counting its durable settlements twice. Evidence judges use a
+  separate compact output ceiling, skip newly created asks until later evidence
+  can exist, and preserve the established `max-rounds` outcome contract for
+  financial stops. Their reasoning effort defaults independently to `medium`,
+  and any unpriced current or historical attempt blocks judge dispatch instead
+  of being coerced to zero.
+- Records review, generation and evidence-judge cache activity with call kind
+  and label so `cache_manifest.json` reconciles with session totals. Normal
+  generations now commit their authoritative ledger entry before cache
+  telemetry and use the same canonical label in both records.
+- Distinguishes unanimous judge rejection (`consensus_unsatisfied`) from judge
+  disagreement and removes arbitrary peer attribution from shadow telemetry.
+  The dynamic contract keeps `judge_peers` and `per_peer_verdict` in shadow
+  events without inventing a scalar author, while active promotion retains the
+  real `judge_peer`.
+- Treats a session with accounting-v2 and no provider calls as a known
+  zero-cost session instead of reporting an unknown total.
+- Closes the remaining evidence-judge durability windows: every reservation
+  records its owning process, startup accounts only dead-owner reservations,
+  recovery preserves an active judge, cancellation reaches a terminal outcome,
+  a cancellation that wins the session lock cannot promote checklist evidence,
+  and a crash after durable round append reconstructs the final artifact
+  automatically without an operator action.
+- Keeps a stale in-flight sweep from reconciling a round while a live process
+  still owns a pending paid provider reservation. The sweep rechecks that
+  ownership inside the session lock before it can mutate accounting.
+- Lets active single-peer and consensus judges resolve a pre-existing
+  `not_resurfaced` evidence ask. The state remains convergence-blocking until
+  that independent, verified judgment or another explicit disposition; it no
+  longer becomes permanently invisible to the automatic judge.
+- Preserves every operator output ceiling for evidence judges. A compact judge
+  cap is now the lower of the peer cap and judge cap, never an undocumented
+  256-token floor that could enlarge a configured 64-token peer limit.
+- Treats durable, unsettled provider reservations as unknown spend in reports.
+  A session with a live paid call can no longer report an exact/reconciled zero
+  before its result or failure is persisted.
+- Extends that fail-closed accounting to every other durable dispatch marker:
+  a lead/revision generation and every primary peer without its settlement now
+  keep the session cost unknown rather than allowing accounting-v2 to claim
+  zero or reconciliation.
+- Gives each in-flight review round and format/decision recovery reservation a
+  durable owner PID. Both interrupted-session recovery and the stale sweep
+  leave work owned by a live process intact, then recover ownerless/dead-owner
+  legacy state conservatively.
+- Blocks single and consensus evidence-judge preflight while a lead/revision
+  generation is still in flight, closing the last path that could budget a
+  paid judge against an incomplete session total.
+- Limits automatic evidence judging to historical asks that stayed unresolved
+  through the current round. A peer that reasserts an ask in this round can no
+  longer have that active request immediately promoted as addressed by a
+  judge.
+- Makes restart recovery distinguish an acknowledged cancellation from a dead
+  owner that never completed it. A durable cancellation request can no longer
+  fabricate a clean terminal state; recovery preserves interrupted work and
+  accounting conservatively.
+- Replaces a backtracking code-symbol matcher used by Evidence Broker
+  correlation with a linear scanner. It preserves camelCase and snake_case
+  matching while bounding adversarial 100,000-character input.
+
+### Changed
+
+- Persists a credential-free effective-configuration snapshot and SHA-256 in
+  every new session for reproducible audits, including prompt bounds and all
+  Perplexity transport/search controls.
+- Makes durable reports action-oriented: peer requests and follow-ups are
+  included, token-stream deltas are suppressed by default, timeline truncation
+  is explicit and undefined fields do not leak into Markdown.
+- Clarifies the session contract that ordinary unanimous reviews are finalized
+  automatically and never require a manual evidence attachment, operator
+  notification or operator-console finalization.
+- Pins OpenAI Responses calls to `service_tier: "default"` so project-level
+  Priority processing cannot silently invalidate the configured Standard rate
+  card.
+- Documents the official Grok 4.5 long-context tier above 200,000 prompt tokens
+  and corrects Perplexity comments: `disable_search` changes search behavior,
+  not the configured per-request charge.
+
+### Release security
+
+- Revalidates every publish tag against the current `main` SHA and independently
+  waits for all applicable push workflows, processed CodeQL analyses and zero
+  open code-scanning alerts. The documented `workflow_dispatch` bridge remains
+  only for the tag ref created with `GITHUB_TOKEN`: it accepts no tag input,
+  must run on the protected `refs/tags/v*` ref, and revalidates tag, checkout
+  and `main` after local verification and before every external write.
+- Installs the exact public package under npm 12's fail-closed dependency
+  controls and runs `npm audit signatures` after publication, cryptographically
+  checking registry signatures and provenance attestations. All commands in
+  the isolated verification fixture explicitly pin `registry.npmjs.org`, so
+  runner-level registry configuration cannot redirect that security check.
+
+### Provider contract audit
+
+- Reverified all six maintained pins against first-party API documentation:
+  `gpt-5.6-sol`, `claude-fable-5`, `gemini-3.1-pro-preview`,
+  `deepseek-v4-pro`, `grok-4.5` and `sonar-reasoning-pro`.
+- Confirms that OpenAI API effort `max` is the correct wire value for
+  GPT-5.6 Sol; the user-facing `ultra` alias remains normalized locally and is
+  not sent as an undocumented API value.
+- Confirms the provider-specific structured-output projections, including
+  Anthropic SDK schema sanitization and Gemini's documented JSON Schema subset.
+
 ## [v04.05.17] — 2026-07-17
 
 **Provider SDK maintenance with exact install-script review.** This patch

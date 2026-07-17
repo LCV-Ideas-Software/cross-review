@@ -151,15 +151,11 @@ export interface TokenUsage {
   // provider-reported costs to keep the no-hardcoded-financials
   // contract intact.
   provider_reported_total_cost_usd?: number | undefined;
-  // v3.0.0 R1 fix (codex cross-review catch 2026-05-12): per-call
-  // signal that a Perplexity Sonar call actually performed a web search
-  // on the wire. The relator (generate) role forces disable_search:true
-  // regardless of operator config; without this signal, estimateCost()
-  // would charge a request fee for searches that did not run. False
-  // means the adapter sent disable_search:true; true means search was
-  // active. Undefined (legacy/stub paths) → cost layer falls back to
-  // the global config.perplexity.disable_search check. Set only by
-  // PerplexityAdapter; ignored by all other peers' cost branches.
+  // Per-call signal that a Perplexity Sonar call actually performed a
+  // web search. This is latency/search telemetry only: Perplexity's
+  // published request pricing is unchanged when disable_search=true,
+  // so estimateCost() charges the configured request fee either way.
+  // Set only by PerplexityAdapter; ignored by other peers.
   search_performed?: boolean | undefined;
 }
 
@@ -229,6 +225,10 @@ export interface CacheManifestEntry {
   latency_ms: number;
   estimated_savings_usd?: number | undefined;
   savings_unknown?: boolean | undefined;
+  // Distinguishes the operation that consumed the cache. Older manifests
+  // omit this field and are interpreted as ordinary peer reviews.
+  call_kind?: "review" | "generation" | "evidence_judge" | undefined;
+  call_label?: string | undefined;
 }
 
 export interface CacheManifest {
@@ -371,11 +371,62 @@ export interface PeerFailure {
     | undefined;
 }
 
+/**
+ * Minimal durable ledger entry written as soon as one provider settles,
+ * before the all-peer barrier. The raw response/failure remains in the
+ * referenced artifact; metadata retains only the fields required to recover
+ * exact usage/cost without treating an already-settled call as unknown.
+ */
+export interface ProviderCallSettlement {
+  round: number;
+  peer: PeerId;
+  provider: string;
+  model: string;
+  kind: "result" | "failure";
+  artifact_path: string;
+  settled_at: string;
+  status?: ReviewStatus | null | undefined;
+  usage?: TokenUsage | undefined;
+  cost?: CostEstimate | undefined;
+  attempts: number;
+  latency_ms: number;
+  billing_status?: "reported" | "unknown" | undefined;
+  unpriced_attempts?: number | undefined;
+  /** Links a secondary provider call to the reservation created before dispatch. */
+  reservation_id?: string | undefined;
+}
+
+export interface ProviderCallReservation {
+  id: string;
+  peer: PeerId;
+  provider: string;
+  model: string;
+  label: string;
+  started_at: string;
+  /** Process that owns this secondary call while its round remains active. */
+  owner_pid?: number | undefined;
+}
+
+/** A paid non-review call reserved before dispatch (generation or evidence judge). */
+export interface PendingProviderCallReservation extends ProviderCallReservation {
+  round: number;
+  call_kind: "generation" | "evidence_judge";
+  /** Process that owns the in-flight call; prevents another live host from
+   * conservatively reconciling a provider call that is still running. */
+  owner_pid: number;
+}
+
 export interface InFlightRound {
   round: number;
   peers: PeerId[];
   started_at: string;
   status: "running";
+  /** Process that owns the review round after the session lock is released. */
+  owner_pid?: number | undefined;
+  /** Settled calls awaiting atomic promotion into a completed round. */
+  provider_settlements?: ProviderCallSettlement[] | undefined;
+  /** Secondary calls (for example format recovery) reserved before dispatch. */
+  provider_call_reservations?: ProviderCallReservation[] | undefined;
   /** Journal baseline for broker mutations made before the round is appended.
    * `null` preserves the distinction between an absent field and an empty
    * collection so interrupted recovery can restore the exact prior state. */
@@ -786,6 +837,9 @@ export interface PeerCallContext {
   // ship-critical paths. Each adapter maps the shared scale to its provider
   // contract; the canonical Grok 4.5 adapter clamps it to low/medium/high.
   reasoning_effort_override?: ReasoningEffort | undefined;
+  // Per-operation output budget. Evidence judges use a compact cap rather
+  // than inheriting the much larger full-review budget.
+  max_output_tokens_override?: number | undefined;
   // v2.21.0 (caching): caller identity plumbed to the adapter so
   // OpenAI/Grok adapters can build a pair-scoped prompt_cache_key
   // (peer:caller:vN). Defaults to "operator" when omitted by the
@@ -902,6 +956,10 @@ export interface SessionMeta {
   version: string;
   /** v2 records every known billable path and marks unknown attempts explicitly. */
   accounting_schema_version?: 2 | undefined;
+  /** Redacted, credential-free settings actually used when the session began. */
+  effective_config_snapshot?: Record<string, unknown> | undefined;
+  /** SHA-256 of the canonical JSON form of effective_config_snapshot. */
+  effective_config_sha256?: string | undefined;
   created_at: string;
   updated_at: string;
   task: string;
@@ -911,6 +969,13 @@ export interface SessionMeta {
   outcome_reason?: string | undefined;
   capability_snapshot: PeerProbeResult[];
   in_flight?: InFlightRound | undefined;
+  /**
+   * Exact provider settlements recovered from an interrupted, non-appended
+   * round. They affect accounting but never masquerade as completed votes.
+   */
+  interrupted_provider_settlements?: ProviderCallSettlement[] | undefined;
+  /** Paid non-review calls reserved before dispatch and not yet settled. */
+  pending_provider_call_reservations?: PendingProviderCallReservation[] | undefined;
   /** Provider dispatch marker, independent from async background-job control. */
   generation_in_flight?: BackgroundGenerationInFlight | undefined;
   convergence_scope?: ConvergenceScope | undefined;
@@ -1187,9 +1252,8 @@ export interface AppConfig {
   // v3.0.0 (Perplexity 6th peer): per-call knobs that are specific to
   // Perplexity Sonar API. `search_context_size` controls the breadth of
   // the underlying web search (low/medium/high) and drives both quality
-  // AND per-1000-request fee. `disable_search` turns off the web-search
-  // component entirely (peer becomes a pure LLM reasoning over the
-  // attached evidence; pricing reduces to token-based only). Set via
+  // AND per-1000-request fee. `disable_search` turns off retrieval but does
+  // not waive Perplexity's documented request fee. Set via
   // CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE (default "low") and
   // CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH (default false).
   // `probe_mode` defaults to auth_only so probe_peers never burns Sonar
@@ -1213,6 +1277,9 @@ export interface EvidenceJudgeAutowireConfig {
   peer: PeerId | undefined;
   active: boolean;
   max_items_per_pass: number;
+  max_output_tokens: number;
+  /** Deliberately independent from the primary reviewer effort. */
+  reasoning_effort?: ReasoningEffort | undefined;
   configured_mode_raw: string;
   configured_peer_raw: string;
   // v2.15.0 (item 1): consensus-based autowire. When set (>=2 enabled

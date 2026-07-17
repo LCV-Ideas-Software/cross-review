@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.5.17";
+export const VERSION = "4.5.18";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -655,11 +655,21 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
     10,
   );
   const maxItemsPerPass = Number.isFinite(rawCap) && rawCap > 0 ? rawCap : 4;
+  const rawOutputCap = Number.parseInt(
+    envValue("CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS") ?? "2048",
+    10,
+  );
+  const maxOutputTokens =
+    Number.isFinite(rawOutputCap) && rawOutputCap >= 256 ? rawOutputCap : 2048;
+  const judgeReasoningEffort =
+    reasoningEffort("CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT", "medium") ?? "medium";
   return {
     mode,
     peer,
     active,
     max_items_per_pass: maxItemsPerPass,
+    max_output_tokens: maxOutputTokens,
+    reasoning_effort: judgeReasoningEffort,
     configured_mode_raw: rawMode,
     configured_peer_raw: rawPeer,
     consensus_peers: consensusPeers,
