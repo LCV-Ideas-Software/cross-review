@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.20** (package `4.5.20`).
+**Status.** Stable. The current source/release target is **v04.05.21** (package `4.5.21`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.21`**      | Aligns the durable effective-config regression with JSON semantics: unset optional properties are omitted consistently from persisted snapshots and their SHA-256 canonical form.                                                                                           |
 | **`v04.05.20`**      | Restores a deterministic CI fixture for the pre-publish budget/cache contract: Gemini has an explicit test rate and a manually known settlement cannot retain a stale unknown-spend marker. The production financial gate remains fail-closed.                              |
 | **`v04.05.19`**      | Hardens the npm publication gate without weakening artifact verification: an integrity-bound temporary lock drives `npm ci` and `npm audit signatures`, while visibility no longer pipes downloaded data into Node.                                                         |
 | **`v04.05.18`**      | Closes the 4.5.16–4.5.17 session-audit findings: symmetric grounding for blocking verdicts, per-peer write-through durability, terminal preflight audit trails, bounded evidence judges, complete cache/config telemetry and action-oriented compact reports.               |

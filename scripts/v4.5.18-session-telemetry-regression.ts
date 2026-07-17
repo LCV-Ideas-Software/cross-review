@@ -59,6 +59,13 @@ const regressions: Regression[] = [
       };
       assert.match(meta.effective_config_sha256 ?? "", /^[0-9a-f]{64}$/);
       assert.ok(meta.effective_config_snapshot, "effective config snapshot is absent");
+      // The durable snapshot is JSON. Optional runtime properties with an
+      // `undefined` value (such as an unset single-judge peer) are omitted
+      // during canonicalization and persistence, so compare against the same
+      // JSON-representable form rather than the in-memory object.
+      const expectedEvidenceJudgeAutowire = JSON.parse(
+        JSON.stringify(orchestrator.config.evidence_judge_autowire),
+      ) as Record<string, unknown>;
       assert.deepEqual(
         {
           models: meta.effective_config_snapshot?.models,
@@ -71,7 +78,7 @@ const regressions: Regression[] = [
           models: orchestrator.config.models,
           reasoning_effort: orchestrator.config.reasoning_effort,
           retry: orchestrator.config.retry,
-          evidence_judge_autowire: orchestrator.config.evidence_judge_autowire,
+          evidence_judge_autowire: expectedEvidenceJudgeAutowire,
           cost_rates: orchestrator.config.cost_rates,
         },
       );

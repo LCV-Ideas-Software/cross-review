@@ -7,6 +7,16 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.21] — 2026-07-17
+
+**Durable configuration telemetry fixture aligned with JSON semantics.**
+
+### Fixed
+
+- Normalizes the expected evidence-judge autowire object before comparing it
+  with the persisted effective-config snapshot. Unset optional properties are
+  intentionally absent from durable JSON and its SHA-256 canonical form.
+
 ## [v04.05.20] — 2026-07-17
 
 **Reproducible pre-publish budget/cache regression under CI defaults.**

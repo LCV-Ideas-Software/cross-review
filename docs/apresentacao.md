@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-17: `4.5.20`. O registro pode ficar
+> Estado do source/release target em 2026-07-17: `4.5.21`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -616,6 +616,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                              |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.21`      | Alinha a fixture de telemetria de config durável à semântica JSON: propriedade opcional não configurada é omitida do snapshot persistido e de seu SHA-256 canônico.                                |
 | `v04.05.20`      | Restaura fixture CI determinística do contrato budget/cache: Gemini recebe rate explícito e settlement conhecido não retém marcador de gasto desconhecido; o gate financeiro continua fail-closed. |
 | `v04.05.19`      | Corrige o Auto-tag/Scorecard com lock temporário íntegro, `npm ci`, contrato do tarball e `npm audit signatures`; visibilidade sem pipe remoto.                                                    |
 | `v04.05.18`      | Grounding simétrico para vetos factuais, persistência imediata por peer, preflights terminais auditáveis, judges limitados, telemetria de cache/config e relatórios compactos acionáveis.          |
