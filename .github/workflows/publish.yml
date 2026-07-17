@@ -413,17 +413,9 @@ jobs:
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
         run: |
           set -euo pipefail
-          REGISTRY_PATH="$(node -e "process.stdout.write(encodeURIComponent(process.env.PACKAGE_NAME))")"
-          URL="https://registry.npmjs.org/${REGISTRY_PATH}"
           for attempt in {1..12}; do
-            if curl -fsS "$URL" | node -e '
-              let data = "";
-              process.stdin.on("data", (chunk) => { data += chunk; });
-              process.stdin.on("end", () => {
-                const pkg = JSON.parse(data);
-                process.exit(pkg.versions && pkg.versions[process.env.PACKAGE_VERSION] ? 0 : 1);
-              });
-            '; then
+            published_version="$(npm --registry=https://registry.npmjs.org view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version 2>/dev/null || true)"
+            if [ "$published_version" = "$PACKAGE_VERSION" ]; then
               echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is publicly visible on npmjs.com."
               exit 0
             fi
@@ -448,13 +440,29 @@ jobs:
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
         run: |
           set -euo pipefail
-          audit_dir="$(mktemp -d)"
-          trap 'rm -rf "$audit_dir"' EXIT
-          cd "$audit_dir"
-          npm --registry=https://registry.npmjs.org init --yes >/dev/null
-          npm --registry=https://registry.npmjs.org install --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none "${PACKAGE_NAME}@${PACKAGE_VERSION}"
+          audit_root="$(mktemp -d)"
+          trap 'rm -rf "$audit_root"' EXIT
           for attempt in {1..12}; do
-            if npm --registry=https://registry.npmjs.org audit signatures; then
+            audit_dir="$(mktemp -d "$audit_root/attempt.XXXXXX")"
+            if ! npm --registry=https://registry.npmjs.org view "${PACKAGE_NAME}@${PACKAGE_VERSION}" --json > "$audit_dir/registry-metadata.json"; then
+              echo "Registry metadata is not available yet for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+            elif ! node "$GITHUB_WORKSPACE/scripts/create-signature-audit-lock.mjs" \
+              --source-package-json "$GITHUB_WORKSPACE/package.json" \
+              --source-package-lock "$GITHUB_WORKSPACE/package-lock.json" \
+              --registry-metadata "$audit_dir/registry-metadata.json" \
+              --output-directory "$audit_dir" \
+              --package-name "$PACKAGE_NAME" \
+              --package-version "$PACKAGE_VERSION"; then
+              echo "::error::Published package metadata cannot produce a cryptographically pinned signature-audit lock."
+              exit 1
+            elif (
+              cd "$audit_dir"
+              npm --registry=https://registry.npmjs.org ci --omit=dev --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none
+              node "$GITHUB_WORKSPACE/scripts/verify-published-package-runtime-contract.mjs" \
+                --expected "$audit_dir/published-package-runtime-contract.json" \
+                --installed "$audit_dir/node_modules/${PACKAGE_NAME}/package.json"
+              npm --registry=https://registry.npmjs.org audit signatures
+            ); then
               echo "Registry signatures and provenance verified for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
               exit 0
             fi

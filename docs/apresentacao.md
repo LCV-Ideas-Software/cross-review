@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-17: `4.5.18`. O registro pode ficar
+> Estado do source/release target em 2026-07-17: `4.5.19`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -616,6 +616,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                     |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.19`      | Corrige o Auto-tag/Scorecard com lock temporário íntegro, `npm ci`, contrato do tarball e `npm audit signatures`; visibilidade sem pipe remoto.                                           |
 | `v04.05.18`      | Grounding simétrico para vetos factuais, persistência imediata por peer, preflights terminais auditáveis, judges limitados, telemetria de cache/config e relatórios compactos acionáveis. |
 | `v04.05.17`      | Publica a manutenção acumulada dos SDKs e preserva o bloqueio estrito de scripts npm com autorização exata do lifecycle no-op do Google Gen AI 2.12.0.                                    |
 | `v04.05.16`      | Limita o polling padrão, distingue rodada ativa de concluída, entrega Markdown real seguro e torna estado/cancelamento de jobs durável e explícito entre hosts.                           |

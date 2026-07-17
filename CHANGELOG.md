@@ -7,6 +7,22 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.19] — 2026-07-17
+
+**Release-gate hardening without weakening provenance verification.**
+
+### Fixed
+
+- Corrects the Auto-tag/Scorecard blocker introduced by the 4.5.18 release
+  audit: the post-publish signature check no longer uses mutable `npm install`.
+  It derives an isolated lockfile-v3 fixture from the committed dependency tree,
+  binds the exact published tarball to npmjs.org and its SHA-512 SRI integrity,
+  installs only through `npm ci`, verifies the installed manifest against the
+  protected source contract, then runs `npm audit signatures`.
+- Replaces the npm visibility `curl | node` pipeline with a fixed-registry
+  metadata query, so release verification never pipes downloaded content into
+  an interpreter. The zero-open-alert publication gate remains unchanged.
+
 ## [v04.05.18] — 2026-07-17
 
 **Session-audit remediation and symmetric anti-deception controls.** This patch

@@ -317,18 +317,67 @@ assert.match(
 );
 assert.match(
   publishWorkflow,
-  /npm --registry=https:\/\/registry\.npmjs\.org install --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}"/,
-  "signature audit must install the exact published package under npm v12 fail-closed dependency controls",
+  /npm --registry=https:\/\/registry\.npmjs\.org view "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}" --json[\s\S]*?create-signature-audit-lock\.mjs[\s\S]*?npm --registry=https:\/\/registry\.npmjs\.org ci --omit=dev --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none[\s\S]*?verify-published-package-runtime-contract\.mjs[\s\S]*?npm --registry=https:\/\/registry\.npmjs\.org audit signatures/,
+  "signature audit must install the exact published package through a validated lockfile and npm ci",
 );
 assert.match(
   publishWorkflow,
-  /npm --registry=https:\/\/registry\.npmjs\.org init --yes/,
-  "the isolated signature-audit fixture must not inherit a registry from runner configuration",
+  /npm --registry=https:\/\/registry\.npmjs\.org view "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}" version/,
+  "public visibility must query the fixed npmjs.org registry without downloading executable content",
 );
 assert.doesNotMatch(
   publishWorkflow,
-  /npm install --package-lock-only[\s\S]{0,500}npm audit signatures/,
-  "npm audit signatures requires installed dependencies, not a package-lock-only fixture",
+  /npm --registry=https:\/\/registry\.npmjs\.org install[^\n]*"\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}"/,
+  "published-package signature verification must not use a mutable npm install command",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /curl -fsS "\$URL" \| node -e/,
+  "npmjs visibility must not pipe downloaded data into an interpreter",
+);
+assert.match(
+  registryVerifier,
+  /const NPM_REGISTRY_URL = "https:\/\/registry\.npmjs\.org"/,
+  "registry verifier must keep its fixed npmjs.org origin",
+);
+const signatureAuditLockGenerator = await read("scripts/create-signature-audit-lock.mjs");
+assert.match(
+  signatureAuditLockGenerator,
+  /source package identity does not match the protected release identity/,
+  "signature-audit lock generator must bind source identity to the protected release identity",
+);
+assert.match(
+  signatureAuditLockGenerator,
+  /npm registry runtime dependencies do not match the protected source package/,
+  "signature-audit lock generator must reject registry dependency substitution",
+);
+assert.match(
+  signatureAuditLockGenerator,
+  /dist\.integrity must be a sha512 SRI value/,
+  "signature-audit lock generator must require the registry sha512 integrity value",
+);
+assert.match(
+  signatureAuditLockGenerator,
+  /dist\.tarball escaped the fixed HTTPS npmjs\.org origin/,
+  "signature-audit lock generator must reject tarballs outside the fixed npmjs.org origin",
+);
+assert.match(
+  signatureAuditLockGenerator,
+  /published-package-runtime-contract\.json/,
+  "signature-audit lock generator must emit the expected published runtime contract",
+);
+const publishedPackageRuntimeContractVerifier = await read(
+  "scripts/verify-published-package-runtime-contract.mjs",
+);
+assert.match(
+  publishedPackageRuntimeContractVerifier,
+  /installed package identity does not match the protected release identity/,
+  "published-package verifier must bind the installed artifact to the protected release identity",
+);
+assert.match(
+  publishedPackageRuntimeContractVerifier,
+  /installed package \$\{field\} does not match the protected source package/,
+  "published-package verifier must reject a tarball whose runtime dependencies differ from source",
 );
 assert.match(
   publishWorkflow,
