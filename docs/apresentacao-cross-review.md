@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.16`                           |
-| Data do source/release target | `2026-07-13`                       |
+| Versão preparada pelo source  | `4.5.17`                           |
+| Data do source/release target | `2026-07-17`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -808,6 +808,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                               |
 | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.17`      | 2026-07-17    | Publica a manutenção acumulada dos SDKs e mantém scripts de dependências bloqueados por padrão, com autorização exata do lifecycle no-op do Google Gen AI 2.12.0.                      |
 | `v04.05.16`      | 2026-07-13    | Compacta o poll padrão, separa rodada ativa/concluída, entrega Markdown real seguro e persiste estado terminal de jobs para cancelamento tardio explícito entre hosts.                 |
 | `v04.05.15`      | 2026-07-12    | Publica a continuidade do Evidence Broker com updater npm suportado, npm 12 verificado nos workflows e lock pip-compile íntegro.                                                       |
 | `v04.05.14`      | 2026-07-12    | Restaura continuidade segura do Evidence Broker por replay local grounded, aliases estritos, `git -C ... diff --check` e persistência reconciliada.                                    |
@@ -883,9 +884,9 @@ Antes de usar uma revisão como gate:
 
 ## Fontes verificadas para esta apresentação
 
-- Contrato runtime do source target: regressões preparadas em 2026-07-13. O
+- Contrato runtime do source target: regressões preparadas em 2026-07-17. O
   runtime 4.5.8 foi confirmado após o reload daquela auditoria; o source/release
-  target atual é 4.5.16. `server_info` continua sendo a autoridade para cada
+  target atual é 4.5.17. `server_info` continua sendo a autoridade para cada
   janela depois do upgrade e reload.
 - `package.json` do repositório local.
 - `README.md`.

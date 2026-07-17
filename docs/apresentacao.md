@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-13: `4.5.16`. O registro pode ficar
+> Estado do source/release target em 2026-07-17: `4.5.17`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -613,6 +613,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.17`      | Publica a manutenção acumulada dos SDKs e preserva o bloqueio estrito de scripts npm com autorização exata do lifecycle no-op do Google Gen AI 2.12.0.                                  |
 | `v04.05.16`      | Limita o polling padrão, distingue rodada ativa de concluída, entrega Markdown real seguro e torna estado/cancelamento de jobs durável e explícito entre hosts.                         |
 | `v04.05.15`      | Publica a continuidade do Evidence Broker com hardgate Dependabot completo: npm suportado no updater, npm 12 no build/release e lock pip-compile íntegro.                               |
 | `v04.05.14`      | Reprocessa localmente fontes READY históricas estritamente grounded sem reutilizá-las no prompt atual, colapsa aliases seguros e persiste a convergência reconciliada.                  |

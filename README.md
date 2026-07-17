@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.16** (package `4.5.16`).
+**Status.** Stable. The current source/release target is **v04.05.17** (package `4.5.17`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.17`**      | Publishes the accumulated provider/toolchain maintenance, raises the Anthropic SDK range and keeps npm 12 dependency scripts fail-closed with an exact, reviewed Google Gen AI 2.12.0 no-op lifecycle permission.                                                           |
 | **`v04.05.16`**      | Makes background observation compact and race-safe: summary polling by default, explicit forensic detail, real HTML-neutralized Markdown, durable cross-host job status and idempotent late-cancellation results with final state.                                          |
 | **`v04.05.15`**      | Ships the Evidence Broker continuity fix with the complete Dependabot hardgate: supported npm resolver, npm 12 build/release pin, pip-compile source+hash lock, grouped Python updates and concurrent-base merge retry.                                                     |
 | **`v04.05.14`**      | Restores Evidence Broker continuity safely: clean grounded historical READY sources are replayed locally without stale prompt reuse, strict same-owner aliases collapse, `git -C ... diff --check` is recognized and final convergence is persisted consistently.           |
