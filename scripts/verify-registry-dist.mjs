@@ -4,6 +4,8 @@ const ATTESTATION_MAX_ATTEMPTS = 12;
 const ATTESTATION_RETRY_DELAY_MS = 10_000;
 const RETRYABLE_ATTESTATION_STATUSES = new Set([404, 408, 425, 429]);
 const SLSA_PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
+const DSSE_IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
+const IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
 
 // v4.0.8: package name + version are mandatory inputs supplied by the
 // caller via PACKAGE_NAME and PACKAGE_VERSION env vars. This script no
@@ -148,14 +150,60 @@ const sleep = (delayMs) =>
     globalThis.setTimeout(resolve, delayMs);
   });
 
+function decodeSlsaDsseAttestation(attestation) {
+  if (attestation?.predicateType !== SLSA_PROVENANCE_PREDICATE) {
+    return undefined;
+  }
+
+  // npm's attestation endpoint supplies a Sigstore bundle. The SLSA
+  // statement is the base64-encoded payload of its DSSE envelope, not a
+  // pre-decoded `predicate` property on the outer registry record.
+  const envelope = attestation?.bundle?.dsseEnvelope;
+  if (!envelope || typeof envelope !== "object") {
+    throw new Error("SLSA provenance is missing its DSSE envelope");
+  }
+  if (envelope.payloadType !== DSSE_IN_TOTO_PAYLOAD_TYPE) {
+    throw new Error(
+      `SLSA provenance has unsupported DSSE payload type ${String(envelope.payloadType)}`,
+    );
+  }
+  if (typeof envelope.payload !== "string" || envelope.payload.length === 0) {
+    throw new Error("SLSA provenance DSSE envelope is missing its payload");
+  }
+
+  let statement;
+  try {
+    statement = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8"));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`SLSA provenance DSSE payload is not valid JSON: ${detail}`, { cause: error });
+  }
+  if (!statement || typeof statement !== "object") {
+    throw new Error("SLSA provenance DSSE payload is not an in-toto statement");
+  }
+  if (statement._type !== IN_TOTO_STATEMENT_TYPE) {
+    throw new Error("SLSA provenance DSSE payload has an unexpected in-toto statement type");
+  }
+  if (statement.predicateType !== SLSA_PROVENANCE_PREDICATE) {
+    throw new Error("SLSA provenance DSSE payload has an unexpected predicate type");
+  }
+  if (!statement.predicate || typeof statement.predicate !== "object") {
+    throw new Error("SLSA provenance DSSE payload is missing its predicate");
+  }
+  return {
+    predicateType: SLSA_PROVENANCE_PREDICATE,
+    predicate: statement.predicate,
+  };
+}
+
 function expectedSlsaProvenance(document) {
   if (!Array.isArray(document?.attestations)) {
     throw new Error(`npm attestation document for ${spec} is missing an attestations array`);
   }
 
-  const slsaAttestations = document.attestations.filter(
-    (attestation) => attestation?.predicateType === SLSA_PROVENANCE_PREDICATE,
-  );
+  const slsaAttestations = document.attestations
+    .map((attestation) => decodeSlsaDsseAttestation(attestation))
+    .filter((attestation) => attestation !== undefined);
   if (slsaAttestations.length === 0) {
     throw new Error(`npm attestation document for ${spec} is missing SLSA provenance v1`);
   }
@@ -175,7 +223,7 @@ function expectedSlsaProvenance(document) {
   }
 
   const expectedAttestation = workflowMatched.find((attestation) =>
-    attestation.predicate.buildDefinition.resolvedDependencies?.some(
+    attestation.predicate?.buildDefinition?.resolvedDependencies?.some(
       (dependency) =>
         dependency?.uri === expectedGitDependencyUri &&
         dependency?.digest?.gitCommit === expectedGitSha,

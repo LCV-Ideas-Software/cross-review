@@ -700,31 +700,53 @@ globalThis.setTimeout = (callback, _delay, ...args) => {
   return 0;
 };
 
-const slsaAttestationResponse = ({ gitSha = regressionGitSha } = {}) =>
-  globalThis.Response.json({
+const slsaAttestationResponse = ({
+  gitSha = regressionGitSha,
+  statementType = "https://in-toto.io/Statement/v1",
+} = {}) => {
+  // npm's published attestation endpoint returns a Sigstore bundle whose
+  // in-toto statement is stored in the base64-encoded DSSE envelope payload.
+  // Keep this fixture congruent with that public registry contract instead of
+  // modeling a pre-decoded predicate object that the endpoint never returns.
+  const payload = Buffer.from(
+    JSON.stringify({
+      _type: statementType,
+      predicateType: "https://slsa.dev/provenance/v1",
+      predicate: {
+        buildDefinition: {
+          externalParameters: {
+            workflow: {
+              ref: regressionGitTag,
+              repository: regressionGitRepository,
+              path: regressionGithubWorkflowPath,
+            },
+          },
+          resolvedDependencies: [
+            {
+              uri: `git+${regressionGitRepository}@${regressionGitTag}`,
+              digest: { gitCommit: gitSha },
+            },
+          ],
+        },
+      },
+    }),
+    "utf8",
+  ).toString("base64");
+  return globalThis.Response.json({
     attestations: [
       {
         predicateType: "https://slsa.dev/provenance/v1",
-        predicate: {
-          buildDefinition: {
-            externalParameters: {
-              workflow: {
-                ref: regressionGitTag,
-                repository: regressionGitRepository,
-                path: regressionGithubWorkflowPath,
-              },
-            },
-            resolvedDependencies: [
-              {
-                uri: `git+${regressionGitRepository}@${regressionGitTag}`,
-                digest: { gitCommit: gitSha },
-              },
-            ],
+        bundle: {
+          dsseEnvelope: {
+            payloadType: "application/vnd.in-toto+json",
+            payload,
+            signatures: [],
           },
         },
       },
     ],
   });
+};
 
 async function runRegistryVerifierScenario(scenario, attestationResponseFactories) {
   let attestationLookupCount = 0;
@@ -807,6 +829,14 @@ try {
       ]),
     /expected git commit 0123456789abcdef0123456789abcdef01234567/,
     "post-publish verification must reject provenance for a different source commit",
+  );
+  await assert.rejects(
+    () =>
+      runRegistryVerifierScenario("wrong-in-toto-statement", [
+        () => slsaAttestationResponse({ statementType: "https://in-toto.io/Statement/v0.1" }),
+      ]),
+    /unexpected in-toto statement type/,
+    "post-publish verification must reject a provenance payload that is not an in-toto Statement v1",
   );
 } finally {
   globalThis.fetch = originalFetch;

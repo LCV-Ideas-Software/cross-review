@@ -7,6 +7,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.22] — 2026-07-17
+
+**npm provenance verification follows the registry DSSE envelope contract.**
+
+### Fixed
+
+- Decodes the in-toto statement from npm's published Sigstore DSSE envelope
+  before binding SLSA provenance to the release workflow, protected tag, and
+  immutable source commit. The cryptographic `npm audit signatures` gate
+  remains mandatory after this structural verification.
+
 ## [v04.05.21] — 2026-07-17
 
 **Durable configuration telemetry fixture aligned with JSON semantics.**
