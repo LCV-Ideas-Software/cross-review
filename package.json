@@ -1,6 +1,6 @@
 {
   "name": "@lcv-ideas-software/cross-review",
-  "version": "4.5.24",
+  "version": "4.5.25",
   "description": "API-first MCP server for multi-model cross-review with unanimous convergence gates.",
   "type": "module",
   "main": "dist/src/mcp/server.js",
@@ -84,7 +84,7 @@
     "@google/genai@2.12.0": true,
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true,
-    "protobufjs@7.6.4": true
+    "protobufjs@7.6.5": true
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

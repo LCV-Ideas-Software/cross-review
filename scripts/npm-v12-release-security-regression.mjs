@@ -52,7 +52,7 @@ const expectedAllowScripts = {
   "@google/genai@2.12.0": true,
   "esbuild@0.28.1": true,
   "fsevents@2.3.3": true,
-  "protobufjs@7.6.4": true,
+  "protobufjs@7.6.5": true,
 };
 const expectedNpmCliVersion = "12.0.1";
 const expectedNpmCliSha512 =

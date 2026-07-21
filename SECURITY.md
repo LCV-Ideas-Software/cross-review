@@ -2,15 +2,16 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.24 for package 4.5.24. This
+Current supported source/release target: v04.05.25 for package 4.5.25. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.24 resolves the three current registry advisories in the immutable lock:
+v04.05.25 resolves the three current registry advisories in the immutable lock:
 `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7.
 The Scorecard/Code Scanning and Auto-tag gates remain fail-closed; no finding is
-suppressed. The cryptographic `npm audit signatures` gate remains mandatory. It
+suppressed. Its version-pinned `allowScripts` approval is likewise updated only
+to `protobufjs@7.6.5`; the cryptographic `npm audit signatures` gate remains mandatory. It
 preserves v04.05.23 normalization of the one-item JSON array that npm v12 returns
 from `npm view --json`; v04.05.22 decoding of npm's published Sigstore DSSE
 envelope before binding SLSA provenance to the release workflow, protected tag,

@@ -7,7 +7,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
-## [v04.05.24] — 2026-07-21
+## [v04.05.25] — 2026-07-21
 
 **Security advisories are remediated without weakening release gates.**
 
@@ -17,6 +17,9 @@ standard `v00.00.00`; npm package versions remain SemVer.
   `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7.
   The Scorecard/Code Scanning and Auto-tag hard gates remain fail-closed; no
   alert suppression or workflow bypass was introduced.
+- Updates the version-pinned install-script approval to `protobufjs@7.6.5`.
+  This preserves npm's strict allowlist and does not enable a global script
+  bypass.
 
 ## [v04.05.23] — 2026-07-17
 
