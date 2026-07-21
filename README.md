@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.23** (package `4.5.23`).
+**Status.** Stable. The current source/release target is **v04.05.24** (package `4.5.24`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.24`**      | Resolves the three registry advisories in the lockfile: `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7. Scorecard and Auto-tag remain fail-closed; no alert was suppressed.                                                                    |
 | **`v04.05.23`**      | Accepts npm 12's one-item `npm view --json` response only when it contains one metadata object; empty, multiple, and malformed responses fail closed before the integrity-bound audit lock and mandatory `npm audit signatures` gate.                                       |
 | **`v04.05.22`**      | Decodes npm's Sigstore DSSE envelope before binding the SLSA provenance to the protected tag, publication workflow, and immutable source commit; the later cryptographic `npm audit signatures` gate remains mandatory.                                                     |
 | **`v04.05.21`**      | Aligns the durable effective-config regression with JSON semantics: unset optional properties are omitted consistently from persisted snapshots and their SHA-256 canonical form.                                                                                           |

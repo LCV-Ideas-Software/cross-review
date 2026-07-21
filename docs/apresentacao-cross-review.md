@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-07-17.
+Data de referência desta apresentação: 2026-07-21.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.23`                           |
-| Data do source/release target | `2026-07-17`                       |
+| Versão preparada pelo source  | `4.5.24`                           |
+| Data do source/release target | `2026-07-21`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -808,6 +808,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                      |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.24`      | 2026-07-21    | Corrige as três vulnerabilidades do lock: `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7; Scorecard e Auto-tag permanecem fail-closed, sem supressão de alerta.                   |
 | `v04.05.23`      | 2026-07-17    | Aceita a resposta unitária de `npm view --json` no npm 12 apenas com um objeto de metadata; respostas vazias, múltiplas ou inválidas falham fechadas antes do lock íntegro e da auditoria obrigatória.        |
 | `v04.05.22`      | 2026-07-17    | Decodifica o envelope DSSE Sigstore publicado pelo npm antes de vincular a provenance SLSA ao workflow, à tag protegida e ao commit imutável; a auditoria criptográfica posterior permanece obrigatória.      |
 | `v04.05.21`      | 2026-07-17    | Alinha a fixture de telemetria de config durável à semântica JSON: propriedade opcional não configurada é omitida do snapshot persistido e de seu SHA-256 canônico.                                           |
@@ -890,9 +891,9 @@ Antes de usar uma revisão como gate:
 
 ## Fontes verificadas para esta apresentação
 
-- Contrato runtime do source target: regressões preparadas em 2026-07-17. O
+- Contrato runtime do source target: regressões preparadas em 2026-07-21. O
   runtime 4.5.8 foi confirmado após o reload daquela auditoria; o source/release
-  target atual é 4.5.23. `server_info` continua sendo a autoridade para cada
+  target atual é 4.5.24. `server_info` continua sendo a autoridade para cada
   janela depois do upgrade e reload.
 - `package.json` do repositório local.
 - `README.md`.
