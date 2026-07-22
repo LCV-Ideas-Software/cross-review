@@ -338,6 +338,179 @@ assert.match(
   /Require owner-enforced immutable GitHub Releases[\s\S]*?LCV_AUTOMATION_TOKEN[\s\S]*?repos\/\$\{GITHUB_REPOSITORY\}\/immutable-releases[\s\S]*?enforced_by_owner/,
   "owner-enforced immutable releases must be proven in the gate before registry jobs become eligible",
 );
+const immutableReleasePreflightBlock = publicationGateBlock.match(
+  /- name: Require owner-enforced immutable GitHub Releases[\s\S]*?(?=\n\s+- name: Checkout)/,
+)?.[0];
+assert.ok(
+  immutableReleasePreflightBlock,
+  "the owner-enforced immutable-release preflight must remain independently auditable",
+);
+const preflightAdminTokenCopy = immutableReleasePreflightBlock.indexOf(
+  'immutability_token="${ADMIN_GH_TOKEN:-}"',
+);
+const preflightAdminTokenUnset = immutableReleasePreflightBlock.indexOf("unset ADMIN_GH_TOKEN");
+const preflightFirstSubprocess = immutableReleasePreflightBlock.indexOf(
+  'policy_json="$(GH_TOKEN="$immutability_token" gh api',
+);
+assert.ok(
+  preflightAdminTokenCopy >= 0 &&
+    preflightAdminTokenUnset > preflightAdminTokenCopy &&
+    preflightFirstSubprocess > preflightAdminTokenUnset,
+  "the initial administrative token must become a non-exported shell variable before any subprocess starts",
+);
+assert.equal(
+  (immutableReleasePreflightBlock.match(/\$\{?ADMIN_GH_TOKEN/g) ?? []).length,
+  1,
+  "the initial exported administrative token may only be read once before it is unset",
+);
+assert.match(
+  immutableReleasePreflightBlock,
+  /GH_TOKEN="\$immutability_token" gh api --method GET[\s\S]*?immutable-releases/,
+  "the initial administrative token must be injected only into the immutable-policy gh api subprocess",
+);
+assert.doesNotMatch(
+  immutableReleasePreflightBlock,
+  /export\s+immutability_token/,
+  "the copied initial administrative token must never be exported",
+);
+const immutablePreflightFixtureRoot = await mkdtemp(
+  path.join(os.tmpdir(), "cross-review-immutable-preflight-"),
+);
+try {
+  const mockBin = path.join(immutablePreflightFixtureRoot, "mock-bin");
+  const fixtureScript = path.join(immutablePreflightFixtureRoot, "immutable-preflight.sh");
+  const traceFile = path.join(immutablePreflightFixtureRoot, "environment.trace");
+  await mkdir(mockBin, { recursive: true });
+  const preflightRunBody = immutableReleasePreflightBlock
+    .match(/run: \|\r?\n([\s\S]*)/)?.[1]
+    ?.split(/\r?\n/)
+    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .join("\n");
+  assert.ok(preflightRunBody, "the immutable-policy preflight must retain an executable run body");
+  await writeFile(fixtureScript, `#!/usr/bin/env bash\n${preflightRunBody}\n`, "utf8");
+  await writeFile(
+    path.join(mockBin, "gh"),
+    `#!/usr/bin/env bash
+printf 'gh ADMIN=%s GH=%s COPY=%s\n' \
+  "\${ADMIN_GH_TOKEN-unset}" "\${GH_TOKEN-unset}" "\${immutability_token-unset}" >> "$TRACE_FILE"
+printf '%s\n' '{"enabled":true,"enforced_by_owner":true}'
+`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(mockBin, "jq"),
+    `#!/usr/bin/env bash
+printf 'jq ADMIN=%s GH=%s COPY=%s\n' \
+  "\${ADMIN_GH_TOKEN-unset}" "\${GH_TOKEN-unset}" "\${immutability_token-unset}" >> "$TRACE_FILE"
+case "$*" in
+  *enforced_by_owner*) printf '%s\n' true ;;
+  *enabled*) printf '%s\n' true ;;
+  *) exit 64 ;;
+esac
+`,
+    "utf8",
+  );
+  await Promise.all([
+    chmod(fixtureScript, 0o755),
+    chmod(path.join(mockBin, "gh"), 0o755),
+    chmod(path.join(mockBin, "jq"), 0o755),
+  ]);
+  const preflightOutput = execFileSync("bash", [fixtureScript], {
+    cwd: immutablePreflightFixtureRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ADMIN_GH_TOKEN: "administrative-sentinel",
+      GITHUB_REPOSITORY: "LCV-Ideas-Software/cross-review-fixture",
+      GITHUB_RUN_ID: "1",
+      PATH: `${mockBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      RUNNER_TEMP: immutablePreflightFixtureRoot,
+      TRACE_FILE: traceFile,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.match(
+    preflightOutput,
+    /Owner-enforced immutable releases proven before any registry or release write/,
+    "the isolated administrative preflight fixture must still authorize the policy read",
+  );
+  const preflightTrace = await readFile(traceFile, "utf8");
+  assert.equal(
+    preflightTrace,
+    [
+      "gh ADMIN=unset GH=administrative-sentinel COPY=unset",
+      "jq ADMIN=unset GH=unset COPY=unset",
+      "jq ADMIN=unset GH=unset COPY=unset",
+      "",
+    ].join("\n"),
+    "only gh api may inherit the administrative token; jq and every unrelated child must receive none",
+  );
+} finally {
+  await rm(immutablePreflightFixtureRoot, { recursive: true, force: true });
+}
+const workflowStepBlocks = (workflow) => workflow.split(/\r?\n(?= {6}- name: )/);
+const exportedGithubTokenSteps = [
+  ...workflowStepBlocks(autoTagWorkflow),
+  ...workflowStepBlocks(publishWorkflow),
+].filter((step) => step.includes(["GH_TOKEN: $", "{{ secrets.GITHUB_TOKEN }}"].join("")));
+assert.equal(
+  exportedGithubTokenSteps.length,
+  12,
+  "the secret-scope regression must audit every write-all GITHUB_TOKEN shell step",
+);
+for (const step of exportedGithubTokenSteps) {
+  const stepName = step.match(/- name:\s*([^\r\n]+)/)?.[1] ?? "unnamed GITHUB_TOKEN step";
+  const runBody = step.match(/run: \|\r?\n([\s\S]*)/)?.[1] ?? "";
+  const tokenCopy = runBody.indexOf('github_token="${GH_TOKEN:-}"');
+  const tokenUnset = runBody.indexOf("unset GH_TOKEN");
+  assert.ok(
+    tokenCopy >= 0 && tokenUnset > tokenCopy,
+    `${stepName} must copy then unset the exported GITHUB_TOKEN before invoking any child`,
+  );
+  assert.equal(
+    (runBody.match(/\$\{?GH_TOKEN/g) ?? []).length,
+    1,
+    `${stepName} may read the exported GITHUB_TOKEN name only once`,
+  );
+  assert.doesNotMatch(
+    runBody,
+    /export\s+github_token|^\s*gh\s+(?:api|run|workflow|release)\b/m,
+    `${stepName} must not export the copy or invoke an authenticated gh command without a scoped wrapper`,
+  );
+}
+
+const githubPackagesJobBlock = publishWorkflow.match(
+  /\n {2}publish-gh-packages:[\s\S]*?(?=\n {2}create-github-release:)/,
+)?.[0];
+assert.ok(githubPackagesJobBlock, "the GitHub Packages job must remain independently auditable");
+assert.equal(
+  (githubPackagesJobBlock.match(/NODE_AUTH_TOKEN:\s*\$\{\{ secrets\.GITHUB_TOKEN \}\}/g) ?? [])
+    .length,
+  1,
+  "the GitHub Packages write token must enter only the credential-file setup step",
+);
+const githubPackagesCredentialBlock = githubPackagesJobBlock.match(
+  /- name: Select GitHub Packages registry for publish[\s\S]*?(?=\n\s+# The `--registry`)/,
+)?.[0];
+assert.ok(
+  githubPackagesCredentialBlock,
+  "GitHub Packages must retain an explicit credential-file setup step",
+);
+assert.match(
+  githubPackagesCredentialBlock,
+  /github_packages_token="\$\{NODE_AUTH_TOKEN:-\}"\s+unset NODE_AUTH_TOKEN[\s\S]*?_authToken=\$\{github_packages_token\}/,
+  "the GitHub Packages token must become a non-exported shell variable before the credential file is written",
+);
+assert.equal(
+  (githubPackagesCredentialBlock.match(/\$\{?NODE_AUTH_TOKEN/g) ?? []).length,
+  1,
+  "the exported GitHub Packages token name may only be read once before it is unset",
+);
+assert.match(
+  githubPackagesJobBlock,
+  /- name: Remove GitHub Packages credential file\s+if: always\(\)[\s\S]*?rm -f -- "\$\{RUNNER_TEMP\}\/npm-github-packages\.npmrc"/,
+  "the temporary GitHub Packages credential file must be removed even after a failed publication step",
+);
 for (const externalWriter of ["publish-npmjs", "publish-gh-packages"]) {
   assert.match(
     publishWorkflow,
@@ -1002,7 +1175,7 @@ assert.ok(
   githubReleaseReconciliationBlock,
   "the GitHub Release reconciliation step must remain independently auditable",
 );
-const githubTokenCopy = githubReleaseReconciliationBlock.indexOf('github_token="$GH_TOKEN"');
+const githubTokenCopy = githubReleaseReconciliationBlock.indexOf('github_token="${GH_TOKEN:-}"');
 const githubTokenUnset = githubReleaseReconciliationBlock.indexOf("unset GH_TOKEN");
 const firstGithubReconciliationSubprocess =
   githubReleaseReconciliationBlock.indexOf('ref_json="$(github_api');
@@ -1013,7 +1186,7 @@ assert.ok(
   "GITHUB_TOKEN must become a non-exported shell variable before any release-reconciliation subprocess starts",
 );
 assert.equal(
-  (githubReleaseReconciliationBlock.match(/\$GH_TOKEN/g) ?? []).length,
+  (githubReleaseReconciliationBlock.match(/\$\{?GH_TOKEN/g) ?? []).length,
   1,
   "the exported GITHUB_TOKEN name may only be read once before it is unset",
 );
@@ -1059,6 +1232,118 @@ assert.match(
   /GH_TOKEN="\$immutability_token" gh api --method GET[\s\S]*?immutable-releases/,
   "the administrative token must be scoped inline only to the policy-read API process",
 );
+const waitForCreatedReleaseFunction = githubReleaseReconciliationBlock.match(
+  /^ {10}wait_for_created_release\(\) \{\r?\n[\s\S]*?^ {10}\}\r?$/m,
+)?.[0];
+assert.ok(
+  waitForCreatedReleaseFunction,
+  "a newly created draft release must have bounded eventual-consistency discovery",
+);
+const createDraftReleaseBlock = githubReleaseReconciliationBlock.match(
+  /if \[ "\$load_status" -eq 1 \]; then[\s\S]*?(?=\n {10}elif \[ "\$load_status" -ne 0 \])/,
+)?.[0];
+assert.ok(createDraftReleaseBlock, "draft release creation must remain independently auditable");
+assert.equal(
+  (createDraftReleaseBlock.match(/github_api --method POST/g) ?? []).length,
+  1,
+  "draft recovery must issue exactly one release-creation POST",
+);
+assert.match(
+  createDraftReleaseBlock,
+  /created_release_id="\$\(jq -er '\.id' "\$created_release"\)"\s+wait_for_created_release "\$created_release_id"/,
+  "draft recovery must wait for the exact server-issued release id before asset upload",
+);
+assert.doesNotMatch(
+  createDraftReleaseBlock,
+  /created_release_id="\$\(jq -er '\.id' "\$created_release"\)"\s+load_release/,
+  "one immediate list read is not a safe substitute for bounded release visibility polling",
+);
+
+const releaseVisibilityFixtureRoot = await mkdtemp(
+  path.join(os.tmpdir(), "cross-review-release-visibility-"),
+);
+try {
+  const fixtureScript = path.join(releaseVisibilityFixtureRoot, "release-visibility.sh");
+  const fixtureFunction = waitForCreatedReleaseFunction
+    .split(/\r?\n/)
+    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .join("\n");
+  await writeFile(
+    fixtureScript,
+    `#!/usr/bin/env bash
+set -uo pipefail
+${fixtureFunction}
+release_json="$RUNNER_TEMP/release.json"
+load_calls=0
+sleep_calls=0
+sleep() {
+  sleep_calls=$((sleep_calls + 1))
+}
+load_release() {
+  load_calls=$((load_calls + 1))
+  case "$MOCK_MODE" in
+    delayed)
+      if [ "$load_calls" -lt 4 ]; then
+        return 1
+      fi
+      printf '{"id":42}\n' > "$release_json"
+      ;;
+    mismatch)
+      printf '{"id":99}\n' > "$release_json"
+      ;;
+    api-error)
+      return 3
+      ;;
+    never)
+      return 1
+      ;;
+    *)
+      return 64
+      ;;
+  esac
+}
+fixture_status=0
+wait_for_created_release 42 || fixture_status=$?
+printf 'status=%s load_calls=%s sleep_calls=%s\n' \
+  "$fixture_status" "$load_calls" "$sleep_calls"
+`,
+    "utf8",
+  );
+  await chmod(fixtureScript, 0o755);
+  const runVisibilityFixture = (mode) =>
+    execFileSync("bash", [fixtureScript], {
+      cwd: releaseVisibilityFixtureRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MOCK_MODE: mode,
+        RUNNER_TEMP: releaseVisibilityFixtureRoot,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  assert.match(
+    runVisibilityFixture("delayed"),
+    /status=0 load_calls=4 sleep_calls=3/,
+    "a newly created exact release id that appears after transient misses must converge by retry",
+  );
+  assert.match(
+    runVisibilityFixture("mismatch"),
+    /status=2 load_calls=1 sleep_calls=0/,
+    "a different listed release id must fail immediately before any asset mutation",
+  );
+  assert.match(
+    runVisibilityFixture("api-error"),
+    /status=3 load_calls=1 sleep_calls=0/,
+    "a release-list API or parse error must fail immediately without being retried as absence",
+  );
+  assert.match(
+    runVisibilityFixture("never"),
+    /status=1 load_calls=12 sleep_calls=11/,
+    "release visibility that never converges must fail after a bounded number of reads",
+  );
+} finally {
+  await rm(releaseVisibilityFixtureRoot, { recursive: true, force: true });
+}
 const firstReleaseMutation = githubReleaseReconciliationBlock.search(
   /github_api --method (?:POST|PATCH)|--request POST/,
 );
@@ -1404,18 +1689,160 @@ for (const prerequisite of [
   );
 }
 const privilegedCheckoutBlock = autoTagWorkflow.match(
-  /- name: Checkout CI-verified main commit with full history[\s\S]*?(?=\n\s+- name: Setup Node\.js 24 for release-policy validation)/,
+  /- name: Checkout trusted main with full history[\s\S]*?(?=\n\s+- name: Setup Node\.js 24 for release-policy validation)/,
 )?.[0];
 assert.ok(privilegedCheckoutBlock, "auto-tag must retain an explicit trusted checkout step");
 assert.match(
   privilegedCheckoutBlock,
-  /ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha\s*\}\}/,
-  "the serialized workflow_run must checkout the exact successful same-repository main SHA",
+  /ref:\s*refs\/heads\/main/,
+  "the privileged workflow_run must checkout only the constant trusted main ref",
 );
+assert.doesNotMatch(
+  privilegedCheckoutBlock,
+  /github\.event\.workflow_run/,
+  "the privileged checkout must never consume a workflow_run-controlled ref expression",
+);
+assert.match(
+  autoTagWorkflow,
+  /git cat-file -e "\$VERIFIED_SHA\^\{commit\}"[\s\S]*?git merge-base --is-ancestor "\$VERIFIED_SHA" "\$CHECKED_OUT_SHA"[\s\S]*?compare\/\$\{VERIFIED_SHA\}\.\.\.\$\{LIVE_MAIN_SHA\}[\s\S]*?git switch --detach "\$VERIFIED_SHA"/,
+  "the exact successful workflow_run SHA must be validated as a trusted main ancestor before the working tree detaches to it",
+);
+const verifiedMainStep = workflowStepBlocks(autoTagWorkflow).find((step) =>
+  step.includes(
+    "- name: Verify checked out commit is the successful CI commit on live main history",
+  ),
+);
+const detectVersionStep = workflowStepBlocks(autoTagWorkflow).find((step) =>
+  step.includes("- name: Detect an actual package version change"),
+);
+assert.ok(verifiedMainStep, "auto-tag must retain its trusted-main verification step");
+assert.ok(detectVersionStep, "auto-tag must retain its exact version-change detection step");
+const extractRunBody = (step) =>
+  step
+    .match(/run: \|\r?\n([\s\S]*)/)?.[1]
+    ?.split(/\r?\n/)
+    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .join("\n");
+const verifiedMainRunBody = extractRunBody(verifiedMainStep);
+const detectVersionRunBody = extractRunBody(detectVersionStep);
+assert.ok(verifiedMainRunBody, "trusted-main verification must retain executable shell");
+assert.ok(detectVersionRunBody, "version-change detection must retain executable shell");
+
+// Two rapid version bumps are the adversarial workflow_run case: by the time
+// CI for 4.5.26 is handled, trusted main may already contain 4.5.27. The
+// checkout action must stay on a constant trusted ref, but every versioned read
+// after ancestry validation must execute at the exact event SHA.
+const rapidVersionFixtureRoot = await mkdtemp(
+  path.join(os.tmpdir(), "cross-review-rapid-version-bumps-"),
+);
+try {
+  const mockBin = path.join(rapidVersionFixtureRoot, "mock-bin");
+  const scriptsDir = path.join(rapidVersionFixtureRoot, "scripts");
+  const verificationScript = path.join(rapidVersionFixtureRoot, "verify-main.sh");
+  const detectionScript = path.join(rapidVersionFixtureRoot, "detect-version.sh");
+  const verificationOutput = path.join(rapidVersionFixtureRoot, "verified.out");
+  const versionOutput = path.join(rapidVersionFixtureRoot, "version.out");
+  await Promise.all([mkdir(mockBin, { recursive: true }), mkdir(scriptsDir, { recursive: true })]);
+  await Promise.all([
+    writeFile(verificationScript, `#!/usr/bin/env bash\n${verifiedMainRunBody}\n`, "utf8"),
+    writeFile(detectionScript, `#!/usr/bin/env bash\n${detectVersionRunBody}\n`, "utf8"),
+    writeFile(
+      path.join(scriptsDir, "release-policy.mjs"),
+      await read("scripts/release-policy.mjs"),
+      "utf8",
+    ),
+    writeFile(
+      path.join(mockBin, "gh"),
+      `#!/usr/bin/env bash
+if [ "\${GH_TOKEN:-}" != "event-token" ] || [ -n "\${github_token:-}" ]; then
+  printf '%s\n' 'unexpected token scope in gh fixture' >&2
+  exit 65
+fi
+case "$*" in
+  *git/ref/heads/main*) printf '%s\n' "$MOCK_LIVE_MAIN_SHA" ;;
+  *compare/*...*) printf '%s\n' ahead ;;
+  *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 64 ;;
+esac
+`,
+      "utf8",
+    ),
+  ]);
+  await Promise.all([
+    chmod(verificationScript, 0o755),
+    chmod(detectionScript, 0o755),
+    chmod(path.join(mockBin, "gh"), 0o755),
+  ]);
+  const rapidGit = (args) =>
+    execFileSync("git", args, {
+      cwd: rapidVersionFixtureRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  rapidGit(["init", "-b", "main"]);
+  rapidGit(["config", "user.name", "Release Regression"]);
+  rapidGit(["config", "user.email", "release-regression@example.invalid"]);
+  const commitVersion = async (version) => {
+    await writeFile(
+      path.join(rapidVersionFixtureRoot, "package.json"),
+      `${JSON.stringify({ name: "rapid-version-fixture", version }, null, 2)}\n`,
+      "utf8",
+    );
+    rapidGit(["add", "package.json", "scripts/release-policy.mjs"]);
+    rapidGit(["commit", "-m", `version ${version}`]);
+    return rapidGit(["rev-parse", "HEAD"]);
+  };
+  await commitVersion("4.5.25");
+  const eventSha = await commitVersion("4.5.26");
+  const liveMainSha = await commitVersion("4.5.27");
+  execFileSync("bash", [verificationScript], {
+    cwd: rapidVersionFixtureRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GH_TOKEN: "event-token",
+      GITHUB_OUTPUT: verificationOutput,
+      GITHUB_REPOSITORY: "LCV-Ideas-Software/cross-review-fixture",
+      MOCK_LIVE_MAIN_SHA: liveMainSha,
+      PATH: `${mockBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      VERIFIED_SHA: eventSha,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.equal(
+    rapidGit(["rev-parse", "HEAD"]),
+    eventSha,
+    "after trust validation, auto-tag must detach to the exact workflow_run SHA",
+  );
+  execFileSync("bash", [detectionScript], {
+    cwd: rapidVersionFixtureRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GITHUB_OUTPUT: versionOutput,
+      VERIFIED_SHA: eventSha,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const rapidVersionOutput = await readFile(versionOutput, "utf8");
+  for (const exactEventOutput of [
+    "version=4.5.26",
+    "tag=v04.05.26",
+    `version_boundary_sha=${eventSha}`,
+    `release_candidate_sha=${eventSha}`,
+    "changed=true",
+  ]) {
+    assert.ok(
+      rapidVersionOutput.split(/\r?\n/).includes(exactEventOutput),
+      `two rapid bumps must still process the event commit exactly: ${exactEventOutput}`,
+    );
+  }
+} finally {
+  await rm(rapidVersionFixtureRoot, { recursive: true, force: true });
+}
 for (const codeScanningGate of [
   "permissions: write-all",
   "Wait for exact CodeQL analyses and require zero results",
-  'gh run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA"',
+  'github_run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA"',
   "code-scanning/analyses?per_page=100",
   "--paginate --slurp",
   "Accept: application/sarif+json",
@@ -1523,7 +1950,7 @@ const createTagBlock = autoTagWorkflow.match(
 assert.ok(createTagBlock, "auto-tag must retain an explicit tag-creation step");
 assert.ok(
   createTagBlock.indexOf("git/ref/heads/main") <
-    createTagBlock.search(/gh api --method POST "repos\/\$GITHUB_REPOSITORY\/git\/refs"/),
+    createTagBlock.search(/github_api --method POST "repos\/\$GITHUB_REPOSITORY\/git\/refs"/),
   "auto-tag must revalidate authenticated live-main ancestry immediately before creating the tag",
 );
 assert.match(
@@ -1552,12 +1979,12 @@ assert.doesNotMatch(
 );
 assert.match(
   autoTagWorkflow,
-  /gh workflow run publish\.yml(?: --repo "\$GITHUB_REPOSITORY")? --ref "\$\{TAG\}"/,
+  /github_workflow run publish\.yml(?: --repo "\$GITHUB_REPOSITORY")? --ref "\$\{TAG\}"/,
   "auto-tag must dispatch publish.yml on the tag ref because GITHUB_TOKEN tag pushes do not trigger a second workflow",
 );
 assert.doesNotMatch(
   autoTagWorkflow,
-  /gh workflow run publish\.yml[^\n]*\s-f\s+tag=/,
+  /github_workflow run publish\.yml[^\n]*\s-f\s+tag=/,
   "auto-tag must not supply a second tag input that could diverge from the dispatch ref",
 );
 assert.ok(

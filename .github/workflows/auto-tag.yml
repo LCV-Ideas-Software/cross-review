@@ -35,11 +35,11 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Checkout CI-verified main commit with full history
+      - name: Checkout trusted main with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: refs/heads/main
           fetch-depth: 0
       - name: Setup Node.js 24 for release-policy validation
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -53,21 +53,47 @@ jobs:
           VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          if [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
-            echo "matches=false" >> "$GITHUB_OUTPUT"
-            echo "::error::Checkout $CHECKED_OUT_SHA does not match CI-verified $VERIFIED_SHA."
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to validate the successful CI commit."
             exit 1
           fi
-          LIVE_MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          if [[ ! "$VERIFIED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CI supplied an invalid commit identity: '$VERIFIED_SHA'."
+            exit 1
+          fi
+          if ! git cat-file -e "$VERIFIED_SHA^{commit}" 2>/dev/null; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CI-verified commit $VERIFIED_SHA is absent from the full trusted main checkout."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$VERIFIED_SHA" "$CHECKED_OUT_SHA"; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CI-verified commit $VERIFIED_SHA is not an ancestor of trusted main checkout $CHECKED_OUT_SHA."
+            exit 1
+          fi
+          LIVE_MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
           if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
             echo "matches=false" >> "$GITHUB_OUTPUT"
             echo "::error::CI-verified commit $VERIFIED_SHA is no longer in live main history at $LIVE_MAIN_SHA (compare status: $relation)."
             exit 0
           fi
+          git switch --detach "$VERIFIED_SHA"
+          EXACT_CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          if [ "$EXACT_CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Trusted checkout detached to $EXACT_CHECKED_OUT_SHA instead of CI-verified commit $VERIFIED_SHA."
+            exit 1
+          fi
           echo "matches=true" >> "$GITHUB_OUTPUT"
-          echo "Verified successful CI commit $VERIFIED_SHA in live main history at $LIVE_MAIN_SHA."
+          echo "Verified successful CI commit $VERIFIED_SHA as an ancestor of trusted checkout $CHECKED_OUT_SHA and live main $LIVE_MAIN_SHA, then detached the working tree to that exact commit."
       - name: Detect an actual package version change
         if: steps.verified.outputs.matches == 'true'
         id: version-change
@@ -143,11 +169,20 @@ jobs:
           RELEASE_CANDIDATE_SHA: ${{ steps.version-change.outputs.release_candidate_sha }}
         run: |
           set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to resolve the immutable release target."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
           resolve_remote_tag() {
             local tag="$1"
             local ref_json ref_error object_type object_sha tag_json status
             ref_error="$RUNNER_TEMP/tag-ref-${GITHUB_RUN_ID}-${tag//[^A-Za-z0-9._-]/_}.err"
-            if ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" 2>"$ref_error")"; then
+            if ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" 2>"$ref_error")"; then
               :
             else
               status=$?
@@ -168,7 +203,7 @@ jobs:
                 echo "::error::Tag $tag resolves to unsupported Git object type '$object_type'." >&2
                 return 1
               fi
-              tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
+              tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
               object_type="$(jq -er '.object.type' <<<"$tag_json")"
               object_sha="$(jq -er '.object.sha' <<<"$tag_json")"
             done
@@ -190,7 +225,7 @@ jobs:
           }
           assert_ancestor() {
             local ancestor="$1" descendant="$2" relation
-            relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${ancestor}...${descendant}" --jq '.status')"
+            relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${ancestor}...${descendant}" --jq '.status')"
             if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
               echo "::error::Commit $ancestor is not an ancestor of $descendant (compare status: $relation)."
               exit 1
@@ -210,7 +245,7 @@ jobs:
             # commit, not an unverified historical bump, while retaining the
             # recorded boundary as audit evidence for the version epoch.
             target_sha="$RELEASE_CANDIDATE_SHA"
-            release_pages="$(gh api --method GET --paginate --slurp \
+            release_pages="$(github_api --method GET --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2026-03-10" \
               "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
@@ -225,7 +260,7 @@ jobs:
 
           assert_ancestor "$VERSION_BOUNDARY_SHA" "$target_sha"
           assert_ancestor "$target_sha" "$RELEASE_CANDIDATE_SHA"
-          target_package="$(gh api --method GET "repos/$GITHUB_REPOSITORY/contents/package.json" -f ref="$target_sha" --jq '.content' | tr -d '\n' | base64 --decode)"
+          target_package="$(github_api --method GET "repos/$GITHUB_REPOSITORY/contents/package.json" -f ref="$target_sha" --jq '.content' | tr -d '\n' | base64 --decode)"
           target_version="$(node -e '
             let input = "";
             process.stdin.setEncoding("utf8");
@@ -255,7 +290,13 @@ jobs:
           TARGET_SHA: ${{ steps.check.outputs.target_sha }}
         run: |
           set -euo pipefail
-          bash scripts/require-release-push-workflows.sh "$TARGET_SHA"
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to inspect exact-SHA workflows."
+            exit 1
+          fi
+          GH_TOKEN="$github_token" bash scripts/require-release-push-workflows.sh "$TARGET_SHA"
       - name: Wait for exact CodeQL analyses and require zero results
         if: >-
           steps.verified.outputs.matches == 'true' &&
@@ -265,9 +306,21 @@ jobs:
           TARGET_SHA: ${{ steps.check.outputs.target_sha }}
         run: |
           set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to inspect exact CodeQL evidence."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          github_run() {
+            GH_TOKEN="$github_token" gh run "$@"
+          }
           codeql_state="missing"
           for poll_attempt in {1..60}; do
-            codeql_run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA" --event push --limit 1 --json databaseId,status,conclusion --jq 'sort_by(.databaseId) | last // null')"
+            codeql_run="$(github_run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA" --event push --limit 1 --json databaseId,status,conclusion --jq 'sort_by(.databaseId) | last // null')"
             codeql_state="$(jq -r 'if . == null then "missing" else "\(.status):\(.conclusion // "")" end' <<<"$codeql_run")"
             if [ "$codeql_state" = "completed:success" ]; then
               echo "CodeQL completed successfully for $TARGET_SHA."
@@ -290,7 +343,7 @@ jobs:
           # state cannot prove that an older queued release commit was clean.
           required_codeql_categories=("/language:actions" "/language:javascript-typescript")
           for attempt in {1..12}; do
-            analyses_json="$(gh api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
             target_analyses="$(jq -c --arg sha "$TARGET_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL")]' <<<"$analyses_json")"
             analyses_ready=true
             for category in "${required_codeql_categories[@]}"; do
@@ -323,7 +376,7 @@ jobs:
                 fi
                 analysis_id="$(jq -er --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last | .id' <<<"$target_analyses")"
                 sarif_file="$RUNNER_TEMP/codeql-${analysis_id}.sarif"
-                gh api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
+                github_api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
                 result_count="$(jq '[.runs[]?.results[]?] | length' "$sarif_file")"
                 if [ "$result_count" -ne 0 ]; then
                   echo "::error::Exact CodeQL analysis $category contains $result_count result(s) for $TARGET_SHA; refusing to tag."
@@ -351,7 +404,13 @@ jobs:
           VERSION_BOUNDARY_SHA: ${{ steps.version-change.outputs.version_boundary_sha }}
         run: |
           set -euo pipefail
-          bash scripts/require-dependabot-release-evidence.sh require "$TARGET_SHA" "$VERSION_BOUNDARY_SHA"
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to inspect Dependabot release evidence."
+            exit 1
+          fi
+          GH_TOKEN="$github_token" bash scripts/require-dependabot-release-evidence.sh require "$TARGET_SHA" "$VERSION_BOUNDARY_SHA"
       - name: Create tag through the GitHub API
         if: >-
           steps.verified.outputs.matches == 'true' &&
@@ -363,17 +422,26 @@ jobs:
           TARGET_SHA: ${{ steps.check.outputs.target_sha }}
         run: |
           set -euo pipefail
-          LIVE_MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${TARGET_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to create the immutable release tag."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          LIVE_MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${TARGET_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
           if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
             echo "::error::Tag target $TARGET_SHA left live main history at $LIVE_MAIN_SHA (compare status: $relation)."
             exit 1
           fi
           create_error="$RUNNER_TEMP/create-tag-${GITHUB_RUN_ID}.err"
-          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+          if ! github_api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/${TAG}" \
             -f sha="$TARGET_SHA" >/dev/null 2>"$create_error"; then
-            ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")"
+            ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")"
             object_type="$(jq -er '.object.type' <<<"$ref_json")"
             existing_sha="$(jq -er '.object.sha' <<<"$ref_json")"
             for _ in {1..10}; do
@@ -384,7 +452,7 @@ jobs:
                 echo "::error::Concurrent tag $TAG resolves to unsupported Git object type '$object_type'."
                 exit 1
               fi
-              tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$existing_sha")"
+              tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$existing_sha")"
               object_type="$(jq -er '.object.type' <<<"$tag_json")"
               existing_sha="$(jq -er '.object.sha' <<<"$tag_json")"
             done
@@ -406,10 +474,22 @@ jobs:
           TARGET_SHA: ${{ steps.check.outputs.target_sha }}
         run: |
           set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to dispatch the protected-tag publication."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          github_workflow() {
+            GH_TOKEN="$github_token" gh workflow "$@"
+          }
           expected_sha="$TARGET_SHA"
           for attempt in {1..10}; do
             ref_error="$RUNNER_TEMP/dispatch-tag-${GITHUB_RUN_ID}.err"
-            if ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>"$ref_error")"; then
+            if ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>"$ref_error")"; then
               object_type="$(jq -er '.object.type' <<<"$ref_json")"
               tag_sha="$(jq -er '.object.sha' <<<"$ref_json")"
               for _ in {1..10}; do
@@ -420,7 +500,7 @@ jobs:
                   echo "::error::Tag $TAG resolves to unsupported Git object type '$object_type'."
                   exit 1
                 fi
-                tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha")"
+                tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha")"
                 object_type="$(jq -er '.object.type' <<<"$tag_json")"
                 tag_sha="$(jq -er '.object.sha' <<<"$tag_json")"
               done
@@ -442,6 +522,6 @@ jobs:
             echo "Waiting for tag ${TAG} to become visible through the authenticated API (${attempt}/10)."
             sleep 2
           done
-          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "${TAG}"
+          github_workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "${TAG}"
           echo "Dispatched publish.yml on protected tag ref ${TAG}; it will publish packages and create the GitHub Release."
     timeout-minutes: 90

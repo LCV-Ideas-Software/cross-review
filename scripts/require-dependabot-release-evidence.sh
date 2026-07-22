@@ -11,6 +11,11 @@ die() {
   exit 1
 }
 
+release_evidence_github_token=""
+github_api() {
+  GH_TOKEN="$release_evidence_github_token" gh api "$@"
+}
+
 commit_parent() {
   git rev-list --parents -n 1 "$1" | awk '{print $2}'
 }
@@ -103,8 +108,8 @@ resolve_provenance() {
 
 assert_target_on_live_main() {
   local target_sha="$1" live_main_sha relation
-  live_main_sha="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-  relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${target_sha}...${live_main_sha}" --jq '.status')"
+  live_main_sha="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+  relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${target_sha}...${live_main_sha}" --jq '.status')"
   if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
     die "Release target $target_sha left live main history at $live_main_sha (compare status: $relation)."
   fi
@@ -112,7 +117,7 @@ assert_target_on_live_main() {
 
 resolve_dependabot_workflow_id() {
   local workflow_pages matches count
-  workflow_pages="$(gh api --method GET --paginate --slurp \
+  workflow_pages="$(github_api --method GET --paginate --slurp \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2026-03-10" \
     "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100")"
@@ -159,7 +164,9 @@ require_evidence() {
   local run_pages latest_runs all_ready run state
 
   : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-  : "${GH_TOKEN:?GH_TOKEN is required}"
+  release_evidence_github_token="${GH_TOKEN:-}"
+  unset GH_TOKEN
+  [ -n "$release_evidence_github_token" ] || die "GH_TOKEN is required"
 
   provenance="$(resolve_provenance "$target_sha" "$version_boundary_sha")"
   changed="$(jq -r '.changed_in_epoch' <<<"$provenance")"
@@ -178,7 +185,7 @@ require_evidence() {
 
   for attempt in {1..60}; do
     assert_target_on_live_main "$target_sha"
-    run_pages="$(gh api --method GET --paginate --slurp \
+    run_pages="$(github_api --method GET --paginate --slurp \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2026-03-10" \
       "repos/$GITHUB_REPOSITORY/actions/workflows/${workflow_id}/runs" \
