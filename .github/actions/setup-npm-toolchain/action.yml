@@ -15,7 +15,8 @@ runs:
       env:
         NPM_CLI_VERSION: ${{ inputs.version }}
         NPM_CLI_SHA512: ${{ inputs.sha512 }}
-      run: |
+      run:
+        | # zizmor: ignore[github-env] Exact version/SHA-512 inputs are validated; only RUNNER_TEMP paths are exported.
         set -euo pipefail
 
         if [[ ! "$NPM_CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

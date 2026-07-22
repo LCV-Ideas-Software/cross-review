@@ -3,10 +3,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-permissions:
-  contents: read
+permissions: write-all
 concurrency:
-  group: publish-${{ github.ref_name }}
+  # One repository-wide release transaction at a time. Per-tag groups would
+  # allow two versions to race the monotonic npm/GitHub `latest` decisions.
+  group: release-publication
+  queue: max
   cancel-in-progress: false
 env:
   # Pin the npm release toolchain so the gate exercises npm v12 install-time defaults.
@@ -14,12 +16,10 @@ env:
   NPM_CLI_SHA512: "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140"
 jobs:
   gate:
-    name: Pre-publish gate (test + metadata)
+    name: Pre-publish gate (test + immutable artifact)
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: read
+    environment: release-validation
+    permissions: write-all
     outputs:
       name: ${{ steps.meta.outputs.name }}
       version: ${{ steps.meta.outputs.version }}
@@ -27,6 +27,10 @@ jobs:
       sha: ${{ steps.hardgate.outputs.sha }}
       display_tag: ${{ steps.meta.outputs.display_tag }}
       dist_tag: ${{ steps.meta.outputs.dist_tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      package_tarball: ${{ steps.pack.outputs.tarball }}
+      package_sha256: ${{ steps.pack.outputs.sha256 }}
+      package_integrity: ${{ steps.pack.outputs.integrity }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -58,9 +62,45 @@ jobs:
             exit 1
           fi
           echo "Validated publish ref: $PUBLISH_REF"
+      - name: Require owner-enforced immutable GitHub Releases
+        env:
+          ADMIN_GH_TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_GH_TOKEN" ]; then
+            echo "::error::LCV_AUTOMATION_TOKEN is required for the pre-publication immutable-release policy gate."
+            exit 1
+          fi
+          policy_error="$RUNNER_TEMP/immutable-release-policy-gate-${GITHUB_RUN_ID}.err"
+          if ! policy_json="$(GH_TOKEN="$ADMIN_GH_TOKEN" gh api --method GET \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" 2>"$policy_error")"; then
+            cat "$policy_error" >&2
+            echo "::error::Could not prove owner-enforced immutable releases before external publication."
+            exit 1
+          fi
+          policy_enabled="$(jq -er '
+            if has("enabled") and ((.enabled | type) == "boolean")
+            then (.enabled | tostring)
+            else error("missing or invalid enabled state")
+            end
+          ' <<<"$policy_json")"
+          policy_enforced="$(jq -er '
+            if has("enforced_by_owner") and ((.enforced_by_owner | type) == "boolean")
+            then (.enforced_by_owner | tostring)
+            else error("missing or invalid owner enforcement state")
+            end
+          ' <<<"$policy_json")"
+          if [ "$policy_enabled" != "true" ] || [ "$policy_enforced" != "true" ]; then
+            echo "::error::External publication requires owner-enforced immutable releases (enabled=$policy_enabled enforced_by_owner=$policy_enforced)."
+            exit 1
+          fi
+          echo "Owner-enforced immutable releases proven before any registry or release write."
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.ref }}
           fetch-depth: 0
       - name: Verify checked out tag identity
@@ -79,176 +119,193 @@ jobs:
             exit 1
           fi
           echo "Verified tag $PUBLISH_REF at $TAG_SHA."
-      - name: Revalidate tag SHA against current main and all required workflows
+      - name: Revalidate immutable tag target against live main history and all required workflows
         id: prerequisite_gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUBLISH_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main
-          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
-          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
-          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
-            echo "::error::Tag $PUBLISH_REF points to $TAG_SHA, but current main is $MAIN_SHA."
-            exit 1
-          fi
-
-          changed_files="$(git diff-tree --no-commit-id --name-only -r "$TAG_SHA")"
-          required_workflows=("CI" "CodeQL" "Socket Security")
-          scorecard_required=false
-          if grep -Eq '^(\.github/workflows/|\.github/dependabot\.yml$|socketsecurity-requirements\.txt$|SECURITY\.md$)' <<<"$changed_files"; then
-            required_workflows+=("OpenSSF Scorecard")
-            scorecard_required=true
-          fi
-          if grep -Eq '^(\.github/workflows/pages\.yml$|site/)' <<<"$changed_files"; then
-            required_workflows+=("Pages")
-          fi
-
-          # Do not trust the workflow that created or supplied the tag. Query
-          # every branch-push workflow required by the tagged main commit.
-          runs_json="[]"
-          for attempt in {1..60}; do
-            remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-            if [ "$remote_main_sha" != "$TAG_SHA" ]; then
-              echo "::error::main advanced to ${remote_main_sha:-missing} while the publish gate was waiting; refusing stale tag $PUBLISH_REF."
+          resolve_remote_tag() {
+            local tag="$1" ref_json object_type object_sha tag_json
+            ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag")"
+            object_type="$(jq -er '.object.type' <<<"$ref_json")"
+            object_sha="$(jq -er '.object.sha' <<<"$ref_json")"
+            for _ in {1..10}; do
+              if [ "$object_type" = "commit" ]; then
+                printf '%s' "$object_sha"
+                return 0
+              fi
+              if [ "$object_type" != "tag" ]; then
+                echo "::error::Tag $tag resolves to unsupported Git object type '$object_type'." >&2
+                return 1
+              fi
+              tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
+              object_type="$(jq -er '.object.type' <<<"$tag_json")"
+              object_sha="$(jq -er '.object.sha' <<<"$tag_json")"
+            done
+            echo "::error::Tag $tag exceeds the maximum annotated-tag peel depth." >&2
+            return 1
+          }
+          TAG_SHA="$(resolve_remote_tag "$PUBLISH_REF")"
+          assert_target_on_live_main() {
+            local relation
+            LIVE_MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+            relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${TAG_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
+            if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+              echo "::error::Tag $PUBLISH_REF at $TAG_SHA is no longer in live main history at $LIVE_MAIN_SHA (compare status: $relation)."
               exit 1
             fi
+            echo "Validated immutable target $TAG_SHA in live main history at $LIVE_MAIN_SHA."
+          }
+          assert_target_on_live_main
 
-            runs_json="$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$TAG_SHA" --event push --limit 100 --json databaseId,workflowName,name,status,conclusion,url)"
-            all_ready=true
-            for workflow_name in "${required_workflows[@]}"; do
-              workflow_state="$(jq -r --arg workflow "$workflow_name" '
-                [.[] | select(.workflowName == $workflow)]
-                | sort_by(.databaseId)
-                | last
-                | if . == null then "missing" else "\(.status):\(.conclusion // "")" end
-              ' <<<"$runs_json")"
-              if [ "$workflow_state" = "completed:success" ]; then
-                continue
-              fi
-              if [[ "$workflow_state" == completed:* ]]; then
-                echo "::error::$workflow_name finished as $workflow_state for $TAG_SHA; refusing publication."
-                jq -r --arg workflow "$workflow_name" '.[] | select(.workflowName == $workflow) | [.databaseId, .name, .status, .conclusion, .url] | @tsv' <<<"$runs_json"
-                exit 1
-              fi
-              all_ready=false
-              echo "Waiting for $workflow_name on $TAG_SHA (state: $workflow_state)."
-            done
-
-            if [ "$all_ready" = true ]; then
-              echo "All applicable push workflows completed successfully for $TAG_SHA: ${required_workflows[*]}."
+          TARGET_VERSION="$(git show "$TAG_SHA:package.json" | jq -er '.version | select(type == "string" and length > 0)')"
+          VERSION_BOUNDARY_SHA="$TAG_SHA"
+          version_cursor="$TAG_SHA"
+          while version_parent="$(git rev-list --parents -n 1 "$version_cursor" | awk '{print $2}')" && [ -n "$version_parent" ]; do
+            if ! parent_package="$(git show "$version_parent:package.json" 2>/dev/null)"; then
               break
             fi
-            if [ "$attempt" -eq 60 ]; then
-              echo "::error::Not all applicable workflows completed successfully for $TAG_SHA."
-              exit 1
+            parent_version="$(jq -er '.version | select(type == "string" and length > 0)' <<<"$parent_package")"
+            if [ "$parent_version" != "$TARGET_VERSION" ]; then
+              break
             fi
-            sleep 5
+            VERSION_BOUNDARY_SHA="$version_parent"
+            version_cursor="$version_parent"
           done
 
-          # A dependabot.yml push starts four independent ecosystem update
-          # jobs. They are not ordinary push workflows, but they are still a
-          # required consequence of that release commit.
-          if grep -Fxq ".github/dependabot.yml" <<<"$changed_files"; then
-            for attempt in {1..60}; do
-              remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-              if [ "$remote_main_sha" != "$TAG_SHA" ]; then
-                echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for Dependabot; refusing stale tag $PUBLISH_REF."
-                exit 1
-              fi
-              dependabot_json="$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$TAG_SHA" --limit 100 --json databaseId,workflowName,name,status,conclusion,url --jq '[.[] | select(.workflowName == "Dependabot Updates")]')"
-              dependabot_count="$(jq 'length' <<<"$dependabot_json")"
-              if [ "$dependabot_count" -ge 4 ] && jq -e 'all(.[]; .status == "completed")' <<<"$dependabot_json" >/dev/null; then
-                if ! jq -e 'all(.[]; .conclusion == "success")' <<<"$dependabot_json" >/dev/null; then
-                  echo "::error::One or more Dependabot update jobs failed for $TAG_SHA; refusing publication."
-                  jq -r '.[] | [.databaseId, .name, .status, .conclusion, .url] | @tsv' <<<"$dependabot_json"
-                  exit 1
-                fi
-                echo "All ${dependabot_count} Dependabot update jobs completed successfully for $TAG_SHA."
-                break
-              fi
-              if [ "$attempt" -eq 60 ]; then
-                echo "::error::Dependabot did not produce and complete all four ecosystem jobs for $TAG_SHA."
-                exit 1
-              fi
-              echo "Waiting for four successful Dependabot update jobs on $TAG_SHA (${attempt}/60; observed: ${dependabot_count})."
-              sleep 5
-            done
-          fi
+          # Resolve each required workflow by its active file path and numeric
+          # workflow ID; display names are not unique security identities.
+          bash scripts/require-release-push-workflows.sh "$TAG_SHA"
 
-          # A successful CodeQL workflow only proves upload completion. Wait
-          # for both configured analyses for this exact SHA, then bracket the
-          # moving-main alert query so a mixed security snapshot cannot pass.
+          # Dependabot Updates is a GitHub-managed dynamic workflow, not a
+          # push-triggered YAML workflow. Gate the newest run per ecosystem on
+          # the first-parent commits that carry this epoch's exact final config
+          # blob, so a later same-version recovery commit cannot skip it.
+          bash scripts/require-dependabot-release-evidence.sh require "$TAG_SHA" "$VERSION_BOUNDARY_SHA"
+
+          # A successful CodeQL workflow only proves upload completion. Read
+          # and evaluate the SARIF tied to TAG_SHA itself. The alert state of a
+          # newer main commit is not historical evidence for this release.
+          target_codeql="[]"
+          required_codeql_categories=("/language:actions" "/language:javascript-typescript")
           for attempt in {1..12}; do
-            remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-            if [ "$remote_main_sha" != "$TAG_SHA" ]; then
-              echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for CodeQL analyses."
-              exit 1
-            fi
-            processed_categories="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?ref=refs/heads/main&per_page=100" --jq '.[] | .commit_sha + " " + .category' | grep -F "$TAG_SHA " || true)"
-            if grep -Fq "/language:actions" <<<"$processed_categories" && grep -Fq "/language:javascript-typescript" <<<"$processed_categories"; then
-              echo "Both CodeQL categories are processed for $TAG_SHA."
+            assert_target_on_live_main
+            analyses_json="$(gh api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            target_codeql="$(jq -c --arg sha "$TAG_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL")]' <<<"$analyses_json")"
+            codeql_ready=true
+            for category in "${required_codeql_categories[@]}"; do
+              analysis="$(jq -c --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last // null' <<<"$target_codeql")"
+              if [ "$analysis" = "null" ]; then
+                codeql_ready=false
+                echo "Waiting for exact CodeQL analysis $category on $TAG_SHA."
+                continue
+              fi
+              analysis_error="$(jq -r '.error // ""' <<<"$analysis")"
+              if [ -n "$analysis_error" ]; then
+                echo "::error::CodeQL analysis $category failed processing for $TAG_SHA: $analysis_error"
+                exit 1
+              fi
+            done
+            if [ "$codeql_ready" = true ]; then
+              echo "Both exact CodeQL categories are processed for $TAG_SHA."
               break
             fi
             if [ "$attempt" -eq 12 ]; then
-              echo "::error::CodeQL analyses were not visible for both categories on $TAG_SHA."
+              echo "::error::Exact CodeQL analyses were not visible for both categories on $TAG_SHA."
               exit 1
             fi
-            echo "Waiting for processed CodeQL analyses on $TAG_SHA ($attempt/12)."
             sleep 5
           done
+          missing_category_count="$(jq '[.[] | select((.category // "") == "")] | length' <<<"$target_codeql")"
+          if [ "$missing_category_count" -ne 0 ]; then
+            echo "::error::Exact CodeQL evidence contains $missing_category_count analysis object(s) without a category for $TAG_SHA."
+            exit 1
+          fi
+          codeql_category_count=0
+          while IFS= read -r category; do
+            codeql_category_count=$((codeql_category_count + 1))
+            analysis="$(jq -c --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last' <<<"$target_codeql")"
+            analysis_error="$(jq -r '.error // ""' <<<"$analysis")"
+            if [ -n "$analysis_error" ]; then
+              echo "::error::CodeQL analysis $category failed processing for $TAG_SHA: $analysis_error"
+              exit 1
+            fi
+            analysis_id="$(jq -er --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last | .id' <<<"$target_codeql")"
+            sarif_file="$RUNNER_TEMP/codeql-${analysis_id}.sarif"
+            gh api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
+            result_count="$(jq '[.runs[]?.results[]?] | length' "$sarif_file")"
+            if [ "$result_count" -ne 0 ]; then
+              echo "::error::Exact CodeQL analysis $category contains $result_count result(s) for $TAG_SHA."
+              jq -r '.runs[]?.results[]? | [.ruleId, (.level // "warning"), .message.text] | @tsv' "$sarif_file"
+              exit 1
+            fi
+          done < <(jq -r '[.[] | .category] | unique[]' <<<"$target_codeql")
+          echo "Exact CodeQL SARIF gate passed across all $codeql_category_count categories with zero results for $TAG_SHA."
 
-          # Scorecard uploads three independent SARIF categories. Its workflow
-          # can finish before all of them are processed, so wait for all three
-          # categories for this exact release SHA before querying alerts.
-          if [ "$scorecard_required" = true ]; then
-            for attempt in {1..12}; do
-              remote_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-              if [ "$remote_main_sha" != "$TAG_SHA" ]; then
-                echo "::error::main advanced to ${remote_main_sha:-missing} while waiting for Scorecard SARIF analyses."
+          # Scorecard's intentionally accepted solo-maintainer findings are
+          # narrow and explicit. Every other exact-SHA result fails closed.
+          target_scorecard="[]"
+          for attempt in {1..12}; do
+            assert_target_on_live_main
+            analyses_json="$(gh api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            target_scorecard="$(jq -c --arg sha "$TAG_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "Scorecard")]' <<<"$analyses_json")"
+            scorecard_ready=true
+            for category in "supply-chain/local" "supply-chain/online-scm" "supply-chain/branch-protection"; do
+              analysis="$(jq -c --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last // null' <<<"$target_scorecard")"
+              if [ "$analysis" = "null" ]; then
+                scorecard_ready=false
+                echo "Waiting for exact OpenSSF Scorecard analysis $category on $TAG_SHA."
+                continue
+              fi
+              analysis_error="$(jq -r '.error // ""' <<<"$analysis")"
+              if [ -n "$analysis_error" ]; then
+                echo "::error::OpenSSF Scorecard analysis $category failed processing for $TAG_SHA: $analysis_error"
                 exit 1
               fi
-              processed_scorecard_categories="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?ref=refs/heads/main&per_page=100" --jq '.[] | .commit_sha + " " + .category' | grep -F "$TAG_SHA " || true)"
-              if grep -Fq "supply-chain/local" <<<"$processed_scorecard_categories" && \
-                grep -Fq "supply-chain/online-scm" <<<"$processed_scorecard_categories" && \
-                grep -Fq "supply-chain/branch-protection" <<<"$processed_scorecard_categories"; then
-                echo "All three OpenSSF Scorecard SARIF categories are processed for $TAG_SHA."
-                break
-              fi
-              if [ "$attempt" -eq 12 ]; then
-                echo "::error::OpenSSF Scorecard SARIF analyses were not visible for supply-chain/local, supply-chain/online-scm, and supply-chain/branch-protection on $TAG_SHA."
-                exit 1
-              fi
-              echo "Waiting for all three processed OpenSSF Scorecard SARIF categories on $TAG_SHA ($attempt/12)."
-              sleep 5
             done
-          fi
+            if [ "$scorecard_ready" = true ]; then
+              echo "All three exact OpenSSF Scorecard SARIF categories are processed for $TAG_SHA."
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "::error::Exact OpenSSF Scorecard SARIF analyses were not visible for all three categories on $TAG_SHA."
+              exit 1
+            fi
+            sleep 5
+          done
+          for category in "supply-chain/local" "supply-chain/online-scm" "supply-chain/branch-protection"; do
+            analysis_id="$(jq -er --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last | .id' <<<"$target_scorecard")"
+            sarif_file="$RUNNER_TEMP/scorecard-${analysis_id}.sarif"
+            gh api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
+            unexpected_results="$(jq '[
+              .runs[]?.results[]?
+              | select(
+                  .ruleId != "MaintainedID" and
+                  .ruleId != "CodeReviewID" and
+                  .ruleId != "CIIBestPracticesID" and
+                  .ruleId != "FuzzingID" and
+                  .ruleId != "BranchProtectionID" and
+                  .ruleId != "TokenPermissionsID"
+                )
+            ] | length' "$sarif_file")"
+            if [ "$unexpected_results" -ne 0 ]; then
+              echo "::error::Exact OpenSSF Scorecard analysis $category contains $unexpected_results non-allowlisted result(s) for $TAG_SHA."
+              jq -r '.runs[]?.results[]? | [.ruleId, (.level // "warning"), .message.text] | @tsv' "$sarif_file"
+              exit 1
+            fi
+          done
+          echo "Exact OpenSSF Scorecard SARIF gate passed for $TAG_SHA."
 
-          alert_main_before="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-          if [ "$alert_main_before" != "$TAG_SHA" ]; then
-            echo "::error::main advanced to ${alert_main_before:-missing} before the code-scanning alert query."
+          final_tag_sha="$(resolve_remote_tag "$PUBLISH_REF")"
+          if [ "$final_tag_sha" != "$TAG_SHA" ]; then
+            echo "::error::Release tag changed while the hard gate was running (tag=$final_tag_sha expected=$TAG_SHA)."
             exit 1
           fi
-          open_alerts="$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100" --jq '.[].number')"
-          alert_main_after="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-          if [ "$alert_main_after" != "$TAG_SHA" ]; then
-            echo "::error::main advanced to ${alert_main_after:-missing} during the code-scanning alert query."
-            exit 1
-          fi
-          if [ -n "$open_alerts" ]; then
-            echo "::error::Open code-scanning alert(s) block publication: $(echo "$open_alerts" | tr '\n' ' ')"
-            exit 1
-          fi
-          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
-          final_tag_sha="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
-          final_main_sha="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-          if [ "$final_tag_sha" != "$TAG_SHA" ] || [ "$final_main_sha" != "$TAG_SHA" ]; then
-            echo "::error::Release identity changed while the hard gate was running (tag=$final_tag_sha main=${final_main_sha:-missing}, expected=$TAG_SHA)."
-            exit 1
-          fi
+          assert_target_on_live_main
           echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
-          echo "Independent release gate passed for $PUBLISH_REF at $TAG_SHA with zero open code-scanning alerts."
+          echo "Independent release gate passed for $PUBLISH_REF at immutable target $TAG_SHA."
       - name: Setup Node.js 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -275,6 +332,7 @@ jobs:
       - name: Revalidate protected release identity after local validation
         id: hardgate
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUBLISH_REF: ${{ github.ref_name }}
           PUBLISH_EVENT_REF: ${{ github.ref }}
           PUBLISH_REF_TYPE: ${{ github.ref_type }}
@@ -285,12 +343,30 @@ jobs:
             echo "::error::Protected tag trigger identity changed or is invalid after local validation."
             exit 1
           fi
-          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
-          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
+          object_type="$(jq -er '.object.type' <<<"$ref_json")"
+          TAG_SHA="$(jq -er '.object.sha' <<<"$ref_json")"
+          for _ in {1..10}; do
+            if [ "$object_type" = "commit" ]; then
+              break
+            fi
+            if [ "$object_type" != "tag" ]; then
+              echo "::error::Tag $PUBLISH_REF resolves to unsupported Git object type '$object_type'."
+              exit 1
+            fi
+            tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
+            object_type="$(jq -er '.object.type' <<<"$tag_json")"
+            TAG_SHA="$(jq -er '.object.sha' <<<"$tag_json")"
+          done
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-          if [ "$TAG_SHA" != "$CHECKED_OUT_SHA" ] || [ "$TAG_SHA" != "$MAIN_SHA" ]; then
-            echo "::error::Release identity changed after local validation (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
+          MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${TAG_SHA}...${MAIN_SHA}" --jq '.status')"
+          if [ "$TAG_SHA" != "$CHECKED_OUT_SHA" ]; then
+            echo "::error::Release tag $TAG_SHA no longer matches checked-out commit $CHECKED_OUT_SHA."
+            exit 1
+          fi
+          if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+            echo "::error::Release identity changed after local validation (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=$MAIN_SHA relation=$relation)."
             exit 1
           fi
           echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
@@ -298,55 +374,96 @@ jobs:
       - name: Resolve release metadata
         id: meta
         shell: bash
+        env:
+          PUBLISH_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           NAME="$(node -p "require('./package.json').name")"
-          DISPLAY_TAG="$(echo "${VERSION%%-*}" | awk -F. '{ printf "v%02d.%02d.%02d", $1, $2, $3 }')"
+          node scripts/release-policy.mjs validate-semver "$VERSION"
+          DISPLAY_TAG="$(node scripts/release-policy.mjs display-tag "$VERSION")"
+          PRERELEASE=false
+          DIST_TAG=latest
           if [[ "$VERSION" == *-* ]]; then
-            DISPLAY_TAG="${DISPLAY_TAG}-${VERSION#*-}"
+            PRERELEASE=true
+            PRERELEASE_SUFFIX="${VERSION#*-}"
+            DIST_TAG="${PRERELEASE_SUFFIX%%.*}"
+            if [[ "$DIST_TAG" == "latest" || ! "$DIST_TAG" =~ ^[A-Za-z][0-9A-Za-z_-]*$ ]]; then
+              DIST_TAG=prerelease
+            fi
           fi
-          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            echo "::error::Release metadata must be resolved from a tag ref, got '$GITHUB_REF'."
+          if [ "$PUBLISH_REF" != "$DISPLAY_TAG" ]; then
+            echo "::error::Publish tag '$PUBLISH_REF' does not exactly match package.json version '$VERSION' (expected '$DISPLAY_TAG')."
             exit 1
           fi
-          TAG="${GITHUB_REF#refs/tags/}"
-          if [ "$TAG" != "$DISPLAY_TAG" ]; then
-            echo "::error::Publish tag '$TAG' does not match package.json version '$VERSION' (expected '$DISPLAY_TAG')."
+          if [ "$PRERELEASE" = "true" ] && [ "$DIST_TAG" = "latest" ]; then
+            echo "::error::A prerelease must never use the npm latest dist-tag."
             exit 1
-          fi
-          if [[ "$VERSION" == *-* ]]; then
-            DIST_TAG="${VERSION#*-}"
-            DIST_TAG="${DIST_TAG%%.*}"
-          else
-            DIST_TAG="latest"
           fi
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$PUBLISH_REF" >> "$GITHUB_OUTPUT"
           echo "display_tag=$DISPLAY_TAG" >> "$GITHUB_OUTPUT"
           echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
-          echo "Publish metadata: $NAME@$VERSION -> $TAG ($DIST_TAG)"
-    timeout-minutes: 60
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Publish metadata: $NAME@$VERSION -> $PUBLISH_REF ($DIST_TAG; prerelease=$PRERELEASE)"
+      - name: Pack the immutable release artifact
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          npm --registry=https://registry.npmjs.org pack --pack-destination artifacts
+          mapfile -t tarballs < <(find artifacts -maxdepth 1 -type f -name '*.tgz' -print)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one package tarball, found ${#tarballs[@]}."
+            exit 1
+          fi
+          TARBALL="${tarballs[0]}"
+          TARBALL_NAME="$(basename "$TARBALL")"
+          TARBALL_SHA256="$(sha256sum "$TARBALL" | awk '{print $1}')"
+          TARBALL_INTEGRITY="$(node -e '
+            const { createHash } = require("node:crypto");
+            const { readFileSync } = require("node:fs");
+            const bytes = readFileSync(process.argv[1]);
+            process.stdout.write(`sha512-${createHash("sha512").update(bytes).digest("base64")}`);
+          ' "$TARBALL")"
+          node scripts/release-policy.mjs verify-file-sri "$TARBALL" "$TARBALL_INTEGRITY"
+          echo "tarball=$TARBALL_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$TARBALL_SHA256" >> "$GITHUB_OUTPUT"
+          echo "integrity=$TARBALL_INTEGRITY" >> "$GITHUB_OUTPUT"
+          echo "Packed immutable artifact $TARBALL_NAME (sha256=$TARBALL_SHA256; SRI=$TARBALL_INTEGRITY)."
+      - name: Upload immutable package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-package-tgz
+          path: artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+    timeout-minutes: 90
   publish-npmjs:
     name: Publish to npmjs.com
     needs: gate
     runs-on: ubuntu-latest
     environment: npm-production
-    permissions:
-      contents: read
-      id-token: write
+    permissions: write-all
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - name: Checkout
+      - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
+      - name: Download immutable package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package-tgz
+          path: artifacts
       - name: Setup Node.js 24 for npmjs
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -360,6 +477,16 @@ jobs:
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
+      - name: Verify package artifact digest
+        env:
+          PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
+          PACKAGE_SHA256: ${{ needs.gate.outputs.package_sha256 }}
+          PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
+        run: |
+          set -euo pipefail
+          test -f "artifacts/$PACKAGE_TARBALL"
+          echo "$PACKAGE_SHA256  artifacts/$PACKAGE_TARBALL" | sha256sum --check --strict
+          node scripts/release-policy.mjs verify-file-sri "artifacts/$PACKAGE_TARBALL" "$PACKAGE_INTEGRITY"
       - name: Verify trusted publishing toolchain
         run: |
           set -euo pipefail
@@ -379,44 +506,124 @@ jobs:
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
         run: |
-          if npm --registry=https://registry.npmjs.org view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+          set -euo pipefail
+          view_error="$RUNNER_TEMP/npmjs-view-${GITHUB_RUN_ID}.err"
+          if package_view="$(npm --registry=https://registry.npmjs.org view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version dist.integrity --json 2>"$view_error")"; then
+            normalized_view="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$package_view")"
+            published_version="$(jq -er '.version' <<<"$normalized_view")"
+            published_integrity="$(jq -er '.["dist.integrity"]' <<<"$normalized_view")"
+            if [ "$published_version" != "$PACKAGE_VERSION" ]; then
+              echo "::error::npmjs.com returned version $published_version for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+              exit 1
+            fi
+            node scripts/release-policy.mjs verify-sri \
+              "$PACKAGE_INTEGRITY" "$published_integrity" \
+              "npmjs.com ${PACKAGE_NAME}@${PACKAGE_VERSION}"
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on npmjs.com; skipping publish."
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on npmjs.com with the exact SRI; skipping publish."
           else
+            if ! grep -Eq 'E404|404 Not Found|HTTP 404' "$view_error"; then
+              cat "$view_error" >&2
+              echo "::error::Could not safely determine npmjs.com package state."
+              exit 1
+            fi
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is not published on npmjs.com yet."
           fi
-      - name: Revalidate release tag identity before npmjs publication
+      - name: Choose npmjs.com dist-tag without regressing latest
+        id: npmjs-tag
         env:
-          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
-          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+          PACKAGE_NAME: ${{ needs.gate.outputs.name }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PREFERRED_TAG: ${{ needs.gate.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
-          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          view_error="$RUNNER_TEMP/npmjs-tags-${GITHUB_RUN_ID}.err"
+          if tags_view="$(npm --registry=https://registry.npmjs.org view "$PACKAGE_NAME" dist-tags --json 2>"$view_error")"; then
+            normalized_tags="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$tags_view")"
+            PRIOR_LATEST="$(jq -er 'if type == "object" then (.latest // "") else error("unexpected dist-tags response") end' <<<"$normalized_tags")"
+          else
+            if ! grep -Eq 'E404|404 Not Found|HTTP 404' "$view_error"; then
+              cat "$view_error" >&2
+              echo "::error::Could not safely read npmjs.com dist-tags."
+              exit 1
+            fi
+            PRIOR_LATEST=""
+          fi
+          PUBLISH_TAG="$(node scripts/release-policy.mjs npm-publish-tag \
+            "$PACKAGE_VERSION" "$PREFERRED_TAG" "$PRIOR_LATEST")"
+          echo "prior_latest=$PRIOR_LATEST" >> "$GITHUB_OUTPUT"
+          echo "publish_tag=$PUBLISH_TAG" >> "$GITHUB_OUTPUT"
+          echo "npmjs.com monotonic decision: candidate=$PACKAGE_VERSION prior_latest=${PRIOR_LATEST:-missing} publish_tag=$PUBLISH_TAG."
+      - name: Revalidate release tag identity before npmjs publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
+          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+          PUBLISH_EVENT_REF: ${{ github.ref }}
+          PUBLISH_REF_TYPE: ${{ github.ref_type }}
+          PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH_REF_TYPE" != "tag" ] || [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ] || [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
+            echo "::error::Protected tag trigger identity is no longer valid."
+            exit 1
+          fi
+          ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
+          object_type="$(jq -er '.object.type' <<<"$ref_json")"
+          TAG_SHA="$(jq -er '.object.sha' <<<"$ref_json")"
+          for _ in {1..10}; do
+            if [ "$object_type" = "commit" ]; then
+              break
+            fi
+            if [ "$object_type" != "tag" ]; then
+              echo "::error::Tag $PUBLISH_REF resolves to unsupported Git object type '$object_type'."
+              exit 1
+            fi
+            tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
+            object_type="$(jq -er '.object.type' <<<"$tag_json")"
+            TAG_SHA="$(jq -er '.object.sha' <<<"$tag_json")"
+          done
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ] || [ "$MAIN_SHA" != "$VERIFIED_SHA" ]; then
-            echo "::error::Release identity no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
+          MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${MAIN_SHA}" --jq '.status')"
+          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
+            echo "::error::Release tag or checkout no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA)."
+            exit 1
+          fi
+          if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+            echo "::error::Release identity no longer names a verified commit in live main history (verified=$VERIFIED_SHA tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=$MAIN_SHA relation=$relation)."
             exit 1
           fi
           echo "Revalidated release tag $PUBLISH_REF at immutable commit $VERIFIED_SHA."
       - name: Publish (public, with provenance)
         if: steps.npmjs-version.outputs.exists != 'true'
         env:
-          DIST_TAG: ${{ needs.gate.outputs.dist_tag }}
-        run: npm --registry=https://registry.npmjs.org publish --access public --provenance --tag "$DIST_TAG"
+          DIST_TAG: ${{ steps.npmjs-tag.outputs.publish_tag }}
+          PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
+        run: npm --registry=https://registry.npmjs.org publish "./artifacts/$PACKAGE_TARBALL" --access public --provenance --tag "$DIST_TAG" --ignore-scripts
       - name: Verify npmjs.com public visibility
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
         run: |
           set -euo pipefail
           for attempt in {1..12}; do
-            published_version="$(npm --registry=https://registry.npmjs.org view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version 2>/dev/null || true)"
-            if [ "$published_version" = "$PACKAGE_VERSION" ]; then
-              echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is publicly visible on npmjs.com."
+            if package_view="$(npm --registry=https://registry.npmjs.org view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version dist.integrity --json 2>/dev/null)"; then
+              normalized_view="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$package_view")"
+              published_version="$(jq -er '.version' <<<"$normalized_view")"
+              published_integrity="$(jq -er '.["dist.integrity"]' <<<"$normalized_view")"
+              if [ "$published_version" != "$PACKAGE_VERSION" ]; then
+                echo "::error::npmjs.com exposed version $published_version for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+                exit 1
+              fi
+              node scripts/release-policy.mjs verify-sri \
+                "$PACKAGE_INTEGRITY" "$published_integrity" \
+                "npmjs.com ${PACKAGE_NAME}@${PACKAGE_VERSION}"
+              echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is publicly visible with the exact SRI."
               exit 0
             fi
             echo "npmjs.com visibility check attempt ${attempt}/12 failed; retrying."
@@ -424,6 +631,20 @@ jobs:
           done
           echo "::error::${PACKAGE_NAME}@${PACKAGE_VERSION} is not publicly visible on npmjs.com."
           exit 1
+      - name: Verify npmjs.com latest remained monotonic
+        env:
+          PACKAGE_NAME: ${{ needs.gate.outputs.name }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PRIOR_LATEST: ${{ steps.npmjs-tag.outputs.prior_latest }}
+          PUBLISH_TAG: ${{ steps.npmjs-tag.outputs.publish_tag }}
+        run: |
+          set -euo pipefail
+          tags_view="$(npm --registry=https://registry.npmjs.org view "$PACKAGE_NAME" dist-tags --json)"
+          normalized_tags="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$tags_view")"
+          ACTUAL_LATEST="$(jq -er 'if type == "object" then (.latest // "") else error("unexpected dist-tags response") end' <<<"$normalized_tags")"
+          node scripts/release-policy.mjs assert-registry-latest \
+            "$PACKAGE_VERSION" "$PRIOR_LATEST" "$ACTUAL_LATEST" "$PUBLISH_TAG"
+          echo "npmjs.com latest is monotonic at ${ACTUAL_LATEST:-missing}; candidate was $PACKAGE_VERSION."
       - name: Verify npmjs.com published artifact metadata
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
@@ -478,21 +699,25 @@ jobs:
     name: Publish to GitHub Packages
     needs: gate
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
+    environment: github-packages-production
+    permissions: write-all
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - name: Checkout
+      - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
+      - name: Download immutable package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package-tgz
+          path: artifacts
       - name: Setup Node.js 24 for GitHub Packages
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -503,6 +728,16 @@ jobs:
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
+      - name: Verify package artifact digest
+        env:
+          PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
+          PACKAGE_SHA256: ${{ needs.gate.outputs.package_sha256 }}
+          PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
+        run: |
+          set -euo pipefail
+          test -f "artifacts/$PACKAGE_TARBALL"
+          echo "$PACKAGE_SHA256  artifacts/$PACKAGE_TARBALL" | sha256sum --check --strict
+          node scripts/release-policy.mjs verify-file-sri "artifacts/$PACKAGE_TARBALL" "$PACKAGE_INTEGRITY"
       - name: Install dependencies
         run: npm ci --strict-allow-scripts --no-audit --no-fund
         env:
@@ -533,55 +768,179 @@ jobs:
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if npm --registry=https://registry.npmjs.org view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --@lcv-ideas-software:registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+          set -euo pipefail
+          view_error="$RUNNER_TEMP/gh-packages-view-${GITHUB_RUN_ID}.err"
+          if package_view="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version dist.integrity --json --registry=https://npm.pkg.github.com --@lcv-ideas-software:registry=https://npm.pkg.github.com 2>"$view_error")"; then
+            normalized_view="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$package_view")"
+            published_version="$(jq -er '.version' <<<"$normalized_view")"
+            published_integrity="$(jq -er '.["dist.integrity"]' <<<"$normalized_view")"
+            if [ "$published_version" != "$PACKAGE_VERSION" ]; then
+              echo "::error::GitHub Packages returned version $published_version for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+              exit 1
+            fi
+            node scripts/release-policy.mjs verify-sri \
+              "$PACKAGE_INTEGRITY" "$published_integrity" \
+              "GitHub Packages ${PACKAGE_NAME}@${PACKAGE_VERSION}"
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on GitHub Packages; skipping publish."
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on GitHub Packages with the exact SRI; skipping publish."
           else
+            if ! grep -Eq 'E404|404 Not Found|HTTP 404' "$view_error"; then
+              cat "$view_error" >&2
+              echo "::error::Could not safely determine GitHub Packages state."
+              exit 1
+            fi
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is not published on GitHub Packages yet."
           fi
-      - name: Revalidate release tag identity before GitHub Packages publication
+      - name: Choose GitHub Packages dist-tag without regressing latest
+        id: gh-packages-tag
         env:
-          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
-          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+          PACKAGE_NAME: ${{ needs.gate.outputs.name }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PREFERRED_TAG: ${{ needs.gate.outputs.dist_tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
-          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
+          view_error="$RUNNER_TEMP/gh-packages-tags-${GITHUB_RUN_ID}.err"
+          if tags_view="$(npm view "$PACKAGE_NAME" dist-tags --json \
+            --registry=https://npm.pkg.github.com \
+            --@lcv-ideas-software:registry=https://npm.pkg.github.com 2>"$view_error")"; then
+            normalized_tags="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$tags_view")"
+            PRIOR_LATEST="$(jq -er 'if type == "object" then (.latest // "") else error("unexpected dist-tags response") end' <<<"$normalized_tags")"
+          else
+            if ! grep -Eq 'E404|404 Not Found|HTTP 404' "$view_error"; then
+              cat "$view_error" >&2
+              echo "::error::Could not safely read GitHub Packages dist-tags."
+              exit 1
+            fi
+            PRIOR_LATEST=""
+          fi
+          PUBLISH_TAG="$(node scripts/release-policy.mjs npm-publish-tag \
+            "$PACKAGE_VERSION" "$PREFERRED_TAG" "$PRIOR_LATEST")"
+          echo "prior_latest=$PRIOR_LATEST" >> "$GITHUB_OUTPUT"
+          echo "publish_tag=$PUBLISH_TAG" >> "$GITHUB_OUTPUT"
+          echo "GitHub Packages monotonic decision: candidate=$PACKAGE_VERSION prior_latest=${PRIOR_LATEST:-missing} publish_tag=$PUBLISH_TAG."
+      - name: Revalidate release tag identity before GitHub Packages publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
+          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+          PUBLISH_EVENT_REF: ${{ github.ref }}
+          PUBLISH_REF_TYPE: ${{ github.ref_type }}
+          PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH_REF_TYPE" != "tag" ] || [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ] || [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
+            echo "::error::Protected tag trigger identity is no longer valid."
+            exit 1
+          fi
+          ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
+          object_type="$(jq -er '.object.type' <<<"$ref_json")"
+          TAG_SHA="$(jq -er '.object.sha' <<<"$ref_json")"
+          for _ in {1..10}; do
+            if [ "$object_type" = "commit" ]; then
+              break
+            fi
+            if [ "$object_type" != "tag" ]; then
+              echo "::error::Tag $PUBLISH_REF resolves to unsupported Git object type '$object_type'."
+              exit 1
+            fi
+            tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
+            object_type="$(jq -er '.object.type' <<<"$tag_json")"
+            TAG_SHA="$(jq -er '.object.sha' <<<"$tag_json")"
+          done
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ] || [ "$MAIN_SHA" != "$VERIFIED_SHA" ]; then
-            echo "::error::Release identity no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
+          MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${MAIN_SHA}" --jq '.status')"
+          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
+            echo "::error::Release tag or checkout no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA)."
+            exit 1
+          fi
+          if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+            echo "::error::Release identity no longer names a verified commit in live main history (verified=$VERIFIED_SHA tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=$MAIN_SHA relation=$relation)."
             exit 1
           fi
           echo "Revalidated release tag $PUBLISH_REF at immutable commit $VERIFIED_SHA."
       - name: Publish (public, with provenance)
         if: steps.gh-packages-version.outputs.exists != 'true'
         env:
-          DIST_TAG: ${{ needs.gate.outputs.dist_tag }}
+          DIST_TAG: ${{ steps.gh-packages-tag.outputs.publish_tag }}
+          PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm --registry=https://registry.npmjs.org publish --@lcv-ideas-software:registry=https://npm.pkg.github.com --access public --provenance --tag "$DIST_TAG"
+        run: npm publish "./artifacts/$PACKAGE_TARBALL" --registry=https://npm.pkg.github.com --@lcv-ideas-software:registry=https://npm.pkg.github.com --access public --provenance --tag "$DIST_TAG" --ignore-scripts
+      - name: Verify GitHub Packages visibility
+        env:
+          PACKAGE_NAME: ${{ needs.gate.outputs.name }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if package_view="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version dist.integrity --json --registry=https://npm.pkg.github.com --@lcv-ideas-software:registry=https://npm.pkg.github.com 2>/dev/null)"; then
+              normalized_view="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$package_view")"
+              published_version="$(jq -er '.version' <<<"$normalized_view")"
+              published_integrity="$(jq -er '.["dist.integrity"]' <<<"$normalized_view")"
+              if [ "$published_version" != "$PACKAGE_VERSION" ]; then
+                echo "::error::GitHub Packages exposed version $published_version for ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+                exit 1
+              fi
+              node scripts/release-policy.mjs verify-sri \
+                "$PACKAGE_INTEGRITY" "$published_integrity" \
+                "GitHub Packages ${PACKAGE_NAME}@${PACKAGE_VERSION}"
+              echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is visible on GitHub Packages with the exact SRI."
+              exit 0
+            fi
+            echo "GitHub Packages visibility check attempt ${attempt}/12 failed; retrying."
+            sleep 10
+          done
+          echo "::error::${PACKAGE_NAME}@${PACKAGE_VERSION} is not visible on GitHub Packages."
+          exit 1
+      - name: Verify GitHub Packages latest remained monotonic
+        env:
+          PACKAGE_NAME: ${{ needs.gate.outputs.name }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PRIOR_LATEST: ${{ steps.gh-packages-tag.outputs.prior_latest }}
+          PUBLISH_TAG: ${{ steps.gh-packages-tag.outputs.publish_tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tags_view="$(npm view "$PACKAGE_NAME" dist-tags --json \
+            --registry=https://npm.pkg.github.com \
+            --@lcv-ideas-software:registry=https://npm.pkg.github.com)"
+          normalized_tags="$(jq -ce 'if type == "array" and length == 1 then .[0] else . end' <<<"$tags_view")"
+          ACTUAL_LATEST="$(jq -er 'if type == "object" then (.latest // "") else error("unexpected dist-tags response") end' <<<"$normalized_tags")"
+          node scripts/release-policy.mjs assert-registry-latest \
+            "$PACKAGE_VERSION" "$PRIOR_LATEST" "$ACTUAL_LATEST" "$PUBLISH_TAG"
+          echo "GitHub Packages latest is monotonic at ${ACTUAL_LATEST:-missing}; candidate was $PACKAGE_VERSION."
     timeout-minutes: 60
   create-github-release:
-    name: Create GitHub Release
+    name: Reconcile GitHub Release from immutable artifact
     needs: [gate, publish-npmjs, publish-gh-packages]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    environment: github-release-production
+    permissions: write-all
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - name: Checkout
+      - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
-      - name: Setup Node.js 24
+      - name: Download immutable package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package-tgz
+          path: artifacts
+      - name: Setup Node.js 24 for release reconciliation
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -591,26 +950,32 @@ jobs:
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
+      - name: Verify package artifact digest
+        env:
+          PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
+          PACKAGE_SHA256: ${{ needs.gate.outputs.package_sha256 }}
+          PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
+        run: |
+          set -euo pipefail
+          test -f "artifacts/$PACKAGE_TARBALL"
+          echo "$PACKAGE_SHA256  artifacts/$PACKAGE_TARBALL" | sha256sum --check --strict
+          node scripts/release-policy.mjs verify-file-sri "artifacts/$PACKAGE_TARBALL" "$PACKAGE_INTEGRITY"
       - name: Install dependencies
         run: npm ci --strict-allow-scripts --no-audit --no-fund
         env:
           STEPSECURITY_NPM_TOKEN: ${{ secrets.STEPSECURITY_NPM_TOKEN }}
-      - name: Create artifact directory
-        run: mkdir -p ./artifacts
-      - name: Pack artifact
-        run: npm --registry=https://registry.npmjs.org pack --pack-destination ./artifacts
       - name: Extract release notes from CHANGELOG.md
-        id: notes
         env:
           TAG: ${{ needs.gate.outputs.tag }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
           DISPLAY_TAG: ${{ needs.gate.outputs.display_tag }}
         run: |
+          set -euo pipefail
           SEMVER_TAG="v${PACKAGE_VERSION}"
           SEMVER_NO_PREFIX="${PACKAGE_VERSION}"
           DISPLAY_NO_PREFIX="${DISPLAY_TAG#v}"
           TAG_NO_PREFIX="${TAG#v}"
-          NOTES=$(awk \
+          NOTES="$(awk \
             -v tag="$TAG" \
             -v tag_np="$TAG_NO_PREFIX" \
             -v display="$DISPLAY_TAG" \
@@ -628,43 +993,502 @@ jobs:
             matches_heading(semver) || matches_heading(semver_np) { found=1; next }
             found && /^## \[/ { exit }
             found { print }
-          ' CHANGELOG.md)
+          ' CHANGELOG.md)"
           if [ -z "$NOTES" ]; then
             NOTES="Release $TAG. See CHANGELOG.md for details."
           fi
-          {
-            echo "notes<<RELEASE_NOTES_EOF"
-            echo "$NOTES"
-            echo "RELEASE_NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-      - name: Revalidate release tag identity before creating GitHub Release
-        env:
-          PUBLISH_REF: ${{ needs.gate.outputs.tag }}
-          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
-        run: |
-          set -euo pipefail
-          git fetch --force origin "refs/tags/$PUBLISH_REF:refs/tags/$PUBLISH_REF"
-          TAG_SHA="$(git rev-parse "refs/tags/$PUBLISH_REF^{commit}")"
-          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          MAIN_SHA="$(git ls-remote --heads origin "refs/heads/main" | awk '{print $1}')"
-          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ] || [ "$MAIN_SHA" != "$VERIFIED_SHA" ]; then
-            echo "::error::Release identity no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=${MAIN_SHA:-missing})."
-            exit 1
-          fi
-          echo "Revalidated release tag $PUBLISH_REF at immutable commit $VERIFIED_SHA."
-      - name: Create or update release (idempotent)
+          printf '%s\n' "$NOTES" > release-notes.md
+      - name: Revalidate release tag identity before reconciling GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMMUTABILITY_TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
           TAG: ${{ needs.gate.outputs.tag }}
-          NOTES: ${{ steps.notes.outputs.notes }}
+          VERIFIED_SHA: ${{ needs.gate.outputs.sha }}
+          PUBLISH_EVENT_REF: ${{ github.ref }}
+          PUBLISH_REF_TYPE: ${{ github.ref_type }}
+          PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
+          PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
+          PRERELEASE: ${{ needs.gate.outputs.prerelease }}
+          PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
+          PACKAGE_SHA256: ${{ needs.gate.outputs.package_sha256 }}
         run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; skipping create."
-            exit 0
+          set -euo pipefail
+          github_token="$GH_TOKEN"
+          immutability_token="$IMMUTABILITY_TOKEN"
+          unset GH_TOKEN
+          unset IMMUTABILITY_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required for release reconciliation."
+            exit 1
           fi
-          gh release create "$TAG" artifacts/*.tgz \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "cross-review $TAG" \
-            --notes "$NOTES" \
-            --latest
+          if [ -z "$immutability_token" ]; then
+            echo "::error::LCV_AUTOMATION_TOKEN is required for immutable-release verification."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          github_release() {
+            GH_TOKEN="$github_token" gh release "$@"
+          }
+          if [ "$PUBLISH_REF_TYPE" != "tag" ] || [ "$PUBLISH_EVENT_REF" != "refs/tags/$TAG" ] || [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
+            echo "::error::Protected tag trigger identity is no longer valid."
+            exit 1
+          fi
+          ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")"
+          object_type="$(jq -er '.object.type' <<<"$ref_json")"
+          TAG_SHA="$(jq -er '.object.sha' <<<"$ref_json")"
+          for _ in {1..10}; do
+            if [ "$object_type" = "commit" ]; then
+              break
+            fi
+            if [ "$object_type" != "tag" ]; then
+              echo "::error::Tag $TAG resolves to unsupported Git object type '$object_type'."
+              exit 1
+            fi
+            tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
+            object_type="$(jq -er '.object.type' <<<"$tag_json")"
+            TAG_SHA="$(jq -er '.object.sha' <<<"$tag_json")"
+          done
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${MAIN_SHA}" --jq '.status')"
+          if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
+            echo "::error::Release tag or checkout no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA)."
+            exit 1
+          fi
+          if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+            echo "::error::Release identity no longer names a verified commit in live main history (verified=$VERIFIED_SHA tag=$TAG_SHA checkout=$CHECKED_OUT_SHA main=$MAIN_SHA relation=$relation)."
+            exit 1
+          fi
+          echo "Revalidated release tag $TAG at immutable commit $VERIFIED_SHA."
+
+          read_latest_release_tag() {
+            local latest_json latest_error
+            latest_error="$RUNNER_TEMP/latest-release-${GITHUB_RUN_ID}.err"
+            if latest_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/releases/latest" 2>"$latest_error")"; then
+              jq -er '.tag_name' <<<"$latest_json"
+              return
+            fi
+            if grep -q 'HTTP 404' "$latest_error"; then
+              printf ''
+              return
+            fi
+            cat "$latest_error" >&2
+            echo "::error::Could not determine the current GitHub latest release." >&2
+            return 1
+          }
+
+          resolve_api_ref_to_commit() {
+            local ref_path="$1"
+            local ref_json ref_error object_type object_sha tag_json
+            ref_json="$RUNNER_TEMP/ref-${GITHUB_RUN_ID}-${RANDOM}.json"
+            ref_error="$RUNNER_TEMP/ref-${GITHUB_RUN_ID}-${RANDOM}.err"
+            if ! github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/$ref_path" >"$ref_json" 2>"$ref_error"; then
+              if grep -q 'HTTP 404' "$ref_error"; then
+                return 2
+              fi
+              cat "$ref_error" >&2
+              echo "::error::Could not resolve authenticated Git reference '$ref_path'." >&2
+              return 1
+            fi
+            object_type="$(jq -er '.object.type' "$ref_json")"
+            object_sha="$(jq -er '.object.sha' "$ref_json")"
+            for _ in {1..8}; do
+              if [ "$object_type" = "commit" ]; then
+                printf '%s' "$object_sha"
+                return
+              fi
+              if [ "$object_type" != "tag" ]; then
+                echo "::error::Git reference '$ref_path' resolves to unsupported object type '$object_type'." >&2
+                return 1
+              fi
+              tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
+              object_type="$(jq -er '.object.type' <<<"$tag_json")"
+              object_sha="$(jq -er '.object.sha' <<<"$tag_json")"
+            done
+            echo "::error::Git reference '$ref_path' exceeded the annotated-tag dereference limit." >&2
+            return 1
+          }
+
+          PRIOR_LATEST_TAG="$(read_latest_release_tag)"
+          PROMOTE_LATEST="$(node scripts/release-policy.mjs github-latest \
+            "$PACKAGE_VERSION" "$PRIOR_LATEST_TAG")"
+          echo "GitHub latest decision: candidate=$PACKAGE_VERSION prior=${PRIOR_LATEST_TAG:-missing} promote=$PROMOTE_LATEST."
+
+          release_json="$RUNNER_TEMP/release-${GITHUB_RUN_ID}.json"
+          expected_title="cross-review $TAG"
+          expected_body="$(cat release-notes.md)"
+
+          assert_immutable_release_policy() {
+            local phase="$1" policy_json policy_error policy_enabled policy_enforced
+            if [ -z "$immutability_token" ]; then
+              echo "::error::LCV_AUTOMATION_TOKEN is required to read the administrative immutable-release policy before $phase."
+              exit 1
+            fi
+            policy_error="$RUNNER_TEMP/immutable-release-policy-${phase}-${GITHUB_RUN_ID}.err"
+            if ! policy_json="$(GH_TOKEN="$immutability_token" gh api --method GET \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/immutable-releases" 2>"$policy_error")"; then
+              cat "$policy_error" >&2
+              echo "::error::Could not prove that immutable releases are administratively enforced before $phase."
+              exit 1
+            fi
+            policy_enabled="$(jq -er '
+              if has("enabled") and ((.enabled | type) == "boolean")
+              then (.enabled | tostring)
+              else error("missing or invalid enabled state")
+              end
+            ' <<<"$policy_json")"
+            policy_enforced="$(jq -er '
+              if has("enforced_by_owner") and ((.enforced_by_owner | type) == "boolean")
+              then (.enforced_by_owner | tostring)
+              else error("missing or invalid owner enforcement state")
+              end
+            ' <<<"$policy_json")"
+            if [ "$policy_enabled" != "true" ] || [ "$policy_enforced" != "true" ]; then
+              echo "::error::Immutable releases are not owner-enforced before $phase (enabled=$policy_enabled enforced_by_owner=$policy_enforced)."
+              exit 1
+            fi
+            echo "Immutable-release policy is owner-enforced before $phase."
+          }
+
+          load_release() {
+            local release_pages matching_releases matching_count
+            if ! release_pages="$(github_api --method GET --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100")"; then
+              echo "::error::Could not list GitHub Releases, including drafts, for $TAG." >&2
+              return 3
+            fi
+            if ! matching_releases="$(jq -ce --arg tag "$TAG" \
+              '[.[][] | select(.tag_name == $tag)]' \
+              <<<"$release_pages")"; then
+              echo "::error::Could not parse the paginated GitHub Releases response." >&2
+              return 3
+            fi
+            matching_count="$(jq -er 'length' <<<"$matching_releases")" || return 3
+            if [ "$matching_count" -gt 1 ]; then
+              echo "::error::Found $matching_count releases for exact tag $TAG; refusing ambiguous reconciliation." >&2
+              return 2
+            fi
+            if [ "$matching_count" -eq 0 ]; then
+              printf 'null\n' >"$release_json"
+              return 1
+            fi
+            jq -e '.[0]' <<<"$matching_releases" >"$release_json"
+          }
+
+          assert_loaded_release_identity() {
+            local expected_id="$1" require_final="$2"
+            local current_title current_body current_draft current_prerelease
+            node scripts/release-policy.mjs assert-existing-tag-release \
+              "$release_json" "$expected_id" "$TAG"
+            current_title="$(jq -r '.name // ""' "$release_json")"
+            current_body="$(jq -r '.body // ""' "$release_json")"
+            current_draft="$(jq -er '.draft' "$release_json")"
+            current_prerelease="$(jq -er '.prerelease' "$release_json")"
+            if [ "$require_final" = "true" ] && \
+              { [ "$current_title" != "$expected_title" ] || \
+                [ "$current_body" != "$expected_body" ] || \
+                [ "$current_draft" != "false" ] || \
+                [ "$current_prerelease" != "$PRERELEASE" ]; }; then
+              echo "::error::Published release metadata did not converge (title='$current_title' draft=$current_draft prerelease=$current_prerelease)."
+              exit 1
+            fi
+            LOADED_RELEASE_DRAFT="$current_draft"
+          }
+
+          require_single_asset() {
+            local matching_assets unexpected_assets
+            matching_assets="$(jq --arg name "$PACKAGE_TARBALL" \
+              '[.assets[]? | select(.name == $name)] | length' "$release_json")"
+            unexpected_assets="$(jq --arg name "$PACKAGE_TARBALL" \
+              '[.assets[]? | select(.name != $name)] | length' "$release_json")"
+            if [ "$matching_assets" -ne 1 ] || [ "$unexpected_assets" -ne 0 ]; then
+              echo "::error::Release $TAG must contain exactly one $PACKAGE_TARBALL asset (matching=$matching_assets unexpected=$unexpected_assets)."
+              exit 1
+            fi
+            LOADED_ASSET_ID="$(jq -er --arg name "$PACKAGE_TARBALL" \
+              '.assets[] | select(.name == $name) | .id' "$release_json")"
+            LOADED_ASSET_STATE="$(jq -er --arg name "$PACKAGE_TARBALL" \
+              '.assets[] | select(.name == $name) | .state' "$release_json")"
+            LOADED_ASSET_DIGEST="$(jq -r --arg name "$PACKAGE_TARBALL" \
+              '.assets[] | select(.name == $name) | (.digest // "")' "$release_json")"
+            if [ "$LOADED_ASSET_STATE" != "uploaded" ]; then
+              echo "::error::Release asset $PACKAGE_TARBALL is in state '$LOADED_ASSET_STATE', expected 'uploaded'."
+              exit 1
+            fi
+            if [ -n "$LOADED_ASSET_DIGEST" ] && \
+              [ "$LOADED_ASSET_DIGEST" != "sha256:$PACKAGE_SHA256" ]; then
+              echo "::error::Release asset digest mismatch (expected sha256:$PACKAGE_SHA256, found $LOADED_ASSET_DIGEST)."
+              exit 1
+            fi
+          }
+
+          verify_asset_bytes() {
+            local asset_id="$1" phase="$2" asset_dir
+            asset_dir="$(mktemp -d "${RUNNER_TEMP}/${phase}.XXXXXX")"
+            github_api --method GET \
+              -H "Accept: application/octet-stream" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              >"$asset_dir/$PACKAGE_TARBALL"
+            echo "$PACKAGE_SHA256  $asset_dir/$PACKAGE_TARBALL" | sha256sum --check --strict
+          }
+
+          assert_live_release_ref() {
+            local current_tag_sha current_main_sha current_relation
+            current_tag_sha="$(resolve_api_ref_to_commit "tags/$TAG")"
+            current_main_sha="$(github_api --method GET \
+              "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+            current_relation="$(github_api --method GET \
+              "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${current_main_sha}" --jq '.status')"
+            if [ "$current_tag_sha" != "$VERIFIED_SHA" ] || \
+              { [ "$current_relation" != "ahead" ] && [ "$current_relation" != "identical" ]; }; then
+              echo "::error::Release identity changed (tag=$current_tag_sha main=$current_main_sha relation=$current_relation expected=$VERIFIED_SHA)."
+              exit 1
+            fi
+          }
+
+          # This administrative read uses a step-scoped token because
+          # GITHUB_TOKEN write-all does not grant Administration: read.
+          # Nothing is created or uploaded unless owner enforcement is proven.
+          assert_immutable_release_policy "release-reconciliation"
+
+          load_status=0
+          load_release || load_status=$?
+          if [ "$load_status" -eq 1 ]; then
+            create_payload="$RUNNER_TEMP/create-release-${GITHUB_RUN_ID}.json"
+            created_release="$RUNNER_TEMP/created-release-${GITHUB_RUN_ID}.json"
+            jq -n \
+              --arg tag "$TAG" \
+              --arg target "$VERIFIED_SHA" \
+              --arg name "$expected_title" \
+              --arg body "$expected_body" \
+              --argjson prerelease "$PRERELEASE" \
+              '{tag_name: $tag, target_commitish: $target, name: $name, body: $body,
+                draft: true, prerelease: $prerelease}' \
+              >"$create_payload"
+            github_api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/releases" \
+              --input "$create_payload" >"$created_release"
+            created_release_id="$(jq -er '.id' "$created_release")"
+            load_release
+            listed_release_id="$(jq -er '.id' "$release_json")"
+            if [ "$listed_release_id" != "$created_release_id" ]; then
+              echo "::error::Created release id $created_release_id but discovery returned $listed_release_id."
+              exit 1
+            fi
+            echo "Created recoverable draft release $TAG as id $created_release_id."
+          elif [ "$load_status" -ne 0 ]; then
+            exit "$load_status"
+          fi
+
+          release_id="$(jq -er '.id' "$release_json")"
+          assert_loaded_release_identity "$release_id" false
+          matching_assets="$(jq --arg name "$PACKAGE_TARBALL" \
+            '[.assets[]? | select(.name == $name)] | length' "$release_json")"
+          unexpected_assets="$(jq --arg name "$PACKAGE_TARBALL" \
+            '[.assets[]? | select(.name != $name)] | length' "$release_json")"
+          if [ "$matching_assets" -gt 1 ] || [ "$unexpected_assets" -gt 0 ]; then
+            echo "::error::Release $TAG has an ambiguous asset set (matching=$matching_assets unexpected=$unexpected_assets)."
+            exit 1
+          fi
+          if [ "$matching_assets" -eq 0 ]; then
+            if [ "$LOADED_RELEASE_DRAFT" != "true" ]; then
+              echo "::error::Published release $TAG is missing immutable asset $PACKAGE_TARBALL."
+              exit 1
+            fi
+            encoded_asset_name="$(jq -rn --arg name "$PACKAGE_TARBALL" '$name | @uri')"
+            upload_json="$RUNNER_TEMP/upload-release-asset-${GITHUB_RUN_ID}.json"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $github_token" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@artifacts/$PACKAGE_TARBALL" \
+              --output "$upload_json" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${encoded_asset_name}"
+            uploaded_asset_id="$(jq -er --arg name "$PACKAGE_TARBALL" \
+              'select(.name == $name and .state == "uploaded") | .id' "$upload_json")"
+            load_release
+            assert_loaded_release_identity "$release_id" false
+            require_single_asset
+            if [ "$LOADED_ASSET_ID" != "$uploaded_asset_id" ]; then
+              echo "::error::Uploaded asset id $uploaded_asset_id but discovery returned $LOADED_ASSET_ID."
+              exit 1
+            fi
+          else
+            require_single_asset
+          fi
+
+          asset_id="$LOADED_ASSET_ID"
+          verify_asset_bytes "$asset_id" "prepublish-release-asset"
+
+          # Close the discovery/upload TOCTOU window immediately before the
+          # externally visible transition. Any identity or asset replacement
+          # blocks publication; nothing is deleted or overwritten.
+          load_release
+          assert_loaded_release_identity "$release_id" false
+          require_single_asset
+          if [ "$LOADED_ASSET_ID" != "$asset_id" ]; then
+            echo "::error::Release asset id changed from $asset_id to $LOADED_ASSET_ID before publication."
+            exit 1
+          fi
+          verify_asset_bytes "$asset_id" "prepatch-release-asset"
+          assert_live_release_ref
+
+          LATEST_DECISION_BASE="$(read_latest_release_tag)"
+          PROMOTE_LATEST="$(node scripts/release-policy.mjs github-latest \
+            "$PACKAGE_VERSION" "$LATEST_DECISION_BASE")"
+          assert_immutable_release_policy "release-patch"
+
+          if [ "$LOADED_RELEASE_DRAFT" = "true" ]; then
+            # Protected release fields are writable only while this is a
+            # draft. One exact PATCH makes the fully assembled release public.
+            publish_payload="$RUNNER_TEMP/publish-release-${GITHUB_RUN_ID}.json"
+            patched_release="$RUNNER_TEMP/patched-release-${GITHUB_RUN_ID}.json"
+            jq -n \
+              --arg tag "$TAG" \
+              --arg target "$VERIFIED_SHA" \
+              --arg name "$expected_title" \
+              --arg body "$expected_body" \
+              --argjson prerelease "$PRERELEASE" \
+              --arg make_latest "$PROMOTE_LATEST" \
+              '{tag_name: $tag, target_commitish: $target, name: $name, body: $body,
+                draft: false, prerelease: $prerelease, make_latest: $make_latest}' \
+              >"$publish_payload"
+            github_api --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              --input "$publish_payload" >"$patched_release"
+            if [ "$(jq -er '.id' "$patched_release")" != "$release_id" ]; then
+              echo "::error::Release publication PATCH returned an unexpected release identity."
+              exit 1
+            fi
+          else
+            # GitHub documents only title and release notes as editable after
+            # an immutable release is published. Never resend tag, target,
+            # draft, prerelease, or make_latest during idempotent recovery.
+            published_immutable="$(jq -er '
+              if has("immutable") and ((.immutable | type) == "boolean")
+              then (.immutable | tostring)
+              else error("missing or invalid immutable release state")
+              end
+            ' "$release_json")"
+            published_prerelease="$(jq -er '.prerelease' "$release_json")"
+            if [ "$published_immutable" != "true" ]; then
+              echo "::error::Existing public release $TAG is not immutable; refusing an undocumented reconciliation mutation."
+              exit 1
+            fi
+            if [ "$published_prerelease" != "$PRERELEASE" ]; then
+              echo "::error::Immutable release $TAG has prerelease=$published_prerelease, expected $PRERELEASE; this protected field cannot be repaired."
+              exit 1
+            fi
+
+            published_title="$(jq -r '.name // ""' "$release_json")"
+            published_body="$(jq -r '.body // ""' "$release_json")"
+            if [ "$published_title" != "$expected_title" ] || [ "$published_body" != "$expected_body" ]; then
+              metadata_payload="$RUNNER_TEMP/release-metadata-${GITHUB_RUN_ID}.json"
+              patched_release="$RUNNER_TEMP/patched-release-${GITHUB_RUN_ID}.json"
+              jq -n --arg name "$expected_title" --arg body "$expected_body" \
+                '{name: $name, body: $body}' >"$metadata_payload"
+              github_api --method PATCH \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                --input "$metadata_payload" >"$patched_release"
+              if [ "$(jq -er '.id' "$patched_release")" != "$release_id" ]; then
+                echo "::error::Release metadata PATCH returned an unexpected release identity."
+                exit 1
+              fi
+              echo "Reconciled only the documented editable title/notes for immutable release $TAG."
+            else
+              echo "Immutable release $TAG already has exact metadata; no release mutation was sent."
+            fi
+          fi
+
+          # Publishing under GitHub's immutable-release policy also creates a
+          # signed release attestation. Wait for that server-side transition;
+          # a merely public-but-mutable release must never satisfy this gate.
+          release_immutable="false"
+          for immutability_attempt in {1..12}; do
+            load_release
+            assert_loaded_release_identity "$release_id" true
+            require_single_asset
+            if [ "$LOADED_ASSET_ID" != "$asset_id" ]; then
+              echo "::error::Published release asset id changed from $asset_id to $LOADED_ASSET_ID."
+              exit 1
+            fi
+            release_immutable="$(jq -er '
+              if has("immutable") and ((.immutable | type) == "boolean")
+              then (.immutable | tostring)
+              else error("missing or invalid immutable release state")
+              end
+            ' "$release_json")"
+            if [ "$release_immutable" = "true" ]; then
+              break
+            fi
+            if [ "$immutability_attempt" -eq 12 ]; then
+              echo "::error::Published release $TAG did not become immutable; refusing a mutable success state."
+              exit 1
+            fi
+            echo "Waiting for immutable release state for $TAG ($immutability_attempt/12)."
+            sleep 5
+          done
+          verify_asset_bytes "$asset_id" "final-release-asset"
+          assert_live_release_ref
+
+          release_attestation_output="$RUNNER_TEMP/release-attestation-${GITHUB_RUN_ID}.out"
+          release_attestation_error="$RUNNER_TEMP/release-attestation-${GITHUB_RUN_ID}.err"
+          asset_attestation_output="$RUNNER_TEMP/release-asset-attestation-${GITHUB_RUN_ID}.out"
+          asset_attestation_error="$RUNNER_TEMP/release-asset-attestation-${GITHUB_RUN_ID}.err"
+          # gh <=2.92.0 can disclose GH_TOKEN during these verification calls
+          # (CVE-2026-48501); fail before networking unless the fix is present.
+          GH_CLI_VERSION="$(gh --version | awk 'NR == 1 && $1 == "gh" && $2 == "version" { print $3 }')"
+          node scripts/release-policy.mjs assert-safe-gh-release-verifier "$GH_CLI_VERSION"
+          echo "Using GitHub CLI $GH_CLI_VERSION for release attestation verification."
+          attestation_verified=false
+          for attestation_attempt in {1..12}; do
+            : >"$release_attestation_output"
+            : >"$release_attestation_error"
+            : >"$asset_attestation_output"
+            : >"$asset_attestation_error"
+            if github_release verify "$TAG" --repo "$GITHUB_REPOSITORY" \
+              >"$release_attestation_output" 2>"$release_attestation_error" && \
+              github_release verify-asset "$TAG" "artifacts/$PACKAGE_TARBALL" \
+                --repo "$GITHUB_REPOSITORY" \
+                >"$asset_attestation_output" 2>"$asset_attestation_error"; then
+              cat "$release_attestation_output"
+              cat "$asset_attestation_output"
+              attestation_verified=true
+              break
+            fi
+            if [ "$attestation_attempt" -eq 12 ]; then
+              cat "$release_attestation_error" >&2
+              cat "$asset_attestation_error" >&2
+              echo "::error::GitHub did not provide a valid signed release and asset attestation for immutable release $TAG."
+              exit 1
+            fi
+            echo "Waiting for the signed release attestation for $TAG ($attestation_attempt/12)."
+            sleep 5
+          done
+          if [ "$attestation_verified" != "true" ]; then
+            echo "::error::Signed release attestation verification did not complete."
+            exit 1
+          fi
+
+          ACTUAL_LATEST_TAG="$(read_latest_release_tag)"
+          node scripts/release-policy.mjs assert-github-latest \
+            "$PACKAGE_VERSION" "$PRIOR_LATEST_TAG" "$ACTUAL_LATEST_TAG" "$PROMOTE_LATEST"
+          node scripts/release-policy.mjs assert-github-latest \
+            "$PACKAGE_VERSION" "$LATEST_DECISION_BASE" "$ACTUAL_LATEST_TAG" "$PROMOTE_LATEST"
+          echo "Release $TAG id $release_id is immutable and attested with verified asset id $asset_id (sha256:$PACKAGE_SHA256); GitHub latest remains monotonic at ${ACTUAL_LATEST_TAG:-missing}."
     timeout-minutes: 60

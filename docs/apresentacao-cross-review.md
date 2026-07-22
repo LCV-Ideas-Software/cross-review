@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.25`                           |
-| Data do source/release target | `2026-07-21`                       |
+| Versão preparada pelo source  | `4.5.26`                           |
+| Data do source/release target | `2026-07-22`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -492,33 +492,38 @@ do host. Esses itens continuam separados por desenho.
 
 Dependências diretas de runtime declaradas no `package.json` atual:
 
-| Pacote                      | Versão declarada | Uso                               |
-| --------------------------- | ---------------- | --------------------------------- |
-| `@anthropic-ai/sdk`         | `^0.111.0`       | Cliente Anthropic/Claude.         |
-| `@google/genai`             | `^2.11.0`        | Cliente Google Gemini.            |
-| `@modelcontextprotocol/sdk` | `^1.29.0`        | Implementação MCP.                |
-| `openai`                    | `^6.46.0`        | OpenAI e APIs compatíveis.        |
-| `pino`                      | `^10.3.1`        | Logging estruturado.              |
-| `proper-lockfile`           | `^4.1.2`         | Locking de sessão multi-processo. |
-| `protobufjs`                | `^8.6.4`         | Serialização protobuf.            |
-| `zod`                       | `^4.4.3`         | Validação de schemas.             |
+| Pacote              | Versão declarada | Uso                               |
+| ------------------- | ---------------- | --------------------------------- |
+| `@anthropic-ai/sdk` | `^0.113.0`       | Cliente Anthropic/Claude.         |
+| `@google/genai`     | `^2.13.0`        | Cliente Google Gemini.            |
+| `openai`            | `^6.46.0`        | OpenAI e APIs compatíveis.        |
+| `pino`              | `^10.3.1`        | Logging estruturado.              |
+| `proper-lockfile`   | `^4.1.2`         | Locking de sessão multi-processo. |
+| `protobufjs`        | `^8.6.4`         | Serialização protobuf.            |
+| `zod`               | `^4.4.3`         | Validação de schemas.             |
 
-### Desenvolvimento
+### Bundle e desenvolvimento
 
-Dependências diretas de desenvolvimento:
+O SDK MCP é uma dependência direta de desenvolvimento incorporada pelo build ao
+artefato stdio publicado. Por isso seu escopo auditável é `bundled/dev`: ele não
+fica como dependência de produção não declarada no ambiente consumidor.
 
-| Pacote                   | Versão declarada | Uso                                 |
-| ------------------------ | ---------------- | ----------------------------------- |
-| `@biomejs/biome`         | `^2.4.15`        | Lint/format complementar.           |
-| `@eslint/js`             | `^10.0.1`        | ESLint base.                        |
-| `@types/node`            | `^26.0.0`        | Tipos Node.js.                      |
-| `@types/proper-lockfile` | `^4.1.4`         | Tipos do `proper-lockfile`.         |
-| `eslint`                 | `^10.4.0`        | Lint.                               |
-| `eslint-config-prettier` | `^10.1.8`        | Integração ESLint/Prettier.         |
-| `prettier`               | `^3.8.3`         | Formatação.                         |
-| `tsx`                    | `^4.22.3`        | Execução TypeScript em scripts/dev. |
-| `typescript`             | `^6.0.3`         | Build e typecheck.                  |
-| `typescript-eslint`      | `^8.59.4`        | Regras TypeScript para ESLint.      |
+Dependências diretas de bundle e desenvolvimento:
+
+| Pacote                      | Versão declarada | Uso                                      |
+| --------------------------- | ---------------- | ---------------------------------------- |
+| `@modelcontextprotocol/sdk` | `^1.29.0`        | Implementação MCP incorporada ao bundle. |
+| `@biomejs/biome`            | `^2.4.15`        | Lint/format complementar.                |
+| `@eslint/js`                | `^10.0.1`        | ESLint base.                             |
+| `@types/node`               | `^26.0.0`        | Tipos Node.js.                           |
+| `@types/proper-lockfile`    | `^4.1.4`         | Tipos do `proper-lockfile`.              |
+| `esbuild`                   | `^0.28.1`        | Bundle auditável do servidor stdio.      |
+| `eslint`                    | `^10.4.0`        | Lint.                                    |
+| `eslint-config-prettier`    | `^10.1.8`        | Integração ESLint/Prettier.              |
+| `prettier`                  | `^3.8.3`         | Formatação.                              |
+| `tsx`                       | `^4.22.3`        | Execução TypeScript em scripts/dev.      |
+| `typescript`                | `^6.0.3`         | Build e typecheck.                       |
+| `typescript-eslint`         | `^8.59.4`        | Regras TypeScript para ESLint.           |
 
 ## Scripts do projeto
 
@@ -808,6 +813,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.26`      | 2026-07-22    | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                                                     |
 | `v04.05.25`      | 2026-07-21    | Corrige as três vulnerabilidades do lock: `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7; aprova estritamente apenas o `postinstall` revisado de `protobufjs@7.6.5`. Scorecard e Auto-tag permanecem fail-closed, sem supressão de alerta. |
 | `v04.05.23`      | 2026-07-17    | Aceita a resposta unitária de `npm view --json` no npm 12 apenas com um objeto de metadata; respostas vazias, múltiplas ou inválidas falham fechadas antes do lock íntegro e da auditoria obrigatória.                                                                 |
 | `v04.05.22`      | 2026-07-17    | Decodifica o envelope DSSE Sigstore publicado pelo npm antes de vincular a provenance SLSA ao workflow, à tag protegida e ao commit imutável; a auditoria criptográfica posterior permanece obrigatória.                                                               |
@@ -891,9 +897,9 @@ Antes de usar uma revisão como gate:
 
 ## Fontes verificadas para esta apresentação
 
-- Contrato runtime do source target: regressões preparadas em 2026-07-21. O
+- Contrato runtime do source target: regressões preparadas em 2026-07-22. O
   runtime 4.5.8 foi confirmado após o reload daquela auditoria; o source/release
-  target atual é 4.5.25. `server_info` continua sendo a autoridade para cada
+  target atual é 4.5.26. `server_info` continua sendo a autoridade para cada
   janela depois do upgrade e reload.
 - `package.json` do repositório local.
 - `README.md`.
