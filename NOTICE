@@ -18,9 +18,9 @@ limitations under the License.
 
 Third-party dependencies
 
-This product includes software developed by third parties. Runtime
-dependencies and their licenses are listed in package.json and can be
-audited via `npm ls --all` and `npm-license-crawler` (not bundled).
-At the time of v2.3.1, direct runtime dependencies are the official provider
-SDKs, `@modelcontextprotocol/sdk`, `pino`, and `zod`. See package.json and
-package-lock.json for the exact dependency graph.
+This product includes software developed by third parties. The MCP stdio
+entrypoint incorporates the audited, reachable subset of the official
+`@modelcontextprotocol/sdk` and its validation dependencies. The generated
+`dist/THIRD_PARTY_LICENSES.txt` included in every package contains their
+exact versions and complete license notices. All other runtime dependencies
+remain external and are listed in package.json and package-lock.json.

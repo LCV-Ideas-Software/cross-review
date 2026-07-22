@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.25** (package `4.5.25`).
+**Status.** Stable. The current source/release target is **v04.05.26** (package `4.5.26`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.26`**      | Bundles the MCP runtime and hardens exact-SHA automation, immutable releases, and current provider dependencies.                                                                                                                                                                 |
 | **`v04.05.25`**      | Resolves the three registry advisories in the lockfile: `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7; updates the one reviewed install-script approval to `protobufjs@7.6.5`. Scorecard and Auto-tag remain fail-closed; no alert was suppressed. |
 | **`v04.05.23`**      | Accepts npm 12's one-item `npm view --json` response only when it contains one metadata object; empty, multiple, and malformed responses fail closed before the integrity-bound audit lock and mandatory `npm audit signatures` gate.                                            |
 | **`v04.05.22`**      | Decodes npm's Sigstore DSSE envelope before binding the SLSA provenance to the protected tag, publication workflow, and immutable source commit; the later cryptographic `npm audit signatures` gate remains mandatory.                                                          |
@@ -185,12 +186,15 @@ MCP-compatible server surface.
 Runtime calls are real provider calls by default. Stubs exist only for smoke
 tests and CI when `CROSS_REVIEW_STUB=1`.
 
-- OpenAI client library for the Codex/OpenAI peer.
-- Anthropic TypeScript client library for Claude.
-- Google Gen AI client library for Gemini.
+- OpenAI client library (`^6.46.0`) for the Codex/OpenAI peer.
+- Anthropic TypeScript client library (`@anthropic-ai/sdk` `^0.113.0`) for Claude.
+- Google Gen AI client library (`@google/genai` `^2.13.0`) for Gemini.
 - OpenAI-compatible DeepSeek API through the OpenAI client library.
 - OpenAI-compatible xAI Grok API through the OpenAI client library.
 - OpenAI-compatible Perplexity Sonar API through the OpenAI client library.
+- The MCP SDK (`@modelcontextprotocol/sdk` `^1.29.0`) is declared as a
+  development dependency and bundled into the stdio artifact; its audited scope
+  is therefore `bundled/dev`, not an undeclared consumer dependency.
 
 ## Quick Start
 
