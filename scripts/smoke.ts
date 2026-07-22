@@ -7527,18 +7527,26 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // threading, P1.4 max_items_per_pass default 4, P2.1 clampEffortForModel
 // direct test, P2.4 consensus event shape (judge_peers + per_peer_verdict).
 
-// P1.1 anti-drift: package.json `overrides` includes `hono >=4.12.25`
-// to clear five hono advisories (GHSA-88fw-hqm2-52qc high CORS + four
-// medium, all affecting hono < 4.12.25; flagged by the OpenSSF Scorecard
-// vulnerabilities probe) via @modelcontextprotocol/sdk transitive. A
-// future Dependabot PR or refactor could strip the override; this
-// guard catches that. Same precedent as ip-address override since v2.18.1.
+// P1.1 anti-drift: package.json `overrides` must keep a stable Hono v4
+// minimum at or above 4.12.27 to clear the prior five advisories plus
+// GHSA-hvrm-45r6-mjfj, GHSA-w62v-xxxg-mg59, and GHSA-xgm2-5f3f-mvvc
+// (all affecting older releases; flagged by the OpenSSF Scorecard probe) via
+// @modelcontextprotocol/sdk transitive. Validate the security floor as a
+// semver contract instead of freezing the exact string so Dependabot can
+// safely raise it. Same precedent as ip-address override since v2.18.1.
 {
   const fsModule = await import("node:fs");
   const pathModule = await import("node:path");
   const pkgRaw = fsModule.readFileSync(pathModule.resolve(process.cwd(), "package.json"), "utf8");
+  const lockRaw = fsModule.readFileSync(
+    pathModule.resolve(process.cwd(), "package-lock.json"),
+    "utf8",
+  );
   const pkg = JSON.parse(pkgRaw) as {
     overrides?: Record<string, string> | undefined;
+  };
+  const lock = JSON.parse(lockRaw) as {
+    packages?: Record<string, { version?: string | undefined }> | undefined;
   };
   const overrides = pkg.overrides;
   assert.ok(
@@ -7552,10 +7560,77 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     overrides.hono,
     "v2.18.5 / P1.1: package.json overrides includes `hono` key (anti-drift guard against accidental removal)",
   );
+
+  type StableSemver = readonly [major: number, minor: number, patch: number];
+  const parseStableSemver = (version: string, label: string): StableSemver => {
+    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+    assert.ok(match, `${label} must use stable X.Y.Z semver (got ${version})`);
+    const parsed: StableSemver = [Number(match[1]), Number(match[2]), Number(match[3])];
+    assert.ok(
+      parsed.every(Number.isSafeInteger),
+      `${label} must contain safe non-negative integer components (got ${version})`,
+    );
+    return parsed;
+  };
+  const compareStableSemver = (left: StableSemver, right: StableSemver): number => {
+    const deltas = [left[0] - right[0], left[1] - right[1], left[2] - right[2]];
+    for (const delta of deltas) {
+      if (delta !== 0) return delta;
+    }
+    return 0;
+  };
+  const parseMinimumRange = (range: string, label: string): StableSemver => {
+    const match = /^>=(\d+\.\d+\.\d+) <(\d+)$/.exec(range);
+    assert.ok(
+      match,
+      `${label} must use a >=X.Y.Z floor and an exclusive next-major ceiling (got ${range})`,
+    );
+    const floor = match[1];
+    assert.ok(floor, `${label} must include a semver floor`);
+    assert.equal(
+      Number(match[2]),
+      5,
+      `${label} must exclude unsupported Hono major versions (got ${range})`,
+    );
+    return parseStableSemver(floor, label);
+  };
+
+  const minimumSafeHonoVersion: StableSemver = [4, 12, 27];
+  const configuredHonoFloor = parseMinimumRange(overrides.hono, "v2.18.5 / P1.1: hono override");
   assert.equal(
-    overrides.hono,
-    ">=4.12.25",
-    `v2.18.5 / P1.1: hono override pinned to ">=4.12.25" (got ${overrides.hono})`,
+    configuredHonoFloor[0],
+    4,
+    "v2.18.5 / P1.1: hono override must retain the currently supported v4 major",
+  );
+  assert.ok(
+    compareStableSemver(configuredHonoFloor, minimumSafeHonoVersion) >= 0,
+    `v2.18.5 / P1.1: hono override must exclude every release below 4.12.27 (got ${overrides.hono})`,
+  );
+  assert.ok(
+    compareStableSemver(
+      parseMinimumRange(">=4.12.31 <5", "Dependabot raised-floor regression fixture"),
+      minimumSafeHonoVersion,
+    ) >= 0,
+    "v2.18.5 / P1.1: a Dependabot-raised Hono security floor must remain accepted",
+  );
+
+  const resolvedHonoVersion = lock.packages?.["node_modules/hono"]?.version;
+  assert.ok(
+    resolvedHonoVersion,
+    "v2.18.5 / P1.1: package-lock.json must contain the resolved Hono package",
+  );
+  const resolvedHono = parseStableSemver(
+    resolvedHonoVersion,
+    "v2.18.5 / P1.1: resolved Hono version",
+  );
+  assert.equal(
+    resolvedHono[0],
+    4,
+    "v2.18.5 / P1.1: the lockfile must retain the currently supported Hono v4 major",
+  );
+  assert.ok(
+    compareStableSemver(resolvedHono, configuredHonoFloor) >= 0,
+    `v2.18.5 / P1.1: resolved Hono ${resolvedHonoVersion} must satisfy override ${overrides.hono}`,
   );
   assert.ok(
     overrides["ip-address"],
@@ -10207,7 +10282,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v4.0.5 / AUDIT-6: publish workflow must verify npm registry artifact metadata after publication.",
   );
   assert.ok(
-    /if \[ "\$TAG" != "\$DISPLAY_TAG" \]/.test(publishWorkflow),
+    /if \[ "\$PUBLISH_REF" != "\$DISPLAY_TAG" \]/.test(publishWorkflow),
     "v4.5.1 / release metadata: publish must reject a tag that does not match package.json.",
   );
   assert.ok(
@@ -10220,19 +10295,45 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "utf8",
   );
   assert.ok(
-    /if \[\[ "\$VERSION" == \*-\* \]\]; then[\s\S]{0,120}TAG="\$\{TAG\}-\$\{VERSION#\*-\}"/.test(
-      autoTagWorkflow,
-    ),
-    "v4.5.1 / release metadata: auto-tag and publish must derive the same prerelease display tag.",
+    autoTagWorkflow.includes('node scripts/release-policy.mjs display-tag "$CURRENT_VERSION"') &&
+      publishWorkflow.includes('node scripts/release-policy.mjs display-tag "$VERSION"'),
+    "v4.5.1 / release metadata: auto-tag and publish must share strict display-tag derivation.",
   );
   console.log("[smoke] registry_dist_metadata_verification_test: PASS");
 }
 
 {
   const npmRegistryArg = "--registry=https://registry.npmjs.org";
+  const githubPackagesRegistryArg = "--registry=https://npm.pkg.github.com";
+  const githubPackagesScopeRegistryArg =
+    "--@lcv-ideas-software:registry=https://npm.pkg.github.com";
   const isAllowedNpmCommand = (command: string): boolean => {
-    const afterNpm = command.trim().replace(/^.*?\bnpm\s+/, "");
-    return /^(ci|install|update)\b/.test(afterNpm) || afterNpm.startsWith(npmRegistryArg);
+    const trimmed = command.trim();
+    if (!trimmed.startsWith("npm ")) return false;
+
+    const afterNpm = trimmed.slice("npm ".length);
+    if (/^(ci|install|update)\b/.test(afterNpm)) return true;
+    if (afterNpm === npmRegistryArg || afterNpm.startsWith(`${npmRegistryArg} `)) return true;
+
+    const tokens = afterNpm.split(/\s+/);
+    if (tokens[0] !== "view" && tokens[0] !== "publish") return false;
+    if (/[;&|\r\n]/.test(afterNpm)) return false;
+    if (tokens[0] === "publish" && !/^['"]?\.\/artifacts\//.test(tokens[1] ?? "")) return false;
+
+    const registryArgs = tokens.filter(
+      (token) => token === "--registry" || token.startsWith("--registry="),
+    );
+    const scopeRegistryArgs = tokens.filter(
+      (token) =>
+        token === "--@lcv-ideas-software:registry" ||
+        token.startsWith("--@lcv-ideas-software:registry="),
+    );
+    return (
+      registryArgs.length === 1 &&
+      registryArgs[0] === githubPackagesRegistryArg &&
+      scopeRegistryArgs.length === 1 &&
+      scopeRegistryArgs[0] === githubPackagesScopeRegistryArg
+    );
   };
   const extractNpmShellCommand = (line: string): string | undefined => {
     const trimmed = line.trim();
@@ -10273,6 +10374,31 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         `v4.0.5 / npm-registry: package script ${name} must pass ${npmRegistryArg} unless it is dependency install/update.`,
       );
     }
+  }
+
+  for (const command of [
+    `npm view "@lcv-ideas-software/cross-review@4.5.26" version ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg}`,
+    `npm publish "./artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg} --ignore-scripts`,
+  ]) {
+    assert.ok(
+      isAllowedNpmCommand(command),
+      "v4.5.26 / npm-registry: exact GitHub Packages view/publish commands must be allowed.",
+    );
+  }
+  for (const command of [
+    `npm publish "artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg}`,
+    `npm publish "artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg}`,
+    `npm view "@lcv-ideas-software/cross-review@4.5.26" version ${githubPackagesScopeRegistryArg}`,
+    `npm exec --yes attacker ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg}`,
+    `npm publish "./artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg}.example ${githubPackagesScopeRegistryArg}`,
+    `npm publish "./artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg}=https://example.invalid`,
+    `npm publish "./artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg} --registry=https://example.invalid`,
+    `npm publish "./artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg} && npm exec attacker`,
+  ]) {
+    assert.ok(
+      !isAllowedNpmCommand(command),
+      `v4.5.26 / npm-registry: malformed or over-broad GitHub Packages command must be rejected: ${command}`,
+    );
   }
   console.log("[smoke] npm_registry_discipline_test: PASS");
 }
