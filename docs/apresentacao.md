@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-21: `4.5.25`. O registro pode ficar
+> Estado do source/release target em 2026-07-22: `4.5.26`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -588,18 +588,21 @@ Depois de alterá-los, reinicie ou recarregue a janela/host MCP e confirme em
 - **Node.js ≥ 22**, com módulos ECMAScript (`"type": "module"`).
 - Escrito em **TypeScript**.
 
-### Dependências de runtime
+### Dependências de runtime e bundle
 
-| Pacote                      | Função                                                     |
-| --------------------------- | ---------------------------------------------------------- |
-| `@modelcontextprotocol/sdk` | implementação do protocolo MCP                             |
-| `@anthropic-ai/sdk`         | cliente da API Anthropic (Claude)                          |
-| `@google/genai`             | cliente da API Google Gen AI (Gemini)                      |
-| `openai`                    | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
-| `zod`                       | validação de esquemas de entrada                           |
-| `pino`                      | logs estruturados (NDJSON)                                 |
-| `proper-lockfile`           | trava de arquivo para concorrência segura                  |
-| `protobufjs`                | serialização protobuf usada pela árvore de runtime         |
+| Pacote                      | Versão     | Escopo        | Função                                                     |
+| --------------------------- | ---------- | ------------- | ---------------------------------------------------------- |
+| `@modelcontextprotocol/sdk` | `^1.29.0`  | `bundled/dev` | implementação MCP incorporada ao bundle stdio              |
+| `@anthropic-ai/sdk`         | `^0.113.0` | runtime       | cliente da API Anthropic (Claude)                          |
+| `@google/genai`             | `^2.13.0`  | runtime       | cliente da API Google Gen AI (Gemini)                      |
+| `openai`                    | `^6.46.0`  | runtime       | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
+| `zod`                       | `^4.4.3`   | runtime       | validação de esquemas de entrada                           |
+| `pino`                      | `^10.3.1`  | runtime       | logs estruturados (NDJSON)                                 |
+| `proper-lockfile`           | `^4.1.2`   | runtime       | trava de arquivo para concorrência segura                  |
+| `protobufjs`                | `^8.6.4`   | runtime       | serialização protobuf usada pela árvore de runtime         |
+
+O SDK MCP é declarado em `devDependencies`, mas o build o incorpora ao artefato
+stdio publicado; ele não fica como dependência de produção ausente no consumidor.
 
 ### Dependências de desenvolvimento
 
@@ -616,6 +619,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.26`      | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                     |
 | `v04.05.25`      | Corrige `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7 no lock; aprova estritamente apenas `protobufjs@7.6.5` para script de instalação. Scorecard e Auto-tag permanecem fail-closed sem suprimir alertas. |
 | `v04.05.23`      | Aceita a resposta unitária de `npm view --json` no npm 12 somente com um objeto de metadata; vazia, múltipla ou inválida falha fechada antes do lock íntegro e da auditoria obrigatória.                                               |
 | `v04.05.22`      | Decodifica o envelope DSSE do npm e vincula a provenance SLSA ao workflow, à tag protegida e ao commit; a auditoria criptográfica posterior permanece obrigatória.                                                                     |

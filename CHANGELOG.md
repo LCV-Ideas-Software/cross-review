@@ -7,6 +7,89 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.26] — 2026-07-22
+
+**The published MCP runtime and repository automation now fail closed at the
+same reviewed commit.**
+
+### Fixed
+
+- Bundles the MCP stdio runtime and its license inventory into the npm package,
+  then installs that package in a clean consumer fixture to prove it starts
+  without undeclared production dependencies.
+- Replaces the repository-local Dependabot mutator with the reviewed central
+  controller, bound to immutable bot identity, exact-head checks and approval,
+  guarded branch refresh, and exact-SHA squash merge.
+- Updates the Hono server override with an explicit v5 exclusion and the npm
+  v12 install-script policy with a package-wide denial for Google GenAI, so a
+  future dependency update cannot silently acquire install-time execution.
+- Serializes every tag through one repository-wide GitHub FIFO release queue,
+  preventing concurrent versions from racing npm or GitHub `latest`. Older
+  successful CI commits remain valid only while they are in live `main`
+  history, and every branch/tag identity is resolved through authenticated
+  GitHub APIs before tagging or publishing.
+- Queues every side-effect-free release validation without cancellation, while
+  keeping a historical cancelled result fail-closed instead of rerunning it in
+  a concurrency context that could cancel the current `main` gate.
+- Gates queued releases on every CodeQL SARIF category at the exact target
+  commit and on exact-SHA OpenSSF Scorecard SARIF, rather than substituting
+  mutable current-branch alert state.
+- Runs Pages and OpenSSF Scorecard on every `main` push and requires all six
+  push workflows at the exact release candidate, resolving each by its active
+  workflow path and numeric ID instead of its non-unique display name. The gate
+  allows queued workflows up to 60 minutes to finish. For GitHub-managed
+  Dependabot Updates, follows the final configuration blob across the complete
+  version epoch and requires the newest trusted success for each ecosystem,
+  preventing a later same-version recovery commit from bypassing an earlier
+  config change.
+- Publishes the generated tarball through an explicit local `./artifacts/`
+  path, preventing npm from interpreting the package argument as a GitHub
+  shorthand or Git dependency.
+- Discovers GitHub Releases (including drafts) through the complete paginated
+  collection, reconciles releases and assets only by their immutable numeric
+  IDs, and never deletes or overwrites an existing asset during recovery.
+- Treats the authenticated existing tag ref—not the API's informational
+  `target_commitish` value—as release identity, so an immutable historical
+  release remains recoverable after `main` advances.
+- Re-downloads and SHA-256-verifies the exact GitHub Release asset after
+  discovery, immediately before the release PATCH, and again from the final
+  public state. A complete protected-field PATCH is restricted to drafts;
+  idempotent recovery of an already immutable release sends no mutation unless
+  its title or notes need the only documented metadata-only repair.
+- Requires the final GitHub Release to report `immutable: true`, then verifies
+  GitHub's signed release attestation and binds the local tarball to its
+  attested release asset before the workflow may close green.
+- Uses the isolated administrative automation token to prove the repository's
+  immutable-release policy is owner-enforced in the common gate before either
+  package registry can write, again before any GitHub Release write, and
+  immediately before publication, preventing a red-but-public mutable result.
+  The long reconciliation step immediately copies both GitHub tokens into
+  non-exported shell variables and removes their exported names before any
+  subprocess. The repository token is injected only into the `gh api`/`gh
+release` wrappers or the release-asset `curl` header; the administrative
+  token remains scoped only to each immutable-policy read.
+- Refuses release-attestation commands on GitHub CLI versions older than
+  2.93.0, the first version patched for the token-disclosure vulnerability
+  CVE-2026-48501, and records the verified runner version before use.
+
+### Changed
+
+- Updates `@anthropic-ai/sdk` to `^0.113.0` and `@google/genai` to `^2.13.0`. Keeps
+  TypeScript on the newest supported 6.0.x release because the current
+  `typescript-eslint` peer contract excludes TypeScript 7.
+- Synchronizes the public dependency inventory with the release manifest. The
+  MCP SDK remains declared at `^1.29.0` under development dependencies and is
+  incorporated into the published stdio bundle, so its documented audit scope
+  is `bundled/dev`.
+
+### Security
+
+- Standardizes `write-all` at workflow and job scope while keeping privileged
+  automation on trusted default-branch code, immutable action SHAs, blocked
+  egress, and non-persistent checkout credentials.
+- Adds Zizmor 1.28.0 analysis and retains Scorecard SARIF publication without
+  the incompatible public Scorecard-results permission mode.
+
 ## [v04.05.25] — 2026-07-21
 
 **Security advisories are remediated without weakening release gates.**
