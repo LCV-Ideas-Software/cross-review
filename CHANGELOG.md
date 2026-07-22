@@ -101,6 +101,9 @@ same reviewed commit.**
   parses every registry-verifier request and requires exact equality with the
   npm registry origin. This closes the CodeQL incomplete-URL-sanitization
   finding without suppressing it or weakening the zero-SARIF release gate.
+- Measures the adversarial code-symbol extraction deadline around the production
+  algorithm itself, retaining its two-second ceiling while a separate ten-second
+  child-process watchdog prevents loader startup from producing false failures.
 - Adds Zizmor 1.28.0 analysis and retains Scorecard SARIF publication without
   the incompatible public Scorecard-results permission mode.
 

@@ -924,13 +924,20 @@ const regressions: Regression[] = [
           [
             'import { extractChecklistCodeSymbols } from "./src/core/session-store.ts";',
             'const adversarial = "a" + "A".repeat(100_000) + "_";',
-            "if (extractChecklistCodeSymbols(adversarial).length !== 0) process.exit(2);",
+            "const started = process.hrtime.bigint();",
+            "const extracted = extractChecklistCodeSymbols(adversarial);",
+            "const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;",
+            "console.log(JSON.stringify({ elapsedMs, extracted: extracted.length }));",
+            "if (extracted.length !== 0 || elapsedMs > 2_000) process.exit(2);",
           ].join("\n"),
         ],
         {
           cwd: process.cwd(),
           encoding: "utf8",
-          timeout: 2_000,
+          // Process startup and the tsx loader are outside the production
+          // algorithm's deadline. Retain a larger fail-safe for a hung child,
+          // while the child measures the extraction itself against 2 seconds.
+          timeout: 10_000,
           windowsHide: true,
         },
       );
