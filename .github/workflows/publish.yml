@@ -67,12 +67,14 @@ jobs:
           ADMIN_GH_TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "$ADMIN_GH_TOKEN" ]; then
+          immutability_token="${ADMIN_GH_TOKEN:-}"
+          unset ADMIN_GH_TOKEN
+          if [ -z "$immutability_token" ]; then
             echo "::error::LCV_AUTOMATION_TOKEN is required for the pre-publication immutable-release policy gate."
             exit 1
           fi
           policy_error="$RUNNER_TEMP/immutable-release-policy-gate-${GITHUB_RUN_ID}.err"
-          if ! policy_json="$(GH_TOKEN="$ADMIN_GH_TOKEN" gh api --method GET \
+          if ! policy_json="$(GH_TOKEN="$immutability_token" gh api --method GET \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "repos/${GITHUB_REPOSITORY}/immutable-releases" 2>"$policy_error")"; then
@@ -126,9 +128,18 @@ jobs:
           PUBLISH_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to validate exact release prerequisites."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
           resolve_remote_tag() {
             local tag="$1" ref_json object_type object_sha tag_json
-            ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag")"
+            ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag")"
             object_type="$(jq -er '.object.type' <<<"$ref_json")"
             object_sha="$(jq -er '.object.sha' <<<"$ref_json")"
             for _ in {1..10}; do
@@ -140,7 +151,7 @@ jobs:
                 echo "::error::Tag $tag resolves to unsupported Git object type '$object_type'." >&2
                 return 1
               fi
-              tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
+              tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
               object_type="$(jq -er '.object.type' <<<"$tag_json")"
               object_sha="$(jq -er '.object.sha' <<<"$tag_json")"
             done
@@ -150,8 +161,8 @@ jobs:
           TAG_SHA="$(resolve_remote_tag "$PUBLISH_REF")"
           assert_target_on_live_main() {
             local relation
-            LIVE_MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-            relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${TAG_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
+            LIVE_MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+            relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${TAG_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
             if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
               echo "::error::Tag $PUBLISH_REF at $TAG_SHA is no longer in live main history at $LIVE_MAIN_SHA (compare status: $relation)."
               exit 1
@@ -177,13 +188,13 @@ jobs:
 
           # Resolve each required workflow by its active file path and numeric
           # workflow ID; display names are not unique security identities.
-          bash scripts/require-release-push-workflows.sh "$TAG_SHA"
+          GH_TOKEN="$github_token" bash scripts/require-release-push-workflows.sh "$TAG_SHA"
 
           # Dependabot Updates is a GitHub-managed dynamic workflow, not a
           # push-triggered YAML workflow. Gate the newest run per ecosystem on
           # the first-parent commits that carry this epoch's exact final config
           # blob, so a later same-version recovery commit cannot skip it.
-          bash scripts/require-dependabot-release-evidence.sh require "$TAG_SHA" "$VERSION_BOUNDARY_SHA"
+          GH_TOKEN="$github_token" bash scripts/require-dependabot-release-evidence.sh require "$TAG_SHA" "$VERSION_BOUNDARY_SHA"
 
           # A successful CodeQL workflow only proves upload completion. Read
           # and evaluate the SARIF tied to TAG_SHA itself. The alert state of a
@@ -192,7 +203,7 @@ jobs:
           required_codeql_categories=("/language:actions" "/language:javascript-typescript")
           for attempt in {1..12}; do
             assert_target_on_live_main
-            analyses_json="$(gh api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
             target_codeql="$(jq -c --arg sha "$TAG_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL")]' <<<"$analyses_json")"
             codeql_ready=true
             for category in "${required_codeql_categories[@]}"; do
@@ -234,7 +245,7 @@ jobs:
             fi
             analysis_id="$(jq -er --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last | .id' <<<"$target_codeql")"
             sarif_file="$RUNNER_TEMP/codeql-${analysis_id}.sarif"
-            gh api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
+            github_api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
             result_count="$(jq '[.runs[]?.results[]?] | length' "$sarif_file")"
             if [ "$result_count" -ne 0 ]; then
               echo "::error::Exact CodeQL analysis $category contains $result_count result(s) for $TAG_SHA."
@@ -249,7 +260,7 @@ jobs:
           target_scorecard="[]"
           for attempt in {1..12}; do
             assert_target_on_live_main
-            analyses_json="$(gh api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
             target_scorecard="$(jq -c --arg sha "$TAG_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "Scorecard")]' <<<"$analyses_json")"
             scorecard_ready=true
             for category in "supply-chain/local" "supply-chain/online-scm" "supply-chain/branch-protection"; do
@@ -278,7 +289,7 @@ jobs:
           for category in "supply-chain/local" "supply-chain/online-scm" "supply-chain/branch-protection"; do
             analysis_id="$(jq -er --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last | .id' <<<"$target_scorecard")"
             sarif_file="$RUNNER_TEMP/scorecard-${analysis_id}.sarif"
-            gh api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
+            github_api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
             unexpected_results="$(jq '[
               .runs[]?.results[]?
               | select(
@@ -339,11 +350,20 @@ jobs:
           PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to revalidate protected release identity."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
           if [ "$PUBLISH_REF_TYPE" != "tag" ] || [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ] || [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
             echo "::error::Protected tag trigger identity changed or is invalid after local validation."
             exit 1
           fi
-          ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
+          ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
           object_type="$(jq -er '.object.type' <<<"$ref_json")"
           TAG_SHA="$(jq -er '.object.sha' <<<"$ref_json")"
           for _ in {1..10}; do
@@ -354,13 +374,13 @@ jobs:
               echo "::error::Tag $PUBLISH_REF resolves to unsupported Git object type '$object_type'."
               exit 1
             fi
-            tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
+            tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
             object_type="$(jq -er '.object.type' <<<"$tag_json")"
             TAG_SHA="$(jq -er '.object.sha' <<<"$tag_json")"
           done
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${TAG_SHA}...${MAIN_SHA}" --jq '.status')"
+          MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${TAG_SHA}...${MAIN_SHA}" --jq '.status')"
           if [ "$TAG_SHA" != "$CHECKED_OUT_SHA" ]; then
             echo "::error::Release tag $TAG_SHA no longer matches checked-out commit $CHECKED_OUT_SHA."
             exit 1
@@ -567,11 +587,20 @@ jobs:
           PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to revalidate npmjs publication identity."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
           if [ "$PUBLISH_REF_TYPE" != "tag" ] || [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ] || [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
             echo "::error::Protected tag trigger identity is no longer valid."
             exit 1
           fi
-          ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
+          ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
           object_type="$(jq -er '.object.type' <<<"$ref_json")"
           TAG_SHA="$(jq -er '.object.sha' <<<"$ref_json")"
           for _ in {1..10}; do
@@ -582,13 +611,13 @@ jobs:
               echo "::error::Tag $PUBLISH_REF resolves to unsupported Git object type '$object_type'."
               exit 1
             fi
-            tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
+            tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
             object_type="$(jq -er '.object.type' <<<"$tag_json")"
             TAG_SHA="$(jq -er '.object.sha' <<<"$tag_json")"
           done
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${MAIN_SHA}" --jq '.status')"
+          MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${MAIN_SHA}" --jq '.status')"
           if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
             echo "::error::Release tag or checkout no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA)."
             exit 1
@@ -747,12 +776,19 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          github_packages_token="${NODE_AUTH_TOKEN:-}"
+          unset NODE_AUTH_TOKEN
+          if [ -z "$github_packages_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to create the temporary GitHub Packages credential file."
+            exit 1
+          fi
           umask 077
           npmrc="${RUNNER_TEMP}/npm-github-packages.npmrc"
           {
             echo "@lcv-ideas-software:registry=https://npm.pkg.github.com"
-            echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}"
+            echo "//npm.pkg.github.com/:_authToken=${github_packages_token}"
           } > "$npmrc"
+          unset github_packages_token
           chmod 600 "$npmrc"
           echo "NPM_CONFIG_USERCONFIG=$npmrc" >> "$GITHUB_ENV"
           npm --registry=https://registry.npmjs.org config get @lcv-ideas-software:registry
@@ -769,7 +805,6 @@ jobs:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
           PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           view_error="$RUNNER_TEMP/gh-packages-view-${GITHUB_RUN_ID}.err"
@@ -801,7 +836,6 @@ jobs:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
           PREFERRED_TAG: ${{ needs.gate.outputs.dist_tag }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           view_error="$RUNNER_TEMP/gh-packages-tags-${GITHUB_RUN_ID}.err"
@@ -833,11 +867,20 @@ jobs:
           PUBLISH_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to revalidate GitHub Packages publication identity."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
           if [ "$PUBLISH_REF_TYPE" != "tag" ] || [ "$PUBLISH_EVENT_REF" != "refs/tags/$PUBLISH_REF" ] || [ "$PUBLISH_REF_PROTECTED" != "true" ]; then
             echo "::error::Protected tag trigger identity is no longer valid."
             exit 1
           fi
-          ref_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
+          ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$PUBLISH_REF")"
           object_type="$(jq -er '.object.type' <<<"$ref_json")"
           TAG_SHA="$(jq -er '.object.sha' <<<"$ref_json")"
           for _ in {1..10}; do
@@ -848,13 +891,13 @@ jobs:
               echo "::error::Tag $PUBLISH_REF resolves to unsupported Git object type '$object_type'."
               exit 1
             fi
-            tag_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
+            tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA")"
             object_type="$(jq -er '.object.type' <<<"$tag_json")"
             TAG_SHA="$(jq -er '.object.sha' <<<"$tag_json")"
           done
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          MAIN_SHA="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-          relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${MAIN_SHA}" --jq '.status')"
+          MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${MAIN_SHA}" --jq '.status')"
           if [ "$TAG_SHA" != "$VERIFIED_SHA" ] || [ "$CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
             echo "::error::Release tag or checkout no longer names verified commit $VERIFIED_SHA (tag=$TAG_SHA checkout=$CHECKED_OUT_SHA)."
             exit 1
@@ -869,14 +912,12 @@ jobs:
         env:
           DIST_TAG: ${{ steps.gh-packages-tag.outputs.publish_tag }}
           PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm publish "./artifacts/$PACKAGE_TARBALL" --registry=https://npm.pkg.github.com --@lcv-ideas-software:registry=https://npm.pkg.github.com --access public --provenance --tag "$DIST_TAG" --ignore-scripts
       - name: Verify GitHub Packages visibility
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
           PACKAGE_INTEGRITY: ${{ needs.gate.outputs.package_integrity }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           for attempt in {1..12}; do
@@ -905,7 +946,6 @@ jobs:
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
           PRIOR_LATEST: ${{ steps.gh-packages-tag.outputs.prior_latest }}
           PUBLISH_TAG: ${{ steps.gh-packages-tag.outputs.publish_tag }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tags_view="$(npm view "$PACKAGE_NAME" dist-tags --json \
@@ -916,6 +956,11 @@ jobs:
           node scripts/release-policy.mjs assert-registry-latest \
             "$PACKAGE_VERSION" "$PRIOR_LATEST" "$ACTUAL_LATEST" "$PUBLISH_TAG"
           echo "GitHub Packages latest is monotonic at ${ACTUAL_LATEST:-missing}; candidate was $PACKAGE_VERSION."
+      - name: Remove GitHub Packages credential file
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f -- "${RUNNER_TEMP}/npm-github-packages.npmrc"
     timeout-minutes: 60
   create-github-release:
     name: Reconcile GitHub Release from immutable artifact
@@ -1013,7 +1058,7 @@ jobs:
           PACKAGE_SHA256: ${{ needs.gate.outputs.package_sha256 }}
         run: |
           set -euo pipefail
-          github_token="$GH_TOKEN"
+          github_token="${GH_TOKEN:-}"
           immutability_token="$IMMUTABILITY_TOKEN"
           unset GH_TOKEN
           unset IMMUTABILITY_TOKEN
@@ -1181,6 +1226,31 @@ jobs:
             jq -e '.[0]' <<<"$matching_releases" >"$release_json"
           }
 
+          wait_for_created_release() {
+            local expected_release_id="$1" visibility_attempt load_status listed_release_id
+            for visibility_attempt in {1..12}; do
+              load_status=0
+              load_release || load_status=$?
+              if [ "$load_status" -eq 0 ]; then
+                listed_release_id="$(jq -er '.id' "$release_json")" || return 3
+                if [ "$listed_release_id" != "$expected_release_id" ]; then
+                  echo "::error::Created release id $expected_release_id but discovery returned $listed_release_id." >&2
+                  return 2
+                fi
+                return 0
+              fi
+              if [ "$load_status" -ne 1 ]; then
+                return "$load_status"
+              fi
+              if [ "$visibility_attempt" -eq 12 ]; then
+                echo "::error::Created release id $expected_release_id did not become visible after 12 authenticated list reads." >&2
+                return 1
+              fi
+              echo "Waiting for created release id $expected_release_id to become visible (${visibility_attempt}/12)."
+              sleep 5
+            done
+          }
+
           assert_loaded_release_identity() {
             local expected_id="$1" require_final="$2"
             local current_title current_body current_draft current_prerelease
@@ -1278,12 +1348,7 @@ jobs:
               "repos/${GITHUB_REPOSITORY}/releases" \
               --input "$create_payload" >"$created_release"
             created_release_id="$(jq -er '.id' "$created_release")"
-            load_release
-            listed_release_id="$(jq -er '.id' "$release_json")"
-            if [ "$listed_release_id" != "$created_release_id" ]; then
-              echo "::error::Created release id $created_release_id but discovery returned $listed_release_id."
-              exit 1
-            fi
+            wait_for_created_release "$created_release_id"
             echo "Created recoverable draft release $TAG as id $created_release_id."
           elif [ "$load_status" -ne 0 ]; then
             exit "$load_status"

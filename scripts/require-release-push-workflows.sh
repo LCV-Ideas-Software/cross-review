@@ -27,14 +27,20 @@ die() {
 [ "$#" -eq 1 ] || die "Usage: $0 TARGET_SHA"
 readonly TARGET_SHA="$1"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-: "${GH_TOKEN:?GH_TOKEN is required}"
+release_gate_github_token="${GH_TOKEN:-}"
+unset GH_TOKEN
+[ -n "$release_gate_github_token" ] || die "GH_TOKEN is required"
+
+github_api() {
+  GH_TOKEN="$release_gate_github_token" gh api "$@"
+}
 
 git rev-parse --verify "$TARGET_SHA^{commit}" >/dev/null 2>&1 ||
   die "Release target is not a local commit: $TARGET_SHA"
 
 declare -a workflow_ids=()
 for discovery_attempt in {1..60}; do
-  workflow_pages="$(gh api --method GET --paginate --slurp \
+  workflow_pages="$(github_api --method GET --paginate --slurp \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2026-03-10" \
     "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100")"
@@ -69,8 +75,8 @@ done
 
 assert_target_on_live_main() {
   local live_main_sha relation
-  live_main_sha="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-  relation="$(gh api --method GET "repos/$GITHUB_REPOSITORY/compare/${TARGET_SHA}...${live_main_sha}" --jq '.status')"
+  live_main_sha="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+  relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${TARGET_SHA}...${live_main_sha}" --jq '.status')"
   if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
     die "Release target $TARGET_SHA left live main history at $live_main_sha (compare status: $relation)."
   fi
@@ -86,7 +92,7 @@ for attempt in {1..360}; do
     assert_target_on_live_main
   fi
 
-  run_pages="$(gh api --method GET --paginate --slurp \
+  run_pages="$(github_api --method GET --paginate --slurp \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2026-03-10" \
     "repos/$GITHUB_REPOSITORY/actions/runs" \

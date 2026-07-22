@@ -47,7 +47,10 @@ same reviewed commit.**
   shorthand or Git dependency.
 - Discovers GitHub Releases (including drafts) through the complete paginated
   collection, reconciles releases and assets only by their immutable numeric
-  IDs, and never deletes or overwrites an existing asset during recovery.
+  IDs, and never deletes or overwrites an existing asset during recovery. A
+  newly created draft is polled with a bounded retry until its exact
+  server-issued ID is visible; a mismatched ID or an API/parse failure aborts
+  immediately before any asset upload.
 - Treats the authenticated existing tag ref—not the API's informational
   `target_commitish` value—as release identity, so an immutable historical
   release remains recoverable after `main` advances.
@@ -63,11 +66,13 @@ same reviewed commit.**
   immutable-release policy is owner-enforced in the common gate before either
   package registry can write, again before any GitHub Release write, and
   immediately before publication, preventing a red-but-public mutable result.
-  The long reconciliation step immediately copies both GitHub tokens into
-  non-exported shell variables and removes their exported names before any
-  subprocess. The repository token is injected only into the `gh api`/`gh
-release` wrappers or the release-asset `curl` header; the administrative
-  token remains scoped only to each immutable-policy read.
+  Every multi-command GitHub step immediately copies its token into a
+  non-exported shell variable and removes the exported name before unrelated
+  subprocesses run. Tokens are injected only into the intended `gh` wrapper,
+  release-asset `curl` header, or guarded helper shell. The GitHub Packages
+  token is written once to a mode-0600 runner-temporary npmrc, removed from the
+  environment before child processes, and deleted by an unconditional cleanup
+  step.
 - Refuses release-attestation commands on GitHub CLI versions older than
   2.93.0, the first version patched for the token-disclosure vulnerability
   CVE-2026-48501, and records the verified runner version before use.
@@ -87,6 +92,11 @@ release` wrappers or the release-asset `curl` header; the administrative
 - Standardizes `write-all` at workflow and job scope while keeping privileged
   automation on trusted default-branch code, immutable action SHAs, blocked
   egress, and non-persistent checkout credentials.
+- Keeps the privileged `workflow_run` auto-tag job on a constant trusted
+  `refs/heads/main` checkout. The successful CI SHA is treated only as data and
+  must be a valid full commit that is an ancestor of both that checkout and
+  authenticated live `main`; only then does the working tree detach to that
+  exact event commit before versioned repository code or metadata is read.
 - Adds Zizmor 1.28.0 analysis and retains Scorecard SARIF publication without
   the incompatible public Scorecard-results permission mode.
 
