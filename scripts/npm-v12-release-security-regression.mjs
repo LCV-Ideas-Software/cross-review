@@ -271,13 +271,30 @@ assert.doesNotMatch(
   /workflow_dispatch:\s*\r?\n\s+inputs:/,
   "publication dispatch must not accept any ref-like input; github.ref is the sole release identity",
 );
-assert.match(
-  publishWorkflow,
-  /concurrency:\s*\r?\n(?:\s*#[^\n]*\r?\n)*\s+group:\s*release-publication\s*\r?\n\s+queue:\s*max\s*\r?\n\s+cancel-in-progress:\s*false/,
+const publishWorkflowLines = publishWorkflow.split(/\r?\n/);
+const publishConcurrencyStart = publishWorkflowLines.indexOf("concurrency:");
+const publishEnvStart = publishWorkflowLines.indexOf("env:", publishConcurrencyStart + 1);
+assert.ok(
+  publishConcurrencyStart >= 0 && publishEnvStart > publishConcurrencyStart,
+  "publish must retain one top-level concurrency block before its environment",
+);
+const publishConcurrencyBlock = publishWorkflowLines
+  .slice(publishConcurrencyStart, publishEnvStart)
+  .filter((line) => !line.trimStart().startsWith("#"))
+  .join("\n")
+  .trimEnd();
+assert.equal(
+  publishConcurrencyBlock,
+  [
+    "concurrency:",
+    "  group: release-publication",
+    "  queue: max",
+    "  cancel-in-progress: false",
+  ].join("\n"),
   "all tags must share one FIFO publication transaction so registry and GitHub latest cannot race",
 );
 assert.doesNotMatch(
-  publishWorkflow.match(/concurrency:[\s\S]*?(?=\nenv:)/)?.[0] ?? "",
+  publishConcurrencyBlock,
   /github\.(?:ref|sha)|\$\{\{/,
   "the publication concurrency group must not partition transactions by tag, ref, or commit",
 );
