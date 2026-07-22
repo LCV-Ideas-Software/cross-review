@@ -2121,8 +2121,15 @@ const slsaAttestationResponse = ({
 
 async function runRegistryVerifierScenario(scenario, attestationResponseFactories) {
   let attestationLookupCount = 0;
+  let metadataLookupCount = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    const parsedUrl = new URL(url);
+    assert.equal(
+      parsedUrl.origin,
+      "https://registry.npmjs.org",
+      "every registry-verifier request must use the exact parsed npm registry origin",
+    );
     if (url === regressionAttestationUrl) {
       assert.equal(
         init?.redirect,
@@ -2136,6 +2143,12 @@ async function runRegistryVerifierScenario(scenario, attestationResponseFactorie
       attestationLookupCount += 1;
       return responseFactory();
     }
+    assert.equal(
+      url,
+      "https://registry.npmjs.org/@lcv-ideas-software%2Fregistry-verifier-regression/0.0.0-test",
+      "the metadata lookup must encode the complete package identity under the pinned registry origin",
+    );
+    metadataLookupCount += 1;
     return globalThis.Response.json({
       dist: {
         shasum: "0000000000000000000000000000000000000000",
@@ -2150,6 +2163,11 @@ async function runRegistryVerifierScenario(scenario, attestationResponseFactorie
     });
   };
   await import(`./verify-registry-dist.mjs?eventual-consistency=${scenario}`);
+  assert.equal(
+    metadataLookupCount,
+    1,
+    "each verifier run must perform one exact-origin metadata lookup",
+  );
   return attestationLookupCount;
 }
 

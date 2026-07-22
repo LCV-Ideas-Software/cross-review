@@ -10075,8 +10075,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v4.0.6 / F1: verify-registry-dist.mjs must not spawn npm/npm.cmd; Windows Node hardening rejects npm.cmd spawn.",
   );
   assert.ok(
-    verifyScript.includes("https://registry.npmjs.org") && verifyScript.includes("fetch("),
-    "v4.0.6 / F1: verify-registry-dist.mjs must query npm registry metadata directly.",
+    verifyScript.includes("fetch("),
+    "v4.0.6 / F1: verify-registry-dist.mjs must query registry metadata directly without spawning npm.",
   );
   assert.ok(
     verifyScript.includes("AbortSignal.timeout(") && verifyScript.includes("FETCH_TIMEOUT_MS"),
