@@ -32,6 +32,8 @@ const [
   scorecardWorkflow,
   zizmorWorkflow,
   pagesWorkflow,
+  releaseRecoveryWorkflow,
+  releaseRecoveryScript,
   dependabotReleaseEvidence,
   releasePushWorkflowGate,
 ] = await Promise.all([
@@ -58,6 +60,8 @@ const [
   read(".github/workflows/scorecard.yml"),
   read(".github/workflows/zizmor.yml"),
   read(".github/workflows/pages.yml"),
+  read(".github/workflows/recover-v4.5.26-release.yml"),
+  read("scripts/recover-v4.5.26-release.sh"),
   read("scripts/require-dependabot-release-evidence.sh"),
   read("scripts/require-release-push-workflows.sh"),
 ]);
@@ -1085,6 +1089,226 @@ assert.doesNotMatch(
   loadedReleaseIdentityBlock,
   /target_commitish|resolve_target_sha/,
   "target_commitish is unused when the Git tag exists and must not impersonate release identity",
+);
+for (const field of ["draft", "prerelease"]) {
+  assert.match(
+    loadedReleaseIdentityBlock,
+    new RegExp(
+      `current_${field}="\\$\\(jq -er '[\\s\\S]*?\\.${field} \\| type[\\s\\S]*?` +
+        `\\.${field} \\| tostring[\\s\\S]*?release ${field} must be boolean[\\s\\S]*?` +
+        `"\\$release_json"\\)"`,
+    ),
+    `release ${field}=false must remain a valid boolean string instead of becoming jq exit 1`,
+  );
+}
+assert.doesNotMatch(
+  loadedReleaseIdentityBlock,
+  /jq -er '\.(?:draft|prerelease)'/,
+  "jq -e must not treat the valid boolean false as a failed release identity read",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /jq -er '\.(?:draft|prerelease)'/,
+  "no release path may use jq -e directly on a boolean that is validly false",
+);
+
+const frozenTagRecoverySkip = autoTagWorkflow.match(
+  /# v04\.05\.26 contains the pre-fix publish workflow[\s\S]*?(?=\n\s+for attempt in \{1\.\.10\}; do)/,
+)?.[0];
+assert.ok(
+  frozenTagRecoverySkip,
+  "auto-tag must retain a separately auditable exception for the immutable workflow frozen at v04.05.26",
+);
+assert.match(
+  frozenTagRecoverySkip,
+  /TAG" = "v04\.05\.26"[\s\S]*?TARGET_SHA" = "2b8b9b086b4ca48544e42334e7ae625f006c88ae"[\s\S]*?recover-v4\.5\.26-release\.yml[\s\S]*?exit 0/,
+  "only the exact broken tag and commit may bypass redispatch of its known-failing workflow",
+);
+assert.ok(
+  frozenTagRecoverySkip.indexOf("exit 0") <
+    autoTagWorkflow.indexOf("github_workflow run publish.yml"),
+  "the frozen-tag exception must stop before publish.yml can be redispatched",
+);
+
+assert.match(
+  releaseRecoveryWorkflow,
+  /^name: Recover v04\.05\.26 GitHub Release[\s\S]*?workflow_dispatch:[\s\S]*?confirmation:[\s\S]*?required: true/m,
+  "the historical recovery must require an explicit typed confirmation",
+);
+assert.equal(
+  (releaseRecoveryWorkflow.match(/permissions:\s*write-all/g) ?? []).length,
+  2,
+  "the recovery workflow and its only job must retain the organization-wide write-all policy",
+);
+assert.match(
+  releaseRecoveryWorkflow,
+  /concurrency:\s*\r?\n\s+group: release-publication\s*\r?\n\s+queue: max\s*\r?\n\s+cancel-in-progress: false/,
+  "historical recovery must share the non-cancelling publication FIFO with every tag",
+);
+assert.match(
+  releaseRecoveryWorkflow,
+  /environment:\s*github-release-recovery/,
+  "the exact recovery must use its main-only protected environment",
+);
+assert.match(
+  releaseRecoveryWorkflow,
+  /Checkout trusted main recovery implementation[\s\S]*?persist-credentials: false[\s\S]*?ref: \$\{\{ github\.sha \}\}[\s\S]*?fetch-depth: 0/,
+  "recovery must execute only the immutable workflow SHA with no persisted Git credentials",
+);
+assert.doesNotMatch(
+  releaseRecoveryWorkflow,
+  /pull_request(?:_target)?:|push:|schedule:/,
+  "the privileged recovery must be manual-only and unreachable from untrusted PR events",
+);
+assert.match(
+  releaseRecoveryWorkflow,
+  /Remove GitHub Packages recovery credential file\s+if: always\(\)[\s\S]*?rm -f -- "\$\{RUNNER_TEMP\}\/cross-review-release-recovery\.npmrc"/,
+  "the temporary package-read credential must be removed even on failure",
+);
+
+const recoveryGithubCopy = releaseRecoveryScript.indexOf('github_token="$' + '{GH_TOKEN:-}"');
+const recoveryAdminCopy = releaseRecoveryScript.indexOf(
+  'immutability_token="$' + '{IMMUTABILITY_TOKEN:-}"',
+);
+const recoveryGithubUnset = releaseRecoveryScript.indexOf("unset GH_TOKEN");
+const recoveryAdminUnset = releaseRecoveryScript.indexOf("unset IMMUTABILITY_TOKEN");
+const recoveryFirstSubprocess = releaseRecoveryScript.indexOf('work_dir="$(mktemp -d');
+assert.ok(
+  recoveryGithubCopy >= 0 &&
+    recoveryAdminCopy > recoveryGithubCopy &&
+    recoveryGithubUnset > recoveryAdminCopy &&
+    recoveryAdminUnset > recoveryGithubUnset &&
+    recoveryFirstSubprocess > recoveryAdminUnset,
+  "both exported recovery tokens must become non-exported shell variables before any subprocess starts",
+);
+assert.equal(
+  (releaseRecoveryScript.match(/\$\{?GH_TOKEN/g) ?? []).length,
+  1,
+  "the exported GITHUB_TOKEN name may be read only once by the recovery script",
+);
+assert.equal(
+  (releaseRecoveryScript.match(/\$\{?IMMUTABILITY_TOKEN/g) ?? []).length,
+  1,
+  "the exported administrative token name may be read only once by the recovery script",
+);
+
+for (const exactRecoveryIdentity of [
+  'readonly operator_login="lcv-leo"',
+  'readonly operator_id="268063598"',
+  'readonly tag="v04.05.26"',
+  'readonly target_sha="2b8b9b086b4ca48544e42334e7ae625f006c88ae"',
+  'readonly release_id="358385263"',
+  'readonly source_run_id="29967505793"',
+  'readonly source_artifact_id="8548431216"',
+  'readonly source_artifact_archive_sha256="b0746ff47cdea0fea65ff32b6817a05551963336e983ab2b4ae5d333392fd51e"',
+  'readonly package_sha256="97ce84603d5d98654840b7ee6cf2c27e906cee883de6010e18351842869c9301"',
+  'readonly package_sri="sha512-i11a4PTnpmEk+30E1B/kziZlBgnVGHbUz/eY1kAspIEume+37KqNnW8dgIHOBOD+1g6XhOPTG3TjqgZBFHy/sg=="',
+  'readonly release_body_sha256="680cea720946b164dcb1627f0112266198f39e5f656ad089e3f87f30aa243444"',
+  'readonly confirmation_phrase="RECOVER v04.05.26 RELEASE 358385263 FROM RUN 29967505793 ARTIFACT 8548431216"',
+]) {
+  assert.ok(
+    releaseRecoveryScript.includes(exactRecoveryIdentity),
+    `recovery must remain bound to exact reviewed evidence: ${exactRecoveryIdentity}`,
+  );
+}
+
+const recoveryJsonHelper = releaseRecoveryScript.match(/github_json_api\(\) \{[\s\S]*?^\}/m)?.[0];
+const recoveryBinaryHelper = releaseRecoveryScript.match(
+  /github_binary_api\(\) \{[\s\S]*?^\}/m,
+)?.[0];
+assert.ok(
+  recoveryJsonHelper && recoveryBinaryHelper,
+  "recovery must keep distinct JSON and binary API helpers",
+);
+assert.match(recoveryJsonHelper, /Accept: application\/vnd\.github\+json/);
+assert.doesNotMatch(recoveryJsonHelper, /application\/octet-stream/);
+assert.match(recoveryBinaryHelper, /Accept: application\/octet-stream/);
+assert.doesNotMatch(recoveryBinaryHelper, /application\/vnd\.github\+json/);
+assert.equal(
+  (releaseRecoveryScript.match(/github_binary_api --method GET/g) ?? []).length,
+  1,
+  "only release-asset byte downloads may use the octet-stream helper",
+);
+assert.match(
+  releaseRecoveryScript,
+  /github_json_api --method GET "repos\/\$repository\/actions\/artifacts\/\$source_artifact_id\/zip"/,
+  "the Actions artifact archive endpoint must retain its documented JSON media type",
+);
+
+for (const recoveryGate of [
+  "validate_commits initial-evidence",
+  "validate_immutable_policy initial-evidence",
+  "validate_source_evidence initial-evidence",
+  "verify_registry_integrity initial-evidence",
+  "validate_commits final-upload-boundary",
+  "validate_immutable_policy final-upload-boundary",
+  "validate_source_evidence final-upload-boundary",
+  "verify_registry_integrity final-upload-boundary",
+  "validate_commits final-publish-boundary",
+  "validate_immutable_policy final-publish-boundary",
+  "validate_source_evidence final-publish-boundary",
+  "verify_registry_integrity final-publish-boundary",
+  "validate_commits final-immutable",
+  "validate_immutable_policy final-immutable",
+  "validate_source_evidence final-immutable",
+  "verify_registry_integrity final-immutable",
+]) {
+  assert.ok(
+    releaseRecoveryScript.includes(recoveryGate),
+    `recovery must close every identity and registry TOCTOU boundary: ${recoveryGate}`,
+  );
+}
+for (const safetyContract of [
+  ".commit.verification.verified == true",
+  '.commit.verification.reason == "valid"',
+  "git status --porcelain=v1 --untracked-files=all",
+  "trusted recovery checkout is not byte-clean",
+  '.conclusion == "failure"',
+  "Publish to npmjs.com",
+  "Publish to GitHub Packages",
+  ".expired == false",
+  "sha256sum --check --strict",
+  "verify-file-sri",
+  "Package tarball contains unsafe path",
+  "LCV_AUTOMATION_TOKEN is required",
+  "enforced_by_owner",
+  "Release changed before upload; refusing overwrite or duplication",
+  "Release changed before publication PATCH",
+  'make_latest: "true"',
+  "assert-safe-gh-release-verifier",
+  "CVE-2026-48501",
+  'github_release verify "$tag"',
+  'github_release verify-asset "$tag"',
+]) {
+  assert.ok(
+    releaseRecoveryScript.includes(safetyContract),
+    `recovery must retain fail-closed contract: ${safetyContract}`,
+  );
+}
+assert.match(
+  releaseRecoveryScript,
+  /-H "Authorization: Bearer \$github_token"/,
+  "the one-time recovery upload must use GitHub's Bearer authorization scheme",
+);
+assert.match(
+  releaseRecoveryScript,
+  /github_release verify-asset "\$tag" "\$artifact_tarball"/,
+  "immutable asset attestation must verify the exact downloaded local asset path",
+);
+assert.equal(
+  (releaseRecoveryScript.match(/--request POST/g) ?? []).length,
+  1,
+  "recovery may contain exactly one guarded asset-creation operation",
+);
+assert.equal(
+  (releaseRecoveryScript.match(/--method PATCH/g) ?? []).length,
+  1,
+  "recovery may contain exactly one guarded draft-publication operation",
+);
+assert.doesNotMatch(
+  releaseRecoveryScript,
+  /--method DELETE|--request DELETE|gh release delete|gh release upload|--clobber|npm\s+publish|git\s+push|git\s+tag|git\s+reset/,
+  "recovery must never delete, overwrite, publish a package, or mutate Git identity/history",
 );
 assert.equal(
   (publishWorkflow.match(/verify_asset_bytes "\$asset_id"/g) ?? []).length,

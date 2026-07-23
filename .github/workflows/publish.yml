@@ -1258,8 +1258,16 @@ jobs:
               "$release_json" "$expected_id" "$TAG"
             current_title="$(jq -r '.name // ""' "$release_json")"
             current_body="$(jq -r '.body // ""' "$release_json")"
-            current_draft="$(jq -er '.draft' "$release_json")"
-            current_prerelease="$(jq -er '.prerelease' "$release_json")"
+            current_draft="$(jq -er '
+              if ((.draft | type) == "boolean")
+              then (.draft | tostring)
+              else error("release draft must be boolean") end
+            ' "$release_json")"
+            current_prerelease="$(jq -er '
+              if ((.prerelease | type) == "boolean")
+              then (.prerelease | tostring)
+              else error("release prerelease must be boolean") end
+            ' "$release_json")"
             if [ "$require_final" = "true" ] && \
               { [ "$current_title" != "$expected_title" ] || \
                 [ "$current_body" != "$expected_body" ] || \
@@ -1448,7 +1456,11 @@ jobs:
               else error("missing or invalid immutable release state")
               end
             ' "$release_json")"
-            published_prerelease="$(jq -er '.prerelease' "$release_json")"
+            published_prerelease="$(jq -er '
+              if ((.prerelease | type) == "boolean")
+              then (.prerelease | tostring)
+              else error("release prerelease must be boolean") end
+            ' "$release_json")"
             if [ "$published_immutable" != "true" ]; then
               echo "::error::Existing public release $TAG is not immutable; refusing an undocumented reconciliation mutation."
               exit 1
