@@ -1203,7 +1203,7 @@ for (const exactRecoveryIdentity of [
   'readonly source_artifact_archive_sha256="b0746ff47cdea0fea65ff32b6817a05551963336e983ab2b4ae5d333392fd51e"',
   'readonly package_sha256="97ce84603d5d98654840b7ee6cf2c27e906cee883de6010e18351842869c9301"',
   'readonly package_sri="sha512-i11a4PTnpmEk+30E1B/kziZlBgnVGHbUz/eY1kAspIEume+37KqNnW8dgIHOBOD+1g6XhOPTG3TjqgZBFHy/sg=="',
-  'readonly release_body_sha256="680cea720946b164dcb1627f0112266198f39e5f656ad089e3f87f30aa243444"',
+  'readonly release_body_sha256="94c32cae66c26566ec0577d22a88229b7fd721ff9416490fb04e4df8dfd7c932"',
   'readonly confirmation_phrase="RECOVER v04.05.26 RELEASE 358385263 FROM RUN 29967505793 ARTIFACT 8548431216"',
 ]) {
   assert.ok(
