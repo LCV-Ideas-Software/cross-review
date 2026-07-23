@@ -349,7 +349,7 @@ else
     --arg body "$expected_body" \
     '{tag_name: $tag, target_commitish: $target, name: $name, body: $body,
       draft: false, prerelease: false, make_latest: "true"}' >"$publish_payload"
-  github_json_api --method PATCH "repos/$repository/releases/$release_id" \
+  immutability_json_api --method PATCH "repos/$repository/releases/$release_id" \
     --input "$publish_payload" >"$work_dir/patched-release.json"
   [ "$(jq -er '.id' "$work_dir/patched-release.json")" = "$release_id" ] || die "Publication PATCH returned a different release id."
 fi

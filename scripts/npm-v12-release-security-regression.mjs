@@ -1305,6 +1305,11 @@ assert.equal(
   1,
   "recovery may contain exactly one guarded draft-publication operation",
 );
+assert.match(
+  releaseRecoveryScript,
+  /immutability_json_api --method PATCH "repos\/\$repository\/releases\/\$release_id"/,
+  "the exact draft-publication transition must use the administrative token after GITHUB_TOKEN integration access is refused",
+);
 assert.doesNotMatch(
   releaseRecoveryScript,
   /--method DELETE|--request DELETE|gh release delete|gh release upload|--clobber|npm\s+publish|git\s+push|git\s+tag|git\s+reset/,
