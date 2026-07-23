@@ -2,5 +2,5 @@
 # uv pip compile --upgrade --generate-hashes --python-version 3.12 socketsecurity-requirements.in --output-file socketsecurity-requirements.txt
 pre-commit==4.6.1
 socketsecurity==2.5.0
-# Explicit security floor for GHSA-rwj8-pgh3-r573.
-gitpython>=3.1.54
+# Exact current release; Dependabot updates this source and the hash lock together.
+gitpython==3.1.54
