@@ -487,6 +487,17 @@ jobs:
             GH_TOKEN="$github_token" gh workflow "$@"
           }
           expected_sha="$TARGET_SHA"
+          # v04.05.26 contains the pre-fix publish workflow. GitHub executes a
+          # workflow_dispatch from the selected tag ref, so redispatching that
+          # immutable tag can only repeat Publish #119/#120's boolean-read
+          # failure. The dedicated main-only recovery workflow is the sole
+          # reviewed path for this exact release identity; later tags use the
+          # corrected publish.yml stored at their own immutable commit.
+          if [ "$TAG" = "v04.05.26" ] && \
+            [ "$TARGET_SHA" = "2b8b9b086b4ca48544e42334e7ae625f006c88ae" ]; then
+            echo "Refusing to redispatch the known-frozen publish.yml for $TAG at $TARGET_SHA; recover-v4.5.26-release.yml owns this exact historical reconciliation."
+            exit 0
+          fi
           for attempt in {1..10}; do
             ref_error="$RUNNER_TEMP/dispatch-tag-${GITHUB_RUN_ID}.err"
             if ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>"$ref_error")"; then
