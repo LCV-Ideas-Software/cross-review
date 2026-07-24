@@ -85,13 +85,7 @@ export function hardenTokensFilePermissions(filePath: string): boolean {
     const commands = [
       [filePath, "/reset"],
       [filePath, "/inheritance:r"],
-      [
-        filePath,
-        "/grant:r",
-        `*${currentUserSid}:(F)`,
-        "*S-1-5-18:(F)",
-        "*S-1-5-32-544:(F)",
-      ],
+      [filePath, "/grant:r", `*${currentUserSid}:(F)`, "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"],
     ];
     for (const args of commands) {
       const result = spawnSync("icacls.exe", args, {
