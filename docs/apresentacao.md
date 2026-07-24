@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-22: `4.5.26`. O registro pode ficar
+> Estado do source/release target em 2026-07-24: `4.5.27`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -623,6 +623,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.27`      | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de Socket, Dependabot e recuperação de release.                                                                                       |
 | `v04.05.26`      | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                     |
 | `v04.05.25`      | Corrige `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7 no lock; aprova estritamente apenas `protobufjs@7.6.5` para script de instalação. Scorecard e Auto-tag permanecem fail-closed sem suprimir alertas. |
 | `v04.05.23`      | Aceita a resposta unitária de `npm view --json` no npm 12 somente com um objeto de metadata; vazia, múltipla ou inválida falha fechada antes do lock íntegro e da auditoria obrigatória.                                               |

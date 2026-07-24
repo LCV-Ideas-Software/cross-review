@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.26** (package `4.5.26`).
+**Status.** Stable. The current source/release target is **v04.05.27** (package `4.5.27`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.27`**      | Updates the Anthropic and OpenAI SDKs, makes manifests and lockfiles the dependency source of truth, and ships hardened Socket and Dependabot automation with verified release recovery.                                                                                         |
 | **`v04.05.26`**      | Bundles the MCP runtime and hardens exact-SHA automation, immutable releases, and current provider dependencies.                                                                                                                                                                 |
 | **`v04.05.25`**      | Resolves the three registry advisories in the lockfile: `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7; updates the one reviewed install-script approval to `protobufjs@7.6.5`. Scorecard and Auto-tag remain fail-closed; no alert was suppressed. |
 | **`v04.05.23`**      | Accepts npm 12's one-item `npm view --json` response only when it contains one metadata object; empty, multiple, and malformed responses fail closed before the integrity-bound audit lock and mandatory `npm audit signatures` gate.                                            |

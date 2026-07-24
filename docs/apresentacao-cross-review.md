@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.26`                           |
-| Data do source/release target | `2026-07-22`                       |
+| Versão preparada pelo source  | `4.5.27`                           |
+| Data do source/release target | `2026-07-24`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -817,6 +817,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.27`      | 2026-07-24    | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de Socket, Dependabot e recuperação de release.                                                                                                                       |
 | `v04.05.26`      | 2026-07-22    | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                                                     |
 | `v04.05.25`      | 2026-07-21    | Corrige as três vulnerabilidades do lock: `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7; aprova estritamente apenas o `postinstall` revisado de `protobufjs@7.6.5`. Scorecard e Auto-tag permanecem fail-closed, sem supressão de alerta. |
 | `v04.05.23`      | 2026-07-17    | Aceita a resposta unitária de `npm view --json` no npm 12 apenas com um objeto de metadata; respostas vazias, múltiplas ou inválidas falham fechadas antes do lock íntegro e da auditoria obrigatória.                                                                 |
@@ -903,7 +904,7 @@ Antes de usar uma revisão como gate:
 
 - Contrato runtime do source target: regressões preparadas em 2026-07-22. O
   runtime 4.5.8 foi confirmado após o reload daquela auditoria; o source/release
-  target atual é 4.5.26. `server_info` continua sendo a autoridade para cada
+  target atual é 4.5.27. `server_info` continua sendo a autoridade para cada
   janela depois do upgrade e reload.
 - `package.json` do repositório local.
 - `README.md`.

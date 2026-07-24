@@ -7,6 +7,40 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.27] — 2026-07-24
+
+**Provider SDK and repository automation updates now ship from one verified
+dependency source of truth.**
+
+### Added
+
+- Updates `@anthropic-ai/sdk` to `0.114.0`, including the new
+  `model_context_window_exceeded` stop reason, and updates `openai` to `6.49.0`
+  with its latest schema helpers and upstream fixes.
+- Adds a dynamic third-party inventory regression that requires exactly one
+  entry for every direct dependency and verifies each entry's scope, resolved
+  license and canonical source.
+
+### Fixed
+
+- Removes manually mirrored dependency versions from user-facing documentation.
+  Declared ranges now come from `package.json`, while `package-lock.json`
+  remains the exact resolution for this repository checkout.
+- Sends Socket Security an explicit commit SHA and only the bounded commit
+  subject, preventing large squash messages from being serialized into API
+  requests.
+- Rolls out the guarded central Dependabot controller, including exact-head
+  approval, immutable-SHA squash merge and non-destructive recovery for a
+  falsely reported already-current branch.
+- Hardens the `v04.05.26` recovery path around exact release-note identity,
+  artifact verification and the single authorized publication transition.
+
+### Security
+
+- Updates GitPython to `3.1.55`, which prevents environment expansion in remote
+  URLs, and refreshes the dependency graph without dismissing its alerts.
+- Updates Socket Security CLI to `2.5.1` and OpenSSF Scorecard Action to `2.4.4`.
+
 ## [v04.05.26] — 2026-07-22
 
 **The published MCP runtime and repository automation now fail closed at the
