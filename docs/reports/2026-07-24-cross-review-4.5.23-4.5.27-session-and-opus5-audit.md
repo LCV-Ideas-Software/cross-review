@@ -2,7 +2,10 @@
 
 Data da auditoria: 24 de julho de 2026  
 Versão publicada carregada durante a análise: 4.5.27  
-Versão corretiva preparada no worktree: 4.5.28
+Versão corretiva final preparada: 4.5.29
+Nota de release: a tag imutável 4.5.28 não foi publicada; o gate detectou a
+GHSA-mh99-v99m-4gvg, divulgada durante a entrega, e exigiu 4.5.29 com
+`brace-expansion` 5.0.8.
 
 ## 1. Resumo executivo
 
@@ -659,7 +662,7 @@ leitura.
 O runtime carregado durante a auditoria é 4.5.27. O rate card Opus 5 já foi
 adicionado à configuração central no disco, mas qualquer diferença de hash
 entre arquivo e processo exige reload da janela para que `server_info` prove a
-aplicação. A publicação 4.5.28 e o reload não fazem parte da evidência desta
+aplicação. A publicação 4.5.29 e o reload não fazem parte da evidência desta
 etapa.
 
 ## 9. Matriz de validação
@@ -681,6 +684,7 @@ etapa.
 | `session_events`     | paginação, filtro e opt-in forense                       | PASS                                           |
 | Caller tokens        | geração temporária e hardening                           | PASS                                           |
 | Caller tokens        | DACL exata e fluxo sem TOCTOU por pathname               | PASS                                           |
+| Supply chain         | `brace-expansion` 5.0.8 e `npm audit`                    | PASS, zero vulnerabilidades                    |
 | Qualidade            | formatter, lint, Biome e TypeScript                      | PASS                                           |
 | Suite integrada      | cobertura completa dos targets do `npm test`             | PASS por execução única e continuação dirigida |
 | Smoke final          | `npm run smoke` no worktree final                        | PASS                                           |
@@ -688,8 +692,8 @@ etapa.
 | Consumidor externo   | `npm run test:consumer`                                  | PASS                                           |
 | Revisão independente | auditoria de diff e raciocínio Ultrabrain                | Concluída; dois achados corrigidos             |
 | GitHub Actions       | todos os workflows no SHA de release                     | Pendente nesta etapa                           |
-| npm                  | pacote 4.5.28 publicado e íntegro                        | Pendente nesta etapa                           |
-| Runtime instalado    | `server_info` 4.5.28, hashes iguais e reload false       | Depende de instalação/reload pelo operador     |
+| npm                  | pacote 4.5.29 publicado e íntegro                        | Pendente nesta etapa                           |
+| Runtime instalado    | `server_info` 4.5.29, hashes iguais e reload false       | Depende de instalação/reload pelo operador     |
 
 A primeira execução integrada foi interrompida por metadados anti-drift
 desatualizados em documentação e no próprio smoke, não por novos defeitos de
@@ -702,9 +706,15 @@ A auditoria independente do diff encontrou dois problemas antes do fechamento:
 `VERSION` ainda em 4.5.27 e uma DACL Windows que não removia ACEs explícitas
 preexistentes. Ambos foram corrigidos e cobertos pela validação final.
 
+Os gates externos acrescentaram dois achados posteriores: CodeQL detectou o
+fluxo TOCTOU por pathname no carregamento de caller tokens, e o Scorecard
+detectou a GHSA-mh99-v99m-4gvg, divulgada durante o release. O primeiro foi
+convertido para leitura/migração por descritor; o segundo foi corrigido com
+`brace-expansion` 5.0.8 e bump para 4.5.29. Nenhum alerta foi suprimido.
+
 ## 10. Plano de ação priorizado
 
-### P0 — fechar a 4.5.28
+### P0 — fechar a 4.5.29
 
 1. formatar somente os arquivos alterados;
 2. executar uma vez o gate de qualidade;
@@ -714,7 +724,7 @@ preexistentes. Ambos foram corrigidos e cobertos pela validação final.
 5. submeter o SHA final ao hardgate independente;
 6. commit e sync direto em `main`;
 7. acompanhar todos os GitHub Actions até verde;
-8. publicar `@lcv-ideas-software/cross-review@4.5.28`;
+8. publicar `@lcv-ideas-software/cross-review@4.5.29`;
 9. após instalação global pelo operador e reload, confirmar via `server_info`:
    versão, data de processo, hashes, `config_load.applied=true`,
    `parse_error=null` e `reload_required=false`.
@@ -759,7 +769,7 @@ truncado como decisão definitiva.
 - manter o threshold central aplicado em 16.384 caracteres;
 - manter `include_text=false`;
 - persistir thresholds efetivos no snapshot;
-- monitorar percentual de `peer.token.delta` após a 4.5.28.
+- monitorar percentual de `peer.token.delta` após a 4.5.29.
 
 ### P3 — evento terminal canônico
 
@@ -775,7 +785,8 @@ sessões 4.5.24 ou 4.5.27. Os problemas mais graves não foram rejeições de c�
 pelos peers, mas falhas de lifecycle e amplificação de evidência capazes de
 manter estado incorreto e consumir orçamento.
 
-O worktree 4.5.28 aborda as causas comprovadas sem relaxar as garantias
+O conjunto preparado em 4.5.28 e finalizado em 4.5.29 aborda as causas
+comprovadas sem relaxar as garantias
 anti-enganação:
 
 - não aceita blockers sem grounding;
@@ -791,6 +802,6 @@ modelo ativo.
 
 A entrega só pode ser considerada concluída depois da validação integrada
 única, hardgate independente, GitHub Actions verdes, publicação npm e prova do
-runtime 4.5.28 após reload. O risco de mesmo SID sobre caller tokens permanece
+runtime 4.5.29 após reload. O risco de mesmo SID sobre caller tokens permanece
 explicitamente aberto como correção arquitetural prioritária, não mascarado
 pela melhoria de ACL.

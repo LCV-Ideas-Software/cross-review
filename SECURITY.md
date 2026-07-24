@@ -2,13 +2,16 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.28 for package 4.5.28. This
+Current supported source/release target: v04.05.29 for package 4.5.29. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.25 resolves the three current registry advisories in the immutable lock:
-`body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7.
+v04.05.29 resolves GHSA-mh99-v99m-4gvg by locking `brace-expansion` 5.0.8.
+The advisory was published while the 4.5.28 release gate was running, so the
+immutable 4.5.28 tag was not published. v04.05.25 had resolved the three
+advisories known at that time: `body-parser` 2.3.0, nested `protobufjs` 7.6.5,
+and the earlier `brace-expansion` advisory with 5.0.7.
 The Scorecard/Code Scanning and Auto-tag gates remain fail-closed; no finding is
 suppressed. Its version-pinned `allowScripts` approval is likewise updated only
 to `protobufjs@7.6.5`; the cryptographic `npm audit signatures` gate remains mandatory. It

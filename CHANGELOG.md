@@ -7,6 +7,16 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.29] — 2026-07-24
+
+### Security
+
+- Locks transitive `brace-expansion` 5.0.8 to remediate
+  GHSA-mh99-v99m-4gvg, a high-severity denial-of-service flaw disclosed while
+  the 4.5.28 publication gate was running.
+- Supersedes the immutable but unpublished `v04.05.28` tag. No 4.5.28 package
+  reached npmjs.com or GitHub Packages.
+
 ## [v04.05.28] — 2026-07-24
 
 **Provider compatibility and session safety now share one fail-closed,

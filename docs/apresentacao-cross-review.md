@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.28`                        |
+| Versão preparada pelo source  | `v04.05.29`                        |
 | Data do source/release target | `2026-07-24`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -827,6 +827,8 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.29`      | 2026-07-24    | Substitui a tag 4.5.28 não publicada, fixa `brace-expansion` 5.0.8 após o advisory de DoS divulgado durante o release e preserva a correção TOCTOU dos caller tokens validada pelo CodeQL.                                                                             |
+| `v04.05.28`      | 2026-07-24    | Prepara Claude Opus 5 como override, limita a amplificação do Evidence Broker, repara lifecycle/provenance/truthfulness, protege caller tokens e pagina eventos; a tag foi preservada, mas não publicada.                                                              |
 | `v04.05.27`      | 2026-07-24    | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de Socket, Dependabot e recuperação de release.                                                                                                                       |
 | `v04.05.26`      | 2026-07-22    | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                                                     |
 | `v04.05.25`      | 2026-07-21    | Corrige as três vulnerabilidades do lock: `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7; aprova estritamente apenas o `postinstall` revisado de `protobufjs@7.6.5`. Scorecard e Auto-tag permanecem fail-closed, sem supressão de alerta. |
