@@ -48,6 +48,10 @@ cost-bounded runtime contract.**
   the current user, SYSTEM and Administrators, and verifies owner-only `0600`
   permissions on POSIX. The documented same-OS-user isolation limitation
   remains explicit.
+- Loads and migrates an existing token map through one verified file
+  descriptor, with no-follow opening on POSIX and descriptor/path identity
+  checks, eliminating the pathname time-of-check/time-of-use flow detected by
+  CodeQL.
 - Bounds hostile or excessively verbose Evidence Broker growth to prevent
   repeated prompt amplification and denial-of-wallet without truncating,
   discarding or auto-satisfying review blockers.

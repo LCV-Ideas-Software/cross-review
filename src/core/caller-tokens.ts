@@ -136,6 +136,50 @@ export function hardenTokensFilePermissions(filePath: string): boolean {
   }
 }
 
+function openTokensFile(filePath: string): number {
+  let flags = fs.constants.O_RDWR;
+  if (process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number") {
+    flags |= fs.constants.O_NOFOLLOW;
+  }
+  return fs.openSync(filePath, flags);
+}
+
+function openedFileMatchesPath(filePath: string, fd: number): boolean {
+  try {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    const current = fs.statSync(filePath, { bigint: true });
+    return opened.isFile() && opened.dev === current.dev && opened.ino === current.ino;
+  } catch {
+    return false;
+  }
+}
+
+function hardenOpenedTokensFilePermissions(filePath: string, fd: number): boolean {
+  try {
+    if (process.platform !== "win32") {
+      fs.fchmodSync(fd, 0o600);
+      return (fs.fstatSync(fd).mode & 0o077) === 0 && openedFileMatchesPath(filePath, fd);
+    }
+    return hardenTokensFilePermissions(filePath) && openedFileMatchesPath(filePath, fd);
+  } catch {
+    return false;
+  }
+}
+
+function rewriteOpenedTokensFile(fd: number, payload: string): void {
+  const encoded = Buffer.from(payload, "utf8");
+  fs.ftruncateSync(fd, 0);
+  let offset = 0;
+  while (offset < encoded.length) {
+    const written = fs.writeSync(fd, encoded, offset, encoded.length - offset, offset);
+    if (written <= 0) {
+      throw new Error("caller-tokens: zero-byte write while migrating token file");
+    }
+    offset += written;
+  }
+  fs.fsyncSync(fd);
+}
+
 export function generateHostTokens(
   dataDir: string,
   options: { overwrite?: boolean } = {},
@@ -196,69 +240,57 @@ export function generateHostTokens(
 
 export function loadHostTokens(dataDir: string): HostTokensRecord | null {
   const filePath = getTokensFilePath(dataDir);
-  if (fs.existsSync(filePath) && !hardenTokensFilePermissions(filePath)) {
-    return null;
-  }
-  let raw: string;
+  let fd: number | null = null;
   try {
-    raw = fs.readFileSync(filePath, "utf8");
-  } catch (err: unknown) {
+    fd = openTokensFile(filePath);
+    if (!hardenOpenedTokensFilePermissions(filePath, fd)) return null;
+
+    const raw = fs.readFileSync(fd, "utf8");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
     if (
-      typeof err === "object" &&
-      err !== null &&
-      "code" in err &&
-      (err as { code?: string }).code === "ENOENT"
+      typeof parsed !== "object" ||
+      parsed === null ||
+      ![1, 2].includes((parsed as { version?: number }).version ?? 0) ||
+      typeof (parsed as { tokens?: unknown }).tokens !== "object" ||
+      (parsed as { tokens?: unknown }).tokens === null
     ) {
       return null;
     }
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    ![1, 2].includes((parsed as { version?: number }).version ?? 0) ||
-    typeof (parsed as { tokens?: unknown }).tokens !== "object" ||
-    (parsed as { tokens?: unknown }).tokens === null
-  ) {
-    return null;
-  }
-  const tokensIn = (parsed as { tokens: Record<string, unknown> }).tokens;
-  const map = {} as HostTokensMap;
-  const seen = new Set<string>();
-  for (const identity of PEERS) {
-    const tok = tokensIn[identity];
-    if (typeof tok !== "string" || tok.length !== TOKEN_HEX_LENGTH || !/^[0-9a-f]+$/i.test(tok)) {
-      return null;
+    const tokensIn = (parsed as { tokens: Record<string, unknown> }).tokens;
+    const map = {} as HostTokensMap;
+    const seen = new Set<string>();
+    for (const identity of PEERS) {
+      const tok = tokensIn[identity];
+      if (typeof tok !== "string" || tok.length !== TOKEN_HEX_LENGTH || !/^[0-9a-f]+$/i.test(tok)) {
+        return null;
+      }
+      const normalizedToken = tok.toLowerCase();
+      if (seen.has(normalizedToken)) {
+        return null;
+      }
+      seen.add(normalizedToken);
+      map[identity] = normalizedToken;
     }
-    const normalizedToken = tok.toLowerCase();
-    if (seen.has(normalizedToken)) {
-      return null;
-    }
-    seen.add(normalizedToken);
-    map[identity] = normalizedToken;
-  }
-  const storedOperatorToken = tokensIn.operator;
-  const operatorToken =
-    typeof storedOperatorToken === "string" &&
-    storedOperatorToken.length === TOKEN_HEX_LENGTH &&
-    /^[0-9a-f]+$/i.test(storedOperatorToken) &&
-    !seen.has(storedOperatorToken.toLowerCase())
-      ? storedOperatorToken.toLowerCase()
-      : crypto.randomBytes(TOKEN_BYTES).toString("hex");
-  if (seen.has(operatorToken)) return null;
-  seen.add(operatorToken);
-  map.operator = operatorToken;
+    const storedOperatorToken = tokensIn.operator;
+    const operatorToken =
+      typeof storedOperatorToken === "string" &&
+      storedOperatorToken.length === TOKEN_HEX_LENGTH &&
+      /^[0-9a-f]+$/i.test(storedOperatorToken) &&
+      !seen.has(storedOperatorToken.toLowerCase())
+        ? storedOperatorToken.toLowerCase()
+        : crypto.randomBytes(TOKEN_BYTES).toString("hex");
+    if (seen.has(operatorToken)) return null;
+    seen.add(operatorToken);
+    map.operator = operatorToken;
 
-  if ((parsed as { version?: number }).version !== 2 || storedOperatorToken !== operatorToken) {
-    try {
-      fs.writeFileSync(
-        filePath,
+    if ((parsed as { version?: number }).version !== 2 || storedOperatorToken !== operatorToken) {
+      rewriteOpenedTokensFile(
+        fd,
         JSON.stringify(
           {
             version: 2,
@@ -272,18 +304,33 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
           null,
           2,
         ),
-        { encoding: "utf8", mode: 0o600 },
       );
-    } catch {
+    }
+    const generated_at = (parsed as { generated_at?: unknown }).generated_at;
+    return {
+      filePath,
+      map,
+      generated_at: typeof generated_at === "string" ? generated_at : null,
+    };
+  } catch (err: unknown) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code?: string }).code === "ENOENT"
+    ) {
       return null;
     }
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* load already fails closed on every operation above */
+      }
+    }
   }
-  const generated_at = (parsed as { generated_at?: unknown }).generated_at;
-  return {
-    filePath,
-    map,
-    generated_at: typeof generated_at === "string" ? generated_at : null,
-  };
 }
 
 export function ensureHostTokens(dataDir: string): HostTokensRecord | null {

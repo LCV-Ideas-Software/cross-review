@@ -534,6 +534,10 @@ No worktree 4.5.28, o runtime falha fechado se não puder proteger o arquivo:
 - POSIX: modo `0600` verificado;
 - Windows: herança NTFS removida e DACL limitada ao usuário atual, SYSTEM e
   Administrators.
+- arquivos existentes são abertos uma única vez, endurecidos e lidos pelo
+  mesmo descritor; a migração de schema também escreve pelo descritor, após
+  verificar que ele ainda corresponde ao path. Em POSIX, a abertura usa
+  `O_NOFOLLOW`.
 
 A ACL do arquivo local efetivamente usado durante a análise foi ajustada para
 esse conjunto, removendo acesso herdado de grupos de sandbox.
@@ -676,7 +680,7 @@ etapa.
 | Evidence Broker      | regressão de amplificação, atomicidade e circuit breaker | PASS                                           |
 | `session_events`     | paginação, filtro e opt-in forense                       | PASS                                           |
 | Caller tokens        | geração temporária e hardening                           | PASS                                           |
-| Caller tokens        | remoção de ACE explícita ampla e DACL exata              | PASS                                           |
+| Caller tokens        | DACL exata e fluxo sem TOCTOU por pathname               | PASS                                           |
 | Qualidade            | formatter, lint, Biome e TypeScript                      | PASS                                           |
 | Suite integrada      | cobertura completa dos targets do `npm test`             | PASS por execução única e continuação dirigida |
 | Smoke final          | `npm run smoke` no worktree final                        | PASS                                           |
