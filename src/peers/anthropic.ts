@@ -77,7 +77,7 @@ class AnthropicRefusalError extends Error {
     readonly billed: boolean,
   ) {
     const category = stop_details?.category ? ` category=${stop_details.category}` : "";
-    super(`Claude Fable 5 refusal from ${model}${category}.`);
+    super(`Anthropic refusal from ${model}${category}.`);
     this.name = "AnthropicRefusalError";
     this.accounted_attempts =
       typeof cost?.total_cost === "number" && Number.isFinite(cost.total_cost) ? 1 : 0;
@@ -162,14 +162,19 @@ function buildSystemBlock(
   ];
 }
 
-// v2.21.0: empirical Anthropic cache min-token guidance. At ~4 chars
-// per token we set the chars threshold so the warning fires when the
-// system prompt is unlikely to engage caching (Anthropic Opus 4.7
-// requires the cached block be at least the documented threshold).
-// Computed inline to avoid the smoke harness's "no stale max-tokens
-// limit literal" guard from misinterpreting the constant as the old
-// max_output_tokens regression.
-const ANTHROPIC_CACHE_MIN_CHARS = (1 << 12) * 4;
+// Anthropic documents model-specific prompt-cache minima. The runtime cannot
+// count provider tokens without a paid request, so the notice uses the same
+// conservative ~4 chars/token approximation as before while keeping the
+// underlying model threshold explicit and testable.
+export function anthropicCacheMinTokens(model: string): number {
+  if (/^claude-(?:fable|opus)-5(?:-|$)/i.test(model)) return 512;
+  if (/^claude-opus-4-8(?:-|$)/i.test(model)) return 1_024;
+  return 4_096;
+}
+
+function anthropicCacheMinChars(model: string): number {
+  return anthropicCacheMinTokens(model) * 4;
+}
 
 function anthropicEffort(value: AppConfig["reasoning_effort"][PeerId]): AnthropicEffort {
   if (value === "none" || value === "minimal") return "low";
@@ -255,10 +260,11 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
     if (message.stop_reason !== "refusal") return;
     const usage = usageFromAnthropic(message.usage);
     const estimatedCost = usage ? estimateCost(this.config, this.id, usage, this.model) : undefined;
-    // Anthropic documents two Fable refusal billing paths. A refusal before
-    // any output is not charged even though usage can report input tokens;
-    // a mid-stream refusal is charged for input and generated output. Treat
-    // provider-reported output tokens as the observable discriminator.
+    // Anthropic documents the same two refusal billing paths for Fable 5 and
+    // Opus 5. A refusal before any output is not charged even though usage can
+    // report input tokens; a mid-stream refusal is charged for input and
+    // generated output. Treat provider-reported output tokens as the
+    // observable discriminator.
     const billed = (usage?.output_tokens ?? 0) > 0;
     const cost: CostEstimate | undefined = billed
       ? estimatedCost
@@ -491,6 +497,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           message: `Anthropic review attempt ${attempt}`,
         });
         const systemText = this.systemPrompt(context);
+        const cacheMinTokens = anthropicCacheMinTokens(this.model);
+        const cacheMinChars = anthropicCacheMinChars(this.model);
         // v2.21.0: best-effort short-prefix warning — does NOT block.
         // v3.7.5 (A3): gated on the per-provider flag too so we don't
         // emit a warning about a cache that won't engage by design.
@@ -498,15 +506,20 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           this.config.cache.enabled &&
           !this.config.cache.disable_per_peer.claude &&
           attempt === 1 &&
-          systemText.length < ANTHROPIC_CACHE_MIN_CHARS
+          systemText.length < cacheMinChars
         ) {
           context.emit({
             type: "provider.cache.notice",
             session_id: context.session_id,
             round: context.round,
             peer: this.id,
-            message: `Anthropic system prompt is shorter than ~${ANTHROPIC_CACHE_MIN_CHARS} chars; cache may not engage. Consider increasing systemPrompt or attaching more evidence.`,
-            data: { system_chars: systemText.length, min_chars_hint: ANTHROPIC_CACHE_MIN_CHARS },
+            message: `Anthropic system prompt is shorter than the approximate ${cacheMinTokens}-token cache minimum for ${this.model}; cache may not engage.`,
+            data: {
+              model: this.model,
+              system_chars: systemText.length,
+              min_tokens: cacheMinTokens,
+              min_chars_hint: cacheMinChars,
+            },
           });
         }
         const requestedEffort = anthropicEffort(

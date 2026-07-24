@@ -6951,6 +6951,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
             cache_read_per_million: 0.5,
             cache_write_per_million: 10,
           },
+          "claude-opus-5": {
+            input_per_million: 5,
+            output_per_million: 25,
+            cache_read_per_million: 0.5,
+            cache_write_per_million: 10,
+          },
           "claude-fable-5": {
             input_per_million: 10,
             output_per_million: 50,
@@ -6982,12 +6988,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 1h cache-write pricing when models.claude=claude-fable-5",
     );
     const claudeOverrideFlat = flattenFileConfigToEnvMap(claudeModelRatesConfig, (name: string) =>
-      name === "CROSS_REVIEW_ANTHROPIC_MODEL" ? "claude-opus-4-8" : undefined,
+      name === "CROSS_REVIEW_ANTHROPIC_MODEL" ? "claude-opus-5" : undefined,
     );
     assert.equal(
       claudeOverrideFlat.CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION,
       "5",
-      "v4.4.4 / central config: model_cost_rates must follow the env/registry model override before file models.claude",
+      "v4.5.28 / central config: Opus 5 model_cost_rates must follow the env/registry model override before file models.claude",
     );
     console.log("[smoke] central_config_file_load_test: PASS");
   } finally {
@@ -7255,6 +7261,71 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   }
   const distinct = new Set(Object.values(map));
   assert.equal(distinct.size, 7, "all 7 identity tokens are distinct");
+  if (process.platform === "win32") {
+    const explicitEveryoneAcl = spawnSync("icacls.exe", [isolatedPath, "/grant", "*S-1-1-0:(R)"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    assert.equal(
+      explicitEveryoneAcl.status,
+      0,
+      "Windows ACL regression fixture must add an explicit Everyone read ACE",
+    );
+    assert.ok(
+      f1.loadHostTokens(tmpRoot),
+      "loadHostTokens must rebuild and verify a protected DACL before reading tokens",
+    );
+    const aclProbe = spawnSync(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "& { param([string]$Path) $acl = Get-Acl -LiteralPath $Path; [pscustomobject]@{ Protected = $acl.AreAccessRulesProtected; Rules = @($acl.Access | ForEach-Object { [pscustomobject]@{ Sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; Type = [string]$_.AccessControlType; Rights = [int]$_.FileSystemRights; IsInherited = $_.IsInherited } }) } | ConvertTo-Json -Depth 4 -Compress }",
+        "-Path",
+        isolatedPath,
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+    );
+    assert.equal(aclProbe.status, 0, "Windows token-file ACL probe must succeed");
+    const parsedAcl = JSON.parse(aclProbe.stdout) as {
+      Protected: boolean;
+      Rules: Array<{ Sid: string; Type: string; Rights: number; IsInherited: boolean }>;
+    };
+    const rules = parsedAcl.Rules;
+    assert.equal(parsedAcl.Protected, true, "host-tokens.json DACL must be protected");
+    assert.equal(rules.length, 3, "host-tokens.json must contain exactly three access ACEs");
+    assert.ok(
+      rules.every((rule) => rule.IsInherited === false),
+      "host-tokens.json must not inherit model-sandbox read permissions on Windows",
+    );
+    const expectedSids = new Set([
+      "S-1-5-18",
+      "S-1-5-32-544",
+      spawnSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 5_000,
+      }).stdout.match(/"(S-\d+(?:-\d+)+)"/i)?.[1],
+    ]);
+    assert.deepEqual(
+      new Set(rules.map((rule) => rule.Sid)),
+      expectedSids,
+      "host-tokens.json must remove every explicit ACE outside the three allowed SIDs",
+    );
+    assert.ok(
+      rules.every((rule) => rule.Type === "Allow"),
+      "host-tokens.json must not retain deny or non-Allow ACEs",
+    );
+  } else {
+    assert.equal(
+      fs.statSync(isolatedPath).mode & 0o077,
+      0,
+      "host-tokens.json must remain owner-only on POSIX",
+    );
+  }
 
   // (2) loadHostTokens is idempotent — re-read returns the same map.
   const r2 = f1.loadHostTokens(tmpRoot);
@@ -8747,22 +8818,34 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // We slice the server source from the closure declaration to the
   // matching closing }, STARTUP_SWEEP_DELAY_MS); to confirm no expensive
   // sweep slips back into setImmediate scope in a future refactor.
-  for (const sweep of [
-    "sweepOrphanTmpFiles",
-    "clearStaleInFlight",
-    "abortStaleSessions",
-    "pruneOldSessions",
+  assert.match(
+    serverSrc,
+    /recoverStartupInterruptedSessions[\s\S]*?store\.recoverInterruptedSessions\([\s\S]*?store\.clearStaleInFlight\(\)/,
+    "v4.5.28 / startup_sweeps_use_setTimeout: startup recovery helper must retain the complete recovery followed by the stale-marker fallback",
+  );
+  for (const { label, needle } of [
+    { label: "sweepOrphanTmpFiles", needle: "store.sweepOrphanTmpFiles(" },
+    {
+      label: "recoverStartupInterruptedSessions",
+      needle: "recoverStartupInterruptedSessions(",
+    },
+    { label: "abortStaleSessions", needle: "store.abortStaleSessions(" },
+    { label: "pruneOldSessions", needle: "store.pruneOldSessions(" },
   ]) {
-    const sweepIdx = bootPath.indexOf(`store.${sweep}(`);
+    const sweepIdx = bootPath.indexOf(needle);
     assert.ok(
       sweepIdx > 0,
-      `v2.27.1 / startup_sweeps_use_setTimeout: ${sweep} must still be invoked from boot path`,
+      `v2.27.1 / startup_sweeps_use_setTimeout: ${label} must still be invoked from boot path`,
     );
-    // Look for the closest preceding setTimeout( above this index.
-    const preceding = bootPath.slice(Math.max(0, sweepIdx - 600), sweepIdx);
+    // Locate the enclosing deferred closure by its exact opening and
+    // STARTUP_SWEEP_DELAY_MS suffix. A fixed-size look-behind is brittle:
+    // legitimate setup inside the closure (for example active job IDs)
+    // can grow without moving the sweep out of setTimeout.
+    const closureStart = bootPath.lastIndexOf("setTimeout(() => {", sweepIdx);
+    const closureEnd = bootPath.indexOf("}, STARTUP_SWEEP_DELAY_MS);", sweepIdx);
     assert.ok(
-      /setTimeout\(\s*\(\)\s*=>\s*\{[\s\S]*$/.test(preceding),
-      `v2.27.1 / startup_sweeps_use_setTimeout: ${sweep} call site must sit inside a setTimeout(() => { ... }) block`,
+      closureStart >= 0 && closureEnd > sweepIdx,
+      `v2.27.1 / startup_sweeps_use_setTimeout: ${label} call site must sit inside a setTimeout(() => { ... }) block`,
     );
   }
   console.log("[smoke] startup_sweeps_use_setTimeout_test: PASS");

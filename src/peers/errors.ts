@@ -233,7 +233,7 @@ export function classifyProviderError(
     (provider.toLowerCase() === "anthropic" &&
       (/\banthropic_refusal\b|\brefusal\b/i.test(providerSignals) ||
         /\bstop_reason\b[^a-z0-9_]+refusal\b/i.test(message) ||
-        /\bclaude fable 5 refusal\b/i.test(message)));
+        /\bclaude (?:fable|opus) 5 refusal\b/i.test(message)));
   const providerTerminalRejected = errorRecord?.code === "provider_terminal_state_rejected";
   const retryableDeepSeekInsufficientResource =
     providerTerminalRejected &&
@@ -368,7 +368,7 @@ export function classifyProviderError(
             : undefined,
     reformulation_advice:
       moderation || providerRefusal
-        ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent. If Claude Fable 5 is the selected model, a deliberate Anthropic fallback model may also be configured explicitly; do not silently downgrade."
+        ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent. If an Anthropic classifier refusal persists, any model change must remain an explicit operator choice; do not silently downgrade."
         : docsAdvice,
     retry_after_ms: extractRetryAfterMs(error),
     attempts,

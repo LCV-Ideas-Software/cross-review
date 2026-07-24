@@ -154,13 +154,15 @@ Anthropic supports up to 4 breakpoints per request; we reserve 3 for future addi
 
 ## Empirical guidance
 
-| Provider  | Practical minimum cached prefix | Notes                                                                                      |
-| --------- | ------------------------------- | ------------------------------------------------------------------------------------------ |
-| OpenAI    | ≥ 1024 tokens                   | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers.   |
-| Anthropic | ≥ 4096 tokens                   | Below this size Anthropic may not actually create the cache entry. Adapter emits a notice. |
-| Gemini    | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                       |
-| DeepSeek  | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                        |
-| Grok      | service-managed                 | Grok 4.5 uses `prompt_cache_key`; xAI manages retention.                                   |
+| Provider/model     | Practical minimum cached prefix | Notes                                                                                    |
+| ------------------ | ------------------------------- | ---------------------------------------------------------------------------------------- |
+| OpenAI             | ≥ 1024 tokens                   | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers. |
+| Anthropic Fable 5  | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
+| Anthropic Opus 5   | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
+| Anthropic Opus 4.8 | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                       |
+| Gemini             | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                     |
+| DeepSeek           | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                      |
+| Grok               | service-managed                 | Grok 4.5 uses `prompt_cache_key`; xAI manages retention.                                 |
 
 ## Reference URLs
 

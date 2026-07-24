@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.5.27";
+export const VERSION = "4.5.28";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -344,6 +344,23 @@ export function loadConfig(): AppConfig {
       // averaging ~30KB each before any per-file truncation. Operator
       // can still tune via CROSS_REVIEW_MAX_ATTACHED_EVIDENCE_CHARS.
       max_attached_evidence_chars: intEnv("CROSS_REVIEW_MAX_ATTACHED_EVIDENCE_CHARS", 200_000),
+    },
+    evidence_broker: {
+      // A peer can still describe every blocker in its durable structured
+      // response, but at most eight distinct asks may enter one broker round.
+      // More than that is a contract violation, not a reason to truncate.
+      max_requests_per_peer_round: intEnv(
+        "CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_PEER_ROUND",
+        8,
+      ),
+      // Five ordinary reviewers × eight asks would already create forty
+      // sticky prompt entries. Stop the round at 24 instead and preserve the
+      // full peer outputs in the terminal audit record.
+      max_requests_per_round: intEnv("CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_ROUND", 24),
+      // Session-wide bounds prevent a 4.5.25-style 142-item checklist from
+      // being reinjected into every later paid provider call.
+      max_items_per_session: intEnv("CROSS_REVIEW_EVIDENCE_BROKER_MAX_ITEMS_PER_SESSION", 64),
+      max_chars_per_session: intEnv("CROSS_REVIEW_EVIDENCE_BROKER_MAX_CHARS_PER_SESSION", 64_000),
     },
     max_output_tokens: intEnv("CROSS_REVIEW_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
     max_output_tokens_by_peer: {

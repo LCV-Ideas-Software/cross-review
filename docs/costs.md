@@ -38,12 +38,13 @@ artifacts when present.
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
 Current reference values verified against official provider documentation on
-2026-07-17 for the maintained model pins:
+2026-07-24 for the maintained model pins and supported Claude Opus 5 override:
 
 | Provider/model                   | Input   | Output | Cached input / cache hit | Extended tier                                                      |
 | -------------------------------- | ------- | ------ | ------------------------ | ------------------------------------------------------------------ |
 | OpenAI `gpt-5.6-sol`             | `5`     | `30`   | `0.5`                    | `>272000`: input `10`, output `45`, cached input `1`               |
 | Anthropic `claude-fable-5`       | `10`    | `50`   | `1`                      | none                                                               |
+| Anthropic `claude-opus-5`        | `5`     | `25`   | `0.5`                    | none                                                               |
 | Gemini `gemini-3.1-pro-preview`  | `2`     | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4` |
 | DeepSeek `deepseek-v4-pro`       | `0.435` | `0.87` | `0.003625`               | none                                                               |
 | xAI `grok-4.5`                   | `2`     | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                |
@@ -74,7 +75,8 @@ Official pricing sources:
 - OpenAI: [API pricing](https://developers.openai.com/api/docs/pricing),
   [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol) and
   [Priority processing](https://developers.openai.com/api/docs/guides/priority-processing#configuring-priority-processing).
-- Anthropic: [Fable 5 model, retention and base pricing](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5)
+- Anthropic: [models overview](https://platform.claude.com/docs/en/about-claude/models/overview),
+  [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5)
   and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 - Google: [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 - DeepSeek: [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
@@ -84,10 +86,10 @@ Official pricing sources:
 - Perplexity: [Sonar Reasoning Pro](https://docs.perplexity.ai/docs/sonar/models/sonar-reasoning-pro)
   and [Sonar API pricing](https://docs.perplexity.ai/docs/getting-started/pricing).
 
-Anthropic cache-write rates are separate from cache-hit rates. For
-`claude-fable-5`, configure `CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION`
-as `20` when using the workspace's default Anthropic `1h` cache TTL, or `12.5`
-if you deliberately switch Anthropic cache TTL to `5m`.
+Anthropic cache-write rates are separate from cache-hit rates. With the
+workspace's default `1h` TTL, configure cache write as `20` for Fable 5 and
+`10` for Opus 5. If you deliberately switch to `5m`, the corresponding values
+are `12.5` and `6.25`.
 
 The configured Perplexity request fee is charged in cross-review's accounting
 for every Sonar request, including calls with `disable_search=true`. Disabling
@@ -106,6 +108,12 @@ overrides can select models with different prices:
   },
   "model_cost_rates": {
     "claude": {
+      "claude-opus-5": {
+        "input_per_million": 5,
+        "output_per_million": 25,
+        "cache_read_per_million": 0.5,
+        "cache_write_per_million": 10
+      },
       "claude-fable-5": {
         "input_per_million": 10,
         "output_per_million": 50,

@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadConfig } from "../src/core/config.js";
 import { FileConfigSchema, flattenFileConfigToEnvMap } from "../src/core/file-config.js";
 import type { PeerFailure, ReasoningEffort, RuntimeEvent } from "../src/core/types.js";
-import { AnthropicAdapter } from "../src/peers/anthropic.js";
+import { AnthropicAdapter, anthropicCacheMinTokens } from "../src/peers/anthropic.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { classifyProviderError } from "../src/peers/errors.js";
 import { GeminiAdapter } from "../src/peers/gemini.js";
@@ -609,6 +609,23 @@ async function captureGrokReasoningEffort(
 }
 
 {
+  const opus5 = selectFromCandidates(
+    "claude",
+    [
+      { id: "claude-fable-5", source: "api" },
+      { id: "claude-opus-5", source: "api" },
+    ],
+    "claude-opus-5",
+  );
+  assert.equal(opus5.selected, "claude-opus-5");
+  assert.equal(
+    opus5.confidence,
+    "verified",
+    "Claude Opus 5 must be a first-class supported operator override when the Models API lists it.",
+  );
+}
+
+{
   const fable = selectFromCandidates(
     "claude",
     [
@@ -671,6 +688,60 @@ async function captureGrokReasoningEffort(
     "Claude must normalize the ultra alias to its strongest official output_config.effort value.",
   );
 }
+
+{
+  const adapter = new AnthropicAdapter({
+    ...config,
+    models: { ...config.models, claude: "claude-opus-5" },
+    reasoning_effort: { ...config.reasoning_effort, claude: "max" },
+    max_output_tokens_by_peer: { ...config.max_output_tokens_by_peer, claude: 64_000 },
+    streaming: { ...config.streaming, tokens: false },
+  });
+  let capturedPayload: Record<string, unknown> | undefined;
+  (
+    adapter as unknown as {
+      client: () => Promise<{
+        messages: {
+          create: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+        };
+      }>;
+    }
+  ).client = async () => ({
+    messages: {
+      create: async (payload) => {
+        capturedPayload = payload;
+        return {
+          content: [{ type: "text", text: "revised fixture" }],
+          model: "claude-opus-5",
+          stop_reason: "end_turn",
+          usage: { input_tokens: 100, output_tokens: 20 },
+        };
+      },
+    },
+  });
+  await adapter.generate("Revise this fixture.", {
+    session_id: "550e8400-e29b-41d4-a716-446655440014",
+    round: 1,
+    task: "Claude Opus 5 provider contract",
+    emit: () => undefined,
+  });
+  assert.equal(capturedPayload?.model, "claude-opus-5");
+  assert.equal(capturedPayload?.max_tokens, 64_000);
+  assert.deepEqual(capturedPayload?.thinking, { type: "adaptive", display: "omitted" });
+  assert.deepEqual(capturedPayload?.output_config, { effort: "max" });
+  for (const unsupportedSamplingField of ["temperature", "top_p", "top_k"]) {
+    assert.equal(
+      Object.hasOwn(capturedPayload ?? {}, unsupportedSamplingField),
+      false,
+      `Claude Opus 5 request must not send unsupported ${unsupportedSamplingField}.`,
+    );
+  }
+}
+
+assert.equal(anthropicCacheMinTokens("claude-fable-5"), 512);
+assert.equal(anthropicCacheMinTokens("claude-opus-5"), 512);
+assert.equal(anthropicCacheMinTokens("claude-opus-4-8"), 1_024);
+assert.equal(anthropicCacheMinTokens("claude-unknown"), 4_096);
 
 assert.equal(
   clampEffortForPerplexity("ultra"),
@@ -747,14 +818,14 @@ assert.equal(
 {
   const adapter = new AnthropicAdapter({
     ...config,
-    models: { ...config.models, claude: "claude-fable-5" },
+    models: { ...config.models, claude: "claude-opus-5" },
     cost_rates: {
       ...config.cost_rates,
       claude: {
-        input_per_million: 10,
-        output_per_million: 50,
-        cache_read_per_million: 1,
-        cache_write_per_million: 20,
+        input_per_million: 5,
+        output_per_million: 25,
+        cache_read_per_million: 0.5,
+        cache_write_per_million: 10,
       },
     },
   });
@@ -776,7 +847,7 @@ assert.equal(
     messages: {
       create: async () => ({
         content: [],
-        model: "claude-fable-5",
+        model: "claude-opus-5",
         stop_reason: "refusal",
         stop_details: { type: "refusal", category: "cyber", explanation: "fixture" },
         usage: { input_tokens: 412, output_tokens: 0 },
@@ -795,7 +866,7 @@ assert.equal(
     (error: unknown) => {
       assert.match(
         error instanceof Error ? error.message : String(error),
-        /Claude Fable 5 refusal/,
+        /Anthropic refusal from claude-opus-5/,
       );
       const failure = (
         error as { peerFailure?: { cost?: { total_cost?: number }; unpriced_attempts?: number } }
@@ -810,10 +881,10 @@ assert.equal(
       (event) =>
         event.type === "provider.refusal" &&
         event.peer === "claude" &&
-        event.data?.model === "claude-fable-5" &&
+        event.data?.model === "claude-opus-5" &&
         event.data?.billed === false,
     ),
-    "Anthropic Fable refusal before output must emit billed=false even when usage is reported.",
+    "Anthropic Opus 5 refusal before output must emit billed=false even when usage is reported.",
   );
 }
 

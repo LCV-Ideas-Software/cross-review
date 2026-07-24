@@ -58,6 +58,90 @@ export function getTokensFilePath(dataDir: string): string {
   return path.join(dataDir, "host-tokens.json");
 }
 
+/**
+ * Keep the plaintext capability map outside inherited model-sandbox ACLs.
+ * POSIX mode bits are applied by Node. Windows needs an explicit protected
+ * DACL because `mode: 0o600` does not override inherited NTFS access entries.
+ */
+export function hardenTokensFilePermissions(filePath: string): boolean {
+  try {
+    if (process.platform !== "win32") {
+      fs.chmodSync(filePath, 0o600);
+      return (fs.statSync(filePath).mode & 0o077) === 0;
+    }
+
+    const identity = spawnSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5_000,
+    });
+    const currentUserSid = identity.stdout?.match(/"(S-\d+(?:-\d+)+)"/i)?.[1];
+    if (identity.status !== 0 || !currentUserSid) return false;
+
+    // Reset first so every pre-existing explicit ACE is discarded, then
+    // remove inherited ACEs and rebuild the complete allow-list. `/grant:r`
+    // alone only replaces ACEs for the named identities and would preserve a
+    // hostile explicit Everyone/Users/model-sandbox grant.
+    const commands = [
+      [filePath, "/reset"],
+      [filePath, "/inheritance:r"],
+      [
+        filePath,
+        "/grant:r",
+        `*${currentUserSid}:(F)`,
+        "*S-1-5-18:(F)",
+        "*S-1-5-32-544:(F)",
+      ],
+    ];
+    for (const args of commands) {
+      const result = spawnSync("icacls.exe", args, {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      });
+      if (result.status !== 0 || result.error) return false;
+    }
+
+    const verification = spawnSync(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        [
+          "& { param([string]$Path, [string]$CurrentUserSid)",
+          "$allowed = @($CurrentUserSid, 'S-1-5-18', 'S-1-5-32-544')",
+          "$acl = Get-Acl -LiteralPath $Path",
+          "if (-not $acl.AreAccessRulesProtected) { exit 11 }",
+          "$rules = @($acl.Access)",
+          "if ($rules.Count -ne $allowed.Count) { exit 12 }",
+          "foreach ($rule in $rules) {",
+          "  $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value",
+          "  if ($sid -notin $allowed) { exit 13 }",
+          "  if ($rule.IsInherited) { exit 14 }",
+          "  if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { exit 15 }",
+          "  if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { exit 16 }",
+          "}",
+          "}",
+        ].join("; "),
+        "-Path",
+        filePath,
+        "-CurrentUserSid",
+        currentUserSid,
+      ],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      },
+    );
+    return verification.status === 0 && !verification.error;
+  } catch {
+    return false;
+  }
+}
+
 export function generateHostTokens(
   dataDir: string,
   options: { overwrite?: boolean } = {},
@@ -103,18 +187,24 @@ export function generateHostTokens(
     }
     throw err;
   }
-  if (process.platform !== "win32") {
+  if (!hardenTokensFilePermissions(filePath)) {
     try {
-      fs.chmodSync(filePath, 0o600);
+      fs.rmSync(filePath, { force: true });
     } catch {
-      /* best-effort POSIX hardening */
+      /* the caller still fails closed below */
     }
+    throw new Error(
+      "caller-tokens: could not apply owner-only permissions; insecure token file was rejected",
+    );
   }
   return { filePath, map, generated_at: payload.generated_at };
 }
 
 export function loadHostTokens(dataDir: string): HostTokensRecord | null {
   const filePath = getTokensFilePath(dataDir);
+  if (fs.existsSync(filePath) && !hardenTokensFilePermissions(filePath)) {
+    return null;
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, "utf8");

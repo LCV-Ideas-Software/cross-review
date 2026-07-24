@@ -28,6 +28,12 @@ the `evidence` field of a review starter, and the runtime persists it
 automatically as `caller_submitted_unverified`. Legacy six-token files are
 migrated in place without rotating the existing peer tokens.
 
+The runtime refuses an insecure token file: POSIX permissions must remain
+owner-only (`0600`), and Windows inheritance is removed so only the current
+user, SYSTEM and Administrators retain access. This protects against inherited
+model-sandbox ACLs; hosts that run unrestricted under the same OS identity still
+require OS-level isolation or a secret vault.
+
 DeepSeek, Grok and Perplexity do not need separate local MCP caller hosts merely
 to participate as outbound review adapters; their provider API keys are enough.
 Distribute a peer capability token only when a local MCP client actually acts
@@ -81,19 +87,32 @@ The canonical Claude Fable 5 rate variables are:
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION", "20", "User")
 ```
 
+To opt into Claude Opus 5, change the model and its active rate variables
+together. These values use the maintained `1h` Anthropic cache TTL:
+
+```powershell
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-opus-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION", "5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION", "25", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION", "0.5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION", "10", "User")
+```
+
 When using central `config.json`, prefer a model-keyed entry under
 `model_cost_rates.claude` instead of changing Anthropic rate variables by hand.
 The runtime chooses the active rate card after honoring any explicit
 environment/registry model override.
 
-Fable 5 can return successful responses with `stop_reason="refusal"`. The
-runtime records those as `provider_refusal` and discards partial refusal output.
+Fable 5 and Opus 5 can return successful responses with
+`stop_reason="refusal"`. The runtime records those as `provider_refusal` and
+discards partial refusal output.
 Anthropic does not charge a refusal that occurs before output, even when the
 response reports input usage; a mid-stream refusal is billable for input and
 generated output, and the ledger distinguishes the two cases.
-Its request omits the explicit `thinking` field because adaptive thinking is
-automatic. Anthropic documents Fable 5 as a 30-day-retention model with no zero
-data retention option, so enable it only when that posture is acceptable.
+Fable's request omits the explicit `thinking` field because adaptive thinking
+is automatic. Opus 5 sends explicit adaptive thinking with display omitted.
+Anthropic documents Fable 5 as a 30-day-retention model with no zero data
+retention option, so enable it only when that posture is acceptable.
 
 `ultra` is a Codex product/CLI mode, not a literal OpenAI Responses API
 `reasoning.effort`. Cross-review accepts `reasoning_effort.codex="ultra"` as a

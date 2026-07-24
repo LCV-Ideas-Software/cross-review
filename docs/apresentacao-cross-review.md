@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `4.5.27`                           |
+| Versão preparada pelo source  | `v04.05.28`                        |
 | Data do source/release target | `2026-07-24`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -214,6 +214,16 @@ latência mínimos.
 `output_config.effort` para controlar profundidade. A retenção documentada é
 de 30 dias, sem ZDR; recusas `stop_reason="refusal"` bloqueiam como
 `provider_refusal` e seu texto parcial não é aceito como parecer.
+
+`claude-opus-5` é um override explícito suportado, não um fallback. Ele usa
+pensamento adaptativo com exibição omitida e o mesmo controle de effort, além
+de rate card próprio; trocar apenas o nome do modelo sem a tarifa correspondente
+continua falhando fechado no preflight financeiro.
+
+Nesta versão, o Evidence Broker também passa a admitir pedidos de forma
+atômica, com tetos configuráveis por peer, rodada e sessão. Exceder um teto
+preserva a resposta completa para auditoria e encerra a sessão antes de novo
+gasto; nenhum blocker é truncado ou declarado satisfeito por conveniência.
 
 Para `gpt-5.6-sol`, `ultra` designa um modo de execução do produto Codex, não
 um `reasoning.effort` literal da Responses API. O cross-review o aceita como

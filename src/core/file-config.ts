@@ -205,6 +205,16 @@ const RetrySchema = z
   .strict()
   .optional();
 
+const EvidenceBrokerSchema = z
+  .object({
+    max_requests_per_peer_round: z.number().int().positive().optional(),
+    max_requests_per_round: z.number().int().positive().optional(),
+    max_items_per_session: z.number().int().positive().optional(),
+    max_chars_per_session: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 export const FileConfigSchema = z
   .object({
     // Optional schema version sentinel so future breaking changes can
@@ -230,6 +240,7 @@ export const FileConfigSchema = z
     model_cost_rates: PerPeerModelCostRatesSchema,
     budget: BudgetSchema,
     retry: RetrySchema,
+    evidence_broker: EvidenceBrokerSchema,
     evidence_judge_autowire: EvidenceJudgeAutowireSchema,
     cache: CacheSchema,
     perplexity: PerplexitySubSchema,
@@ -407,6 +418,24 @@ export function flattenFileConfigToEnvMap(
     set("CROSS_REVIEW_RETRY_BASE_MS", config.retry.base_delay_ms);
     set("CROSS_REVIEW_RETRY_MAX_MS", config.retry.max_delay_ms);
     set("CROSS_REVIEW_TIMEOUT_MS", config.retry.timeout_ms);
+  }
+  if (config.evidence_broker) {
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_PEER_ROUND",
+      config.evidence_broker.max_requests_per_peer_round,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_ROUND",
+      config.evidence_broker.max_requests_per_round,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_ITEMS_PER_SESSION",
+      config.evidence_broker.max_items_per_session,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_CHARS_PER_SESSION",
+      config.evidence_broker.max_chars_per_session,
+    );
   }
   if (config.evidence_judge_autowire) {
     set("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE", config.evidence_judge_autowire.mode);

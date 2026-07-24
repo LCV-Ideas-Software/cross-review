@@ -7,6 +7,51 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.28] — 2026-07-24
+
+**Provider compatibility and session safety now share one fail-closed,
+cost-bounded runtime contract.**
+
+### Added
+
+- Adds `claude-opus-5` as an explicit supported Anthropic override while
+  retaining `claude-fable-5` as the canonical pin. Opus 5 uses adaptive
+  thinking with omitted display, native effort through `max`, a 64K maintained
+  output budget, model-aware cache thresholds and its own US$5/US$25 rate card.
+- Updates `@anthropic-ai/sdk` to `0.115.0`, whose public types include Opus 5
+  and the adaptive-thinking display contract.
+- Adds configurable, atomic Evidence Broker admission limits: 8 requests per
+  peer per round, 24 per round, 64 items and 64,000 request characters per
+  session.
+- Adds bounded `session_events` pagination with token-delta telemetry excluded
+  by default and explicitly available for forensic callers.
+- Adds claim-level grounding diagnostics that identify whether caller evidence
+  or peer-submitted sources failed to corroborate each decisive claim.
+
+### Fixed
+
+- Recovers interrupted sessions automatically at startup, rejects recycled
+  process IDs, reconciles control, health, accounting and background-job state,
+  and settles orphan running jobs after terminal sessions.
+- Treats server-issued Evidence Broker checklist identifiers as provenance
+  instead of fabricated hexadecimal evidence.
+- Distinguishes a leading future prerequisite such as “after green CI, retry”
+  from a current-state assertion in the truthfulness preflight.
+- Stops legacy oversized checklists before provider dispatch and stops a
+  newly oversized round before automatic judging or later paid work, while
+  preserving complete peer responses and rejecting the checklist append
+  atomically.
+
+### Security
+
+- Removes inherited Windows ACLs from `host-tokens.json`, grants access only to
+  the current user, SYSTEM and Administrators, and verifies owner-only `0600`
+  permissions on POSIX. The documented same-OS-user isolation limitation
+  remains explicit.
+- Bounds hostile or excessively verbose Evidence Broker growth to prevent
+  repeated prompt amplification and denial-of-wallet without truncating,
+  discarding or auto-satisfying review blockers.
+
 ## [v04.05.27] — 2026-07-24
 
 **Provider SDK and repository automation updates now ship from one verified

@@ -51,6 +51,12 @@ verdict and convergence data without retransmitting complete prior-round peer
 `latest_completed_round_number` (the newest round already appended); an
 active round can therefore be newer than the latest completed one.
 
+`session_events` is independently bounded: it defaults to 200 records, supports
+`limit` from 1 through 1,000, and omits `peer.token.delta` records unless
+`include_token_deltas=true`. Consumers continue with `next_seq` while
+`has_more=true`; this keeps ordinary monitoring compact while retaining an
+explicit forensic path for token-progress telemetry.
+
 Background-job observations are written as compact per-job records inside the
 contained session directory and reconciled with process-local state. This lets
 sibling MCP hosts and restarted runtimes distinguish terminal work from an
@@ -62,6 +68,13 @@ ambiguous missing-running-job result.
 Object-returning tools honor `response_format="markdown"` through a shared
 Markdown renderer. Caller-, peer- and persistence-controlled strings are
 HTML-neutralized before rendering; JSON remains the default wire text.
+
+Evidence Broker checklist growth is admitted atomically under four configurable
+limits: requests per peer per round, requests per round, durable items per
+session and total request characters per session. A violation is terminal and
+audit-visible; no partial batch is written, no blocker is silently removed or
+marked satisfied, and no automatic judge or later provider round is allowed.
+Legacy sessions already over a global limit stop before provider dispatch.
 
 ## Streaming Model
 
@@ -168,9 +181,10 @@ sanitized review prompt. This retry does not bypass provider policy: if the
 compact context is insufficient, the peer must return `NEEDS_EVIDENCE` or the
 session remains blocked for operator action.
 
-Claude Fable 5 refusals are different from transport errors: Anthropic returns
-HTTP 200 with `stop_reason="refusal"` and optional `stop_details`. The
-Anthropic adapter treats this as a non-skippable `provider_refusal`, emits a
+Claude Fable 5 and Opus 5 refusals are different from transport errors:
+Anthropic returns HTTP 200 with `stop_reason="refusal"` and optional
+`stop_details`. The Anthropic adapter treats this as a non-skippable
+`provider_refusal`, emits a
 structured `provider.refusal` event, discards incomplete refusal output, and
 only tries another Claude model when the operator configured an explicit
 fallback chain.
@@ -229,7 +243,10 @@ The identity map contains six peer capabilities plus a separate `operator`
 capability. Operator-only tools require a verified operator token regardless of
 the permissive peer-token setting. A model token cannot be reused as operator,
 and evidence judges cannot rule on their own asks. The operator token belongs
-only in a dedicated human-console host.
+only in a dedicated human-console host. The plaintext token map is protected
+with owner-only POSIX permissions or a non-inherited Windows DACL; this removes
+model-sandbox group access but is not a boundary between unrestricted processes
+sharing one OS identity.
 
 The truthfulness, evidence-provenance and convergence gates compare asserted
 runtime/model values, workflow/deployment/authorization claims, hashes and test
@@ -277,7 +294,10 @@ The peer adapters use the strongest official reasoning controls available for ea
   lower literals are translated to the nearest available family value.
 - Anthropic runs canonical `claude-fable-5`. The request omits the explicit
   `thinking` field because adaptive thinking is automatic and controls depth
-  with `output_config.effort`. Fable has 30-day/no-ZDR retention semantics.
+  with `output_config.effort`. The supported explicit `claude-opus-5` override
+  sends adaptive thinking with display omitted and the same effort control;
+  it is never selected as a fallback. Fable has 30-day/no-ZDR retention
+  semantics.
 - Gemini maps the shared configured effort to the pinned Gemini 3.x model's
   native `LOW`, `MEDIUM`, or `HIGH` thinking level.
 - DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows

@@ -16,6 +16,7 @@ import {
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
 import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { sessionReportMarkdown } from "../core/reports.js";
+import type { SessionStore } from "../core/session-store.js";
 import type {
   BackgroundJobKind,
   BackgroundJobStatus,
@@ -24,6 +25,7 @@ import type {
   ReviewRound,
   RuntimeCapabilities,
   RuntimeEvent,
+  SessionEvent,
   SessionMeta,
 } from "../core/types.js";
 import { PEERS } from "../core/types.js";
@@ -46,6 +48,31 @@ const SessionListDetailSchema = z.enum(["summary", "full"]).default("summary");
 const SessionPollDetailSchema = z.enum(["summary", "full"]).default("summary");
 const SESSION_LIST_DEFAULT_LIMIT = 25;
 const SESSION_LIST_MAX_LIMIT = 100;
+
+export function pageSessionEvents(
+  allEvents: readonly SessionEvent[],
+  sinceSeq: number,
+  limit: number,
+  includeTokenDeltas: boolean,
+): {
+  events: SessionEvent[];
+  next_seq: number;
+  has_more: boolean;
+  filtered_token_delta_count: number;
+} {
+  const eligibleEvents = includeTokenDeltas
+    ? [...allEvents]
+    : allEvents.filter((event) => event.type !== "peer.token.delta");
+  const events = eligibleEvents.slice(0, limit);
+  const nextSeq =
+    events.at(-1)?.seq ?? (eligibleEvents.length === 0 ? allEvents.at(-1)?.seq : undefined);
+  return {
+    events,
+    next_seq: nextSeq ?? sinceSeq,
+    has_more: eligibleEvents.length > events.length,
+    filtered_token_delta_count: includeTokenDeltas ? 0 : allEvents.length - eligibleEvents.length,
+  };
+}
 // v2.15.0 (item 2): per-call reasoning_effort overrides. Optional partial
 // record keyed by peer id; missing keys fall back to the global config
 // default (CROSS_REVIEW_<PEER>_REASONING_EFFORT env var, ultimately
@@ -601,6 +628,7 @@ type DurableSessionState = Pick<
   | "outcome_reason"
   | "in_flight"
   | "generation_in_flight"
+  | "pending_provider_call_reservations"
   | "control"
 >;
 
@@ -894,21 +922,29 @@ export function reconcileObservedJobs(
   observedJobs: readonly JobStatus[],
   processLocalRunningJobIds: ReadonlySet<string> = new Set(),
 ): JobStatus[] {
-  const activeControlJobId =
-    session.control?.status === "running" || session.control?.status === "cancel_requested"
-      ? session.control.job_id
-      : undefined;
+  const controlActive =
+    session.control?.status === "running" || session.control?.status === "cancel_requested";
+  const activeControlJobId = controlActive ? session.control?.job_id : undefined;
+  const durableExecutionActive =
+    !session.outcome &&
+    (Boolean(session.in_flight) ||
+      Boolean(session.generation_in_flight) ||
+      (session.pending_provider_call_reservations?.length ?? 0) > 0 ||
+      controlActive);
   return observedJobs.map((job) =>
     job.status === "running" &&
     !processLocalRunningJobIds.has(job.job_id) &&
-    ((activeControlJobId !== undefined && job.job_id !== activeControlJobId) ||
+    (!durableExecutionActive ||
+      (activeControlJobId !== undefined && job.job_id !== activeControlJobId) ||
       (session.control?.status === "recovered_after_restart" &&
         session.control.job_id === job.job_id))
       ? {
           ...job,
           status: "failed",
           completed_at: session.updated_at,
-          error: "background_job_interrupted_or_settled_without_terminal_status",
+          error: session.outcome
+            ? `background_job_settled_after_terminal_session: outcome=${session.outcome}, reason=${session.outcome_reason ?? "unspecified"}`
+            : "background_job_interrupted_or_settled_without_terminal_status",
         }
       : job,
   );
@@ -1097,6 +1133,22 @@ function createRuntime() {
 }
 
 type Runtime = ReturnType<typeof createRuntime>;
+
+export async function recoverStartupInterruptedSessions(
+  store: Pick<SessionStore, "recoverInterruptedSessions" | "clearStaleInFlight">,
+  activeSessionIds: ReadonlySet<string> = new Set(),
+): Promise<{
+  recovered: SessionMeta[];
+  in_flight: { scanned: number; cleared: number };
+}> {
+  // Recover the full durable lifecycle first. This is the only path that
+  // settles generation-only markers and atomically transitions control,
+  // background-job history, accounting and health. The legacy marker sweep
+  // remains as a race-safe fallback when an owner disappears during startup.
+  const recovered = await store.recoverInterruptedSessions(new Set(activeSessionIds));
+  const inFlight = await store.clearStaleInFlight();
+  return { recovered, in_flight: inFlight };
+}
 
 function recordIdentityForgeryBlocked(
   runtime: Runtime,
@@ -1627,6 +1679,7 @@ export async function main(): Promise<void> {
           stub: runtime.config.stub,
           retry_timeout_ms: runtime.config.retry.timeout_ms,
           budget: runtime.config.budget,
+          evidence_broker: runtime.config.evidence_broker,
           financial_controls: (() => {
             // v3.7.0 (AUDIT-4, Codex super-audit 2026-05-14): readiness
             // is computed over the ENABLED peer subset, not the full
@@ -2558,10 +2611,12 @@ export async function main(): Promise<void> {
     {
       title: "Read Session Events",
       description:
-        "Read durable session events from events.ndjson. Use since_seq to incrementally poll long-running sessions.",
+        "Read a bounded page of durable session events. Token-delta telemetry is excluded by default; opt in only for streaming forensics. Continue with next_seq while has_more is true.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         since_seq: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(1_000).default(200),
+        include_token_deltas: z.boolean().default(false),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2571,14 +2626,16 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, since_seq, response_format }) =>
-      textResult(
+    async ({ session_id, since_seq, limit, include_token_deltas, response_format }) => {
+      const allEvents = runtime.orchestrator.store.readEvents(session_id, since_seq);
+      return textResult(
         {
           session_id,
-          events: runtime.orchestrator.store.readEvents(session_id, since_seq),
+          ...pageSessionEvents(allEvents, since_seq, limit, include_token_deltas),
         },
         response_format,
-      ),
+      );
+    },
   );
 
   registerTool(
@@ -3334,9 +3391,28 @@ export async function main(): Promise<void> {
             JSON.stringify(pendingProviderSweep),
           );
         }
-        const inFlightSweep = await runtime.orchestrator.store.clearStaleInFlight();
-        if (inFlightSweep.scanned > 0) {
-          console.error("[cross-review] startup in_flight sweep:", JSON.stringify(inFlightSweep));
+        const activeSessionIds = new Set(
+          [...runtime.jobs.values()]
+            .filter((job) => job.status === "running")
+            .map((job) => job.session_id),
+        );
+        const recoverySweep = await recoverStartupInterruptedSessions(
+          runtime.orchestrator.store,
+          activeSessionIds,
+        );
+        if (recoverySweep.recovered.length > 0) {
+          console.error(
+            "[cross-review] startup interrupted-session recovery:",
+            JSON.stringify({
+              recovered: recoverySweep.recovered.map((session) => session.session_id),
+            }),
+          );
+        }
+        if (recoverySweep.in_flight.scanned > 0) {
+          console.error(
+            "[cross-review] startup in_flight sweep:",
+            JSON.stringify(recoverySweep.in_flight),
+          );
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

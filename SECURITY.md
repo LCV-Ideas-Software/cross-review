@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.27 for package 4.5.27. This
+Current supported source/release target: v04.05.28 for package 4.5.28. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
@@ -190,8 +190,12 @@ operator-only.
 The capability token authenticates the MCP host, not a model's internal intent
 or amount of cognitive effort. The operator token must never be placed in a
 model host. The local token file is plaintext and therefore assumes processes
-with read access to the cross-review data directory are trusted; use OS-level
-isolation for adversaries that can read another host's files.
+with read access to the cross-review data directory are trusted. The runtime
+fails closed unless it can enforce owner-only mode on POSIX or a protected
+Windows DACL limited to the current user, SYSTEM and Administrators. This
+removes inherited model-sandbox access but cannot isolate two unrestricted
+processes running as the same OS user; use separate OS identities or a secret
+vault for that threat model.
 
 No API can prove how much internal reasoning a model performed. The runtime
 proves observable protocol behavior—terminal completion, evidence custody,

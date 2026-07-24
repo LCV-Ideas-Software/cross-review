@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.27** (package `4.5.27`).
+**Status.** Stable. The current source/release target is **v04.05.28** (package `4.5.28`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.28`**      | Adds opt-in Claude Opus 5 support; bounds Evidence Broker amplification without weakening blockers; repairs interrupted-session lifecycle, checklist provenance and truthfulness diagnostics; hardens caller-token ACLs; and makes event polling compact.                        |
 | **`v04.05.27`**      | Updates the Anthropic and OpenAI SDKs, makes manifests and lockfiles the dependency source of truth, and ships hardened Socket and Dependabot automation with verified release recovery.                                                                                         |
 | **`v04.05.26`**      | Bundles the MCP runtime and hardens exact-SHA automation, immutable releases, and current provider dependencies.                                                                                                                                                                 |
 | **`v04.05.25`**      | Resolves the three registry advisories in the lockfile: `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7; updates the one reviewed install-script approval to `protobufjs@7.6.5`. Scorecard and Auto-tag remain fail-closed; no alert was suppressed. |
@@ -266,6 +267,14 @@ retention posture and no zero-data-retention option for this model. A response
 with `stop_reason="refusal"` is recorded as `provider_refusal`, and partial
 refusal output is not accepted as a review.
 
+Claude Opus 5 (`claude-opus-5`) is a first-class explicit override, not a
+fallback and not an automatic replacement for Fable 5. The adapter sends
+adaptive thinking with omitted thinking text and supports
+`low`/`medium`/`high`/`xhigh`/`max` effort. The maintained 64,000-token Claude
+output budget is Anthropic's recommended starting point for `xhigh` or `max`;
+the model's synchronous API ceiling is 128,000. Selecting Opus 5 also selects
+its own model-specific rate card, so Fable pricing is never borrowed.
+
 For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.5`; xAI
 accepts only `low`, `medium`, or `high` reasoning effort for it, so the adapter
 clamps the shared scale before sending the request.
@@ -286,6 +295,27 @@ zero. Their environment-variable equivalents are
 `CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT`; as with the other central
 settings, an explicit host environment value takes precedence over
 `config.json`.
+
+Evidence Broker admission is fail-closed and atomic. Its configurable defaults
+are `8` requests per peer per round, `24` requests per round, `64` durable
+items and `64,000` total request characters per session:
+
+```json
+{
+  "evidence_broker": {
+    "max_requests_per_peer_round": 8,
+    "max_requests_per_round": 24,
+    "max_items_per_session": 64,
+    "max_chars_per_session": 64000
+  }
+}
+```
+
+Crossing a limit never truncates, discards or auto-satisfies a blocker. The
+complete peer response remains durable, the checklist batch is rejected as a
+unit, automatic judging is skipped and the session stops with
+`evidence_checklist_contract_violation` before another paid round. Existing
+oversized sessions stop before provider dispatch.
 
 Financial and budget controls are required for paid provider calls. Configure
 these environment variables before running real sessions (example):
@@ -330,6 +360,11 @@ these environment variables before running real sessions (example):
 - `regenerate_caller_tokens`
 - `session_sweep`
 - `session_finalize`
+
+`session_events` returns at most 200 events by default, excludes
+`peer.token.delta` telemetry unless `include_token_deltas=true`, and returns
+`next_seq` plus `has_more` for bounded pagination. Set `limit` explicitly up to
+1,000 when a larger forensic page is needed.
 
 `session_poll` uses `detail="summary"` by default. The compact response keeps
 operational progress, verdicts, bounded peer summaries and convergence data,
@@ -441,7 +476,11 @@ one for `operator`. Operator tools require the operator token even when token
 enforcement for peers is otherwise permissive. Keep that token only in a
 dedicated human-console MCP host—placing it in a model host grants that model
 operator authority. `host-tokens.json` contains secrets and assumes the local
-OS account/data directory is trusted.
+OS account/data directory is trusted. The runtime now removes inherited NTFS
+ACLs from this file on Windows and grants only the current user, SYSTEM and
+Administrators; on POSIX it verifies owner-only mode `0600`. This blocks direct
+read access inherited by model-sandbox groups, but it is not isolation from
+another process running as the same unrestricted OS user.
 
 `session_cancel_job` and `contest_verdict` accept only the explicitly persisted
 session petitioner with its peer token, or the dedicated operator. Legacy

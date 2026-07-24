@@ -78,6 +78,43 @@ import type { PeerResult } from "../src/core/types.js";
     "v4.2.4 / truthfulness_preflight: unsupported current-state claims must have their own issue class",
   );
 
+  const futureConditionalInstruction = truthfulnessPreflight({
+    task: "Review this release plan.",
+    initialDraft:
+      "After merge and exact-head green CI, retry v1.2.5 first and verify immutable release evidence before considering v1.2.6.",
+    runtimeFacts,
+    attachmentsPresent: false,
+  });
+  assert.deepEqual(
+    {
+      pass: futureConditionalInstruction.pass,
+      current_state_claim_matched: futureConditionalInstruction.current_state_claim_matched,
+      issue_classes: futureConditionalInstruction.issue_classes,
+    },
+    {
+      pass: true,
+      current_state_claim_matched: false,
+      issue_classes: [],
+    },
+    "v4.5.28 / truthfulness_preflight: a future temporal prerequisite must not be reclassified as current state",
+  );
+
+  const assertiveStateAfterTemporalPreamble = truthfulnessPreflight({
+    task: "Review this status report.",
+    initialDraft: "After the merge completed, CI is green.",
+    runtimeFacts,
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    assertiveStateAfterTemporalPreamble.pass,
+    false,
+    "v4.5.28 / truthfulness_preflight: stripping a temporal preamble must preserve an assertive main clause",
+  );
+  assert.ok(
+    assertiveStateAfterTemporalPreamble.issue_classes.includes("unsupported_current_state_claim"),
+    "v4.5.28 / truthfulness_preflight: a real current-state assertion must still fail closed",
+  );
+
   const historicalChangelog = truthfulnessPreflight({
     task: "Review this changelog text.",
     initialDraft: "v4.2.0 was released on 2026-05-17. v4.2.1 was released on 2026-05-21.",

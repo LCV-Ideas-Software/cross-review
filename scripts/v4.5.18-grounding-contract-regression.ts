@@ -127,6 +127,46 @@ const regressions: Regression[] = [
     },
   },
   {
+    name: "server-issued checklist ids repeated by a peer are not fabricated evidence",
+    run: () => {
+      const checklistIds = ["8197001b4386e9bb", "b6671ea0b3a1b864", "4407b8766d1d4101"];
+      const sources = checklistIds.map((id) =>
+        [
+          `Checklist-Item: ${id}`,
+          `Attachment: ${ATTACHMENT.relative_path}`,
+          `sha256=${ATTACHMENT.sha256}`,
+          'Artifact quote: "src/index.ts:10: return verifiedValue;"',
+        ].join("\n"),
+      );
+      const knownChecklistGrounding = groundReadyPeerEvidence(peerResult("READY", sources), {
+        ...groundingInput(),
+        evidenceChecklistItemIds: checklistIds,
+      });
+
+      assert.equal(
+        knownChecklistGrounding.fabrication.fabricated,
+        false,
+        "identifiers issued by the server in the round prompt must be part of the provenance corpus",
+      );
+      assert.equal(
+        knownChecklistGrounding.result.status,
+        "READY",
+        "a verified READY with three grounded checklist citations must remain definitive",
+      );
+
+      const unknownChecklistGrounding = groundReadyPeerEvidence(
+        peerResult("READY", sources),
+        groundingInput(),
+      );
+      assert.equal(
+        unknownChecklistGrounding.fabrication.fabricated,
+        true,
+        "unrecognized checklist-like hex identifiers must remain subject to fabrication detection",
+      );
+      assert.equal(unknownChecklistGrounding.result.status, "NEEDS_EVIDENCE");
+    },
+  },
+  {
     name: "a factual NOT_READY must correlate its blocker with the cited source",
     run: () => {
       const source = [
@@ -154,6 +194,50 @@ const regressions: Regression[] = [
       assert.ok(
         grounding.failed_predicates.includes("blocking_claims_correlated_to_sources"),
         "the durable diagnostics must identify missing blocker-to-source correlation",
+      );
+    },
+  },
+  {
+    name: "aggregate caller-evidence failures identify the exact unsupported artifact claim",
+    run: () => {
+      const source = [
+        `Attachment: ${ATTACHMENT.relative_path}`,
+        `sha256=${ATTACHMENT.sha256}`,
+        'Artifact quote: "src/index.ts:10: return verifiedValue;"',
+      ].join("\n");
+      const grounding = groundReadyPeerEvidence(peerResult("READY", [source]), {
+        ...groundingInput(),
+        artifactText: "Implementation candidate under review. Tests 9 passed, 0 failed.",
+        callerSubmittedAttachments: [
+          {
+            ...ATTACHMENT,
+            content: `${ATTACHMENT.content}\nTests 9 passed, 0 failed.`,
+          },
+        ],
+        requirePeerSubmittedCorroboration: true,
+      });
+
+      assert.equal(grounding.result.status, "NEEDS_EVIDENCE");
+      assert.deepEqual(grounding.failed_claim_diagnostics, [
+        {
+          corpus: "peer_sources",
+          claim_type: "operational_assertion",
+          index: 0,
+          claim_excerpt: "9 passed",
+        },
+        {
+          corpus: "peer_sources",
+          claim_type: "operational_assertion",
+          index: 1,
+          claim_excerpt: "0 failed",
+        },
+      ]);
+      const transformation = grounding.result.decision_transformations?.at(-1);
+      assert.deepEqual(
+        (transformation?.details as { failed_claim_diagnostics?: unknown })
+          ?.failed_claim_diagnostics,
+        grounding.failed_claim_diagnostics,
+        "claim-level diagnostics must be persisted with the status transformation",
       );
     },
   },

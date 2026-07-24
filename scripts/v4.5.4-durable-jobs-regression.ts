@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -390,6 +391,110 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     },
   },
   {
+    name: "startup-recovery-settles-generation-only-background-job",
+    run: async () => {
+      const dataDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "cross-review-v454-startup-generation-"),
+      );
+      try {
+        const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const session = await store.init("startup generation recovery", "operator", []);
+        await store.markBackgroundJobRunning(session.session_id, {
+          job_id: jobId,
+          owner_pid: 2_147_483_647,
+        });
+        await store.writeBackgroundJobStatus({
+          job_id: jobId,
+          kind: "run_until_unanimous",
+          session_id: session.session_id,
+          status: "running",
+          started_at: new Date(Date.now() - 60_000).toISOString(),
+        });
+        await store.markBackgroundGenerationInFlight(session.session_id, {
+          peer: "grok",
+          provider: "xai",
+          model: "grok-4.5",
+          label: "revision",
+          round: 1,
+          started_at: new Date(Date.now() - 60_000).toISOString(),
+          owner_pid: 2_147_483_647,
+        });
+
+        const sweep = await serverModule.recoverStartupInterruptedSessions(store, new Set());
+        const meta = store.read(session.session_id);
+        const job = store.readBackgroundJobStatus(session.session_id, jobId);
+        assert.equal(sweep.recovered.length, 1);
+        assert.equal(meta.generation_in_flight, undefined);
+        assert.equal(meta.control?.status, "recovered_after_restart");
+        assert.equal(meta.convergence_health?.state, "stale");
+        assert.equal(meta.failed_attempts?.length, 1);
+        assert.equal(job?.status, "failed");
+        assert.equal(api.durableSessionExecutionActive?.(meta as DurableState), false);
+      } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "startup-recovery-rejects-a-recycled-live-pid",
+    run: async () => {
+      const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-pid-reuse-"));
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          child.once("spawn", resolve);
+          child.once("error", reject);
+        });
+        const childPid = child.pid;
+        assert.ok(childPid);
+        const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const session = await store.init("recycled pid recovery", "operator", []);
+        const markerStartedAt = new Date(Date.now() - 60_000).toISOString();
+        await store.markBackgroundJobRunning(session.session_id, {
+          job_id: jobId,
+          owner_pid: childPid,
+        });
+        await store.writeBackgroundJobStatus({
+          job_id: jobId,
+          kind: "run_until_unanimous",
+          session_id: session.session_id,
+          status: "running",
+          started_at: markerStartedAt,
+        });
+        await store.markBackgroundGenerationInFlight(session.session_id, {
+          peer: "grok",
+          provider: "xai",
+          model: "grok-4.5",
+          label: "revision",
+          round: 1,
+          started_at: markerStartedAt,
+          owner_pid: childPid,
+        });
+        const recycledOwnerMeta = store.read(session.session_id);
+        if (!recycledOwnerMeta.control) throw new Error("fixture requires background control");
+        recycledOwnerMeta.control.updated_at = markerStartedAt;
+        fs.writeFileSync(
+          store.metaPath(session.session_id),
+          JSON.stringify(recycledOwnerMeta),
+          "utf8",
+        );
+
+        const sweep = await serverModule.recoverStartupInterruptedSessions(store, new Set());
+        const meta = store.read(session.session_id);
+        assert.equal(sweep.recovered.length, 1);
+        assert.equal(meta.generation_in_flight, undefined);
+        assert.equal(meta.control?.status, "recovered_after_restart");
+        assert.equal(store.readBackgroundJobStatus(session.session_id, jobId)?.status, "failed");
+      } finally {
+        child.kill();
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
     name: "cancel-requested-pre-round-job-is-visible-to-remote-poll",
     run: () => {
       assert.equal(typeof api.synthesizeDurableJob, "function");
@@ -469,11 +574,104 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     },
   },
   {
+    name: "startup-recovery-settles-orphan-job-files-without-touching-active-or-terminal-meta",
+    run: async () => {
+      const dataDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "cross-review-v454-orphan-job-status-"),
+      );
+      try {
+        const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+
+        const terminalSession = await store.init("terminal orphan job", "operator", []);
+        await store.markBackgroundJobRunning(terminalSession.session_id, {
+          job_id: jobId,
+          owner_pid: 2_147_483_647,
+        });
+        await store.writeBackgroundJobStatus({
+          job_id: jobId,
+          kind: "ask_peers",
+          session_id: terminalSession.session_id,
+          status: "running",
+          started_at: new Date(Date.now() - 60_000).toISOString(),
+        });
+        await store.finalize(terminalSession.session_id, "aborted", "terminal_fixture");
+        const terminalMetaBefore = fs.readFileSync(
+          store.metaPath(terminalSession.session_id),
+          "utf8",
+        );
+        const terminalReportPath = path.join(
+          store.sessionDir(terminalSession.session_id),
+          "session-report.md",
+        );
+        const terminalReportBefore = fs.readFileSync(terminalReportPath, "utf8");
+        const terminalJobBefore = store.readBackgroundJobStatus(terminalSession.session_id, jobId);
+        assert.equal(terminalJobBefore?.status, "running", "fixture must reproduce stale job");
+        assert.equal(
+          serverModule.reconcileObservedJobs(
+            store.read(terminalSession.session_id),
+            terminalJobBefore ? [terminalJobBefore] : [],
+          )[0]?.status,
+          "failed",
+        );
+
+        const orphanSession = await store.init("orphan job without control", "operator", []);
+        await store.writeBackgroundJobStatus({
+          job_id: jobId,
+          kind: "ask_peers",
+          session_id: orphanSession.session_id,
+          status: "running",
+          started_at: new Date(Date.now() - 60_000).toISOString(),
+        });
+
+        const activeSession = await store.init("active local job", "operator", []);
+        await store.markBackgroundJobRunning(activeSession.session_id, {
+          job_id: jobId,
+          owner_pid: process.pid,
+        });
+        await store.writeBackgroundJobStatus({
+          job_id: jobId,
+          kind: "ask_peers",
+          session_id: activeSession.session_id,
+          status: "running",
+          started_at: new Date().toISOString(),
+        });
+
+        await serverModule.recoverStartupInterruptedSessions(
+          store,
+          new Set([activeSession.session_id]),
+        );
+
+        const terminalJob = store.readBackgroundJobStatus(terminalSession.session_id, jobId);
+        const orphanJob = store.readBackgroundJobStatus(orphanSession.session_id, jobId);
+        const activeJob = store.readBackgroundJobStatus(activeSession.session_id, jobId);
+        assert.equal(terminalJob?.status, "failed");
+        assert.match(terminalJob?.error ?? "", /background_job_settled_after_terminal_session/);
+        assert.equal(orphanJob?.status, "failed");
+        assert.equal(
+          orphanJob?.error,
+          "background_job_interrupted_or_settled_without_terminal_status",
+        );
+        assert.equal(activeJob?.status, "running");
+        assert.equal(
+          fs.readFileSync(store.metaPath(terminalSession.session_id), "utf8"),
+          terminalMetaBefore,
+        );
+        assert.equal(fs.readFileSync(terminalReportPath, "utf8"), terminalReportBefore);
+      } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
     name: "stale-in-flight-sweep-never-steals-a-live-background-owner",
     run: async () => {
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-live-owner-sweep-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const processIdentityStore = store as unknown as {
+          processStartTimeMs: (pid: number) => number | undefined;
+        };
+        processIdentityStore.processStartTimeMs = () => Date.now() - 60 * 60 * 1000;
         const session = await store.init("live owner stale timestamp", "operator", []);
         await store.markInFlight(session.session_id, {
           round: 1,
@@ -497,6 +695,63 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         assert.equal(result.cleared, 0);
         assert.ok(store.read(session.session_id).in_flight);
         assert.equal(store.read(session.session_id).failed_attempts?.length ?? 0, 0);
+      } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "stale-in-flight-sweep-settles-control-job-and-health",
+    run: async () => {
+      const dataDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "cross-review-v454-coherent-stale-sweep-"),
+      );
+      try {
+        const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const session = await store.init("coherent stale sweep", "operator", []);
+        const startedAt = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+        await store.markInFlight(session.session_id, {
+          round: 1,
+          peers: ["claude"],
+          started_at: startedAt,
+          scope: {
+            petitioner: "operator",
+            caller: "operator",
+            acting_peer: "operator",
+            caller_status: "READY",
+            expected_peers: ["claude"],
+            reviewer_peers: ["claude"],
+          },
+        });
+        await store.markBackgroundJobRunning(session.session_id, {
+          job_id: jobId,
+          owner_pid: 2_147_483_647,
+        });
+        await store.writeBackgroundJobStatus({
+          job_id: jobId,
+          kind: "ask_peers",
+          session_id: session.session_id,
+          status: "running",
+          started_at: startedAt,
+        });
+        seedDeadInFlightOwner(store, session.session_id);
+
+        const result = await store.clearStaleInFlight();
+        const meta = store.read(session.session_id);
+        const job = store.readBackgroundJobStatus(session.session_id, jobId);
+        assert.equal(result.cleared, 1);
+        assert.equal(meta.in_flight, undefined);
+        assert.equal(meta.control?.status, "recovered_after_restart");
+        assert.equal(meta.convergence_health?.state, "stale");
+        assert.equal(job?.status, "failed");
+        assert.ok(job?.completed_at);
+        assert.match(job?.error ?? "", /background_job_recovered_after_restart/);
+        assert.equal(api.durableSessionExecutionActive?.(meta as DurableState), false);
+        assert.ok(
+          store
+            .readEvents(session.session_id)
+            .some((event) => event.type === "session.recovered_after_restart"),
+        );
       } finally {
         fs.rmSync(dataDir, { recursive: true, force: true });
       }
@@ -556,6 +811,10 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
+        const processIdentityStore = store as unknown as {
+          processStartTimeMs: (pid: number) => number | undefined;
+        };
+        processIdentityStore.processStartTimeMs = () => Date.now() - 60 * 60 * 1000;
         const session = await store.init("live primary review stale timestamp", "operator", []);
         await store.markInFlight(session.session_id, {
           round: 1,

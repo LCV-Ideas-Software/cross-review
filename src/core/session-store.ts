@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,6 +17,7 @@ import type {
   ConvergenceScope,
   EvidenceAttachment,
   EvidenceAttachmentOrigin,
+  EvidenceBrokerLimits,
   EvidenceChecklistAliasCollapse,
   EvidenceChecklistItem,
   EvidenceChecklistRuntimeReclassification,
@@ -80,6 +82,7 @@ function effectiveConfigSnapshot(config: AppConfig): Record<string, unknown> {
     retry: config.retry,
     budget: config.budget,
     prompt: config.prompt,
+    evidence_broker: config.evidence_broker,
     max_output_tokens: config.max_output_tokens,
     max_output_tokens_by_peer: config.max_output_tokens_by_peer,
     truthfulness_preflight_enabled: config.truthfulness_preflight_enabled,
@@ -450,6 +453,179 @@ function strictChecklistAliasTarget(
   return undefined;
 }
 
+export type EvidenceChecklistContractLimit =
+  | "max_requests_per_peer_round"
+  | "max_requests_per_round"
+  | "max_items_per_session"
+  | "max_chars_per_session"
+  | "identifier_collision";
+
+export interface EvidenceChecklistContractViolation {
+  limit: EvidenceChecklistContractLimit;
+  observed: number;
+  maximum: number;
+  peer?: PeerId | undefined;
+}
+
+export interface EvidenceChecklistAdmission {
+  accepted: boolean;
+  round: number;
+  incoming_total: number;
+  incoming_unique: number;
+  incoming_duplicates: number;
+  requests_by_peer: Partial<Record<PeerId, number>>;
+  existing_items: number;
+  existing_chars: number;
+  existing_matches: number;
+  strict_aliases: number;
+  new_items: number;
+  projected_items: number;
+  projected_chars: number;
+  limits: EvidenceBrokerLimits;
+  violations: EvidenceChecklistContractViolation[];
+}
+
+export class EvidenceChecklistContractViolationError extends Error {
+  readonly code = "evidence_checklist_contract_violation";
+
+  constructor(readonly admission: EvidenceChecklistAdmission) {
+    const summary = admission.violations
+      .map(
+        (violation) =>
+          `${violation.limit}${violation.peer ? `(${violation.peer})` : ""}=${violation.observed}>${violation.maximum}`,
+      )
+      .join(",");
+    super(`evidence_checklist_contract_violation: ${summary}`);
+    this.name = "EvidenceChecklistContractViolationError";
+  }
+}
+
+function checklistItemId(peer: PeerId, ask: string): string {
+  return crypto.createHash("sha256").update(`${peer}:${ask}`).digest("hex").slice(0, 16);
+}
+
+/**
+ * Preview one atomic Evidence Broker append. Exact duplicates are collapsed
+ * only within the same peer identity; cross-peer asks remain independent so
+ * one reviewer can never erase another reviewer's blocker. Strict references
+ * to an older same-owner Checklist-Item are aliases, not new entries.
+ */
+export function evaluateEvidenceChecklistAdmission(
+  checklist: readonly EvidenceChecklistItem[],
+  round: number,
+  incoming: readonly { peer: PeerId; ask: string }[],
+  limits: EvidenceBrokerLimits,
+): EvidenceChecklistAdmission {
+  const uniqueIncoming: Array<{ peer: PeerId; ask: string }> = [];
+  const incomingIdentities = new Set<string>();
+  for (const { peer, ask } of incoming) {
+    const trimmed = ask.trim();
+    if (!trimmed) continue;
+    const identity = `${peer}\u0000${trimmed}`;
+    if (incomingIdentities.has(identity)) continue;
+    incomingIdentities.add(identity);
+    uniqueIncoming.push({ peer, ask: trimmed });
+  }
+
+  const requestsByPeer: Partial<Record<PeerId, number>> = {};
+  for (const { peer } of uniqueIncoming) {
+    requestsByPeer[peer] = (requestsByPeer[peer] ?? 0) + 1;
+  }
+
+  const existingById = new Map(checklist.map((item) => [item.id, item]));
+  const newById = new Map<string, { peer: PeerId; ask: string }>();
+  let existingMatches = 0;
+  let strictAliases = 0;
+  let identifierCollisions = 0;
+  for (const candidate of uniqueIncoming) {
+    if (strictChecklistAliasTarget(candidate.ask, candidate.peer, checklist, round)) {
+      strictAliases += 1;
+      continue;
+    }
+    const id = checklistItemId(candidate.peer, candidate.ask);
+    const existing = existingById.get(id);
+    if (existing) {
+      if (existing.peer === candidate.peer && existing.ask === candidate.ask) {
+        existingMatches += 1;
+      } else {
+        identifierCollisions += 1;
+      }
+      continue;
+    }
+    const pending = newById.get(id);
+    if (pending) {
+      if (pending.peer !== candidate.peer || pending.ask !== candidate.ask) {
+        identifierCollisions += 1;
+      }
+      continue;
+    }
+    newById.set(id, candidate);
+  }
+
+  const existingChars = checklist.reduce((sum, item) => sum + item.ask.length, 0);
+  const newChars = [...newById.values()].reduce((sum, item) => sum + item.ask.length, 0);
+  const projectedItems = checklist.length + newById.size;
+  const projectedChars = existingChars + newChars;
+  const violations: EvidenceChecklistContractViolation[] = [];
+  for (const [peer, observed] of Object.entries(requestsByPeer) as Array<[PeerId, number]>) {
+    if (observed > limits.max_requests_per_peer_round) {
+      violations.push({
+        limit: "max_requests_per_peer_round",
+        peer,
+        observed,
+        maximum: limits.max_requests_per_peer_round,
+      });
+    }
+  }
+  if (uniqueIncoming.length > limits.max_requests_per_round) {
+    violations.push({
+      limit: "max_requests_per_round",
+      observed: uniqueIncoming.length,
+      maximum: limits.max_requests_per_round,
+    });
+  }
+  if (projectedItems > limits.max_items_per_session) {
+    violations.push({
+      limit: "max_items_per_session",
+      observed: projectedItems,
+      maximum: limits.max_items_per_session,
+    });
+  }
+  if (projectedChars > limits.max_chars_per_session) {
+    violations.push({
+      limit: "max_chars_per_session",
+      observed: projectedChars,
+      maximum: limits.max_chars_per_session,
+    });
+  }
+  if (identifierCollisions > 0) {
+    violations.push({
+      limit: "identifier_collision",
+      observed: identifierCollisions,
+      maximum: 0,
+    });
+  }
+
+  return {
+    accepted: violations.length === 0,
+    round,
+    incoming_total: incoming.filter((item) => item.ask.trim().length > 0).length,
+    incoming_unique: uniqueIncoming.length,
+    incoming_duplicates:
+      incoming.filter((item) => item.ask.trim().length > 0).length - uniqueIncoming.length,
+    requests_by_peer: requestsByPeer,
+    existing_items: checklist.length,
+    existing_chars: existingChars,
+    existing_matches: existingMatches,
+    strict_aliases: strictAliases,
+    new_items: newById.size,
+    projected_items: projectedItems,
+    projected_chars: projectedChars,
+    limits: { ...limits },
+    violations,
+  };
+}
+
 function sessionMetaShapeError(value: unknown): string | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return "root must be an object";
@@ -768,6 +944,10 @@ export class SessionStore {
   // interleaving across processes, but it does not by itself guarantee that
   // independently scheduled promises acquire the lock in call order.
   private readonly eventWriteChains = new Map<string, Promise<void>>();
+  private readonly processStartTimeCache = new Map<
+    number,
+    { checked_at_ms: number; started_at_ms: number | undefined }
+  >();
   constructor(private readonly config: AppConfig) {
     fs.mkdirSync(this.sessionsDir(), { recursive: true });
   }
@@ -855,6 +1035,40 @@ export class SessionStore {
     return statuses.sort((a, b) =>
       (a.completed_at ?? a.started_at).localeCompare(b.completed_at ?? b.started_at),
     );
+  }
+
+  private async settleOrphanedBackgroundJobStatuses(
+    session: SessionMeta,
+    activeSessionIds: ReadonlySet<string>,
+  ): Promise<number> {
+    if (activeSessionIds.has(session.session_id)) return 0;
+    const controlActive =
+      session.control?.status === "running" || session.control?.status === "cancel_requested";
+    const durableExecutionActive =
+      !session.outcome &&
+      (Boolean(session.in_flight) ||
+        Boolean(session.generation_in_flight) ||
+        (session.pending_provider_call_reservations?.length ?? 0) > 0 ||
+        controlActive);
+    if (durableExecutionActive) return 0;
+
+    const runningJobs = this.readBackgroundJobStatuses(session.session_id).filter(
+      (job) => job.status === "running",
+    );
+    if (runningJobs.length === 0) return 0;
+    const settledAt = session.outcome ? session.updated_at : now();
+    const error = session.outcome
+      ? `background_job_settled_after_terminal_session: outcome=${session.outcome}, reason=${session.outcome_reason ?? "unspecified"}`
+      : "background_job_interrupted_or_settled_without_terminal_status";
+    for (const job of runningJobs) {
+      await this.writeBackgroundJobStatus({
+        ...job,
+        status: "failed",
+        completed_at: settledAt,
+        error,
+      });
+    }
+    return runningJobs.length;
   }
 
   assertSessionId(sessionId: string): void {
@@ -1019,29 +1233,99 @@ export class SessionStore {
     meta.totals = this.totalsFor(meta);
   }
 
-  private ownerPidIsAlive(ownerPid: number | undefined): boolean {
-    return (
-      typeof ownerPid === "number" &&
-      Number.isInteger(ownerPid) &&
-      ownerPid > 0 &&
-      this.processAlive(ownerPid)
-    );
+  private processStartTimeMs(pid: number): number | undefined {
+    if (pid === process.pid) {
+      return Date.now() - process.uptime() * 1_000;
+    }
+    const cached = this.processStartTimeCache.get(pid);
+    if (cached && Date.now() - cached.checked_at_ms <= 1_000) {
+      return cached.started_at_ms;
+    }
+    let startedAtMs: number | undefined;
+    try {
+      const output =
+        process.platform === "win32"
+          ? execFileSync(
+              "powershell.exe",
+              [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                '& { param([int]$TargetPid) $p = Get-Process -Id $TargetPid -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToString("o") }',
+                "-TargetPid",
+                String(pid),
+              ],
+              {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "ignore"],
+                timeout: 10_000,
+                windowsHide: true,
+              },
+            )
+          : execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+              timeout: 10_000,
+              windowsHide: true,
+            });
+      const parsed = Date.parse(output.trim());
+      startedAtMs = Number.isFinite(parsed) ? parsed : undefined;
+    } catch {
+      // Start-time introspection is a hardening signal. Platforms that do not
+      // expose it retain the prior conservative PID-liveness behavior.
+      startedAtMs = undefined;
+    }
+    this.processStartTimeCache.set(pid, {
+      checked_at_ms: Date.now(),
+      started_at_ms: startedAtMs,
+    });
+    return startedAtMs;
+  }
+
+  private ownerPidIsAlive(ownerPid: number | undefined, markerStartedAt?: string): boolean {
+    if (
+      typeof ownerPid !== "number" ||
+      !Number.isInteger(ownerPid) ||
+      ownerPid <= 0 ||
+      !this.processAlive(ownerPid)
+    ) {
+      return false;
+    }
+    const markerStartedMs = markerStartedAt ? Date.parse(markerStartedAt) : Number.NaN;
+    if (!Number.isFinite(markerStartedMs)) return true;
+    const processStartedMs = this.processStartTimeMs(ownerPid);
+    // A live process that started after the durable dispatch marker cannot be
+    // its owner: the OS recycled the PID. Treat that marker as orphaned.
+    return processStartedMs === undefined || processStartedMs <= markerStartedMs + 1_000;
   }
 
   private pendingProviderCallOwnerIsAlive(reservation: PendingProviderCallReservation): boolean {
-    return this.ownerPidIsAlive(reservation.owner_pid);
+    return this.ownerPidIsAlive(reservation.owner_pid, reservation.started_at);
   }
 
   private inFlightOwnerIsAlive(session: SessionMeta): boolean {
-    const ownerPids = [
-      session.in_flight?.owner_pid,
-      session.generation_in_flight?.owner_pid,
-      session.control?.owner_pid,
-      ...(session.in_flight?.provider_call_reservations ?? []).map(
-        (reservation) => reservation.owner_pid,
-      ),
+    const owners = [
+      {
+        pid: session.in_flight?.owner_pid,
+        marker_started_at: session.in_flight?.started_at,
+      },
+      {
+        pid: session.generation_in_flight?.owner_pid,
+        marker_started_at: session.generation_in_flight?.started_at,
+      },
+      {
+        pid: session.control?.owner_pid,
+        marker_started_at: session.control?.requested_at ?? session.control?.updated_at,
+      },
+      ...(session.in_flight?.provider_call_reservations ?? []).map((reservation) => ({
+        pid: reservation.owner_pid,
+        marker_started_at: reservation.started_at,
+      })),
     ];
-    return ownerPids.some((ownerPid) => this.ownerPidIsAlive(ownerPid));
+    return owners.some(({ pid, marker_started_at }) =>
+      this.ownerPidIsAlive(pid, marker_started_at),
+    );
   }
 
   private accountInterruptedPendingProviderCalls(
@@ -2518,6 +2802,15 @@ export class SessionStore {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const checklist = meta.evidence_checklist ?? [];
+      const admission = evaluateEvidenceChecklistAdmission(
+        checklist,
+        round,
+        incoming,
+        this.config.evidence_broker,
+      );
+      if (!admission.accepted) {
+        throw new EvidenceChecklistContractViolationError(admission);
+      }
       const byId = new Map(checklist.map((item) => [item.id, item]));
       const ts = now();
       for (const { peer, ask } of incoming) {
@@ -2536,11 +2829,7 @@ export class SessionStore {
           }
           continue;
         }
-        const id = crypto
-          .createHash("sha256")
-          .update(`${peer}:${trimmed}`)
-          .digest("hex")
-          .slice(0, 16);
+        const id = checklistItemId(peer, trimmed);
         const existingItem = byId.get(id);
         if (existingItem) {
           // Same ask resurfaced. Bump last_round/last_seen_at and
@@ -2576,6 +2865,20 @@ export class SessionStore {
       await writeJson(this.metaPath(sessionId), meta);
       return updated;
     });
+  }
+
+  inspectEvidenceChecklistAdmission(
+    sessionId: string,
+    round: number,
+    incoming: readonly { peer: PeerId; ask: string }[] = [],
+  ): EvidenceChecklistAdmission {
+    const meta = this.read(sessionId);
+    return evaluateEvidenceChecklistAdmission(
+      meta.evidence_checklist ?? [],
+      round,
+      incoming,
+      this.config.evidence_broker,
+    );
   }
 
   /**
@@ -2998,6 +3301,12 @@ export class SessionStore {
   async recoverInterruptedSessions(activeSessionIds = new Set<string>()): Promise<SessionMeta[]> {
     const recovered: SessionMeta[] = [];
     for (const session of this.list()) {
+      try {
+        await this.settleOrphanedBackgroundJobStatuses(session, activeSessionIds);
+      } catch {
+        // Operational job history is advisory. A failed status repair must not
+        // block recovery of authoritative session metadata.
+      }
       const pendingProviderCalls = (session.pending_provider_call_reservations?.length ?? 0) > 0;
       const livePendingProviderCall = (session.pending_provider_call_reservations ?? []).some(
         (reservation) => this.pendingProviderCallOwnerIsAlive(reservation),
@@ -3085,7 +3394,7 @@ export class SessionStore {
               : previousControl?.status === "cancel_requested"
                 ? `Cancellation was requested${previousControl.reason ? ` (${previousControl.reason})` : ""}, but the background owner exited before a durable round began.`
                 : "The background owner exited before a durable round began. Start a new round to continue from saved session context."
-            : `Round ${round} was interrupted before completion and can be resumed manually.`;
+            : `Round ${round} was interrupted before completion. Start a new round to continue from saved session context.`;
         const transitionedAt = now();
         if (previousControl?.job_id) {
           const interruptedJob = this.readBackgroundJobStatus(
@@ -4867,6 +5176,7 @@ export class SessionStore {
         try {
           let recoveredConvergedRound: ReviewRound | undefined;
           let recoveredConvergedSession: SessionMeta | undefined;
+          let recoveredInterruptedSession: SessionMeta | undefined;
           await this.withSessionLock(session.session_id, async () => {
             const current = this.read(session.session_id);
             if (!current.in_flight) return;
@@ -4883,6 +5193,7 @@ export class SessionStore {
               cleared += 1;
               return;
             }
+            const interruptedRound = current.in_flight.round;
             const appendedReservation = inFlightRoundAlreadyAppended(current);
             if (!appendedReservation) {
               this.accountInterruptedInFlight(current, "stale_in_flight_sweep");
@@ -4894,7 +5205,40 @@ export class SessionStore {
             // in_flight is the broader accounting envelope; never leave a
             // narrower generation marker behind for a second recovery charge.
             delete current.generation_in_flight;
-            current.updated_at = now();
+            const previousControl = current.control;
+            const reason = appendedReservation
+              ? `The background owner exited after durable round ${interruptedRound} was appended. Start a new round to continue from saved session context.`
+              : `Round ${interruptedRound} was interrupted before completion. Start a new round to continue from saved session context.`;
+            const transitionedAt = now();
+            if (previousControl?.job_id) {
+              const interruptedJob = this.readBackgroundJobStatus(
+                current.session_id,
+                previousControl.job_id,
+              );
+              if (interruptedJob?.status === "running") {
+                await this.writeBackgroundJobStatus({
+                  ...interruptedJob,
+                  status: previousControl.status === "cancel_requested" ? "cancelled" : "failed",
+                  completed_at: transitionedAt,
+                  error: `background_job_recovered_after_restart: ${reason}`,
+                });
+              }
+            }
+            current.control = {
+              status: "recovered_after_restart",
+              reason,
+              job_id: previousControl?.job_id,
+              owner_pid: previousControl?.owner_pid,
+              requested_at: previousControl?.requested_at,
+              updated_at: transitionedAt,
+            };
+            current.convergence_health = transitionHealth(
+              current,
+              "stale",
+              `Recovered interrupted round ${interruptedRound} during the startup sweep. Start a new round to continue from saved session context.`,
+              transitionedAt,
+            );
+            current.updated_at = transitionedAt;
             await writeJson(this.metaPath(session.session_id), current);
             if (brokerRollback) {
               await this.appendEventRecord({
@@ -4905,6 +5249,7 @@ export class SessionStore {
                 data: { ...brokerRollback, cause: "stale_in_flight_sweep" },
               });
             }
+            recoveredInterruptedSession = current;
             cleared += 1;
           });
           if (recoveredConvergedSession && recoveredConvergedRound) {
@@ -4928,6 +5273,33 @@ export class SessionStore {
             }
             try {
               const reported = this.read(recoveredConvergedSession.session_id);
+              this.saveReport(
+                reported.session_id,
+                sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+              );
+            } catch {
+              /* report regeneration is best-effort; meta.json remains authoritative */
+            }
+          }
+          if (recoveredInterruptedSession) {
+            try {
+              await this.appendEvent({
+                type: "session.recovered_after_restart",
+                session_id: recoveredInterruptedSession.session_id,
+                ts: recoveredInterruptedSession.updated_at,
+                message:
+                  recoveredInterruptedSession.control?.reason ??
+                  "Startup sweep recovered an interrupted review round.",
+                data: {
+                  recovered_after_restart: true,
+                  source: "stale_in_flight_sweep",
+                },
+              });
+            } catch {
+              /* event persistence is best-effort; session_doctor will flag gaps */
+            }
+            try {
+              const reported = this.read(recoveredInterruptedSession.session_id);
               this.saveReport(
                 reported.session_id,
                 sessionReportMarkdown(reported, this.readEvents(reported.session_id)),

@@ -48,9 +48,10 @@ const PRIORITY: Record<PeerId, string[]> = {
 };
 
 const SUPPORTED_MODEL_OVERRIDES: Partial<Record<PeerId, string[]>> = {
-  // Preserve Opus 4.8 as an explicit compatibility option for operators
-  // whose Anthropic organization cannot accept Fable 5's 30-day retention.
-  claude: ["claude-opus-4-8"],
+  // Preserve Opus as an explicit compatibility option for operators whose
+  // Anthropic organization cannot accept Fable 5's 30-day retention. Opus 5
+  // is a fixed, dateless model id rather than an evergreen alias.
+  claude: ["claude-opus-5", "claude-opus-4-8"],
 };
 
 function supportedModels(peer: PeerId): string[] {

@@ -62,6 +62,16 @@ already generated. Anthropic documents 30-day retention and no zero data
 retention option for Fable, so operators must accept that posture before using
 the peer.
 
+Claude Opus 5 (`claude-opus-5`) is a supported explicit operator override. It
+does not enter the canonical priority list and is never selected as an
+automatic fallback. The Messages request uses
+`thinking={type:"adaptive",display:"omitted"}` plus
+`output_config.effort`; it never sends the removed manual
+`thinking={type:"enabled",budget_tokens:...}` form or non-default sampling
+parameters. Opus 5 has a 1M-token context window and 128K synchronous output
+ceiling. Anthropic recommends starting with 64K `max_tokens` at `xhigh` or
+`max`, which matches the maintained Claude budget.
+
 Google's deprecation schedule lists `gemini-2.5-pro` for shutdown on
 2026-10-16 and recommends `gemini-3.1-pro-preview` as the replacement.
 Workspace policy remains: only `gemini-*-pro` variants >= 2.5 are permitted
@@ -102,8 +112,9 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   accepts through `high` (`minimal` → `low`, higher shared values → `high`);
   original GPT-5 accepts `minimal` through `high` (`none` → `minimal`, higher
   shared values → `high`).
-- Anthropic/Claude: Fable 5 omits the explicit `thinking` object (adaptive
-  thinking is automatic) and uses `output_config.effort` for depth.
+- Anthropic/Claude: Fable 5 omits the explicit `thinking` object because
+  adaptive thinking is automatic. Opus 5 uses explicit adaptive thinking with
+  display omitted. Both use `output_config.effort` for depth.
 - Google/Gemini: the configured shared effort maps to native `LOW`, `MEDIUM`,
   or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default;
@@ -133,7 +144,8 @@ enum.
 The legacy `max_output_tokens` value remains the fallback. Use
 `max_output_tokens_by_peer` when official reasoning guidance or model ceilings
 differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
-64,000 for Claude Fable 5 at `max`, and 20,000 for the other four peers. These
+64,000 for Claude Fable 5 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
+four peers. These
 values follow the official OpenAI allocation guidance and Anthropic task-budget
 minimum without assuming an undocumented Grok 4.5 ceiling. `server_info`
 returns the effective six-peer map used by both provider payloads and budget
@@ -144,6 +156,8 @@ preflight.
 - OpenAI: [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
   and [latest-model guide](https://developers.openai.com/api/docs/guides/latest-model).
 - Anthropic: [Fable 5 introduction](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5),
+  [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5),
+  [Opus 5 migration guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide),
   [effort](https://platform.claude.com/docs/en/build-with-claude/effort),
   [refusals and fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback),
   and [API/data retention](https://platform.claude.com/docs/en/manage-claude/api-and-data-retention).

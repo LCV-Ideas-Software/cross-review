@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-24: `4.5.27`. O registro pode ficar
+> Estado do source/release target em 2026-07-24: `4.5.28`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -332,6 +332,11 @@ aceita apenas `low`/`medium`/`high` e recebe `high` quando o alias é usado.
 Overrides explícitos para famílias OpenAI anteriores são normalizados ao enum
 da família: teto `xhigh` em GPT-5.5/5.4/5.2 e `high` em GPT-5.1/GPT-5.
 
+O `claude-opus-5` também é suportado como override explícito, sem substituir o
+Fable 5 canônico e sem criar fallback automático. Seu request usa pensamento
+adaptativo com exibição omitida, `output_config.effort` e o rate card próprio
+de US$ 5/MTok de entrada e US$ 25/MTok de saída.
+
 Como o `cross-review` é orientado à correção, os adaptadores pedem
 explicitamente o maior nível de raciocínio que cada API oficial oferece. O
 conteúdo bruto de "pensamento" (chain-of-thought) **não é solicitado nem
@@ -623,6 +628,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.28`      | Prepara Claude Opus 5 como override explícito; limita amplificação do Evidence Broker sem enfraquecer blockers; corrige provenance, truthfulness e lifecycle interrompido; protege ACLs de tokens; e pagina eventos de forma compacta. |
 | `v04.05.27`      | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de Socket, Dependabot e recuperação de release.                                                                                       |
 | `v04.05.26`      | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                     |
 | `v04.05.25`      | Corrige `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7 no lock; aprova estritamente apenas `protobufjs@7.6.5` para script de instalação. Scorecard e Auto-tag permanecem fail-closed sem suprimir alertas. |

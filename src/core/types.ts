@@ -331,6 +331,7 @@ export interface PeerFailure {
     | "budget_preflight"
     | "evidence_preflight"
     | "truthfulness_preflight"
+    | "evidence_broker_contract"
     | "cancelled"
     | "fallback_exhausted"
     | "format_recovery_exhausted"
@@ -633,6 +634,19 @@ export interface EvidenceChecklistItem {
   // artifacts and the evidence_status_history note. Undefined for
   // resurfacing-promoted items.
   judge_rationale?: string | undefined;
+}
+
+/**
+ * Evidence Broker admission limits. They bound model-authored checklist
+ * growth without weakening the checklist itself: an over-limit round is
+ * retained for audit and the session stops fail-closed instead of silently
+ * dropping blocker text.
+ */
+export interface EvidenceBrokerLimits {
+  max_requests_per_peer_round: number;
+  max_requests_per_round: number;
+  max_items_per_session: number;
+  max_chars_per_session: number;
 }
 
 // v2.8.0: durable audit trail for every status transition on an
@@ -1169,6 +1183,7 @@ export interface AppConfig {
     // bytes balances literal evidence needs against provider context limits.
     max_attached_evidence_chars: number;
   };
+  evidence_broker: EvidenceBrokerLimits;
   /** Legacy global output ceiling used when a peer has no explicit override. */
   max_output_tokens: number;
   /**

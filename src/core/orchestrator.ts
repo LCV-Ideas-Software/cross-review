@@ -19,7 +19,11 @@ import {
 import { maxOutputTokensForPeer } from "./output-budget.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
 import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
-import { SessionStore } from "./session-store.js";
+import {
+  type EvidenceChecklistAdmission,
+  EvidenceChecklistContractViolationError,
+  SessionStore,
+} from "./session-store.js";
 import { decisionQualityFromStatus, parsePeerStatus } from "./status.js";
 import type {
   AppConfig,
@@ -759,6 +763,11 @@ export interface ReadyPeerEvidenceGroundingInput {
     sha256?: string | undefined;
     content: string;
   }>;
+  /**
+   * Server-issued checklist identifiers visible to peers in the round prompt.
+   * They are trusted reference metadata, not model-invented hex tokens.
+   */
+  evidenceChecklistItemIds?: ReadonlyArray<string>;
   requirePeerSubmittedCorroboration?: boolean | undefined;
   runtimeFacts: TruthfulnessRuntimeFacts;
 }
@@ -773,6 +782,16 @@ export interface ReadyPeerEvidenceGroundingResult {
     supported: boolean;
     attachment_custody_claimed: boolean;
     correlated_attachment?: string | undefined;
+  }>;
+  failed_claim_diagnostics: Array<{
+    corpus: "caller_evidence" | "peer_sources";
+    claim_type:
+      | "operational_assertion"
+      | "fabrication_prone_claim"
+      | "historical_claim"
+      | "forced_current_state_claim";
+    index: number;
+    claim_excerpt: string;
   }>;
   fabrication: FabricationDetectionResult;
   peer_submitted_evidence_required: boolean;
@@ -1183,11 +1202,14 @@ export function groundReadyPeerEvidence(
         .join("\n"),
     )
     .join("\n");
+  const evidenceChecklistProvenanceText = (input.evidenceChecklistItemIds ?? [])
+    .map((id) => `Checklist-Item: ${id}`)
+    .join("\n");
   const attachmentRefs = new Set(
     input.attachmentRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
   );
   const fabrication = detectFabricatedEvidence(sources.join("\n"), {
-    provenanceCorpus: `${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}\n${evidenceAttachmentProvenanceText}`,
+    provenanceCorpus: `${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}\n${evidenceAttachmentProvenanceText}\n${evidenceChecklistProvenanceText}`,
     priorDraftCorpus: input.artifactText,
     narrativeCorpus: "",
   });
@@ -1228,6 +1250,63 @@ export function groundReadyPeerEvidence(
         isAssertiveCurrentStateClaim(line),
       )
     : [];
+  const failedClaimsForCorpus = (
+    corpusName: "caller_evidence" | "peer_sources",
+    corpusText: string,
+  ) => [
+    ...operationalAssertions.flatMap((claim, index) =>
+      evidenceCorroboratesOperationalAssertion(claim, corpusText)
+        ? []
+        : [
+            {
+              corpus: corpusName,
+              claim_type: "operational_assertion" as const,
+              index,
+              claim_excerpt: claim.display.slice(0, 240),
+            },
+          ],
+    ),
+    ...fabricationProneClaims.flatMap((claim, index) =>
+      operationalClaimCorroborated(claim, corpusText)
+        ? []
+        : [
+            {
+              corpus: corpusName,
+              claim_type: "fabrication_prone_claim" as const,
+              index,
+              claim_excerpt: claim.slice(0, 240),
+            },
+          ],
+    ),
+    ...historicalClaims.flatMap((claim, index) =>
+      historicalClaimHasMatchingSnapshot(claim, corpusText)
+        ? []
+        : [
+            {
+              corpus: corpusName,
+              claim_type: "historical_claim" as const,
+              index,
+              claim_excerpt: claim.slice(0, 240),
+            },
+          ],
+    ),
+    ...forcedCurrentStateClaims.flatMap((claim, index) =>
+      truthfulnessClaimHasMatchingEvidence(claim, corpusText)
+        ? []
+        : [
+            {
+              corpus: corpusName,
+              claim_type: "forced_current_state_claim" as const,
+              index,
+              claim_excerpt: claim.slice(0, 240),
+            },
+          ],
+    ),
+  ];
+  const failedCallerEvidenceClaimDiagnostics = failedClaimsForCorpus(
+    "caller_evidence",
+    callerSubmittedEvidenceText,
+  );
   const hasHighRiskOperationalClaims =
     operationalAssertions.length > 0 ||
     fabricationProneClaims.length > 0 ||
@@ -1248,24 +1327,13 @@ export function groundReadyPeerEvidence(
       truthfulnessClaimHasMatchingEvidence(claim, input.attachedEvidenceText),
     );
   const peerEvidenceGrounded =
-    hasHighRiskOperationalClaims &&
-    operationalAssertions.every((assertion) =>
-      evidenceCorroboratesOperationalAssertion(assertion, callerSubmittedEvidenceText),
-    ) &&
-    fabricationProneClaims.every((claim) =>
-      operationalClaimCorroborated(claim, callerSubmittedEvidenceText),
-    ) &&
-    historicalClaims.every((claim) =>
-      historicalClaimHasMatchingSnapshot(claim, callerSubmittedEvidenceText),
-    ) &&
-    forcedCurrentStateClaims.every((claim) =>
-      truthfulnessClaimHasMatchingEvidence(claim, callerSubmittedEvidenceText),
-    );
+    hasHighRiskOperationalClaims && failedCallerEvidenceClaimDiagnostics.length === 0;
   const peerSubmittedEvidenceRequired =
     peerResult.status === "READY" &&
     (input.requirePeerSubmittedCorroboration === true ||
       (!operatorGrounded && hasHighRiskOperationalClaims && callerSubmittedAttachments.length > 0));
   const sourceText = sources.join("\n");
+  const failedPeerSourceClaimDiagnostics = failedClaimsForCorpus("peer_sources", sourceText);
   const blockingClaimsCorrelated = blockingClaimsCorrelatedToSources(peerResult, sources);
   const peerCustodySourcesCorrelated =
     sources.length > 0 &&
@@ -1281,14 +1349,10 @@ export function groundReadyPeerEvidence(
       peerEvidenceGrounded &&
       evidenceSourceNamesPeerCustody(sourceText, callerSubmittedAttachments) &&
       peerCustodySourcesCorrelated &&
-      operationalAssertions.every((assertion) =>
-        evidenceCorroboratesOperationalAssertion(assertion, sourceText),
-      ) &&
-      fabricationProneClaims.every((claim) => operationalClaimCorroborated(claim, sourceText)) &&
-      historicalClaims.every((claim) => historicalClaimHasMatchingSnapshot(claim, sourceText)) &&
-      forcedCurrentStateClaims.every((claim) =>
-        truthfulnessClaimHasMatchingEvidence(claim, sourceText),
-      ));
+      failedPeerSourceClaimDiagnostics.length === 0);
+  const failedClaimDiagnostics = peerSubmittedEvidenceRequired
+    ? [...failedCallerEvidenceClaimDiagnostics, ...failedPeerSourceClaimDiagnostics]
+    : [];
   const definitiveVerdict = peerResult.status === "READY" || peerResult.status === "NOT_READY";
   const suppliedSourcesGrounded =
     sources.length > 0 &&
@@ -1330,6 +1394,7 @@ export function groundReadyPeerEvidence(
       unsupported_sources: [],
       failed_predicates: [],
       source_diagnostics: sourceDiagnostics,
+      failed_claim_diagnostics: [],
       fabrication,
       peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
       peer_submitted_evidence_corroborated: peerSubmittedEvidenceCorroborated,
@@ -1381,7 +1446,9 @@ export function groundReadyPeerEvidence(
       unsupported_sources: unsupportedSources,
       failed_predicates: failedPredicates,
       source_diagnostics: sourceDiagnostics,
+      failed_claim_diagnostics: failedClaimDiagnostics.slice(0, 20),
       fabricated: fabrication.fabricated,
+      fabrication_details: fabrication,
       blocking_claims_correlated_to_sources: blockingClaimsCorrelated,
       peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
       peer_submitted_evidence_corroborated: false,
@@ -1408,6 +1475,7 @@ export function groundReadyPeerEvidence(
     unsupported_sources: unsupportedSources,
     failed_predicates: failedPredicates,
     source_diagnostics: sourceDiagnostics,
+    failed_claim_diagnostics: failedClaimDiagnostics.slice(0, 20),
     fabrication,
     peer_submitted_evidence_required: peerSubmittedEvidenceRequired,
     peer_submitted_evidence_corroborated: false,
@@ -2289,6 +2357,8 @@ const NEGATIVE_OPERATIONAL_STATE_PATTERN =
   /\b(?:unhealthy|red|offline|down|degraded|failed|failing|errored|indispon[ií]vel|degradad[oa]|falhou|falhando|vermelho|fora\s+do\s+ar)\b/i;
 const OPERATIONAL_STATE_INSTRUCTION_PATTERN =
   /^\s*(?:please\s+)?(?:check|inspect|verify|review|ensure|determine|assess|investigate|validate|confirm\s+whether|verifique|inspecione|revise|garanta|determine|avalie|investigue|valide|confirme\s+se)\b/i;
+const LEADING_TEMPORAL_CONDITION_PATTERN =
+  /^\s*(?:after|once|upon|following|ap[oó]s|depois\s+de)\b[^,\n]{0,240},\s*/i;
 
 const ATTRIBUTED_DOCUMENTATION_CLAIM_PATTERN =
   /\b(?:documentation|docs?|provider documentation|google|openai|anthropic|xai|deepseek|perplexity)\s+(?:documentation\s+)?(?:says?|states?|describes?|calls?|documents?|informa|afirma|declara|descreve)\s*:/i;
@@ -2327,16 +2397,23 @@ function historicalRuntimeClaimDetected(line: string): boolean {
 }
 
 function operationalStateClaimDetected(claim: string): boolean {
-  if (isNonAssertiveTruthfulnessLine(claim)) return false;
+  // A leading temporal condition describes a prerequisite, not the current
+  // state asserted by the main clause. Keep evaluating the main clause so
+  // "After merge, CI is green" still fails closed, while
+  // "After ... green CI, retry ..." remains a non-assertive instruction.
+  const assertedClause = claim.replace(LEADING_TEMPORAL_CONDITION_PATTERN, "");
+  if (isNonAssertiveTruthfulnessLine(assertedClause)) return false;
   const subjectThenState =
     /\b(?:production|prod|deployment|deploy|service(?!\s+bindings?\b)|server|ci|pipeline|workflow|produ[cç][aã]o|servi[cç]o|servidor)\b[\s\S]{0,80}\b(?:is|are|was|were|est[aá]|est[aã]o|ficou|permanece|status\s*[:=])\b[\s\S]{0,40}\b(?:healthy|green|online|up|running|loaded|live|stable|available|operational|ready|success|successful|succeeded|completed|unhealthy|red|offline|down|degraded|failed|failing|errored|saud[aá]vel|verde|ativo|rodando|carregad[oa]|est[aá]vel|dispon[ií]vel|operacional|pronto|sucesso|conclu[ií]d[oa]|indispon[ií]vel|degradad[oa]|falhou|falhando|vermelho|fora\s+do\s+ar)\b/i.test(
-      claim,
+      assertedClause,
     );
   const stateThenSubject =
     /\b(?:healthy|green|online|up|running|loaded|live|stable|available|operational|unhealthy|red|offline|down|degraded|failed|failing|errored|saud[aá]vel|verde|ativo|rodando|carregad[oa]|est[aá]vel|dispon[ií]vel|operacional|indispon[ií]vel|degradad[oa]|falhou|falhando|vermelho|fora\s+do\s+ar)\b[\s\S]{0,30}\b(?:production|prod|deployment|deploy|service(?!\s+bindings?\b)|server|ci|pipeline|workflow|produ[cç][aã]o|servi[cç]o|servidor)\b/i.test(
-      claim,
+      assertedClause,
     );
-  return OPERATIONAL_STATE_SUBJECT_PATTERN.test(claim) && (subjectThenState || stateThenSubject);
+  return (
+    OPERATIONAL_STATE_SUBJECT_PATTERN.test(assertedClause) && (subjectThenState || stateThenSubject)
+  );
 }
 
 function operationalStateClaimCorroborated(claim: string, suppliedEvidence: string): boolean {
@@ -3035,6 +3112,43 @@ function unparseableAfterRecoveryFailure(result: PeerResult): PeerFailure {
     retryable: false,
     attempts: result.attempts,
     latency_ms: result.latency_ms,
+  };
+}
+
+function evidenceBrokerContractFailure(adapter: PeerAdapter, message: string): PeerFailure {
+  return {
+    peer: adapter.id,
+    provider: adapter.provider,
+    model: adapter.model,
+    failure_class: "evidence_broker_contract",
+    message,
+    retryable: false,
+    attempts: 0,
+    latency_ms: 0,
+  };
+}
+
+function evidenceBrokerContractMessage(admission: EvidenceChecklistAdmission): string {
+  const violations = admission.violations
+    .map(
+      (violation) =>
+        `${violation.limit}${violation.peer ? `/${violation.peer}` : ""}=${violation.observed}>${violation.maximum}`,
+    )
+    .join(", ");
+  return (
+    `Evidence Broker contract violation in round ${admission.round}: ${violations}. ` +
+    "No checklist item was silently truncated or auto-satisfied; the complete peer responses remain in the durable round."
+  );
+}
+
+function evidenceBrokerCircuitConvergence(base: ConvergenceResult): ConvergenceResult {
+  return {
+    ...base,
+    converged: false,
+    latest_round_converged: false,
+    session_quorum_converged: false,
+    recovery_converged: false,
+    reason: "evidence_checklist_contract_violation",
   };
 }
 
@@ -5573,6 +5687,68 @@ export class CrossReviewOrchestrator {
         session = this.store.read(session.session_id);
       }
     }
+    // A legacy session may already exceed the broker limits before this
+    // runtime sees it. Stop before prompt construction/provider dispatch:
+    // reinjecting an oversized historical checklist just once more repeats
+    // the original amplification bug. The zero-attempt failures make the
+    // pre-dispatch stop visible per selected peer without claiming provider
+    // work occurred.
+    const existingChecklistAdmission = this.store.inspectEvidenceChecklistAdmission(
+      session.session_id,
+      roundNumber,
+    );
+    if (!existingChecklistAdmission.accepted) {
+      const message = evidenceBrokerContractMessage(existingChecklistAdmission);
+      const promptFile = this.store.savePrompt(
+        session.session_id,
+        roundNumber,
+        `# Cross Review - Evidence Broker Circuit Breaker\n\n${message}`,
+      );
+      const rejected = selectAdapters(adapters, selectedPeers).map((adapter) =>
+        evidenceBrokerContractFailure(adapter, message),
+      );
+      for (const failure of rejected) {
+        await this.store.savePeerFailure(session.session_id, roundNumber, failure);
+      }
+      const round = await this.store.appendRound(session.session_id, {
+        caller_status: callerStatus,
+        prompt_file: promptFile,
+        peers: [],
+        rejected,
+        convergence: evidenceBrokerCircuitConvergence(
+          checkConvergence(selectedPeers, callerStatus, [], rejected),
+        ),
+        convergence_scope: convergenceScope,
+        started_at: startedAt,
+      });
+      await this.checkBudgetWarning(session.session_id, round.round);
+      this.emit({
+        type: "session.evidence_checklist_circuit_breaker_tripped",
+        session_id: session.session_id,
+        round: round.round,
+        message,
+        data: {
+          phase: "pre_dispatch",
+          admission: existingChecklistAdmission,
+          paid_provider_calls_started: 0,
+          checklist_mutated: false,
+        },
+      });
+      this.emit({
+        type: "round.completed",
+        session_id: session.session_id,
+        round: round.round,
+        message: "evidence_checklist_contract_violation",
+        data: { converged: false },
+      });
+      await this.store.flushPendingEvents();
+      const updated = await this.store.finalize(
+        session.session_id,
+        "aborted",
+        "evidence_checklist_contract_violation",
+      );
+      return { session: updated, round, converged: false };
+    }
     const callerSubmissionId = await this.persistCallerSubmittedEvidence({
       sessionId: session.session_id,
       caller: actingPeer,
@@ -6234,6 +6410,7 @@ export class CrossReviewOrchestrator {
               attachment.label,
               attachment.relative_path,
             ]),
+            evidenceChecklistItemIds: (session.evidence_checklist ?? []).map((item) => item.id),
             runtimeFacts: runtimeTruthFacts(this.config),
           });
           peerResult = grounding.result;
@@ -6393,18 +6570,68 @@ export class CrossReviewOrchestrator {
       .map((item) => item.id);
     const evidenceAsks = peerAuthoredEvidenceChecklistAsks(peers);
     if (evidenceAsks.length > 0) {
-      const checklist = await this.store.appendEvidenceChecklistItems(
-        session.session_id,
-        roundNumber,
-        evidenceAsks,
-      );
-      this.emit({
-        type: "session.evidence_checklist_updated",
-        session_id: session.session_id,
-        round: roundNumber,
-        message: `Evidence checklist now has ${checklist.length} item(s) across ${new Set(checklist.map((c) => c.peer)).size} peer(s).`,
-        data: { items_total: checklist.length },
-      });
+      try {
+        const checklist = await this.store.appendEvidenceChecklistItems(
+          session.session_id,
+          roundNumber,
+          evidenceAsks,
+        );
+        this.emit({
+          type: "session.evidence_checklist_updated",
+          session_id: session.session_id,
+          round: roundNumber,
+          message: `Evidence checklist now has ${checklist.length} item(s) across ${new Set(checklist.map((c) => c.peer)).size} peer(s).`,
+          data: { items_total: checklist.length },
+        });
+      } catch (error) {
+        if (!(error instanceof EvidenceChecklistContractViolationError)) throw error;
+        const message = evidenceBrokerContractMessage(error.admission);
+        const round = await this.store.appendRound(session.session_id, {
+          caller_status: callerStatus,
+          draft_file: draftFile,
+          prompt_file: promptFile,
+          peers,
+          rejected,
+          accounting_only_failures: skipped,
+          convergence: evidenceBrokerCircuitConvergence(evidencePanelConvergence),
+          convergence_scope:
+            skipped.length > 0
+              ? { ...convergenceScope, skipped_peers: skipped.map((failure) => failure.peer) }
+              : convergenceScope,
+          started_at: startedAt,
+        });
+        await this.checkBudgetWarning(session.session_id, round.round);
+        this.emit({
+          type: "session.evidence_checklist_circuit_breaker_tripped",
+          session_id: session.session_id,
+          round: round.round,
+          message,
+          data: {
+            phase: "post_round",
+            admission: error.admission,
+            paid_provider_calls_started: [...peers, ...rejected, ...skipped].reduce(
+              (sum, attempt) => sum + Math.max(0, attempt.attempts),
+              0,
+            ),
+            checklist_mutated: false,
+            automatic_judges_started: 0,
+          },
+        });
+        this.emit({
+          type: "round.completed",
+          session_id: session.session_id,
+          round: round.round,
+          message: "evidence_checklist_contract_violation",
+          data: { converged: false },
+        });
+        await this.store.flushPendingEvents();
+        const updated = await this.store.finalize(
+          session.session_id,
+          "aborted",
+          "evidence_checklist_contract_violation",
+        );
+        return { session: updated, round, converged: false };
+      }
     }
     // v2.8.0 Address Detection: run resurfacing-inference after the
     // aggregation. Open items whose last_round did not advance to the

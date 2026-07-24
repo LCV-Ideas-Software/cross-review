@@ -8,7 +8,7 @@ import type {
   SessionEvent,
   SessionMeta,
 } from "../src/core/types.js";
-import { markdownResult, summarizeSessionForList } from "../src/mcp/server.js";
+import { markdownResult, pageSessionEvents, summarizeSessionForList } from "../src/mcp/server.js";
 
 const now = "2026-07-17T12:00:00.000Z";
 
@@ -272,6 +272,50 @@ check("markdown_omits_undefined_object_fields", () => {
   });
   assert.doesNotMatch(markdown, /undefined/);
   assert.doesNotMatch(markdown, /idle_ms/);
+});
+
+check("session_events_defaults_are_bounded_and_filter_token_deltas", () => {
+  const events: SessionEvent[] = [
+    {
+      seq: 1,
+      ts: now,
+      type: "peer.token.delta",
+      peer: "claude",
+      message: "delta-1",
+    },
+    { seq: 2, ts: now, type: "session.fixture", message: "visible-1" },
+    {
+      seq: 3,
+      ts: now,
+      type: "peer.token.delta",
+      peer: "claude",
+      message: "delta-2",
+    },
+    { seq: 4, ts: now, type: "session.fixture", message: "visible-2" },
+  ];
+
+  const firstPage = pageSessionEvents(events, 0, 1, false);
+  assert.deepEqual(
+    firstPage.events.map((event) => event.seq),
+    [2],
+  );
+  assert.equal(firstPage.next_seq, 2);
+  assert.equal(firstPage.has_more, true);
+  assert.equal(firstPage.filtered_token_delta_count, 2);
+
+  const deltaOnlyPage = pageSessionEvents(
+    events.filter((event) => event.type === "peer.token.delta"),
+    0,
+    200,
+    false,
+  );
+  assert.deepEqual(deltaOnlyPage.events, []);
+  assert.equal(deltaOnlyPage.next_seq, 3);
+  assert.equal(deltaOnlyPage.has_more, false);
+
+  const forensicPage = pageSessionEvents(events, 0, 10, true);
+  assert.equal(forensicPage.events.length, 4);
+  assert.equal(forensicPage.filtered_token_delta_count, 0);
 });
 
 check("server_info_surfaces_evidence_judge_reasoning_effort", () => {
