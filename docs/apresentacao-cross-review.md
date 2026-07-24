@@ -492,15 +492,19 @@ do host. Esses itens continuam separados por desenho.
 
 Dependências diretas de runtime declaradas no `package.json` atual:
 
-| Pacote              | Versão declarada | Uso                               |
-| ------------------- | ---------------- | --------------------------------- |
-| `@anthropic-ai/sdk` | `^0.113.0`       | Cliente Anthropic/Claude.         |
-| `@google/genai`     | `^2.13.0`        | Cliente Google Gemini.            |
-| `openai`            | `^6.46.0`        | OpenAI e APIs compatíveis.        |
-| `pino`              | `^10.3.1`        | Logging estruturado.              |
-| `proper-lockfile`   | `^4.1.2`         | Locking de sessão multi-processo. |
-| `protobufjs`        | `^8.6.4`         | Serialização protobuf.            |
-| `zod`               | `^4.4.3`         | Validação de schemas.             |
+| Pacote              | Uso                               |
+| ------------------- | --------------------------------- |
+| `@anthropic-ai/sdk` | Cliente Anthropic/Claude.         |
+| `@google/genai`     | Cliente Google Gemini.            |
+| `openai`            | OpenAI e APIs compatíveis.        |
+| `pino`              | Logging estruturado.              |
+| `proper-lockfile`   | Locking de sessão multi-processo. |
+| `protobufjs`        | Serialização protobuf.            |
+| `zod`               | Validação de schemas.             |
+
+O `package.json` é a fonte de verdade para os intervalos declarados, e o
+`package-lock.json` registra a resolução exata deste checkout do repositório;
+consumidores resolvem os intervalos em seus próprios lockfiles.
 
 ### Bundle e desenvolvimento
 

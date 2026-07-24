@@ -590,16 +590,20 @@ Depois de alterá-los, reinicie ou recarregue a janela/host MCP e confirme em
 
 ### Dependências de runtime e bundle
 
-| Pacote                      | Versão     | Escopo        | Função                                                     |
-| --------------------------- | ---------- | ------------- | ---------------------------------------------------------- |
-| `@modelcontextprotocol/sdk` | `^1.29.0`  | `bundled/dev` | implementação MCP incorporada ao bundle stdio              |
-| `@anthropic-ai/sdk`         | `^0.113.0` | runtime       | cliente da API Anthropic (Claude)                          |
-| `@google/genai`             | `^2.13.0`  | runtime       | cliente da API Google Gen AI (Gemini)                      |
-| `openai`                    | `^6.46.0`  | runtime       | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
-| `zod`                       | `^4.4.3`   | runtime       | validação de esquemas de entrada                           |
-| `pino`                      | `^10.3.1`  | runtime       | logs estruturados (NDJSON)                                 |
-| `proper-lockfile`           | `^4.1.2`   | runtime       | trava de arquivo para concorrência segura                  |
-| `protobufjs`                | `^8.6.4`   | runtime       | serialização protobuf usada pela árvore de runtime         |
+| Pacote                      | Escopo        | Função                                                     |
+| --------------------------- | ------------- | ---------------------------------------------------------- |
+| `@modelcontextprotocol/sdk` | `bundled/dev` | implementação MCP incorporada ao bundle stdio              |
+| `@anthropic-ai/sdk`         | runtime       | cliente da API Anthropic (Claude)                          |
+| `@google/genai`             | runtime       | cliente da API Google Gen AI (Gemini)                      |
+| `openai`                    | runtime       | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
+| `zod`                       | runtime       | validação de esquemas de entrada                           |
+| `pino`                      | runtime       | logs estruturados (NDJSON)                                 |
+| `proper-lockfile`           | runtime       | trava de arquivo para concorrência segura                  |
+| `protobufjs`                | runtime       | serialização protobuf usada pela árvore de runtime         |
+
+O `package.json` é a fonte de verdade para os intervalos declarados, e o
+`package-lock.json` registra a resolução exata deste checkout do repositório;
+consumidores resolvem os intervalos em seus próprios lockfiles.
 
 O SDK MCP é declarado em `devDependencies`, mas o build o incorpora ao artefato
 stdio publicado; ele não fica como dependência de produção ausente no consumidor.

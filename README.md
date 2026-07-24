@@ -186,15 +186,19 @@ MCP-compatible server surface.
 Runtime calls are real provider calls by default. Stubs exist only for smoke
 tests and CI when `CROSS_REVIEW_STUB=1`.
 
-- OpenAI client library (`^6.46.0`) for the Codex/OpenAI peer.
-- Anthropic TypeScript client library (`@anthropic-ai/sdk` `^0.113.0`) for Claude.
-- Google Gen AI client library (`@google/genai` `^2.13.0`) for Gemini.
+- OpenAI client library (`openai`) for the Codex/OpenAI peer.
+- Anthropic TypeScript client library (`@anthropic-ai/sdk`) for Claude.
+- Google Gen AI client library (`@google/genai`) for Gemini.
 - OpenAI-compatible DeepSeek API through the OpenAI client library.
 - OpenAI-compatible xAI Grok API through the OpenAI client library.
 - OpenAI-compatible Perplexity Sonar API through the OpenAI client library.
-- The MCP SDK (`@modelcontextprotocol/sdk` `^1.29.0`) is declared as a
+- The MCP SDK (`@modelcontextprotocol/sdk`) is declared as a
   development dependency and bundled into the stdio artifact; its audited scope
   is therefore `bundled/dev`, not an undeclared consumer dependency.
+
+`package.json` is the source of truth for declared dependency ranges.
+`package-lock.json` records the exact resolution for this repository checkout;
+consumers resolve those ranges through their own lockfiles.
 
 ## Quick Start
 

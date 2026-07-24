@@ -76,7 +76,7 @@ const expectedNpmCliVersion = "12.0.1";
 const expectedNpmCliSha512 =
   "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140";
 const expectedDependabotController =
-  "LCV-Ideas-Software/.github/dependabot-automerge@d8f67ca034edb6173ce9baaff41ccb320ef4bf2d";
+  "LCV-Ideas-Software/.github/dependabot-automerge@3f62b39a76f767d09a5482b8e380746883be3b94";
 
 assert.equal(
   packageJson.packageManager,
@@ -2514,33 +2514,103 @@ for (const [document, label] of [
   );
 }
 
-for (const [dependency, declaredVersion, scope] of [
-  ["@anthropic-ai/sdk", packageJson.dependencies?.["@anthropic-ai/sdk"], "runtime"],
-  ["@google/genai", packageJson.dependencies?.["@google/genai"], "runtime"],
-  [
-    "@modelcontextprotocol/sdk",
-    packageJson.devDependencies?.["@modelcontextprotocol/sdk"],
-    "bundled/dev",
-  ],
-]) {
-  assert.ok(declaredVersion, `${dependency} must remain directly declared`);
-  assert.ok(
-    thirdParty.includes(dependency) &&
-      thirdParty.includes(declaredVersion) &&
-      thirdParty.includes(scope),
-    `THIRDPARTY.md must identify ${dependency} ${declaredVersion} with ${scope} scope`,
+const directDependencies = new Map([
+  ...Object.keys(packageJson.dependencies ?? {}).map((dependency) => [dependency, "runtime"]),
+  ...Object.keys(packageJson.devDependencies ?? {}).map((dependency) => [
+    dependency,
+    dependency === "@modelcontextprotocol/sdk" ? "bundled/dev" : "development",
+  ]),
+]);
+function validateThirdPartyInventory(markdown) {
+  const rows = markdown
+    .split(/\r?\n/)
+    .filter((line) => /^\|\s*[^-|\s][^|]*\|/.test(line))
+    .slice(1)
+    .map((line) =>
+      line
+        .split("|")
+        .slice(1, -1)
+        .map((cell) => cell.trim()),
+    );
+  assert.equal(
+    rows.length,
+    directDependencies.size,
+    "THIRDPARTY.md must contain exactly one row per direct dependency",
   );
+  const seenDependencies = new Set();
+  for (const [dependency, license, scope, source] of rows) {
+    assert.ok(
+      directDependencies.has(dependency),
+      `THIRDPARTY.md must not contain undeclared dependency ${dependency}`,
+    );
+    assert.ok(
+      !seenDependencies.has(dependency),
+      `THIRDPARTY.md must contain ${dependency} exactly once`,
+    );
+    seenDependencies.add(dependency);
+    assert.equal(
+      scope,
+      directDependencies.get(dependency),
+      `THIRDPARTY.md must identify the exact scope for ${dependency}`,
+    );
+    assert.equal(
+      license,
+      packageLock.packages?.[`node_modules/${dependency}`]?.license,
+      `THIRDPARTY.md must match the resolved license for ${dependency}`,
+    );
+    assert.equal(
+      source,
+      `https://www.npmjs.com/package/${dependency}`,
+      `THIRDPARTY.md must identify the canonical npm source for ${dependency}`,
+    );
+  }
+  assert.deepEqual(
+    [...seenDependencies].sort(),
+    [...directDependencies.keys()].sort(),
+    "THIRDPARTY.md must inventory every direct dependency",
+  );
+}
+validateThirdPartyInventory(thirdParty);
+const anthropicRow = thirdParty
+  .split(/\r?\n/)
+  .find((line) => line.includes("| @anthropic-ai/sdk "));
+assert.ok(anthropicRow, "THIRDPARTY.md must include the Anthropic SDK row");
+for (const [mutation, expectedFailure] of [
+  [thirdParty.replace(anthropicRow, ""), /exactly one row/],
+  [thirdParty.replace(anthropicRow, `${anthropicRow}\n${anthropicRow}`), /exactly one row/],
+  [thirdParty.replace("| runtime     |", "| development |"), /exact scope/],
+  [thirdParty.replace("| MIT               |", "| UNKNOWN           |"), /resolved license/],
+]) {
+  assert.throws(
+    () => validateThirdPartyInventory(mutation),
+    expectedFailure,
+    "THIRDPARTY.md regression guard must reject incomplete or inaccurate inventory",
+  );
+}
+
+for (const dependency of ["@anthropic-ai/sdk", "@google/genai", "@modelcontextprotocol/sdk"]) {
+  assert.ok(directDependencies.has(dependency), `${dependency} must remain directly declared`);
   for (const [document, label] of [
     [readme, "README"],
     [presentation, "full presentation"],
     [presentationShort, "short presentation"],
-    [changelog, "changelog"],
   ]) {
     assert.ok(
-      document.includes(dependency) && document.includes(declaredVersion),
-      `${label} must identify the current ${dependency} ${declaredVersion} declaration`,
+      document.includes(dependency),
+      `${label} must identify the current ${dependency} declaration`,
     );
   }
+}
+for (const [document, label] of [
+  [thirdParty, "THIRDPARTY.md"],
+  [readme, "README"],
+  [presentation, "full presentation"],
+  [presentationShort, "short presentation"],
+]) {
+  assert.ok(
+    document.includes("package.json") && document.includes("package-lock.json"),
+    `${label} must point version readers to the manifest and lockfile sources of truth`,
+  );
 }
 for (const [document, label] of [
   [readme, "README"],
