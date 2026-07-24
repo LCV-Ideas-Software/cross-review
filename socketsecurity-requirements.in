@@ -1,6 +1,6 @@
 # Direct Python tools used by CI. Regenerate the hash-locked companion with:
 # uv pip compile --upgrade --generate-hashes --python-version 3.12 socketsecurity-requirements.in --output-file socketsecurity-requirements.txt
 pre-commit==4.6.1
-socketsecurity==2.5.0
+socketsecurity==2.5.1
 # Exact current release; Dependabot updates this source and the hash lock together.
 gitpython==3.1.55
