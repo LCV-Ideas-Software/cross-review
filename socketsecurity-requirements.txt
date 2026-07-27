@@ -228,9 +228,9 @@ gitdb==4.0.12 \
     --hash=sha256:5ef71f855d191a3326fcfbc0d5da835f26b13fbcba60c32c21091c349ffdb571 \
     --hash=sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf
     # via gitpython
-gitpython==3.1.55 \
-    --hash=sha256:781e3b1624dad81b24e9524bf0297b69786a0706db2cbceec1e2b05c38e5152f \
-    --hash=sha256:7c9ec1e69c158c081632ab35c41471e302c96db2ae42165036a5d2403378812e
+gitpython==3.1.57 \
+    --hash=sha256:4ccf7d73c10f5c9e76043fbb2675ac5a1b3ff5b41e648f56bcbed5f63792ecaf \
+    --hash=sha256:c493ec57c0ef6b19743798b6a5af859c71814b524e7e6f97baa2f8e658961488
     # via
     #   -r socketsecurity-requirements.in
     #   socketsecurity
@@ -369,9 +369,9 @@ socketdev==3.3.0 \
     --hash=sha256:3d60bd4ac3201e9d581b1fe02bf2e6aef1b90c13ae75d15a8664aa9ef966734e \
     --hash=sha256:513c045ce42bdd6cc2bb66a527f5863e0c399e56dbdcb1832cd5d94a5fb1a5e4
     # via socketsecurity
-socketsecurity==2.5.1 \
-    --hash=sha256:05ce32491dc0962fd74b2e3989ac27b738fb077dded5c9b08e5f942321bddc0a \
-    --hash=sha256:46987d3e700fd13b13eafe490830faed8df45ef5302317a1212b31bf8a7c1a7d
+socketsecurity==2.5.2 \
+    --hash=sha256:22d7796e621c04cf71bb24a02c1596b5686de2b054de645079f9f339702eac6f \
+    --hash=sha256:ce970da4ef2a37c726e5409a60d76b894692bb33fa50b7f43bad058f310196f5
     # via -r socketsecurity-requirements.in
 soupsieve==2.9.1 \
     --hash=sha256:4f4477399246b7a0c720a88ca2454b11cd6bb9ae4c9d170140786e916776c14c \
