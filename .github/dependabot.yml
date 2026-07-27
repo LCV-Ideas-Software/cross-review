@@ -1,29 +1,11 @@
 version: 2
 
-# StepSecurity Secure Registry auth (matches project .npmrc).
 # `package.json` deliberately has no Corepack `packageManager` hint: Dependabot
 # uses its supported bundled npm, while CI/Publish pin and verify npm 12.0.1.
-# Dependabot needs its own auth context — Actions secrets do not
-# propagate to the Dependabot service. The `DEPENDABOT_STEPSECURITY_NPM_TOKEN`
-# org secret carries the same proxy token used by CI workflows via the
-# Actions secret `STEPSECURITY_NPM_TOKEN`. Adding this `registries:`
-# block restores Dependabot's ability to resolve versions through the
-# StepSecurity proxy after `.npmrc` switched the default registry from
-# npmjs.org to registry.stepsecurity.io/javascript.
-registries:
-  stepsecurity-javascript:
-    type: npm-registry
-    url: https://registry.stepsecurity.io/javascript
-    token: ${{ secrets.DEPENDABOT_STEPSECURITY_NPM_TOKEN }}
-    # `.npmrc` already declares this as the global registry. GitHub's npm
-    # guidance requires omitting `replaces-base` in that configuration shape;
-    # otherwise Corepack also tries to obtain the npm CLI through the proxy.
 
 updates:
   - package-ecosystem: npm
     directory: "/"
-    registries:
-      - stepsecurity-javascript
     schedule:
       interval: "daily"
       time: "01:00"

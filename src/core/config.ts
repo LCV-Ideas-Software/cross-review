@@ -333,8 +333,8 @@ export function loadConfig(): AppConfig {
       max_peer_requests: intEnv("CROSS_REVIEW_MAX_PEER_REQUESTS", 8),
       // v2.14.0 (path-A structural fix): see AppConfig type docs.
       // v2.26.1 (2026-05-12): default raised 80_000 → 200_000 after the
-      // stepsecurity v0.2.0 ship empirically demonstrated that 80K is
-      // too low for multi-file evidence sets. session-store.ts:1507
+      // first large multi-file release review demonstrated that 80K is too
+      // low for multi-file evidence sets. session-store.ts:1507
       // computes `perFileCap = max(2_000, floor(totalCap * 0.6))`, then
       // each attachment consumes `min(perFileCap, totalCap - used)`. With
       // 5 attachments totaling ~95KB, the 4th+ attachments got truncated

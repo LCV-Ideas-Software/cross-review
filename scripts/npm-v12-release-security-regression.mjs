@@ -27,7 +27,6 @@ const [
   serverSource,
   dependabotConfig,
   pythonVersion,
-  socketWorkflow,
   dependabotAutomergeWorkflow,
   scorecardWorkflow,
   zizmorWorkflow,
@@ -55,7 +54,6 @@ const [
   read("src/mcp/server.ts"),
   read(".github/dependabot.yml"),
   read(".python-version"),
-  read(".github/workflows/socket.yml"),
   read(".github/workflows/dependabot-automerge.yml"),
   read(".github/workflows/scorecard.yml"),
   read(".github/workflows/zizmor.yml"),
@@ -76,12 +74,12 @@ const expectedNpmCliVersion = "12.0.1";
 const expectedNpmCliSha512 =
   "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140";
 const expectedDependabotController =
-  "LCV-Ideas-Software/.github/dependabot-automerge@86383cce42ac86077f87ad80ab48d4308fdd1ab6";
+  "LCV-Ideas-Software/.github/dependabot-automerge@eabe20b6941cc4094e9ab50edac474b572a972a9";
 
 assert.equal(
   packageJson.packageManager,
   undefined,
-  "packageManager must stay workflow-pinned: Dependabot's supported npm must not bootstrap through the private registry",
+  "packageManager must stay workflow-pinned so Dependabot's supported npm remains decoupled from the verified release toolchain",
 );
 
 assert.deepEqual(
@@ -101,31 +99,22 @@ for (const lifecycle of ["preinstall", "install", "postinstall"]) {
 const foreignResolved = Object.entries(packageLock.packages ?? {})
   .map(([packagePath, metadata]) => ({ packagePath, resolved: metadata.resolved }))
   .filter(({ resolved }) => typeof resolved === "string")
-  .filter(
-    ({ resolved }) =>
-      !resolved.startsWith("https://registry.npmjs.org/") &&
-      !resolved.startsWith("https://registry.stepsecurity.io/"),
-  );
+  .filter(({ resolved }) => !resolved.startsWith("https://registry.npmjs.org/"));
 assert.deepEqual(
   foreignResolved,
   [],
   "npm v12 blocks git and remote-URL dependencies; the lockfile must use approved registries only",
 );
 
-assert.ok(
-  dependabotConfig.includes("stepsecurity-javascript:") &&
-    dependabotConfig.includes("url: https://registry.stepsecurity.io/javascript"),
-  "Dependabot npm updates must authenticate to the StepSecurity registry declared in .npmrc",
-);
 assert.doesNotMatch(
   dependabotConfig,
-  /replaces-base:/,
-  "a global registry already exists in .npmrc, so Dependabot must not redirect Corepack with replaces-base",
+  /^registries:/m,
+  "Dependabot must use the public npm registry without a private registry credential",
 );
 assert.match(
   npmrc,
-  /^registry=https:\/\/registry\.stepsecurity\.io\/javascript$/m,
-  ".npmrc must keep StepSecurity as the global npm dependency registry",
+  /^registry=https:\/\/registry\.npmjs\.org\/$/m,
+  ".npmrc must use npmjs.org as the global npm dependency registry",
 );
 for (const ecosystem of ["npm", "github-actions", "pip", "pre-commit"]) {
   assert.match(
@@ -143,6 +132,11 @@ assert.match(
   dependabotAutomergeWorkflow,
   /workflow_run:/,
   "Dependabot automation must run in the privileged default-branch context only after untrusted PR checks complete",
+);
+assert.match(
+  dependabotAutomergeWorkflow,
+  /workflows:\s*\r?\n\s+- CodeQL\s*\r?\n\s+types:/,
+  "Dependabot automation workflow_run must be triggered only by CodeQL completion",
 );
 assert.doesNotMatch(
   dependabotAutomergeWorkflow,
@@ -170,7 +164,6 @@ assert.ok(
 for (const [workflow, label] of [
   [ciWorkflow, "CI"],
   [codeqlWorkflow, "CodeQL"],
-  [socketWorkflow, "Socket Security"],
   [scorecardWorkflow, "OpenSSF Scorecard"],
   [zizmorWorkflow, "Zizmor"],
   [pagesWorkflow, "Pages"],
@@ -193,7 +186,7 @@ for (const [workflow, label] of [
 }
 assert.match(
   ciWorkflow,
-  /pip install[^\n]*--require-hashes[^\n]*socketsecurity-requirements\.txt/,
+  /pip install[^\n]*--require-hashes[^\n]*python-tools-requirements\.txt/,
   "CI must install the Dependabot-managed Python lock with hash verification",
 );
 assert.match(
@@ -207,13 +200,11 @@ assert.match(
   "CI must parse and semantically validate dependabot.yml",
 );
 assert.equal(pythonVersion.trim(), "3.12", "the Python security-tool lock is resolved for 3.12");
-for (const workflow of [ciWorkflow, socketWorkflow]) {
-  assert.match(
-    workflow,
-    /python-version-file:\s*["']?\.python-version["']?/,
-    "Python consumers must use the centrally pinned lock version",
-  );
-}
+assert.match(
+  ciWorkflow,
+  /python-version-file:\s*["']?\.python-version["']?/,
+  "Python consumers must use the centrally pinned lock version",
+);
 assert.doesNotMatch(
   dependabotConfig,
   /interval:\s*["']?daily["']?\s*\r?\n\s*day:/,
@@ -247,13 +238,9 @@ assert.doesNotMatch(
 );
 
 assert.equal(
-  (
-    publishWorkflow.match(
-      /STEPSECURITY_NPM_TOKEN:\s*\$\{\{ secrets\.STEPSECURITY_NPM_TOKEN \}\}/g,
-    ) ?? []
-  ).length,
-  4,
-  "the StepSecurity read token must be scoped only to the four npm ci steps",
+  (publishWorkflow.match(/STEPSECURITY_NPM_TOKEN/g) ?? []).length,
+  0,
+  "the removed private-registry credential must not remain in publishing",
 );
 assert.match(
   publishWorkflow,
@@ -611,12 +598,11 @@ assert.match(
 assert.match(
   autoTagWorkflow,
   /Require every exact-SHA push workflow to pass[\s\S]*?require-release-push-workflows\.sh "\$TARGET_SHA"/,
-  "auto-tag must not create a release identity before all six exact-SHA push workflows pass",
+  "auto-tag must not create a release identity before all five exact-SHA push workflows pass",
 );
 for (const workflowPath of [
   ".github/workflows/ci.yml",
   ".github/workflows/codeql.yml",
-  ".github/workflows/socket.yml",
   ".github/workflows/zizmor.yml",
   ".github/workflows/scorecard.yml",
   ".github/workflows/pages.yml",
@@ -710,7 +696,7 @@ set -euo pipefail
 arguments="$*"
 case "$arguments" in
   *"/actions/workflows?per_page=100"*)
-    printf '%s\\n' '[{"workflows":[{"id":101,"path":".github/workflows/ci.yml","state":"active"},{"id":102,"path":".github/workflows/codeql.yml","state":"active"},{"id":103,"path":".github/workflows/socket.yml","state":"active"},{"id":104,"path":".github/workflows/zizmor.yml","state":"active"},{"id":105,"path":".github/workflows/scorecard.yml","state":"active"},{"id":106,"path":".github/workflows/pages.yml","state":"active"}]}]'
+    printf '%s\\n' '[{"workflows":[{"id":101,"path":".github/workflows/ci.yml","state":"active"},{"id":102,"path":".github/workflows/codeql.yml","state":"active"},{"id":103,"path":".github/workflows/zizmor.yml","state":"active"},{"id":104,"path":".github/workflows/scorecard.yml","state":"active"},{"id":105,"path":".github/workflows/pages.yml","state":"active"}]}]'
     ;;
   *"/git/ref/heads/main"*)
     printf '%s\\n' "$MOCK_SHA"
@@ -729,7 +715,7 @@ case "$arguments" in
     printf '{"id":201,"workflow_id":101,"name":"CI","path":".github/workflows/ci.yml","event":"push","status":"completed","conclusion":"%s","head_sha":"%s","head_branch":"main","head_repository":{"full_name":"%s"}}' "$ci_conclusion" "$MOCK_SHA" "$MOCK_REPO"
     printf ',{"id":999,"workflow_id":999,"name":"CI","path":".github/workflows/not-ci.yml","event":"push","status":"completed","conclusion":"success","head_sha":"%s","head_branch":"main","head_repository":{"full_name":"%s"}}' "$MOCK_SHA" "$MOCK_REPO"
     workflow_id=102
-    for workflow_path in codeql socket zizmor scorecard pages; do
+    for workflow_path in codeql zizmor scorecard pages; do
       printf ',{"id":%s,"workflow_id":%s,"name":"fixture","path":".github/workflows/%s.yml","event":"push","status":"completed","conclusion":"success","head_sha":"%s","head_branch":"main","head_repository":{"full_name":"%s"}}' "$((workflow_id + 100))" "$workflow_id" "$workflow_path" "$MOCK_SHA" "$MOCK_REPO"
       workflow_id="$((workflow_id + 1))"
     done
@@ -780,8 +766,8 @@ esac
   });
   assert.match(
     happyOutput,
-    /All six exact-path, exact-ID push workflows passed/,
-    "the executable exact-workflow gate fixture must pass all six trusted identities",
+    /All five exact-path, exact-ID push workflows passed/,
+    "the executable exact-workflow gate fixture must pass all five trusted identities",
   );
 
   let spoofFailure;
@@ -1877,10 +1863,9 @@ assert.match(
   "ordinary CI must fail closed when an unreviewed dependency script appears",
 );
 assert.equal(
-  (ciWorkflow.match(/STEPSECURITY_NPM_TOKEN:\s*\$\{\{ secrets\.STEPSECURITY_NPM_TOKEN \}\}/g) ?? [])
-    .length,
-  1,
-  "ordinary CI must expose the StepSecurity read token only to npm ci",
+  (ciWorkflow.match(/STEPSECURITY_NPM_TOKEN/g) ?? []).length,
+  0,
+  "ordinary CI must not expose the removed private-registry credential",
 );
 assert.doesNotMatch(
   ciWorkflow,

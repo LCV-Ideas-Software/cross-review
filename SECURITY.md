@@ -102,21 +102,16 @@ must use bounded or linear matching and include adversarial long-input coverage.
 
 Dependabot covers every package ecosystem represented by a committed manifest:
 npm, GitHub Actions, pip/pip-compile and pre-commit. The committed `.npmrc`
-declares the authenticated StepSecurity proxy as npm's global dependency
-registry; following GitHub's documented configuration shape, the Dependabot
-credential does not also set `replaces-base`, which would incorrectly redirect
-Corepack's npm CLI bootstrap through that proxy. `package.json` intentionally
-does not carry a `packageManager` Corepack hint: Dependabot uses its supported
-npm 11 resolver, while CI and Publish independently bootstrap npm 12.0.1 from
-the npm registry tarball and verify its pinned SHA-512. This preserves the
-audited npm 12 build/release toolchain without making Dependabot install an
-unsupported CLI through the private dependency proxy. Ordinary CI installs the
-Python tool lock with `--require-hashes` under the centrally pinned Python 3.12
-and executes the pre-commit hooks, so those bot updates are not auto-merged on
-skipped consumer checks. `socketsecurity-requirements.in` is the direct
-pip-compile source; its generated `.txt` companion must contain the full pinned,
-hashed transitive closure. Compatible Python updates are grouped to avoid a
-burst of lockfile PRs racing each other.
+declares npmjs.org as npm's global dependency registry. `package.json`
+intentionally does not carry a `packageManager` Corepack hint: Dependabot uses
+its supported npm resolver, while CI and Publish independently bootstrap npm
+12.0.1 from the npm registry tarball and verify its pinned SHA-512. Ordinary CI
+installs the Python tool lock with `--require-hashes` under the centrally pinned
+Python 3.12 and executes the pre-commit hooks, so those bot updates are not
+auto-merged on skipped consumer checks. `python-tools-requirements.in` is the
+direct pip-compile source; its generated `.txt` companion must contain the full
+pinned, hashed transitive closure. Compatible Python updates are grouped to
+avoid a burst of lockfile PRs racing each other.
 
 When `.github/dependabot.yml` changes, Auto-tag waits for the four dynamic
 Dependabot ecosystem jobs attached to the same SHA and requires every one to
@@ -169,12 +164,12 @@ in v04.04.07 and v04.04.08.
 
 Package publication uses npm Trusted Publishing/OIDC from the protected
 `npm-production` GitHub environment, not a long-lived npm publish token. The
-release workflow pins npm 12, disables dependency caches, limits the
-StepSecurity read credential to install steps, rejects unreviewed dependency
-scripts and verifies registry-visible SLSA provenance. The published package
-has no install-time lifecycle script of its own; operators must not bypass npm
-12 policy with `--dangerously-allow-all-scripts` or replace a registry upgrade
-with a locally built source installation.
+release workflow pins npm 12, disables dependency caches, enforces the
+dependency install-script allowlist, rejects unreviewed dependency scripts and
+verifies registry-visible SLSA provenance. The published package has no
+install-time lifecycle script of its own; operators must not bypass npm 12
+policy with `--dangerously-allow-all-scripts` or replace a registry upgrade with
+a locally built source installation.
 
 The post-publish verifier treats package visibility and the advertised
 attestation document as independently propagated registry surfaces. It retries

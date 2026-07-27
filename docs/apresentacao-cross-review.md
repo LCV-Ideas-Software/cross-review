@@ -808,7 +808,7 @@ O repositório usa workflows para:
 - auto-tag somente após CI verde de um push em `main` e publicação pela tag
   verificada;
 - publicação manual somente por dispatch explícito de uma tag existente;
-- Pages, Scorecard, Socket, dependency review e automerge de Dependabot.
+- Pages, Scorecard, dependency review e automerge de Dependabot.
 
 O gate de CI executa:
 
@@ -829,7 +829,7 @@ publica com provenance quando aplicável.
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `v04.05.29`      | 2026-07-24    | Substitui a tag 4.5.28 não publicada, fixa `brace-expansion` 5.0.8 após o advisory de DoS divulgado durante o release e preserva a correção TOCTOU dos caller tokens validada pelo CodeQL.                                                                             |
 | `v04.05.28`      | 2026-07-24    | Prepara Claude Opus 5 como override, limita a amplificação do Evidence Broker, repara lifecycle/provenance/truthfulness, protege caller tokens e pagina eventos; a tag foi preservada, mas não publicada.                                                              |
-| `v04.05.27`      | 2026-07-24    | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de Socket, Dependabot e recuperação de release.                                                                                                                       |
+| `v04.05.27`      | 2026-07-24    | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de dependências e recuperação de release.                                                                                                                             |
 | `v04.05.26`      | 2026-07-22    | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                                                     |
 | `v04.05.25`      | 2026-07-21    | Corrige as três vulnerabilidades do lock: `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7; aprova estritamente apenas o `postinstall` revisado de `protobufjs@7.6.5`. Scorecard e Auto-tag permanecem fail-closed, sem supressão de alerta. |
 | `v04.05.23`      | 2026-07-17    | Aceita a resposta unitária de `npm view --json` no npm 12 apenas com um objeto de metadata; respostas vazias, múltiplas ou inválidas falham fechadas antes do lock íntegro e da auditoria obrigatória.                                                                 |
@@ -848,7 +848,7 @@ publica com provenance quando aplicável.
 | `v04.05.10`      | 2026-07-12    | Tolera a propagação independente da atestação npm com retry delimitado e URL presa ao registry, mantendo SLSA provenance v1 obrigatório.                                                                                                                               |
 | `v04.05.09`      | 2026-07-12    | Elimina o deadlock DEF-10 mantendo remediação interna fora de `caller_requests`, sem afrouxar asks reais, grounding, custódia ou convergência.                                                                                                                         |
 | `v04.05.08`      | 2026-07-12    | Fecha sete alertas de code scanning com bootstrap npm 12.0.1 pinado por SHA-512 e checkout da branch padrão condicionado ao SHA que passou no CI.                                                                                                                      |
-| `v04.05.07`      | 2026-07-12    | Embarca a remediação dos seis providers com CI antes da tag, npm 12.0.1, scripts estritos, cache desativado e token StepSecurity restrito ao install.                                                                                                                  |
+| `v04.05.07`      | 2026-07-12    | Embarca a remediação dos seis providers com CI antes da tag, npm 12.0.1, scripts estritos e cache desativado.                                                                                                                                                          |
 | `v04.05.06`      | 2026-07-12    | Corrige contratos wire dos seis providers, budgets por peer, recovery OpenAI/Gemini, grounding de diffs/escapes, namespaces, terminais e contabilidade por modelo.                                                                                                     |
 | `v04.05.05`      | 2026-07-12    | Follow-up de publicação: fixtures de cancelamento, health e contabilidade herméticas em runner limpo, com prova contra falso verde; produção continua fail-closed sem rates.                                                                                           |
 | `v04.05.04`      | 2026-07-12    | Remedia grounding e preflights do hardgate, consenso independente, cancelamento multi-janela, ledger financeiro fail-closed, tetos efetivos, health/report terminal e alias `ultra`.                                                                                   |

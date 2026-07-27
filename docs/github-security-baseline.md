@@ -31,8 +31,7 @@ authentication and disallow tokens**, while the Trusted Publisher remains
 authorized. The workflow grants `id-token: write`, uses a GitHub-hosted runner,
 disables package-manager caches, pins npm 12 by exact version and registry
 tarball SHA-512, verifies the CLI before execution, and verifies the published
-SLSA provenance. The read-only `STEPSECURITY_NPM_TOKEN` is scoped only to
-dependency installation steps.
+SLSA provenance.
 
 A successful CI run for a push to `main` may auto-create an
 organization-standard display tag such as `vXX.XX.XX` from `package.json`. The

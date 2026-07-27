@@ -30,30 +30,21 @@ for ecosystem, update in by_ecosystem.items():
     assert schedule.get("interval") == "daily", f"{ecosystem} must run daily"
     assert "day" not in schedule, f"{ecosystem} daily schedule cannot use weekly-only day"
 
-registries = config.get("registries")
-assert isinstance(registries, dict), "Dependabot registries must be a mapping"
-stepsecurity = registries.get("stepsecurity-javascript")
-assert isinstance(stepsecurity, dict), "StepSecurity npm registry must be configured"
-assert stepsecurity.get("type") == "npm-registry"
-assert stepsecurity.get("url") == "https://registry.stepsecurity.io/javascript"
-assert "replaces-base" not in stepsecurity, (
-    "Do not combine replaces-base with the global StepSecurity registry in .npmrc; "
-    "Dependabot/Corepack must fetch the npm CLI from the ecosystem base registry"
-)
-assert by_ecosystem["npm"].get("registries") == ["stepsecurity-javascript"]
+assert "registries" not in config, "Dependabot must not retain private registry credentials"
+assert "registries" not in by_ecosystem["npm"], "npm updates must use the public base registry"
 
 npmrc = (root_path / ".npmrc").read_text(encoding="utf-8")
-assert "registry=https://registry.stepsecurity.io/javascript" in npmrc, (
-    ".npmrc must keep StepSecurity as npm's global dependency registry"
+assert "registry=https://registry.npmjs.org/" in npmrc, (
+    ".npmrc must use npmjs.org as npm's global dependency registry"
 )
 
-python_source_path = root_path / "socketsecurity-requirements.in"
-python_lock_path = root_path / "socketsecurity-requirements.txt"
+python_source_path = root_path / "python-tools-requirements.in"
+python_lock_path = root_path / "python-tools-requirements.txt"
 assert python_source_path.is_file(), "pip-compile source manifest is required"
 assert python_lock_path.is_file(), "pip-compile hash lock is required"
 python_source = python_source_path.read_text(encoding="utf-8")
 python_lock = python_lock_path.read_text(encoding="utf-8")
-for direct_dependency in ("pre-commit", "socketsecurity"):
+for direct_dependency in ("pre-commit", "pyyaml"):
     source_lines = [
         line.strip()
         for line in python_source.splitlines()
