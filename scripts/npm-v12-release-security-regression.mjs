@@ -74,7 +74,7 @@ const expectedNpmCliVersion = "12.0.1";
 const expectedNpmCliSha512 =
   "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140";
 const expectedDependabotController =
-  "LCV-Ideas-Software/.github/dependabot-automerge@eabe20b6941cc4094e9ab50edac474b572a972a9";
+  "LCV-Ideas-Software/.github/dependabot-automerge@aeb0bba0fc26df8203eada443126c5850438107a";
 
 assert.equal(
   packageJson.packageManager,
@@ -1929,8 +1929,23 @@ const verifiedMainStep = workflowStepBlocks(autoTagWorkflow).find((step) =>
 const detectVersionStep = workflowStepBlocks(autoTagWorkflow).find((step) =>
   step.includes("- name: Detect an actual package version change"),
 );
+const resolveReleaseTargetStep = workflowStepBlocks(autoTagWorkflow).find((step) =>
+  step.includes("- name: Resolve immutable release target"),
+);
+const dispatchPublishStep = workflowStepBlocks(autoTagWorkflow).find((step) =>
+  step.includes("- name: Dispatch publish workflow"),
+);
+const reconcileGitHubReleaseStep = workflowStepBlocks(publishWorkflow).find((step) =>
+  step.includes("- name: Revalidate release tag identity before reconciling GitHub Release"),
+);
 assert.ok(verifiedMainStep, "auto-tag must retain its trusted-main verification step");
 assert.ok(detectVersionStep, "auto-tag must retain its exact version-change detection step");
+assert.ok(
+  resolveReleaseTargetStep,
+  "auto-tag must retain its immutable release-target reconciliation step",
+);
+assert.ok(dispatchPublishStep, "auto-tag must retain its protected-tag dispatch step");
+assert.ok(reconcileGitHubReleaseStep, "publish must retain its GitHub Release reconciliation step");
 const extractRunBody = (step) =>
   step
     .match(/run: \|\r?\n([\s\S]*)/)?.[1]
@@ -1939,8 +1954,36 @@ const extractRunBody = (step) =>
     .join("\n");
 const verifiedMainRunBody = extractRunBody(verifiedMainStep);
 const detectVersionRunBody = extractRunBody(detectVersionStep);
+const resolveReleaseTargetRunBody = extractRunBody(resolveReleaseTargetStep);
+const dispatchPublishRunBody = extractRunBody(dispatchPublishStep);
+const reconcileGitHubReleaseRunBody = extractRunBody(reconcileGitHubReleaseStep);
 assert.ok(verifiedMainRunBody, "trusted-main verification must retain executable shell");
 assert.ok(detectVersionRunBody, "version-change detection must retain executable shell");
+assert.ok(
+  resolveReleaseTargetRunBody,
+  "release-target reconciliation must retain executable shell",
+);
+assert.ok(dispatchPublishRunBody, "protected-tag dispatch must retain executable shell");
+assert.ok(
+  reconcileGitHubReleaseRunBody,
+  "GitHub Release reconciliation must retain executable shell",
+);
+const extractTopLevelShellFunction = (runBody, functionName) => {
+  const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const functionSource = runBody.match(
+    new RegExp(`^${escapedName}\\(\\) \\{[\\s\\S]*?^\\}$`, "m"),
+  )?.[0];
+  assert.ok(functionSource, `workflow shell must retain ${functionName}()`);
+  return functionSource;
+};
+const publishHttpStatusHelper = extractTopLevelShellFunction(
+  reconcileGitHubReleaseRunBody,
+  "github_api_error_is_exact_status",
+);
+const resolveApiRefToCommitFunction = extractTopLevelShellFunction(
+  reconcileGitHubReleaseRunBody,
+  "resolve_api_ref_to_commit",
+);
 
 // Two rapid version bumps are the adversarial workflow_run case: by the time
 // CI for 4.5.26 is handled, trusted main may already contain 4.5.27. The
@@ -2053,6 +2096,482 @@ esac
 } finally {
   await rm(rapidVersionFixtureRoot, { recursive: true, force: true });
 }
+
+// A canonical tag is immutable, so later successful main runs must not keep
+// dispatching the same already-published tag forever. Only a completed,
+// successful Publish run with the exact workflow path, tag/ref, head SHA, and
+// repository is sufficient evidence to suppress recovery. Near-miss successes
+// must not count, and an exact failed run must remain recoverable.
+const canonicalPublishFixtureRoot = await mkdtemp(
+  path.join(os.tmpdir(), "cross-review-canonical-publish-"),
+);
+try {
+  const mockBin = path.join(canonicalPublishFixtureRoot, "mock-bin");
+  const reconciliationScript = path.join(canonicalPublishFixtureRoot, "resolve-release.sh");
+  const targetSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const otherSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const repository = "LCV-Ideas-Software/cross-review-fixture";
+  const tag = "v09.08.07";
+  const legacyTag = "v9.8.7";
+  const packageName = "@lcv-ideas-software/cross-review-fixture";
+  const packageVersion = "9.8.7";
+  const expectedAssetName = "lcv-ideas-software-cross-review-fixture-9.8.7.tgz";
+  const validAssetDigest = `sha256:${"c".repeat(64)}`;
+  const exactRun = {
+    id: 101,
+    path: ".github/workflows/publish.yml",
+    event: "workflow_dispatch",
+    status: "completed",
+    conclusion: "success",
+    head_branch: tag,
+    head_sha: targetSha,
+    head_repository: { full_name: repository },
+    repository: { full_name: repository },
+  };
+  const exactDurableRelease = {
+    tag_name: tag,
+    target_commitish: targetSha,
+    draft: false,
+    immutable: true,
+    assets: [
+      {
+        name: expectedAssetName,
+        state: "uploaded",
+        digest: validAssetDigest,
+      },
+    ],
+  };
+  const nearMissSuccesses = [
+    { ...exactRun, id: 102, path: ".github/workflows/not-publish.yml" },
+    { ...exactRun, id: 103, head_branch: "v09.08.06" },
+    { ...exactRun, id: 104, head_sha: otherSha },
+    {
+      ...exactRun,
+      id: 105,
+      head_repository: { full_name: "LCV-Ideas-Software/not-cross-review" },
+    },
+    {
+      ...exactRun,
+      id: 107,
+      repository: { full_name: "LCV-Ideas-Software/not-cross-review" },
+    },
+  ];
+  await mkdir(mockBin, { recursive: true });
+  await Promise.all([
+    writeFile(
+      reconciliationScript,
+      `#!/usr/bin/env bash\n${resolveReleaseTargetRunBody}\n`,
+      "utf8",
+    ),
+    writeFile(
+      path.join(mockBin, "gh"),
+      `#!/usr/bin/env bash
+if [ "\${GH_TOKEN:-}" != "fixture-token" ]; then
+  printf '%s\n' 'unexpected token scope in canonical Publish fixture' >&2
+  exit 65
+fi
+arguments="$*"
+if [[ "$arguments" == *"git/ref/tags/$MOCK_TAG"* ]]; then
+  printf '{"object":{"type":"commit","sha":"%s"}}\n' "$MOCK_TARGET_SHA"
+elif [[ "$arguments" == *"git/ref/tags/$MOCK_LEGACY_TAG"* ]]; then
+  case "$MOCK_LEGACY_STATUS" in
+    404) printf '%s\n' 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+    503-with-404)
+      printf '%s\n' 'gh: Service Unavailable; upstream diagnostic mentioned HTTP 404 (HTTP 503)' >&2
+      exit 1
+      ;;
+    *) printf 'gh: fixture API failure (HTTP %s)\n' "$MOCK_LEGACY_STATUS" >&2; exit 1 ;;
+  esac
+elif [[ "$arguments" == *"/compare/"* ]]; then
+  printf '%s\n' identical
+elif [[ "$arguments" == *"/contents/package.json"* ]]; then
+  printf '%s\n' "$MOCK_PACKAGE_BASE64"
+elif [[ "$arguments" == *"/actions/runs"* ]]; then
+  if [[ "$arguments" != *"--paginate"* ]] || [[ "$arguments" != *"--slurp"* ]]; then
+    printf '%s\n' 'Publish evidence query must be paginated and slurped' >&2
+    exit 66
+  fi
+  printf '%s\n' "$MOCK_RUN_PAGES"
+elif [[ "$arguments" == *"/releases/tags/$MOCK_TAG"* ]]; then
+  case "$MOCK_RELEASE_STATUS" in
+    200) printf '%s\n' "$MOCK_RELEASE_JSON" ;;
+    404) printf '%s\n' 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+    503-with-404)
+      printf '%s\n' 'gh: Service Unavailable; upstream diagnostic mentioned HTTP 404 (HTTP 503)' >&2
+      exit 1
+      ;;
+    *) printf 'gh: fixture API failure (HTTP %s)\n' "$MOCK_RELEASE_STATUS" >&2; exit 1 ;;
+  esac
+else
+  printf 'unexpected gh invocation: %s\n' "$arguments" >&2
+  exit 64
+fi
+`,
+      "utf8",
+    ),
+  ]);
+  await Promise.all([chmod(reconciliationScript, 0o755), chmod(path.join(mockBin, "gh"), 0o755)]);
+  const executeReconciliation = async (
+    name,
+    workflowRuns,
+    { legacyStatus = 404, release = null, releaseStatus = 500 } = {},
+  ) => {
+    const output = path.join(canonicalPublishFixtureRoot, `${name}.out`);
+    execFileSync("bash", [reconciliationScript], {
+      cwd: canonicalPublishFixtureRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GH_TOKEN: "fixture-token",
+        GITHUB_OUTPUT: output,
+        GITHUB_REPOSITORY: repository,
+        GITHUB_RUN_ID: name,
+        LEGACY_TAG: legacyTag,
+        MOCK_LEGACY_TAG: legacyTag,
+        MOCK_LEGACY_STATUS: String(legacyStatus),
+        MOCK_PACKAGE_BASE64: Buffer.from(
+          `${JSON.stringify({ name: packageName, version: packageVersion })}\n`,
+        ).toString("base64"),
+        MOCK_RELEASE_JSON: JSON.stringify(release),
+        MOCK_RELEASE_STATUS: String(releaseStatus),
+        MOCK_RUN_PAGES: JSON.stringify([{ workflow_runs: workflowRuns }]),
+        MOCK_TAG: tag,
+        MOCK_TARGET_SHA: targetSha,
+        PATH: `${mockBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        RELEASE_CANDIDATE_SHA: targetSha,
+        RUNNER_TEMP: ".",
+        TAG: tag,
+        VERSION: packageVersion,
+        VERSION_BOUNDARY_SHA: targetSha,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return (await readFile(output, "utf8")).split(/\r?\n/).filter(Boolean);
+  };
+  const alreadyPublishedOutput = await executeReconciliation("success", [
+    ...nearMissSuccesses,
+    exactRun,
+  ]);
+  const unpublishedRuns = [...nearMissSuccesses, { ...exactRun, id: 106, conclusion: "failure" }];
+  const recoveryOutput = await executeReconciliation("absence", unpublishedRuns, {
+    releaseStatus: 404,
+  });
+  const durableReleaseOutput = await executeReconciliation(
+    "expired-run-durable-release",
+    nearMissSuccesses,
+    {
+      release: exactDurableRelease,
+      releaseStatus: 200,
+    },
+  );
+  const releaseNearMisses = {
+    tag: { ...exactDurableRelease, tag_name: "v09.08.06" },
+    target: { ...exactDurableRelease, target_commitish: otherSha },
+    asset: {
+      ...exactDurableRelease,
+      assets: [{ ...exactDurableRelease.assets[0], name: "wrong-package-9.8.7.tgz" }],
+    },
+    digest: {
+      ...exactDurableRelease,
+      assets: [{ ...exactDurableRelease.assets[0], digest: "sha256:not-a-valid-digest" }],
+    },
+    state: {
+      ...exactDurableRelease,
+      assets: [{ ...exactDurableRelease.assets[0], state: "new" }],
+    },
+    "zero-assets": { ...exactDurableRelease, assets: [] },
+    "extra-asset": {
+      ...exactDurableRelease,
+      assets: [
+        exactDurableRelease.assets[0],
+        {
+          name: "unexpected-provenance.json",
+          state: "uploaded",
+          digest: `sha256:${"d".repeat(64)}`,
+        },
+      ],
+    },
+    mutable: { ...exactDurableRelease, immutable: false },
+    draft: { ...exactDurableRelease, draft: true },
+  };
+  const nearMissOutputs = await Promise.all(
+    Object.entries(releaseNearMisses).map(async ([name, release]) => [
+      name,
+      await executeReconciliation(`release-near-miss-${name}`, unpublishedRuns, {
+        release,
+        releaseStatus: 200,
+      }),
+    ]),
+  );
+  await assert.rejects(
+    executeReconciliation("tag-api-error-mentions-404", unpublishedRuns, {
+      legacyStatus: "503-with-404",
+    }),
+    /Command failed/,
+    "a non-404 tag-ref API failure must remain blocking when its diagnostics mention HTTP 404",
+  );
+  await assert.rejects(
+    executeReconciliation("release-api-error", unpublishedRuns, {
+      releaseStatus: 503,
+    }),
+    /Command failed/,
+    "a non-404 GitHub Release API failure must fail closed instead of redispatching blindly",
+  );
+  await assert.rejects(
+    executeReconciliation("release-api-error-mentions-404", unpublishedRuns, {
+      releaseStatus: "503-with-404",
+    }),
+    /Command failed/,
+    "a non-404 API failure must remain blocking even when its diagnostics mention HTTP 404",
+  );
+  assert.ok(
+    alreadyPublishedOutput.includes("should_dispatch=false"),
+    "an exact successful historical Publish run must suppress another dispatch of the immutable tag",
+  );
+  assert.ok(
+    recoveryOutput.includes("should_dispatch=true"),
+    "without an exact successful historical Publish run, recovery must remain enabled",
+  );
+  assert.ok(
+    durableReleaseOutput.includes("should_dispatch=false"),
+    "an exact durable immutable GitHub Release must suppress redispatch after workflow runs expire",
+  );
+  for (const [name, output] of nearMissOutputs) {
+    assert.ok(
+      output.includes("should_dispatch=true"),
+      `a ${name} GitHub Release near miss must keep publication recovery enabled`,
+    );
+  }
+} finally {
+  await rm(canonicalPublishFixtureRoot, { recursive: true, force: true });
+}
+
+// GitHub API absence checks must use the terminal status emitted by `gh api`,
+// never a free-text `HTTP 404` substring that may appear inside a 5xx
+// diagnostic. Exercise every call site that tolerates a real 404.
+const githubHttpStatusFixtureRoot = await mkdtemp(
+  path.join(os.tmpdir(), "cross-review-github-http-status-"),
+);
+try {
+  const mockBin = path.join(githubHttpStatusFixtureRoot, "mock-bin");
+  const dispatchScript = path.join(githubHttpStatusFixtureRoot, "dispatch-publish.sh");
+  const reconcileReleaseScript = path.join(
+    githubHttpStatusFixtureRoot,
+    "reconcile-github-release.sh",
+  );
+  const resolveRefScript = path.join(githubHttpStatusFixtureRoot, "resolve-api-ref.sh");
+  const sleepLog = path.join(githubHttpStatusFixtureRoot, "sleep.log");
+  const workflowLog = path.join(githubHttpStatusFixtureRoot, "workflow.log");
+  const refStatusFile = path.join(githubHttpStatusFixtureRoot, "ref-status.txt");
+  const targetSha = "dddddddddddddddddddddddddddddddddddddddd";
+  const checkedOutSha = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
+  const repository = "LCV-Ideas-Software/cross-review-fixture";
+  const tag = "v09.08.07";
+  await mkdir(mockBin, { recursive: true });
+  await Promise.all([
+    writeFile(dispatchScript, `#!/usr/bin/env bash\n${dispatchPublishRunBody}\n`, "utf8"),
+    writeFile(
+      reconcileReleaseScript,
+      `#!/usr/bin/env bash\n${reconcileGitHubReleaseRunBody}\n`,
+      "utf8",
+    ),
+    writeFile(
+      resolveRefScript,
+      `#!/usr/bin/env bash
+set -u
+github_api() {
+  printf '%s\n' 'gh: Service Unavailable; upstream diagnostic mentioned HTTP 404 (HTTP 503)' >&2
+  return 1
+}
+${publishHttpStatusHelper}
+${resolveApiRefToCommitFunction}
+set +e
+resolve_api_ref_to_commit "tags/$MOCK_TAG" >/dev/null
+ref_status=$?
+set -e
+printf '%s\n' "$ref_status" >"$MOCK_REF_STATUS_FILE"
+`,
+      "utf8",
+    ),
+    writeFile(
+      path.join(mockBin, "gh"),
+      `#!/usr/bin/env bash
+arguments="$*"
+case "$MOCK_GH_MODE" in
+  dispatch)
+    if [ "$1" = "api" ]; then
+      printf '%s\n' 'gh: Service Unavailable; upstream diagnostic mentioned HTTP 404 (HTTP 503)' >&2
+      exit 1
+    fi
+    if [ "$1" = "workflow" ]; then
+      printf '%s\n' "$arguments" >>"$MOCK_WORKFLOW_LOG"
+      exit 0
+    fi
+    ;;
+  latest)
+    if [[ "$arguments" == *"git/ref/tags/$MOCK_TAG"* ]]; then
+      printf '{"object":{"type":"commit","sha":"%s"}}\n' "$MOCK_TARGET_SHA"
+      exit 0
+    fi
+    if [[ "$arguments" == *"git/ref/heads/main"* ]]; then
+      printf '{"object":{"type":"commit","sha":"%s"}}\n' "$MOCK_TARGET_SHA"
+      exit 0
+    fi
+    if [[ "$arguments" == *"/compare/"* ]]; then
+      printf '%s\n' identical
+      exit 0
+    fi
+    if [[ "$arguments" == *"/releases/latest"* ]]; then
+      printf '%s\n' 'gh: Service Unavailable; upstream diagnostic mentioned HTTP 404 (HTTP 503)' >&2
+      exit 1
+    fi
+    ;;
+esac
+printf 'gh: unexpected fixture invocation: %s (HTTP 500)\n' "$arguments" >&2
+exit 1
+`,
+      "utf8",
+    ),
+    writeFile(
+      path.join(mockBin, "git"),
+      `#!/usr/bin/env bash
+if [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then
+  printf '%s\n' "$MOCK_TARGET_SHA"
+  exit 0
+fi
+printf '%s\n' 'unexpected git fixture invocation' >&2
+exit 1
+`,
+      "utf8",
+    ),
+    writeFile(
+      path.join(mockBin, "sleep"),
+      `#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$MOCK_SLEEP_LOG"
+`,
+      "utf8",
+    ),
+    writeFile(sleepLog, "", "utf8"),
+    writeFile(workflowLog, "", "utf8"),
+  ]);
+  await Promise.all(
+    [
+      dispatchScript,
+      reconcileReleaseScript,
+      resolveRefScript,
+      path.join(mockBin, "gh"),
+      path.join(mockBin, "git"),
+      path.join(mockBin, "sleep"),
+    ].map((file) => chmod(file, 0o755)),
+  );
+
+  const expectShellFailure = (
+    script,
+    env,
+    { cwd = githubHttpStatusFixtureRoot, runnerTemp = "." } = {},
+  ) => {
+    let failure;
+    try {
+      execFileSync("bash", [script], {
+        cwd,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${mockBin}${path.delimiter}${process.env.PATH ?? ""}`,
+          RUNNER_TEMP: runnerTemp,
+          ...env,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure, `${path.basename(script)} must fail closed`);
+    return `${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`;
+  };
+
+  const dispatchError = expectShellFailure(dispatchScript, {
+    GH_TOKEN: "fixture-token",
+    GITHUB_REPOSITORY: repository,
+    GITHUB_RUN_ID: "dispatch-503-with-404",
+    MOCK_GH_MODE: "dispatch",
+    MOCK_SLEEP_LOG: "sleep.log",
+    MOCK_WORKFLOW_LOG: "workflow.log",
+    TAG: tag,
+    TARGET_SHA: targetSha,
+  });
+  assert.match(
+    dispatchError,
+    /Could not safely resolve tag .* before dispatch/,
+    "tag visibility must reject a 503 whose diagnostic mentions HTTP 404",
+  );
+  assert.equal(
+    await readFile(sleepLog, "utf8"),
+    "",
+    "a non-404 tag-visibility failure must not be retried as eventual 404 propagation",
+  );
+  assert.equal(
+    await readFile(workflowLog, "utf8"),
+    "",
+    "a non-404 tag-visibility failure must never dispatch Publish",
+  );
+
+  const latestError = expectShellFailure(
+    reconcileReleaseScript,
+    {
+      GH_TOKEN: "fixture-token",
+      GITHUB_REPOSITORY: repository,
+      GITHUB_RUN_ID: "latest-503-with-404",
+      IMMUTABILITY_TOKEN: "fixture-immutability-token",
+      MOCK_GH_MODE: "latest",
+      MOCK_TAG: tag,
+      MOCK_TARGET_SHA: checkedOutSha,
+      PACKAGE_SHA256: "e".repeat(64),
+      PACKAGE_TARBALL: "cross-review-fixture-9.8.7.tgz",
+      PACKAGE_VERSION: "9.8.7",
+      PRERELEASE: "false",
+      PUBLISH_EVENT_REF: `refs/tags/${tag}`,
+      PUBLISH_REF_PROTECTED: "true",
+      PUBLISH_REF_TYPE: "tag",
+      TAG: tag,
+      VERIFIED_SHA: checkedOutSha,
+    },
+    {
+      cwd: root,
+      runnerTemp: githubHttpStatusFixtureRoot.replaceAll("\\", "/"),
+    },
+  );
+  assert.match(
+    latestError,
+    /Could not determine the current GitHub latest release/,
+    "latest-release discovery must reject a 503 whose diagnostic mentions HTTP 404",
+  );
+
+  execFileSync("bash", [resolveRefScript], {
+    cwd: githubHttpStatusFixtureRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GITHUB_REPOSITORY: repository,
+      GITHUB_RUN_ID: "ref-503-with-404",
+      MOCK_REF_STATUS_FILE: "ref-status.txt",
+      MOCK_TAG: tag,
+      RUNNER_TEMP: ".",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.equal(
+    await readFile(refStatusFile, "utf8"),
+    "1\n",
+    "ref resolution must classify a 503 mentioning HTTP 404 as a blocking API failure, not absence",
+  );
+} finally {
+  await rm(githubHttpStatusFixtureRoot, { recursive: true, force: true });
+}
+
 for (const codeScanningGate of [
   "permissions: write-all",
   "Wait for exact CodeQL analyses and require zero results",
@@ -2153,10 +2672,89 @@ for (const targetRecoveryContract of [
     `release target recovery must remain authenticated, immutable, and fail closed: ${targetRecoveryContract}`,
   );
 }
+for (const publishEvidenceContract of [
+  'publish_workflow_path=".github/workflows/publish.yml"',
+  "actions/runs?head_sha=$target_sha&event=workflow_dispatch&per_page=100",
+  "--paginate --slurp",
+  ".path == $workflow_path",
+  ".head_branch == $tag",
+  ".head_sha == $sha",
+  ".head_repository.full_name == $repo",
+  ".repository.full_name == $repo",
+  '.event == "workflow_dispatch"',
+  '.status == "completed"',
+  '.conclusion == "success"',
+  "should_dispatch=false",
+]) {
+  assert.ok(
+    tagCheckBlock.includes(publishEvidenceContract),
+    `canonical-tag reconciliation must use exact successful Publish evidence: ${publishEvidenceContract}`,
+  );
+}
+assert.match(
+  tagCheckBlock,
+  /if \[ -n "\$canonical_sha" \]; then[\s\S]*?actions\/runs\?head_sha=\$target_sha[\s\S]*?if \[ "\$successful_publish_count" -gt 0 \]; then[\s\S]*?should_dispatch=false[\s\S]*?else[\s\S]*?should_dispatch=true/,
+  "only a canonical tag with exact successful Publish evidence may suppress redispatch",
+);
+assert.match(
+  tagCheckBlock,
+  /if \[ -z "\$target_sha" \]; then[\s\S]*?--paginate --slurp[\s\S]*?releases\?per_page=100[\s\S]*?release_count/,
+  "auto-tag must still discover tagless draft release identities through the paginated list endpoint",
+);
+for (const durableReleaseContract of [
+  "releases/tags/$TAG",
+  "expected_asset_name",
+  ".tag_name == $tag",
+  ".target_commitish == $sha",
+  ".draft == false",
+  ".immutable == true",
+  '(.assets | type) == "array"',
+  "(.assets | length) == 1",
+  ".assets[0].name == $asset",
+  '.assets[0].state == "uploaded"',
+  'test("^sha256:[0-9a-f]{64}$")',
+  "durable_release_evidence",
+  'github_api_error_is_exact_status "$release_error" 404',
+]) {
+  assert.ok(
+    tagCheckBlock.includes(durableReleaseContract),
+    `expired workflow runs require exact durable GitHub Release evidence: ${durableReleaseContract}`,
+  );
+}
+assert.match(
+  tagCheckBlock,
+  /if \[ "\$successful_publish_count" -eq 0 \]; then[\s\S]*?releases\/tags\/\$TAG[\s\S]*?elif \[ "\$durable_release_evidence" = "true" \]; then[\s\S]*?should_dispatch=false/,
+  "durable release evidence may suppress recovery only when no exact successful Publish run remains",
+);
+assert.match(
+  tagCheckBlock,
+  /if github_api_error_is_exact_status "\$release_error" 404; then[\s\S]*?else[\s\S]*?cat "\$release_error" >&2[\s\S]*?exit "\$release_status"/,
+  "only a 404 may represent an absent Release; other API failures must fail closed",
+);
 assert.doesNotMatch(
   tagCheckBlock,
-  /releases\/tags\//,
-  "auto-tag must discover draft release identities through the paginated list endpoint",
+  /grep[^\n]*HTTP 404/,
+  "release-target GitHub API errors must never use free-text HTTP 404 matching",
+);
+assert.match(
+  tagCheckBlock,
+  /if github_api_error_is_exact_status "\$ref_error" 404; then[\s\S]*?return 2/,
+  "remote-tag discovery must use exact terminal HTTP status classification",
+);
+assert.match(
+  reconcileGitHubReleaseRunBody,
+  /if github_api_error_is_exact_status "\$latest_error" 404; then/,
+  "GitHub latest discovery must use exact terminal HTTP status classification",
+);
+assert.match(
+  reconcileGitHubReleaseRunBody,
+  /if github_api_error_is_exact_status "\$ref_error" 404; then/,
+  "Git reference discovery must use exact terminal HTTP status classification",
+);
+assert.doesNotMatch(
+  reconcileGitHubReleaseRunBody,
+  /grep[^\n]*HTTP 404/,
+  "GitHub Release reconciliation must never use free-text HTTP 404 matching",
 );
 const createTagBlock = autoTagWorkflow.match(
   /- name: Create tag through the GitHub API[\s\S]*?(?=\n\s+- name: Dispatch publish workflow)/,
@@ -2181,6 +2779,16 @@ const dispatchPublishBlock = autoTagWorkflow.match(
   /- name: Dispatch publish workflow[\s\S]*?(?=\n\s+timeout-minutes:)/,
 )?.[0];
 assert.ok(dispatchPublishBlock, "auto-tag must retain explicit publish redispatch");
+assert.match(
+  dispatchPublishBlock,
+  /elif ! github_api_error_is_exact_status "\$ref_error" 404; then/,
+  "tag visibility must use exact terminal HTTP status classification",
+);
+assert.doesNotMatch(
+  dispatchPublishBlock,
+  /grep[^\n]*HTTP 404/,
+  "tag visibility must never use free-text HTTP 404 matching",
+);
 assert.doesNotMatch(
   dispatchPublishBlock,
   /steps\.version-change\.outputs\.changed == 'true'/,
@@ -2189,7 +2797,7 @@ assert.doesNotMatch(
 assert.doesNotMatch(
   dispatchPublishBlock,
   /steps\.check\.outputs\.exists/,
-  "a valid existing canonical tag must redispatch publish.yml so partial publication can recover",
+  "a valid existing canonical tag without exact success evidence must remain eligible for recovery",
 );
 assert.match(
   autoTagWorkflow,

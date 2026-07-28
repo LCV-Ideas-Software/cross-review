@@ -173,6 +173,13 @@ jobs:
           github_api() {
             GH_TOKEN="$github_token" gh api "$@"
           }
+          github_api_error_is_exact_status() {
+            local error_file="$1" expected_status="$2" observed_statuses
+            observed_statuses="$(sed -nE \
+              's/^gh: .* \(HTTP ([0-9]{3})\)$/\1/p' \
+              "$error_file" | sort -u)"
+            [ "$observed_statuses" = "$expected_status" ]
+          }
           resolve_remote_tag() {
             local tag="$1"
             local ref_json ref_error object_type object_sha tag_json status
@@ -181,7 +188,7 @@ jobs:
               :
             else
               status=$?
-              if grep -q 'HTTP 404' "$ref_error"; then
+              if github_api_error_is_exact_status "$ref_error" 404; then
                 return 2
               fi
               cat "$ref_error" >&2
@@ -262,18 +269,98 @@ jobs:
             process.stdin.on("data", (chunk) => { input += chunk; });
             process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version));
           ' <<<"$target_package")"
+          target_name="$(node -e '
+            let input = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { input += chunk; });
+            process.stdin.on("end", () => process.stdout.write(JSON.parse(input).name));
+          ' <<<"$target_package")"
           if [ "$target_version" != "$VERSION" ]; then
             echo "::error::Release target $target_sha contains package version $target_version, expected $VERSION."
             exit 1
           fi
+          expected_asset_name="$(node -e '
+            const [name, version] = process.argv.slice(1);
+            if (!name || !version || /[\r\n]/.test(name) || /[\r\n]/.test(version)) {
+              throw new Error("package name and version must be non-empty single-line strings");
+            }
+            const normalizedName = name.replace(/^@/, "").replaceAll("/", "-");
+            process.stdout.write(`${normalizedName}-${version}.tgz`);
+          ' "$target_name" "$target_version")"
 
           echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
-          echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
           if [ -n "$canonical_sha" ]; then
+            publish_workflow_path=".github/workflows/publish.yml"
+            publish_run_pages="$(github_api --method GET --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$target_sha&event=workflow_dispatch&per_page=100")"
+            successful_publish_count="$(jq -er \
+              --arg workflow_path "$publish_workflow_path" \
+              --arg tag "$TAG" \
+              --arg sha "$target_sha" \
+              --arg repo "$GITHUB_REPOSITORY" \
+              '[.[] | .workflow_runs[]? | select(
+                .path == $workflow_path and
+                .head_branch == $tag and
+                .head_sha == $sha and
+                .head_repository.full_name == $repo and
+                .repository.full_name == $repo and
+                .event == "workflow_dispatch" and
+                .status == "completed" and
+                .conclusion == "success"
+              )] | length' \
+              <<<"$publish_run_pages")"
+            durable_release_evidence=false
+            if [ "$successful_publish_count" -eq 0 ]; then
+              release_error="$RUNNER_TEMP/release-by-tag-${GITHUB_RUN_ID}.err"
+              if release_json="$(github_api --method GET \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>"$release_error")"; then
+                durable_release_evidence="$(jq -er \
+                  --arg tag "$TAG" \
+                  --arg sha "$target_sha" \
+                  --arg asset "$expected_asset_name" \
+                  'if (try (
+                    .tag_name == $tag and
+                    .target_commitish == $sha and
+                    .draft == false and
+                    .immutable == true and
+                    (.assets | type) == "array" and
+                    (.assets | length) == 1 and
+                    .assets[0].name == $asset and
+                    .assets[0].state == "uploaded" and
+                    (.assets[0].digest | test("^sha256:[0-9a-f]{64}$"))
+                  ) catch false)
+                  then "true"
+                  else "false"
+                  end' \
+                  <<<"$release_json")"
+              else
+                release_status=$?
+                if github_api_error_is_exact_status "$release_error" 404; then
+                  echo "No GitHub Release exists for canonical tag $TAG; publication recovery remains enabled."
+                else
+                  cat "$release_error" >&2
+                  exit "$release_status"
+                fi
+              fi
+            fi
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Canonical tag $TAG already resolves to validated target $target_sha; publication will be reconciled idempotently."
+            if [ "$successful_publish_count" -gt 0 ]; then
+              echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
+              echo "Canonical tag $TAG already has successful exact-identity Publish evidence at $target_sha; no redispatch is required."
+            elif [ "$durable_release_evidence" = "true" ]; then
+              echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
+              echo "Canonical tag $TAG has an exact immutable GitHub Release at $target_sha with uploaded asset $expected_asset_name and a valid sha256 digest; no redispatch is required."
+            else
+              echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
+              echo "Canonical tag $TAG has neither successful exact-identity Publish-run evidence nor exact durable GitHub Release evidence at $target_sha; publication will be reconciled idempotently."
+            fi
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
             echo "Canonical tag $TAG will be created at validated target $target_sha (version epoch starts at $VERSION_BOUNDARY_SHA)."
           fi
       - name: Require every exact-SHA push workflow to pass
@@ -478,6 +565,13 @@ jobs:
           github_api() {
             GH_TOKEN="$github_token" gh api "$@"
           }
+          github_api_error_is_exact_status() {
+            local error_file="$1" expected_status="$2" observed_statuses
+            observed_statuses="$(sed -nE \
+              's/^gh: .* \(HTTP ([0-9]{3})\)$/\1/p' \
+              "$error_file" | sort -u)"
+            [ "$observed_statuses" = "$expected_status" ]
+          }
           github_workflow() {
             GH_TOKEN="$github_token" gh workflow "$@"
           }
@@ -516,7 +610,7 @@ jobs:
               fi
               echo "Tag $TAG is visible through the authenticated API at exact target $expected_sha."
               break
-            elif ! grep -q 'HTTP 404' "$ref_error"; then
+            elif ! github_api_error_is_exact_status "$ref_error" 404; then
               cat "$ref_error" >&2
               echo "::error::Could not safely resolve tag $TAG before dispatch."
               exit 1

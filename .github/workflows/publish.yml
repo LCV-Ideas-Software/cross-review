@@ -1045,6 +1045,13 @@ jobs:
           github_api() {
             GH_TOKEN="$github_token" gh api "$@"
           }
+          github_api_error_is_exact_status() {
+            local error_file="$1" expected_status="$2" observed_statuses
+            observed_statuses="$(sed -nE \
+              's/^gh: .* \(HTTP ([0-9]{3})\)$/\1/p' \
+              "$error_file" | sort -u)"
+            [ "$observed_statuses" = "$expected_status" ]
+          }
           github_release() {
             GH_TOKEN="$github_token" gh release "$@"
           }
@@ -1087,7 +1094,7 @@ jobs:
               jq -er '.tag_name' <<<"$latest_json"
               return
             fi
-            if grep -q 'HTTP 404' "$latest_error"; then
+            if github_api_error_is_exact_status "$latest_error" 404; then
               printf ''
               return
             fi
@@ -1102,7 +1109,7 @@ jobs:
             ref_json="$RUNNER_TEMP/ref-${GITHUB_RUN_ID}-${RANDOM}.json"
             ref_error="$RUNNER_TEMP/ref-${GITHUB_RUN_ID}-${RANDOM}.err"
             if ! github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/$ref_path" >"$ref_json" 2>"$ref_error"; then
-              if grep -q 'HTTP 404' "$ref_error"; then
+              if github_api_error_is_exact_status "$ref_error" 404; then
                 return 2
               fi
               cat "$ref_error" >&2
