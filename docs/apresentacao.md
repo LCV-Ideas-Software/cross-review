@@ -5,6 +5,12 @@
 > changelog resumido. As seções 1 a 3 e 8 a 9 são acessíveis a qualquer
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
+>
+> Estado do source/release target em 2026-07-28: `4.5.31`. O registro pode ficar
+> atrás do source durante o workflow; consulte `npm view
+@lcv-ideas-software/cross-review version` para a publicação e `server_info`
+> para a versão runtime efetivamente carregada. Recarregue a janela após
+> upgrade do pacote, mudança de configuração central ou variáveis.
 
 ---
 
@@ -167,17 +173,40 @@ executam uma **pré-checagem puramente textual de evidência**. Ela detecta o
 caso de uma submissão que **afirma** ter concluído um trabalho ("os testes
 passaram", "o build está verde") mas **não embute nenhuma evidência
 concreta** (trechos de diff, saída de comando, hashes, referências de
-linha). Nesse caso, a sessão é encerrada localmente com
-`needs_evidence_preflight` — **sem gastar orçamento de API**. A pré-checagem
-é deliberadamente conservadora: um plano de trabalho legítimo, sem diff,
+linha). Nesse caso, o loop unânime preserva o draft/evidência e finaliza a
+tentativa como `aborted / needs_evidence_preflight`; uma rodada direta registra
+a rejeição local e permanece iterável — ambos **sem gastar orçamento de API**.
+O mesmo caller autenticado pode corrigir e reenviar a evidência inline ou no
+campo `evidence`, sem operação humana. A
+pré-checagem é deliberadamente conservadora: um plano legítimo, sem diff,
 passa normalmente.
 
 Há também uma **pré-checagem de veracidade operacional** para alegações de
 runtime, versão, data, histórico de sessão, workflow, deploy ou autorização.
 Quando uma dessas alegações contradiz o runtime carregado ou aparece sem fonte
-verificável, a sessão é bloqueada com `needs_truthfulness_preflight`; desde
-`v04.02.04`, o operador pode anexar evidência e reexecutar essa checagem local
-com `session_truthfulness_preflight_check`, sem chamar provedores.
+correspondente, o loop unânime é preservado e finalizado como
+`aborted / needs_truthfulness_preflight`; uma rodada direta registra o bloqueio
+local e pode receber a correção seguinte. O próprio agente autenticado pode
+corrigir a evidência inline ou no campo `evidence`, usar o preflight local para
+conferência e continuar sem pedir anexo manual ao operador.
+
+Esses controles não aceitam a palavra de um agente como prova. Todo voto
+`READY` precisa citar fonte rastreável ao artefato ou à evidência transportada.
+Se uma alegação operacional depender apenas de material enviado por um peer,
+dois revisores independentes precisam retornar `READY/verified` e citar path,
+SHA-256 e linhas brutas correlacionadas; `inferred` ou repetição narrativa não
+servem. Fatos do runtime só corroboram
+uma alegação runtime correspondente e, isoladamente, não provam revisão;
+caso contrário, o voto é rebaixado para `NEEDS_EVIDENCE`. Alegações de
+workflow, deploy, hashes, testes e autorização precisam coincidir com valores
+presentes na evidência, e itens `open` ou `not_resurfaced` impedem a
+convergência. O autor de uma ask pode retirar somente a própria exigência após
+revalidação estrita (`requester_reverified`); silêncio não a fecha. Só um host
+humano com capability `operator` separada pode atribuir autoridade de operador
+ou dar disposição terminal; tokens de peers não servem como operador. Cada anexo
+novo registra autor, origem, horário, bytes e SHA-256; a leitura recalcula
+a integridade e falha fechada se houver adulteração. Anexos legados ficam
+marcados como `legacy_unverified` e ficam fora do corpus confiável.
 
 ---
 
@@ -287,18 +316,26 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 
 | Par          | Modelo canônico          |
 | ------------ | ------------------------ |
-| OpenAI/Codex | `gpt-5.5`                |
-| Anthropic    | `claude-opus-4-8`        |
+| OpenAI/Codex | `gpt-5.6-sol`            |
+| Anthropic    | `claude-fable-5`         |
 | Google       | `gemini-3.1-pro-preview` |
 | DeepSeek     | `deepseek-v4-pro`        |
-| xAI/Grok     | `grok-4.3`               |
+| xAI/Grok     | `grok-4.5`               |
 | Perplexity   | `sonar-reasoning-pro`    |
 
-`claude-fable-5` é suportado como opção Anthropic explícita para o par
-`claude`. Ele não substitui o pin padrão `claude-opus-4-8`; quando o operador
-o seleciona, a seleção de modelo o reconhece como suportado, refusals
-`stop_reason="refusal"` bloqueiam a unanimidade como `provider_refusal`, e o
-rate card Anthropic deve ser ajustado para os preços de Fable 5.
+No Fable 5, o adaptador omite o campo explícito `thinking`, pois o raciocínio
+adaptativo é automático, e usa `output_config.effort` para a profundidade. A
+retenção documentada é de 30 dias, sem opção ZDR. No GPT-5.6 Sol, `ultra` é um
+modo do produto Codex, não um `reasoning.effort` literal da Responses API; o
+cross-review aceita esse alias na configuração e envia `max` à API. O Grok 4.5
+aceita apenas `low`/`medium`/`high` e recebe `high` quando o alias é usado.
+Overrides explícitos para famílias OpenAI anteriores são normalizados ao enum
+da família: teto `xhigh` em GPT-5.5/5.4/5.2 e `high` em GPT-5.1/GPT-5.
+
+O `claude-opus-5` também é suportado como override explícito, sem substituir o
+Fable 5 canônico e sem criar fallback automático. Seu request usa pensamento
+adaptativo com exibição omitida, `output_config.effort` e o rate card próprio
+de US$ 5/MTok de entrada e US$ 25/MTok de saída.
 
 Como o `cross-review` é orientado à correção, os adaptadores pedem
 explicitamente o maior nível de raciocínio que cada API oficial oferece. O
@@ -336,8 +373,16 @@ O runtime integra-se ao cache de prompt de cada provedor compatível, emite um
 evento uniforme `provider.cache.usage` e grava um `cache_manifest.json` por
 sessão. Os modos de cache observados são: `auto` (OpenAI, DeepSeek, Grok),
 `explicit` (Anthropic), `implicit` (Gemini) e `not_supported` (Perplexity,
-cuja API Sonar não expõe superfície de cache). O cache pode ser desativado
-globalmente com `CROSS_REVIEW_DISABLE_CACHE=true`.
+cuja API Sonar não expõe superfície de cache).
+
+`CROSS_REVIEW_DISABLE_CACHE=true` remove globalmente os controles de cache que
+o cliente consegue influenciar. Ele não pode obrigar Gemini ou DeepSeek a
+desativar o cache implícito/automático administrado pelo serviço.
+
+GPT-5.6 Sol usa `prompt_cache_options` em modo implícito com TTL de 30 minutos
+e contabiliza leitura e escrita de cache separadamente. Grok 4.5 usa
+`prompt_cache_key`, com retenção administrada pela xAI e sem inferir tokens de
+escrita.
 
 ### 4.8. As 30 ferramentas MCP
 
@@ -345,7 +390,8 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 
 **Descoberta e diagnóstico**
 
-- `server_info` — informações e capacidades do servidor.
+- `server_info` — informações, capacidades e estado da configuração carregada,
+  incluindo hashes, erro de parse e `reload_required`.
 - `runtime_capabilities` — capacidades efetivas do runtime.
 - `probe_peers` — testa a disponibilidade e a autenticação dos pares.
 
@@ -364,11 +410,13 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_start_round` — inicia uma rodada (em segundo plano).
 - `run_until_unanimous` — roda rodadas até a unanimidade (bloqueante).
 - `session_start_unanimous` — roda até a unanimidade (em segundo plano).
-- `session_cancel_job` — solicita o cancelamento cooperativo de um trabalho.
+- `session_cancel_job` — solicita cancelamento cooperativo; se o job ou a
+  sessão já terminou, responde idempotentemente com o estado terminal.
 
 **Acompanhamento**
 
-- `session_poll` — sonda o estado de uma sessão.
+- `session_poll` — sonda o estado com `detail="summary"` limitado por
+  padrão; `detail="full"` é a opção forense explícita.
 - `session_events` — lê o fluxo de eventos.
 - `session_metrics` — métricas da sessão.
 - `session_doctor` — diagnóstico e modo de reparo opcional; histórico terminal
@@ -378,12 +426,23 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_peer_reliability_report` — relatório agregado e somente leitura por
   peer.
 - `session_check_convergence` — verifica a convergência.
-- `session_truthfulness_preflight_check` — reexecuta a pré-checagem de
-  veracidade de uma sessão sem chamar provedores.
+- `session_preflight_check` — executa os mesmos gates de evidência e veracidade
+  da rodada real, sem chamar provedores.
+- `session_truthfulness_preflight_check` — alias legado do preflight combinado.
+
+`session_poll` não retransmite por padrão os corpos completos `text`, `raw`
+e `structured` dos peers de rodadas anteriores.
+`active_round_number` indica a rodada em execução e
+`latest_completed_round_number` a rodada mais recente já gravada. Respostas
+com `response_format="markdown"` são Markdown real, com HTML de conteúdo
+externo neutralizado. O status compacto de jobs é durável entre hosts/restarts;
+um cancelamento tardio retorna `job_already_terminal` ou
+`session_already_terminal`, acompanhado de `final_state`.
 
 **Evidência**
 
-- `session_attach_evidence` — anexa evidência à sessão.
+- `session_attach_evidence` — promoção opcional de autoridade, exclusiva do
+  operador; agentes usam `evidence`, persistido automaticamente.
 - `session_evidence_checklist_update` — atualiza a checklist de evidência.
 - `session_evidence_judge_pass` — passada de juiz de evidência.
 - `session_evidence_judge_consensus_pass` — passada de juiz por consenso.
@@ -417,25 +476,26 @@ grava ainda um log NDJSON por processo sob `<data_dir>/logs`.
 ### Instalação via npm
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 ```
+
+Use somente o pacote publicado pelo registro; não instale o runtime globalmente
+a partir dos fontes e não aponte o host MCP para este checkout. Depois,
+recarregue a janela MCP e confirme a versão efetiva em `server_info`.
 
 Alternativamente, pelo espelho do GitHub Packages:
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 A instalação disponibiliza dois binários: `cross-review` (o servidor MCP) e
 `cross-review-dashboard` (o painel local).
 
-### Build a partir do código-fonte
+### Política de runtime no desenvolvimento
 
-```bash
-npm install
-npm run build
-node dist/src/mcp/server.js
-```
+Builds e testes de validação podem rodar no checkout, mas não constituem uma
+instalação. O host MCP deve executar somente a versão global publicada.
 
 ### Registro no host MCP
 
@@ -506,9 +566,13 @@ Use as variáveis de substituição apenas quando quiser fixar um modelo
 diferente do canônico:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.5", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
 ```
+
+O arquivo central e as variáveis são carregados uma vez no início do processo.
+Depois de alterá-los, reinicie ou recarregue a janela/host MCP e confirme em
+`server_info.config_load` que `reload_required=false`; não há live reload.
 
 ### 6.4. Tempo limite e streaming
 
@@ -516,7 +580,9 @@ diferente do canônico:
   de 30 minutos.
 - `CROSS_REVIEW_STREAM_EVENTS` e `CROSS_REVIEW_STREAM_TOKENS` — controlam o
   streaming; ambos ativos por padrão.
-- `CROSS_REVIEW_DISABLE_CACHE=true` — desativa o cache de prompt globalmente.
+- `CROSS_REVIEW_DISABLE_CACHE=true` — remove globalmente os controles de cache
+  que o cliente consegue influenciar; não desliga caching administrado pelo
+  provedor.
 
 ---
 
@@ -527,17 +593,25 @@ diferente do canônico:
 - **Node.js ≥ 22**, com módulos ECMAScript (`"type": "module"`).
 - Escrito em **TypeScript**.
 
-### Dependências de runtime
+### Dependências de runtime e bundle
 
-| Pacote                      | Função                                                     |
-| --------------------------- | ---------------------------------------------------------- |
-| `@modelcontextprotocol/sdk` | implementação do protocolo MCP                             |
-| `@anthropic-ai/sdk`         | cliente da API Anthropic (Claude)                          |
-| `@google/genai`             | cliente da API Google Gen AI (Gemini)                      |
-| `openai`                    | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
-| `zod`                       | validação de esquemas de entrada                           |
-| `pino`                      | logs estruturados (NDJSON)                                 |
-| `proper-lockfile`           | trava de arquivo para concorrência segura                  |
+| Pacote                      | Escopo        | Função                                                     |
+| --------------------------- | ------------- | ---------------------------------------------------------- |
+| `@modelcontextprotocol/sdk` | `bundled/dev` | implementação MCP incorporada ao bundle stdio              |
+| `@anthropic-ai/sdk`         | runtime       | cliente da API Anthropic (Claude)                          |
+| `@google/genai`             | runtime       | cliente da API Google Gen AI (Gemini)                      |
+| `openai`                    | runtime       | cliente OpenAI — atende Codex, DeepSeek, Grok e Perplexity |
+| `zod`                       | runtime       | validação de esquemas de entrada                           |
+| `pino`                      | runtime       | logs estruturados (NDJSON)                                 |
+| `proper-lockfile`           | runtime       | trava de arquivo para concorrência segura                  |
+| `protobufjs`                | runtime       | serialização protobuf usada pela árvore de runtime         |
+
+O `package.json` é a fonte de verdade para os intervalos declarados, e o
+`package-lock.json` registra a resolução exata deste checkout do repositório;
+consumidores resolvem os intervalos em seus próprios lockfiles.
+
+O SDK MCP é declarado em `devDependencies`, mas o build o incorpora ao artefato
+stdio publicado; ele não fica como dependência de produção ausente no consumidor.
 
 ### Dependências de desenvolvimento
 
@@ -552,41 +626,74 @@ O histórico completo está em [CHANGELOG.md](../CHANGELOG.md). A exibição
 pública de versão segue o padrão `v00.00.00`; as versões do pacote npm seguem
 SemVer. Marcos principais:
 
-| Versão           | Marco                                                                                                                                                                                   |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                                                                                                      |
-| `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                                                                                              |
-| `v02.14.00`      | Grok entra no painel de revisão.                                                                                                                                                        |
-| `v02.21.00`      | Cache de prompt entre provedores.                                                                                                                                                       |
-| `v02.24.00`      | Trava de proveniência de evidência.                                                                                                                                                     |
-| `v02.25.00`      | Terceiro modo de deliberação: `circular`.                                                                                                                                               |
-| `v03.00.00`      | Perplexity entra como sexto par — o painel passa a sexteto.                                                                                                                             |
-| `v03.01.00`      | Arquivo de configuração central (`config.json`).                                                                                                                                        |
-| `v03.05.00`      | Pré-checagem de evidência antes de chamadas pagas.                                                                                                                                      |
-| `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                                                                                             |
-| `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais.                                                                        |
-| `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                                                                                               |
-| `v04.02.02`      | Refresh de providers, pins e rate cards.                                                                                                                                                |
-| `v04.02.03`      | Pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                                                                                                                               |
-| `v04.02.04`      | Truthfulness preflight mais auditável e ferramenta de reteste local.                                                                                                                    |
-| `v04.02.05`      | Auditoria de sessões, split de custo e proveniência do relator reforçados.                                                                                                              |
-| `v04.03.00`      | Disposition de evidência pendente, eval offline e relatório por peer.                                                                                                                   |
-| `v04.03.01`      | Classificação mais estrita de skips por erro de provider.                                                                                                                               |
-| `v04.03.02`      | Redaction de persistência, guards de sessão finalizada e identity gates.                                                                                                                |
-| `v04.03.03`      | Diagnósticos forenses, flush em sinais, retry 5xx e SDKs oficiais atuais.                                                                                                               |
-| `v04.03.04`      | Sequência de eventos cross-process, detector anti-fabricação, fallback Gemini e retry streaming reforçados.                                                                             |
-| `v04.03.05`      | Filtro de `<think>` em eventos streaming da Perplexity, config path `~` e smokes/dashboard reforçados.                                                                                  |
-| `v04.03.06`      | Isola `runtime-smoke` em data dir temporário para não contaminar o corpus real de sessões.                                                                                              |
-| `v04.03.07`      | Preflight de evidência bloqueia referências a artefatos externos de prova/log não anexados à sessão.                                                                                    |
-| `v04.03.08`      | Smoke focado para a matriz comportamental de `evidence_preflight`.                                                                                                                      |
-| `v04.03.09`      | Smoke focado para `truthfulness_preflight` e match mais estrito de evidências.                                                                                                          |
-| `v04.04.06`      | Fecha a cauda restante da revalidação Claude: leituras de evidência no orquestrador falham fechado, `session_doctor` separa histórico terminal de achados e T2#10 cai para 160 pins.    |
-| `v04.04.05`      | Fecha os 7 resíduos verificados da auditoria: realpath fail-closed em evidências, tipagem de `shadow_decision`, data derivada do CHANGELOG, comentário JWT e budget T2#10 bloqueado.    |
-| `v04.04.04`      | Rate cards por modelo no `config.json`, com seleção automática entre preços de Claude Opus 4.8 e Claude Fable 5 conforme o modelo configurado.                                          |
-| `v04.04.03`      | Reduz o débito T2#10 movendo contrato estático de SDK lazy imports para o smoke dedicado de source contracts.                                                                           |
-| `v04.04.02`      | Suporte operacional ao Claude Fable 5 como opção Anthropic explícita, com seleção verificada, refusal handling e docs de custo/retenção.                                                |
-| `v04.04.01`      | Varredura residual completa: identity gate em toda superfície mutável, cache/anexos, EventLog async, probe Perplexity auth-only, custo/cache e smoke dedicado para contratos de source. |
-| `v04.04.00`      | Release consolidada de auditoria: `log_level`, containment realpath, guard inicial anti-fabricação, identity audit, probe Perplexity e docs.                                            |
+| Versão           | Marco                                                                                                                                                                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.31`      | Substitui a tag 4.5.30 não publicada e torna a validação de licenças sensível à versão exata do SDK MCP empacotado.                                                                                                                    |
+| `v04.05.30`      | Atualiza OpenAI para 7.0.0 e o SDK MCP empacotado para 1.30.0; remove Socket/Step; impede redispatch imutável; exige status GitHub exato; e executa Zizmor direto via uv com checksum.                                                 |
+| `v04.05.29`      | Substitui a tag 4.5.28 não publicada, fixa `brace-expansion` 5.0.8 após o novo advisory de DoS bloquear o release e preserva a correção TOCTOU dos caller tokens validada pelo CodeQL.                                                 |
+| `v04.05.28`      | Prepara Claude Opus 5 como override explícito; limita amplificação do Evidence Broker sem enfraquecer blockers; corrige provenance, truthfulness e lifecycle interrompido; protege ACLs de tokens; e pagina eventos de forma compacta. |
+| `v04.05.27`      | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de dependências e recuperação de release.                                                                                             |
+| `v04.05.26`      | Empacota o runtime MCP e reforça automação no SHA exato, releases imutáveis e dependências atuais.                                                                                                                                     |
+| `v04.05.25`      | Corrige `body-parser` 2.3.0, `protobufjs` aninhado 7.6.5 e `brace-expansion` 5.0.7 no lock; aprova estritamente apenas `protobufjs@7.6.5` para script de instalação. Scorecard e Auto-tag permanecem fail-closed sem suprimir alertas. |
+| `v04.05.23`      | Aceita a resposta unitária de `npm view --json` no npm 12 somente com um objeto de metadata; vazia, múltipla ou inválida falha fechada antes do lock íntegro e da auditoria obrigatória.                                               |
+| `v04.05.22`      | Decodifica o envelope DSSE do npm e vincula a provenance SLSA ao workflow, à tag protegida e ao commit; a auditoria criptográfica posterior permanece obrigatória.                                                                     |
+| `v04.05.21`      | Alinha a fixture de telemetria de config durável à semântica JSON: propriedade opcional não configurada é omitida do snapshot persistido e de seu SHA-256 canônico.                                                                    |
+| `v04.05.20`      | Restaura fixture CI determinística do contrato budget/cache: Gemini recebe rate explícito e settlement conhecido não retém marcador de gasto desconhecido; o gate financeiro continua fail-closed.                                     |
+| `v04.05.19`      | Corrige o Auto-tag/Scorecard com lock temporário íntegro, `npm ci`, contrato do tarball e `npm audit signatures`; visibilidade sem pipe remoto.                                                                                        |
+| `v04.05.18`      | Grounding simétrico para vetos factuais, persistência imediata por peer, preflights terminais auditáveis, judges limitados, telemetria de cache/config e relatórios compactos acionáveis.                                              |
+| `v04.05.17`      | Publica a manutenção acumulada dos SDKs e preserva o bloqueio estrito de scripts npm com autorização exata do lifecycle no-op do Google Gen AI 2.12.0.                                                                                 |
+| `v04.05.16`      | Limita o polling padrão, distingue rodada ativa de concluída, entrega Markdown real seguro e torna estado/cancelamento de jobs durável e explícito entre hosts.                                                                        |
+| `v04.05.15`      | Publica a continuidade do Evidence Broker com hardgate Dependabot completo: npm suportado no updater, npm 12 no build/release e lock pip-compile íntegro.                                                                              |
+| `v04.05.14`      | Reprocessa localmente fontes READY históricas estritamente grounded sem reutilizá-las no prompt atual, colapsa aliases seguros e persiste a convergência reconciliada.                                                                 |
+| `v04.05.13`      | Remove a recorrência ReDoS do matcher de símbolos e impede tag/publicação enquanto CodeQL do SHA exato não concluir com zero alertas abertos.                                                                                          |
+| `v04.05.12`      | Corrige a convergência do Evidence Broker, roteia IDs pendentes automaticamente e preserva o bloqueio de evidência irrelevante ou parcial.                                                                                             |
+| `v04.05.11`      | Torna inequívoco o transporte autônomo de evidência: agentes usam `evidence`, sem upload humano, e a promoção opcional do operador não é confundida com requisito.                                                                     |
+| `v04.05.10`      | Corrige a corrida entre visibilidade do pacote e propagação da atestação npm com retry delimitado e fetch preso ao registry.                                                                                                           |
+| `v04.05.09`      | Separa remediação interna de pedidos reais dos peers, eliminando o deadlock DEF-10 da checklist sem relaxar grounding, custódia ou bloqueio de evidência não resolvida.                                                                |
+| `v04.05.08`      | Fecha sete alertas de code scanning com bootstrap npm 12.0.1 pinado por SHA-512 e checkout da branch padrão condicionado ao SHA que passou no CI.                                                                                      |
+| `v04.05.07`      | Embarca a remediação dos seis providers com CI antes da tag, npm 12.0.1, scripts estritos e cache desativado.                                                                                                                          |
+| `v04.05.06`      | Contratos wire por provider, budgets por peer, recovery controlado OpenAI/Gemini, grounding de diff/escapes, namespace runtime, terminais e FinOps corrigidos.                                                                         |
+| `v04.05.05`      | Follow-up de publicação: fixtures de cancelamento, health e contabilidade herméticas em runner limpo, com prova contra falso verde; produção permanece fail-closed sem rates.                                                          |
+| `v04.05.04`      | Corrige grounding, preflights, consenso, cancelamento multi-janela, contabilidade e tetos efetivos; expõe a cadeia de decisão e aceita `ultra` como alias normalizado por provider.                                                    |
+| `v04.05.03`      | Corrige ReDoS e falsos bloqueios do hardgate em citações autenticadas, aspas simples correlacionadas e bumps de versão do artefato.                                                                                                    |
+| `v04.05.02`      | Publicação do transporte automático de evidência com fixture de regressão hermético, independente da configuração central do operador.                                                                                                 |
+| `v04.05.01`      | Transporte automático de evidência autenticada, autoridade sem confusão de owner, painel independente estrito e terminais imutáveis.                                                                                                   |
+| `v04.05.00`      | Refresh dos seis providers e hardening de terminais, config fingerprint, custody, grounding e anti-fabricação.                                                                                                                         |
+| `v04.04.08`      | Piso transitivo corrigido de `hono` e advisory set corrente fechado.                                                                                                                                                                   |
+| `v04.04.07`      | Piso corrigido de `protobufjs` para consumidores downstream.                                                                                                                                                                           |
+| `v2.0.0-alpha.0` | Primeiro servidor MCP, exclusivamente via API/SDK.                                                                                                                                                                                     |
+| `v02.01.00`      | Primeira versão estável do `cross-review`.                                                                                                                                                                                             |
+| `v02.14.00`      | Grok entra no painel de revisão.                                                                                                                                                                                                       |
+| `v02.21.00`      | Cache de prompt entre provedores.                                                                                                                                                                                                      |
+| `v02.24.00`      | Trava de proveniência de evidência.                                                                                                                                                                                                    |
+| `v02.25.00`      | Terceiro modo de deliberação: `circular`.                                                                                                                                                                                              |
+| `v03.00.00`      | Perplexity entra como sexto par — o painel passa a sexteto.                                                                                                                                                                            |
+| `v03.01.00`      | Arquivo de configuração central (`config.json`).                                                                                                                                                                                       |
+| `v03.05.00`      | Pré-checagem de evidência antes de chamadas pagas.                                                                                                                                                                                     |
+| `v04.00.00`      | Projeto renomeado de `cross-review-v2` para `cross-review`.                                                                                                                                                                            |
+| `v04.01.00`      | Endurecimento de segurança: concorrência do armazenamento de sessão, superfície de DoS e redação de credenciais.                                                                                                                       |
+| `v04.02.00`      | Listagem de sessões paginada e semântica de cancelamento.                                                                                                                                                                              |
+| `v04.02.02`      | Refresh de providers, pins e rate cards.                                                                                                                                                                                               |
+| `v04.02.03`      | Pin Gemini 3.1 Pro Preview e rate card Gemini atualizado.                                                                                                                                                                              |
+| `v04.02.04`      | Truthfulness preflight mais auditável e ferramenta de reteste local.                                                                                                                                                                   |
+| `v04.02.05`      | Auditoria de sessões, split de custo e proveniência do relator reforçados.                                                                                                                                                             |
+| `v04.03.00`      | Disposition de evidência pendente, eval offline e relatório por peer.                                                                                                                                                                  |
+| `v04.03.01`      | Classificação mais estrita de skips por erro de provider.                                                                                                                                                                              |
+| `v04.03.02`      | Redaction de persistência, guards de sessão finalizada e identity gates.                                                                                                                                                               |
+| `v04.03.03`      | Diagnósticos forenses, flush em sinais, retry 5xx e SDKs oficiais atuais.                                                                                                                                                              |
+| `v04.03.04`      | Sequência de eventos cross-process, detector anti-fabricação, fallback Gemini e retry streaming reforçados.                                                                                                                            |
+| `v04.03.05`      | Filtro de `<think>` em eventos streaming da Perplexity, config path `~` e smokes/dashboard reforçados.                                                                                                                                 |
+| `v04.03.06`      | Isola `runtime-smoke` em data dir temporário para não contaminar o corpus real de sessões.                                                                                                                                             |
+| `v04.03.07`      | Preflight de evidência bloqueia referências a artefatos externos de prova/log não anexados à sessão.                                                                                                                                   |
+| `v04.03.08`      | Smoke focado para a matriz comportamental de `evidence_preflight`.                                                                                                                                                                     |
+| `v04.03.09`      | Smoke focado para `truthfulness_preflight` e match mais estrito de evidências.                                                                                                                                                         |
+| `v04.04.06`      | Fecha a cauda restante da revalidação Claude: leituras de evidência no orquestrador falham fechado, `session_doctor` separa histórico terminal de achados e T2#10 cai para 160 pins.                                                   |
+| `v04.04.05`      | Fecha os 7 resíduos verificados da auditoria: realpath fail-closed em evidências, tipagem de `shadow_decision`, data derivada do CHANGELOG, comentário JWT e budget T2#10 bloqueado.                                                   |
+| `v04.04.04`      | Rate cards por modelo no `config.json`, com seleção automática entre preços de Claude Opus 4.8 e Claude Fable 5 conforme o modelo configurado.                                                                                         |
+| `v04.04.03`      | Reduz o débito T2#10 movendo contrato estático de SDK lazy imports para o smoke dedicado de source contracts.                                                                                                                          |
+| `v04.04.02`      | Suporte operacional ao Claude Fable 5 como opção Anthropic explícita, com seleção verificada, refusal handling e docs de custo/retenção.                                                                                               |
+| `v04.04.01`      | Varredura residual completa: identity gate em toda superfície mutável, cache/anexos, EventLog async, probe Perplexity auth-only, custo/cache e smoke dedicado para contratos de source.                                                |
+| `v04.04.00`      | Release consolidada de auditoria: `log_level`, containment realpath, guard inicial anti-fabricação, identity audit, probe Perplexity e docs.                                                                                           |
 
 > Nota sobre o nome: até a versão 3.7.5, o projeto foi publicado como
 > `@lcv-ideas-software/cross-review-v2`. A v4.0.0 é a primeira versão sob o

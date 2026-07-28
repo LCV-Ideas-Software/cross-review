@@ -1,0 +1,4 @@
+# Direct Python tools used by CI. Regenerate the hash-locked companion with:
+# uv pip compile --upgrade --generate-hashes --python-version 3.12 python-tools-requirements.in --output-file python-tools-requirements.txt
+pre-commit==4.6.1
+pyyaml==6.0.3

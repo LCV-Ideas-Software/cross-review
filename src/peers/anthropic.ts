@@ -19,12 +19,16 @@
 // import inside `client()` so the @anthropic-ai/sdk module tree is not
 // pulled at server boot. Type-only import preserves all annotations.
 import type Anthropic from "@anthropic-ai/sdk";
+import { estimateCost, mergeCost, mergeUsage } from "../core/cost.js";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { statusInstruction, statusJsonSchema } from "../core/status.js";
 import type {
   AppConfig,
+  CostEstimate,
   GenerationResult,
   PeerAdapter,
   PeerCallContext,
+  PeerFailure,
   PeerId,
   PeerProbeResult,
   PeerResult,
@@ -34,6 +38,7 @@ import { redact } from "../security/redact.js";
 import { BasePeerAdapter, STREAM_TEXT_MAX_BYTES, StreamBufferOverflowError } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";
+import { assertAnthropicCompletion, withEstimatedTerminalBilling } from "./terminal.js";
 import { parseAnthropicContent, userPrompt } from "./text.js";
 
 type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -62,16 +67,41 @@ type AnthropicMessageLike = {
 class AnthropicRefusalError extends Error {
   readonly code = "anthropic_refusal";
   readonly stop_reason = "refusal";
+  readonly accounted_attempts: number;
 
   constructor(
     readonly model: string,
     readonly stop_details: AnthropicStopDetails | null | undefined,
-    readonly usage: AnthropicUsage | null | undefined,
+    readonly usage: TokenUsage | undefined,
+    readonly cost: CostEstimate | undefined,
     readonly billed: boolean,
   ) {
     const category = stop_details?.category ? ` category=${stop_details.category}` : "";
-    super(`Claude Fable 5 refusal from ${model}${category}.`);
+    super(`Anthropic refusal from ${model}${category}.`);
     this.name = "AnthropicRefusalError";
+    this.accounted_attempts =
+      typeof cost?.total_cost === "number" && Number.isFinite(cost.total_cost) ? 1 : 0;
+  }
+}
+
+class AnthropicMaxTokensError extends Error {
+  readonly code: "anthropic_max_tokens_retryable" | "anthropic_max_tokens_exhausted";
+  readonly stop_reason = "max_tokens";
+
+  constructor(
+    readonly model: string,
+    readonly usage: TokenUsage | undefined,
+    readonly cost: CostEstimate | undefined,
+    readonly accounted_attempts: number,
+    retryable: boolean,
+  ) {
+    super(
+      retryable
+        ? `anthropic_max_tokens_retryable: ${model} returned stop_reason=max_tokens; retrying once at medium effort.`
+        : `anthropic_max_tokens_exhausted: ${model} returned stop_reason=max_tokens after controlled recovery.`,
+    );
+    this.name = "AnthropicMaxTokensError";
+    this.code = retryable ? "anthropic_max_tokens_retryable" : "anthropic_max_tokens_exhausted";
   }
 }
 
@@ -92,6 +122,16 @@ function usageFromAnthropic(usage: AnthropicUsage | null | undefined): TokenUsag
     result.cache_provider_mode = "explicit";
   }
   return result;
+}
+
+function combinedAnthropicUsage(items: Array<TokenUsage | undefined>): TokenUsage | undefined {
+  return items.some(Boolean) ? mergeUsage(items) : undefined;
+}
+
+function pricedAnthropicAttemptCount(items: Array<CostEstimate | undefined>): number {
+  return items.filter(
+    (cost) => typeof cost?.total_cost === "number" && Number.isFinite(cost.total_cost),
+  ).length;
 }
 
 // v2.21.0: build the system block as a single cacheable text block when
@@ -122,17 +162,23 @@ function buildSystemBlock(
   ];
 }
 
-// v2.21.0: empirical Anthropic cache min-token guidance. At ~4 chars
-// per token we set the chars threshold so the warning fires when the
-// system prompt is unlikely to engage caching (Anthropic Opus 4.7
-// requires the cached block be at least the documented threshold).
-// Computed inline to avoid the smoke harness's "no stale max-tokens
-// limit literal" guard from misinterpreting the constant as the old
-// max_output_tokens regression.
-const ANTHROPIC_CACHE_MIN_CHARS = (1 << 12) * 4;
+// Anthropic documents model-specific prompt-cache minima. The runtime cannot
+// count provider tokens without a paid request, so the notice uses the same
+// conservative ~4 chars/token approximation as before while keeping the
+// underlying model threshold explicit and testable.
+export function anthropicCacheMinTokens(model: string): number {
+  if (/^claude-(?:fable|opus)-5(?:-|$)/i.test(model)) return 512;
+  if (/^claude-opus-4-8(?:-|$)/i.test(model)) return 1_024;
+  return 4_096;
+}
+
+function anthropicCacheMinChars(model: string): number {
+  return anthropicCacheMinTokens(model) * 4;
+}
 
 function anthropicEffort(value: AppConfig["reasoning_effort"][PeerId]): AnthropicEffort {
   if (value === "none" || value === "minimal") return "low";
+  if (value === "ultra") return "max";
   return value ?? "max";
 }
 
@@ -148,8 +194,45 @@ export function loadAnthropicCtor(): Promise<typeof Anthropic> {
   return _AnthropicCtorPromise;
 }
 
+type AnthropicStatusOutputFormat = {
+  type: "json_schema";
+  schema: Record<string, unknown>;
+};
+
+// Anthropic accepts a documented subset of JSON Schema. Keep the complete
+// cross-review contract in statusJsonSchema/Zod, but use the official SDK's
+// lowering pass for the provider wire. The helper removes unsupported
+// constraints, carries them into descriptions, and leaves local validation to
+// the caller. Cache the dynamic import/result so the cold-start property of the
+// adapter is preserved and every retry uses the same deterministic schema.
+let _AnthropicStatusOutputFormatPromise: Promise<AnthropicStatusOutputFormat> | null = null;
+export function loadAnthropicStatusOutputFormat(): Promise<AnthropicStatusOutputFormat> {
+  if (!_AnthropicStatusOutputFormatPromise) {
+    _AnthropicStatusOutputFormatPromise = import("@anthropic-ai/sdk/helpers/json-schema").then(
+      ({ jsonSchemaOutputFormat }) => {
+        const lowered = jsonSchemaOutputFormat(statusJsonSchema);
+        return {
+          type: lowered.type,
+          schema: lowered.schema as Record<string, unknown>,
+        };
+      },
+    );
+  }
+  return _AnthropicStatusOutputFormatPromise;
+}
+
 function anthropicThinking(): { type: "adaptive"; display: "omitted" } {
   return { type: "adaptive", display: "omitted" };
+}
+
+function anthropicThinkingFields(
+  model: string,
+): Record<string, never> | { thinking: ReturnType<typeof anthropicThinking> } {
+  // Fable 5 runs adaptive thinking whenever the field is unset. Anthropic's
+  // official Opus 4.8 -> Fable 5 migration removes the thinking field and
+  // uses output_config.effort as the depth control.
+  if (/^claude-fable-5(?:-|$)/i.test(model)) return {};
+  return { thinking: anthropicThinking() };
 }
 
 export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
@@ -175,8 +258,26 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
     phase: "review" | "generation",
   ): void {
     if (message.stop_reason !== "refusal") return;
-    const usage = message.usage ?? undefined;
+    const usage = usageFromAnthropic(message.usage);
+    const estimatedCost = usage ? estimateCost(this.config, this.id, usage, this.model) : undefined;
+    // Anthropic documents the same two refusal billing paths for Fable 5 and
+    // Opus 5. A refusal before any output is not charged even though usage can
+    // report input tokens; a mid-stream refusal is charged for input and
+    // generated output. Treat provider-reported output tokens as the
+    // observable discriminator.
     const billed = (usage?.output_tokens ?? 0) > 0;
+    const cost: CostEstimate | undefined = billed
+      ? estimatedCost
+      : usage
+        ? {
+            currency: "USD",
+            input_cost: 0,
+            output_cost: 0,
+            total_cost: 0,
+            estimated: false,
+            source: estimatedCost?.source ?? "unknown-rate",
+          }
+        : undefined;
     const model = message.model ?? this.model;
     const details = message.stop_details ?? undefined;
     context.emit({
@@ -198,11 +299,141 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             ? redact(details.explanation).slice(0, 500)
             : null,
         billed,
+        retryable: false,
+        usable_output: false,
         input_tokens: usage?.input_tokens ?? null,
         output_tokens: usage?.output_tokens ?? null,
+        cost: cost ?? null,
       },
     });
-    throw new AnthropicRefusalError(model, details, usage, billed);
+    throw new AnthropicRefusalError(model, details, usage, cost, billed);
+  }
+
+  private throwIfMaxTokens(
+    message: AnthropicMessageLike,
+    context: PeerCallContext,
+    phase: "review" | "generation",
+    attempt: number,
+    recoveryAlreadyTriggered: boolean,
+    requestedEffort: AnthropicEffort,
+    accumulatedUsage: TokenUsage[],
+    accumulatedCosts: CostEstimate[],
+  ): void {
+    if (message.stop_reason !== "max_tokens") return;
+    const currentUsage = usageFromAnthropic(message.usage);
+    const currentCost = currentUsage
+      ? estimateCost(this.config, this.id, currentUsage, this.model)
+      : undefined;
+    if (currentUsage) accumulatedUsage.push(currentUsage);
+    if (currentCost) accumulatedCosts.push(currentCost);
+    const usage = combinedAnthropicUsage(accumulatedUsage);
+    const fableRecoveryEligible = /^claude-fable-5(?:-|$)/i.test(this.model);
+    const effortReductionAvailable =
+      requestedEffort === "high" || requestedEffort === "xhigh" || requestedEffort === "max";
+    const retryable =
+      fableRecoveryEligible &&
+      effortReductionAvailable &&
+      !recoveryAlreadyTriggered &&
+      attempt < this.config.retry.max_attempts;
+    const terminalMessage = retryable
+      ? "Claude Fable 5 hit max_tokens; retrying once at medium effort with prior usage retained."
+      : recoveryAlreadyTriggered
+        ? "Anthropic output remained truncated after the controlled max_tokens recovery."
+        : !fableRecoveryEligible
+          ? "Anthropic output hit max_tokens; no model-specific effort recovery is documented for this model."
+          : !effortReductionAvailable
+            ? `Claude Fable 5 hit max_tokens at ${requestedEffort} effort; retry suppressed because medium would not reduce effort.`
+            : "Anthropic output hit max_tokens after the configured retry budget was exhausted.";
+    const cost = accumulatedCosts.length > 0 ? mergeCost(accumulatedCosts) : undefined;
+    context.emit({
+      type: retryable ? "peer.max_tokens_recovery.started" : "peer.max_tokens_recovery.exhausted",
+      session_id: context.session_id,
+      round: context.round,
+      peer: this.id,
+      message: terminalMessage,
+      data: {
+        provider: this.provider,
+        model: message.model ?? this.model,
+        phase,
+        stop_reason: "max_tokens",
+        retryable,
+        recovery_effort: retryable ? "medium" : null,
+        usage: usage ?? null,
+        cost: cost ?? null,
+      },
+    });
+    throw new AnthropicMaxTokensError(
+      message.model ?? this.model,
+      usage,
+      cost,
+      pricedAnthropicAttemptCount(accumulatedCosts),
+      retryable,
+    );
+  }
+
+  private classifyWithAccumulatedUsage(
+    error: unknown,
+    attempt: number,
+    started: number,
+    accumulatedUsage: TokenUsage[],
+    accumulatedCosts: CostEstimate[],
+  ) {
+    const failure = classifyProviderError(
+      this.id,
+      this.provider,
+      this.model,
+      error,
+      attempt,
+      started,
+    );
+    if (accumulatedUsage.length === 0 || error instanceof AnthropicMaxTokensError) return failure;
+    const providerResultSettled =
+      error !== null &&
+      typeof error === "object" &&
+      (error as Record<string, unknown>).provider_result_settled === true;
+    if (providerResultSettled) {
+      // resultFromText/generationFromText already combined max_tokens usage
+      // with the successful recovery response before withRetry observed the
+      // cancellation. Re-merging accumulatedUsage here would double bill.
+      return failure;
+    }
+    const priorUsage = combinedAnthropicUsage(accumulatedUsage);
+    const priorCost = accumulatedCosts.length > 0 ? mergeCost(accumulatedCosts) : undefined;
+    const accountedPrior = pricedAnthropicAttemptCount(accumulatedCosts);
+    const currentUnpriced =
+      failure.unpriced_attempts ??
+      (typeof failure.cost?.total_cost === "number" && Number.isFinite(failure.cost.total_cost)
+        ? 0
+        : failure.attempts);
+    const currentAccounted = Math.max(0, failure.attempts - currentUnpriced);
+    const unpricedAttempts = Math.max(0, attempt - accountedPrior - currentAccounted);
+    const merged: PeerFailure = {
+      ...failure,
+      usage: combinedAnthropicUsage([priorUsage, failure.usage]),
+      cost: mergeCost([priorCost, failure.cost]),
+      billing_status: unpricedAttempts === 0 ? ("reported" as const) : ("unknown" as const),
+    };
+    if (unpricedAttempts > 0) merged.unpriced_attempts = unpricedAttempts;
+    else delete merged.unpriced_attempts;
+    return merged;
+  }
+
+  private successfulRecoveryBilling(
+    rawUsage: AnthropicUsage | null | undefined,
+    accumulatedUsage: TokenUsage[],
+    accumulatedCosts: CostEstimate[],
+  ) {
+    const currentUsage = usageFromAnthropic(rawUsage);
+    if (accumulatedUsage.length === 0) return { usage: currentUsage };
+    const currentCost = currentUsage
+      ? estimateCost(this.config, this.id, currentUsage, this.model)
+      : undefined;
+    const allCosts = [...accumulatedCosts, currentCost];
+    return {
+      usage: combinedAnthropicUsage([...accumulatedUsage, currentUsage]),
+      costOverride: mergeCost(allCosts),
+      accountedAttemptsOverride: pricedAnthropicAttemptCount(allCosts),
+    };
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -252,6 +483,9 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
 
   async call(prompt: string, context: PeerCallContext): Promise<PeerResult> {
     const started = Date.now();
+    const maxTokensUsage: TokenUsage[] = [];
+    const maxTokensCosts: CostEstimate[] = [];
+    let maxTokensRecoveryTriggered = false;
     return withRetry(
       this.config,
       async (attempt) => {
@@ -263,6 +497,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           message: `Anthropic review attempt ${attempt}`,
         });
         const systemText = this.systemPrompt(context);
+        const cacheMinTokens = anthropicCacheMinTokens(this.model);
+        const cacheMinChars = anthropicCacheMinChars(this.model);
         // v2.21.0: best-effort short-prefix warning — does NOT block.
         // v3.7.5 (A3): gated on the per-provider flag too so we don't
         // emit a warning about a cache that won't engage by design.
@@ -270,20 +506,30 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           this.config.cache.enabled &&
           !this.config.cache.disable_per_peer.claude &&
           attempt === 1 &&
-          systemText.length < ANTHROPIC_CACHE_MIN_CHARS
+          systemText.length < cacheMinChars
         ) {
           context.emit({
             type: "provider.cache.notice",
             session_id: context.session_id,
             round: context.round,
             peer: this.id,
-            message: `Anthropic system prompt is shorter than ~${ANTHROPIC_CACHE_MIN_CHARS} chars; cache may not engage. Consider increasing systemPrompt or attaching more evidence.`,
-            data: { system_chars: systemText.length, min_chars_hint: ANTHROPIC_CACHE_MIN_CHARS },
+            message: `Anthropic system prompt is shorter than the approximate ${cacheMinTokens}-token cache minimum for ${this.model}; cache may not engage.`,
+            data: {
+              model: this.model,
+              system_chars: systemText.length,
+              min_tokens: cacheMinTokens,
+              min_chars_hint: cacheMinChars,
+            },
           });
         }
+        const requestedEffort = anthropicEffort(
+          context.reasoning_effort_override ?? this.config.reasoning_effort.claude,
+        );
+        const statusOutputFormat = await loadAnthropicStatusOutputFormat();
         const body = {
           model: this.model,
-          max_tokens: this.config.max_output_tokens,
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           system: buildSystemBlock(systemText, this.config),
           messages: [
             {
@@ -291,15 +537,10 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
               content: `${userPrompt(prompt)}\n\n${statusInstruction()}`,
             },
           ],
-          thinking: anthropicThinking(),
+          ...anthropicThinkingFields(this.model),
           output_config: {
-            effort: anthropicEffort(
-              context.reasoning_effort_override ?? this.config.reasoning_effort.claude,
-            ),
-            format: {
-              type: "json_schema" as const,
-              schema: statusJsonSchema,
-            },
+            effort: maxTokensRecoveryTriggered ? "medium" : requestedEffort,
+            format: statusOutputFormat,
           },
         };
         if (this.shouldStreamTokens(context)) {
@@ -315,6 +556,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "review",
             "content_block_delta.text_delta",
+            attempt,
           );
           let streamedBytes = 0;
           stream.on("text", (delta) => {
@@ -327,12 +569,38 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           });
           const message = await stream.finalMessage();
           this.throwIfRefusal(message, context, "review");
+          const recoveryAlreadyTriggered = maxTokensRecoveryTriggered;
+          if (message.stop_reason === "max_tokens") maxTokensRecoveryTriggered = true;
+          this.throwIfMaxTokens(
+            message,
+            context,
+            "review",
+            attempt,
+            recoveryAlreadyTriggered,
+            requestedEffort,
+            maxTokensUsage,
+            maxTokensCosts,
+          );
+          withEstimatedTerminalBilling(
+            this.config,
+            this.id,
+            this.model,
+            usageFromAnthropic(message.usage),
+            () =>
+              assertAnthropicCompletion(message, {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "review",
+              }),
+          );
           const parsed = parseAnthropicContent(message.content);
           tokenStream.complete(parsed.text.length);
           return this.resultFromText({
             text: parsed.text,
             raw: { streamed: true, provider: this.provider, model: message.model },
-            usage: usageFromAnthropic(message.usage),
+            ...this.successfulRecoveryBilling(message.usage, maxTokensUsage, maxTokensCosts),
             started,
             attempts: attempt,
             modelReported: message.model,
@@ -342,24 +610,62 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         const reviewClient = await this.client();
         const message = await reviewClient.messages.create(body, { signal: context.signal });
         this.throwIfRefusal(message, context, "review");
+        const recoveryAlreadyTriggered = maxTokensRecoveryTriggered;
+        if (message.stop_reason === "max_tokens") maxTokensRecoveryTriggered = true;
+        this.throwIfMaxTokens(
+          message,
+          context,
+          "review",
+          attempt,
+          recoveryAlreadyTriggered,
+          requestedEffort,
+          maxTokensUsage,
+          maxTokensCosts,
+        );
+        withEstimatedTerminalBilling(
+          this.config,
+          this.id,
+          this.model,
+          usageFromAnthropic(message.usage),
+          () =>
+            assertAnthropicCompletion(message, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+            }),
+        );
         const parsed = parseAnthropicContent(message.content);
         return this.resultFromText({
           text: parsed.text,
           raw: message,
-          usage: usageFromAnthropic(message.usage),
+          ...this.successfulRecoveryBilling(message.usage, maxTokensUsage, maxTokensCosts),
           started,
           attempts: attempt,
           modelReported: message.model,
           extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "review", attempt);
+        return this.classifyWithAccumulatedUsage(
+          error,
+          attempt,
+          started,
+          maxTokensUsage,
+          maxTokensCosts,
+        );
+      },
+      { signal: context.signal },
     );
   }
 
   async generate(prompt: string, context: PeerCallContext): Promise<GenerationResult> {
     const started = Date.now();
+    const maxTokensUsage: TokenUsage[] = [];
+    const maxTokensCosts: CostEstimate[] = [];
+    let maxTokensRecoveryTriggered = false;
     return withRetry(
       this.config,
       async (attempt) => {
@@ -370,16 +676,18 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `Anthropic generation attempt ${attempt}`,
         });
+        const requestedEffort = anthropicEffort(
+          context.reasoning_effort_override ?? this.config.reasoning_effort.claude,
+        );
         const body = {
           model: this.model,
-          max_tokens: this.config.max_output_tokens,
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           system: buildSystemBlock(this.systemPrompt(context), this.config),
           messages: [{ role: "user" as const, content: userPrompt(prompt) }],
-          thinking: anthropicThinking(),
+          ...anthropicThinkingFields(this.model),
           output_config: {
-            effort: anthropicEffort(
-              context.reasoning_effort_override ?? this.config.reasoning_effort.claude,
-            ),
+            effort: maxTokensRecoveryTriggered ? "medium" : requestedEffort,
           },
         };
         if (this.shouldStreamTokens(context)) {
@@ -389,6 +697,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "generation",
             "content_block_delta.text_delta",
+            attempt,
           );
           let streamedBytes = 0;
           stream.on("text", (delta) => {
@@ -401,12 +710,38 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           });
           const message = await stream.finalMessage();
           this.throwIfRefusal(message, context, "generation");
+          const recoveryAlreadyTriggered = maxTokensRecoveryTriggered;
+          if (message.stop_reason === "max_tokens") maxTokensRecoveryTriggered = true;
+          this.throwIfMaxTokens(
+            message,
+            context,
+            "generation",
+            attempt,
+            recoveryAlreadyTriggered,
+            requestedEffort,
+            maxTokensUsage,
+            maxTokensCosts,
+          );
+          withEstimatedTerminalBilling(
+            this.config,
+            this.id,
+            this.model,
+            usageFromAnthropic(message.usage),
+            () =>
+              assertAnthropicCompletion(message, {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "generation",
+              }),
+          );
           const parsed = parseAnthropicContent(message.content);
           tokenStream.complete(parsed.text.length);
           return this.generationFromText({
             text: parsed.text,
             raw: { streamed: true, provider: this.provider, model: message.model },
-            usage: usageFromAnthropic(message.usage),
+            ...this.successfulRecoveryBilling(message.usage, maxTokensUsage, maxTokensCosts),
             started,
             attempts: attempt,
             modelReported: message.model,
@@ -416,19 +751,54 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
         const generateClient = await this.client();
         const message = await generateClient.messages.create(body, { signal: context.signal });
         this.throwIfRefusal(message, context, "generation");
+        const recoveryAlreadyTriggered = maxTokensRecoveryTriggered;
+        if (message.stop_reason === "max_tokens") maxTokensRecoveryTriggered = true;
+        this.throwIfMaxTokens(
+          message,
+          context,
+          "generation",
+          attempt,
+          recoveryAlreadyTriggered,
+          requestedEffort,
+          maxTokensUsage,
+          maxTokensCosts,
+        );
+        withEstimatedTerminalBilling(
+          this.config,
+          this.id,
+          this.model,
+          usageFromAnthropic(message.usage),
+          () =>
+            assertAnthropicCompletion(message, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+            }),
+        );
         const parsed = parseAnthropicContent(message.content);
         return this.generationFromText({
           text: parsed.text,
           raw: message,
-          usage: usageFromAnthropic(message.usage),
+          ...this.successfulRecoveryBilling(message.usage, maxTokensUsage, maxTokensCosts),
           started,
           attempts: attempt,
           modelReported: message.model,
           extraParserWarnings: parsed.parser_warning ? [parsed.parser_warning] : undefined,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "generation", attempt);
+        return this.classifyWithAccumulatedUsage(
+          error,
+          attempt,
+          started,
+          maxTokensUsage,
+          maxTokensCosts,
+        );
+      },
+      { signal: context.signal },
     );
   }
 }

@@ -9,6 +9,7 @@
 //   - `provider = "xai"`
 //   - auth via canonical `GROK_API_KEY`
 //   - operator chooses the model through CROSS_REVIEW_GROK_MODEL:
+//       * grok-4.5 (canonical): explicit reasoning.effort through high
 //       * grok-4-latest / grok-4.20 / grok-4.20-reasoning:
 //         xAI automatic reasoning; omit reasoning.effort
 //       * grok-4.3: explicit reasoning.effort supported through high
@@ -23,8 +24,9 @@
 // v2.27.1 (cold-start hardening): reuse the lazy OpenAI ctor loaded by
 // peers/openai.ts. Type-only import preserves annotations.
 import type OpenAI from "openai";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { pairScopedCacheKey } from "../core/prompt-parts.js";
-import { statusInstruction, statusJsonSchema } from "../core/status.js";
+import { grokStatusJsonSchema, statusInstruction } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -39,6 +41,14 @@ import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor, streamingFailureErrorFromEvent } from "./openai.js";
 import { withRetry } from "./retry.js";
+import {
+  assertResponsesCompletion,
+  assertResponsesStreamCompleted,
+  assertResponsesStreamNotRefused,
+  observeResponsesStreamRefusal,
+  observeResponsesStreamTerminal,
+  withEstimatedTerminalBilling,
+} from "./terminal.js";
 import { textFromOpenAIResponse, userPrompt } from "./text.js";
 
 type GrokUsage = {
@@ -60,6 +70,8 @@ type GrokStreamEvent = {
   type: string;
   delta?: unknown | undefined;
   response?: {
+    status?: string | undefined;
+    incomplete_details?: { reason?: string | undefined } | null | undefined;
     usage?: GrokUsage | null | undefined;
     model?: string | undefined;
     error?:
@@ -83,17 +95,29 @@ type GrokStreamEvent = {
     | undefined;
 };
 
+type GrokResponseTerminal = {
+  status?: unknown;
+  incomplete_details?: { reason?: unknown } | null | undefined;
+  usage?: GrokUsage | null | undefined;
+  model?: string | undefined;
+  error?: NonNullable<GrokStreamEvent["response"]>["error"];
+  output?: unknown;
+};
+
 const GROK_BASE_URL = "https://api.x.ai/v1";
 
 function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
-  // v2.21.0 (caching): xAI's grok-4.3 mirrors the OpenAI Responses API
-  // shape and surfaces cached tokens under prompt_tokens_details. The
-  // adapter is OpenAI-compatible so the same parsing path applies.
+  // xAI's OpenAI-compatible Responses usage surfaces cached tokens under
+  // prompt_tokens_details (or input_tokens_details on newer response shapes),
+  // so the same parsing path applies to the current Grok 4.5 pin and legacy
+  // supported pins.
   const cached =
     usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
+  const providerInput = usage.input_tokens ?? 0;
   const result: TokenUsage = {
-    input_tokens: usage.input_tokens,
+    input_tokens:
+      usage.input_tokens === undefined ? undefined : Math.max(0, providerInput - cached),
     output_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
     reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
@@ -112,14 +136,16 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
 // v2.16.0 clarification (operator directive 2026-05-05) / v2.18.4 update
 // (Codex audit 2026-05-07 P2.1): per CURRENT xAI docs at
 // https://docs.x.ai/developers/model-capabilities/text/reasoning,
-// BOTH `grok-4.20-multi-agent` AND `grok-4.3` accept the
+// `grok-4.5`, `grok-4.20-multi-agent`, and `grok-4.3` accept the
 // `reasoning.effort` parameter (xAI added grok-4.3 reasoning_effort
 // support after v2.16.0 froze; verified via WebFetch 2026-05-07).
 // Their accepted value sets DIFFER:
+//   - grok-4.5: { "low", "medium", "high" (default) }
 //   - grok-4.3: { "none", "low" (default), "medium", "high" }
 //   - grok-4.20-multi-agent: { "low", "medium", "high", "xhigh" }
 // The internal config scale uses
-// { "none", "minimal", "low", "medium", "high", "xhigh", "max" } so this
+// { "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" }
+// so this
 // adapter clamps to each model's accepted set: for grok-4.3,
 // "xhigh"/"max" downgrade to "high"; for multi-agent, "max" maps to
 // "xhigh" (existing behavior). Other Grok-4 models such as
@@ -135,7 +161,7 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
 type GrokReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 function grokEffort(value: AppConfig["reasoning_effort"][PeerId]): GrokReasoningEffort {
-  return value === "max" ? "xhigh" : (value ?? "xhigh");
+  return value === "max" || value === "ultra" ? "xhigh" : (value ?? "xhigh");
 }
 
 // v2.18.4 / Codex audit 2026-05-07 P2.1: per-model effort clamp.
@@ -150,6 +176,11 @@ export function clampEffortForModel(
   effort: GrokReasoningEffort,
   model: string,
 ): GrokReasoningEffort {
+  if (model === "grok-4.5") {
+    if (effort === "none" || effort === "minimal" || effort === "low") return "low";
+    if (effort === "xhigh") return "high";
+    return effort;
+  }
   if (model === "grok-4.3") {
     // grok-4.3 accepts only { none, low, medium, high }. Our internal
     // post-grokEffort scale is { none, minimal, low, medium, high,
@@ -160,12 +191,20 @@ export function clampEffortForModel(
     // none/low/medium/high pass through unchanged.
     return effort;
   }
-  // grok-4.20-multi-agent and others: existing scale unchanged.
+  if (model === "grok-4.20-multi-agent") {
+    // xAI accepts only low|medium|high|xhigh for this model. The shared
+    // none/minimal settings mean "use the lowest supported effort" here;
+    // max/ultra have already collapsed to xhigh in grokEffort().
+    if (effort === "none" || effort === "minimal") return "low";
+    return effort;
+  }
+  // Models outside the explicit allowlist never call this helper on-wire.
   return effort;
 }
 
 // v2.15.0/v2.16.0: per-model reasoning capability detection. Per
-// official xAI docs, `grok-4.3` and `grok-4.20-multi-agent` accept the
+// official xAI docs, `grok-4.5`, `grok-4.3`, and
+// `grok-4.20-multi-agent` accept the
 // `reasoning.effort` body field. Other Grok models (including
 // `grok-4-latest`, `grok-4.20`, and `grok-4.20-reasoning`) have automatic
 // reasoning by design in this runtime, so the field is unnecessary and
@@ -184,11 +223,12 @@ export function clampEffortForModel(
 // capability discovery endpoint, replace the static set with a
 // runtime probe + cache.
 export const GROK_REASONING_EFFORT_MODELS: ReadonlySet<string> = new Set([
+  "grok-4.5",
   "grok-4.20-multi-agent",
   // v2.18.4 / Codex audit 2026-05-07 P2.1: xAI docs (WebFetch verified
   // 2026-05-07) document grok-4.3 as supporting reasoning_effort with
   // { none, low (default), medium, high }. Added to allowlist so the
-  // adapter sends the field; clampEffortForModel narrows xhigh/max to
+  // adapter sends the field; clampEffortForModel narrows xhigh/max/ultra to
   // "high" for this model.
   "grok-4.3",
 ]);
@@ -207,30 +247,40 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
     this.model = modelOverride ?? config.models.grok;
   }
 
-  // v2.21.0 (caching): construct a per-call client so we can attach a
-  // dynamic x-grok-conv-id header derived from the pair-scoped cache
-  // key. xAI uses the header to bucket cache entries the same way
-  // OpenAI uses prompt_cache_key — it ties a sequence of calls to the
-  // same conversation/cache scope.
+  // Responses API uses prompt_cache_key in the request body. The
+  // x-grok-conv-id header is the corresponding Chat Completions surface
+  // and is intentionally not duplicated here.
   private async client(callerForCache?: PeerId | "operator"): Promise<OpenAI> {
     const apiKey = this.config.api_keys.grok;
     if (!apiKey) {
       throw new Error("GROK_API_KEY was not found in environment variables.");
     }
     const Ctor = await loadOpenAICtor();
-    if (this.config.cache.enabled) {
-      const convId = pairScopedCacheKey(
-        this.id,
-        callerForCache ?? "operator",
-        this.config.cache.schema_version,
-      );
-      return new Ctor({
-        apiKey,
-        baseURL: GROK_BASE_URL,
-        defaultHeaders: { "x-grok-conv-id": convId },
-      });
-    }
+    void callerForCache;
     return new Ctor({ apiKey, baseURL: GROK_BASE_URL });
+  }
+
+  private assertResponseTerminal(
+    response: GrokResponseTerminal,
+    context: PeerCallContext,
+    phase: "review" | "generation",
+  ): void {
+    const usage = usageFromGrok(response.usage);
+    withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+      if (response.error) {
+        throw streamingFailureErrorFromEvent(
+          { type: "response.failed", response: { error: response.error } },
+          "Grok response failed.",
+        );
+      }
+      assertResponsesCompletion(response, {
+        context,
+        peer: this.id,
+        provider: this.provider,
+        model: this.model,
+        phase,
+      });
+    });
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -307,9 +357,8 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               type: "json_schema" as const,
               name: "cross_review_status",
               strict: true,
-              schema: statusJsonSchema,
+              schema: grokStatusJsonSchema,
             },
-            verbosity: "low" as const,
           },
           ...(modelAcceptsReasoningEffort(this.model)
             ? {
@@ -324,13 +373,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               }
             : {}),
           store: false,
-          max_output_tokens: this.config.max_output_tokens,
+          max_output_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,
-                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
-                  ? "24h"
-                  : "in_memory") as "in_memory" | "24h",
               }
             : {}),
         };
@@ -340,26 +387,70 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "review",
             "response.output_text.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
+          let responseCompleted = false;
+          let responseRefused = false;
           const reviewClient = await this.client(context.caller);
           const stream = await reviewClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
           for await (const event of stream as AsyncIterable<GrokStreamEvent>) {
+            responseRefused = observeResponsesStreamRefusal(event, responseRefused);
+            const eventUsage = usageFromGrok(event.response?.usage);
+            responseCompleted = withEstimatedTerminalBilling(
+              this.config,
+              this.id,
+              this.model,
+              eventUsage,
+              () =>
+                observeResponsesStreamTerminal(event, responseCompleted, {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "review",
+                }),
+            );
             if (event.type === "response.output_text.delta") {
               const delta = typeof event.delta === "string" ? event.delta : "";
               stream_buffer.append(delta);
               tokenStream.append(delta);
             } else if (event.type === "response.completed") {
-              usage = usageFromGrok(event.response?.usage);
+              usage = eventUsage;
               modelReported = event.response?.model;
-            } else if (event.type === "response.failed" || event.type === "response.error") {
-              throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
+            } else if (
+              event.type === "response.failed" ||
+              event.type === "error" ||
+              event.type === "response.error"
+            ) {
+              withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+                throw streamingFailureErrorFromEvent(
+                  event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                  "Grok streaming response failed.",
+                );
+              });
             }
           }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+            assertResponsesStreamCompleted(responseCompleted, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+            });
+            assertResponsesStreamNotRefused(responseRefused, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "review",
+            });
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.resultFromText({
@@ -376,6 +467,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
+        this.assertResponseTerminal(response as GrokResponseTerminal, context, "review");
         return this.resultFromText({
           text: textFromOpenAIResponse(response),
           raw: response,
@@ -385,8 +477,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "review", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
+      { signal: context.signal },
     );
   }
 
@@ -426,13 +521,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
               }
             : {}),
           store: false,
-          max_output_tokens: this.config.max_output_tokens,
+          max_output_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
           ...(this.config.cache.enabled
             ? {
                 prompt_cache_key: cacheKey,
-                prompt_cache_retention: (this.config.cache.ttl.openai === "1h"
-                  ? "24h"
-                  : "in_memory") as "in_memory" | "24h",
               }
             : {}),
         };
@@ -442,26 +535,70 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "generation",
             "response.output_text.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
+          let responseCompleted = false;
+          let responseRefused = false;
           const generateClient = await this.client(context.caller);
           const stream = await generateClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
           );
           for await (const event of stream as AsyncIterable<GrokStreamEvent>) {
+            responseRefused = observeResponsesStreamRefusal(event, responseRefused);
+            const eventUsage = usageFromGrok(event.response?.usage);
+            responseCompleted = withEstimatedTerminalBilling(
+              this.config,
+              this.id,
+              this.model,
+              eventUsage,
+              () =>
+                observeResponsesStreamTerminal(event, responseCompleted, {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "generation",
+                }),
+            );
             if (event.type === "response.output_text.delta") {
               const delta = typeof event.delta === "string" ? event.delta : "";
               stream_buffer.append(delta);
               tokenStream.append(delta);
             } else if (event.type === "response.completed") {
-              usage = usageFromGrok(event.response?.usage);
+              usage = eventUsage;
               modelReported = event.response?.model;
-            } else if (event.type === "response.failed" || event.type === "response.error") {
-              throw streamingFailureErrorFromEvent(event, "Grok streaming response failed.");
+            } else if (
+              event.type === "response.failed" ||
+              event.type === "error" ||
+              event.type === "response.error"
+            ) {
+              withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+                throw streamingFailureErrorFromEvent(
+                  event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                  "Grok streaming response failed.",
+                );
+              });
             }
           }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+            assertResponsesStreamCompleted(responseCompleted, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+            });
+            assertResponsesStreamNotRefused(responseRefused, {
+              context,
+              peer: this.id,
+              provider: this.provider,
+              model: this.model,
+              phase: "generation",
+            });
+          });
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.generationFromText({
@@ -478,6 +615,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
+        this.assertResponseTerminal(response as GrokResponseTerminal, context, "generation");
         return this.generationFromText({
           text: textFromOpenAIResponse(response),
           raw: response,
@@ -487,8 +625,11 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "generation", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
+      { signal: context.signal },
     );
   }
 }

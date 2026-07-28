@@ -8,8 +8,10 @@ canonical pin.
 
 ## Rules
 
-1. Query the provider's official model API using the current API key to
-   validate that the canonical pin is currently available.
+1. When the provider exposes a model-list endpoint, query it with the current
+   API key to validate that the canonical pin is available. Perplexity is the
+   documented exception: Sonar exposes no public `models.list`, so its pin is
+   validated against official documentation and remains `confidence=inferred`.
 2. Keep only models that can perform text generation for the peer role.
 3. Exclude known non-thinking, low-capacity or deprecated models — they
    never become the canonical pin.
@@ -39,26 +41,36 @@ env-var per host — a deliberate decision, never a silent downgrade.
 
 | Peer             | Pin                      | Override env-var                |
 | ---------------- | ------------------------ | ------------------------------- |
-| OpenAI/Codex     | `gpt-5.5`                | `CROSS_REVIEW_OPENAI_MODEL`     |
-| Anthropic/Claude | `claude-opus-4-8`        | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| OpenAI/Codex     | `gpt-5.6-sol`            | `CROSS_REVIEW_OPENAI_MODEL`     |
+| Anthropic/Claude | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | Google/Gemini    | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | DeepSeek         | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| xAI/Grok         | `grok-4.3`               | `CROSS_REVIEW_GROK_MODEL`       |
+| xAI/Grok         | `grok-4.5`               | `CROSS_REVIEW_GROK_MODEL`       |
 | Perplexity       | `sonar-reasoning-pro`    | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
 
-Claude Fable 5 (`claude-fable-5`) is a supported Anthropic production-model
-override for the `claude` peer. It is intentionally not the default canonical
-pin because it has different cost, refusal and data-retention posture from
-Claude Opus 4.8. When `CROSS_REVIEW_ANTHROPIC_MODEL=claude-fable-5` is set and
-the Anthropic Models API lists Fable, model selection records
-`confidence=verified`; when Fable is absent, the runtime keeps the explicit
-Fable pin and surfaces the provider failure rather than falling back to Opus.
-Fable refusals are successful API responses with `stop_reason="refusal"` and
-are recorded as non-skippable `provider_refusal` failures unless the operator
-configured an explicit Anthropic fallback model chain.
+Claude Fable 5 (`claude-fable-5`) is the canonical Anthropic production model.
+The adapter omits the explicit `thinking` field because Fable applies adaptive
+thinking automatically; `output_config.effort` remains the depth control.
+Fable refusals are successful API responses with `stop_reason="refusal"`; the
+runtime discards partial refusal output and records a non-skippable
+`provider_refusal`. A refusal before output is zero-cost even though Anthropic
+can report input usage; a mid-stream refusal is billed for the input and output
+already generated. Anthropic documents 30-day retention and no zero data
+retention option for Fable, so operators must accept that posture before using
+the peer.
+
+Claude Opus 5 (`claude-opus-5`) is a supported explicit operator override. It
+does not enter the canonical priority list and is never selected as an
+automatic fallback. The Messages request uses
+`thinking={type:"adaptive",display:"omitted"}` plus
+`output_config.effort`; it never sends the removed manual
+`thinking={type:"enabled",budget_tokens:...}` form or non-default sampling
+parameters. Opus 5 has a 1M-token context window and 128K synchronous output
+ceiling. Anthropic recommends starting with 64K `max_tokens` at `xhigh` or
+`max`, which matches the maintained Claude budget.
 
 Google's deprecation schedule lists `gemini-2.5-pro` for shutdown on
 2026-10-16 and recommends `gemini-3.1-pro-preview` as the replacement.
@@ -67,16 +79,18 @@ for this peer; no `*-flash` variants and no models below 2.5. Operators can
 still override the pin explicitly, but the default/canonical path follows the
 documented replacement.
 
-`GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.3`
-model accepts explicit `reasoning.effort` values through `high`; the adapter
-clamps the shared effort scale so unsupported `xhigh`/`max` requests do not
+`GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.5`
+model accepts exactly `low`, `medium`, and `high` for `reasoning.effort`; the
+adapter maps the shared scale into that range so unsupported values do not
 reach the wire.
 
 `PERPLEXITY_API_KEY` is the canonical auth variable for Perplexity Sonar.
 Sonar billing has a 3rd dimension: per-1000-requests fee that scales with
 `CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` (low/medium/high). When
 Perplexity is the relator (lottery), the adapter forces `disable_search=true`
-to skip search for the synthesis step.
+to skip search for the synthesis step. The runtime still accounts for the
+configured Sonar request fee: disabling search does not turn the request into
+a zero-cost probe or synthesis call.
 
 Perplexity does not document a zero-token model/auth endpoint. To avoid
 accidental probe spend, `probe_peers` defaults to
@@ -88,20 +102,80 @@ explicitly want a minimal `disable_search` round-trip.
 
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
-- OpenAI/Codex: Responses API with reasoning effort `xhigh` by default.
-- Anthropic/Claude: adaptive thinking with omitted thinking display plus
-  `output_config.effort=xhigh` by default on Opus 4.8 and the supported Fable 5
-  override.
-- Google/Gemini: high thinking level for the pinned Gemini 3.1 Pro Preview
-  model; the adapter keeps the Gemini 3 thinking path explicit because this
-  peer is used for complex reasoning and coding review.
-- DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default.
-- Grok: the pinned `grok-4.3` model accepts explicit `reasoning.effort`;
-  unsupported shared-scale values are clamped to the nearest supported value.
-- Perplexity: the pinned `sonar-reasoning-pro` model accepts an explicit
-  `reasoning_effort` enum (`minimal`/`low`/`medium`/`high`, `high` by default);
-  `clampEffortForPerplexity` narrows the shared effort scale into that range
-  (`none`/`minimal` → `minimal`; `xhigh`/`max` → `high`).
+- OpenAI/Codex: `gpt-5.6-sol` through the Responses API. The API accepts
+  `reasoning.effort=max`; cross-review accepts the Codex product/CLI term
+  `ultra` only as a config compatibility alias and normalizes it to `max`
+  before the request. The shared legacy `minimal` setting is normalized to
+  GPT-5.6's lowest active API effort, `low`; it is never sent literally.
+  Explicit model overrides are also family-aware: GPT-5.5/5.4/5.2 accept
+  through `xhigh` (`minimal` → `low`, `max`/`ultra` → `xhigh`); GPT-5.1
+  accepts through `high` (`minimal` → `low`, higher shared values → `high`);
+  original GPT-5 accepts `minimal` through `high` (`none` → `minimal`, higher
+  shared values → `high`).
+- Anthropic/Claude: Fable 5 omits the explicit `thinking` object because
+  adaptive thinking is automatic. Opus 5 uses explicit adaptive thinking with
+  display omitted. Both use `output_config.effort` for depth.
+- Google/Gemini: the configured shared effort maps to native `LOW`, `MEDIUM`,
+  or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
+- DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default;
+  shared-scale `xhigh`, `max`, and `ultra` all normalize to `max`.
+- Grok: the pinned `grok-4.5` model accepts explicit `reasoning.effort` at
+  `low`, `medium`, or `high`; unsupported shared-scale values are clamped.
+  For the explicit `grok-4.20-multi-agent` compatibility override, the
+  provider enum is `low`/`medium`/`high`/`xhigh`: shared `none`/`minimal`
+  normalize to `low`, while `max`/`ultra` normalize to `xhigh`.
+- Perplexity: the general `/v1/sonar` request schema accepts an explicit
+  `reasoning_effort` enum (`minimal`/`low`/`medium`/`high`). The specific
+  Sonar Reasoning Pro page does not promise how those levels change model
+  depth, so the field is treated as an endpoint capability rather than a
+  quality guarantee. `clampEffortForPerplexity` narrows the shared scale into
+  that enum (`none`/`minimal` → `minimal`; `xhigh`/`max`/`ultra` → `high`).
+
+The alias is accepted consistently by central `config.json`, environment
+variables and per-call overrides. It is never a provider payload value:
+OpenAI GPT-5.6, Anthropic and DeepSeek receive `max`; Grok 4.5 and Perplexity
+receive `high`; Gemini maps the configured setting to its native thinking enum.
+When an operator explicitly selects an older GPT-5 family, the OpenAI adapter
+uses that family's documented ceiling rather than blindly sending GPT-5.6's
+enum.
+
+## Per-peer output budgets
+
+The legacy `max_output_tokens` value remains the fallback. Use
+`max_output_tokens_by_peer` when official reasoning guidance or model ceilings
+differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
+64,000 for Claude Fable 5 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
+four peers. These
+values follow the official OpenAI allocation guidance and Anthropic task-budget
+minimum without assuming an undocumented Grok 4.5 ceiling. `server_info`
+returns the effective six-peer map used by both provider payloads and budget
+preflight.
+
+## Official provider references
+
+- OpenAI: [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+  and [latest-model guide](https://developers.openai.com/api/docs/guides/latest-model).
+- Anthropic: [Fable 5 introduction](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5),
+  [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5),
+  [Opus 5 migration guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide),
+  [effort](https://platform.claude.com/docs/en/build-with-claude/effort),
+  [refusals and fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback),
+  and [API/data retention](https://platform.claude.com/docs/en/manage-claude/api-and-data-retention).
+- Google: [Gemini 3.1 Pro Preview](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview),
+  [Gemini 3](https://ai.google.dev/gemini-api/docs/gemini-3), and
+  [thinking](https://ai.google.dev/gemini-api/docs/thinking), plus the
+  [deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations).
+- DeepSeek: [API updates](https://api-docs.deepseek.com/updates) and
+  [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode), plus
+  [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
+- xAI: [Grok 4.5](https://docs.x.ai/developers/grok-4-5) and
+  [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning),
+  plus [prompt-cache usage and pricing](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing).
+- Perplexity: [Sonar models](https://docs.perplexity.ai/docs/sonar/models) and
+  [Sonar Reasoning Pro](https://docs.perplexity.ai/docs/sonar/models/sonar-reasoning-pro),
+  [OpenAI compatibility](https://docs.perplexity.ai/docs/sonar/openai-compatibility),
+  the [request schema](https://docs.perplexity.ai/api-reference/sonar-post), and
+  [pricing](https://docs.perplexity.ai/docs/getting-started/pricing).
 
 ## Historical Documentation Refresh — 2026-05-05
 
@@ -109,12 +183,12 @@ This section is historical context for the v2.16.0 protocol repair. Do not
 read it as the current pin list; the authoritative current pins are listed
 above and enforced by `src/peers/model-selection.ts`.
 
-- OpenAI: GPT-5.5 is the current recommended frontier model for complex
+- OpenAI: GPT-5.5 was, at that time, the recommended frontier model for complex
   reasoning/coding, with Responses API reasoning effort values through `xhigh`
   and 1M context / 128K output.
-- Anthropic: Claude Opus 4.8 supersedes Opus 4.7 as the current
-  complex-reasoning and agentic-coding default; current docs retain the same
-  regular price tier as 4.7.
+- Anthropic: Claude Opus 4.8 had superseded Opus 4.7 as the then-current
+  complex-reasoning and agentic-coding default; the documentation at that time
+  retained the same regular price tier as 4.7.
 - Google Gemini: Gemini 3.1 Pro Preview is the documented replacement for
   Gemini 2.5 Pro. Gemini 3 Pro Preview was deprecated/shut down and must stay
   out of current pins and downgrade chains.
@@ -122,9 +196,9 @@ above and enforced by `src/peers/model-selection.ts`.
   legacy `deepseek-chat` and `deepseek-reasoner` were scheduled for
   discontinuation on 2026-07-24 and must stay out of current pins and
   downgrade chains.
-- xAI Grok: historical Grok notes covered aliases and explicit-effort models
-  that predate the current concrete `grok-4.3` pin. Current runtime behavior
-  is defined above: send clamped explicit `reasoning.effort` for `grok-4.3`.
+- xAI Grok: historical Grok notes covered aliases and the earlier concrete
+  `grok-4.3` pin. Current runtime behavior is defined above by the
+  `grok-4.5` pin and its clamped `low`/`medium`/`high` reasoning effort.
 
 ## Important
 

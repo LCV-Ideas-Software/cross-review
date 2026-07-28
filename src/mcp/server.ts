@@ -1,18 +1,31 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { loadConfig, missingFinancialControlVars, RELEASE_DATE, VERSION } from "../core/config.js";
-import { CrossReviewOrchestrator, truthfulnessPreflight } from "../core/orchestrator.js";
+import {
+  getFileConfigRuntimeStatus,
+  loadConfig,
+  missingFinancialControlVars,
+  RELEASE_DATE,
+  VERSION,
+} from "../core/config.js";
+import { CrossReviewOrchestrator } from "../core/orchestrator.js";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { sessionReportMarkdown } from "../core/reports.js";
+import type { SessionStore } from "../core/session-store.js";
 import type {
+  BackgroundJobKind,
+  BackgroundJobStatus,
   ConvergenceScope,
   PeerId,
+  ReviewRound,
   RuntimeCapabilities,
   RuntimeEvent,
+  SessionEvent,
   SessionMeta,
 } from "../core/types.js";
 import { PEERS } from "../core/types.js";
@@ -32,8 +45,34 @@ const SessionListOutcomeFilterSchema = z
   .enum(["all", "open", "converged", "aborted", "max-rounds"])
   .default("all");
 const SessionListDetailSchema = z.enum(["summary", "full"]).default("summary");
+const SessionPollDetailSchema = z.enum(["summary", "full"]).default("summary");
 const SESSION_LIST_DEFAULT_LIMIT = 25;
 const SESSION_LIST_MAX_LIMIT = 100;
+
+export function pageSessionEvents(
+  allEvents: readonly SessionEvent[],
+  sinceSeq: number,
+  limit: number,
+  includeTokenDeltas: boolean,
+): {
+  events: SessionEvent[];
+  next_seq: number;
+  has_more: boolean;
+  filtered_token_delta_count: number;
+} {
+  const eligibleEvents = includeTokenDeltas
+    ? [...allEvents]
+    : allEvents.filter((event) => event.type !== "peer.token.delta");
+  const events = eligibleEvents.slice(0, limit);
+  const nextSeq =
+    events.at(-1)?.seq ?? (eligibleEvents.length === 0 ? allEvents.at(-1)?.seq : undefined);
+  return {
+    events,
+    next_seq: nextSeq ?? sinceSeq,
+    has_more: eligibleEvents.length > events.length,
+    filtered_token_delta_count: includeTokenDeltas ? 0 : allEvents.length - eligibleEvents.length,
+  };
+}
 // v2.15.0 (item 2): per-call reasoning_effort overrides. Optional partial
 // record keyed by peer id; missing keys fall back to the global config
 // default (CROSS_REVIEW_<PEER>_REASONING_EFFORT env var, ultimately
@@ -53,7 +92,16 @@ const SESSION_LIST_MAX_LIMIT = 100;
 // since v3.0.0) produces a clean `{type:"object", properties:{...}}`
 // accepted by every host; runtime accepts the same
 // `{codex:"high", claude:"low"}` shape.
-const ReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const ReasoningEffortSchema = z.enum([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
 const ReasoningEffortOverridesSchema = z
   .object({
     codex: ReasoningEffortSchema.optional(),
@@ -70,7 +118,7 @@ const ReasoningEffortOverridesSchema = z
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. Useful to dial down expensive peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents, or Perplexity sonar-deep-research that bills citation + reasoning + search queries separately) for routine reviews without editing the host MCP configs.",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-5.6 and high on Grok 4.5; older GPT-5 families use their own ceilings).",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -109,11 +157,79 @@ const ReviewFocusSchema = z
 const SCHEMA_TASK_MAX_CHARS = 32_000;
 const SCHEMA_DRAFT_MAX_CHARS = 200_000;
 const SCHEMA_INITIAL_DRAFT_MAX_CHARS = 200_000;
+const AutomaticCallerEvidenceSchema = z
+  .string()
+  .max(SCHEMA_INITIAL_DRAFT_MAX_CHARS)
+  .optional()
+  .describe(
+    "Raw evidence from the authenticated AI caller. It is persisted automatically as durable, SHA-256-addressed caller_submitted_unverified material and transported to reviewers; no manual operator attachment is required. Do not call session_attach_evidence for this routine path.",
+  );
 
-function textResult(value: unknown, responseFormat = "json") {
+function markdownEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\\/g, "\\\\")
+    .replace(/([`*_{}[\]()#+.!|>-])/g, "\\$1");
+}
+
+function markdownScalar(value: unknown): string | null {
+  if (value == null) return "`null`";
+  if (typeof value === "boolean" || typeof value === "number" || typeof value === "bigint") {
+    return `\`${String(value)}\``;
+  }
+  if (typeof value !== "string") return null;
+  if (!value.includes("\n")) return value.length ? markdownEscape(value) : "_empty_";
+  return null;
+}
+
+function markdownLines(value: unknown, depth = 0): string[] {
+  const scalar = markdownScalar(value);
+  if (scalar !== null) return [scalar];
+  if (typeof value === "string") {
+    return value.split(/\r?\n/).map((line) => `> ${markdownEscape(line)}`);
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) return ["_none_"];
+    return value.flatMap((item, index) => {
+      const itemScalar = markdownScalar(item);
+      if (itemScalar !== null) return [`- ${itemScalar}`];
+      const heading = "#".repeat(Math.min(6, depth + 3));
+      return [`${heading} Item ${index + 1}`, "", ...markdownLines(item, depth + 1), ""];
+    });
+  }
+  if (value && typeof value === "object") {
+    // Match JSON object semantics: optional fields that are absent at runtime
+    // are omitted instead of leaking the JavaScript implementation detail
+    // `undefined` into user-facing Markdown (notably session_poll health data).
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([, item]) => item !== undefined,
+    );
+    if (!entries.length) return ["_none_"];
+    return entries.flatMap(([key, item]) => {
+      const itemScalar = markdownScalar(item);
+      if (itemScalar !== null) return [`- **${markdownEscape(key)}:** ${itemScalar}`];
+      const heading = "#".repeat(Math.min(6, depth + 2));
+      return [`${heading} ${markdownEscape(key)}`, "", ...markdownLines(item, depth + 1), ""];
+    });
+  }
+  return [markdownEscape(String(value))];
+}
+
+export function markdownResult(value: unknown): string {
+  return markdownLines(value)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function textResult(value: unknown, responseFormat = "json") {
   const text =
-    responseFormat === "markdown" && typeof value === "string"
-      ? value
+    responseFormat === "markdown"
+      ? typeof value === "string"
+        ? value
+        : markdownResult(value)
       : JSON.stringify(value, null, 2);
   return { content: [{ type: "text" as const, text }] };
 }
@@ -132,7 +248,7 @@ function matchesSessionListOutcome(meta: SessionMeta, outcomeFilter: SessionList
   return meta.outcome === outcomeFilter;
 }
 
-function summarizeSessionForList(meta: SessionMeta) {
+export function summarizeSessionForList(meta: SessionMeta) {
   return {
     session_id: meta.session_id,
     version: meta.version,
@@ -145,8 +261,11 @@ function summarizeSessionForList(meta: SessionMeta) {
     control_status: meta.control?.status ?? null,
     rounds: meta.rounds.length,
     in_flight: Boolean(meta.in_flight),
+    generation_in_flight: Boolean(meta.generation_in_flight),
     open_evidence_items:
-      meta.evidence_checklist?.filter((item) => item.status === "open").length ?? 0,
+      meta.evidence_checklist?.filter((item) => (item.status ?? "open") === "open").length ?? 0,
+    not_resurfaced_evidence_items:
+      meta.evidence_checklist?.filter((item) => item.status === "not_resurfaced").length ?? 0,
     lead_peer: meta.convergence_scope?.lead_peer ?? null,
     voting_peers:
       meta.convergence_scope?.voting_peers ?? meta.convergence_scope?.reviewer_peers ?? [],
@@ -278,21 +397,11 @@ export interface CallerIdentityResult {
 
 // v2.18.0 / F1: token verification overlays the v2.17.0 clientInfo gate.
 // Decision tree (in order):
-//   1. caller="operator" → human-driven, non-agent identity. Returns
-//      identity_verified=false, verification_method="none". Token check is
-//      skipped by design — operator is a non-PEER identity, the gate-setter
-//      themselves; AI agents cannot forge "I'm not an AI agent" because:
-//      (a) F1 cross-review R2 codex catch hardening: if the calling host
-//      carries CROSS_REVIEW_CALLER_TOKEN, it IS an agent host (the token
-//      bind is to a specific AI agent's identity). Declaring caller="operator"
-//      from such a host is identity forgery and throws. Only HOSTS WITHOUT
-//      a token (genuinely human-driven curl/dashboard/stdio) can declare
-//      operator. (b) downstream privilege model: operator caller is never
-//      added to PEERS panels, never participates in tribunal review, never
-//      gets identity_verified=true — verifying code paths that gate on
-//      identity_verified or peer-membership are unaffected by operator
-//      caller. Hard-enforce mode does NOT apply to operator (the
-//      gate-setter is exempt from their own gate by design).
+//   1. caller="operator" → require the distinct operator capability token.
+//      A client name is self-declared and cannot authenticate a human; tokenless
+//      or peer-token hosts therefore fail closed regardless of hard-enforce
+//      mode. The operator token belongs only in a dedicated human console,
+//      never in a model host.
 //   2. v2.17.0 clientInfo cross-check throws → propagate (preserves all
 //      existing forgery rejections).
 //   3. CROSS_REVIEW_CALLER_TOKEN env present → must resolve to declaredCaller
@@ -310,25 +419,26 @@ export function verifyCallerIdentity(
   clientInfo: ClientInfo,
 ): CallerIdentityResult {
   const identity_metadata = getParentProcessSnapshot();
-  // operator is a non-agent identity; nothing to forge against PEERS list.
-  // BUT: if the calling host carries CROSS_REVIEW_CALLER_TOKEN, it IS an
-  // agent host (token binds to a specific agent's identity). Declaring
-  // operator from such a host is identity forgery — throw.
+  const candidates = getCallerCandidatesFromClientInfo(clientInfo);
   if (declaredCaller === "operator") {
-    const presented = process.env.CROSS_REVIEW_CALLER_TOKEN;
-    if (typeof presented === "string" && presented.trim().length > 0) {
+    if (candidates.length > 0) {
       throw new Error(
-        "identity_forgery_blocked: caller='operator' is not permitted from a host that carries CROSS_REVIEW_CALLER_TOKEN. The token binds to a specific AI agent's identity; declaring operator from such a host is a forgery attempt. Either drop the token from the calling host's env (genuine human-driven invocations should not carry an agent token) or pass the actual agent caller that matches the token.",
+        `identity_forgery_blocked: caller='operator' is not permitted from an agent-identified host. clientInfo.name='${clientInfo?.name}' resolves to ${candidates.join(", ")}; declare the actual peer identity (and present its token when required).`,
+      );
+    }
+    const tokenResult = verifyTokenForCaller("operator", HOST_TOKENS_RECORD);
+    if (!tokenResult.verified) {
+      throw new Error(
+        "operator_authority_required: caller='operator' requires the dedicated operator capability token in CROSS_REVIEW_CALLER_TOKEN. Use a separate human-console MCP host; never place this token in a model host.",
       );
     }
     return {
-      identity_verified: false, // no agent claim made; nothing to verify
-      verification_method: "none",
+      identity_verified: true,
+      verification_method: "token",
       client_info_name: clientInfo?.name ?? null,
       identity_metadata,
     };
   }
-  const candidates = getCallerCandidatesFromClientInfo(clientInfo);
   if (candidates.length >= 2) {
     throw new Error(
       `identity_forgery_blocked: clientInfo.name='${clientInfo?.name}' matches multiple agents (${candidates.join(", ")}); cannot validate declared caller='${declaredCaller}' against an ambiguous client. Pass the request from a host whose clientInfo.name resolves to a single agent.`,
@@ -396,8 +506,9 @@ export function lockCallerPeerSelection<
     // ignored_peers = full 6-peer panel = enabled set). When this
     // field is supplied the lock short-circuits the emit when the
     // caller-supplied panel set-equals the enabled set; otherwise
-    // (legacy callers, undefined) behavior matches v3.3.0..v3.7.4
-    // exactly.
+    // (legacy callers, undefined) any explicitly supplied list is treated
+    // as an override, including an empty list that would otherwise turn the
+    // full-panel lock into a no-reviewer abort.
     enabledPeers?: readonly PeerId[] | undefined;
   },
 ): T {
@@ -417,8 +528,7 @@ export function lockCallerPeerSelection<
     callerSuppliedPeers !== undefined &&
     callerSuppliedPeers.length === ctx.enabledPeers.length &&
     [...callerSuppliedPeers].sort().join("|") === [...ctx.enabledPeers].sort().join("|");
-  const peerPanelOverridden =
-    !!callerSuppliedPeers && callerSuppliedPeers.length > 0 && !callerPanelMatchesEnabled;
+  const peerPanelOverridden = callerSuppliedPeers !== undefined && !callerPanelMatchesEnabled;
   // lead_peer: locked for peer callers (forces lottery so callers cannot
   // pin a sympathetic relator). Operator caller may pin lead_peer for
   // legitimate testing.
@@ -507,29 +617,504 @@ export function buildResponseNotices<
   return notices;
 }
 
-type JobKind = "ask_peers" | "run_until_unanimous";
-export type JobStatus = {
-  job_id: string;
-  kind: JobKind;
-  session_id: string;
-  status: "running" | "completed" | "failed" | "cancelled";
-  started_at: string;
-  completed_at?: string | undefined;
-  error?: string | undefined;
-  result_summary?: Record<string, unknown> | undefined;
+type JobKind = BackgroundJobKind;
+export type JobStatus = BackgroundJobStatus;
+
+type DurableSessionState = Pick<
+  SessionMeta,
+  | "session_id"
+  | "updated_at"
+  | "outcome"
+  | "outcome_reason"
+  | "in_flight"
+  | "generation_in_flight"
+  | "pending_provider_call_reservations"
+  | "control"
+>;
+
+export type DurableJobStatus = JobStatus & {
+  kind: "durable_session_round";
+  source: "durable_session";
+  round: number;
+  peers: PeerId[];
+  control_status: NonNullable<SessionMeta["control"]>["status"] | null;
+  cancellation_requested: boolean;
 };
+
+/**
+ * Process-local job maps are only an optimization. The persisted session is
+ * the cross-window authority for whether work is still active.
+ */
+export function durableSessionExecutionActive(session: DurableSessionState): boolean {
+  if (session.outcome) return false;
+  return (
+    Boolean(session.in_flight) ||
+    Boolean(session.generation_in_flight) ||
+    session.control?.status === "running" ||
+    session.control?.status === "cancel_requested"
+  );
+}
+
+export function durableSessionCancellationWon(
+  session: DurableSessionState,
+  signalAborted = false,
+): boolean {
+  if (session.outcome) {
+    return (
+      (session.outcome === "aborted" && session.outcome_reason === "session_cancelled") ||
+      session.control?.status === "cancelled"
+    );
+  }
+  return signalAborted || session.control?.status === "cancelled";
+}
+
+/**
+ * A background rejection may arrive after the routine has already persisted
+ * its terminal snapshot. In that case the process-local catch handler must not
+ * append an automatic operator escalation or rewrite the sealed meta/report.
+ */
+export function shouldEscalateBackgroundJobFailure(
+  session: DurableSessionState | undefined,
+): boolean {
+  return Boolean(session && !session.outcome);
+}
+
+/**
+ * Build the job-shaped view returned by session_poll when another MCP host
+ * owns the real AbortController and this process therefore has no local job.
+ */
+export function synthesizeDurableJob(
+  session: DurableSessionState,
+  localJobs: readonly JobStatus[],
+): DurableJobStatus | null {
+  if (session.outcome || localJobs.some((job) => job.status === "running")) return null;
+  const controlActive =
+    session.control?.status === "running" || session.control?.status === "cancel_requested";
+  if (!session.in_flight && !session.generation_in_flight && !controlActive) return null;
+  const durableJobId = session.control?.job_id;
+  const matchingJob = durableJobId
+    ? localJobs.find((job) => job.job_id === durableJobId)
+    : undefined;
+  if (matchingJob && !matchingJob.error?.startsWith("background_job_settlement_failed")) {
+    return null;
+  }
+  return {
+    job_id: session.control?.job_id ?? session.session_id,
+    kind: "durable_session_round",
+    session_id: session.session_id,
+    status: "running",
+    started_at:
+      session.in_flight?.started_at ??
+      session.generation_in_flight?.started_at ??
+      session.control?.requested_at ??
+      session.control?.updated_at ??
+      "",
+    source: "durable_session",
+    round: session.in_flight?.round ?? session.generation_in_flight?.round ?? 0,
+    peers:
+      session.in_flight?.peers ??
+      (session.generation_in_flight ? [session.generation_in_flight.peer] : []),
+    control_status: session.control?.status ?? null,
+    cancellation_requested: session.control?.status === "cancel_requested",
+  };
+}
+
+type SessionPollDetail = z.infer<typeof SessionPollDetailSchema>;
+
+export function summarizeReviewRoundForPoll(round: ReviewRound) {
+  return {
+    round: round.round,
+    started_at: round.started_at,
+    completed_at: round.completed_at ?? null,
+    caller_status: round.caller_status,
+    peers: round.peers.slice(0, PEERS.length).map((peer) => ({
+      peer: peer.peer,
+      provider: textPreview(peer.provider, 100),
+      model: textPreview(peer.model, 200),
+      model_reported: peer.model_reported ? textPreview(peer.model_reported, 200) : null,
+      model_match: peer.model_match ?? null,
+      status: peer.status,
+      raw_status: peer.raw_status ?? null,
+      parsed_status: peer.parsed_status ?? null,
+      normalized_status: peer.normalized_status ?? null,
+      summary: textPreview(peer.structured?.summary ?? peer.text),
+      parser_warnings: peer.parser_warnings.slice(0, 3).map((warning) => textPreview(warning)),
+      latency_ms: peer.latency_ms,
+      attempts: peer.attempts,
+    })),
+    rejected: round.rejected.slice(0, PEERS.length).map((failure) => ({
+      peer: failure.peer,
+      provider: textPreview(failure.provider, 100),
+      model: failure.model ? textPreview(failure.model, 200) : null,
+      failure_class: failure.failure_class,
+      message: textPreview(failure.message),
+      retryable: failure.retryable,
+      attempts: failure.attempts,
+      latency_ms: failure.latency_ms,
+    })),
+    convergence: {
+      converged: round.convergence.converged,
+      reason: textPreview(round.convergence.reason, 500),
+      latest_round_converged: round.convergence.latest_round_converged ?? null,
+      session_quorum_converged: round.convergence.session_quorum_converged ?? null,
+      recovery_converged: round.convergence.recovery_converged ?? null,
+      ready_peers: round.convergence.ready_peers.slice(0, PEERS.length),
+      not_ready_peers: round.convergence.not_ready_peers.slice(0, PEERS.length),
+      needs_evidence_peers: round.convergence.needs_evidence_peers.slice(0, PEERS.length),
+      rejected_peers: round.convergence.rejected_peers.slice(0, PEERS.length),
+      skipped_peers: round.convergence.skipped_peers.slice(0, PEERS.length),
+      blocking_details: round.convergence.blocking_details
+        .slice(0, 4)
+        .map((detail) => textPreview(detail)),
+    },
+  };
+}
+
+function isDurableJobStatus(job: JobStatus): job is DurableJobStatus {
+  return job.kind === "durable_session_round" && "source" in job;
+}
+
+function terminalJobSummary(job: JobStatus) {
+  const resultSummary = job.result_summary;
+  return {
+    job_id: job.job_id,
+    kind: job.kind,
+    session_id: job.session_id,
+    status: job.status,
+    started_at: job.started_at,
+    completed_at: job.completed_at ?? null,
+    error: job.error ? textPreview(job.error, 500) : null,
+    result_summary: resultSummary
+      ? {
+          session_id:
+            typeof resultSummary.session_id === "string"
+              ? textPreview(resultSummary.session_id, 100)
+              : null,
+          outcome:
+            typeof resultSummary.outcome === "string"
+              ? textPreview(resultSummary.outcome, 100)
+              : null,
+          converged: typeof resultSummary.converged === "boolean" ? resultSummary.converged : null,
+          rounds: typeof resultSummary.rounds === "number" ? resultSummary.rounds : null,
+        }
+      : null,
+    ...(isDurableJobStatus(job)
+      ? {
+          source: job.source,
+          round: job.round,
+          peers: job.peers.slice(0, PEERS.length),
+          control_status: job.control_status,
+          cancellation_requested: job.cancellation_requested,
+        }
+      : {}),
+  };
+}
+
+function inFlightSummary(session: SessionMeta) {
+  const round = session.in_flight;
+  if (!round) return null;
+  return {
+    round: round.round,
+    peers: round.peers.slice(0, PEERS.length),
+    started_at: round.started_at,
+    status: round.status,
+  };
+}
+
+function healthSummary(session: SessionMeta) {
+  const health = session.convergence_health;
+  if (!health) return null;
+  return {
+    state: health.state,
+    last_event_at: health.last_event_at,
+    last_activity_at: health.last_activity_at,
+    last_state_transition_at: health.last_state_transition_at,
+    detail: textPreview(health.detail, 500),
+    idle_ms: health.idle_ms,
+  };
+}
+
+function controlSummary(session: SessionMeta) {
+  const control = session.control;
+  if (!control) return null;
+  return {
+    status: control.status,
+    reason: control.reason ? textPreview(control.reason, 300) : undefined,
+    job_id: control.job_id,
+    owner_pid: control.owner_pid,
+    requested_at: control.requested_at,
+    updated_at: control.updated_at,
+  };
+}
+
+function generationInFlightSummary(session: SessionMeta) {
+  const generation = session.generation_in_flight;
+  if (!generation) return null;
+  return {
+    peer: generation.peer,
+    provider: textPreview(generation.provider, 100),
+    model: textPreview(generation.model, 200),
+    label: textPreview(generation.label, 300),
+    round: generation.round,
+    started_at: generation.started_at,
+    owner_pid: generation.owner_pid,
+  };
+}
+
+export function compactSessionFinalState(session: SessionMeta) {
+  const latestRound = session.rounds.at(-1);
+  return {
+    session_outcome: session.outcome ?? null,
+    outcome_reason: session.outcome_reason ?? null,
+    health_state: session.convergence_health?.state ?? null,
+    rounds: session.rounds.length,
+    latest_round_number: latestRound?.round ?? null,
+    latest_round_converged: latestRound?.convergence.converged ?? null,
+    in_flight: Boolean(session.in_flight),
+    generation_in_flight: Boolean(session.generation_in_flight),
+    control_status: session.control?.status ?? null,
+    updated_at: session.updated_at,
+  };
+}
+
+export function compactJobsForPoll(
+  localJobs: readonly JobStatus[],
+  durableJob: DurableJobStatus | null,
+  activeJobId?: string,
+): Array<JobStatus | DurableJobStatus> {
+  const running = localJobs
+    .filter((job) => job.status === "running")
+    .sort((a, b) => a.started_at.localeCompare(b.started_at));
+  const activeRunning = activeJobId
+    ? running.find((job) => job.job_id === activeJobId)
+    : running.at(-1);
+  const latestTerminal = localJobs
+    .filter((job) => job.status !== "running")
+    .sort((a, b) => (a.completed_at ?? a.started_at).localeCompare(b.completed_at ?? b.started_at))
+    .at(-1);
+  const selected: Array<JobStatus | DurableJobStatus> = activeRunning ? [activeRunning] : [];
+  if (latestTerminal && !selected.some((job) => job.job_id === latestTerminal.job_id)) {
+    selected.push(latestTerminal);
+  }
+  if (durableJob && !selected.some((job) => job.job_id === durableJob.job_id)) {
+    selected.push(durableJob);
+  } else if (durableJob) {
+    const duplicateIndex = selected.findIndex((job) => job.job_id === durableJob.job_id);
+    const duplicate = selected[duplicateIndex];
+    if (duplicate?.error?.includes("background_job_settlement_failed")) {
+      selected.splice(duplicateIndex, 1, { ...durableJob, error: duplicate.error });
+    }
+  }
+  return selected;
+}
+
+export function mergeObservedJobs(
+  durableJobs: readonly JobStatus[],
+  processLocalJobs: readonly JobStatus[],
+): JobStatus[] {
+  const byId = new Map(durableJobs.map((job) => [job.job_id, job]));
+  for (const job of processLocalJobs) byId.set(job.job_id, job);
+  return [...byId.values()].sort((a, b) => a.started_at.localeCompare(b.started_at));
+}
+
+export function reconcileObservedJobs(
+  session: DurableSessionState,
+  observedJobs: readonly JobStatus[],
+  processLocalRunningJobIds: ReadonlySet<string> = new Set(),
+): JobStatus[] {
+  const controlActive =
+    session.control?.status === "running" || session.control?.status === "cancel_requested";
+  const activeControlJobId = controlActive ? session.control?.job_id : undefined;
+  const durableExecutionActive =
+    !session.outcome &&
+    (Boolean(session.in_flight) ||
+      Boolean(session.generation_in_flight) ||
+      (session.pending_provider_call_reservations?.length ?? 0) > 0 ||
+      controlActive);
+  return observedJobs.map((job) =>
+    job.status === "running" &&
+    !processLocalRunningJobIds.has(job.job_id) &&
+    (!durableExecutionActive ||
+      (activeControlJobId !== undefined && job.job_id !== activeControlJobId) ||
+      (session.control?.status === "recovered_after_restart" &&
+        session.control.job_id === job.job_id))
+      ? {
+          ...job,
+          status: "failed",
+          completed_at: session.updated_at,
+          error: session.outcome
+            ? `background_job_settled_after_terminal_session: outcome=${session.outcome}, reason=${session.outcome_reason ?? "unspecified"}`
+            : "background_job_interrupted_or_settled_without_terminal_status",
+        }
+      : job,
+  );
+}
+
+export function cancellationNoopPayload(
+  session: SessionMeta,
+  localJobs: readonly JobStatus[],
+  requestedJobId?: string,
+) {
+  const terminalJobs = localJobs
+    .filter(
+      (job) =>
+        job.status !== "running" && (requestedJobId === undefined || job.job_id === requestedJobId),
+    )
+    .sort((a, b) => (a.completed_at ?? a.started_at).localeCompare(b.completed_at ?? b.started_at));
+  const terminalJob = terminalJobs.at(-1);
+  const reason = terminalJob
+    ? "job_already_terminal"
+    : session.outcome
+      ? "session_already_terminal"
+      : "no_running_job_matched";
+  const message = terminalJob
+    ? `Background job ${terminalJob.job_id} already finished with status=${terminalJob.status}; no cancellation was requested.`
+    : session.outcome
+      ? `Session ${session.session_id} is already terminal with outcome=${session.outcome}; no cancellation was requested.`
+      : `No active background job matched session ${session.session_id}${requestedJobId ? ` and job ${requestedJobId}` : ""}.`;
+  return {
+    session_id: session.session_id,
+    requested: false,
+    reason,
+    message,
+    matched_jobs: terminalJob ? [terminalJobSummary(terminalJob)] : [],
+    terminal_job: terminalJob ? terminalJobSummary(terminalJob) : null,
+    final_state: compactSessionFinalState(session),
+  };
+}
+
+export function sessionPollPayload(
+  session: SessionMeta,
+  localJobs: readonly JobStatus[],
+  detail: SessionPollDetail,
+  notices: readonly string[],
+) {
+  const durableJob = synthesizeDurableJob(session, localJobs);
+  const jobs = compactJobsForPoll(localJobs, durableJob, session.control?.job_id);
+  const latestRound = session.rounds.at(-1);
+  const healthState = session.convergence_health?.state;
+  const needsAttention =
+    !session.outcome &&
+    !jobs.some((job) => job.status === "running") &&
+    (healthState === "stale" || healthState === "blocked");
+  return {
+    session_id: session.session_id,
+    outcome: session.outcome,
+    outcome_reason:
+      detail === "full"
+        ? session.outcome_reason
+        : session.outcome_reason
+          ? textPreview(session.outcome_reason, 500)
+          : undefined,
+    health: detail === "full" ? (session.convergence_health ?? null) : healthSummary(session),
+    in_flight: detail === "full" ? (session.in_flight ?? null) : inFlightSummary(session),
+    generation_in_flight:
+      detail === "full"
+        ? (session.generation_in_flight ?? null)
+        : generationInFlightSummary(session),
+    active_round_number: session.in_flight?.round ?? session.generation_in_flight?.round ?? null,
+    rounds: session.rounds.length,
+    latest_completed_round_number: latestRound?.round ?? null,
+    latest_round:
+      latestRound === undefined
+        ? null
+        : detail === "full"
+          ? latestRound
+          : summarizeReviewRoundForPoll(latestRound),
+    latest_round_detail: detail,
+    jobs: detail === "full" ? localJobs : jobs.map((job) => terminalJobSummary(job)),
+    control: detail === "full" ? (session.control ?? null) : controlSummary(session),
+    needs_attention: needsAttention,
+    notices: notices.slice(0, 8).map((notice) => textPreview(notice, 500)),
+  };
+}
+
+export function sessionPollMarkdown(payload: ReturnType<typeof sessionPollPayload>): string {
+  return ["# cross-review session poll", "", markdownResult(payload)].join("\n");
+}
+
+/**
+ * Observe cancellation written by a sibling MCP process. This closes the
+ * process-local AbortController gap without holding a session lock for the
+ * duration of a provider call. Read failures are transient/best-effort; the
+ * next interval retries until the job settles.
+ */
+export function watchDurableCancellation(
+  job: Pick<JobStatus, "job_id" | "session_id">,
+  controller: AbortController,
+  readSession: () => DurableSessionState,
+  intervalMs = 250,
+): () => void {
+  let timer: NodeJS.Timeout | undefined;
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clearInterval(timer);
+    controller.signal.removeEventListener("abort", stop);
+  };
+  const observe = () => {
+    if (stopped || controller.signal.aborted) return;
+    try {
+      const session = readSession();
+      const control = session.control;
+      if (
+        control?.status === "cancel_requested" &&
+        (!control.job_id || control.job_id === job.job_id)
+      ) {
+        controller.abort(control.reason ?? "session_cancelled");
+      }
+    } catch {
+      // A sibling may be atomically replacing meta.json. Retry on the next tick.
+    }
+  };
+
+  controller.signal.addEventListener("abort", stop, { once: true });
+  observe();
+  if (!stopped) {
+    timer = setInterval(observe, Math.max(5, intervalMs));
+    timer.unref();
+  }
+  return stop;
+}
+
+/**
+ * Close the startup gap between the watcher's first read and its next poll.
+ * The caller invokes this with the state returned by the atomic
+ * markBackgroundJobRunning transition, immediately before it could dispatch
+ * any work.
+ */
+export function throwIfDurableCancellationRequested(
+  job: Pick<JobStatus, "job_id">,
+  controller: AbortController,
+  session: DurableSessionState,
+): void {
+  const control = session.control;
+  if (control?.status !== "cancel_requested" || (control.job_id && control.job_id !== job.job_id)) {
+    return;
+  }
+  const reason = control.reason ?? "session_cancelled";
+  controller.abort(reason);
+  const error = new Error(reason);
+  error.name = "AbortError";
+  throw error;
+}
 
 function createRuntime() {
   const config = loadConfig();
   const eventLog = new EventLog(config);
   const holder: { orchestrator?: CrossReviewOrchestrator } = {};
   const emit = (event: RuntimeEvent) => {
-    eventLog.emit(event);
+    // Stamp once at occurrence time and pass the same timestamp to both
+    // sinks.  Previously EventLog and SessionStore independently stamped
+    // their copies, so persistence latency could masquerade as event time.
+    const stamped = { ...event, ts: event.ts ?? now() };
+    eventLog.emit(stamped);
     // Fire-and-forget: appendEvent is async (v4.1.0 proper-lockfile lock)
     // but the emit pipeline must stay sync — callers that need synchronous
     // persistence guarantees should await appendEvent directly. Unhandled
     // rejections are swallowed inside appendEvent.
-    void holder.orchestrator?.store.appendEvent(event);
+    void holder.orchestrator?.store.appendEvent(stamped);
   };
   const orchestrator = new CrossReviewOrchestrator(config, emit);
   holder.orchestrator = orchestrator;
@@ -548,6 +1133,22 @@ function createRuntime() {
 }
 
 type Runtime = ReturnType<typeof createRuntime>;
+
+export async function recoverStartupInterruptedSessions(
+  store: Pick<SessionStore, "recoverInterruptedSessions" | "clearStaleInFlight">,
+  activeSessionIds: ReadonlySet<string> = new Set(),
+): Promise<{
+  recovered: SessionMeta[];
+  in_flight: { scanned: number; cleared: number };
+}> {
+  // Recover the full durable lifecycle first. This is the only path that
+  // settles generation-only markers and atomically transitions control,
+  // background-job history, accounting and health. The legacy marker sweep
+  // remains as a race-safe fallback when an owner disappears during startup.
+  const recovered = await store.recoverInterruptedSessions(new Set(activeSessionIds));
+  const inFlight = await store.clearStaleInFlight();
+  return { recovered, in_flight: inFlight };
+}
 
 function recordIdentityForgeryBlocked(
   runtime: Runtime,
@@ -596,6 +1197,149 @@ function verifyToolCallerIdentity(
     return identity;
   } catch (error) {
     recordIdentityForgeryBlocked(runtime, site, caller, clientInfo, error, session_id);
+    throw error;
+  }
+}
+
+function verifyOperatorToolCallerIdentity(
+  runtime: Runtime,
+  site: string,
+  caller: PeerId | "operator",
+  clientInfo: ClientInfo,
+  session_id?: string,
+): CallerIdentityResult {
+  let identity: CallerIdentityResult;
+  try {
+    identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, session_id);
+  } catch (error) {
+    if (site !== "session_attach_evidence" || caller !== "operator") throw error;
+    const routedError = new Error(
+      `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface and the requested operator identity was not verified. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`,
+      { cause: error },
+    );
+    runtime.emit({
+      type: "session.operator_authority_blocked",
+      session_id,
+      message: routedError.message,
+      data: {
+        site,
+        caller,
+        verification_method: "none",
+        client_info_name: clientInfo?.name ?? "unknown",
+      },
+    });
+    throw routedError;
+  }
+  if (caller !== "operator") {
+    const error = new Error(
+      site === "session_attach_evidence"
+        ? `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface; received caller='${caller}'. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`
+        : `operator_authority_required: ${site} mutates authoritative evidence, terminal state, or security configuration and may only be called by the human operator; received caller='${caller}'.`,
+    );
+    runtime.emit({
+      type: "session.operator_authority_blocked",
+      session_id,
+      message: error.message,
+      data: {
+        site,
+        caller,
+        verification_method: identity.verification_method,
+        client_info_name: identity.client_info_name,
+      },
+    });
+    throw error;
+  }
+  if (!identity.identity_verified || identity.verification_method !== "token") {
+    const error = new Error(
+      `operator_authority_required: ${site} requires a verified dedicated operator capability token.`,
+    );
+    runtime.emit({
+      type: "session.operator_authority_blocked",
+      session_id,
+      message: error.message,
+      data: {
+        site,
+        caller,
+        verification_method: identity.verification_method,
+        client_info_name: identity.client_info_name,
+      },
+    });
+    throw error;
+  }
+  return identity;
+}
+
+export function assertSessionMutationAuthority(
+  site: string,
+  caller: PeerId | "operator",
+  identity: CallerIdentityResult,
+  sessionOwner: PeerId | "operator" | null,
+): void {
+  if (caller === "operator") {
+    if (identity.identity_verified && identity.verification_method === "token") return;
+    throw new Error(
+      `operator_authority_required: ${site} requires the dedicated verified operator capability token.`,
+    );
+  }
+  if (!identity.identity_verified || identity.verification_method !== "token") {
+    throw new Error(
+      `session_owner_token_required: ${site} requires the verified capability token for session petitioner '${sessionOwner}'.`,
+    );
+  }
+  if (sessionOwner === null) {
+    throw new Error(
+      `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session; the dedicated operator token is required.`,
+    );
+  }
+  if (caller !== sessionOwner) {
+    throw new Error(
+      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}' or the human operator; received caller='${caller}'.`,
+    );
+  }
+}
+
+export function hasTrustedPetitionerProvenance(version: unknown): boolean {
+  if (typeof version !== "string") return false;
+  const match = version.match(
+    /^v?(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/,
+  );
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  // Petitioner and acting-peer provenance became durable and distinct in
+  // v2.16. Older sessions may later acquire a petitioner field derived from
+  // historically ambiguous `caller` metadata, so presence alone is not proof.
+  return major > 2 || (major === 2 && minor >= 16);
+}
+
+function verifySessionMutationAuthority(
+  runtime: Runtime,
+  site: string,
+  caller: PeerId | "operator",
+  clientInfo: ClientInfo,
+  sessionId: string,
+): CallerIdentityResult {
+  const identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, sessionId);
+  const session = runtime.orchestrator.store.read(sessionId);
+  const sessionOwner = hasTrustedPetitionerProvenance(session.version)
+    ? (session.convergence_scope?.petitioner ?? session.caller)
+    : null;
+  try {
+    assertSessionMutationAuthority(site, caller, identity, sessionOwner);
+    return identity;
+  } catch (error) {
+    runtime.emit({
+      type: "session.session_authority_blocked",
+      session_id: sessionId,
+      message: safeErrorMessage(error),
+      data: {
+        site,
+        caller,
+        session_owner: sessionOwner,
+        verification_method: identity.verification_method,
+        client_info_name: identity.client_info_name,
+      },
+    });
     throw error;
   }
 }
@@ -649,12 +1393,12 @@ function summarizeJobResult(result: unknown): Record<string, unknown> {
   return {};
 }
 
-function startJob(
+async function startJob(
   runtime: Runtime,
   kind: JobKind,
   sessionId: string,
   run: (signal: AbortSignal) => Promise<unknown>,
-): JobStatus {
+): Promise<JobStatus> {
   const controller = new AbortController();
   const job: JobStatus = {
     job_id: crypto.randomUUID(),
@@ -663,41 +1407,163 @@ function startJob(
     status: "running",
     started_at: now(),
   };
+  let persisted: SessionMeta;
+  persisted = await runtime.orchestrator.store.markBackgroundJobRunning(sessionId, {
+    job_id: job.job_id,
+    owner_pid: process.pid,
+  });
+  if (
+    persisted.outcome ||
+    persisted.control?.status !== "running" ||
+    persisted.control.job_id !== job.job_id
+  ) {
+    if (persisted.control?.status === "cancel_requested" && !persisted.outcome) {
+      await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+    }
+    const error = new Error(
+      persisted.outcome
+        ? `session_already_finalized: cannot start background job for ${sessionId} with outcome=${persisted.outcome}`
+        : `background_job_owner_not_acquired: session ${sessionId} did not persist owner ${job.job_id}`,
+    );
+    if (persisted.control?.status === "cancel_requested") error.name = "AbortError";
+    throw error;
+  }
+  try {
+    await runtime.orchestrator.store.writeBackgroundJobStatus(job);
+  } catch (error) {
+    try {
+      const cleared = await runtime.orchestrator.store.clearBackgroundJobControl(
+        sessionId,
+        job.job_id,
+      );
+      if (cleared.control?.status === "cancel_requested" && cleared.control.job_id === job.job_id) {
+        await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+      } else if (
+        !cleared.outcome &&
+        cleared.control?.status === "running" &&
+        cleared.control.job_id === job.job_id
+      ) {
+        throw new Error(`durable owner ${job.job_id} remained active after startup cleanup`, {
+          cause: error,
+        });
+      }
+    } catch (cleanupError) {
+      throw new Error(
+        `background_job_status_persist_failed: ${safeErrorMessage(error)}; ` +
+          `background_job_settlement_failed: ${safeErrorMessage(cleanupError)}`,
+        { cause: cleanupError },
+      );
+    }
+    throw new Error(`background_job_status_persist_failed: ${safeErrorMessage(error)}`, {
+      cause: error,
+    });
+  }
+  // Publish the process-local job only after its durable owner marker exists.
+  // A sibling process can now either see the durable synthetic job or this
+  // local job, never an uncancellable local-only "running" state.
   runtime.jobs.set(job.job_id, job);
   pruneCompletedJobs(runtime.jobs);
   runtime.controllers.set(job.job_id, controller);
-  void run(controller.signal)
+  const stopDurableCancellationWatch = watchDurableCancellation(job, controller, () =>
+    runtime.orchestrator.store.read(sessionId),
+  );
+  let preDispatchError: unknown;
+  try {
+    // Re-read after the watcher's immediate observation to close the window
+    // where a sibling persisted cancellation after markBackgroundJobRunning.
+    persisted = runtime.orchestrator.store.read(sessionId);
+    throwIfDurableCancellationRequested(job, controller, persisted);
+  } catch (error) {
+    preDispatchError = error;
+  }
+
+  const execution = preDispatchError
+    ? Promise.reject(preDispatchError)
+    : Promise.resolve().then(() => run(controller.signal));
+  void execution
     .then(async (result) => {
-      job.status = controller.signal.aborted ? "cancelled" : "completed";
-      job.completed_at = now();
-      job.result_summary = summarizeJobResult(result);
-      runtime.controllers.delete(job.job_id);
-      if (controller.signal.aborted) {
-        try {
-          await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
-        } catch {
-          // The job status remains visible even if a session write fails.
-        }
-      }
-    })
-    .catch(async (error) => {
-      job.status = controller.signal.aborted ? "cancelled" : "failed";
-      job.completed_at = now();
-      job.error = safeErrorMessage(error);
-      runtime.controllers.delete(job.job_id);
+      let cancellationWon = false;
+      let settlementError: unknown;
       try {
-        if (controller.signal.aborted) {
+        const persisted = runtime.orchestrator.store.read(sessionId);
+        cancellationWon = durableSessionCancellationWon(persisted, controller.signal.aborted);
+        if (cancellationWon) {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
         } else {
+          const settled = await runtime.orchestrator.store.clearBackgroundJobControl(
+            sessionId,
+            job.job_id,
+          );
+          cancellationWon = durableSessionCancellationWon(settled, controller.signal.aborted);
+          if (cancellationWon) {
+            await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+          }
+        }
+      } catch (error) {
+        settlementError = error;
+      }
+      job.status = settlementError
+        ? cancellationWon
+          ? "cancelled"
+          : "failed"
+        : cancellationWon
+          ? "cancelled"
+          : "completed";
+      job.completed_at = now();
+      if (settlementError) {
+        job.error = `background_job_settlement_failed: ${safeErrorMessage(settlementError)}`;
+      } else {
+        job.result_summary = summarizeJobResult(result);
+      }
+      try {
+        await runtime.orchestrator.store.writeBackgroundJobStatus(job);
+      } catch (historyError) {
+        job.error = [
+          job.error,
+          `background_job_status_persist_failed: ${safeErrorMessage(historyError)}`,
+        ]
+          .filter(Boolean)
+          .join("; ");
+      }
+      runtime.controllers.delete(job.job_id);
+    })
+    .catch(async (error) => {
+      let persisted: SessionMeta | undefined;
+      try {
+        persisted = runtime.orchestrator.store.read(sessionId);
+      } catch {
+        // Preserve the process-local result when durable state is temporarily unreadable.
+      }
+      const cancellationWon = persisted
+        ? durableSessionCancellationWon(persisted, controller.signal.aborted)
+        : controller.signal.aborted;
+      let settlementError: unknown;
+      try {
+        if (cancellationWon) {
+          await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
+        } else if (shouldEscalateBackgroundJobFailure(persisted)) {
+          await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
           await runtime.orchestrator.store.escalateToOperator(sessionId, {
-            reason: `Background job failed: ${job.error}`,
+            reason: `Background job failed: ${safeErrorMessage(error)}`,
             severity: "critical",
           });
         }
-      } catch {
-        // Job state remains available even if the session cannot be updated.
+      } catch (cleanupError) {
+        settlementError = cleanupError;
       }
-    });
+      job.status = cancellationWon ? "cancelled" : "failed";
+      job.completed_at = now();
+      job.error = settlementError
+        ? `${safeErrorMessage(error)}; background_job_settlement_failed: ${safeErrorMessage(settlementError)}`
+        : safeErrorMessage(error);
+      try {
+        await runtime.orchestrator.store.writeBackgroundJobStatus(job);
+      } catch (historyError) {
+        job.error = `${job.error}; background_job_status_persist_failed: ${safeErrorMessage(historyError)}`;
+      }
+      runtime.controllers.delete(job.job_id);
+    })
+    .finally(stopDurableCancellationWatch);
   return job;
 }
 
@@ -729,19 +1595,19 @@ function runtimeCapabilities(runtime: Runtime): RuntimeCapabilities {
 export async function main(): Promise<void> {
   const runtime = createRuntime();
   // v2.18.0 / F1: initialize the per-host token map (load existing OR
-  // generate with mode 0o600). Failure is non-fatal — the v2.17.0
-  // clientInfo gate still works for non-migrated hosts. One-shot stderr
-  // line on first generation publishes the file path so the operator can
-  // distribute the per-agent secrets.
+  // generate with mode 0o600). Legacy v1 records are migrated in place by
+  // adding a seventh, distinct operator capability. Failure leaves peer
+  // clientInfo checks available in permissive mode, but operator calls remain
+  // fail-closed because a client name cannot authenticate a human.
   initHostTokensRecord(runtime.config.data_dir);
   const tokensRecord = getHostTokensRecord();
   if (tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] F1 caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute the per-agent secrets to each MCP host config as CROSS_REVIEW_CALLER_TOKEN to enable verification_method=token; v2.17.0 clientInfo gate remains active as fallback).\n`,
+      `[cross-review] caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute each peer token only to its model host and keep the distinct operator token only in a dedicated human console).\n`,
     );
   } else if (!tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] F1 caller capability tokens unavailable (failed to load or generate host-tokens.json); the v2.17.0 clientInfo identity gate remains active. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions to enable token verification.\n`,
+      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but operator tools are disabled fail-closed. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions.\n`,
     );
   }
   const server = new McpServer({
@@ -796,9 +1662,24 @@ export async function main(): Promise<void> {
           tools: toolNames,
           data_dir: runtime.config.data_dir,
           log_file: runtime.eventLog.path(),
+          config_load: getFileConfigRuntimeStatus() ?? null,
+          config_precedence: [
+            "process.env",
+            "Windows user environment/registry",
+            "central config.json",
+            "hardcoded defaults",
+          ],
+          models: runtime.config.models,
+          model_selection: runtime.config.model_selection,
+          fallback_models: runtime.config.fallback_models,
+          reasoning_effort: runtime.config.reasoning_effort,
+          cost_rates: runtime.config.cost_rates,
+          cache: runtime.config.cache,
+          perplexity: runtime.config.perplexity,
           stub: runtime.config.stub,
           retry_timeout_ms: runtime.config.retry.timeout_ms,
           budget: runtime.config.budget,
+          evidence_broker: runtime.config.evidence_broker,
           financial_controls: (() => {
             // v3.7.0 (AUDIT-4, Codex super-audit 2026-05-14): readiness
             // is computed over the ENABLED peer subset, not the full
@@ -819,6 +1700,9 @@ export async function main(): Promise<void> {
           })(),
           prompt: runtime.config.prompt,
           max_output_tokens: runtime.config.max_output_tokens,
+          max_output_tokens_by_peer: Object.fromEntries(
+            PEERS.map((peer) => [peer, maxOutputTokensForPeer(runtime.config, peer)]),
+          ),
           streaming: runtime.config.streaming,
           // v2.12.0: judge auto-wire is now a first-class observable. Operators
           // checking `server_info` know whether shadow is collecting data,
@@ -833,6 +1717,8 @@ export async function main(): Promise<void> {
             peer: runtime.config.evidence_judge_autowire.peer ?? null,
             active: runtime.config.evidence_judge_autowire.active,
             max_items_per_pass: runtime.config.evidence_judge_autowire.max_items_per_pass,
+            max_output_tokens: runtime.config.evidence_judge_autowire.max_output_tokens,
+            reasoning_effort: runtime.config.evidence_judge_autowire.reasoning_effort ?? "medium",
             configured_mode_raw: runtime.config.evidence_judge_autowire.configured_mode_raw,
             configured_peer_raw: runtime.config.evidence_judge_autowire.configured_peer_raw,
             consensus_peers: runtime.config.evidence_judge_autowire.consensus_peers,
@@ -853,9 +1739,13 @@ export async function main(): Promise<void> {
             file_path: getHostTokensRecord()?.filePath ?? null,
             generated_at: getHostTokensRecord()?.generated_at ?? null,
             hard_enforce: isHardEnforceMode(),
-            agents: getHostTokensRecord() ? Object.keys(getHostTokensRecord()?.map ?? {}) : [],
+            agents: getHostTokensRecord() ? [...PEERS] : [],
+            operator_capability_loaded: Boolean(getHostTokensRecord()?.map.operator),
+            operator_capability_required: true,
+            identities: getHostTokensRecord() ? Object.keys(getHostTokensRecord()?.map ?? {}) : [],
           },
-          codeql_policy: "Default Setup on GitHub; no advanced workflow committed.",
+          codeql_policy:
+            "Repository policy: committed Advanced CodeQL workflow (.github/workflows/codeql.yml, security-extended); avoid duplicate Default Setup.",
           secrets_policy: "API keys are read from Windows environment variables only.",
         },
         response_format,
@@ -918,7 +1808,7 @@ export async function main(): Promise<void> {
     {
       title: "Initialize Session",
       description:
-        "Create a durable cross-review session after probing provider availability and model selection. This does not call reviewer models yet.",
+        "Create a durable cross-review session after probing provider availability and model selection. This does not call reviewer models yet. AI callers should submit raw proof through the `evidence` field of the subsequent review starter; the runtime will persist it automatically without session_attach_evidence or human intervention.",
       inputSchema: z.object({
         task: z.string().min(1).describe("Original task or artifact being reviewed."),
         review_focus: ReviewFocusSchema,
@@ -1005,12 +1895,13 @@ export async function main(): Promise<void> {
     {
       title: "Ask Peers",
       description:
-        "Run a real API review round against selected peers. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
+        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
+        evidence: AutomaticCallerEvidenceSchema,
         caller: CallerSchema.default("operator"),
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
@@ -1036,13 +1927,22 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyToolCallerIdentity(
-        runtime,
-        "ask_peers",
-        input.caller,
-        server.server.getClientVersion(),
-        input.session_id,
-      );
+      if (input.session_id) {
+        verifySessionMutationAuthority(
+          runtime,
+          "ask_peers",
+          input.caller,
+          server.server.getClientVersion(),
+          input.session_id,
+        );
+      } else {
+        verifyToolCallerIdentity(
+          runtime,
+          "ask_peers",
+          input.caller,
+          server.server.getClientVersion(),
+        );
+      }
       // v3.3.0: caller peer-selection lock — silently strips
       // caller-supplied `peers` (and, for peer callers, `lead_peer`) and
       // emits an audit event for the operator. See lockCallerPeerSelection
@@ -1066,12 +1966,13 @@ export async function main(): Promise<void> {
     {
       title: "Start Review Round",
       description:
-        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling.",
+        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
+        evidence: AutomaticCallerEvidenceSchema,
         caller: CallerSchema.default("operator"),
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
@@ -1097,13 +1998,22 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyToolCallerIdentity(
-        runtime,
-        "session_start_round",
-        input.caller,
-        server.server.getClientVersion(),
-        input.session_id,
-      );
+      if (input.session_id) {
+        verifySessionMutationAuthority(
+          runtime,
+          "session_start_round",
+          input.caller,
+          server.server.getClientVersion(),
+          input.session_id,
+        );
+      } else {
+        verifyToolCallerIdentity(
+          runtime,
+          "session_start_round",
+          input.caller,
+          server.server.getClientVersion(),
+        );
+      }
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_round",
@@ -1113,7 +2023,7 @@ export async function main(): Promise<void> {
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
         : await runtime.orchestrator.initSession(locked.task, locked.caller, locked.review_focus);
-      const job = startJob(runtime, "ask_peers", session.session_id, (signal) =>
+      const job = await startJob(runtime, "ask_peers", session.session_id, (signal) =>
         runtime.orchestrator.askPeers({ ...locked, session_id: session.session_id, signal }),
       );
       return textResult(
@@ -1137,7 +2047,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Until Unanimous",
       description:
-        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
+        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
       inputSchema: z.object({
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
@@ -1163,7 +2073,19 @@ export async function main(): Promise<void> {
           // 6-element default. `.max(PEERS.length)` tracks the roster.
           .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
-        max_rounds: z.number().int().min(1).max(1000).default(8),
+        max_rounds: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .default(8)
+          .describe("Hard review-round ceiling unless allow_auto_extension is explicitly true."),
+        allow_auto_extension: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Opt in to at most two evidence-only auto-extensions. False keeps max_rounds rigid.",
+          ),
         until_stopped: z.boolean().default(false),
         max_cost_usd: z.number().positive().optional(),
         reasoning_effort_overrides: ReasoningEffortOverridesSchema,
@@ -1182,14 +2104,12 @@ export async function main(): Promise<void> {
         // shared prose/spec artifacts. For approve/reject judgments over
         // external code, prefer ship (default) or review.
         mode: z.enum(["ship", "review", "circular"]).default("ship"),
-        // v3.5.0 (CRV2-4): optional structured evidence the caller
-        // supplies up-front. When present (non-empty) it satisfies the
-        // evidence preflight unconditionally — it is the caller's
-        // authoritative declaration that concrete evidence exists for
-        // the review. cross-review stays API-only: it does not run
-        // git/shell to gather evidence; packaging is a caller-side
-        // responsibility (see docs/evidence-preflight.md).
-        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        // v3.5.0 (CRV2-4): optional structured evidence supplied up-front.
+        // The preflight checks value correspondence with every operational
+        // claim; presence alone is never proof. Peer material is persisted,
+        // hashed and transported as unverified review evidence without a
+        // manual operator attachment step.
+        evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1228,7 +2148,7 @@ export async function main(): Promise<void> {
     {
       title: "Start Until Unanimous",
       description:
-        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
+        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -1247,7 +2167,19 @@ export async function main(): Promise<void> {
           // 6-element default. `.max(PEERS.length)` tracks the roster.
           .max(PEERS.length)
           .default([...PEERS] as PeerId[]),
-        max_rounds: z.number().int().min(1).max(1000).default(8),
+        max_rounds: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .default(8)
+          .describe("Hard review-round ceiling unless allow_auto_extension is explicitly true."),
+        allow_auto_extension: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Opt in to at most two evidence-only auto-extensions. False keeps max_rounds rigid.",
+          ),
         until_stopped: z.boolean().default(false),
         max_cost_usd: z.number().positive().optional(),
         reasoning_effort_overrides: ReasoningEffortOverridesSchema,
@@ -1260,14 +2192,12 @@ export async function main(): Promise<void> {
         // shared prose/spec artifacts. For approve/reject judgments over
         // external code, prefer ship (default) or review.
         mode: z.enum(["ship", "review", "circular"]).default("ship"),
-        // v3.5.0 (CRV2-4): optional structured evidence the caller
-        // supplies up-front. When present (non-empty) it satisfies the
-        // evidence preflight unconditionally — it is the caller's
-        // authoritative declaration that concrete evidence exists for
-        // the review. cross-review stays API-only: it does not run
-        // git/shell to gather evidence; packaging is a caller-side
-        // responsibility (see docs/evidence-preflight.md).
-        evidence: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+        // v3.5.0 (CRV2-4): optional structured evidence supplied up-front.
+        // The preflight checks value correspondence with every operational
+        // claim; presence alone is never proof. Peer material is persisted,
+        // hashed and transported as unverified review evidence without a
+        // manual operator attachment step.
+        evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1279,13 +2209,22 @@ export async function main(): Promise<void> {
     },
     async ({ response_format, ...input }) => {
       // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      verifyToolCallerIdentity(
-        runtime,
-        "session_start_unanimous",
-        input.caller,
-        server.server.getClientVersion(),
-        input.session_id,
-      );
+      if (input.session_id) {
+        verifySessionMutationAuthority(
+          runtime,
+          "session_start_unanimous",
+          input.caller,
+          server.server.getClientVersion(),
+          input.session_id,
+        );
+      } else {
+        verifyToolCallerIdentity(
+          runtime,
+          "session_start_unanimous",
+          input.caller,
+          server.server.getClientVersion(),
+        );
+      }
       // v3.3.0: caller peer-selection lock.
       const locked = lockCallerPeerSelection(input, {
         site: "session_start_unanimous",
@@ -1301,7 +2240,7 @@ export async function main(): Promise<void> {
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
         : await runtime.orchestrator.initSession(locked.task, initCaller, locked.review_focus);
-      const job = startJob(runtime, "run_until_unanimous", session.session_id, (signal) =>
+      const job = await startJob(runtime, "run_until_unanimous", session.session_id, (signal) =>
         runtime.orchestrator.runUntilUnanimous({
           ...locked,
           session_id: session.session_id,
@@ -1328,11 +2267,11 @@ export async function main(): Promise<void> {
     {
       title: "Cancel Session Job",
       description:
-        "Request cancellation for running background jobs in a durable session. Provider calls receive AbortSignal where the provider client supports it.",
+        "Request cancellation for running background jobs in a durable session. The reason accepts at most 300 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token; another peer cannot cancel the job. Provider calls receive AbortSignal where the provider client supports it.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         job_id: SessionIdSchema.optional(),
-        reason: z.string().min(1).max(300).default("operator_requested"),
+        reason: z.string().min(1).max(300).default("requester_requested"),
         caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
       }),
@@ -1344,39 +2283,99 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, job_id, reason, caller, response_format }) => {
-      verifyToolCallerIdentity(
+      verifySessionMutationAuthority(
         runtime,
         "session_cancel_job",
         caller,
         server.server.getClientVersion(),
         session_id,
       );
-      const jobs = [...runtime.jobs.values()].filter(
-        (job) =>
-          job.session_id === session_id &&
-          job.status === "running" &&
-          (!job_id || job.job_id === job_id),
+      const processLocalJobs = [...runtime.jobs.values()].filter(
+        (job) => job.session_id === session_id,
       );
-      if (!jobs.length) {
-        return textResult(
-          {
-            session_id,
-            requested: false,
-            reason: "no_running_job_matched",
-            matched_jobs: [],
-          },
-          response_format,
-        );
+      const persistedJobs = job_id
+        ? [runtime.orchestrator.store.readBackgroundJobStatus(session_id, job_id)].filter(
+            (job): job is JobStatus => job !== undefined,
+          )
+        : runtime.orchestrator.store.readBackgroundJobStatuses(session_id);
+      const session = runtime.orchestrator.store.read(session_id);
+      const sessionJobs = reconcileObservedJobs(
+        session,
+        mergeObservedJobs(persistedJobs, processLocalJobs),
+        new Set(
+          processLocalJobs.filter((job) => job.status === "running").map((job) => job.job_id),
+        ),
+      );
+      const explicitTerminalJob = job_id
+        ? sessionJobs.find((job) => job.job_id === job_id && job.status !== "running")
+        : undefined;
+      const unsettledTerminalJob = sessionJobs.find(
+        (job) =>
+          job.job_id === session.control?.job_id &&
+          job.status !== "running" &&
+          job.error?.includes("background_job_settlement_failed"),
+      );
+      const requestedJobStillDurablyActive =
+        explicitTerminalJob !== undefined &&
+        durableSessionExecutionActive(session) &&
+        session.control?.job_id === explicitTerminalJob.job_id;
+      if (explicitTerminalJob && !requestedJobStillDurablyActive) {
+        return textResult(cancellationNoopPayload(session, sessionJobs, job_id), response_format);
       }
-      const meta = await runtime.orchestrator.store.requestCancellation(session_id, reason, job_id);
-      for (const job of jobs) {
+      const jobs = sessionJobs.filter(
+        (job) => job.status === "running" && (!job_id || job.job_id === job_id),
+      );
+      const durableExecutionActive = durableSessionExecutionActive(session);
+      if (!jobs.length && !durableExecutionActive) {
+        return textResult(cancellationNoopPayload(session, sessionJobs, job_id), response_format);
+      }
+      let meta: SessionMeta;
+      try {
+        meta = await runtime.orchestrator.store.requestCancellation(session_id, reason, job_id, {
+          require_active_execution: true,
+        });
+      } catch (error) {
+        const code = (error as Error & { code?: string }).code;
+        if (code !== "session_already_finalized" && code !== "no_active_execution") throw error;
+        // The executor settled after the optimistic snapshot but before the
+        // store acquired its lock. Let its same-process terminal bookkeeping
+        // run, then report the authoritative no-op instead of recreating an
+        // orphan cancel_requested control.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const current = runtime.orchestrator.store.read(session_id);
+        const refreshedJobs = reconcileObservedJobs(
+          current,
+          mergeObservedJobs(
+            job_id
+              ? [runtime.orchestrator.store.readBackgroundJobStatus(session_id, job_id)].filter(
+                  (job): job is JobStatus => job !== undefined,
+                )
+              : runtime.orchestrator.store.readBackgroundJobStatuses(session_id),
+            [...runtime.jobs.values()].filter((job) => job.session_id === session_id),
+          ),
+          new Set(
+            [...runtime.jobs.values()]
+              .filter((job) => job.session_id === session_id && job.status === "running")
+              .map((job) => job.job_id),
+          ),
+        );
+        return textResult(cancellationNoopPayload(current, refreshedJobs, job_id), response_format);
+      }
+      for (const job of processLocalJobs.filter(
+        (candidate) => candidate.status === "running" && (!job_id || candidate.job_id === job_id),
+      )) {
         runtime.controllers.get(job.job_id)?.abort(reason);
       }
+      if (unsettledTerminalJob && session.control?.job_id === unsettledTerminalJob.job_id) {
+        meta = await runtime.orchestrator.store.markCancelled(session_id, "session_cancelled");
+      }
+      const durableJob = synthesizeDurableJob(meta, jobs);
       return textResult(
         {
           session_id,
           requested: true,
           matched_jobs: jobs,
+          durable_execution: durableJob,
           control: meta.control,
         },
         response_format,
@@ -1402,7 +2401,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ caller, response_format }) => {
-      verifyToolCallerIdentity(
+      verifyOperatorToolCallerIdentity(
         runtime,
         "session_recover_interrupted",
         caller,
@@ -1427,9 +2426,10 @@ export async function main(): Promise<void> {
     {
       title: "Poll Session",
       description:
-        "Return durable session state and background job status without waiting for provider calls to finish.",
+        "Return durable session state and background job status without waiting for provider calls to finish. Default detail=summary keeps prior-round peer text/raw payloads out of polling responses; use detail=full or session_read only when full forensic data is required.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
+        detail: SessionPollDetailSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1439,17 +2439,30 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, response_format }) => {
+    async ({ session_id, detail, response_format }) => {
       const session = runtime.orchestrator.store.read(session_id);
-      const jobs = [...runtime.jobs.values()].filter((job) => job.session_id === session_id);
+      const localJobs = reconcileObservedJobs(
+        session,
+        mergeObservedJobs(
+          runtime.orchestrator.store.readBackgroundJobStatuses(session_id),
+          [...runtime.jobs.values()].filter((job) => job.session_id === session_id),
+        ),
+        new Set(
+          [...runtime.jobs.values()]
+            .filter((job) => job.session_id === session_id && job.status === "running")
+            .map((job) => job.job_id),
+        ),
+      );
+      const durableJob = synthesizeDurableJob(session, localJobs);
+      const jobs = compactJobsForPoll(localJobs, durableJob, session.control?.job_id);
       // v3.6.0 (B1, logs+sessions study): `needs_attention` — derived
       // convenience flag. The 169-session corpus showed 28 non-terminal
       // sessions (5 open + 9 stale + 14 blocked), many abandoned by the
       // caller until the 24h sweep aborted them. This flag is true when
       // the session has no terminal `outcome` AND its health is stale or
       // blocked AND there is no running job — i.e. it is sitting
-      // un-finalized with nothing in flight and needs the caller to
-      // finalize, contest, continue, or cancel it.
+      // un-finalized with nothing in flight and needs the caller/operator
+      // workflow to continue, contest, cancel, or finalize it.
       const hasRunningJob = jobs.some((job) => job.status === "running");
       const healthState = session.convergence_health?.state;
       const needsAttention =
@@ -1475,21 +2488,10 @@ export async function main(): Promise<void> {
             `running job — finalize, contest, continue, or cancel it. The 24h stale-session sweep is only a backstop.`,
         );
       }
-      return textResult(
-        {
-          session_id,
-          outcome: session.outcome,
-          health: session.convergence_health,
-          in_flight: session.in_flight,
-          rounds: session.rounds.length,
-          latest_round: session.rounds.at(-1) ?? null,
-          jobs,
-          control: session.control,
-          needs_attention: needsAttention,
-          notices,
-        },
-        response_format,
-      );
+      const payload = sessionPollPayload(session, localJobs, detail, notices);
+      return response_format === "markdown"
+        ? textResult(sessionPollMarkdown(payload), "markdown")
+        : textResult(payload, "json");
     },
   );
 
@@ -1577,7 +2579,21 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyToolCallerIdentity(runtime, "session_doctor", caller, server.server.getClientVersion());
+      if (repair) {
+        verifyOperatorToolCallerIdentity(
+          runtime,
+          "session_doctor.repair",
+          caller,
+          server.server.getClientVersion(),
+        );
+      } else {
+        verifyToolCallerIdentity(
+          runtime,
+          "session_doctor",
+          caller,
+          server.server.getClientVersion(),
+        );
+      }
       return textResult(
         await runtime.orchestrator.store.sessionDoctor(
           limit,
@@ -1595,10 +2611,12 @@ export async function main(): Promise<void> {
     {
       title: "Read Session Events",
       description:
-        "Read durable session events from events.ndjson. Use since_seq to incrementally poll long-running sessions.",
+        "Read a bounded page of durable session events. Token-delta telemetry is excluded by default; opt in only for streaming forensics. Continue with next_seq while has_more is true.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         since_seq: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(1_000).default(200),
+        include_token_deltas: z.boolean().default(false),
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1608,14 +2626,16 @@ export async function main(): Promise<void> {
         openWorldHint: false,
       },
     },
-    async ({ session_id, since_seq, response_format }) =>
-      textResult(
+    async ({ session_id, since_seq, limit, include_token_deltas, response_format }) => {
+      const allEvents = runtime.orchestrator.store.readEvents(session_id, since_seq);
+      return textResult(
         {
           session_id,
-          events: runtime.orchestrator.store.readEvents(session_id, since_seq),
+          ...pageSessionEvents(allEvents, since_seq, limit, include_token_deltas),
         },
         response_format,
-      ),
+      );
+    },
   );
 
   registerTool(
@@ -1677,6 +2697,7 @@ export async function main(): Promise<void> {
           convergence_health: session.convergence_health,
           convergence_scope: session.convergence_scope,
           in_flight: session.in_flight,
+          generation_in_flight: session.generation_in_flight,
           failed_attempts: session.failed_attempts ?? [],
         },
         response_format,
@@ -1684,27 +2705,25 @@ export async function main(): Promise<void> {
     },
   );
 
-  registerTool(
-    "session_truthfulness_preflight_check",
-    {
-      title: "Check Truthfulness Preflight",
-      description:
-        "Re-run the local truthfulness preflight for a saved session without calling providers. Useful after attaching evidence to confirm whether a prior truthfulness_preflight abort is now supported.",
-      inputSchema: z.object({
-        session_id: SessionIdSchema,
-        task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
-        draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
-        evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async ({ session_id, task, draft, evidence, response_format }) => {
+  const savedSessionPreflightSchema = z.object({
+    session_id: SessionIdSchema,
+    task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
+    draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
+    evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
+    caller: CallerSchema.default("operator"),
+    response_format: ResponseFormatSchema,
+  });
+  const savedSessionPreflightHandler =
+    (site: "session_preflight_check" | "session_truthfulness_preflight_check") =>
+    async ({
+      session_id,
+      task,
+      draft,
+      evidence,
+      caller,
+      response_format,
+    }: z.infer<typeof savedSessionPreflightSchema>) => {
+      verifyToolCallerIdentity(runtime, site, caller, server.server.getClientVersion(), session_id);
       const session = runtime.orchestrator.store.read(session_id);
       const latestDraftPath = session.rounds.at(-1)?.draft_file;
       let effectiveDraft = draft;
@@ -1715,51 +2734,91 @@ export async function main(): Promise<void> {
           SCHEMA_DRAFT_MAX_CHARS,
         );
       }
-      const attachments = runtime.orchestrator.store.readEvidenceAttachments(
-        session_id,
-        runtime.config.prompt.max_attached_evidence_chars,
-      );
-      const result = truthfulnessPreflight({
+      const result = runtime.orchestrator.checkSessionPreflights({
+        sessionId: session_id,
         task: task ?? session.task,
-        initialDraft: effectiveDraft,
-        structuredEvidence: evidence,
-        attachmentsPresent: attachments.length > 0,
-        runtimeFacts: {
-          runtime_version: runtime.config.version,
-          release_date: RELEASE_DATE,
-          model_pins: runtime.config.models,
-        },
+        draft: effectiveDraft,
+        evidence,
+        caller,
       });
+      const truthfulness = result.truthfulness.result;
+      const evidenceResult = result.evidence.result;
       return textResult(
         {
           session_id: session.session_id,
           used_task_source: task ? "input" : "session",
           used_draft_source: draft ? "input" : latestDraftPath ? latestDraftPath : null,
           pass: result.pass,
-          reason: result.reason,
-          issue_classes: result.issue_classes,
-          current_state_claim_matched: result.current_state_claim_matched,
-          historical_state_claim_matched: result.historical_state_claim_matched,
-          contradictions: result.contradictions,
-          unsupported_claims: result.unsupported_claims,
-          structured_evidence_supplied: result.structured_evidence_supplied,
-          attachments_present: result.attachments_present,
-          attached_evidence_count: attachments.length,
+          reason: result.pass
+            ? "all enabled submission preflights passed"
+            : `submission blocked by preflight gate(s): ${result.blocking_gates.join(", ")}`,
+          blocking_gates: result.blocking_gates,
+          truthfulness_pass: result.truthfulness.pass,
+          evidence_pass: result.evidence.pass,
+          truthfulness: result.truthfulness,
+          evidence: result.evidence,
+          // Legacy truthfulness fields remain additive for existing clients.
+          issue_classes: truthfulness?.issue_classes ?? [],
+          current_state_claim_matched: truthfulness?.current_state_claim_matched ?? false,
+          historical_state_claim_matched: truthfulness?.historical_state_claim_matched ?? false,
+          contradictions: truthfulness?.contradictions ?? [],
+          unsupported_claims: truthfulness?.unsupported_claims ?? [],
+          structured_evidence_supplied:
+            truthfulness?.structured_evidence_supplied ??
+            evidenceResult?.structured_evidence_supplied ??
+            false,
+          attachments_present:
+            result.reviewable_attachment_count > 0 || result.operator_verified_attachment_count > 0,
+          attached_evidence_count: result.reviewable_attachment_count,
+          operator_verified_evidence_count: result.operator_verified_attachment_count,
           evidence_files: session.evidence_files ?? [],
-          source_marker_found: result.source_marker_found,
-          runtime_facts_available: result.runtime_facts_available,
+          source_marker_found: truthfulness?.source_marker_found ?? false,
+          runtime_facts_available: truthfulness?.runtime_facts_available ?? true,
         },
         response_format,
       );
+    };
+
+  registerTool(
+    "session_preflight_check",
+    {
+      title: "Check Submission Preflights",
+      description:
+        "Run the same enabled evidence and truthfulness gates used by a real review round, without calling providers. Peer-submitted inline/structured evidence is checked as review material and requires no manual operator attachment.",
+      inputSchema: savedSessionPreflightSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
+    savedSessionPreflightHandler("session_preflight_check"),
+  );
+
+  registerTool(
+    "session_truthfulness_preflight_check",
+    {
+      title: "Check Submission Preflights (Legacy Alias)",
+      description:
+        "Backward-compatible alias for session_preflight_check. Its top-level pass now reflects both enabled runtime gates, eliminating truthfulness-only false positives.",
+      inputSchema: savedSessionPreflightSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    savedSessionPreflightHandler("session_truthfulness_preflight_check"),
   );
 
   registerTool(
     "session_attach_evidence",
     {
-      title: "Attach Evidence",
+      title: "Promote Operator Evidence (Optional)",
       description:
-        "Persist a text evidence artifact under a durable session evidence directory and register it in session metadata.",
+        "Optional operator-only authority promotion; AI callers must not use this tool. No human operator action is required for ordinary reviews: pass raw proof through the `evidence` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, and the runtime persists it durably as caller_submitted_unverified material.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         label: z.string().min(1).max(120),
@@ -1777,7 +2836,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, label, content, content_type, extension, caller, response_format }) => {
-      verifyToolCallerIdentity(
+      verifyOperatorToolCallerIdentity(
         runtime,
         "session_attach_evidence",
         caller,
@@ -1790,6 +2849,8 @@ export async function main(): Promise<void> {
           content,
           content_type,
           extension,
+          attached_by: caller,
+          origin: "session_attach_evidence",
         }),
         response_format,
       );
@@ -1822,7 +2883,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, item_id, status, note, caller, response_format }) => {
-      verifyToolCallerIdentity(
+      verifyOperatorToolCallerIdentity(
         runtime,
         "session_evidence_checklist_update",
         caller,
@@ -1849,7 +2910,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Pass",
       description:
-        "v2.9.0 LLM-based satisfied detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment (satisfied + confidence + rationale). The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal operator statuses (satisfied/deferred/rejected) and items already addressed by resurfacing-inference are NEVER touched. Items per pass are capped via CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS (default 8). Optional item_ids filter narrows the pass to specific items; omit for all-open. The judge_peer is the LLM that performs the judgment — choose any peer with a configured API key. v2.10.0: optional shadow_mode (default false) routes the pass through a non-mutating path that emits session.evidence_judge_pass.shadow_decision events without touching checklist state — operators use it to collect empirical judgment-quality data before relying on active mutation.",
+        "Operator-authorized LLM satisfied-detection for the Evidence Broker. Requires the dedicated operator capability token. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment; a peer can never judge its own evidence ask. The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal operator statuses and already-addressed items are never touched. Optional shadow_mode records non-mutating decisions.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         judge_peer: PeerSchema,
@@ -1888,7 +2949,7 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyToolCallerIdentity(
+      verifyOperatorToolCallerIdentity(
         runtime,
         "session_evidence_judge_pass",
         caller,
@@ -1922,7 +2983,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Consensus Pass",
       description:
-        "v2.14.0 — multi-peer consensus judge pass. Fires `judgeEvidenceAsk` against ALL `judge_peers` in parallel for each open checklist item; promotes (active mode) ONLY when all peers return verified-satisfied with non-empty rationale and zero parser_warnings. Disagreement leaves the item open with `reason=consensus_disagreement` and `per_peer` details. Shadow mode emits `session.evidence_judge_pass.shadow_decision` events with `consensus_peers` so the precision report tool sees consensus runs in its corpus. Requires at least 2 judge_peers; single-peer callers should use `session_evidence_judge_pass`. All judge_peers must be enabled (CROSS_REVIEW_PEER_<NAME>=on).",
+        "Operator-authorized multi-peer evidence judgment. Requires the dedicated operator capability token and at least two distinct enabled judge peers. A peer is forbidden from ruling on its own evidence ask; any self-judge member makes that item's consensus fail closed. Active mode promotes only unanimous verified-satisfied judgments with non-empty rationales and zero parser warnings; shadow mode never mutates state.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         // v3.7.0 (AUDIT-3): .max(PEERS.length) — same stale-`.max(5)`
@@ -1964,7 +3025,7 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyToolCallerIdentity(
+      verifyOperatorToolCallerIdentity(
         runtime,
         "session_evidence_judge_consensus_pass",
         caller,
@@ -2028,14 +3089,14 @@ export async function main(): Promise<void> {
   // formally contest a final verdict, opening a new deliberation cycle
   // within the same autos. The original session is preserved (append-
   // only); a new session is initialized with a structural reference
-  // back. Caller NOT_READY (contesta) → use this tool. Caller READY
-  // (acata) → use session_finalize as before.
+  // back. Petitioner NOT_READY (contesta) → use this tool. Petitioner READY
+  // (acata) → notify the human operator, whose dedicated console finalizes.
   registerTool(
     "contest_verdict",
     {
       title: "Contest Verdict",
       description:
-        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. Per the cross-review tribunal-colegiado model: caller READY (acata) → session_finalize as usual; caller NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
+        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token. Petitioner READY (acata) → notify the human operator so the dedicated console can finalize; petitioner NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(4_000),
@@ -2061,21 +3122,21 @@ export async function main(): Promise<void> {
       new_caller,
       response_format,
     }) => {
-      verifyToolCallerIdentity(
+      verifySessionMutationAuthority(
         runtime,
         "contest_verdict",
         caller,
         server.server.getClientVersion(),
         session_id,
       );
-      // v2.17.0: identity forgery rejection (operator directive 2026-05-05).
-      // Skip when new_caller is undefined (orchestrator falls back to a
-      // sensible default); otherwise verify like the other handlers.
-      if (new_caller !== undefined) {
+      // Resolve the new caller before entering the store; omitting the field
+      // must never trigger a hidden fallback to "operator" in persistence.
+      const effectiveNewCaller = new_caller ?? caller;
+      if (effectiveNewCaller !== caller) {
         verifyToolCallerIdentity(
           runtime,
           "contest_verdict.new_caller",
-          new_caller,
+          effectiveNewCaller,
           server.server.getClientVersion(),
           session_id,
         );
@@ -2086,7 +3147,7 @@ export async function main(): Promise<void> {
           reason,
           new_task,
           new_initial_draft,
-          new_caller,
+          new_caller: effectiveNewCaller,
         }),
         response_format,
       );
@@ -2098,7 +3159,7 @@ export async function main(): Promise<void> {
     {
       title: "Regenerate Caller Tokens (F1)",
       description:
-        "v2.18.0 / F1 (caller capability tokens). Rotate the per-host secret tokens used by the F1 identity gate. OVERWRITES the existing host-tokens.json file (default location: <data_dir>/host-tokens.json; override via CROSS_REVIEW_TOKENS_FILE env var) with freshly generated 256-bit hex secrets — one per agent (codex, claude, gemini, deepseek, grok, perplexity). The MCP response returns only token fingerprints, never plaintext secrets; read the local host-tokens.json file directly when redistributing CROSS_REVIEW_CALLER_TOKEN values. AFTER calling this tool, every MCP host carrying a stale token will start being rejected with identity_forgery_blocked: token does not match any known agent. The operator MUST redistribute the secrets and reload the affected hosts. Use cases: (a) initial deployment after first-boot generation; (b) suspected token leak; (c) periodic rotation.",
+        "Rotate the seven caller capability tokens (six peer identities plus a distinct operator). Requires the current dedicated operator token. The response exposes fingerprints only. Distribute each peer token only to its matching model host; keep the operator token exclusively in a separate human-console MCP host. Never place the operator token in Codex, Claude, Gemini, DeepSeek, Grok or Perplexity host configuration.",
       inputSchema: z.object({
         caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
@@ -2111,7 +3172,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ caller, response_format }) => {
-      verifyToolCallerIdentity(
+      verifyOperatorToolCallerIdentity(
         runtime,
         "regenerate_caller_tokens",
         caller,
@@ -2143,7 +3204,8 @@ export async function main(): Promise<void> {
           generated_at: generated.generated_at,
           token_fingerprints,
           next_steps: [
-            "Read the local host-tokens.json file directly and copy each per-agent secret into the corresponding MCP host config as CROSS_REVIEW_CALLER_TOKEN.",
+            "Read host-tokens.json locally and copy each peer secret only into its matching model host as CROSS_REVIEW_CALLER_TOKEN.",
+            "Put the distinct operator secret only in a dedicated human-console MCP host; never expose it to a model host.",
             "Reload the affected MCP hosts so the new env value is picked up.",
             "Stale tokens will start being rejected with identity_forgery_blocked: token does not match any known agent.",
           ],
@@ -2158,7 +3220,7 @@ export async function main(): Promise<void> {
     {
       title: "Escalate To Operator",
       description:
-        "Record a durable operator escalation for sessions that require human judgment or external intervention.",
+        "Record a durable operator escalation for sessions that require human judgment or external intervention. The reason accepts at most 1,000 characters.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(1000),
@@ -2193,7 +3255,7 @@ export async function main(): Promise<void> {
     {
       title: "Sweep Idle Sessions",
       description:
-        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory.",
+        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. The terminal reason accepts at most 200 characters. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory.",
       inputSchema: z.object({
         idle_minutes: z.number().min(1440).max(100_000).default(1440),
         outcome: z.enum(["aborted", "max-rounds"]).default("aborted"),
@@ -2225,7 +3287,12 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyToolCallerIdentity(runtime, "session_sweep", caller, server.server.getClientVersion());
+      verifyOperatorToolCallerIdentity(
+        runtime,
+        "session_sweep",
+        caller,
+        server.server.getClientVersion(),
+      );
       const swept = await runtime.orchestrator.store.sweepIdle(
         idle_minutes * 60_000,
         outcome,
@@ -2255,7 +3322,7 @@ export async function main(): Promise<void> {
     {
       title: "Finalize Session",
       description:
-        "Mark a durable session as converged, aborted or max-rounds with an optional reason.",
+        "Operator-only: mark a durable session as converged, aborted or max-rounds with an optional reason of at most 200 characters. Requires the dedicated operator capability token from a separate human-console host.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         outcome: z.enum(["converged", "aborted", "max-rounds"]),
@@ -2271,7 +3338,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, outcome, reason, caller, response_format }) => {
-      verifyToolCallerIdentity(
+      verifyOperatorToolCallerIdentity(
         runtime,
         "session_finalize",
         caller,
@@ -2316,9 +3383,36 @@ export async function main(): Promise<void> {
   setTimeout(() => {
     void (async () => {
       try {
-        const inFlightSweep = await runtime.orchestrator.store.clearStaleInFlight();
-        if (inFlightSweep.scanned > 0) {
-          console.error("[cross-review] startup in_flight sweep:", JSON.stringify(inFlightSweep));
+        const pendingProviderSweep =
+          await runtime.orchestrator.store.clearStalePendingProviderCalls();
+        if (pendingProviderSweep.scanned > 0) {
+          console.error(
+            "[cross-review] startup pending-provider-call sweep:",
+            JSON.stringify(pendingProviderSweep),
+          );
+        }
+        const activeSessionIds = new Set(
+          [...runtime.jobs.values()]
+            .filter((job) => job.status === "running")
+            .map((job) => job.session_id),
+        );
+        const recoverySweep = await recoverStartupInterruptedSessions(
+          runtime.orchestrator.store,
+          activeSessionIds,
+        );
+        if (recoverySweep.recovered.length > 0) {
+          console.error(
+            "[cross-review] startup interrupted-session recovery:",
+            JSON.stringify({
+              recovered: recoverySweep.recovered.map((session) => session.session_id),
+            }),
+          );
+        }
+        if (recoverySweep.in_flight.scanned > 0) {
+          console.error(
+            "[cross-review] startup in_flight sweep:",
+            JSON.stringify(recoverySweep.in_flight),
+          );
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -2327,7 +3421,7 @@ export async function main(): Promise<void> {
     })();
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.5.0: companion to clearStaleInFlight — abort sessions that the
-  // caller never finalized. Runs AFTER the in_flight sweep (deferred via
+  // dedicated operator console never finalized. Runs AFTER the in_flight sweep (deferred via
   // setTimeout, same delay so order is preserved by registration order)
   // so a session whose in_flight got cleared this same boot is
   // immediately eligible for staleness review.
@@ -2402,7 +3496,7 @@ export async function main(): Promise<void> {
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.15.0 (item 4A boot warning): when operator configured a
   // CROSS_REVIEW_GROK_REASONING_EFFORT but the chosen model is NOT in
-  // the allowlist (grok-4.20-multi-agent and grok-4.3 accept the field
+  // the allowlist (Grok 4.5, 4.20 multi-agent and 4.3 accept the field
   // per xAI docs — see GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE below),
   // inform that the value will be ignored at the wire level.
   // Catches misconfigurations early instead of letting the operator
@@ -2415,7 +3509,7 @@ export async function main(): Promise<void> {
     if (!reasoningSetExplicitly) return;
     if (GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(grokModel)) return;
     console.error(
-      `[cross-review] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs (only grok-4.20-multi-agent and grok-4.3 do). CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. xAI auto-applies reasoning internally for the Grok-4 lineup. Set CROSS_REVIEW_GROK_MODEL=grok-4.20-multi-agent (or grok-4.3) to enable explicit reasoning.effort control.`,
+      `[cross-review] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs. CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Use grok-4.5 (default), grok-4.20-multi-agent, or grok-4.3 for explicit control.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
   // v3.0.0: Perplexity sixth peer — boot notice for reasoning_effort
@@ -2442,6 +3536,7 @@ export async function main(): Promise<void> {
 // the server boot path into a peer adapter module. If xAI adds models
 // to the reasoning-capable set, both lists must update together.
 const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
+  "grok-4.5",
   "grok-4.20-multi-agent",
   // v3.7.3 (Codex v3.7.2 parecer, AUDIT-2): this shadow set had drifted
   // from `peers/grok.ts:GROK_REASONING_EFFORT_MODELS`, which has accepted
@@ -2468,16 +3563,31 @@ const PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new 
 // full server boot at import time — and in CI that boot ran with the
 // stub flag set but without confirmation, tripping the v2.4.0 P1.1
 // fail-fast gate before scripts/smoke.ts could write the confirmation
-// env var. Comparing `import.meta.url` to `process.argv[1]` is the
-// canonical ESM "is main module" check; a side benefit is that bin
-// installs (which resolve through symlinks) still match because we
-// compare resolved paths.
-const __isMainModule = (() => {
-  if (!process.argv[1]) return false;
-  const moduleFile = fileURLToPath(import.meta.url);
-  const argvFile = path.resolve(process.argv[1]);
-  return moduleFile === argvFile;
-})();
+// env var. Both paths must be canonicalized because Node resolves the ESM
+// module through npm's symlink/junction while process.argv[1] can retain the
+// linked bin path. A plain path.resolve comparison therefore exits silently
+// for legitimate symlinked or junction-backed development entry paths.
+export function isMainModule(moduleUrl: string, argvEntry?: string): boolean {
+  if (!argvEntry) return false;
+
+  const canonicalPath = (candidate: string): string => {
+    try {
+      return fs.realpathSync.native(candidate);
+    } catch {
+      // Preserve the normal direct-entry comparison if an unusual launcher
+      // removes or virtualizes the entry path before this module initializes.
+      return path.resolve(candidate);
+    }
+  };
+
+  const moduleFile = canonicalPath(fileURLToPath(moduleUrl));
+  const argvFile = canonicalPath(argvEntry);
+  return process.platform === "win32"
+    ? moduleFile.toLowerCase() === argvFile.toLowerCase()
+    : moduleFile === argvFile;
+}
+
+const __isMainModule = isMainModule(import.meta.url, process.argv[1]);
 
 if (__isMainModule) {
   main().catch((error) => {

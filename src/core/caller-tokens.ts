@@ -30,7 +30,9 @@ import { PEERS } from "./types.js";
 export const TOKEN_BYTES = 32;
 export const TOKEN_HEX_LENGTH = TOKEN_BYTES * 2;
 
-export type HostTokensMap = Record<PeerId, string>;
+export type CallerIdentity = PeerId | "operator";
+export const CALLER_IDENTITIES: readonly CallerIdentity[] = [...PEERS, "operator"];
+export type HostTokensMap = Record<CallerIdentity, string>;
 
 export interface HostTokensRecord {
   filePath: string;
@@ -43,6 +45,7 @@ export interface ParentProcessSnapshot {
   parent_exe_basename: string | null;
 }
 
+// prettier-ignore
 export type TokenVerification =
   | { method: "token"; verified: true }
   | { method: "absent"; verified: false };
@@ -55,14 +58,136 @@ export function getTokensFilePath(dataDir: string): string {
   return path.join(dataDir, "host-tokens.json");
 }
 
+/**
+ * Keep the plaintext capability map outside inherited model-sandbox ACLs.
+ * POSIX mode bits are applied by Node. Windows needs an explicit protected
+ * DACL because `mode: 0o600` does not override inherited NTFS access entries.
+ */
+export function hardenTokensFilePermissions(filePath: string): boolean {
+  try {
+    if (process.platform !== "win32") {
+      fs.chmodSync(filePath, 0o600);
+      return (fs.statSync(filePath).mode & 0o077) === 0;
+    }
+
+    const identity = spawnSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5_000,
+    });
+    const currentUserSid = identity.stdout?.match(/"(S-\d+(?:-\d+)+)"/i)?.[1];
+    if (identity.status !== 0 || !currentUserSid) return false;
+
+    // Reset first so every pre-existing explicit ACE is discarded, then
+    // remove inherited ACEs and rebuild the complete allow-list. `/grant:r`
+    // alone only replaces ACEs for the named identities and would preserve a
+    // hostile explicit Everyone/Users/model-sandbox grant.
+    const commands = [
+      [filePath, "/reset"],
+      [filePath, "/inheritance:r"],
+      [filePath, "/grant:r", `*${currentUserSid}:(F)`, "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"],
+    ];
+    for (const args of commands) {
+      const result = spawnSync("icacls.exe", args, {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      });
+      if (result.status !== 0 || result.error) return false;
+    }
+
+    const verification = spawnSync(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        [
+          "& { param([string]$Path, [string]$CurrentUserSid)",
+          "$allowed = @($CurrentUserSid, 'S-1-5-18', 'S-1-5-32-544')",
+          "$acl = Get-Acl -LiteralPath $Path",
+          "if (-not $acl.AreAccessRulesProtected) { exit 11 }",
+          "$rules = @($acl.Access)",
+          "if ($rules.Count -ne $allowed.Count) { exit 12 }",
+          "foreach ($rule in $rules) {",
+          "  $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value",
+          "  if ($sid -notin $allowed) { exit 13 }",
+          "  if ($rule.IsInherited) { exit 14 }",
+          "  if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { exit 15 }",
+          "  if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { exit 16 }",
+          "}",
+          "}",
+        ].join("; "),
+        "-Path",
+        filePath,
+        "-CurrentUserSid",
+        currentUserSid,
+      ],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      },
+    );
+    return verification.status === 0 && !verification.error;
+  } catch {
+    return false;
+  }
+}
+
+function openTokensFile(filePath: string): number {
+  let flags = fs.constants.O_RDWR;
+  if (process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number") {
+    flags |= fs.constants.O_NOFOLLOW;
+  }
+  return fs.openSync(filePath, flags);
+}
+
+function openedFileMatchesPath(filePath: string, fd: number): boolean {
+  try {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    const current = fs.statSync(filePath, { bigint: true });
+    return opened.isFile() && opened.dev === current.dev && opened.ino === current.ino;
+  } catch {
+    return false;
+  }
+}
+
+function hardenOpenedTokensFilePermissions(filePath: string, fd: number): boolean {
+  try {
+    if (process.platform !== "win32") {
+      fs.fchmodSync(fd, 0o600);
+      return (fs.fstatSync(fd).mode & 0o077) === 0 && openedFileMatchesPath(filePath, fd);
+    }
+    return hardenTokensFilePermissions(filePath) && openedFileMatchesPath(filePath, fd);
+  } catch {
+    return false;
+  }
+}
+
+function rewriteOpenedTokensFile(fd: number, payload: string): void {
+  const encoded = Buffer.from(payload, "utf8");
+  fs.ftruncateSync(fd, 0);
+  let offset = 0;
+  while (offset < encoded.length) {
+    const written = fs.writeSync(fd, encoded, offset, encoded.length - offset, offset);
+    if (written <= 0) {
+      throw new Error("caller-tokens: zero-byte write while migrating token file");
+    }
+    offset += written;
+  }
+  fs.fsyncSync(fd);
+}
+
 export function generateHostTokens(
   dataDir: string,
   options: { overwrite?: boolean } = {},
 ): HostTokensRecord | null {
   const filePath = getTokensFilePath(dataDir);
   const map = {} as HostTokensMap;
-  for (const agent of PEERS) {
-    map[agent] = crypto.randomBytes(TOKEN_BYTES).toString("hex");
+  for (const identity of CALLER_IDENTITIES) {
+    map[identity] = crypto.randomBytes(TOKEN_BYTES).toString("hex");
   }
   const seen = new Set<string>();
   for (const tok of Object.values(map)) {
@@ -72,7 +197,7 @@ export function generateHostTokens(
     seen.add(tok);
   }
   const payload = {
-    version: 1 as const,
+    version: 2 as const,
     generated_at: new Date().toISOString(),
     tokens: map,
   };
@@ -100,21 +225,93 @@ export function generateHostTokens(
     }
     throw err;
   }
-  if (process.platform !== "win32") {
+  if (!hardenTokensFilePermissions(filePath)) {
     try {
-      fs.chmodSync(filePath, 0o600);
+      fs.rmSync(filePath, { force: true });
     } catch {
-      /* best-effort POSIX hardening */
+      /* the caller still fails closed below */
     }
+    throw new Error(
+      "caller-tokens: could not apply owner-only permissions; insecure token file was rejected",
+    );
   }
   return { filePath, map, generated_at: payload.generated_at };
 }
 
 export function loadHostTokens(dataDir: string): HostTokensRecord | null {
   const filePath = getTokensFilePath(dataDir);
-  let raw: string;
+  let fd: number | null = null;
   try {
-    raw = fs.readFileSync(filePath, "utf8");
+    fd = openTokensFile(filePath);
+    if (!hardenOpenedTokensFilePermissions(filePath, fd)) return null;
+
+    const raw = fs.readFileSync(fd, "utf8");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      ![1, 2].includes((parsed as { version?: number }).version ?? 0) ||
+      typeof (parsed as { tokens?: unknown }).tokens !== "object" ||
+      (parsed as { tokens?: unknown }).tokens === null
+    ) {
+      return null;
+    }
+    const tokensIn = (parsed as { tokens: Record<string, unknown> }).tokens;
+    const map = {} as HostTokensMap;
+    const seen = new Set<string>();
+    for (const identity of PEERS) {
+      const tok = tokensIn[identity];
+      if (typeof tok !== "string" || tok.length !== TOKEN_HEX_LENGTH || !/^[0-9a-f]+$/i.test(tok)) {
+        return null;
+      }
+      const normalizedToken = tok.toLowerCase();
+      if (seen.has(normalizedToken)) {
+        return null;
+      }
+      seen.add(normalizedToken);
+      map[identity] = normalizedToken;
+    }
+    const storedOperatorToken = tokensIn.operator;
+    const operatorToken =
+      typeof storedOperatorToken === "string" &&
+      storedOperatorToken.length === TOKEN_HEX_LENGTH &&
+      /^[0-9a-f]+$/i.test(storedOperatorToken) &&
+      !seen.has(storedOperatorToken.toLowerCase())
+        ? storedOperatorToken.toLowerCase()
+        : crypto.randomBytes(TOKEN_BYTES).toString("hex");
+    if (seen.has(operatorToken)) return null;
+    seen.add(operatorToken);
+    map.operator = operatorToken;
+
+    if ((parsed as { version?: number }).version !== 2 || storedOperatorToken !== operatorToken) {
+      rewriteOpenedTokensFile(
+        fd,
+        JSON.stringify(
+          {
+            version: 2,
+            generated_at:
+              typeof (parsed as { generated_at?: unknown }).generated_at === "string"
+                ? (parsed as { generated_at: string }).generated_at
+                : new Date().toISOString(),
+            operator_token_added_at: new Date().toISOString(),
+            tokens: map,
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    const generated_at = (parsed as { generated_at?: unknown }).generated_at;
+    return {
+      filePath,
+      map,
+      generated_at: typeof generated_at === "string" ? generated_at : null,
+    };
   } catch (err: unknown) {
     if (
       typeof err === "object" &&
@@ -125,42 +322,15 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
       return null;
     }
     return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    (parsed as { version?: unknown }).version !== 1 ||
-    typeof (parsed as { tokens?: unknown }).tokens !== "object" ||
-    (parsed as { tokens?: unknown }).tokens === null
-  ) {
-    return null;
-  }
-  const tokensIn = (parsed as { tokens: Record<string, unknown> }).tokens;
-  const map = {} as HostTokensMap;
-  const seen = new Set<string>();
-  for (const agent of PEERS) {
-    const tok = tokensIn[agent];
-    if (typeof tok !== "string" || tok.length !== TOKEN_HEX_LENGTH || !/^[0-9a-f]+$/i.test(tok)) {
-      return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* load already fails closed on every operation above */
+      }
     }
-    if (seen.has(tok)) {
-      return null;
-    }
-    seen.add(tok);
-    map[agent] = tok.toLowerCase();
   }
-  const generated_at = (parsed as { generated_at?: unknown }).generated_at;
-  return {
-    filePath,
-    map,
-    generated_at: typeof generated_at === "string" ? generated_at : null,
-  };
 }
 
 export function ensureHostTokens(dataDir: string): HostTokensRecord | null {
@@ -187,13 +357,13 @@ export function tokensMatch(a: unknown, b: unknown): boolean {
 export function resolveAgentForToken(
   presented: string | null,
   tokensMap: HostTokensMap | undefined,
-): PeerId | null {
+): CallerIdentity | null {
   if (!presented || !tokensMap) return null;
-  let matched: PeerId | null = null;
-  for (const agent of PEERS) {
-    const stored = tokensMap[agent];
+  let matched: CallerIdentity | null = null;
+  for (const identity of CALLER_IDENTITIES) {
+    const stored = tokensMap[identity];
     if (tokensMatch(presented, stored) && matched === null) {
-      matched = agent;
+      matched = identity;
     }
   }
   return matched;
@@ -211,7 +381,7 @@ export function isHardEnforceMode(): boolean {
 }
 
 export function verifyTokenForCaller(
-  declaredCaller: PeerId,
+  declaredCaller: CallerIdentity,
   tokensRecord: HostTokensRecord | null,
 ): TokenVerification {
   const presented = getEnvToken();
@@ -221,15 +391,15 @@ export function verifyTokenForCaller(
       "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN is set but the host-tokens.json file could not be loaded; either remove the env var, regenerate the tokens file via the regenerate_caller_tokens tool, or repair the file (default path: <data_dir>/host-tokens.json; override via CROSS_REVIEW_TOKENS_FILE).",
     );
   }
-  const agent = resolveAgentForToken(presented, tokensRecord.map);
-  if (!agent) {
+  const identity = resolveAgentForToken(presented, tokensRecord.map);
+  if (!identity) {
     throw new Error(
       "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN does not match any known agent's secret in host-tokens.json. Either the token is stale (regenerate via regenerate_caller_tokens) or the host-tokens.json file has been rotated without re-distributing the new value.",
     );
   }
-  if (agent !== declaredCaller) {
+  if (identity !== declaredCaller) {
     throw new Error(
-      `identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN resolves to agent='${agent}' but caller declared='${declaredCaller}'. The token is bound to a specific agent's MCP host config; declaring a different caller from a host carrying another agent's token is identity forgery.`,
+      `identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN resolves to identity='${identity}' but caller declared='${declaredCaller}'. The token is bound to a specific MCP host identity; declaring a different caller is identity forgery.`,
     );
   }
   return { method: "token", verified: true };

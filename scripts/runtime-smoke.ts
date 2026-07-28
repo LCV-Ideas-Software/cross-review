@@ -9,23 +9,58 @@ import { MCP_REQUEST_TIMEOUT_MS } from "../src/core/timeouts.js";
 const runtimeSmokeDataDir =
   process.env.CROSS_REVIEW_RUNTIME_SMOKE_DATA_DIR ??
   fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-runtime-smoke-"));
+const runtimeSmokeConfigPath = path.join(runtimeSmokeDataDir, "config.json");
+const runtimeSmokeCodexToken = "01".repeat(32);
+const runtimeSmokeOperatorToken = "07".repeat(32);
+fs.writeFileSync(
+  runtimeSmokeConfigPath,
+  JSON.stringify({ version: "runtime-smoke-v1" }, null, 2),
+  "utf8",
+);
+fs.writeFileSync(
+  path.join(runtimeSmokeDataDir, "host-tokens.json"),
+  JSON.stringify(
+    {
+      version: 2,
+      generated_at: "2026-07-10T00:00:00.000Z",
+      tokens: {
+        codex: runtimeSmokeCodexToken,
+        claude: "02".repeat(32),
+        gemini: "03".repeat(32),
+        deepseek: "04".repeat(32),
+        grok: "05".repeat(32),
+        perplexity: "06".repeat(32),
+        operator: runtimeSmokeOperatorToken,
+      },
+    },
+    null,
+    2,
+  ),
+  "utf8",
+);
+const invalidMetaDir = path.join(runtimeSmokeDataDir, "sessions", "invalid-shape");
+fs.mkdirSync(invalidMetaDir, { recursive: true });
+fs.writeFileSync(path.join(invalidMetaDir, "meta.json"), "{}", "utf8");
 
-const transport = new StdioClientTransport({
+const runtimeSmokeTransportOptions = {
   command: process.execPath,
   args: ["dist/src/mcp/server.js"],
   cwd: process.cwd(),
   env: {
     ...process.env,
     CROSS_REVIEW_DATA_DIR: runtimeSmokeDataDir,
+    CROSS_REVIEW_CONFIG_FILE: runtimeSmokeConfigPath,
+    CROSS_REVIEW_CALLER_TOKEN: runtimeSmokeOperatorToken,
+    CROSS_REVIEW_REQUIRE_TOKEN: "true",
     CROSS_REVIEW_STUB: process.env.CROSS_REVIEW_STUB ?? "1",
     // v2.4.0 / audit closure (P1.1): runtime smoke is a legitimate stub
     // consumer; opt in to the double-confirmation gate.
     CROSS_REVIEW_STUB_CONFIRMED: process.env.CROSS_REVIEW_STUB_CONFIRMED ?? "1",
-    CROSS_REVIEW_MAX_SESSION_COST_USD: process.env.CROSS_REVIEW_MAX_SESSION_COST_USD ?? "1000",
+    CROSS_REVIEW_MAX_SESSION_COST_USD: process.env.CROSS_REVIEW_MAX_SESSION_COST_USD ?? "10000",
     CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD:
-      process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD ?? "1000",
+      process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD ?? "10000",
     CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD:
-      process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD ?? "1000",
+      process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD ?? "10000",
     CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION:
       process.env.CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION ?? "1000",
     CROSS_REVIEW_OPENAI_OUTPUT_USD_PER_MILLION:
@@ -58,13 +93,9 @@ const transport = new StdioClientTransport({
       process.env.CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION ?? "1000",
     CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION:
       process.env.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION ?? "1000",
-    // Perplexity also bills a per-1000-requests search fee; when search is
-    // enabled `missingFinancialControlVars` requires the request fee for
-    // the configured `search_context_size`. This stub smoke does not
-    // exercise paid search, so disable it — and, belt-and-suspenders in
-    // case an inherited operator env re-enables it, inject the request fee
-    // for every search_context_size so the financial preflight passes
-    // regardless.
+    // Perplexity bills a context-tier fee for every request even when
+    // disable_search=true. Inject every tier so inherited context settings
+    // cannot make this runtime smoke fail financial preflight.
     CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH:
       process.env.CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH ?? "1",
     CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS:
@@ -74,18 +105,30 @@ const transport = new StdioClientTransport({
     CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS:
       process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS ?? "0",
   },
-});
+};
+const transport = new StdioClientTransport(runtimeSmokeTransportOptions);
 
 const client = new Client({ name: "cross-review-runtime-smoke", version: "0.0.0" });
 
-async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-  const result = await client.callTool({ name, arguments: args }, undefined, {
+async function callToolWithClient(
+  targetClient: Client,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const result = await targetClient.callTool({ name, arguments: args }, undefined, {
     timeout: MCP_REQUEST_TIMEOUT_MS,
     maxTotalTimeout: MCP_REQUEST_TIMEOUT_MS,
   });
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content ?? [];
   const text = content[0]?.type === "text" ? (content[0].text ?? "{}") : "{}";
+  if ((result as { isError?: boolean }).isError) {
+    throw new Error(text);
+  }
   return JSON.parse(text);
+}
+
+async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  return await callToolWithClient(client, name, args);
 }
 
 async function callToolText(name: string, args: Record<string, unknown>): Promise<string> {
@@ -98,16 +141,39 @@ async function callToolText(name: string, args: Record<string, unknown>): Promis
 }
 
 type PollState = { outcome?: string; jobs?: Array<{ status: string }> };
+type RuntimePreflightPayload = {
+  pass?: boolean;
+  truthfulness_pass?: boolean;
+  evidence_pass?: boolean;
+  blocking_gates?: string[];
+  operator_verified_evidence_count?: number;
+  evidence?: {
+    result?: { evidence_authority?: string; operator_grounded?: boolean } | null;
+  };
+  truthfulness?: { result?: { operator_grounded?: boolean } | null };
+};
+
+type RuntimePreflightAuthorityAttempt = {
+  tool: "session_preflight_check" | "session_truthfulness_preflight_check";
+  payload?: RuntimePreflightPayload;
+  error?: string;
+};
+type EvidenceToolInputSchema = {
+  properties?: { evidence?: { description?: string } };
+};
 
 const POLL_INTERVAL_MS = 250;
 const POLL_TIMEOUT_MS = 60_000;
 const TERMINAL_OUTCOMES = new Set(["converged", "aborted", "max-rounds"]);
 
-async function pollUntilDone(sessionId: string): Promise<PollState> {
+async function pollUntilDoneWithClient(
+  targetClient: Client,
+  sessionId: string,
+): Promise<PollState> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let lastState: PollState | undefined;
   while (Date.now() < deadline) {
-    const state = (await callTool("session_poll", {
+    const state = (await callToolWithClient(targetClient, "session_poll", {
       session_id: sessionId,
       response_format: "json",
     })) as PollState;
@@ -120,6 +186,10 @@ async function pollUntilDone(sessionId: string): Promise<PollState> {
   throw new Error(
     `Timed out polling runtime-smoke session ${sessionId} after ${POLL_TIMEOUT_MS} ms; last_state=${JSON.stringify(lastState)}`,
   );
+}
+
+async function pollUntilDone(sessionId: string): Promise<PollState> {
+  return pollUntilDoneWithClient(client, sessionId);
 }
 
 try {
@@ -139,6 +209,317 @@ try {
     packageVersion,
     "runtime-smoke: runtime_capabilities.version must match package.json version",
   );
+  const configLoad = (
+    serverInfo as {
+      config_load?: {
+        path?: string;
+        applied?: boolean;
+        parse_error?: string | null;
+        live_reload_supported?: boolean;
+        reload_required?: boolean;
+        loaded_sha256?: string;
+      };
+      models?: Record<string, string>;
+      reasoning_effort?: Record<string, string>;
+    }
+  ).config_load;
+  assert.equal(configLoad?.path, runtimeSmokeConfigPath);
+  assert.equal(configLoad?.applied, true);
+  assert.equal(configLoad?.parse_error, null);
+  assert.equal(configLoad?.live_reload_supported, false);
+  assert.equal(configLoad?.reload_required, false);
+  assert.match(configLoad?.loaded_sha256 ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(typeof (serverInfo as { models?: unknown }).models, "object");
+  assert.equal(typeof (serverInfo as { reasoning_effort?: unknown }).reasoning_effort, "object");
+
+  fs.writeFileSync(
+    runtimeSmokeConfigPath,
+    JSON.stringify({ version: "runtime-smoke-v2" }, null, 2),
+    "utf8",
+  );
+  const staleServerInfo = (await callTool("server_info", {
+    response_format: "json",
+  })) as { config_load?: { reload_required?: boolean; current_sha256?: string } };
+  assert.equal(
+    staleServerInfo.config_load?.reload_required,
+    true,
+    "server_info must reveal when config.json changed after this MCP window loaded it.",
+  );
+  assert.match(staleServerInfo.config_load?.current_sha256 ?? "", /^[a-f0-9]{64}$/);
+  fs.writeFileSync(
+    runtimeSmokeConfigPath,
+    JSON.stringify({ version: "runtime-smoke-v1" }, null, 2),
+    "utf8",
+  );
+  const negativePreflightSession = (await callTool("session_init", {
+    task: "Runtime preflight check: completed implementation with 74 passed.",
+    response_format: "json",
+  })) as { session_id: string };
+  const negativePreflightArgs = {
+    session_id: negativePreflightSession.session_id,
+    draft: "Implementation summary without any raw output.",
+    caller: "operator",
+    response_format: "json",
+  };
+  const negativeCombinedPreflight = (await callTool(
+    "session_preflight_check",
+    negativePreflightArgs,
+  )) as RuntimePreflightPayload;
+  const negativeAliasPreflight = (await callTool(
+    "session_truthfulness_preflight_check",
+    negativePreflightArgs,
+  )) as RuntimePreflightPayload;
+  for (const [tool, payload] of [
+    ["session_preflight_check", negativeCombinedPreflight],
+    ["session_truthfulness_preflight_check", negativeAliasPreflight],
+  ] as const) {
+    assert.equal(payload.truthfulness_pass, true, `${tool}: truthfulness control must pass`);
+    assert.equal(payload.evidence_pass, false, `${tool}: missing evidence must fail`);
+    assert.equal(
+      payload.pass,
+      false,
+      `${tool}: top-level pass must reflect the failing evidence gate, not truthfulness alone`,
+    );
+    assert.deepEqual(payload.blocking_gates, ["evidence"]);
+  }
+
+  const codexTransport = new StdioClientTransport({
+    ...runtimeSmokeTransportOptions,
+    env: {
+      ...runtimeSmokeTransportOptions.env,
+      CROSS_REVIEW_CALLER_TOKEN: runtimeSmokeCodexToken,
+    },
+  });
+  const codexClient = new Client({ name: "codex", version: "0.0.0" });
+  let positiveCombinedPreflight: RuntimePreflightPayload;
+  let positiveAliasPreflight: RuntimePreflightPayload;
+  const operatorOwnerAttempts: RuntimePreflightAuthorityAttempt[] = [];
+  try {
+    await codexClient.connect(codexTransport);
+    const listedTools = await codexClient.listTools();
+    const attachEvidenceTool = listedTools.tools.find(
+      (tool) => tool.name === "session_attach_evidence",
+    );
+    assert.ok(attachEvidenceTool, "runtime must expose session_attach_evidence to operator hosts");
+    assert.match(
+      attachEvidenceTool.description ?? "",
+      /optional[\s\S]*operator-only[\s\S]*no human (?:operator )?action is required[\s\S]*`evidence` field/i,
+      "session_attach_evidence must identify itself as optional operator authority and direct AI callers to automatic evidence transport",
+    );
+    for (const starterName of [
+      "ask_peers",
+      "session_start_round",
+      "run_until_unanimous",
+      "session_start_unanimous",
+    ]) {
+      const starter = listedTools.tools.find((tool) => tool.name === starterName);
+      const schema = starter?.inputSchema as EvidenceToolInputSchema | undefined;
+      assert.match(
+        schema?.properties?.evidence?.description ?? "",
+        /persisted automatically[\s\S]*no manual operator attachment/i,
+        `${starterName}.evidence must advertise automatic durable transport without operator intervention`,
+      );
+    }
+    const peerSession = (await callToolWithClient(codexClient, "session_init", {
+      task: "Runtime peer preflight: completed implementation with 74 passed.",
+      caller: "codex",
+      response_format: "json",
+    })) as { session_id: string };
+    for (const callerArgs of [{ caller: "codex" }, {}]) {
+      let optionalAuthorityRejection = "";
+      try {
+        await callToolWithClient(codexClient, "session_attach_evidence", {
+          session_id: peerSession.session_id,
+          label: "wrong-surface-regression",
+          content: "COMMAND: npm test\nEXIT_CODE: 0",
+          ...callerArgs,
+          response_format: "json",
+        });
+      } catch (error) {
+        optionalAuthorityRejection = error instanceof Error ? error.message : String(error);
+      }
+      assert.match(
+        optionalAuthorityRejection,
+        /no human (?:operator )?action is required[\s\S]*`evidence` field/i,
+        `a rejected AI attachment attempt ${"caller" in callerArgs ? "with" : "without"} explicit caller must route to automatic evidence transport`,
+      );
+    }
+    let forgedAttachmentCallerRejection = "";
+    try {
+      await callToolWithClient(codexClient, "session_attach_evidence", {
+        session_id: peerSession.session_id,
+        label: "forged-caller-regression",
+        content: "COMMAND: npm test\nEXIT_CODE: 0",
+        caller: "claude",
+        response_format: "json",
+      });
+    } catch (error) {
+      forgedAttachmentCallerRejection = error instanceof Error ? error.message : String(error);
+    }
+    assert.match(forgedAttachmentCallerRejection, /identity_forgery_blocked/i);
+    assert.doesNotMatch(
+      forgedAttachmentCallerRejection,
+      /no human (?:operator )?action is required/i,
+      "an invalid explicit peer identity must expose the authentication failure instead of being misrouted",
+    );
+    const peerEvidenceArgs = {
+      session_id: peerSession.session_id,
+      draft: "Implementation candidate submitted by Codex.",
+      evidence: "COMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 74 passed, 0 failed",
+      caller: "codex",
+      response_format: "json",
+    };
+    positiveCombinedPreflight = (await callToolWithClient(
+      codexClient,
+      "session_preflight_check",
+      peerEvidenceArgs,
+    )) as RuntimePreflightPayload;
+    positiveAliasPreflight = (await callToolWithClient(
+      codexClient,
+      "session_truthfulness_preflight_check",
+      peerEvidenceArgs,
+    )) as RuntimePreflightPayload;
+
+    const evidenceSentinel = "AUTONOMOUS_EVIDENCE_SENTINEL_4_5_11";
+    const peerRoundStart = (await callToolWithClient(codexClient, "session_start_round", {
+      session_id: peerSession.session_id,
+      task: "Runtime peer preflight: completed implementation with 74 passed.",
+      draft: "Implementation candidate submitted by Codex; npm test reports 74 passed.",
+      evidence: `${evidenceSentinel}\nCOMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 74 passed, 0 failed`,
+      caller: "codex",
+      response_format: "json",
+    })) as { session_id: string };
+    const peerRoundState = await pollUntilDoneWithClient(codexClient, peerRoundStart.session_id);
+    assert.equal(peerRoundState.outcome, "converged");
+    const peerRoundMeta = (await callToolWithClient(codexClient, "session_read", {
+      session_id: peerRoundStart.session_id,
+      response_format: "json",
+    })) as {
+      active_caller_evidence_submission_id?: string;
+      caller_evidence_submissions?: Array<{
+        submission_id: string;
+        submitted_by: string;
+        attachment_paths: string[];
+      }>;
+      evidence_files?: Array<{
+        path: string;
+        attached_by?: string;
+        origin?: string;
+        sha256?: string;
+      }>;
+    };
+    const activeSubmission = peerRoundMeta.caller_evidence_submissions?.find(
+      (submission) =>
+        submission.submission_id === peerRoundMeta.active_caller_evidence_submission_id,
+    );
+    assert.equal(activeSubmission?.submitted_by, "codex");
+    assert.equal(activeSubmission?.attachment_paths.length, 1);
+    const activeAttachment = peerRoundMeta.evidence_files?.find(
+      (attachment) => attachment.path === activeSubmission?.attachment_paths[0],
+    );
+    assert.equal(activeAttachment?.attached_by, "codex");
+    assert.equal(activeAttachment?.origin, "caller_submitted");
+    assert.match(activeAttachment?.sha256 ?? "", /^[a-f0-9]{64}$/);
+    const peerPrompt = fs.readFileSync(
+      path.join(
+        runtimeSmokeDataDir,
+        "sessions",
+        peerRoundStart.session_id,
+        "agent-runs",
+        "round-1-prompt.md",
+      ),
+      "utf8",
+    );
+    assert.ok(
+      peerPrompt.includes(evidenceSentinel),
+      "MCP starter must persist and transport autonomous Codex evidence to the reviewer prompt",
+    );
+
+    const operatorOwnerArgs = {
+      session_id: negativePreflightSession.session_id,
+      caller: "codex",
+      task: "I triggered workflow deployment run_id=8842 and confirmed the remote deployment succeeded; npm run test reports 74 passed.",
+      draft: "Implementation candidate and deployment closure submitted by Codex.",
+      evidence: [
+        "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
+        "COMMAND: npm run test",
+        "EXIT_CODE: 0",
+        "STDOUT:",
+        "Tests 74 passed, 0 failed",
+      ].join("\n"),
+      response_format: "json",
+    };
+    for (const tool of [
+      "session_preflight_check",
+      "session_truthfulness_preflight_check",
+    ] as const) {
+      try {
+        const payload = (await callToolWithClient(
+          codexClient,
+          tool,
+          operatorOwnerArgs,
+        )) as RuntimePreflightPayload;
+        operatorOwnerAttempts.push({ tool, payload });
+      } catch (error) {
+        operatorOwnerAttempts.push({
+          tool,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  } finally {
+    await codexClient.close();
+  }
+  for (const [tool, payload] of [
+    ["session_preflight_check", positiveCombinedPreflight],
+    ["session_truthfulness_preflight_check", positiveAliasPreflight],
+  ] as const) {
+    assert.equal(payload.truthfulness_pass, true, `${tool}: peer evidence truthfulness must pass`);
+    assert.equal(payload.evidence_pass, true, `${tool}: peer evidence admission must pass`);
+    assert.equal(
+      payload.pass,
+      true,
+      `${tool}: authenticated peer evidence must pass without operator attachment`,
+    );
+    assert.equal(payload.operator_verified_evidence_count, 0);
+    assert.equal(
+      payload.evidence?.result?.evidence_authority,
+      "caller_submitted_unverified",
+      `${tool}: peer evidence must remain explicitly unverified`,
+    );
+  }
+  for (const attempt of operatorOwnerAttempts) {
+    if (attempt.error) {
+      assert.match(
+        attempt.error,
+        /session_owner_mismatch|caller[^\n]*(?:mismatch|forbidden)|(?:owner|authority)[^\n]*mismatch/i,
+        `${attempt.tool}: rejecting a Codex client on an operator-owned session must report an authority mismatch`,
+      );
+      continue;
+    }
+    const payload = attempt.payload;
+    assert.ok(payload, `${attempt.tool}: expected either a payload or an authority rejection`);
+    assert.equal(
+      payload.evidence?.result?.evidence_authority,
+      "caller_submitted_unverified",
+      `${attempt.tool}: a Codex client must never inherit the operator owner's evidence authority`,
+    );
+    assert.equal(
+      payload.evidence?.result?.operator_grounded,
+      false,
+      `${attempt.tool}: Codex inline evidence in an operator-owned session must not be operator-grounded`,
+    );
+    assert.equal(
+      payload.truthfulness?.result?.operator_grounded,
+      false,
+      `${attempt.tool}: truthfulness preflight must preserve the Codex client's unverified authority`,
+    );
+    assert.equal(
+      payload.operator_verified_evidence_count,
+      0,
+      `${attempt.tool}: Codex inline evidence must not create operator-verified evidence`,
+    );
+  }
   const markdownInitText = await callToolText("session_init", {
     task: "Runtime smoke: verify session_init markdown response.",
     review_focus: "runtime/markdown-init",
@@ -161,11 +542,35 @@ try {
     detail?: string | undefined;
     outcome_filter?: string | undefined;
   };
+  assert.equal(
+    fs.existsSync(path.join(invalidMetaDir, "meta.json.bad")),
+    true,
+    "runtime session_list must quarantine a syntactically valid but structurally invalid meta.json.",
+  );
   const noJobSession = (await callTool("session_init", {
     task: "Runtime smoke: verify no-job cancellation is non-terminal.",
     review_focus: "runtime/cancel-no-job",
     response_format: "json",
   })) as { session_id: string };
+  let peerFinalizeBlocked = false;
+  try {
+    await callTool("session_finalize", {
+      session_id: noJobSession.session_id,
+      outcome: "aborted",
+      reason: "unauthorized peer fixture",
+      caller: "claude",
+      response_format: "json",
+    });
+  } catch (error) {
+    peerFinalizeBlocked = /operator_authority_required|identity_forgery_blocked/.test(
+      String(error),
+    );
+  }
+  assert.equal(
+    peerFinalizeBlocked,
+    true,
+    "A peer must not be able to mutate terminal session state through session_finalize.",
+  );
   const noJobCancelResult = (await callTool("session_cancel_job", {
     session_id: noJobSession.session_id,
     reason: "runtime_smoke_no_active_job",
@@ -292,6 +697,10 @@ try {
         runtime_smoke_data_dir: runtimeSmokeDataDir,
         serverInfo,
         capabilities,
+        negativeCombinedPreflight,
+        negativeAliasPreflight,
+        positiveCombinedPreflight,
+        positiveAliasPreflight,
         markdownInitText,
         sessionListResult,
         no_job_cancel_session_id: noJobSession.session_id,

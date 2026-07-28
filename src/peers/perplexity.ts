@@ -43,7 +43,8 @@
 // caller, lead_peer, or reviewer; the workspace HARD GATE
 // (caller != lead_peer != reviewer per session) applies uniformly.
 import type OpenAI from "openai";
-import { statusInstruction, statusJsonSchema } from "../core/status.js";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
+import { portableStatusJsonSchema, statusInstruction } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -58,6 +59,12 @@ import { BasePeerAdapter, StreamBuffer, type TokenEventBuffer } from "./base.js"
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor } from "./openai.js";
 import { withRetry } from "./retry.js";
+import {
+  assertChatCompletionTerminal,
+  assertChatStreamCompleted,
+  observeChatStreamTerminals,
+  withEstimatedTerminalBilling,
+} from "./terminal.js";
 import { userPrompt } from "./text.js";
 
 const PERPLEXITY_BASE_URL = "https://api.perplexity.ai";
@@ -109,12 +116,10 @@ function usageFromSonar(
   if (typeof usage.num_search_queries === "number") {
     result.num_search_queries = usage.num_search_queries;
   }
-  // v3.0.0 R1 fix (codex cross-review catch 2026-05-12): per-call
-  // signal that the cost layer needs to correctly attribute the
-  // request fee. Relator (generate) calls force disable_search:true
-  // on the wire regardless of operator config — without this signal,
-  // estimateCost() would charge a request fee for searches that did
-  // not actually run.
+  // Per-call search signal retained for observability. Perplexity's documented
+  // context-tier request fee is model-based and is not waived by
+  // disable_search, so the FinOps layer must never use this flag to suppress
+  // that fee.
   result.search_performed = searchPerformed;
   // v3.0.0: capture provider-reported total cost for telemetry. The
   // config-driven cost.ts estimateCost remains authoritative; this is
@@ -194,7 +199,7 @@ function sonarText(response: {
 }
 
 // v3.0.0: Perplexity reasoning_effort enum is `minimal|low|medium|high`.
-// The internal config scale can reach `xhigh`/`max` (used by other
+// The internal config scale can reach `xhigh`/`max`/`ultra` (used by other
 // peers). Clamp down so the on-wire value is always one Perplexity
 // accepts.
 //
@@ -213,6 +218,8 @@ export function clampEffortForPerplexity(
       return "low";
     case "medium":
       return "medium";
+    // Includes high/xhigh/max and the operator-facing ultra alias. Never
+    // transmit the compatibility alias to Perplexity's four-value API enum.
     default:
       return "high";
   }
@@ -339,10 +346,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           "Perplexity probe_mode=auth_only: skipped tokenized Sonar round-trip because Perplexity does not document a zero-token model/auth endpoint.",
       };
     }
-    // Perplexity does not document a public `models.list` endpoint via
-    // the OpenAI-SDK base path. Live probe uses a minimal `disable_search`
-    // call to avoid burning a request fee on the health check; Sonar
-    // reasoning models reject values below 16 even for probes.
+    // Perplexity does not document a public `models.list` endpoint via the
+    // OpenAI-SDK base path. A live probe is a billable completion request;
+    // disable_search only avoids external search/latency and does not waive
+    // the documented model request fee. Sonar reasoning models reject values
+    // below 16 even for probes.
     try {
       const probeClient = await this.client();
       const probePayload: PerplexityChatPayload = {
@@ -396,11 +404,9 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           "reviewer",
           context.reasoning_effort_override,
         );
-        // v3.0.0 R1 fix (codex catch): the reviewer role HONORS config;
-        // disable_search is only set on the wire when config explicitly
-        // turns it off. Derive search_performed from the actual on-wire
-        // option so the cost layer charges request fee iff a search
-        // really ran.
+        // Reviewer role honors the configured search switch. The signal is
+        // telemetry only; request-fee pricing is determined by the effective
+        // model even when search is disabled.
         const searchPerformed = sonarOptions.disable_search !== true;
         const payload: PerplexityChatPayload = {
           ...sonarOptions,
@@ -409,23 +415,20 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "system", content: this.systemPrompt(context) },
             { role: "user", content: `${userPrompt(prompt)}\n\n${statusInstruction()}` },
           ],
-          // Perplexity supports the OpenAI structured-output shape, but
-          // the docs warn the FIRST request with a new schema can
-          // incur 10-30s latency. Because the same statusJsonSchema is
-          // reused across every cross-review call, that one-time cost
-          // is amortized for the operator. Schema `name` is required
-          // (1-64 alphanumeric chars).
+          // Sonar documents the json_schema wrapper but not a closed list of
+          // dimensional keywords. Send the portable structural projection and
+          // retain the complete limits in the prompt and local Zod validator.
           response_format: {
             type: "json_schema",
-            json_schema: { name: "cross_review_status", schema: statusJsonSchema },
-          } as NonNullable<OpenAI.ChatCompletionCreateParams["response_format"]>,
-          max_tokens: this.config.max_output_tokens,
+            json_schema: { schema: portableStatusJsonSchema },
+          } as unknown as NonNullable<OpenAI.ChatCompletionCreateParams["response_format"]>,
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         if (this.shouldStreamTokens(context)) {
           const streamPayload: PerplexityChatStreamPayload = {
             ...payload,
             stream: true,
-            stream_options: { include_usage: true },
           };
           const reviewClient = await this.client();
           const stream = await reviewClient.chat.completions.create(streamPayload, {
@@ -437,23 +440,56 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "review",
             "chat.completion.chunk.delta",
+            attempt,
           );
           const perplexityTokenStream = createPerplexityTokenEventBuffer(tokenStream);
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
+          const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage =
               usageFromSonar(chunk.usage as SonarUsage | null | undefined, searchPerformed) ??
               usage;
-            for (const choice of chunk.choices ?? []) {
-              const delta = choice.delta?.content ?? "";
-              stream_buffer.append(delta);
-              perplexityTokenStream.append(delta);
+            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+              observeChatStreamTerminals(
+                chunk.choices,
+                completedChoices,
+                {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "review",
+                  allowToolCalls: false,
+                },
+                rejectedTerminals,
+              ),
+            );
+            if (rejectedTerminals.length === 0) {
+              for (const choice of chunk.choices ?? []) {
+                const delta = choice.delta?.content ?? "";
+                stream_buffer.append(delta);
+                perplexityTokenStream.append(delta);
+              }
             }
           }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+            assertChatStreamCompleted(
+              completedChoices,
+              {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "review",
+              },
+              rejectedTerminals,
+            ),
+          );
           // v3.4.0 Fix #1: apply stripPerplexityThinkingBlock to the
           // streamed text. Non-streaming path at line ~426 uses
           // sonarText(response) which already strips; streaming path was
@@ -481,17 +517,34 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
+        const responseUsage = usageFromSonar(
+          (response as { usage?: SonarUsage }).usage,
+          searchPerformed,
+        );
+        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
+          assertChatCompletionTerminal(response.choices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+            allowToolCalls: false,
+          }),
+        );
         return this.resultFromText({
           text: sonarText(response),
           raw: response,
-          usage: usageFromSonar((response as { usage?: SonarUsage }).usage, searchPerformed),
+          usage: responseUsage,
           started,
           attempts: attempt,
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "review", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
+      { signal: context.signal },
     );
   }
 
@@ -513,11 +566,10 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           "relator",
           context.reasoning_effort_override,
         );
-        // v3.0.0 R1 fix (codex catch): the relator role ALWAYS forces
-        // disable_search:true on the wire (synthesis task, not external
-        // lookup). search_performed is unconditionally false so the
-        // cost layer's request-fee accounting does not charge for a
-        // search that did not run.
+        // The relator role always forces disable_search:true on the wire
+        // because synthesis does not need an external lookup. The
+        // resulting search_performed=false is latency/search telemetry;
+        // Perplexity's published request fee still applies.
         const searchPerformed = sonarOptions.disable_search !== true;
         const payload: PerplexityChatPayload = {
           ...sonarOptions,
@@ -526,13 +578,13 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "system", content: this.systemPrompt(context) },
             { role: "user", content: userPrompt(prompt) },
           ],
-          max_tokens: this.config.max_output_tokens,
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         if (this.shouldStreamTokens(context)) {
           const streamPayload: PerplexityChatStreamPayload = {
             ...payload,
             stream: true,
-            stream_options: { include_usage: true },
           };
           const generateClient = await this.client();
           const stream = await generateClient.chat.completions.create(streamPayload, {
@@ -544,23 +596,56 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "generation",
             "chat.completion.chunk.delta",
+            attempt,
           );
           const perplexityTokenStream = createPerplexityTokenEventBuffer(tokenStream);
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
+          const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage =
               usageFromSonar(chunk.usage as SonarUsage | null | undefined, searchPerformed) ??
               usage;
-            for (const choice of chunk.choices ?? []) {
-              const delta = choice.delta?.content ?? "";
-              stream_buffer.append(delta);
-              perplexityTokenStream.append(delta);
+            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+              observeChatStreamTerminals(
+                chunk.choices,
+                completedChoices,
+                {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "generation",
+                  allowToolCalls: false,
+                },
+                rejectedTerminals,
+              ),
+            );
+            if (rejectedTerminals.length === 0) {
+              for (const choice of chunk.choices ?? []) {
+                const delta = choice.delta?.content ?? "";
+                stream_buffer.append(delta);
+                perplexityTokenStream.append(delta);
+              }
             }
           }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+            assertChatStreamCompleted(
+              completedChoices,
+              {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "generation",
+              },
+              rejectedTerminals,
+            ),
+          );
           // v3.4.0 Fix #1: streaming-path strip parity for generation
           // (relator) path — same root cause as the call() branch above.
           // When Perplexity is sortead as relator (e.g. sess 51973fac),
@@ -584,17 +669,34 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
+        const responseUsage = usageFromSonar(
+          (response as { usage?: SonarUsage }).usage,
+          searchPerformed,
+        );
+        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
+          assertChatCompletionTerminal(response.choices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+            allowToolCalls: false,
+          }),
+        );
         return this.generationFromText({
           text: sonarText(response),
           raw: response,
-          usage: usageFromSonar((response as { usage?: SonarUsage }).usage, searchPerformed),
+          usage: responseUsage,
           started,
           attempts: attempt,
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "generation", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
+      { signal: context.signal },
     );
   }
 }

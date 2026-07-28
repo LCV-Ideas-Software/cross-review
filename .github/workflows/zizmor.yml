@@ -1,0 +1,23 @@
+name: Zizmor
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "43 5 * * 1"
+  workflow_dispatch:
+
+permissions: write-all
+
+concurrency:
+  group: zizmor-${{ github.ref }}
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  zizmor:
+    name: Run zizmor
+    permissions: write-all
+    uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@6bc5f8c4d59309fa3e1963ddc6f21fec617842a0

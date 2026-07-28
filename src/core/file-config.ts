@@ -37,6 +37,7 @@
 // File location: `${data_dir}/config.json` by default, overridable via
 // CROSS_REVIEW_CONFIG_FILE env var. Absence is non-fatal (boot
 // proceeds with env+defaults exactly like pre-v3.1.0).
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -58,6 +59,8 @@ const ReasoningEffortValueSchema = z.enum([
   "high",
   "xhigh",
   "max",
+  // Compatibility alias only. Adapters normalize this before the API call.
+  "ultra",
 ]);
 
 function perPeerOptionalShape<T extends z.ZodTypeAny>(schema: T): Record<PeerId, z.ZodOptional<T>> {
@@ -80,6 +83,11 @@ const PerPeerReasoningSchema = z
   .optional();
 
 const PerPeerBoolSchema = z.object(perPeerOptionalShape(z.boolean())).strict().optional();
+
+const PerPeerPositiveIntSchema = z
+  .object(perPeerOptionalShape(z.number().int().positive()))
+  .strict()
+  .optional();
 
 // Per-peer cost-rate sub-schema. Mirrors AppConfig.cost_rates[peer]
 // from src/core/types.ts (18 optional fields). All numbers; operator
@@ -131,6 +139,8 @@ const EvidenceJudgeAutowireSchema = z
     peer: PeerSchema.optional(),
     consensus_peers: z.array(PeerSchema).optional(),
     max_items_per_pass: z.number().int().positive().optional(),
+    max_output_tokens: z.number().int().min(256).optional(),
+    reasoning_effort: ReasoningEffortValueSchema.optional(),
   })
   .strict()
   .optional();
@@ -195,6 +205,16 @@ const RetrySchema = z
   .strict()
   .optional();
 
+const EvidenceBrokerSchema = z
+  .object({
+    max_requests_per_peer_round: z.number().int().positive().optional(),
+    max_requests_per_round: z.number().int().positive().optional(),
+    max_items_per_session: z.number().int().positive().optional(),
+    max_chars_per_session: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 export const FileConfigSchema = z
   .object({
     // Optional schema version sentinel so future breaking changes can
@@ -204,6 +224,7 @@ export const FileConfigSchema = z
     stub: z.boolean().optional(),
     dashboard_port: z.number().int().positive().optional(),
     max_output_tokens: z.number().int().positive().optional(),
+    max_output_tokens_by_peer: PerPeerPositiveIntSchema,
     models: PerPeerStringSchema,
     // v3.7.3 (operator no-fallback directive 2026-05-14): the user's
     // explicit, per-peer list of models accepted as fallback. Default
@@ -219,6 +240,7 @@ export const FileConfigSchema = z
     model_cost_rates: PerPeerModelCostRatesSchema,
     budget: BudgetSchema,
     retry: RetrySchema,
+    evidence_broker: EvidenceBrokerSchema,
     evidence_judge_autowire: EvidenceJudgeAutowireSchema,
     cache: CacheSchema,
     perplexity: PerplexitySubSchema,
@@ -284,17 +306,22 @@ function normalizeModelId(model: string): string {
 function selectConfiguredModelRate(
   ratesByModel: Record<string, Record<string, unknown>>,
   configuredModel: string | undefined,
+  peer?: PeerId,
 ): Record<string, unknown> | undefined {
   if (!configuredModel) return undefined;
   const normalized = normalizeModelId(configuredModel);
   if (ratesByModel[normalized]) return ratesByModel[normalized];
-  for (const [modelFamily, rate] of Object.entries(ratesByModel)) {
-    const normalizedFamily = normalizeModelId(modelFamily);
-    if (normalized === normalizedFamily || normalized.startsWith(`${normalizedFamily}-`)) {
-      return rate;
-    }
+  for (const [model, rate] of Object.entries(ratesByModel)) {
+    if (normalizeModelId(model) === normalized) return rate;
   }
-  return undefined;
+  // Every documented Perplexity Sonar id is a distinct billable product.
+  // In particular, a `sonar` card must never capture `sonar-pro` or
+  // `sonar-reasoning-pro` merely because their ids share a prefix.
+  if (peer === "perplexity") return undefined;
+  const familyMatches = Object.entries(ratesByModel)
+    .filter(([modelFamily]) => normalized.startsWith(`${normalizeModelId(modelFamily)}-`))
+    .sort(([left], [right]) => normalizeModelId(right).length - normalizeModelId(left).length);
+  return familyMatches[0]?.[1];
 }
 
 // Flatten the structured FileConfig into a flat map of env-var-name →
@@ -315,6 +342,14 @@ export function flattenFileConfigToEnvMap(
   if (config.stub != null) set("CROSS_REVIEW_STUB", config.stub ? "true" : "false");
   set("CROSS_REVIEW_DASHBOARD_PORT", config.dashboard_port);
   set("CROSS_REVIEW_MAX_OUTPUT_TOKENS", config.max_output_tokens);
+  if (config.max_output_tokens_by_peer) {
+    for (const [peer, maxTokens] of Object.entries(config.max_output_tokens_by_peer) as [
+      PeerId,
+      number | undefined,
+    ][]) {
+      if (maxTokens != null) set(`${PEER_TO_ENV_PREFIX[peer]}_MAX_OUTPUT_TOKENS`, maxTokens);
+    }
+  }
 
   // Per-peer model / reasoning / fallback / enabled.
   if (config.models) {
@@ -365,7 +400,7 @@ export function flattenFileConfigToEnvMap(
       if (!ratesByModel) continue;
       const prefix = PEER_TO_ENV_PREFIX[peer];
       const configuredModel = envValue?.(`${prefix}_MODEL`) ?? config.models?.[peer];
-      const modelRate = selectConfiguredModelRate(ratesByModel, configuredModel);
+      const modelRate = selectConfiguredModelRate(ratesByModel, configuredModel, peer);
       if (!modelRate) continue;
       flattenCostRate(out, prefix, modelRate);
     }
@@ -384,6 +419,24 @@ export function flattenFileConfigToEnvMap(
     set("CROSS_REVIEW_RETRY_MAX_MS", config.retry.max_delay_ms);
     set("CROSS_REVIEW_TIMEOUT_MS", config.retry.timeout_ms);
   }
+  if (config.evidence_broker) {
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_PEER_ROUND",
+      config.evidence_broker.max_requests_per_peer_round,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_ROUND",
+      config.evidence_broker.max_requests_per_round,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_ITEMS_PER_SESSION",
+      config.evidence_broker.max_items_per_session,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_BROKER_MAX_CHARS_PER_SESSION",
+      config.evidence_broker.max_chars_per_session,
+    );
+  }
   if (config.evidence_judge_autowire) {
     set("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE", config.evidence_judge_autowire.mode);
     set("CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_PEER", config.evidence_judge_autowire.peer);
@@ -396,6 +449,14 @@ export function flattenFileConfigToEnvMap(
     set(
       "CROSS_REVIEW_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS",
       config.evidence_judge_autowire.max_items_per_pass,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS",
+      config.evidence_judge_autowire.max_output_tokens,
+    );
+    set(
+      "CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT",
+      config.evidence_judge_autowire.reasoning_effort,
     );
   }
   if (config.cache) {
@@ -494,7 +555,38 @@ export interface ApplyFileConfigResult {
   path: string;
   fields_applied: number;
   fields_overridden_by_env: number;
+  checked_at: string;
+  file_exists: boolean;
+  loaded_mtime_ms?: number | undefined;
+  loaded_sha256?: string | undefined;
   parse_error?: string | undefined;
+  /** Validated cards retained for runtime fallback/model-override pricing. */
+  model_cost_rates?: FileConfig["model_cost_rates"] | undefined;
+}
+
+export interface ConfigFileFingerprint {
+  exists: boolean;
+  mtime_ms?: number | undefined;
+  sha256?: string | undefined;
+  read_error?: string | undefined;
+}
+
+function sha256(value: string | Buffer): string {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+export function inspectConfigFileFingerprint(filePath: string): ConfigFileFingerprint {
+  if (!fs.existsSync(filePath)) return { exists: false };
+  try {
+    const raw = fs.readFileSync(filePath);
+    const stat = fs.statSync(filePath);
+    return { exists: true, mtime_ms: stat.mtimeMs, sha256: sha256(raw) };
+  } catch (error) {
+    return {
+      exists: true,
+      read_error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 // Public API used by `loadConfig()`. Reads the file (if present),
@@ -521,21 +613,34 @@ export function applyFileConfigToEnv(
   // CROSS_REVIEW_CONFIG_FILE override respects v2.28.0 registry
   // fallback (operator-stored override path in HKCU\Environment works).
   const filePath = resolveConfigFilePath(dataDir, envValue);
+  const checkedAt = new Date().toISOString();
   if (!fs.existsSync(filePath)) {
-    return { applied: false, path: filePath, fields_applied: 0, fields_overridden_by_env: 0 };
+    return {
+      applied: false,
+      path: filePath,
+      fields_applied: 0,
+      fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: false,
+    };
   }
   let raw: string;
+  let loadedMtimeMs: number | undefined;
   try {
     raw = fs.readFileSync(filePath, "utf8");
+    loadedMtimeMs = fs.statSync(filePath).mtimeMs;
   } catch (error) {
     return {
       applied: false,
       path: filePath,
       fields_applied: 0,
       fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: true,
       parse_error: `read_failed: ${(error as Error).message}`,
     };
   }
+  const loadedSha256 = sha256(raw);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -545,6 +650,10 @@ export function applyFileConfigToEnv(
       path: filePath,
       fields_applied: 0,
       fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: true,
+      loaded_mtime_ms: loadedMtimeMs,
+      loaded_sha256: loadedSha256,
       parse_error: `json_parse_failed: ${(error as Error).message}`,
     };
   }
@@ -555,6 +664,10 @@ export function applyFileConfigToEnv(
       path: filePath,
       fields_applied: 0,
       fields_overridden_by_env: 0,
+      checked_at: checkedAt,
+      file_exists: true,
+      loaded_mtime_ms: loadedMtimeMs,
+      loaded_sha256: loadedSha256,
       parse_error: `schema_validation_failed: ${validated.error.message}`,
     };
   }
@@ -578,5 +691,10 @@ export function applyFileConfigToEnv(
     path: filePath,
     fields_applied: applied,
     fields_overridden_by_env: overridden,
+    checked_at: checkedAt,
+    file_exists: true,
+    loaded_mtime_ms: loadedMtimeMs,
+    loaded_sha256: loadedSha256,
+    model_cost_rates: validated.data.model_cost_rates,
   };
 }

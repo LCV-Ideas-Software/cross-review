@@ -2,42 +2,32 @@ name: OpenSSF Scorecard
 on:
   push:
     branches: ["main"]
-    paths:
-      - ".github/workflows/**"
-      - ".github/dependabot.yml"
-      - "SECURITY.md"
   schedule:
     - cron: "37 8 * * 1"
   workflow_dispatch:
 concurrency:
   group: scorecard-${{ github.ref }}
-  cancel-in-progress: true
-permissions:
-  contents: read
+  queue: max
+  cancel-in-progress: false
+permissions: write-all
 
 jobs:
   scorecard:
     name: OpenSSF Scorecard
-    permissions:
-      contents: read
-      security-events: write
-      id-token: write
+    permissions: write-all
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
-          publish_results: true
+          # OpenSSF's publication API rejects workflows with organization-mandated write-all.
+          # SARIF and artifacts remain enabled below.
+          publish_results: false
       - name: Upload SARIF artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -45,6 +35,6 @@ jobs:
           path: scorecard-results.sarif
           retention-days: 5
       - name: Upload SARIF to code-scanning
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
         with:
           sarif_file: scorecard-results.sarif

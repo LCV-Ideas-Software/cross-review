@@ -1,14 +1,26 @@
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import lockfile from "proper-lockfile";
 import { redact, redactJsonValue, safeErrorMessage } from "../security/redact.js";
+import { blockConvergenceForUnresolvedEvidence } from "./convergence.js";
 import { mergeCost, mergeUsage } from "./cost.js";
+import { sessionCostBreakdown, sessionReportMarkdown } from "./reports.js";
 import type {
   AppConfig,
+  BackgroundGenerationInFlight,
+  BackgroundJobStatus,
+  CallerEvidenceSubmission,
+  ConvergenceHealth,
   ConvergenceResult,
   ConvergenceScope,
+  EvidenceAttachment,
+  EvidenceAttachmentOrigin,
+  EvidenceBrokerLimits,
+  EvidenceChecklistAliasCollapse,
   EvidenceChecklistItem,
+  EvidenceChecklistRuntimeReclassification,
   EvidenceChecklistStatus,
   EvidenceStatusHistoryEntry,
   GenerationArtifact,
@@ -22,6 +34,11 @@ import type {
   PeerReliabilityReport,
   PeerReliabilityStats,
   PeerResult,
+  PendingProviderCallReservation,
+  PreflightCheckRecord,
+  ProviderCallReservation,
+  ProviderCallSettlement,
+  ResolvedEvidenceAttachment,
   ReviewRound,
   ReviewStatus,
   RuntimeEvent,
@@ -42,40 +59,724 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function effectiveConfigSnapshot(config: AppConfig): Record<string, unknown> {
+  return redactJsonValue({
+    models: config.models,
+    fallback_models: config.fallback_models,
+    model_selection: config.model_selection,
+    peer_enabled: config.peer_enabled,
+    reasoning_effort: config.reasoning_effort,
+    retry: config.retry,
+    budget: config.budget,
+    prompt: config.prompt,
+    evidence_broker: config.evidence_broker,
+    max_output_tokens: config.max_output_tokens,
+    max_output_tokens_by_peer: config.max_output_tokens_by_peer,
+    truthfulness_preflight_enabled: config.truthfulness_preflight_enabled,
+    evidence_preflight_enabled: config.evidence_preflight_enabled,
+    streaming: config.streaming,
+    evidence_judge_autowire: config.evidence_judge_autowire,
+    cache: config.cache,
+    perplexity: config.perplexity,
+    cost_rates: config.cost_rates,
+    model_cost_rates: config.model_cost_rates,
+  }) as Record<string, unknown>;
+}
+
+interface EvidenceBrokerRollback {
+  round: number;
+  restored_item_ids: string[];
+  discarded_history_entries: number;
+}
+
+function restoreInterruptedEvidenceBrokerSnapshot(
+  meta: SessionMeta,
+): EvidenceBrokerRollback | undefined {
+  const snapshot = meta.in_flight?.evidence_broker_snapshot;
+  if (!snapshot || !meta.in_flight) return undefined;
+  const currentHistoryLength = meta.evidence_status_history?.length ?? 0;
+  const baselineHistoryLength = snapshot.evidence_status_history?.length ?? 0;
+  const rollback: EvidenceBrokerRollback = {
+    round: meta.in_flight.round,
+    restored_item_ids: (snapshot.evidence_checklist ?? []).map((item) => item.id),
+    discarded_history_entries: Math.max(0, currentHistoryLength - baselineHistoryLength),
+  };
+  if (snapshot.evidence_checklist === null) {
+    delete meta.evidence_checklist;
+  } else {
+    meta.evidence_checklist = structuredClone(snapshot.evidence_checklist);
+  }
+  if (snapshot.evidence_status_history === null) {
+    delete meta.evidence_status_history;
+  } else {
+    meta.evidence_status_history = structuredClone(snapshot.evidence_status_history);
+  }
+  return rollback;
+}
+
+function inFlightRoundAlreadyAppended(meta: SessionMeta): boolean {
+  const inFlight = meta.in_flight;
+  const latestRound = meta.rounds.at(-1);
+  return (
+    inFlight !== undefined &&
+    inFlight.evidence_broker_snapshot === undefined &&
+    latestRound?.round === inFlight.round
+  );
+}
+
+function latestTimestamp(...values: Array<string | undefined>): string {
+  let latest: string | undefined;
+  let latestMs = -Infinity;
+  for (const value of values) {
+    if (!value) continue;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed >= latestMs) {
+      latest = value;
+      latestMs = parsed;
+    } else if (!latest && !Number.isFinite(parsed)) {
+      latest = value;
+    }
+  }
+  return latest ?? now();
+}
+
+function transitionHealth(
+  meta: Pick<SessionMeta, "convergence_health">,
+  state: ConvergenceHealth["state"],
+  detail: string,
+  ts = now(),
+  extra: Pick<ConvergenceHealth, "idle_ms"> = {},
+): ConvergenceHealth {
+  const previousActivity =
+    meta.convergence_health?.last_activity_at ?? meta.convergence_health?.last_event_at;
+  const lastActivityAt = latestTimestamp(previousActivity, ts);
+  return {
+    state,
+    last_event_at: lastActivityAt,
+    last_activity_at: lastActivityAt,
+    last_state_transition_at: ts,
+    detail,
+    ...extra,
+  };
+}
+
+const CHECKLIST_NON_EXECUTION_PATTERN =
+  /\b(?:(?:was|were|is|are|has|have|had)\s+(?:not|never)\s+(?:been\s+)?(?:attempted|started|executed|run|performed|completed)|(?:could|can)\s+not\s+(?:be\s+)?(?:attempted|started|executed|run|performed|completed)|(?:cannot|unable\s+to)\s+(?:attempt|start|execute|run|perform|complete)|(?:was|were|is|are|been)?\s*(?:aborted(?:\s+before\s+(?:execution|running|start))?|cancelled|canceled|skipped|omitted|deferred|blocked|pending|not[- ]run)|(?:n[aã]o|nunca)\s+(?:(?:foi|foram|p[oô]de)\s+)?(?:tentad[oa]s?|iniciad[oa]s?|executad[oa]s?|rodad[oa]s?|realizad[oa]s?|conclu[ií]d[oa]s?)|(?:foi|foram)\s+(?:abortad[oa]s?|cancelad[oa]s?|ignorado?s?|pulad[oa]s?|adiad[oa]s?|bloquead[oa]s?)|sem\s+(?:tentar|iniciar|executar|rodar|realizar|concluir))\b/i;
+
+function checklistEvidenceHasExecutionRecord(corpus: string): boolean {
+  if (CHECKLIST_NON_EXECUTION_PATTERN.test(corpus)) return false;
+  const exitCodes = [...corpus.matchAll(/\bexit[_ ]?code\s*[:=]\s*(\d+)\b/gi)].map((match) =>
+    Number(match[1]),
+  );
+  if (exitCodes.some((code) => code !== 0)) return false;
+  return (
+    (exitCodes.length > 0 && exitCodes.every((code) => code === 0)) ||
+    /\b(?:tests?|test files)\s+\d+\s+passed\b|\b\d+\s+(?:tests?\s+)?passed\b|\btest result:\s*ok\b|\b(?:status|conclusion|result)\s*[:=]\s*(?:success|successful|passed)\b/i.test(
+      corpus,
+    )
+  );
+}
+
+function checklistEvidenceHasOperationalRecord(corpus: string): boolean {
+  return /\b(?:run|task|workflow|deployment|rollback|session)[_-]?id\s*[:=#]\s*[a-z0-9._-]+|\b(?:status|conclusion|result)\s*[:=]\s*[a-z0-9._-]+/i.test(
+    corpus,
+  );
+}
+
+function checklistEvidenceHasDiffRecord(corpus: string): boolean {
+  return /(?:^|\n)\s*diff --git\b|(?:^|\n)\s*@@\s*[-+]|\b\d+\s+files? changed\b/i.test(corpus);
+}
+
+export function extractChecklistCommands(ask: string): string[] {
+  return (
+    ask.match(
+      /\b(?:npm\s+(?:run\s+)?[a-z0-9:_-]+|cargo\s+[a-z0-9:_-]+|git\s+[a-z0-9:_-]+(?:\s+(?:--[a-z0-9_:][a-z0-9:_-]*|-[a-z0-9_:][a-z0-9:_-]*))*)\b/gi,
+    ) ?? []
+  );
+}
+
+const CHECKLIST_FALSE_FILE_ANCHORS = new Set(["e.g", "i.e"]);
+
+function checklistEvidenceHasFileLineRecord(corpus: string): boolean {
+  return /\b[\w./-]+\.[a-z0-9]+:\d+(?:(?:,|-)\d+)*\b/i.test(corpus);
+}
+
+function isAsciiLetterCode(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isAsciiWordCode(code: number): boolean {
+  return isAsciiLetterCode(code) || (code >= 48 && code <= 57) || code === 95;
+}
+
+export function extractChecklistCodeSymbols(ask: string): string[] {
+  const symbols: string[] = [];
+  let start = 0;
+  while (start < ask.length) {
+    const firstCode = ask.charCodeAt(start);
+    if (!isAsciiWordCode(firstCode)) {
+      start += 1;
+      continue;
+    }
+
+    let end = start + 1;
+    let firstUnderscore = firstCode === 95 ? 0 : -1;
+    let hasUppercaseAfterFirst = false;
+    while (end < ask.length) {
+      const code = ask.charCodeAt(end);
+      if (!isAsciiWordCode(code)) break;
+      if (code === 95 && firstUnderscore === -1) firstUnderscore = end - start;
+      if (code >= 65 && code <= 90) hasUppercaseAfterFirst = true;
+      end += 1;
+    }
+
+    const tokenLength = end - start;
+    const isCamelCase =
+      firstCode >= 97 && firstCode <= 122 && firstUnderscore === -1 && hasUppercaseAfterFirst;
+    const isSnakeCase =
+      isAsciiLetterCode(firstCode) && firstUnderscore > 0 && firstUnderscore < tokenLength - 1;
+    if (isCamelCase || isSnakeCase) {
+      symbols.push(ask.slice(start, end).normalize("NFKC").toLowerCase());
+    }
+    start = end;
+  }
+  return symbols;
+}
+
+const CHECKLIST_SEMANTIC_CONCEPTS: ReadonlyArray<{
+  ask: RegExp;
+  evidence: RegExp;
+}> = [
+  {
+    ask: /\b(?:identity|identidade)\b/i,
+    evidence: /\b(?:identity|identidade|schemaid|fragmentid|inputhash)\b/i,
+  },
+  {
+    ask: /\b(?:inject(?:ion|ed|s)?|inje[cç][aã]o)\b/i,
+    evidence: /\b(?:inject(?:ion|ed|s)?|inje[cç][aã]o)\b/i,
+  },
+  { ask: /\bcan[oô]nic(?:al|a|o)?\b/i, evidence: /\bcan[oô]nic(?:al|a|o)?\b/i },
+  {
+    ask: /\b(?:redact(?:ion|ed|s)?|reda[cç][aã]o)\b/i,
+    evidence: /\b(?:redact(?:ion|ed|s)?|reda[cç][aã]o)\b/i,
+  },
+  {
+    ask: /\b(?:secrets?|segredos?)\b/i,
+    evidence: /\b(?:secrets?|segredos?|credentials?|api[_-]?keys?|authorization)\b/i,
+  },
+  {
+    ask: /\b(?:assertions?|asser[cç][oõ]es)\b/i,
+    evidence: /\b(?:assertions?|asser[cç][oõ]es|tests?)\b/i,
+  },
+  { ask: /\breadme(?:\.md)?\b/i, evidence: /\breadme(?:\.md)?\b/i },
+  { ask: /\bsecurity(?:\.md)?\b/i, evidence: /\bsecurity(?:\.md)?\b/i },
+  { ask: /\bchangelog(?:\.md)?\b/i, evidence: /\bchangelog(?:\.md)?\b/i },
+  {
+    ask: /methodolog(?:y|ical)|metodologia/i,
+    evidence: /methodolog(?:y|ical)|metodologia/i,
+  },
+];
+
+function checklistEvidenceSourcesForItem(
+  item: EvidenceChecklistItem,
+  evidenceSources: readonly string[],
+  knownItemIds: readonly string[],
+): { sources: string[]; explicitly_routed: boolean } {
+  const sources = evidenceSources.map((source) => source.trim()).filter(Boolean);
+  const sourceMentionsId = (source: string, id: string): boolean =>
+    new RegExp(`(?:^|[^a-f0-9])${id}(?:[^a-f0-9]|$)`, "i").test(source);
+  const routed = sources.filter((source) => sourceMentionsId(source, item.id));
+  const generic = sources.filter(
+    (source) => !knownItemIds.some((id) => sourceMentionsId(source, id)),
+  );
+  return {
+    // An ID scopes only the source that contains it. A separate generic
+    // source remains eligible for semantic/value correlation with other
+    // asks; otherwise one routed citation poisons every unrelated source in
+    // the same READY envelope (field regression 39cb..., round 5).
+    sources: [...routed, ...generic],
+    explicitly_routed: routed.length > 0,
+  };
+}
+
+function checklistAskCorroborated(
+  item: EvidenceChecklistItem,
+  evidenceSources: readonly string[],
+  knownItemIds: readonly string[],
+): boolean {
+  const scopedEvidence = checklistEvidenceSourcesForItem(item, evidenceSources, knownItemIds);
+  const corpus = scopedEvidence.sources.join("\n").normalize("NFKC").toLowerCase();
+  if (!corpus.trim()) return false;
+  const ask = item.ask.normalize("NFKC").toLowerCase();
+  // Ordered-list markers describe the request structure, not values that the
+  // evidence must repeat. Keep substantive numbers such as 281, 422 or 80s.
+  const anchorAsk = ask.replace(/(^|\n)\s*\d+[.)]\s*/g, "$1");
+  const valueAnchors = [
+    ...(anchorAsk.match(/https?:\/\/[^\s)\]}>'"]+/gi) ?? []),
+    ...(anchorAsk.match(/\b[a-f0-9]{12,64}\b/gi) ?? []),
+    ...(anchorAsk.match(/\b[a-z][a-z0-9_-]*_id\s*[:=#]\s*[a-z0-9._-]+\b/gi) ?? []),
+    ...(anchorAsk.match(/\b\d+(?:\.\d+)*\b/g) ?? []),
+    ...(anchorAsk.match(/\b[\w./-]+\.\w+(?::\d+)?\b/gi) ?? []).filter(
+      (value) => !CHECKLIST_FALSE_FILE_ANCHORS.has(value.toLowerCase()),
+    ),
+  ].map((value) => value.replace(/\s+/g, " ").trim());
+  const commands = extractChecklistCommands(anchorAsk);
+  const codeSymbols = extractChecklistCodeSymbols(item.ask);
+  const requestedConcepts = CHECKLIST_SEMANTIC_CONCEPTS.filter(({ ask: pattern }) =>
+    pattern.test(ask),
+  );
+  const requestsLineEvidence =
+    /\b(?:line numbers?|file\s*:\s*line|linhas?(?:\s+de\s+c[oó]digo)?|arquivo\s*:\s*linha)\b/i.test(
+      ask,
+    );
+  const requestsGrepEvidence = /\bgrep(?:\s+lines?|\s+output|\s+sa[ií]da)?\b/i.test(ask);
+  const requestsDiffEvidence = /\b(?:git\s+diff|diff|patch)\b/i.test(ask);
+  const lineOrDiffAlternative =
+    (requestsLineEvidence || requestsGrepEvidence) &&
+    requestsDiffEvidence &&
+    (/\b(?:or|ou)\b/i.test(ask) ||
+      /\b(?:diff|patch)\s*\/\s*grep\b|\bgrep\s*\/\s*(?:diff|patch)\b/i.test(ask));
+  const hasLineEvidence = checklistEvidenceHasFileLineRecord(corpus);
+  const hasDiffEvidence = checklistEvidenceHasDiffRecord(corpus);
+  const satisfiedByLineAlternative = lineOrDiffAlternative && hasLineEvidence;
+  const requiredCommands = satisfiedByLineAlternative
+    ? commands.filter((command) => !/^git diff(?:\s|$)/i.test(command.replace(/\s+/g, " ")))
+    : commands;
+  const semanticAnchors = [
+    [/(?:exit[_ ]code)/i, /exit[_ ]code/i],
+    [/\btests?\b/i, /\btests?\b/i],
+    [/\b(?:deploy|deployment|rollback)\b/i, /\b(?:deploy|deployment|rollback)\b/i],
+    [/\b(?:workflow|pipeline|github actions?)\b/i, /\b(?:workflow|pipeline|github actions?)\b/i],
+    [/\b(?:diff|patch)\b/i, /\b(?:diff|patch)\b/i],
+  ] as const;
+  const requestedSemantics = semanticAnchors.filter(
+    ([askPattern]) =>
+      askPattern.test(ask) && !(satisfiedByLineAlternative && askPattern.source.includes("diff")),
+  );
+  const requestsExecutionRecord =
+    requiredCommands.length > 0 ||
+    /(?:exit[_ ]code)/i.test(ask) ||
+    /\btests?\b/i.test(ask) ||
+    (/\b(?:execut(?:e|ed|ion)|run|ran|output|resultado|sa[ií]da|executad[oa])\b/i.test(ask) &&
+      !requestsGrepEvidence);
+  const requestsImplementationRecord =
+    /\b(?:code|implementation|implementa[cç][aã]o|arquivo|file|assertions?|asser[cç][oõ]es|schema|contract|validation|valida[cç][aã]o|identity|identidade|injection|inje[cç][aã]o|redact|reda[cç][aã]o)\b/i.test(
+      ask,
+    );
+  const routedConcreteRecord =
+    scopedEvidence.explicitly_routed &&
+    (!requestsExecutionRecord || checklistEvidenceHasExecutionRecord(corpus)) &&
+    (!requestsImplementationRecord || hasLineEvidence || hasDiffEvidence) &&
+    (hasLineEvidence ||
+      hasDiffEvidence ||
+      checklistEvidenceHasExecutionRecord(corpus) ||
+      checklistEvidenceHasOperationalRecord(corpus));
+  // A Checklist-Item id routes a recheck to the right ask; it is not proof
+  // that the cited material answers that ask. Auto-close only when the ask
+  // itself supplied a concrete value, command, or verifiable semantic anchor.
+  const hasAskDerivedAnchor =
+    valueAnchors.length > 0 ||
+    requiredCommands.length > 0 ||
+    requestedSemantics.length > 0 ||
+    codeSymbols.length > 0 ||
+    requestsLineEvidence ||
+    requestsGrepEvidence;
+  if (!hasAskDerivedAnchor && !routedConcreteRecord) return false;
+  if (!valueAnchors.every((value) => corpus.includes(value))) return false;
+  if (
+    !requiredCommands.every((command) =>
+      corpus.includes(command.replace(/\s+/g, " ").toLowerCase()),
+    )
+  ) {
+    return false;
+  }
+  if (!requestedSemantics.every(([, evidencePattern]) => evidencePattern.test(corpus)))
+    return false;
+  if (!requestedConcepts.every(({ evidence }) => evidence.test(corpus))) return false;
+  if (codeSymbols.length > 0) {
+    const everySymbolRequired = /\b(?:all|every|each|todos?|todas?|cada)\b/i.test(ask);
+    const symbolsMatch = everySymbolRequired
+      ? codeSymbols.every((symbol) => corpus.includes(symbol))
+      : codeSymbols.some((symbol) => corpus.includes(symbol));
+    if (!symbolsMatch) return false;
+  }
+  if (lineOrDiffAlternative && !hasLineEvidence && !hasDiffEvidence) return false;
+  if (requestsLineEvidence && !lineOrDiffAlternative && !hasLineEvidence) return false;
+  if (requestsGrepEvidence && !lineOrDiffAlternative && !hasLineEvidence && !hasDiffEvidence)
+    return false;
+  if (requestsExecutionRecord && !checklistEvidenceHasExecutionRecord(corpus)) return false;
+  if (
+    /\b(?:deploy|deployment|rollback|workflow|pipeline|github actions?)\b/i.test(ask) &&
+    !checklistEvidenceHasOperationalRecord(corpus)
+  ) {
+    return false;
+  }
+  if (requestsDiffEvidence && !lineOrDiffAlternative && !hasDiffEvidence) return false;
+  return true;
+}
+
+function strictChecklistAliasTarget(
+  ask: string,
+  peer: PeerId,
+  candidates: readonly EvidenceChecklistItem[],
+  beforeRound: number,
+): EvidenceChecklistItem | undefined {
+  for (const candidate of candidates) {
+    if (candidate.peer !== peer || candidate.first_round >= beforeRound) continue;
+    const marker = new RegExp(
+      `^\\s*Checklist-Item\\s*:\\s*${candidate.id}\\b(?:\\s*\\([^)]*\\))?\\s*(?:[—:;-]\\s*)?`,
+      "i",
+    );
+    const remainder = ask.replace(marker, "").trim();
+    if (remainder === ask.trim()) continue;
+    if (
+      /^(?:(?:(?:the|this)\s+)?same(?:\s+(?:request|item|evidence|proof|transcript|output|hunks?))?\s+(?:remains?|is|are)\s+(?:required|needed|outstanding)|idem|as\s+above)\.?$/i.test(
+        remainder,
+      )
+    ) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+export type EvidenceChecklistContractLimit =
+  | "max_requests_per_peer_round"
+  | "max_requests_per_round"
+  | "max_items_per_session"
+  | "max_chars_per_session"
+  | "identifier_collision";
+
+export interface EvidenceChecklistContractViolation {
+  limit: EvidenceChecklistContractLimit;
+  observed: number;
+  maximum: number;
+  peer?: PeerId | undefined;
+}
+
+export interface EvidenceChecklistAdmission {
+  accepted: boolean;
+  round: number;
+  incoming_total: number;
+  incoming_unique: number;
+  incoming_duplicates: number;
+  requests_by_peer: Partial<Record<PeerId, number>>;
+  existing_items: number;
+  existing_chars: number;
+  existing_matches: number;
+  strict_aliases: number;
+  new_items: number;
+  projected_items: number;
+  projected_chars: number;
+  limits: EvidenceBrokerLimits;
+  violations: EvidenceChecklistContractViolation[];
+}
+
+export class EvidenceChecklistContractViolationError extends Error {
+  readonly code = "evidence_checklist_contract_violation";
+
+  constructor(readonly admission: EvidenceChecklistAdmission) {
+    const summary = admission.violations
+      .map(
+        (violation) =>
+          `${violation.limit}${violation.peer ? `(${violation.peer})` : ""}=${violation.observed}>${violation.maximum}`,
+      )
+      .join(",");
+    super(`evidence_checklist_contract_violation: ${summary}`);
+    this.name = "EvidenceChecklistContractViolationError";
+  }
+}
+
+function checklistItemId(peer: PeerId, ask: string): string {
+  return crypto.createHash("sha256").update(`${peer}:${ask}`).digest("hex").slice(0, 16);
+}
+
+/**
+ * Preview one atomic Evidence Broker append. Exact duplicates are collapsed
+ * only within the same peer identity; cross-peer asks remain independent so
+ * one reviewer can never erase another reviewer's blocker. Strict references
+ * to an older same-owner Checklist-Item are aliases, not new entries.
+ */
+export function evaluateEvidenceChecklistAdmission(
+  checklist: readonly EvidenceChecklistItem[],
+  round: number,
+  incoming: readonly { peer: PeerId; ask: string }[],
+  limits: EvidenceBrokerLimits,
+): EvidenceChecklistAdmission {
+  const uniqueIncoming: Array<{ peer: PeerId; ask: string }> = [];
+  const incomingIdentities = new Set<string>();
+  for (const { peer, ask } of incoming) {
+    const trimmed = ask.trim();
+    if (!trimmed) continue;
+    const identity = `${peer}\u0000${trimmed}`;
+    if (incomingIdentities.has(identity)) continue;
+    incomingIdentities.add(identity);
+    uniqueIncoming.push({ peer, ask: trimmed });
+  }
+
+  const requestsByPeer: Partial<Record<PeerId, number>> = {};
+  for (const { peer } of uniqueIncoming) {
+    requestsByPeer[peer] = (requestsByPeer[peer] ?? 0) + 1;
+  }
+
+  const existingById = new Map(checklist.map((item) => [item.id, item]));
+  const newById = new Map<string, { peer: PeerId; ask: string }>();
+  let existingMatches = 0;
+  let strictAliases = 0;
+  let identifierCollisions = 0;
+  for (const candidate of uniqueIncoming) {
+    if (strictChecklistAliasTarget(candidate.ask, candidate.peer, checklist, round)) {
+      strictAliases += 1;
+      continue;
+    }
+    const id = checklistItemId(candidate.peer, candidate.ask);
+    const existing = existingById.get(id);
+    if (existing) {
+      if (existing.peer === candidate.peer && existing.ask === candidate.ask) {
+        existingMatches += 1;
+      } else {
+        identifierCollisions += 1;
+      }
+      continue;
+    }
+    const pending = newById.get(id);
+    if (pending) {
+      if (pending.peer !== candidate.peer || pending.ask !== candidate.ask) {
+        identifierCollisions += 1;
+      }
+      continue;
+    }
+    newById.set(id, candidate);
+  }
+
+  const existingChars = checklist.reduce((sum, item) => sum + item.ask.length, 0);
+  const newChars = [...newById.values()].reduce((sum, item) => sum + item.ask.length, 0);
+  const projectedItems = checklist.length + newById.size;
+  const projectedChars = existingChars + newChars;
+  const violations: EvidenceChecklistContractViolation[] = [];
+  for (const [peer, observed] of Object.entries(requestsByPeer) as Array<[PeerId, number]>) {
+    if (observed > limits.max_requests_per_peer_round) {
+      violations.push({
+        limit: "max_requests_per_peer_round",
+        peer,
+        observed,
+        maximum: limits.max_requests_per_peer_round,
+      });
+    }
+  }
+  if (uniqueIncoming.length > limits.max_requests_per_round) {
+    violations.push({
+      limit: "max_requests_per_round",
+      observed: uniqueIncoming.length,
+      maximum: limits.max_requests_per_round,
+    });
+  }
+  if (projectedItems > limits.max_items_per_session) {
+    violations.push({
+      limit: "max_items_per_session",
+      observed: projectedItems,
+      maximum: limits.max_items_per_session,
+    });
+  }
+  if (projectedChars > limits.max_chars_per_session) {
+    violations.push({
+      limit: "max_chars_per_session",
+      observed: projectedChars,
+      maximum: limits.max_chars_per_session,
+    });
+  }
+  if (identifierCollisions > 0) {
+    violations.push({
+      limit: "identifier_collision",
+      observed: identifierCollisions,
+      maximum: 0,
+    });
+  }
+
+  return {
+    accepted: violations.length === 0,
+    round,
+    incoming_total: incoming.filter((item) => item.ask.trim().length > 0).length,
+    incoming_unique: uniqueIncoming.length,
+    incoming_duplicates:
+      incoming.filter((item) => item.ask.trim().length > 0).length - uniqueIncoming.length,
+    requests_by_peer: requestsByPeer,
+    existing_items: checklist.length,
+    existing_chars: existingChars,
+    existing_matches: existingMatches,
+    strict_aliases: strictAliases,
+    new_items: newById.size,
+    projected_items: projectedItems,
+    projected_chars: projectedChars,
+    limits: { ...limits },
+    violations,
+  };
+}
+
+function sessionMetaShapeError(value: unknown): string | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return "root must be an object";
+  }
+  const meta = value as Record<string, unknown>;
+  for (const field of ["session_id", "version", "created_at", "updated_at", "task"] as const) {
+    if (typeof meta[field] !== "string" || meta[field].length === 0) {
+      return `${field} must be a non-empty string`;
+    }
+  }
+  if (meta.caller !== "operator" && !PEERS.includes(meta.caller as PeerId)) {
+    return "caller must be operator or a known peer";
+  }
+  if (meta.convergence_scope !== undefined) {
+    if (
+      meta.convergence_scope === null ||
+      typeof meta.convergence_scope !== "object" ||
+      Array.isArray(meta.convergence_scope)
+    ) {
+      return "convergence_scope must be an object";
+    }
+    const scope = meta.convergence_scope as Record<string, unknown>;
+    const validActor = (actor: unknown): actor is PeerId | "operator" =>
+      actor === "operator" || PEERS.includes(actor as PeerId);
+    if (!validActor(scope.caller)) return "convergence_scope.caller must be a known actor";
+    if (scope.petitioner !== undefined && !validActor(scope.petitioner)) {
+      return "convergence_scope.petitioner must be a known actor";
+    }
+    if (scope.acting_peer !== undefined && !validActor(scope.acting_peer)) {
+      return "convergence_scope.acting_peer must be a known actor";
+    }
+    const versionMatch = String(meta.version).match(/^v?(\d+)\.(\d+)\.(\d+)/);
+    const major = Number(versionMatch?.[1] ?? -1);
+    const minor = Number(versionMatch?.[2] ?? -1);
+    const durablePetitioner = major > 2 || (major === 2 && minor >= 16);
+    if (
+      durablePetitioner &&
+      (scope.caller !== meta.caller ||
+        (scope.petitioner !== undefined && scope.petitioner !== meta.caller))
+    ) {
+      return "convergence_scope petitioner and caller must match the persisted session owner";
+    }
+  }
+  if (meta.caller_evidence_submissions !== undefined) {
+    if (!Array.isArray(meta.caller_evidence_submissions)) {
+      return "caller_evidence_submissions must be an array";
+    }
+    for (const value of meta.caller_evidence_submissions) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return "caller_evidence_submissions entries must be objects";
+      }
+      const submission = value as Record<string, unknown>;
+      if (
+        typeof submission.submission_id !== "string" ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(
+          submission.submission_id,
+        )
+      ) {
+        return "caller evidence submission_id must be a UUID";
+      }
+      if (
+        typeof submission.submitted_at !== "string" ||
+        Number.isNaN(Date.parse(submission.submitted_at))
+      ) {
+        return "caller evidence submitted_at must be an ISO timestamp";
+      }
+      const submittedBy = submission.submitted_by;
+      if (submittedBy !== "operator" && !PEERS.includes(submittedBy as PeerId)) {
+        return "caller evidence submitted_by must be a known actor";
+      }
+      if (
+        typeof submission.artifact_sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(submission.artifact_sha256)
+      ) {
+        return "caller evidence artifact_sha256 must be a lowercase SHA-256";
+      }
+      if (
+        !Array.isArray(submission.attachment_paths) ||
+        !submission.attachment_paths.every((entry) => typeof entry === "string" && entry.length > 0)
+      ) {
+        return "caller evidence attachment_paths must contain only non-empty path strings";
+      }
+    }
+  }
+  if (meta.active_caller_evidence_submission_id !== undefined) {
+    if (typeof meta.active_caller_evidence_submission_id !== "string") {
+      return "active_caller_evidence_submission_id must be a string";
+    }
+    const manifests = (meta.caller_evidence_submissions ?? []) as Array<Record<string, unknown>>;
+    if (
+      !manifests.some(
+        (submission) => submission.submission_id === meta.active_caller_evidence_submission_id,
+      )
+    ) {
+      return "active caller evidence submission must reference a persisted manifest";
+    }
+  }
+  if (!Array.isArray(meta.capability_snapshot)) return "capability_snapshot must be an array";
+  if (!Array.isArray(meta.rounds)) return "rounds must be an array";
+  if (meta.in_flight !== undefined) {
+    if (
+      meta.in_flight === null ||
+      typeof meta.in_flight !== "object" ||
+      Array.isArray(meta.in_flight)
+    ) {
+      return "in_flight must be an object";
+    }
+    const settlements = (meta.in_flight as Record<string, unknown>).provider_settlements;
+    if (settlements !== undefined && !Array.isArray(settlements)) {
+      return "in_flight.provider_settlements must be an array";
+    }
+    const reservations = (meta.in_flight as Record<string, unknown>).provider_call_reservations;
+    if (reservations !== undefined && !Array.isArray(reservations)) {
+      return "in_flight.provider_call_reservations must be an array";
+    }
+  }
+  if (
+    meta.interrupted_provider_settlements !== undefined &&
+    !Array.isArray(meta.interrupted_provider_settlements)
+  ) {
+    return "interrupted_provider_settlements must be an array";
+  }
+  if (
+    meta.pending_provider_call_reservations !== undefined &&
+    !Array.isArray(meta.pending_provider_call_reservations)
+  ) {
+    return "pending_provider_call_reservations must be an array";
+  }
+  if (meta.totals === null || typeof meta.totals !== "object" || Array.isArray(meta.totals)) {
+    return "totals must be an object";
+  }
+  return undefined;
+}
+
 function isStubSession(session: SessionMeta): boolean {
   const peerCosts = session.rounds.flatMap((round) => round.peers.map((peer) => peer.cost));
+  const interruptedSettlementCosts = (session.interrupted_provider_settlements ?? []).map(
+    (settlement) => settlement.cost,
+  );
   const generationCosts = (session.generation_files ?? []).map((generation) => generation.cost);
-  const costs = [...peerCosts, ...generationCosts].filter(Boolean);
+  const failureCosts = (session.failed_attempts ?? []).map((failure) => failure.cost);
+  const costs = [
+    ...peerCosts,
+    ...interruptedSettlementCosts,
+    ...generationCosts,
+    ...failureCosts,
+  ].filter(Boolean);
   if (costs.length > 0) return costs.every((cost) => cost?.source === "stub");
   return session.capability_snapshot.some(
     (probe) => probe.provider.startsWith("stub-") || probe.model.startsWith("stub-"),
   );
-}
-
-function sessionPeerCostTotal(session: SessionMeta): number | null {
-  let total = 0;
-  let seen = false;
-  for (const round of session.rounds) {
-    for (const peer of round.peers) {
-      const value = peer.cost?.total_cost;
-      if (value == null || !Number.isFinite(value)) continue;
-      seen = true;
-      total += value;
-    }
-  }
-  return seen ? total : null;
-}
-
-function sessionGenerationCostTotal(session: SessionMeta): number | null {
-  let total = 0;
-  let seen = false;
-  for (const generation of session.generation_files ?? []) {
-    const value = generation.cost?.total_cost;
-    if (value == null || !Number.isFinite(value)) continue;
-    seen = true;
-    total += value;
-  }
-  return seen ? total : null;
 }
 
 function addNullableCost(a: number | null, b: number | null): number | null {
@@ -177,6 +878,47 @@ function timestampFilePart(): string {
   return now().replace(/[:.]/g, "-");
 }
 
+const EVIDENCE_ATTACHMENT_ORIGINS = new Set<EvidenceAttachmentOrigin>([
+  "session_attach_evidence",
+  "caller_submitted",
+  "runtime_generated",
+]);
+
+function currentEvidenceAttachment(
+  value: NonNullable<SessionMeta["evidence_files"]>[number],
+): EvidenceAttachment | undefined {
+  const record = value as unknown as Record<string, unknown>;
+  const custodyFields = [
+    "integrity_version",
+    "sha256",
+    "bytes",
+    "attached_by",
+    "attached_at",
+    "origin",
+  ];
+  if (!custodyFields.some((field) => field in record)) return undefined;
+
+  const validCaller =
+    record.attached_by === "operator" || PEERS.includes(record.attached_by as PeerId);
+  const validOrigin = EVIDENCE_ATTACHMENT_ORIGINS.has(record.origin as EvidenceAttachmentOrigin);
+  const valid =
+    record.integrity_version === 1 &&
+    typeof record.sha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(record.sha256) &&
+    typeof record.bytes === "number" &&
+    Number.isSafeInteger(record.bytes) &&
+    record.bytes >= 0 &&
+    validCaller &&
+    typeof record.attached_at === "string" &&
+    !Number.isNaN(Date.parse(record.attached_at)) &&
+    record.ts === record.attached_at &&
+    validOrigin;
+  if (!valid) {
+    throw new Error(`evidence_custody_metadata_invalid: ${value.path}`);
+  }
+  return value as EvidenceAttachment;
+}
+
 export class SessionStore {
   // v2.4.0 / audit closure (P3.13): in-memory monotonic seq counter per
   // session. Pre-v2.4.0 appendEvent recomputed seq by reading the events
@@ -198,18 +940,14 @@ export class SessionStore {
   // promise here. Promises resolve/reject within appendEvent's own
   // try/catch — flush() therefore always settles, never rejects.
   private readonly pendingEventWrites = new Set<Promise<void>>();
-  private readonly evidenceAttachmentCache = new Map<
-    string,
-    Array<{
-      label: string;
-      relative_path: string;
-      content: string;
-      bytes: number;
-      truncated: boolean;
-      content_type?: string | undefined;
-    }>
+  // Preserve emission order per session.  The durable lock prevents byte
+  // interleaving across processes, but it does not by itself guarantee that
+  // independently scheduled promises acquire the lock in call order.
+  private readonly eventWriteChains = new Map<string, Promise<void>>();
+  private readonly processStartTimeCache = new Map<
+    number,
+    { checked_at_ms: number; started_at_ms: number | undefined }
   >();
-
   constructor(private readonly config: AppConfig) {
     fs.mkdirSync(this.sessionsDir(), { recursive: true });
   }
@@ -235,6 +973,102 @@ export class SessionStore {
 
   eventsPath(sessionId: string): string {
     return path.join(this.sessionDir(sessionId), "events.ndjson");
+  }
+
+  backgroundJobsDir(sessionId: string): string {
+    return path.join(this.sessionDir(sessionId), "background-jobs");
+  }
+
+  private backgroundJobPath(sessionId: string, jobId: string): string {
+    this.assertSessionId(jobId);
+    return path.join(this.backgroundJobsDir(sessionId), `${jobId.toLowerCase()}.json`);
+  }
+
+  async writeBackgroundJobStatus(job: BackgroundJobStatus): Promise<void> {
+    this.assertSessionId(job.session_id);
+    await writeJson(this.backgroundJobPath(job.session_id, job.job_id), job);
+  }
+
+  readBackgroundJobStatus(sessionId: string, jobId: string): BackgroundJobStatus | undefined {
+    const file = this.backgroundJobPath(sessionId, jobId);
+    if (!fs.existsSync(file)) return undefined;
+    const job = this.readBackgroundJobStatusFile(file, sessionId);
+    return job?.job_id === jobId ? job : undefined;
+  }
+
+  private readBackgroundJobStatusFile(
+    file: string,
+    sessionId: string,
+  ): BackgroundJobStatus | undefined {
+    try {
+      const value = readJson<unknown>(file);
+      if (!value || typeof value !== "object") return undefined;
+      const job = value as Partial<BackgroundJobStatus>;
+      if (
+        typeof job.job_id !== "string" ||
+        typeof job.session_id !== "string" ||
+        job.session_id !== sessionId ||
+        !["ask_peers", "run_until_unanimous", "durable_session_round"].includes(job.kind ?? "") ||
+        !["running", "completed", "failed", "cancelled"].includes(job.status ?? "") ||
+        typeof job.started_at !== "string"
+      ) {
+        return undefined;
+      }
+      return job as BackgroundJobStatus;
+    } catch {
+      // Operational job history is advisory. A corrupt entry must not make
+      // the authoritative session unreadable; session_doctor/logs retain the
+      // durable meta and event-chain diagnostics.
+      return undefined;
+    }
+  }
+
+  readBackgroundJobStatuses(sessionId: string): BackgroundJobStatus[] {
+    const dir = this.backgroundJobsDir(sessionId);
+    if (!fs.existsSync(dir)) return [];
+    const statuses: BackgroundJobStatus[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^[a-f0-9-]{36}\.json$/i.test(entry.name)) continue;
+      const job = this.readBackgroundJobStatusFile(path.join(dir, entry.name), sessionId);
+      if (job) statuses.push(job);
+    }
+    return statuses.sort((a, b) =>
+      (a.completed_at ?? a.started_at).localeCompare(b.completed_at ?? b.started_at),
+    );
+  }
+
+  private async settleOrphanedBackgroundJobStatuses(
+    session: SessionMeta,
+    activeSessionIds: ReadonlySet<string>,
+  ): Promise<number> {
+    if (activeSessionIds.has(session.session_id)) return 0;
+    const controlActive =
+      session.control?.status === "running" || session.control?.status === "cancel_requested";
+    const durableExecutionActive =
+      !session.outcome &&
+      (Boolean(session.in_flight) ||
+        Boolean(session.generation_in_flight) ||
+        (session.pending_provider_call_reservations?.length ?? 0) > 0 ||
+        controlActive);
+    if (durableExecutionActive) return 0;
+
+    const runningJobs = this.readBackgroundJobStatuses(session.session_id).filter(
+      (job) => job.status === "running",
+    );
+    if (runningJobs.length === 0) return 0;
+    const settledAt = session.outcome ? session.updated_at : now();
+    const error = session.outcome
+      ? `background_job_settled_after_terminal_session: outcome=${session.outcome}, reason=${session.outcome_reason ?? "unspecified"}`
+      : "background_job_interrupted_or_settled_without_terminal_status";
+    for (const job of runningJobs) {
+      await this.writeBackgroundJobStatus({
+        ...job,
+        status: "failed",
+        completed_at: settledAt,
+        error,
+      });
+    }
+    return runningJobs.length;
   }
 
   assertSessionId(sessionId: string): void {
@@ -279,17 +1113,305 @@ export class SessionStore {
 
   private totalsFor(meta: SessionMeta): SessionMeta["totals"] {
     const peerResults = meta.rounds.flatMap((round) => round.peers);
+    const providerSettlements = [
+      ...(meta.in_flight?.provider_settlements ?? []),
+      ...(meta.interrupted_provider_settlements ?? []),
+    ];
     const generations = meta.generation_files ?? [];
+    const failedAttempts = meta.failed_attempts ?? [];
     return {
       usage: mergeUsage([
         ...peerResults.map((peer) => peer.usage),
+        ...providerSettlements.map((settlement) => settlement.usage),
         ...generations.map((generation) => generation.usage),
+        ...failedAttempts.map((failure) => failure.usage),
       ]),
       cost: mergeCost([
         ...peerResults.map((peer) => peer.cost),
+        ...providerSettlements.map((settlement) => settlement.cost),
         ...generations.map((generation) => generation.cost),
+        ...failedAttempts.map((failure) => failure.cost),
       ]),
     };
+  }
+
+  private accountInterruptedInFlight(meta: SessionMeta, reason: string): void {
+    const inFlight = meta.in_flight;
+    if (!inFlight) return;
+    const settlements = inFlight.provider_settlements ?? [];
+    const reservations = inFlight.provider_call_reservations ?? [];
+    const settledPeers = new Set(
+      settlements
+        .filter((settlement) => settlement.reservation_id === undefined)
+        .map((settlement) => settlement.peer),
+    );
+    if (settlements.length > 0) {
+      const existingArtifacts = new Set(
+        (meta.interrupted_provider_settlements ?? []).map((settlement) => settlement.artifact_path),
+      );
+      meta.interrupted_provider_settlements = [
+        ...(meta.interrupted_provider_settlements ?? []),
+        ...settlements.filter((settlement) => !existingArtifacts.has(settlement.artifact_path)),
+      ];
+    }
+    const elapsed = Math.max(0, Date.now() - Date.parse(inFlight.started_at));
+    const unresolvedPeers = inFlight.peers.filter((peer) => !settledPeers.has(peer));
+    const unknownInitialAttempts = unresolvedPeers.map((peer) => {
+      const snapshot = meta.capability_snapshot.find((entry) => entry.peer === peer);
+      return {
+        peer,
+        provider: snapshot?.provider ?? peer,
+        model: snapshot?.model ?? this.config.models[peer],
+        failure_class: "provider_error" as const,
+        message:
+          `possible_provider_attempt_interrupted: ${reason}; ` +
+          `round ${inFlight.round} ended without a durable provider result. ` +
+          "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+        retryable: false,
+        attempts: 1,
+        latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+        billing_status: "unknown" as const,
+        unpriced_attempts: 1,
+        round: inFlight.round,
+      };
+    });
+    const unknownReservedAttempts = reservations.map((reservation) => ({
+      peer: reservation.peer,
+      provider: reservation.provider,
+      model: reservation.model,
+      failure_class: "provider_error" as const,
+      message:
+        `possible_provider_attempt_interrupted: ${reason}; ` +
+        `round ${inFlight.round} ${reservation.label} call ${reservation.id} ended without a durable provider result. ` +
+        "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+      retryable: false,
+      attempts: 1,
+      latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+      billing_status: "unknown" as const,
+      unpriced_attempts: 1,
+      round: inFlight.round,
+    }));
+    meta.failed_attempts = [
+      ...(meta.failed_attempts ?? []),
+      ...unknownInitialAttempts,
+      ...unknownReservedAttempts,
+    ];
+    // Moving settlements and consuming unresolved peer reservations is
+    // idempotent. A second recovery path cannot count either category twice.
+    inFlight.provider_settlements = [];
+    inFlight.provider_call_reservations = [];
+    inFlight.peers = [];
+    meta.totals = this.totalsFor(meta);
+  }
+
+  private accountInterruptedBackgroundGeneration(meta: SessionMeta, reason: string): void {
+    // Only a provider-dispatch marker is accounting evidence. `control=running`
+    // alone also covers the zero-dispatch interval before run() starts and the
+    // already-settled interval after a round, so inferring spend from it would
+    // create false unpriced attempts.
+    if (meta.in_flight) return;
+    const pending = meta.generation_in_flight;
+    if (!pending) return;
+    const elapsed = Math.max(0, Date.now() - Date.parse(pending.started_at));
+    const unknownAttempt: PeerFailure & { round: number } = {
+      peer: pending.peer,
+      provider: pending.provider,
+      model: pending.model,
+      failure_class: "provider_error",
+      message:
+        `possible initial/background generation attempt interrupted (${pending.label}): ${reason}; ` +
+        "the durable owner ended before a generation result or review-round in_flight marker was persisted. " +
+        "One attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+      retryable: false,
+      attempts: 1,
+      latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+      billing_status: "unknown",
+      unpriced_attempts: 1,
+      round: pending.round,
+    };
+    meta.failed_attempts = [...(meta.failed_attempts ?? []), unknownAttempt];
+    meta.totals = this.totalsFor(meta);
+  }
+
+  private processStartTimeMs(pid: number): number | undefined {
+    if (pid === process.pid) {
+      return Date.now() - process.uptime() * 1_000;
+    }
+    const cached = this.processStartTimeCache.get(pid);
+    if (cached && Date.now() - cached.checked_at_ms <= 1_000) {
+      return cached.started_at_ms;
+    }
+    let startedAtMs: number | undefined;
+    try {
+      const output =
+        process.platform === "win32"
+          ? execFileSync(
+              "powershell.exe",
+              [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                '& { param([int]$TargetPid) $p = Get-Process -Id $TargetPid -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToString("o") }',
+                "-TargetPid",
+                String(pid),
+              ],
+              {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "ignore"],
+                timeout: 10_000,
+                windowsHide: true,
+              },
+            )
+          : execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+              timeout: 10_000,
+              windowsHide: true,
+            });
+      const parsed = Date.parse(output.trim());
+      startedAtMs = Number.isFinite(parsed) ? parsed : undefined;
+    } catch {
+      // Start-time introspection is a hardening signal. Platforms that do not
+      // expose it retain the prior conservative PID-liveness behavior.
+      startedAtMs = undefined;
+    }
+    this.processStartTimeCache.set(pid, {
+      checked_at_ms: Date.now(),
+      started_at_ms: startedAtMs,
+    });
+    return startedAtMs;
+  }
+
+  private ownerPidIsAlive(ownerPid: number | undefined, markerStartedAt?: string): boolean {
+    if (
+      typeof ownerPid !== "number" ||
+      !Number.isInteger(ownerPid) ||
+      ownerPid <= 0 ||
+      !this.processAlive(ownerPid)
+    ) {
+      return false;
+    }
+    const markerStartedMs = markerStartedAt ? Date.parse(markerStartedAt) : Number.NaN;
+    if (!Number.isFinite(markerStartedMs)) return true;
+    const processStartedMs = this.processStartTimeMs(ownerPid);
+    // A live process that started after the durable dispatch marker cannot be
+    // its owner: the OS recycled the PID. Treat that marker as orphaned.
+    return processStartedMs === undefined || processStartedMs <= markerStartedMs + 1_000;
+  }
+
+  private pendingProviderCallOwnerIsAlive(reservation: PendingProviderCallReservation): boolean {
+    return this.ownerPidIsAlive(reservation.owner_pid, reservation.started_at);
+  }
+
+  private inFlightOwnerIsAlive(session: SessionMeta): boolean {
+    const owners = [
+      {
+        pid: session.in_flight?.owner_pid,
+        marker_started_at: session.in_flight?.started_at,
+      },
+      {
+        pid: session.generation_in_flight?.owner_pid,
+        marker_started_at: session.generation_in_flight?.started_at,
+      },
+      {
+        pid: session.control?.owner_pid,
+        marker_started_at: session.control?.requested_at ?? session.control?.updated_at,
+      },
+      ...(session.in_flight?.provider_call_reservations ?? []).map((reservation) => ({
+        pid: reservation.owner_pid,
+        marker_started_at: reservation.started_at,
+      })),
+    ];
+    return owners.some(({ pid, marker_started_at }) =>
+      this.ownerPidIsAlive(pid, marker_started_at),
+    );
+  }
+
+  private accountInterruptedPendingProviderCalls(
+    meta: SessionMeta,
+    reason: string,
+    shouldAccount: (reservation: PendingProviderCallReservation) => boolean = () => true,
+  ): number {
+    const reservations = meta.pending_provider_call_reservations ?? [];
+    const interruptedReservations = reservations.filter(shouldAccount);
+    if (!interruptedReservations.length) return 0;
+    const unknownAttempts = interruptedReservations.map((reservation) => {
+      const elapsed = Math.max(0, Date.now() - Date.parse(reservation.started_at));
+      return {
+        peer: reservation.peer,
+        provider: reservation.provider,
+        model: reservation.model,
+        failure_class: "provider_error" as const,
+        message:
+          `possible_provider_attempt_interrupted: ${reason}; ` +
+          `${reservation.call_kind}/${reservation.label} call ${reservation.id} ended without a durable result. ` +
+          "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
+        retryable: false,
+        attempts: 1,
+        latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
+        billing_status: "unknown" as const,
+        unpriced_attempts: 1,
+        round: reservation.round,
+      };
+    });
+    meta.failed_attempts = [...(meta.failed_attempts ?? []), ...unknownAttempts];
+    meta.pending_provider_call_reservations = reservations.filter(
+      (reservation) => !interruptedReservations.includes(reservation),
+    );
+    meta.totals = this.totalsFor(meta);
+    return interruptedReservations.length;
+  }
+
+  private sealRecoveredAppendedConvergence(meta: SessionMeta): ReviewRound | undefined {
+    const latestRound = meta.rounds.at(-1);
+    if (
+      !inFlightRoundAlreadyAppended(meta) ||
+      latestRound?.convergence.converged !== true ||
+      meta.control?.status === "cancel_requested" ||
+      (meta.pending_provider_call_reservations?.length ?? 0) > 0
+    ) {
+      return undefined;
+    }
+    delete meta.in_flight;
+    delete meta.generation_in_flight;
+    delete meta.control;
+    meta.outcome = "converged";
+    meta.outcome_reason = latestRound.convergence.recovery_converged
+      ? "recovered_unanimity"
+      : "unanimous_ready";
+    const transitionedAt = now();
+    meta.convergence_health = transitionHealth(
+      meta,
+      "converged",
+      meta.outcome_reason,
+      transitionedAt,
+    );
+    meta.updated_at = transitionedAt;
+    return latestRound;
+  }
+
+  private restoreFinalArtifactFromRound(meta: SessionMeta, round: ReviewRound): void {
+    if (!round.draft_file) return;
+    const source = this.safeResolveContainedExistingPath(
+      this.sessionDir(meta.session_id),
+      round.draft_file,
+    );
+    if (!source || !fs.existsSync(source)) return;
+    try {
+      this.saveFinal(meta.session_id, fs.readFileSync(source, "utf8"));
+    } catch {
+      // The round draft remains the authoritative durable fallback. The
+      // terminal outcome must not be reopened merely because a convenience
+      // final.md mirror could not be recreated during restart recovery.
+    }
+  }
+
+  private settleBackgroundGenerationMarker(meta: SessionMeta, peer: PeerId, round: number): void {
+    const pending = meta.generation_in_flight;
+    if (pending?.peer === peer && pending.round === round) {
+      delete meta.generation_in_flight;
+    }
   }
 
   // v4.1.0 hardening: pre-v4.1.0 acquired the lock via an exclusive
@@ -402,6 +1524,12 @@ export class SessionStore {
     reviewFocus?: string,
   ): Promise<SessionMeta> {
     const session_id = crypto.randomUUID();
+    const initializedAt = now();
+    const configSnapshot = effectiveConfigSnapshot(this.config);
+    const configSnapshotSha256 = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(canonicalJsonValue(configSnapshot)))
+      .digest("hex");
     // v2.22.0 (B.P3): snapshot the cost ceiling at session_init time so
     // budget pressure analysis is decoupled from later env-var mutation.
     // null when the operator runs without a session-level cost cap.
@@ -409,15 +1537,20 @@ export class SessionStore {
     const meta: SessionMeta = {
       session_id,
       version: this.config.version,
-      created_at: now(),
-      updated_at: now(),
+      accounting_schema_version: 2,
+      effective_config_snapshot: configSnapshot,
+      effective_config_sha256: configSnapshotSha256,
+      created_at: initializedAt,
+      updated_at: initializedAt,
       task,
       ...(reviewFocus ? { review_focus: reviewFocus } : {}),
       caller,
       capability_snapshot: snapshot,
       convergence_health: {
         state: "idle",
-        last_event_at: now(),
+        last_event_at: initializedAt,
+        last_activity_at: initializedAt,
+        last_state_transition_at: initializedAt,
         detail: "Session initialized.",
       },
       rounds: [],
@@ -430,6 +1563,7 @@ export class SessionStore {
       budget_warning_emitted: false,
     };
     fs.mkdirSync(path.join(this.sessionDir(session_id), "agent-runs"), { recursive: true });
+    fs.mkdirSync(this.backgroundJobsDir(session_id), { recursive: true });
     await writeJson(this.metaPath(session_id), meta);
     fs.writeFileSync(path.join(this.sessionDir(session_id), "task.md"), redact(task), "utf8");
     if (reviewFocus) {
@@ -479,21 +1613,35 @@ export class SessionStore {
         peers: params.peers,
         started_at: params.started_at,
         status: "running",
+        owner_pid: process.pid,
+        evidence_broker_snapshot: {
+          evidence_checklist:
+            meta.evidence_checklist === undefined ? null : structuredClone(meta.evidence_checklist),
+          evidence_status_history:
+            meta.evidence_status_history === undefined
+              ? null
+              : structuredClone(meta.evidence_status_history),
+        },
       };
       meta.convergence_scope = params.scope;
-      meta.convergence_health = {
-        state: "running",
-        last_event_at: now(),
-        detail: `Round ${params.round} is running.`,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        "running",
+        `Round ${params.round} is running.`,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
 
   read(sessionId: string): SessionMeta {
-    return readJson<SessionMeta>(this.metaPath(sessionId));
+    const meta = readJson<unknown>(this.metaPath(sessionId));
+    const shapeError = sessionMetaShapeError(meta);
+    if (shapeError) throw new Error(`schema_validation_failed: ${shapeError}`);
+    return meta as SessionMeta;
   }
 
   readTextArtifact(sessionId: string, relativePath: string, maxChars: number): string {
@@ -540,18 +1688,47 @@ export class SessionStore {
     this.seqCache.set(sessionId, committed);
   }
 
-  private appendEventRecord(event: RuntimeEvent): void {
+  private async appendEventRecord(event: RuntimeEvent): Promise<void> {
     const sessionId = event.session_id;
     if (!sessionId) return;
     const file = this.eventsPath(sessionId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    const meta = this.read(sessionId);
+    const terminalEvent =
+      event.type === "session.finalized" ||
+      event.type === "session.cancelled" ||
+      event.type === "session.evidence_broker_transaction_rolled_back";
+    if (meta.outcome && !terminalEvent) {
+      const error = new Error(
+        `post_terminal_event_rejected: ${event.type} cannot be appended after outcome=${meta.outcome}`,
+      );
+      (error as Error & { code?: string }).code = "post_terminal_event_rejected";
+      throw error;
+    }
     const seq = this.peekNextSeq(sessionId, file);
+    const eventTs = event.ts ?? now();
     fs.appendFileSync(
       file,
-      `${JSON.stringify(redactJsonValue({ ...event, seq, ts: event.ts ?? now() }))}\n`,
+      `${JSON.stringify(redactJsonValue({ ...event, seq, ts: eventTs }))}\n`,
       "utf8",
     );
     this.commitSeq(sessionId, seq);
+
+    // An event is activity, not necessarily a convergence-state transition.
+    // Keep the old last_event_at field as an activity alias while preserving
+    // the independently meaningful state-transition timestamp.
+    if (meta.convergence_health) {
+      const previousLastEvent = meta.convergence_health.last_event_at;
+      const activityAt = latestTimestamp(
+        meta.convergence_health.last_activity_at ?? previousLastEvent,
+        eventTs,
+      );
+      meta.convergence_health.last_activity_at = activityAt;
+      meta.convergence_health.last_event_at = activityAt;
+      meta.convergence_health.last_state_transition_at ??= previousLastEvent;
+      meta.updated_at = latestTimestamp(meta.updated_at, activityAt);
+      await writeJson(this.metaPath(sessionId), meta);
+    }
   }
 
   // v4.1.0: durable event persistence. withSessionLock became async
@@ -563,16 +1740,34 @@ export class SessionStore {
   async appendEvent(event: RuntimeEvent): Promise<void> {
     const sessionId = event.session_id;
     if (!sessionId) return;
-    const write = (async () => {
+    const previous = this.eventWriteChains.get(sessionId) ?? Promise.resolve();
+    const write = previous.then(async () => {
       try {
-        await this.withSessionLock(sessionId, () => {
+        await this.withSessionLock(sessionId, async () => {
           // Only commit the cache AFTER the durable append succeeded.
           // If appendFileSync threw inside appendEventRecord, the cache
           // still reflects the last persisted seq and the next call
           // reuses this seq number.
-          this.appendEventRecord(event);
+          await this.appendEventRecord(event);
         });
       } catch (error) {
+        // Terminal session chains are immutable. Authentication/authority
+        // audit events emitted while serving an idempotent post-terminal MCP
+        // request still belong in the global runtime log, so their local
+        // append is an expected no-op. Do not suppress any other event type:
+        // a late peer/round/provider event is a real ordering defect.
+        const expectedPostTerminalAuditEvents = new Set([
+          "session.identity_verified",
+          "session.identity_forgery_blocked",
+          "session.session_authority_blocked",
+          "session.operator_authority_blocked",
+        ]);
+        if (
+          (error as Error & { code?: string }).code === "post_terminal_event_rejected" &&
+          expectedPostTerminalAuditEvents.has(event.type)
+        ) {
+          return;
+        }
         // Event persistence must never break provider calls or MCP responses.
         console.error(
           JSON.stringify({
@@ -583,10 +1778,14 @@ export class SessionStore {
           }),
         );
       }
-    })();
+    });
+    this.eventWriteChains.set(sessionId, write);
     this.pendingEventWrites.add(write);
     void write.finally(() => {
       this.pendingEventWrites.delete(write);
+      if (this.eventWriteChains.get(sessionId) === write) {
+        this.eventWriteChains.delete(sessionId);
+      }
     });
     return write;
   }
@@ -614,8 +1813,9 @@ export class SessionStore {
       .filter((event) => event.seq > sinceSeq);
   }
 
-  // v2.27.0: corrupted meta.json files are silently skipped + quarantined to
-  // `<session_dir>/meta.json.bad` so subsequent startup sweeps do not re-throw.
+  // v2.27.0/v4.5.0: parse-corrupt or structurally invalid meta.json files are
+  // skipped + quarantined to `<session_dir>/meta.json.bad` so listing and
+  // startup sweeps cannot be crashed by valid JSON with an invalid shape.
   // Empirically demonstrated by 3 sessions corrupted by the v2.25.1 redact
   // escape-boundary bug (77c47284, be47a5b0, 7edf63e3) that caused parse
   // errors on every Claude Code reload until manually deleted 2026-05-12.
@@ -629,7 +1829,10 @@ export class SessionStore {
       const file = path.join(sessionDir, "meta.json");
       if (!fs.existsSync(file)) continue;
       try {
-        metas.push(readJson<SessionMeta>(file));
+        const meta = readJson<unknown>(file);
+        const shapeError = sessionMetaShapeError(meta);
+        if (shapeError) throw new Error(`schema_validation_failed: ${shapeError}`);
+        metas.push(meta as SessionMeta);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const quarantine = path.join(sessionDir, "meta.json.bad");
@@ -699,16 +1902,30 @@ export class SessionStore {
     round: number,
     result: GenerationResult,
     label = "generation",
+    pendingReservationId?: string,
   ): Promise<string> {
-    const file = path.join(
+    const baseFile = path.join(
       this.sessionDir(sessionId),
       "agent-runs",
       `round-${round}-${result.peer}-${label}.json`,
     );
+    const file = fs.existsSync(baseFile)
+      ? baseFile.replace(/\.json$/, `-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`)
+      : baseFile;
     await writeJson(file, { ...result, text: redact(result.text) });
     const relativePath = path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
     await this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      // Cancellation may settle while the provider call is returning. The
+      // terminal meta/report already contain the conservative unknown attempt;
+      // keep them immutable and leave this raw artifact orphaned for forensics.
+      if (meta.outcome) {
+        const err = new Error(
+          `post_terminal_generation_settlement: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (err as Error & { code?: string }).code = "post_terminal_generation_settlement";
+        throw err;
+      }
       const artifact: GenerationArtifact = {
         ts: now(),
         round,
@@ -718,9 +1935,20 @@ export class SessionStore {
         usage: result.usage,
         cost: result.cost,
         latency_ms: result.latency_ms,
+        unpriced_attempts: result.unpriced_attempts,
       };
       meta.generation_files = [...(meta.generation_files ?? []), artifact];
+      this.consumePendingProviderCallReservation(meta, pendingReservationId, result.peer, round);
+      // The result and marker settlement share one meta.json replacement: a
+      // crash can leave the marker (fail closed) or the accounted result, but
+      // never clear the marker while losing the result.
+      this.settleBackgroundGenerationMarker(meta, result.peer, round);
       meta.totals = this.totalsFor(meta);
+      if (round > 0 && round <= (meta.costs_per_round?.length ?? 0)) {
+        const costs = [...(meta.costs_per_round ?? [])];
+        costs[round - 1] = (costs[round - 1] ?? 0) + (result.cost?.total_cost ?? 0);
+        meta.costs_per_round = costs;
+      }
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
     });
@@ -754,14 +1982,289 @@ export class SessionStore {
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
-  async savePeerFailure(sessionId: string, round: number, failure: PeerFailure): Promise<string> {
-    const file = path.join(
+  async savePeerFailure(
+    sessionId: string,
+    round: number,
+    failure: PeerFailure,
+    label = "failure",
+  ): Promise<string> {
+    const baseFile = path.join(
       this.sessionDir(sessionId),
       "agent-runs",
-      `round-${round}-${failure.peer}-failure.json`,
+      `round-${round}-${failure.peer}-${label}.json`,
     );
+    const file = fs.existsSync(baseFile)
+      ? baseFile.replace(/\.json$/, `-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`)
+      : baseFile;
     await writeJson(file, { ...failure, message: redact(failure.message) });
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
+  }
+
+  async reserveInFlightProviderCall(
+    sessionId: string,
+    round: number,
+    params: Omit<ProviderCallReservation, "id" | "started_at" | "owner_pid">,
+  ): Promise<string> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const error = new Error(
+          `post_terminal_provider_reservation: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (error as Error & { code?: string }).code = "post_terminal_provider_reservation";
+        throw error;
+      }
+      const inFlight = meta.in_flight;
+      if (!inFlight || inFlight.round !== round || !inFlight.peers.includes(params.peer)) {
+        const error = new Error(
+          `provider_reservation_without_matching_in_flight: ${params.peer}/round-${round}`,
+        );
+        (error as Error & { code?: string }).code =
+          "provider_reservation_without_matching_in_flight";
+        throw error;
+      }
+      const reservation: ProviderCallReservation = {
+        id: crypto.randomUUID(),
+        ...params,
+        started_at: now(),
+        owner_pid: process.pid,
+      };
+      inFlight.provider_call_reservations = [
+        ...(inFlight.provider_call_reservations ?? []),
+        reservation,
+      ];
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return reservation.id;
+    });
+  }
+
+  async reservePendingProviderCall(
+    sessionId: string,
+    params: Omit<PendingProviderCallReservation, "id" | "started_at" | "owner_pid">,
+  ): Promise<string> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const error = new Error(
+          `post_terminal_provider_reservation: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (error as Error & { code?: string }).code = "post_terminal_provider_reservation";
+        throw error;
+      }
+      if (meta.control?.status === "cancel_requested") {
+        const error = new Error(
+          `provider_reservation_cancelled: refusing to dispatch ${params.call_kind}/${params.label} after cancellation was requested`,
+        );
+        (error as Error & { code?: string }).code = "provider_reservation_cancelled";
+        throw error;
+      }
+      const reservation: PendingProviderCallReservation = {
+        id: crypto.randomUUID(),
+        ...params,
+        started_at: now(),
+        owner_pid: process.pid,
+      };
+      meta.pending_provider_call_reservations = [
+        ...(meta.pending_provider_call_reservations ?? []),
+        reservation,
+      ];
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return reservation.id;
+    });
+  }
+
+  private consumePendingProviderCallReservation(
+    meta: SessionMeta,
+    reservationId: string | undefined,
+    peer: PeerId,
+    round: number,
+  ): void {
+    if (reservationId === undefined) return;
+    const reservation = (meta.pending_provider_call_reservations ?? []).find(
+      (candidate) => candidate.id === reservationId,
+    );
+    if (!reservation || reservation.peer !== peer || reservation.round !== round) {
+      const error = new Error(
+        `provider_settlement_without_matching_pending_reservation: ${peer}/round-${round}/${reservationId}`,
+      );
+      (error as Error & { code?: string }).code =
+        "provider_settlement_without_matching_pending_reservation";
+      throw error;
+    }
+    meta.pending_provider_call_reservations = (
+      meta.pending_provider_call_reservations ?? []
+    ).filter((candidate) => candidate.id !== reservationId);
+  }
+
+  private async recordInFlightProviderSettlement(
+    sessionId: string,
+    settlement: ProviderCallSettlement,
+    reservationId?: string,
+  ): Promise<void> {
+    await this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const error = new Error(
+          `post_terminal_provider_settlement: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (error as Error & { code?: string }).code = "post_terminal_provider_settlement";
+        throw error;
+      }
+      const inFlight = meta.in_flight;
+      if (
+        !inFlight ||
+        inFlight.round !== settlement.round ||
+        !inFlight.peers.includes(settlement.peer)
+      ) {
+        const error = new Error(
+          `provider_settlement_without_matching_in_flight: ${settlement.peer}/round-${settlement.round}`,
+        );
+        (error as Error & { code?: string }).code =
+          "provider_settlement_without_matching_in_flight";
+        throw error;
+      }
+      if (reservationId !== undefined) {
+        const reservation = (inFlight.provider_call_reservations ?? []).find(
+          (candidate) => candidate.id === reservationId,
+        );
+        if (!reservation || reservation.peer !== settlement.peer) {
+          const error = new Error(
+            `provider_settlement_without_matching_reservation: ${settlement.peer}/round-${settlement.round}/${reservationId}`,
+          );
+          (error as Error & { code?: string }).code =
+            "provider_settlement_without_matching_reservation";
+          throw error;
+        }
+        settlement.reservation_id = reservationId;
+        inFlight.provider_call_reservations = (inFlight.provider_call_reservations ?? []).filter(
+          (candidate) => candidate.id !== reservationId,
+        );
+      }
+      inFlight.provider_settlements = [
+        ...(inFlight.provider_settlements ?? []).filter(
+          (existing) => existing.artifact_path !== settlement.artifact_path,
+        ),
+        settlement,
+      ];
+      meta.totals = this.totalsFor(meta);
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+    });
+  }
+
+  async saveInFlightPeerResult(
+    sessionId: string,
+    round: number,
+    result: PeerResult,
+    label = "provider-response",
+    reservationId?: string,
+  ): Promise<string> {
+    const artifactPath = await this.savePeerResult(sessionId, round, result, label);
+    await this.recordInFlightProviderSettlement(
+      sessionId,
+      {
+        round,
+        peer: result.peer,
+        provider: result.provider,
+        model: result.model,
+        kind: "result",
+        artifact_path: artifactPath,
+        settled_at: now(),
+        status: result.status,
+        usage: result.usage,
+        cost: result.cost,
+        attempts: result.attempts,
+        latency_ms: result.latency_ms,
+        billing_status:
+          (result.unpriced_attempts ?? 0) > 0
+            ? "unknown"
+            : result.cost?.total_cost != null
+              ? "reported"
+              : result.attempts > 0
+                ? "unknown"
+                : undefined,
+        unpriced_attempts: result.unpriced_attempts,
+      },
+      reservationId,
+    );
+    return artifactPath;
+  }
+
+  async saveInFlightPeerFailure(
+    sessionId: string,
+    round: number,
+    failure: PeerFailure,
+    label = "provider-failure",
+    reservationId?: string,
+  ): Promise<string> {
+    const artifactPath = await this.savePeerFailure(sessionId, round, failure, label);
+    await this.recordInFlightProviderSettlement(
+      sessionId,
+      {
+        round,
+        peer: failure.peer,
+        provider: failure.provider,
+        model: failure.model ?? this.config.models[failure.peer],
+        kind: "failure",
+        artifact_path: artifactPath,
+        settled_at: now(),
+        usage: failure.usage,
+        cost: failure.cost,
+        attempts: failure.attempts,
+        latency_ms: failure.latency_ms,
+        billing_status:
+          (failure.unpriced_attempts ?? 0) > 0
+            ? "unknown"
+            : (failure.billing_status ??
+              (failure.cost?.total_cost != null
+                ? "reported"
+                : failure.attempts > 0
+                  ? "unknown"
+                  : undefined)),
+        unpriced_attempts: failure.unpriced_attempts,
+      },
+      reservationId,
+    );
+    return artifactPath;
+  }
+
+  async recordPeerFailureAccounting(
+    sessionId: string,
+    round: number,
+    failure: PeerFailure,
+    label = "failure",
+    pendingReservationId?: string,
+  ): Promise<string> {
+    const artifact = await this.savePeerFailure(sessionId, round, failure, label);
+    await this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      // Same late-settlement rule as saveGeneration: terminal accounting is
+      // sealed and must not be rewritten by a provider result that lost the
+      // cancellation race.
+      if (meta.outcome) {
+        const err = new Error(
+          `post_terminal_failure_settlement: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
+        );
+        (err as Error & { code?: string }).code = "post_terminal_failure_settlement";
+        throw err;
+      }
+      meta.failed_attempts = [...(meta.failed_attempts ?? []), { ...failure, round }];
+      this.consumePendingProviderCallReservation(meta, pendingReservationId, failure.peer, round);
+      // Provider failure accounting and dispatch-marker settlement are one
+      // durable transition for the same reason as successful generations.
+      this.settleBackgroundGenerationMarker(meta, failure.peer, round);
+      meta.totals = this.totalsFor(meta);
+      if (round > 0 && round <= (meta.costs_per_round?.length ?? 0)) {
+        const costs = [...(meta.costs_per_round ?? [])];
+        costs[round - 1] = (costs[round - 1] ?? 0) + (failure.cost?.total_cost ?? 0);
+        meta.costs_per_round = costs;
+      }
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+    });
+    return artifact;
   }
 
   async appendRound(
@@ -772,9 +2275,15 @@ export class SessionStore {
       prompt_file: string;
       peers: PeerResult[];
       rejected: PeerFailure[];
+      // Provider-unavailability failures can be excluded from convergence
+      // (`skipped`) without disappearing from the financial ledger. They
+      // remain absent from ReviewRound.rejected but are persisted atomically
+      // with the round in failed_attempts and costs_per_round.
+      accounting_only_failures?: PeerFailure[] | undefined;
       convergence: ConvergenceResult;
       convergence_scope: ConvergenceScope;
       started_at: string;
+      hold_in_flight_for_finalize?: boolean | undefined;
     },
   ): Promise<ReviewRound> {
     return this.withSessionLock(sessionId, async () => {
@@ -794,6 +2303,10 @@ export class SessionStore {
         (err as Error & { code?: string }).code = "session_already_finalized";
         throw err;
       }
+      const durableConvergence = blockConvergenceForUnresolvedEvidence(
+        params.convergence,
+        meta.evidence_checklist ?? [],
+      );
       const round: ReviewRound = {
         round: meta.rounds.length + 1,
         started_at: params.started_at,
@@ -803,21 +2316,45 @@ export class SessionStore {
         prompt_file: params.prompt_file,
         peers: params.peers,
         rejected: params.rejected,
-        convergence: params.convergence,
+        convergence: durableConvergence,
       };
       meta.rounds.push(round);
       meta.failed_attempts = [
         ...(meta.failed_attempts ?? []),
         ...params.rejected.map((failure) => ({ ...failure, round: round.round })),
+        ...(params.accounting_only_failures ?? []).map((failure) => ({
+          ...failure,
+          round: round.round,
+        })),
       ];
-      delete meta.in_flight;
+      if (
+        params.hold_in_flight_for_finalize === true &&
+        durableConvergence.converged &&
+        meta.in_flight?.round === round.round
+      ) {
+        // The broker mutation is committed with this round, but the round
+        // reservation remains until finalize seals the terminal outcome. This
+        // closes the append-to-finalize operator-update race without allowing
+        // recovery to roll back an already appended round.
+        delete meta.in_flight.evidence_broker_snapshot;
+        // Provider settlements have now been promoted into round.peers /
+        // failed_attempts. Retaining them in the reservation would double
+        // count usage and cost until finalize clears in_flight.
+        delete meta.in_flight.provider_settlements;
+        delete meta.in_flight.provider_call_reservations;
+        meta.in_flight.peers = [];
+      } else {
+        delete meta.in_flight;
+      }
       meta.convergence_scope = params.convergence_scope;
-      meta.convergence_health = {
-        state: params.convergence.converged ? "converged" : "blocked",
-        last_event_at: now(),
-        detail: params.convergence.reason,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        durableConvergence.converged ? "converged" : "blocked",
+        durableConvergence.reason,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       meta.totals = this.totalsFor(meta);
       // v2.22.0 (B.P3): append per-round cost. Sum of peer.cost.total_cost
       // across this round's peers. Coerced to 0 when adapters didn't
@@ -825,7 +2362,16 @@ export class SessionStore {
       // so the new round's peer costs are already counted by the merger,
       // but we recompute the round-local sum independently to avoid
       // diff-based drift if a peer's cost changed in a retry loop.
-      const roundCost = params.peers.reduce((sum, peer) => sum + (peer.cost?.total_cost ?? 0), 0);
+      const roundCost =
+        params.peers.reduce((sum, peer) => sum + (peer.cost?.total_cost ?? 0), 0) +
+        params.rejected.reduce((sum, failure) => sum + (failure.cost?.total_cost ?? 0), 0) +
+        (params.accounting_only_failures ?? []).reduce(
+          (sum, failure) => sum + (failure.cost?.total_cost ?? 0),
+          0,
+        ) +
+        (meta.generation_files ?? [])
+          .filter((generation) => generation.round === round.round)
+          .reduce((sum, generation) => sum + (generation.cost?.total_cost ?? 0), 0);
       meta.costs_per_round = [...(meta.costs_per_round ?? []), roundCost];
       await writeJson(this.metaPath(sessionId), meta);
       return round;
@@ -844,13 +2390,34 @@ export class SessionStore {
         ...(meta.failed_attempts ?? []),
         ...failures.map((failure) => ({ ...failure, round })),
       ];
-      meta.convergence_health = {
-        state: "blocked",
-        last_event_at: now(),
-        detail:
-          failures[0]?.message ??
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        "blocked",
+        failures[0]?.message ??
           "truthfulness_preflight blocked the session before a provider round started.",
-      };
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async recordPreflightCheck(
+    sessionId: string,
+    record: Omit<PreflightCheckRecord, "ts"> & { ts?: string | undefined },
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) return meta;
+      meta.preflight_checks = [
+        ...(meta.preflight_checks ?? []),
+        {
+          ...record,
+          ts: record.ts ?? now(),
+        },
+      ];
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
@@ -940,13 +2507,121 @@ export class SessionStore {
     }
   }
 
+  private async persistCancelledTerminal(
+    meta: SessionMeta,
+    outcomeReason = "session_cancelled",
+  ): Promise<SessionMeta> {
+    const sessionId = meta.session_id;
+    const ts = now();
+    const requestedReason = meta.control?.reason ?? outcomeReason;
+    let brokerRollback: EvidenceBrokerRollback | undefined;
+    if (meta.in_flight) {
+      if (!inFlightRoundAlreadyAppended(meta)) {
+        this.accountInterruptedInFlight(meta, `cancelled: ${requestedReason}`);
+        brokerRollback = restoreInterruptedEvidenceBrokerSnapshot(meta);
+      }
+    } else {
+      this.accountInterruptedBackgroundGeneration(meta, `cancelled: ${requestedReason}`);
+    }
+    this.accountInterruptedPendingProviderCalls(meta, `cancelled: ${requestedReason}`);
+    delete meta.in_flight;
+    delete meta.generation_in_flight;
+    meta.outcome = "aborted";
+    meta.outcome_reason = outcomeReason;
+    meta.control = {
+      status: "cancelled",
+      reason: requestedReason,
+      job_id: meta.control?.job_id,
+      owner_pid: meta.control?.owner_pid,
+      requested_at: meta.control?.requested_at,
+      updated_at: ts,
+    };
+    meta.convergence_health = transitionHealth(meta, "cancelled", outcomeReason, ts);
+    meta.updated_at = ts;
+    await writeJson(this.metaPath(sessionId), meta);
+    if (brokerRollback) {
+      await this.appendEventRecord({
+        type: "session.evidence_broker_transaction_rolled_back",
+        session_id: sessionId,
+        round: brokerRollback.round,
+        message: `Evidence Broker mutations from non-appended round ${brokerRollback.round} were rolled back during cancellation.`,
+        data: { ...brokerRollback, cause: "cancelled_before_append" },
+      });
+    }
+    try {
+      await this.appendEventRecord({
+        type: "session.cancelled",
+        session_id: sessionId,
+        ts,
+        message: `Session cancelled: ${requestedReason}`,
+        data: { outcome: "aborted", reason: outcomeReason, requested_reason: requestedReason },
+      });
+    } catch {
+      /* event persistence is best-effort; session_doctor will flag gaps */
+    }
+    try {
+      this.saveReport(sessionId, sessionReportMarkdown(meta, this.readEvents(sessionId)));
+    } catch {
+      /* report regeneration is best-effort; meta.json remains authoritative */
+    }
+    return meta;
+  }
+
   async finalize(
     sessionId: string,
     outcome: NonNullable<SessionMeta["outcome"]>,
     reason?: string,
   ): Promise<SessionMeta> {
+    // A terminal transition must be the final durable event. Drain events
+    // emitted before finalize() before acquiring the terminal write lock.
+    await this.flushPendingEvents();
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome) {
+        if (meta.outcome === outcome && (reason === undefined || meta.outcome_reason === reason)) {
+          return meta;
+        }
+        const err = new Error(
+          `session_already_finalized: session ${sessionId} is finalized as ${meta.outcome}/${meta.outcome_reason ?? "unspecified"}; refusing terminal transition to ${outcome}/${reason ?? "unspecified"}`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
+      // Cancellation and finalization contend on the same session lock. If a
+      // durable cancellation request won that race, it is the authoritative
+      // terminal intent: never persist the contradictory pair
+      // outcome=converged/control=cancel_requested.
+      if (meta.control?.status === "cancel_requested") {
+        return this.persistCancelledTerminal(meta, "session_cancelled");
+      }
+      if (meta.generation_in_flight) {
+        const generation = meta.generation_in_flight;
+        const err = new Error(
+          `cannot_finalize_generation_in_flight: session ${sessionId} still has ${generation.peer}/round-${generation.round}/${generation.label} in flight. Request cancellation and wait for provider work to settle before finalizing.`,
+        );
+        (err as Error & { code?: string }).code = "cannot_finalize_generation_in_flight";
+        throw err;
+      }
+      if ((meta.pending_provider_call_reservations?.length ?? 0) > 0) {
+        const err = new Error(
+          `cannot_finalize_provider_calls_in_flight: session ${sessionId} still has ${meta.pending_provider_call_reservations?.length} paid provider call reservation(s) in flight. Request cancellation and wait for provider work to settle before finalizing.`,
+        );
+        (err as Error & { code?: string }).code = "cannot_finalize_provider_calls_in_flight";
+        throw err;
+      }
+      const latestRound = meta.rounds.at(-1);
+      const completingReservedConvergedRound =
+        outcome === "converged" &&
+        meta.in_flight !== undefined &&
+        meta.in_flight.round === latestRound?.round &&
+        latestRound.convergence.converged;
+      if (meta.in_flight && !completingReservedConvergedRound) {
+        const err = new Error(
+          `cannot_finalize_in_flight_session: session ${sessionId} still has round ${meta.in_flight.round} in flight. Request cancellation with session_cancel_job and wait for provider work to settle before finalizing.`,
+        );
+        (err as Error & { code?: string }).code = "cannot_finalize_in_flight_session";
+        throw err;
+      }
       // v3.2.0 (Codex bug report 2026-05-12): when the caller asserts
       // outcome="converged", the latest round (if any) MUST have
       // `convergence.converged === true`. Otherwise we would persist the
@@ -956,7 +2631,14 @@ export class SessionStore {
       // with outcome="converged"/"unanimous_ready" anyway). Refuse with a
       // structured error so the operator/caller fixes the mismatch
       // upstream instead of corrupting the meta.
-      if (outcome === "converged" && meta.rounds.length > 0) {
+      if (outcome === "converged") {
+        if (meta.rounds.length === 0) {
+          const err = new Error(
+            'session_finalize_outcome_mismatch: cannot finalize as "converged" — at least one completed convergent round is required',
+          );
+          (err as Error & { code?: string }).code = "session_finalize_outcome_mismatch";
+          throw err;
+        }
         const latest = meta.rounds[meta.rounds.length - 1];
         if (latest?.convergence?.converged !== true) {
           const err = new Error(
@@ -966,20 +2648,26 @@ export class SessionStore {
           throw err;
         }
       }
+      if (completingReservedConvergedRound) delete meta.in_flight;
+      // A normal background job is terminalized inside this same session
+      // lock. Its later process-local cleanup must remain a no-op so the
+      // report stays immutable, therefore remove the running control before
+      // sealing the terminal snapshot. Cancellation took its dedicated path
+      // above and intentionally persists control=cancelled.
+      delete meta.control;
       meta.outcome = outcome;
       if (reason) meta.outcome_reason = reason;
-      delete meta.in_flight;
       const ts = now();
-      meta.convergence_health = {
-        state:
-          outcome === "converged" ? "converged" : outcome === "max-rounds" ? "blocked" : "stale",
-        last_event_at: ts,
-        detail: reason ?? outcome,
-      };
+      meta.convergence_health = transitionHealth(
+        meta,
+        outcome === "converged" ? "converged" : outcome === "max-rounds" ? "blocked" : "aborted",
+        reason ?? outcome,
+        ts,
+      );
       meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
       try {
-        this.appendEventRecord({
+        await this.appendEventRecord({
           type: "session.finalized",
           session_id: sessionId,
           ts,
@@ -989,74 +2677,101 @@ export class SessionStore {
       } catch {
         /* event persistence is best-effort; session_doctor will flag gaps */
       }
+      // Keep the durable report terminally consistent without requiring an
+      // explicit session_report call from the operator.
+      try {
+        this.saveReport(sessionId, sessionReportMarkdown(meta, this.readEvents(sessionId)));
+      } catch {
+        /* report regeneration is best-effort; meta.json remains authoritative */
+      }
       return meta;
     });
   }
 
   async requestCancellation(
     sessionId: string,
-    reason = "operator_requested",
+    reason = "requester_requested",
     jobId?: string,
+    options: { require_active_execution?: boolean } = {},
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const err = new Error(
+          `session_already_finalized: cannot request cancellation for ${sessionId} with outcome=${meta.outcome}`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
+      const activeJobId = meta.control?.job_id;
+      if (jobId && activeJobId && jobId !== activeJobId) {
+        const err = new Error(
+          `background_job_mismatch: cancellation requested for job ${jobId}, but session ${sessionId} is owned by job ${activeJobId}`,
+        );
+        (err as Error & { code?: string }).code = "background_job_mismatch";
+        throw err;
+      }
+      const executionActive =
+        Boolean(meta.in_flight) ||
+        Boolean(meta.generation_in_flight) ||
+        (meta.pending_provider_call_reservations?.length ?? 0) > 0 ||
+        meta.control?.status === "running" ||
+        meta.control?.status === "cancel_requested";
+      if (options.require_active_execution && !executionActive) {
+        const err = new Error(
+          `no_active_execution: session ${sessionId} has no in-flight round, generation, or running background job`,
+        );
+        (err as Error & { code?: string }).code = "no_active_execution";
+        throw err;
+      }
+      if (meta.control?.status === "cancel_requested") return meta;
       meta.control = {
         status: "cancel_requested",
         reason,
-        job_id: jobId,
+        // An omitted id targets the one durable owner.  Persisting the
+        // canonical id prevents sibling windows from creating an invisible
+        // cancellation that no owner-side watcher can match.
+        job_id: activeJobId ?? jobId,
+        owner_pid: meta.control?.owner_pid,
         requested_at: now(),
         updated_at: now(),
       };
-      meta.convergence_health = {
-        state: meta.outcome === "converged" ? "converged" : "blocked",
-        last_event_at: now(),
-        detail: `Cancellation requested: ${reason}`,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        "blocked",
+        `Cancellation requested: ${reason}`,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
   }
 
   async markCancelled(sessionId: string, reason = "cancelled"): Promise<SessionMeta> {
+    await this.flushPendingEvents();
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
-      const ts = now();
-      meta.outcome = "aborted";
-      meta.outcome_reason = reason;
-      delete meta.in_flight;
-      meta.control = {
-        status: "cancelled",
-        reason,
-        job_id: meta.control?.job_id,
-        requested_at: meta.control?.requested_at,
-        updated_at: ts,
-      };
-      meta.convergence_health = {
-        state: "stale",
-        last_event_at: ts,
-        detail: reason,
-      };
-      meta.updated_at = ts;
-      await writeJson(this.metaPath(sessionId), meta);
-      try {
-        this.appendEventRecord({
-          type: "session.cancelled",
-          session_id: sessionId,
-          ts,
-          message: `Session cancelled: ${reason}`,
-          data: { outcome: "aborted", reason },
-        });
-      } catch {
-        /* event persistence is best-effort; session_doctor will flag gaps */
+      if (meta.outcome) {
+        if (meta.outcome === "aborted" && meta.outcome_reason === reason) return meta;
+        const err = new Error(
+          `session_already_finalized: session ${sessionId} is finalized as ${meta.outcome}/${meta.outcome_reason ?? "unspecified"}; refusing cancellation overwrite`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
       }
-      return meta;
+      return this.persistCancelledTerminal(meta, reason);
     });
   }
 
   isCancellationRequested(sessionId: string): boolean {
     const meta = this.read(sessionId);
-    return meta.control?.status === "cancel_requested";
+    return (
+      meta.control?.status === "cancel_requested" ||
+      meta.control?.status === "cancelled" ||
+      (meta.outcome === "aborted" && meta.outcome_reason === "session_cancelled")
+    );
   }
 
   async appendFallbackEvent(
@@ -1087,16 +2802,34 @@ export class SessionStore {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const checklist = meta.evidence_checklist ?? [];
+      const admission = evaluateEvidenceChecklistAdmission(
+        checklist,
+        round,
+        incoming,
+        this.config.evidence_broker,
+      );
+      if (!admission.accepted) {
+        throw new EvidenceChecklistContractViolationError(admission);
+      }
       const byId = new Map(checklist.map((item) => [item.id, item]));
       const ts = now();
       for (const { peer, ask } of incoming) {
         const trimmed = ask.trim();
         if (!trimmed) continue;
-        const id = crypto
-          .createHash("sha256")
-          .update(`${peer}:${trimmed}`)
-          .digest("hex")
-          .slice(0, 16);
+        const aliasTarget = strictChecklistAliasTarget(trimmed, peer, checklist, round);
+        if (aliasTarget) {
+          // Only an explicit same-owner, older, strict "same item" alias is
+          // folded. Cross-peer references and requests that append a new
+          // requirement remain first-class blockers; dropping them would let
+          // one peer erase another peer's independent concern.
+          if (round > aliasTarget.last_round) {
+            aliasTarget.last_round = round;
+            aliasTarget.last_seen_at = ts;
+            aliasTarget.round_count += 1;
+          }
+          continue;
+        }
+        const id = checklistItemId(peer, trimmed);
         const existingItem = byId.get(id);
         if (existingItem) {
           // Same ask resurfaced. Bump last_round/last_seen_at and
@@ -1131,6 +2864,146 @@ export class SessionStore {
       meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
       return updated;
+    });
+  }
+
+  inspectEvidenceChecklistAdmission(
+    sessionId: string,
+    round: number,
+    incoming: readonly { peer: PeerId; ask: string }[] = [],
+  ): EvidenceChecklistAdmission {
+    const meta = this.read(sessionId);
+    return evaluateEvidenceChecklistAdmission(
+      meta.evidence_checklist ?? [],
+      round,
+      incoming,
+      this.config.evidence_broker,
+    );
+  }
+
+  /**
+   * Removes only unresolved checklist entries for which the orchestrator has
+   * already proved that the runtime authored the request. This is metadata
+   * repair, not evidence satisfaction: the original rounds remain immutable
+   * and every removal gets a dedicated audit record.
+   */
+  async reclassifyRuntimeGeneratedEvidenceChecklistItems(
+    sessionId: string,
+    proofs: Array<{ item_id: string; peer: PeerId; proof_round: number; proof_rule: string }>,
+  ): Promise<EvidenceChecklistRuntimeReclassification[]> {
+    if (!proofs.length) return [];
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) return [];
+      const proofById = new Map(proofs.map((proof) => [proof.item_id, proof]));
+      const removed: EvidenceChecklistRuntimeReclassification[] = [];
+      const retained: EvidenceChecklistItem[] = [];
+      const ts = now();
+      for (const item of meta.evidence_checklist ?? []) {
+        const proof = proofById.get(item.id);
+        const status = item.status ?? "open";
+        if (
+          !proof ||
+          proof.peer !== item.peer ||
+          (status !== "open" && status !== "not_resurfaced")
+        ) {
+          retained.push(item);
+          continue;
+        }
+        removed.push({
+          ts,
+          item_id: item.id,
+          peer: item.peer,
+          ask: item.ask,
+          first_round: item.first_round,
+          last_round: item.last_round,
+          previous_status: status,
+          proof_round: proof.proof_round,
+          proof_rule: proof.proof_rule,
+          reason: "runtime_remediation_misattributed_as_peer_request",
+        });
+      }
+      if (!removed.length) return [];
+      meta.evidence_checklist = retained;
+      meta.evidence_checklist_runtime_reclassifications = [
+        ...(meta.evidence_checklist_runtime_reclassifications ?? []),
+        ...removed,
+      ];
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return removed;
+    });
+  }
+
+  async collapseReferencedEvidenceChecklistAliases(
+    sessionId: string,
+  ): Promise<EvidenceChecklistAliasCollapse[]> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) return [];
+      const checklist = meta.evidence_checklist ?? [];
+      const unresolved = (item: EvidenceChecklistItem): boolean => {
+        const status = item.status ?? "open";
+        return status === "open" || status === "not_resurfaced";
+      };
+      const collapsed: EvidenceChecklistAliasCollapse[] = [];
+      const removedIds = new Set<string>();
+      const ts = now();
+      const directTarget = new Map<string, EvidenceChecklistItem>();
+      for (const alias of checklist) {
+        if (!unresolved(alias)) continue;
+        const target = strictChecklistAliasTarget(
+          alias.ask,
+          alias.peer,
+          checklist.filter(unresolved),
+          alias.first_round,
+        );
+        if (target) directTarget.set(alias.id, target);
+      }
+      const survivingTarget = (alias: EvidenceChecklistItem): EvidenceChecklistItem | undefined => {
+        const visited = new Set([alias.id]);
+        let target = directTarget.get(alias.id);
+        while (target && directTarget.has(target.id)) {
+          if (visited.has(target.id)) return undefined;
+          visited.add(target.id);
+          target = directTarget.get(target.id);
+        }
+        return target;
+      };
+      for (const alias of checklist) {
+        const previousStatus = alias.status ?? "open";
+        if (previousStatus !== "open" && previousStatus !== "not_resurfaced") continue;
+        const sameOwnerTarget = survivingTarget(alias);
+        if (!sameOwnerTarget) continue;
+        sameOwnerTarget.last_round = Math.max(sameOwnerTarget.last_round, alias.last_round);
+        sameOwnerTarget.last_seen_at =
+          sameOwnerTarget.last_seen_at > alias.last_seen_at
+            ? sameOwnerTarget.last_seen_at
+            : alias.last_seen_at;
+        sameOwnerTarget.round_count += alias.round_count;
+        removedIds.add(alias.id);
+        collapsed.push({
+          ts,
+          alias_item_id: alias.id,
+          peer: alias.peer,
+          ask: alias.ask,
+          first_round: alias.first_round,
+          last_round: alias.last_round,
+          previous_status: previousStatus,
+          referenced_item_ids: [directTarget.get(alias.id)?.id ?? sameOwnerTarget.id],
+          merged_into_item_id: sameOwnerTarget.id,
+          reason: "checklist_item_reference_alias",
+        });
+      }
+      if (!collapsed.length) return [];
+      meta.evidence_checklist = checklist.filter((item) => !removedIds.has(item.id));
+      meta.evidence_checklist_alias_collapses = [
+        ...(meta.evidence_checklist_alias_collapses ?? []),
+        ...collapsed,
+      ];
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return collapsed;
     });
   }
 
@@ -1188,10 +3061,10 @@ export class SessionStore {
           // becomes `not_resurfaced`, NOT `addressed`. "The peer did not
           // re-ask" is not proof the evidence was satisfied — only the
           // judge autowire (verified-satisfied) or explicit operator
-          // action may move an item to a confirmed state. This keeps the
-          // audit trail honest. `not_resurfaced` is still not `open`, so
-          // it does not hard-block the `=== "open"` convergence gate;
-          // the inference is recorded, not enforced.
+          // action or a later strictly grounded READY/verified recheck by the
+          // same requester may move an item to a confirmed state. This keeps
+          // the audit trail honest. `not_resurfaced` remains convergence-
+          // blocking until one of those explicit signals arrives.
           item.status = "not_resurfaced";
           item.addressed_at_round = currentRound;
           // v2.9.0: tag the inference path so the dashboard and audit
@@ -1271,6 +3144,11 @@ export class SessionStore {
   ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry }> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.in_flight && (options.by ?? "operator") === "operator") {
+        throw new Error(
+          `evidence_checklist_update_in_flight: round ${meta.in_flight.round} is still running; retry after it completes or is recovered`,
+        );
+      }
       const checklist = meta.evidence_checklist ?? [];
       const item = checklist.find((entry) => entry.id === itemId);
       if (!item) {
@@ -1305,11 +3183,12 @@ export class SessionStore {
     });
   }
 
-  // v2.9.0: runtime-judge promotion path. Promotes an `open` item to
-  // `addressed` ONLY — never touches terminal operator statuses, never
-  // moves anything other than open. Atomic under the session lock.
-  // Returns null when the item is not currently `open` (already
-  // addressed, terminal, or missing) so the caller can skip emit.
+  // v2.9.0: runtime-judge promotion path. Promotes an unresolved `open` or
+  // `not_resurfaced` item to `addressed`, but never touches terminal
+  // operator statuses. `not_resurfaced` means the peer did not repeat the
+  // ask; it is not a terminal disposition. Atomic under the session lock.
+  // Returns null when the item is already addressed, terminal, or missing so
+  // the caller can skip emit.
   async markEvidenceItemAddressedByJudge(
     sessionId: string,
     itemId: string,
@@ -1317,14 +3196,20 @@ export class SessionStore {
   ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry } | null> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      // Cancellation can win after a judge completes its last optimistic
+      // isCancelled check but before this promotion acquires the session lock.
+      // Do not mutate checklist state in a session that is now terminal or
+      // has a durable cancellation request; the orchestrator will seal the
+      // cancellation after paid-call settlement.
+      if (meta.outcome || meta.control?.status === "cancel_requested") return null;
       const checklist = meta.evidence_checklist ?? [];
       const item = checklist.find((entry) => entry.id === itemId);
       if (!item) return null;
       const status: EvidenceChecklistStatus = item.status ?? "open";
-      // Single allowed transition: open → addressed (judge). Terminal
-      // statuses (satisfied/deferred/rejected) and already-addressed
+      // Allowed runtime transitions: open|not_resurfaced → addressed (judge).
+      // Terminal statuses (satisfied/deferred/rejected) and already-addressed
       // items are NOT auto-mutated here.
-      if (status !== "open") return null;
+      if (status !== "open" && status !== "not_resurfaced") return null;
       const ts = now();
       const rationale = params.rationale.trim().slice(0, 800);
       item.status = "addressed";
@@ -1334,7 +3219,7 @@ export class SessionStore {
       const entry: EvidenceStatusHistoryEntry = {
         ts,
         item_id: itemId,
-        from: "open",
+        from: status,
         to: "addressed",
         by: "runtime",
         round: params.round,
@@ -1350,35 +3235,338 @@ export class SessionStore {
     });
   }
 
+  async markEvidenceItemsAddressedByRequesterReverification(
+    sessionId: string,
+    params: { round: number; peer: PeerId; evidence_sources: string[] },
+  ): Promise<Array<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry }>> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      const checklist = meta.evidence_checklist ?? [];
+      const evidenceSources = params.evidence_sources
+        .map((source) => source.trim())
+        .filter(Boolean);
+      if (!evidenceSources.length) return [];
+      const sourceDigest = crypto
+        .createHash("sha256")
+        .update(JSON.stringify(evidenceSources))
+        .digest("hex");
+      const ts = now();
+      const history = meta.evidence_status_history ?? [];
+      const promoted: Array<{
+        item: EvidenceChecklistItem;
+        history_entry: EvidenceStatusHistoryEntry;
+      }> = [];
+      for (const item of checklist) {
+        const status: EvidenceChecklistStatus = item.status ?? "open";
+        if (
+          item.peer !== params.peer ||
+          item.last_round >= params.round ||
+          (status !== "open" && status !== "not_resurfaced")
+        ) {
+          continue;
+        }
+        if (
+          !checklistAskCorroborated(
+            item,
+            evidenceSources,
+            checklist.map((candidate) => candidate.id),
+          )
+        )
+          continue;
+        const entry: EvidenceStatusHistoryEntry = {
+          ts,
+          item_id: item.id,
+          from: status,
+          to: "addressed",
+          by: "runtime",
+          round: params.round,
+          note: `requester_reverified[${params.peer}]: ${evidenceSources.length} strictly grounded source(s), sha256=${sourceDigest}`,
+        };
+        item.status = "addressed";
+        item.addressed_at_round = params.round;
+        item.address_method = "requester_reverified";
+        delete item.judge_rationale;
+        history.push(entry);
+        promoted.push({ item, history_entry: entry });
+      }
+      if (!promoted.length) return [];
+      meta.evidence_checklist = checklist;
+      meta.evidence_status_history = history;
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return promoted;
+    });
+  }
+
   async recoverInterruptedSessions(activeSessionIds = new Set<string>()): Promise<SessionMeta[]> {
     const recovered: SessionMeta[] = [];
     for (const session of this.list()) {
-      if (session.outcome || activeSessionIds.has(session.session_id) || !session.in_flight)
+      try {
+        await this.settleOrphanedBackgroundJobStatuses(session, activeSessionIds);
+      } catch {
+        // Operational job history is advisory. A failed status repair must not
+        // block recovery of authoritative session metadata.
+      }
+      const pendingProviderCalls = (session.pending_provider_call_reservations?.length ?? 0) > 0;
+      const livePendingProviderCall = (session.pending_provider_call_reservations ?? []).some(
+        (reservation) => this.pendingProviderCallOwnerIsAlive(reservation),
+      );
+      const liveInFlightOwner = this.inFlightOwnerIsAlive(session);
+      const orphanedBackgroundControl =
+        (session.control?.status === "running" || session.control?.status === "cancel_requested") &&
+        !session.in_flight;
+      if (
+        session.outcome ||
+        activeSessionIds.has(session.session_id) ||
+        livePendingProviderCall ||
+        liveInFlightOwner ||
+        (!session.in_flight &&
+          !session.generation_in_flight &&
+          !pendingProviderCalls &&
+          !orphanedBackgroundControl)
+      )
         continue;
+      let actuallyRecovered = false;
+      let recoveredConvergedRound: ReviewRound | undefined;
       const updated = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
-        if (current.outcome || activeSessionIds.has(current.session_id) || !current.in_flight) {
+        const currentOrphanedBackgroundControl =
+          (current.control?.status === "running" ||
+            current.control?.status === "cancel_requested") &&
+          !current.in_flight;
+        const currentPendingProviderCalls =
+          (current.pending_provider_call_reservations?.length ?? 0) > 0;
+        const currentLivePendingProviderCall = (
+          current.pending_provider_call_reservations ?? []
+        ).some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation));
+        const currentLiveInFlightOwner = this.inFlightOwnerIsAlive(current);
+        if (
+          current.outcome ||
+          activeSessionIds.has(current.session_id) ||
+          currentLivePendingProviderCall ||
+          currentLiveInFlightOwner ||
+          (!current.in_flight &&
+            !current.generation_in_flight &&
+            !currentPendingProviderCalls &&
+            !currentOrphanedBackgroundControl)
+        ) {
           return current;
         }
-        const round = current.in_flight.round;
-        delete current.in_flight;
+        const recoveredRound = this.sealRecoveredAppendedConvergence(current);
+        if (recoveredRound) {
+          // appendRound durably committed unanimity before the process died.
+          // Re-seal that exact terminal snapshot instead of reopening a round
+          // that has no outstanding provider work and no human action pending.
+          recoveredConvergedRound = recoveredRound;
+          actuallyRecovered = true;
+          await writeJson(this.metaPath(current.session_id), current);
+          return current;
+        }
+        // A dead owner has not durably acknowledged a requested cancellation.
+        // Do not invent a clean terminal cancellation: retain the established
+        // recovery path below, which records the interrupted owner and makes
+        // the session safely resumable from its durable snapshot.
+        const round = current.in_flight?.round;
+        const interruptedGeneration = current.generation_in_flight;
+        let brokerRollback: EvidenceBrokerRollback | undefined;
+        if (current.in_flight) {
+          // Once a round exists, provider dispatch may already have happened.
+          // Preserve the conservative unknown-spend accounting on recovery.
+          if (!inFlightRoundAlreadyAppended(current)) {
+            this.accountInterruptedInFlight(current, "recovered_after_restart");
+            brokerRollback = restoreInterruptedEvidenceBrokerSnapshot(current);
+          }
+          delete current.in_flight;
+          // in_flight is the authoritative broader dispatch envelope. A
+          // generation marker cannot add a second unknown attempt for the same
+          // interrupted interval.
+          delete current.generation_in_flight;
+        } else if (current.generation_in_flight) {
+          this.accountInterruptedBackgroundGeneration(current, "recovered_after_restart");
+          delete current.generation_in_flight;
+        }
+        this.accountInterruptedPendingProviderCalls(current, "recovered_after_restart");
+        const previousControl = current.control;
+        const reason =
+          round === undefined
+            ? interruptedGeneration
+              ? `Generation ${interruptedGeneration.peer}/round-${interruptedGeneration.round}/${interruptedGeneration.label} was interrupted before its result was durably accounted.`
+              : previousControl?.status === "cancel_requested"
+                ? `Cancellation was requested${previousControl.reason ? ` (${previousControl.reason})` : ""}, but the background owner exited before a durable round began.`
+                : "The background owner exited before a durable round began. Start a new round to continue from saved session context."
+            : `Round ${round} was interrupted before completion. Start a new round to continue from saved session context.`;
+        const transitionedAt = now();
+        if (previousControl?.job_id) {
+          const interruptedJob = this.readBackgroundJobStatus(
+            current.session_id,
+            previousControl.job_id,
+          );
+          if (interruptedJob?.status === "running") {
+            await this.writeBackgroundJobStatus({
+              ...interruptedJob,
+              status: previousControl.status === "cancel_requested" ? "cancelled" : "failed",
+              completed_at: transitionedAt,
+              error: `background_job_recovered_after_restart: ${reason}`,
+            });
+          }
+        }
         current.control = {
           status: "recovered_after_restart",
-          reason: `Round ${round} was interrupted before completion and can be resumed manually.`,
-          updated_at: now(),
+          reason,
+          job_id: previousControl?.job_id,
+          owner_pid: previousControl?.owner_pid,
+          requested_at: previousControl?.requested_at,
+          updated_at: transitionedAt,
         };
-        current.convergence_health = {
-          state: "stale",
-          last_event_at: now(),
-          detail: `Recovered interrupted round ${round} after MCP restart. Start a new round to continue from saved session context.`,
-        };
-        current.updated_at = now();
+        current.convergence_health = transitionHealth(
+          current,
+          "stale",
+          round === undefined
+            ? "Recovered an orphaned background job after MCP restart. Start a new round to continue from saved session context."
+            : `Recovered interrupted round ${round} after MCP restart. Start a new round to continue from saved session context.`,
+          transitionedAt,
+        );
+        current.updated_at = transitionedAt;
         await writeJson(this.metaPath(current.session_id), current);
+        if (brokerRollback) {
+          await this.appendEventRecord({
+            type: "session.evidence_broker_transaction_rolled_back",
+            session_id: current.session_id,
+            round: brokerRollback.round,
+            message: `Evidence Broker mutations from interrupted round ${brokerRollback.round} were rolled back during recovery.`,
+            data: { ...brokerRollback, cause: "recovered_after_restart" },
+          });
+        }
+        actuallyRecovered = true;
         return current;
       });
-      recovered.push(updated);
+      if (actuallyRecovered && recoveredConvergedRound) {
+        this.restoreFinalArtifactFromRound(updated, recoveredConvergedRound);
+        try {
+          await this.appendEvent({
+            type: "session.finalized",
+            session_id: updated.session_id,
+            ts: updated.updated_at,
+            message:
+              "Session finalized as converged: recovered appended unanimous round after restart",
+            data: {
+              outcome: "converged",
+              reason: updated.outcome_reason ?? "unanimous_ready",
+              recovered_after_restart: true,
+              round: recoveredConvergedRound.round,
+            },
+          });
+        } catch {
+          /* event persistence is best-effort; session_doctor will flag gaps */
+        }
+        try {
+          const reported = this.read(updated.session_id);
+          this.saveReport(
+            reported.session_id,
+            sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+          );
+        } catch {
+          /* report regeneration is best-effort; meta.json remains authoritative */
+        }
+      }
+      if (actuallyRecovered) recovered.push(updated);
     }
     return recovered;
+  }
+
+  async markBackgroundJobRunning(
+    sessionId: string,
+    owner: { job_id: string; owner_pid: number },
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      // requestCancellation and this transition share the session lock.  If
+      // cancellation wins the race, starting the deferred background job must
+      // not erase it; if running wins, the subsequent cancellation write wins.
+      if (meta.outcome || meta.control?.status === "cancel_requested") return meta;
+      if (meta.control?.status === "running") {
+        if (meta.control.job_id === owner.job_id) return meta;
+        const err = new Error(
+          `background_job_already_running: session ${sessionId} is owned by job ${meta.control.job_id ?? "unknown"}; refusing owner ${owner.job_id}`,
+        );
+        (err as Error & { code?: string }).code = "background_job_already_running";
+        throw err;
+      }
+      meta.control = {
+        status: "running",
+        job_id: owner.job_id,
+        owner_pid: owner.owner_pid,
+        updated_at: now(),
+      };
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async markBackgroundGenerationInFlight(
+    sessionId: string,
+    generation: BackgroundGenerationInFlight,
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) {
+        const err = new Error(
+          `session_already_finalized: cannot dispatch generation for ${sessionId} with outcome=${meta.outcome}`,
+        );
+        (err as Error & { code?: string }).code = "session_already_finalized";
+        throw err;
+      }
+      if (meta.control?.status === "cancel_requested") return meta;
+      const existing = meta.generation_in_flight;
+      if (existing) {
+        const err = new Error(
+          `generation_already_in_flight: ${existing.peer}/round-${existing.round}/${existing.label}`,
+        );
+        (err as Error & { code?: string }).code = "generation_already_in_flight";
+        throw err;
+      }
+      const ts = now();
+      meta.generation_in_flight = generation;
+      if (meta.control) meta.control.updated_at = ts;
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async clearBackgroundGenerationInFlight(
+    sessionId: string,
+    peer: PeerId,
+    round: number,
+  ): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome || !meta.generation_in_flight) return meta;
+      const before = meta.generation_in_flight;
+      this.settleBackgroundGenerationMarker(meta, peer, round);
+      if (meta.generation_in_flight === before) return meta;
+      const ts = now();
+      if (meta.control) meta.control.updated_at = ts;
+      meta.updated_at = ts;
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
+  }
+
+  async clearBackgroundJobControl(sessionId: string, jobId: string): Promise<SessionMeta> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      // Terminal persistence and its generated report are a single immutable
+      // snapshot.  Late process-local cleanup must not mutate meta.json after
+      // that report has been sealed.
+      if (meta.outcome) return meta;
+      if (meta.control?.job_id !== jobId || meta.control.status === "cancel_requested") return meta;
+      delete meta.control;
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return meta;
+    });
   }
 
   // v2.12.0: walk session events.ndjson and aggregate
@@ -1784,12 +3972,14 @@ export class SessionStore {
                 meta.convergence_health?.state === "blocked" &&
                 meta.rounds.at(-1)?.convergence?.converged === true
               ) {
-                meta.convergence_health = {
-                  state: "converged",
-                  last_event_at: now(),
-                  detail: `v3.6.0 doctor repair: recomputed health from latest round (was "blocked" with outcome="converged" — pre-v3.2.0 corruption artifact)`,
-                };
-                meta.updated_at = now();
+                const transitionedAt = now();
+                meta.convergence_health = transitionHealth(
+                  meta,
+                  "converged",
+                  `v3.6.0 doctor repair: recomputed health from latest round (was "blocked" with outcome="converged" — pre-v3.2.0 corruption artifact)`,
+                  transitionedAt,
+                );
+                meta.updated_at = transitionedAt;
                 await writeJson(this.metaPath(session.session_id), meta);
                 return true;
               }
@@ -1827,6 +4017,9 @@ export class SessionStore {
     let stubSessions = 0;
     let peerCallCostUsd: number | null = null;
     let generationCostUsd: number | null = null;
+    let failedAttemptCostUsd: number | null = null;
+    let unpricedProviderAttempts = 0;
+    let legacyAccountingSessions = 0;
     let totalCostUsd: number | null = null;
     let terminalEventMissingCount = 0;
 
@@ -1851,8 +4044,17 @@ export class SessionStore {
       ).length;
       if (isStubSession(session)) stubSessions += 1;
       else realSessions += 1;
-      peerCallCostUsd = addNullableCost(peerCallCostUsd, sessionPeerCostTotal(session));
-      generationCostUsd = addNullableCost(generationCostUsd, sessionGenerationCostTotal(session));
+      const costBreakdown = sessionCostBreakdown(session);
+      peerCallCostUsd = addNullableCost(peerCallCostUsd, costBreakdown.peer_total);
+      generationCostUsd = addNullableCost(generationCostUsd, costBreakdown.generation_total);
+      failedAttemptCostUsd = addNullableCost(
+        failedAttemptCostUsd,
+        costBreakdown.failed_attempt_total,
+      );
+      unpricedProviderAttempts += costBreakdown.unpriced_failed_attempts;
+      if (costBreakdown.accounting_coverage === "legacy_unknown") {
+        legacyAccountingSessions += 1;
+      }
       const sessionTotalCost = session.totals.cost.total_cost;
       if (sessionTotalCost != null && Number.isFinite(sessionTotalCost)) {
         totalCostUsd = addNullableCost(totalCostUsd, sessionTotalCost);
@@ -2042,6 +4244,9 @@ export class SessionStore {
         total_cost_usd: totalCostUsd,
         peer_call_cost_usd: peerCallCostUsd,
         generation_cost_usd: generationCostUsd,
+        failed_attempt_cost_usd: failedAttemptCostUsd,
+        unpriced_provider_attempts: unpricedProviderAttempts,
+        legacy_accounting_sessions: legacyAccountingSessions,
       },
       findings: {
         open_sessions: openSessions,
@@ -2194,8 +4399,13 @@ export class SessionStore {
   // entries into in-memory contents for inlining into peer prompts.
   // Reads each attachment from disk, applies a per-file cap (60% of the
   // total cap to leave room for at least 1 other attachment + headers),
-  // accumulates into a total-cap, and returns whatever fits. Order
-  // preserved (oldest attachment first). Files that cannot be read
+  // accumulates into a total-cap, and returns whatever fits. The active
+  // automatic caller snapshot is read first. Superseded caller submissions
+  // remain audit-only by default. The orchestrator may read them locally to
+  // replay a previously grounded requester verdict against the corrected
+  // checklist matcher, but they never re-enter a later peer prompt or current
+  // evidence/truthfulness/grounding corpus.
+  // Other custody channels retain their historical order. Files that cannot be read
   // (deleted, permission denied) are skipped silently — the caller
   // sees only the metadata that survived. This closes the recurring
   // "meta-channel limit" pattern (v2.5.0, v2.13.0) where codex demanded
@@ -2206,18 +4416,10 @@ export class SessionStore {
   readEvidenceAttachments(
     sessionId: string,
     totalCapChars: number,
-  ): Array<{
-    label: string;
-    relative_path: string;
-    content: string;
-    bytes: number;
-    truncated: boolean;
-    content_type?: string | undefined;
-  }> {
+    callerSubmissionId?: string,
+    includeHistoricalCallerSubmissions = false,
+  ): ResolvedEvidenceAttachment[] {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
-    const cacheKey = `${sessionId}:${totalCapChars}`;
-    const cached = this.evidenceAttachmentCache.get(cacheKey);
-    if (cached) return cached.map((item) => ({ ...item }));
     let meta: SessionMeta;
     let sessionDir: string;
     try {
@@ -2226,27 +4428,85 @@ export class SessionStore {
     } catch {
       return [];
     }
-    const files = meta.evidence_files ?? [];
-    if (!files.length) return [];
+    const allFiles = meta.evidence_files ?? [];
+    if (!allFiles.length) return [];
+    let files = allFiles;
+    const activeSubmissionId = callerSubmissionId ?? meta.active_caller_evidence_submission_id;
+    if (activeSubmissionId) {
+      const activeSubmission = (meta.caller_evidence_submissions ?? []).find(
+        (submission) => submission.submission_id === activeSubmissionId,
+      );
+      if (!activeSubmission) {
+        throw new Error(
+          `active_caller_evidence_submission_invalid: ${activeSubmissionId} has no persisted manifest`,
+        );
+      }
+      const byPath = new Map(allFiles.map((file) => [file.path, file]));
+      const activeFiles = activeSubmission.attachment_paths.map((attachmentPath) => {
+        const file = byPath.get(attachmentPath);
+        if (!file) {
+          throw new Error(
+            `evidence_integrity_unavailable: active caller submission ${activeSubmissionId} references ${attachmentPath}`,
+          );
+        }
+        return file;
+      });
+      const nonCallerSubmissionFiles = allFiles.filter(
+        (file) => currentEvidenceAttachment(file)?.origin !== "caller_submitted",
+      );
+      const activePaths = new Set(activeSubmission.attachment_paths);
+      const selectedCallerPaths = new Set(activePaths);
+      const historicalCallerFiles = includeHistoricalCallerSubmissions
+        ? [...(meta.caller_evidence_submissions ?? [])]
+            .reverse()
+            .filter((submission) => submission.submission_id !== activeSubmissionId)
+            .flatMap((submission) => submission.attachment_paths)
+            .filter((attachmentPath) => {
+              if (selectedCallerPaths.has(attachmentPath)) return false;
+              selectedCallerPaths.add(attachmentPath);
+              return true;
+            })
+            .map((attachmentPath) => {
+              const file = byPath.get(attachmentPath);
+              if (!file) {
+                throw new Error(
+                  `evidence_integrity_unavailable: historical caller submission references ${attachmentPath}`,
+                );
+              }
+              return file;
+            })
+        : [];
+      files = [...activeFiles, ...historicalCallerFiles, ...nonCallerSubmissionFiles];
+    }
     const perFileCap = Math.max(2_000, Math.floor(totalCapChars * 0.6));
-    const result: Array<{
-      label: string;
-      relative_path: string;
-      content: string;
-      bytes: number;
-      truncated: boolean;
-      content_type?: string | undefined;
-    }> = [];
+    const result: ResolvedEvidenceAttachment[] = [];
     let used = 0;
     for (const file of files) {
+      const custody = currentEvidenceAttachment(file);
       const absolutePath = this.safeResolveContainedExistingPath(sessionDir, file.path);
-      if (!absolutePath) continue;
-      let raw: string;
-      try {
-        raw = fs.readFileSync(absolutePath, "utf8");
-      } catch {
+      if (!absolutePath) {
+        if (custody) {
+          throw new Error(`evidence_integrity_unavailable: ${file.path}`);
+        }
         continue;
       }
+      let persisted: Buffer;
+      try {
+        persisted = fs.readFileSync(absolutePath);
+      } catch (error) {
+        if (custody) {
+          throw new Error(`evidence_integrity_unavailable: ${file.path}`, { cause: error });
+        }
+        continue;
+      }
+      const actualBytes = persisted.byteLength;
+      const actualSha256 = crypto.createHash("sha256").update(persisted).digest("hex");
+      if (custody && (actualBytes !== custody.bytes || actualSha256 !== custody.sha256)) {
+        throw new Error(
+          `evidence_integrity_mismatch: ${file.path} expected sha256=${custody.sha256} bytes=${custody.bytes}, got sha256=${actualSha256} bytes=${actualBytes}`,
+        );
+      }
+      const raw = persisted.toString("utf8");
       const remaining = totalCapChars - used;
       if (remaining <= 0) break;
       const cap = Math.min(perFileCap, remaining);
@@ -2256,16 +4516,26 @@ export class SessionStore {
         label: file.label,
         relative_path: file.path,
         content: slice,
-        bytes: raw.length,
+        bytes: actualBytes,
         truncated,
+        provenance_status: custody ? "verified" : "legacy_unverified",
+        authority_status: custody
+          ? custody.attached_by === "operator"
+            ? "operator_verified"
+            : "caller_submitted_unverified"
+          : "legacy_unverified",
         content_type: file.content_type,
+        ...(custody
+          ? {
+              sha256: custody.sha256,
+              attached_by: custody.attached_by,
+              attached_at: custody.attached_at,
+              origin: custody.origin,
+            }
+          : {}),
       });
       used += slice.length;
     }
-    this.evidenceAttachmentCache.set(
-      cacheKey,
-      result.map((item) => ({ ...item })),
-    );
     return result;
   }
 
@@ -2285,74 +4555,297 @@ export class SessionStore {
     new_initial_draft?: string | undefined;
     new_caller?: PeerId | "operator" | undefined;
   }): Promise<{ contested_meta: SessionMeta; new_session_id: string }> {
-    const original = this.read(params.session_id);
-    if (!original.outcome) {
+    if (!params.new_caller) {
       throw new Error(
-        `cannot_contest_in_flight_session: session ${params.session_id} has no outcome yet (still in flight). Wait for it to converge or finalize before contesting.`,
+        "new_caller_required: contestVerdict requires an explicitly authenticated new session caller.",
       );
     }
-    if (original.contestation) {
-      throw new Error(
-        `session_already_contested: session ${params.session_id} was already contested at ${original.contestation.contested_at} (new_session_id=${original.contestation.new_session_id}).`,
-      );
-    }
-    const newCaller: PeerId | "operator" = params.new_caller ?? "operator";
-    const newSession = await this.init(params.new_task, newCaller, [], undefined);
-    // Cross-link new session → original.
-    await this.withSessionLock(newSession.session_id, async () => {
-      const m = this.read(newSession.session_id);
-      m.contests_session_id = params.session_id;
-      m.updated_at = now();
-      await writeJson(this.metaPath(newSession.session_id), m);
-      return m;
-    });
-    // Stamp original with contestation record.
+    const newCaller: PeerId | "operator" = params.new_caller;
+    let newSessionId: string | undefined;
+    // Validation, successor creation and original stamping are serialized by
+    // the original session lock. Before this boundary two concurrent contests
+    // could both observe `contestation` as absent, create two successors and
+    // let the last writer orphan the first chain link.
     const contestedMeta = await this.withSessionLock(params.session_id, async () => {
-      const m = this.read(params.session_id);
-      m.contestation = {
+      const original = this.read(params.session_id);
+      if (!original.outcome) {
+        throw new Error(
+          `cannot_contest_in_flight_session: session ${params.session_id} has no outcome yet (still in flight). Wait for it to converge or finalize before contesting.`,
+        );
+      }
+      if (original.contestation) {
+        throw new Error(
+          `session_already_contested: session ${params.session_id} was already contested at ${original.contestation.contested_at} (new_session_id=${original.contestation.new_session_id}).`,
+        );
+      }
+
+      // A contest opens a new deliberative cycle inside the same autos.  The
+      // capability snapshot and review focus are custody metadata, not
+      // disposable runtime decoration, so preserve them unless a higher layer
+      // supplies a freshly probed successor later.
+      const newSession = await this.init(
+        params.new_task,
+        newCaller,
+        original.capability_snapshot,
+        original.review_focus,
+      );
+      newSessionId = newSession.session_id;
+      if (params.new_initial_draft !== undefined) {
+        this.saveDraft(newSession.session_id, 0, params.new_initial_draft);
+      }
+      // Cross-link successor → original while the original contest right is
+      // exclusively held. Lock ordering is original then newly-created child;
+      // no other path can hold the child and wait for its not-yet-linked parent.
+      await this.withSessionLock(newSession.session_id, async () => {
+        const successor = this.read(newSession.session_id);
+        successor.contests_session_id = params.session_id;
+        successor.updated_at = now();
+        await writeJson(this.metaPath(newSession.session_id), successor);
+      });
+
+      original.contestation = {
         contested_at: now(),
         reason: params.reason,
-        original_outcome: m.outcome ?? null,
+        original_outcome: original.outcome ?? null,
         new_session_id: newSession.session_id,
       };
-      m.updated_at = now();
-      await writeJson(this.metaPath(params.session_id), m);
-      return m;
+      original.updated_at = now();
+      await writeJson(this.metaPath(params.session_id), original);
+      return original;
     });
-    return { contested_meta: contestedMeta, new_session_id: newSession.session_id };
+    if (!newSessionId) throw new Error("contest_successor_creation_failed");
+    return { contested_meta: contestedMeta, new_session_id: newSessionId };
+  }
+
+  async attachCallerEvidenceSubmission(
+    sessionId: string,
+    params: {
+      submitted_by: PeerId | "operator";
+      artifact_text: string;
+      items: Array<{
+        label: string;
+        content: string;
+        content_type?: string;
+        extension?: string;
+      }>;
+    },
+  ): Promise<{ submission: CallerEvidenceSubmission; meta: SessionMeta }> {
+    if (params.submitted_by !== "operator" && !PEERS.includes(params.submitted_by)) {
+      throw new Error(`evidence_submitted_by_invalid: ${String(params.submitted_by)}`);
+    }
+    const submissionId = crypto.randomUUID();
+    const artifactSha256 = crypto
+      .createHash("sha256")
+      .update(params.artifact_text, "utf8")
+      .digest("hex");
+    const prepared = params.items.map((item) => {
+      const persisted = Buffer.from(redact(item.content), "utf8");
+      return {
+        label: item.label,
+        safeLabel: safeFilePart(item.label),
+        extension: safeFilePart(item.extension ?? "txt").replace(/\./g, "") || "txt",
+        content_type: item.content_type,
+        persisted,
+        sha256: crypto.createHash("sha256").update(persisted).digest("hex"),
+        bytes: persisted.byteLength,
+      };
+    });
+
+    return this.withSessionLock(sessionId, async () => {
+      const current = this.read(sessionId);
+      if (current.outcome) {
+        const error = new Error(
+          `session_already_finalized: session ${sessionId} is finalized with outcome="${current.outcome}"; cannot submit caller evidence`,
+        );
+        (error as Error & { code?: string }).code = "session_already_finalized";
+        throw error;
+      }
+      const submittedAt = now();
+      const attachmentPaths: string[] = [];
+      const attachmentEvents: RuntimeEvent[] = [];
+      for (const item of prepared) {
+        const duplicate = (current.evidence_files ?? []).find((candidate) => {
+          const currentCandidate = currentEvidenceAttachment(candidate);
+          return (
+            currentCandidate?.sha256 === item.sha256 &&
+            currentCandidate.bytes === item.bytes &&
+            currentCandidate.attached_by === params.submitted_by &&
+            currentCandidate.origin === "caller_submitted" &&
+            currentCandidate.label === item.label
+          );
+        });
+        if (duplicate) {
+          attachmentPaths.push(duplicate.path);
+          continue;
+        }
+        const relativePath =
+          `evidence/${timestampFilePart()}-${item.safeLabel}-${crypto.randomUUID()}.${item.extension}`.replace(
+            /\\/g,
+            "/",
+          );
+        const file = path.join(this.sessionDir(sessionId), relativePath);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, item.persisted);
+        const attachment: EvidenceAttachment = {
+          ts: submittedAt,
+          attached_at: submittedAt,
+          attached_by: params.submitted_by,
+          origin: "caller_submitted",
+          integrity_version: 1,
+          sha256: item.sha256,
+          bytes: item.bytes,
+          label: item.label,
+          path: relativePath,
+          content_type: item.content_type,
+        };
+        current.evidence_files = [...(current.evidence_files ?? []), attachment];
+        attachmentPaths.push(relativePath);
+        attachmentEvents.push({
+          type: "session.evidence_attached",
+          session_id: sessionId,
+          ts: submittedAt,
+          message: `Caller-submitted evidence persisted as unverified material from ${params.submitted_by}: ${item.label}`,
+          data: {
+            label: item.label,
+            path: relativePath,
+            content_type: item.content_type,
+            sha256: item.sha256,
+            bytes: item.bytes,
+            attached_by: params.submitted_by,
+            attached_at: submittedAt,
+            origin: "caller_submitted",
+            authority_status: "caller_submitted_unverified",
+          },
+        });
+      }
+      const submission: CallerEvidenceSubmission = {
+        submission_id: submissionId,
+        submitted_at: submittedAt,
+        submitted_by: params.submitted_by,
+        artifact_sha256: artifactSha256,
+        attachment_paths: attachmentPaths,
+      };
+      current.caller_evidence_submissions = [
+        ...(current.caller_evidence_submissions ?? []),
+        submission,
+      ];
+      current.active_caller_evidence_submission_id = submissionId;
+      current.updated_at = submittedAt;
+      await writeJson(this.metaPath(sessionId), current);
+      for (const event of attachmentEvents) await this.appendEventRecord(event);
+      await this.appendEventRecord({
+        type: "session.caller_evidence_submission_activated",
+        session_id: sessionId,
+        ts: submittedAt,
+        message: `Activated caller evidence submission ${submissionId} from ${params.submitted_by} with ${attachmentPaths.length} artifact(s).`,
+        data: {
+          submission_id: submissionId,
+          submitted_by: params.submitted_by,
+          artifact_sha256: artifactSha256,
+          attachment_paths: attachmentPaths,
+          attachment_count: attachmentPaths.length,
+        },
+      });
+      return { submission, meta: current };
+    });
   }
 
   async attachEvidence(
     sessionId: string,
-    params: { label: string; content: string; content_type?: string; extension?: string },
+    params: {
+      label: string;
+      content: string;
+      content_type?: string;
+      extension?: string;
+      attached_by: PeerId | "operator";
+      origin: EvidenceAttachmentOrigin;
+      deduplicate?: boolean;
+    },
   ): Promise<{ path: string; meta: SessionMeta }> {
+    if (params.attached_by !== "operator" && !PEERS.includes(params.attached_by)) {
+      throw new Error(`evidence_attached_by_invalid: ${String(params.attached_by)}`);
+    }
+    if (!EVIDENCE_ATTACHMENT_ORIGINS.has(params.origin)) {
+      throw new Error(`evidence_origin_invalid: ${String(params.origin)}`);
+    }
     const extension = safeFilePart(params.extension ?? "txt").replace(/\./g, "") || "txt";
     const label = safeFilePart(params.label);
-    const relativePath = `evidence/${timestampFilePart()}-${label}.${extension}`;
-    const file = path.join(this.sessionDir(sessionId), relativePath);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, redact(params.content), "utf8");
+    const persisted = Buffer.from(redact(params.content), "utf8");
+    const sha256 = crypto.createHash("sha256").update(persisted).digest("hex");
+    const bytes = persisted.byteLength;
 
     const meta = await this.withSessionLock(sessionId, async () => {
       const current = this.read(sessionId);
-      current.evidence_files = [
-        ...(current.evidence_files ?? []),
-        {
-          ts: now(),
-          label: params.label,
-          path: relativePath.replace(/\\/g, "/"),
-          content_type: params.content_type,
-        },
-      ];
-      current.updated_at = now();
+      if (current.outcome) {
+        const error = new Error(
+          `session_already_finalized: session ${sessionId} is finalized with outcome="${current.outcome}"; cannot attach evidence`,
+        );
+        (error as Error & { code?: string }).code = "session_already_finalized";
+        throw error;
+      }
+      if (params.deduplicate) {
+        const duplicate = (current.evidence_files ?? []).find((candidate) => {
+          const currentCandidate = currentEvidenceAttachment(candidate);
+          return (
+            currentCandidate?.sha256 === sha256 &&
+            currentCandidate.bytes === bytes &&
+            currentCandidate.attached_by === params.attached_by &&
+            currentCandidate.origin === params.origin
+          );
+        });
+        if (duplicate) {
+          return { meta: current, path: duplicate.path };
+        }
+      }
+      const attachedAt = now();
+      const relativePath =
+        `evidence/${timestampFilePart()}-${label}-${crypto.randomUUID()}.${extension}`.replace(
+          /\\/g,
+          "/",
+        );
+      const file = path.join(this.sessionDir(sessionId), relativePath);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, persisted);
+      const attachment: EvidenceAttachment = {
+        ts: attachedAt,
+        attached_at: attachedAt,
+        attached_by: params.attached_by,
+        origin: params.origin,
+        integrity_version: 1,
+        sha256,
+        bytes,
+        label: params.label,
+        path: relativePath,
+        content_type: params.content_type,
+      };
+      current.evidence_files = [...(current.evidence_files ?? []), attachment];
+      current.updated_at = attachedAt;
       await writeJson(this.metaPath(sessionId), current);
-      return current;
+      await this.appendEventRecord({
+        type: "session.evidence_attached",
+        session_id: sessionId,
+        ts: attachedAt,
+        message:
+          params.origin === "caller_submitted" && params.attached_by !== "operator"
+            ? `Caller-submitted evidence persisted as unverified material from ${params.attached_by}: ${params.label}`
+            : `Evidence attached by ${params.attached_by}: ${params.label}`,
+        data: {
+          label: params.label,
+          path: relativePath,
+          content_type: params.content_type,
+          sha256,
+          bytes,
+          attached_by: params.attached_by,
+          attached_at: attachedAt,
+          origin: params.origin,
+          authority_status:
+            params.attached_by === "operator" ? "operator_verified" : "caller_submitted_unverified",
+        },
+      });
+      return { meta: current, path: relativePath };
     });
-    for (const key of [...this.evidenceAttachmentCache.keys()]) {
-      if (key.startsWith(`${sessionId}:`)) this.evidenceAttachmentCache.delete(key);
-    }
 
-    return { path: relativePath.replace(/\\/g, "/"), meta };
+    return { path: meta.path, meta: meta.meta };
   }
 
   async escalateToOperator(
@@ -2365,12 +4858,14 @@ export class SessionStore {
         ...(meta.operator_escalations ?? []),
         { ts: now(), reason: params.reason, severity: params.severity },
       ];
-      meta.convergence_health = {
-        state: meta.outcome === "converged" ? "converged" : "blocked",
-        last_event_at: now(),
-        detail: `Operator escalation requested: ${params.reason}`,
-      };
-      meta.updated_at = now();
+      const transitionedAt = now();
+      meta.convergence_health = transitionHealth(
+        meta,
+        meta.outcome === "converged" ? "converged" : "blocked",
+        `Operator escalation requested: ${params.reason}`,
+        transitionedAt,
+      );
+      meta.updated_at = transitionedAt;
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
     });
@@ -2392,20 +4887,25 @@ export class SessionStore {
       const finalized = await this.withSessionLock(session.session_id, async () => {
         const current = this.read(session.session_id);
         if (current.outcome) return undefined;
+        if (current.in_flight || current.generation_in_flight) return undefined;
+        if (current.control?.status === "cancel_requested") {
+          return this.persistCancelledTerminal(current, "session_cancelled");
+        }
         const ts = now();
+        delete current.control;
         current.outcome = outcome;
         current.outcome_reason = reason;
-        delete current.in_flight;
-        current.convergence_health = {
-          state: "stale",
-          last_event_at: ts,
-          detail: reason,
-          idle_ms: idleFor,
-        };
+        current.convergence_health = transitionHealth(
+          current,
+          outcome === "aborted" ? "aborted" : "blocked",
+          reason,
+          ts,
+          { idle_ms: idleFor },
+        );
         current.updated_at = ts;
         await writeJson(this.metaPath(session.session_id), current);
         try {
-          this.appendEventRecord({
+          await this.appendEventRecord({
             type: "session.finalized",
             session_id: session.session_id,
             ts,
@@ -2414,6 +4914,14 @@ export class SessionStore {
           });
         } catch {
           /* event persistence is best-effort; session_doctor will flag gaps */
+        }
+        try {
+          this.saveReport(
+            session.session_id,
+            sessionReportMarkdown(current, this.readEvents(session.session_id)),
+          );
+        } catch {
+          /* report regeneration is best-effort; meta.json remains authoritative */
         }
         return current;
       });
@@ -2518,6 +5026,92 @@ export class SessionStore {
     return { scanned, removed };
   }
 
+  /**
+   * Reconcile non-review provider calls (currently initial generations and
+   * evidence judges) after a host crash. These calls do not always own an
+   * `in_flight` review round, so clearStaleInFlight cannot see them. A live
+   * owner is an explicit stop signal: another MCP host may still be settling
+   * the same provider call and its result must retain the reservation.
+   */
+  async clearStalePendingProviderCalls(): Promise<{ scanned: number; cleared: number }> {
+    let scanned = 0;
+    let cleared = 0;
+    for (const session of this.list()) {
+      const pending = session.pending_provider_call_reservations ?? [];
+      if (session.outcome || pending.length === 0) continue;
+      scanned += 1;
+      if (pending.some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation))) {
+        continue;
+      }
+      try {
+        let recovered: SessionMeta | undefined;
+        await this.withSessionLock(session.session_id, async () => {
+          const current = this.read(session.session_id);
+          const currentPending = current.pending_provider_call_reservations ?? [];
+          if (
+            current.outcome ||
+            currentPending.length === 0 ||
+            currentPending.some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation))
+          ) {
+            return;
+          }
+          if (current.control?.status === "cancel_requested") {
+            recovered = await this.persistCancelledTerminal(current, "session_cancelled");
+            cleared += 1;
+            return;
+          }
+          const reconciled = this.accountInterruptedPendingProviderCalls(
+            current,
+            "startup_pending_provider_call_sweep",
+          );
+          if (reconciled === 0) return;
+          const transitionedAt = now();
+          current.control = {
+            status: "recovered_after_restart",
+            reason:
+              `${reconciled} paid provider call(s) were interrupted after their dispatch ` +
+              "marker was persisted; billing is conservatively marked unknown.",
+            job_id: current.control?.job_id,
+            owner_pid: current.control?.owner_pid,
+            requested_at: current.control?.requested_at,
+            updated_at: transitionedAt,
+          };
+          current.convergence_health = transitionHealth(
+            current,
+            "stale",
+            "Recovered outstanding paid provider call reservations after MCP restart.",
+            transitionedAt,
+          );
+          current.updated_at = transitionedAt;
+          await writeJson(this.metaPath(current.session_id), current);
+          recovered = current;
+          cleared += 1;
+        });
+        if (recovered && !recovered.outcome) {
+          await this.appendEvent({
+            type: "session.pending_provider_calls_recovered",
+            session_id: recovered.session_id,
+            ts: recovered.updated_at,
+            message:
+              "Startup sweep reconciled paid provider calls whose owning process was no longer alive.",
+            data: {
+              pending_provider_calls_recovered: true,
+              billing_status: "unknown",
+            },
+          });
+          const reported = this.read(recovered.session_id);
+          this.saveReport(
+            reported.session_id,
+            sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+          );
+        }
+      } catch {
+        /* best-effort; a later startup or explicit recovery can retry safely */
+      }
+    }
+    return { scanned, cleared };
+  }
+
   // v2.4.0 / audit closure (P3.11): clear stale meta.in_flight at boot.
   // `markInFlight` sets meta.in_flight before each round and clearInFlight
   // is supposed to clear it on resolve/reject. If the host crashes
@@ -2529,8 +5123,9 @@ export class SessionStore {
   // after a day. Conditions to clear:
   //   - holder pid (lock holder, if any) is dead, OR
   //   - in_flight.started_at is older than HEARTBEAT_STALE_AFTER_MS.
-  // Sessions still actively running on a live PID are skipped. Idempotent
-  // + best-effort. Returns counts for telemetry.
+  // Sessions still actively running on a live PID, or with a live reserved
+  // provider call, are skipped. Idempotent + best-effort. Returns counts for
+  // telemetry.
   async clearStaleInFlight(): Promise<{ scanned: number; cleared: number }> {
     const HEARTBEAT_STALE_AFTER_MS = 30 * 60 * 1000; // 30 minutes
     let scanned = 0;
@@ -2538,6 +5133,11 @@ export class SessionStore {
     for (const session of this.list()) {
       if (!session.in_flight) continue;
       scanned += 1;
+      const livePendingProviderCall = (session.pending_provider_call_reservations ?? []).some(
+        (reservation) => this.pendingProviderCallOwnerIsAlive(reservation),
+      );
+      if (livePendingProviderCall) continue;
+      if (this.inFlightOwnerIsAlive(session)) continue;
       const startedIso = session.in_flight.started_at;
       const startedAge = startedIso ? Date.now() - Date.parse(startedIso) : Infinity;
       // v4.1.0: lock-holder freshness is reported by proper-lockfile's
@@ -2558,21 +5158,156 @@ export class SessionStore {
       }
       // Fallback heartbeat staleness signal when no active lock and
       // started_at indicates the in_flight marker itself is stale.
-      if (!holderAlive && Number.isFinite(startedAge) && startedAge <= HEARTBEAT_STALE_AFTER_MS) {
+      const appendedConvergenceAwaitingSeal =
+        inFlightRoundAlreadyAppended(session) &&
+        session.rounds.at(-1)?.convergence.converged === true &&
+        (session.pending_provider_call_reservations?.length ?? 0) === 0;
+      if (
+        !holderAlive &&
+        Number.isFinite(startedAge) &&
+        startedAge <= HEARTBEAT_STALE_AFTER_MS &&
+        !appendedConvergenceAwaitingSeal
+      ) {
         // No live holder but started_at is recent; do nothing yet (lock
         // may have been released cleanly; let normal finalize handle it).
         continue;
       }
       if (!holderAlive || startedAge > HEARTBEAT_STALE_AFTER_MS) {
         try {
+          let recoveredConvergedRound: ReviewRound | undefined;
+          let recoveredConvergedSession: SessionMeta | undefined;
+          let recoveredInterruptedSession: SessionMeta | undefined;
           await this.withSessionLock(session.session_id, async () => {
             const current = this.read(session.session_id);
             if (!current.in_flight) return;
+            const currentLivePendingProviderCall = (
+              current.pending_provider_call_reservations ?? []
+            ).some((reservation) => this.pendingProviderCallOwnerIsAlive(reservation));
+            if (currentLivePendingProviderCall) return;
+            if (this.inFlightOwnerIsAlive(current)) return;
+            const recoveredRound = this.sealRecoveredAppendedConvergence(current);
+            if (recoveredRound) {
+              recoveredConvergedRound = recoveredRound;
+              recoveredConvergedSession = current;
+              await writeJson(this.metaPath(current.session_id), current);
+              cleared += 1;
+              return;
+            }
+            const interruptedRound = current.in_flight.round;
+            const appendedReservation = inFlightRoundAlreadyAppended(current);
+            if (!appendedReservation) {
+              this.accountInterruptedInFlight(current, "stale_in_flight_sweep");
+            }
+            const brokerRollback = appendedReservation
+              ? undefined
+              : restoreInterruptedEvidenceBrokerSnapshot(current);
             delete current.in_flight;
-            current.updated_at = now();
+            // in_flight is the broader accounting envelope; never leave a
+            // narrower generation marker behind for a second recovery charge.
+            delete current.generation_in_flight;
+            const previousControl = current.control;
+            const reason = appendedReservation
+              ? `The background owner exited after durable round ${interruptedRound} was appended. Start a new round to continue from saved session context.`
+              : `Round ${interruptedRound} was interrupted before completion. Start a new round to continue from saved session context.`;
+            const transitionedAt = now();
+            if (previousControl?.job_id) {
+              const interruptedJob = this.readBackgroundJobStatus(
+                current.session_id,
+                previousControl.job_id,
+              );
+              if (interruptedJob?.status === "running") {
+                await this.writeBackgroundJobStatus({
+                  ...interruptedJob,
+                  status: previousControl.status === "cancel_requested" ? "cancelled" : "failed",
+                  completed_at: transitionedAt,
+                  error: `background_job_recovered_after_restart: ${reason}`,
+                });
+              }
+            }
+            current.control = {
+              status: "recovered_after_restart",
+              reason,
+              job_id: previousControl?.job_id,
+              owner_pid: previousControl?.owner_pid,
+              requested_at: previousControl?.requested_at,
+              updated_at: transitionedAt,
+            };
+            current.convergence_health = transitionHealth(
+              current,
+              "stale",
+              `Recovered interrupted round ${interruptedRound} during the startup sweep. Start a new round to continue from saved session context.`,
+              transitionedAt,
+            );
+            current.updated_at = transitionedAt;
             await writeJson(this.metaPath(session.session_id), current);
+            if (brokerRollback) {
+              await this.appendEventRecord({
+                type: "session.evidence_broker_transaction_rolled_back",
+                session_id: current.session_id,
+                round: brokerRollback.round,
+                message: `Evidence Broker mutations from stale round ${brokerRollback.round} were rolled back during the startup sweep.`,
+                data: { ...brokerRollback, cause: "stale_in_flight_sweep" },
+              });
+            }
+            recoveredInterruptedSession = current;
             cleared += 1;
           });
+          if (recoveredConvergedSession && recoveredConvergedRound) {
+            this.restoreFinalArtifactFromRound(recoveredConvergedSession, recoveredConvergedRound);
+            try {
+              await this.appendEvent({
+                type: "session.finalized",
+                session_id: recoveredConvergedSession.session_id,
+                ts: recoveredConvergedSession.updated_at,
+                message:
+                  "Session finalized as converged: startup sweep recovered appended unanimous round",
+                data: {
+                  outcome: "converged",
+                  reason: recoveredConvergedSession.outcome_reason ?? "unanimous_ready",
+                  recovered_after_restart: true,
+                  round: recoveredConvergedRound.round,
+                },
+              });
+            } catch {
+              /* event persistence is best-effort; session_doctor will flag gaps */
+            }
+            try {
+              const reported = this.read(recoveredConvergedSession.session_id);
+              this.saveReport(
+                reported.session_id,
+                sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+              );
+            } catch {
+              /* report regeneration is best-effort; meta.json remains authoritative */
+            }
+          }
+          if (recoveredInterruptedSession) {
+            try {
+              await this.appendEvent({
+                type: "session.recovered_after_restart",
+                session_id: recoveredInterruptedSession.session_id,
+                ts: recoveredInterruptedSession.updated_at,
+                message:
+                  recoveredInterruptedSession.control?.reason ??
+                  "Startup sweep recovered an interrupted review round.",
+                data: {
+                  recovered_after_restart: true,
+                  source: "stale_in_flight_sweep",
+                },
+              });
+            } catch {
+              /* event persistence is best-effort; session_doctor will flag gaps */
+            }
+            try {
+              const reported = this.read(recoveredInterruptedSession.session_id);
+              this.saveReport(
+                reported.session_id,
+                sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
+              );
+            } catch {
+              /* report regeneration is best-effort; meta.json remains authoritative */
+            }
+          }
         } catch {
           /* best-effort */
         }
@@ -2584,16 +5319,16 @@ export class SessionStore {
   // v2.5.0: abort sessions that were never finalized.
   //
   // Empirical analysis of 253 historical sessions surfaced 22 in-progress
-  // orphans where every peer had reached READY but the caller never
-  // invoked `session_finalize`. Those sessions stayed at `outcome:
+  // orphans where every peer had reached READY but the dedicated operator
+  // console never invoked `session_finalize`. Those sessions stayed at `outcome:
   // undefined` indefinitely, polluting `session_list` and stealing rows
   // from `session_recover_interrupted` consumers that interpret a missing
   // outcome as "still running".
   //
   // The session-start contract (orchestrator.ts > sessionContractDirectives
-  // rule 4) now codifies the caller's finalize obligation; this boot
-  // sweep cleans up the cases where the caller exited without honoring
-  // that contract. It is a companion to `clearStaleInFlight`, with a
+  // rule 4) now requires the caller to notify the human operator; this boot
+  // sweep cleans up cases where the operator console never finalized after
+  // that notification. It is a companion to `clearStaleInFlight`, with a
   // longer threshold because the failure mode is "host died after a
   // session ran", not "host died mid-round".
   //

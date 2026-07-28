@@ -4,110 +4,624 @@ name: Auto-tag on version bump
 # shape and may include prerelease labels; the display tag is derived from the
 # numeric base version.
 #
-# GitHub does not start a second workflow from a tag push created with
-# GITHUB_TOKEN, so this workflow explicitly dispatches publish.yml on the tag
-# ref. The npm-production environment allows v* tag refs, not main.
+# The tag is created only after the CI workflow has completed successfully for
+# a push to main. GitHub does not start a second workflow from a tag push
+# created with GITHUB_TOKEN, so this workflow explicitly dispatches publish.yml
+# *on that tag ref*. Re-running a version-bump run safely redispatches an
+# existing tag only when it still resolves to the exact verified commit.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
-permissions:
-  contents: read
+permissions: write-all
 concurrency:
-  group: auto-tag-${{ github.ref }}
+  group: auto-tag-main
+  queue: max
   cancel-in-progress: false
 jobs:
   auto-tag:
     name: Create org-standard tag from package.json version
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: write
+    permissions: write-all
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      - name: Checkout trusted main with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          egress-policy: audit
-
-      - name: Checkout main with full history
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
+          persist-credentials: false
+          ref: refs/heads/main
           fetch-depth: 0
-      - name: Read package.json version and compute display tag
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version")"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$ ]]; then
-            echo "::error::Invalid version shape in package.json: '$VERSION'. Expected X.Y.Z or X.Y.Z-prerelease."
-            exit 1
-          fi
-          BASE="$(echo "$VERSION" | sed -E 's/-.*$//')"
-          TAG="$(echo "$BASE" | awk -F. '{ printf "v%02d.%02d.%02d", $1, $2, $3 }')"
-          LEGACY_TAG="v${VERSION}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "legacy_tag=$LEGACY_TAG" >> "$GITHUB_OUTPUT"
-          echo "Detected package version: $VERSION -> display tag: $TAG"
-      - name: Check if tag already exists
-        id: check
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          LEGACY_TAG: ${{ steps.version.outputs.legacy_tag }}
-        run: |
-          set -euo pipefail
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag ${TAG} already exists; skipping."
-          elif git ls-remote --exit-code --tags origin "refs/tags/${LEGACY_TAG}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Legacy SemVer tag ${LEGACY_TAG} already exists for this package version; skipping."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Tag ${TAG} does not exist; it will be created."
-          fi
-      - name: Create and push tag
-        if: steps.check.outputs.exists == 'false'
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${TAG}" HEAD
-          git push origin "${TAG}"
-          echo "Created and pushed lightweight tag ${TAG}."
-      - name: Dispatch publish workflow
-        if: steps.check.outputs.exists == 'false'
+      - name: Setup Node.js 24 for release-policy validation
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Verify checked out commit is the successful CI commit on live main history
+        id: verified
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          expected_sha="$(git rev-parse HEAD)"
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to validate the successful CI commit."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          if [[ ! "$VERIFIED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CI supplied an invalid commit identity: '$VERIFIED_SHA'."
+            exit 1
+          fi
+          if ! git cat-file -e "$VERIFIED_SHA^{commit}" 2>/dev/null; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CI-verified commit $VERIFIED_SHA is absent from the full trusted main checkout."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$VERIFIED_SHA" "$CHECKED_OUT_SHA"; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CI-verified commit $VERIFIED_SHA is not an ancestor of trusted main checkout $CHECKED_OUT_SHA."
+            exit 1
+          fi
+          LIVE_MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${VERIFIED_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
+          if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::CI-verified commit $VERIFIED_SHA is no longer in live main history at $LIVE_MAIN_SHA (compare status: $relation)."
+            exit 0
+          fi
+          git switch --detach "$VERIFIED_SHA"
+          EXACT_CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          if [ "$EXACT_CHECKED_OUT_SHA" != "$VERIFIED_SHA" ]; then
+            echo "matches=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Trusted checkout detached to $EXACT_CHECKED_OUT_SHA instead of CI-verified commit $VERIFIED_SHA."
+            exit 1
+          fi
+          echo "matches=true" >> "$GITHUB_OUTPUT"
+          echo "Verified successful CI commit $VERIFIED_SHA as an ancestor of trusted checkout $CHECKED_OUT_SHA and live main $LIVE_MAIN_SHA, then detached the working tree to that exact commit."
+      - name: Detect an actual package version change
+        if: steps.verified.outputs.matches == 'true'
+        id: version-change
+        env:
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          CURRENT_VERSION="$(node -p "require('./package.json').version")"
+          node scripts/release-policy.mjs validate-semver "$CURRENT_VERSION"
+          TAG="$(node scripts/release-policy.mjs display-tag "$CURRENT_VERSION")"
+          LEGACY_TAG="v${CURRENT_VERSION}"
+          echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "legacy_tag=$LEGACY_TAG" >> "$GITHUB_OUTPUT"
+
+          # Record the first-parent boundary where this version epoch began.
+          # If an earlier auto-tag run failed before creating a tag, a later
+          # successful CI commit in the same epoch can safely become the new
+          # release target after its own exact-SHA gates pass.
+          VERSION_BOUNDARY_SHA="$VERIFIED_SHA"
+          cursor="$VERIFIED_SHA"
+          while parent="$(git rev-list --parents -n 1 "$cursor" | awk '{print $2}')" && [ -n "$parent" ]; do
+            if ! parent_package="$(git show "$parent:package.json" 2>/dev/null)"; then
+              break
+            fi
+            parent_version="$(node -e '
+              let input = "";
+              process.stdin.setEncoding("utf8");
+              process.stdin.on("data", (chunk) => { input += chunk; });
+              process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version));
+            ' <<<"$parent_package")"
+            if [ "$parent_version" != "$CURRENT_VERSION" ]; then
+              break
+            fi
+            VERSION_BOUNDARY_SHA="$parent"
+            cursor="$parent"
+          done
+          echo "version_boundary_sha=$VERSION_BOUNDARY_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_candidate_sha=$VERIFIED_SHA" >> "$GITHUB_OUTPUT"
+
+          FIRST_PARENT="$(git rev-list --parents -n 1 HEAD | awk '{print $2}')"
+          if [ -z "$FIRST_PARENT" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "The initial commit establishes package version $CURRENT_VERSION."
+            exit 0
+          fi
+          if PARENT_PACKAGE="$(git show "$FIRST_PARENT:package.json" 2>/dev/null)"; then
+            PARENT_VERSION="$(node -e '
+              let input = "";
+              process.stdin.setEncoding("utf8");
+              process.stdin.on("data", (chunk) => { input += chunk; });
+              process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version));
+            ' <<<"$PARENT_PACKAGE")"
+            if [ "$CURRENT_VERSION" = "$PARENT_VERSION" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "package.json version remains $CURRENT_VERSION; no release tag is required."
+              exit 0
+            fi
+            echo "Package version changed from $PARENT_VERSION to $CURRENT_VERSION."
+          else
+            echo "The first parent has no package.json; treating $CURRENT_VERSION as a version introduction."
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Resolve immutable release target
+        if: steps.verified.outputs.matches == 'true'
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version-change.outputs.tag }}
+          LEGACY_TAG: ${{ steps.version-change.outputs.legacy_tag }}
+          VERSION: ${{ steps.version-change.outputs.version }}
+          VERSION_BOUNDARY_SHA: ${{ steps.version-change.outputs.version_boundary_sha }}
+          RELEASE_CANDIDATE_SHA: ${{ steps.version-change.outputs.release_candidate_sha }}
+        run: |
+          set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to resolve the immutable release target."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          github_api_error_is_exact_status() {
+            local error_file="$1" expected_status="$2" observed_statuses
+            observed_statuses="$(sed -nE \
+              's/^gh: .* \(HTTP ([0-9]{3})\)$/\1/p' \
+              "$error_file" | sort -u)"
+            [ "$observed_statuses" = "$expected_status" ]
+          }
+          resolve_remote_tag() {
+            local tag="$1"
+            local ref_json ref_error object_type object_sha tag_json status
+            ref_error="$RUNNER_TEMP/tag-ref-${GITHUB_RUN_ID}-${tag//[^A-Za-z0-9._-]/_}.err"
+            if ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" 2>"$ref_error")"; then
+              :
+            else
+              status=$?
+              if github_api_error_is_exact_status "$ref_error" 404; then
+                return 2
+              fi
+              cat "$ref_error" >&2
+              return "$status"
+            fi
+            object_type="$(jq -er '.object.type' <<<"$ref_json")"
+            object_sha="$(jq -er '.object.sha' <<<"$ref_json")"
+            for _ in {1..10}; do
+              if [ "$object_type" = "commit" ]; then
+                printf '%s' "$object_sha"
+                return 0
+              fi
+              if [ "$object_type" != "tag" ]; then
+                echo "::error::Tag $tag resolves to unsupported Git object type '$object_type'." >&2
+                return 1
+              fi
+              tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
+              object_type="$(jq -er '.object.type' <<<"$tag_json")"
+              object_sha="$(jq -er '.object.sha' <<<"$tag_json")"
+            done
+            echo "::error::Tag $tag exceeds the maximum annotated-tag peel depth." >&2
+            return 1
+          }
+          read_optional_tag() {
+            local tag="$1" value status
+            if value="$(resolve_remote_tag "$tag")"; then
+              printf '%s' "$value"
+              return 0
+            else
+              status=$?
+            fi
+            if [ "$status" -eq 2 ]; then
+              return 0
+            fi
+            return "$status"
+          }
+          assert_ancestor() {
+            local ancestor="$1" descendant="$2" relation
+            relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${ancestor}...${descendant}" --jq '.status')"
+            if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+              echo "::error::Commit $ancestor is not an ancestor of $descendant (compare status: $relation)."
+              exit 1
+            fi
+          }
+
+          canonical_sha="$(read_optional_tag "$TAG")"
+          legacy_sha="$(read_optional_tag "$LEGACY_TAG")"
+          if [ -n "$canonical_sha" ] && [ -n "$legacy_sha" ] && [ "$canonical_sha" != "$legacy_sha" ]; then
+            echo "::error::Canonical tag $TAG ($canonical_sha) and legacy tag $LEGACY_TAG ($legacy_sha) disagree."
+            exit 1
+          fi
+
+          target_sha="${canonical_sha:-$legacy_sha}"
+          if [ -z "$target_sha" ]; then
+            # No release identity exists yet. Use this later successful CI
+            # commit, not an unverified historical bump, while retaining the
+            # recorded boundary as audit evidence for the version epoch.
+            target_sha="$RELEASE_CANDIDATE_SHA"
+            release_pages="$(github_api --method GET --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
+            release_count="$(jq -er --arg tag "$TAG" \
+              '[.[][] | select(.tag_name == $tag)] | length' \
+              <<<"$release_pages")"
+            if [ "$release_count" -gt 0 ]; then
+              echo "::error::Release $TAG exists without its tag; refusing to recreate identity at $target_sha."
+              exit 1
+            fi
+          fi
+
+          assert_ancestor "$VERSION_BOUNDARY_SHA" "$target_sha"
+          assert_ancestor "$target_sha" "$RELEASE_CANDIDATE_SHA"
+          target_package="$(github_api --method GET "repos/$GITHUB_REPOSITORY/contents/package.json" -f ref="$target_sha" --jq '.content' | tr -d '\n' | base64 --decode)"
+          target_version="$(node -e '
+            let input = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { input += chunk; });
+            process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version));
+          ' <<<"$target_package")"
+          target_name="$(node -e '
+            let input = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { input += chunk; });
+            process.stdin.on("end", () => process.stdout.write(JSON.parse(input).name));
+          ' <<<"$target_package")"
+          if [ "$target_version" != "$VERSION" ]; then
+            echo "::error::Release target $target_sha contains package version $target_version, expected $VERSION."
+            exit 1
+          fi
+          expected_asset_name="$(node -e '
+            const [name, version] = process.argv.slice(1);
+            if (!name || !version || /[\r\n]/.test(name) || /[\r\n]/.test(version)) {
+              throw new Error("package name and version must be non-empty single-line strings");
+            }
+            const normalizedName = name.replace(/^@/, "").replaceAll("/", "-");
+            process.stdout.write(`${normalizedName}-${version}.tgz`);
+          ' "$target_name" "$target_version")"
+
+          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
+          if [ -n "$canonical_sha" ]; then
+            publish_workflow_path=".github/workflows/publish.yml"
+            publish_run_pages="$(github_api --method GET --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$target_sha&event=workflow_dispatch&per_page=100")"
+            successful_publish_count="$(jq -er \
+              --arg workflow_path "$publish_workflow_path" \
+              --arg tag "$TAG" \
+              --arg sha "$target_sha" \
+              --arg repo "$GITHUB_REPOSITORY" \
+              '[.[] | .workflow_runs[]? | select(
+                .path == $workflow_path and
+                .head_branch == $tag and
+                .head_sha == $sha and
+                .head_repository.full_name == $repo and
+                .repository.full_name == $repo and
+                .event == "workflow_dispatch" and
+                .status == "completed" and
+                .conclusion == "success"
+              )] | length' \
+              <<<"$publish_run_pages")"
+            durable_release_evidence=false
+            if [ "$successful_publish_count" -eq 0 ]; then
+              release_error="$RUNNER_TEMP/release-by-tag-${GITHUB_RUN_ID}.err"
+              if release_json="$(github_api --method GET \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>"$release_error")"; then
+                durable_release_evidence="$(jq -er \
+                  --arg tag "$TAG" \
+                  --arg sha "$target_sha" \
+                  --arg asset "$expected_asset_name" \
+                  'if (try (
+                    .tag_name == $tag and
+                    .target_commitish == $sha and
+                    .draft == false and
+                    .immutable == true and
+                    (.assets | type) == "array" and
+                    (.assets | length) == 1 and
+                    .assets[0].name == $asset and
+                    .assets[0].state == "uploaded" and
+                    (.assets[0].digest | test("^sha256:[0-9a-f]{64}$"))
+                  ) catch false)
+                  then "true"
+                  else "false"
+                  end' \
+                  <<<"$release_json")"
+              else
+                release_status=$?
+                if github_api_error_is_exact_status "$release_error" 404; then
+                  echo "No GitHub Release exists for canonical tag $TAG; publication recovery remains enabled."
+                else
+                  cat "$release_error" >&2
+                  exit "$release_status"
+                fi
+              fi
+            fi
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            if [ "$successful_publish_count" -gt 0 ]; then
+              echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
+              echo "Canonical tag $TAG already has successful exact-identity Publish evidence at $target_sha; no redispatch is required."
+            elif [ "$durable_release_evidence" = "true" ]; then
+              echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
+              echo "Canonical tag $TAG has an exact immutable GitHub Release at $target_sha with uploaded asset $expected_asset_name and a valid sha256 digest; no redispatch is required."
+            else
+              echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
+              echo "Canonical tag $TAG has neither successful exact-identity Publish-run evidence nor exact durable GitHub Release evidence at $target_sha; publication will be reconciled idempotently."
+            fi
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
+            echo "Canonical tag $TAG will be created at validated target $target_sha (version epoch starts at $VERSION_BOUNDARY_SHA)."
+          fi
+      - name: Require every exact-SHA push workflow to pass
+        if: >-
+          steps.verified.outputs.matches == 'true' &&
+          steps.check.outputs.should_dispatch == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.check.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to inspect exact-SHA workflows."
+            exit 1
+          fi
+          GH_TOKEN="$github_token" bash scripts/require-release-push-workflows.sh "$TARGET_SHA"
+      - name: Wait for exact CodeQL analyses and require zero results
+        if: >-
+          steps.verified.outputs.matches == 'true' &&
+          steps.check.outputs.should_dispatch == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.check.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to inspect exact CodeQL evidence."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          github_run() {
+            GH_TOKEN="$github_token" gh run "$@"
+          }
+          codeql_state="missing"
+          for poll_attempt in {1..60}; do
+            codeql_run="$(github_run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA" --event push --limit 1 --json databaseId,status,conclusion --jq 'sort_by(.databaseId) | last // null')"
+            codeql_state="$(jq -r 'if . == null then "missing" else "\(.status):\(.conclusion // "")" end' <<<"$codeql_run")"
+            if [ "$codeql_state" = "completed:success" ]; then
+              echo "CodeQL completed successfully for $TARGET_SHA."
+              break
+            fi
+            if [[ "$codeql_state" == completed:* ]]; then
+              echo "::error::CodeQL finished as $codeql_state for $TARGET_SHA; refusing to tag."
+              exit 1
+            fi
+            if [ "$poll_attempt" -eq 60 ]; then
+              echo "::error::CodeQL did not complete successfully for $TARGET_SHA (last state: $codeql_state); refusing to tag."
+              exit 1
+            fi
+            echo "Waiting for CodeQL on $TARGET_SHA ($poll_attempt/60; state: $codeql_state)."
+            sleep 5
+          done
+
+          # Workflow completion and SARIF processing are distinct states. Read
+          # the immutable analyses for TARGET_SHA itself: current main alert
+          # state cannot prove that an older queued release commit was clean.
+          required_codeql_categories=("/language:actions" "/language:javascript-typescript")
+          for attempt in {1..12}; do
+            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            target_analyses="$(jq -c --arg sha "$TARGET_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL")]' <<<"$analyses_json")"
+            analyses_ready=true
+            for category in "${required_codeql_categories[@]}"; do
+              analysis="$(jq -c --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last // null' <<<"$target_analyses")"
+              if [ "$analysis" = "null" ]; then
+                analyses_ready=false
+                echo "Waiting for exact CodeQL analysis $category on $TARGET_SHA."
+                continue
+              fi
+              analysis_error="$(jq -r '.error // ""' <<<"$analysis")"
+              if [ -n "$analysis_error" ]; then
+                echo "::error::CodeQL analysis $category failed processing for $TARGET_SHA: $analysis_error"
+                exit 1
+              fi
+            done
+            if [ "$analyses_ready" = true ]; then
+              missing_category_count="$(jq '[.[] | select((.category // "") == "")] | length' <<<"$target_analyses")"
+              if [ "$missing_category_count" -ne 0 ]; then
+                echo "::error::Exact CodeQL evidence contains $missing_category_count analysis object(s) without a category for $TARGET_SHA."
+                exit 1
+              fi
+              category_count=0
+              while IFS= read -r category; do
+                category_count=$((category_count + 1))
+                analysis="$(jq -c --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last' <<<"$target_analyses")"
+                analysis_error="$(jq -r '.error // ""' <<<"$analysis")"
+                if [ -n "$analysis_error" ]; then
+                  echo "::error::CodeQL analysis $category failed processing for $TARGET_SHA: $analysis_error"
+                  exit 1
+                fi
+                analysis_id="$(jq -er --arg category "$category" '[.[] | select(.category == $category)] | sort_by(.id) | last | .id' <<<"$target_analyses")"
+                sarif_file="$RUNNER_TEMP/codeql-${analysis_id}.sarif"
+                github_api -H "Accept: application/sarif+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses/$analysis_id" >"$sarif_file"
+                result_count="$(jq '[.runs[]?.results[]?] | length' "$sarif_file")"
+                if [ "$result_count" -ne 0 ]; then
+                  echo "::error::Exact CodeQL analysis $category contains $result_count result(s) for $TARGET_SHA; refusing to tag."
+                  jq -r '.runs[]?.results[]? | [.ruleId, (.level // "warning"), .message.text] | @tsv' "$sarif_file"
+                  exit 1
+                fi
+              done < <(jq -r '[.[] | .category] | unique[]' <<<"$target_analyses")
+              echo "All $category_count exact CodeQL SARIF categories contain zero results for $TARGET_SHA."
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "::error::Exact CodeQL analyses were not visible for both categories on $TARGET_SHA; refusing to tag."
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "Code-scanning gate passed on immutable SHA $TARGET_SHA."
+      - name: Require triggered Dependabot updates to pass
+        if: >-
+          steps.verified.outputs.matches == 'true' &&
+          steps.check.outputs.should_dispatch == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.check.outputs.target_sha }}
+          VERSION_BOUNDARY_SHA: ${{ steps.version-change.outputs.version_boundary_sha }}
+        run: |
+          set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to inspect Dependabot release evidence."
+            exit 1
+          fi
+          GH_TOKEN="$github_token" bash scripts/require-dependabot-release-evidence.sh require "$TARGET_SHA" "$VERSION_BOUNDARY_SHA"
+      - name: Create tag through the GitHub API
+        if: >-
+          steps.verified.outputs.matches == 'true' &&
+          steps.check.outputs.should_dispatch == 'true' &&
+          steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version-change.outputs.tag }}
+          TARGET_SHA: ${{ steps.check.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to create the immutable release tag."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          LIVE_MAIN_SHA="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          relation="$(github_api --method GET "repos/$GITHUB_REPOSITORY/compare/${TARGET_SHA}...${LIVE_MAIN_SHA}" --jq '.status')"
+          if [ "$relation" != "ahead" ] && [ "$relation" != "identical" ]; then
+            echo "::error::Tag target $TARGET_SHA left live main history at $LIVE_MAIN_SHA (compare status: $relation)."
+            exit 1
+          fi
+          create_error="$RUNNER_TEMP/create-tag-${GITHUB_RUN_ID}.err"
+          if ! github_api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="$TARGET_SHA" >/dev/null 2>"$create_error"; then
+            ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")"
+            object_type="$(jq -er '.object.type' <<<"$ref_json")"
+            existing_sha="$(jq -er '.object.sha' <<<"$ref_json")"
+            for _ in {1..10}; do
+              if [ "$object_type" = "commit" ]; then
+                break
+              fi
+              if [ "$object_type" != "tag" ]; then
+                echo "::error::Concurrent tag $TAG resolves to unsupported Git object type '$object_type'."
+                exit 1
+              fi
+              tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$existing_sha")"
+              object_type="$(jq -er '.object.type' <<<"$tag_json")"
+              existing_sha="$(jq -er '.object.sha' <<<"$tag_json")"
+            done
+            if [ "$existing_sha" != "$TARGET_SHA" ]; then
+              cat "$create_error" >&2
+              echo "::error::Tag creation failed and ${TAG} resolves to ${existing_sha:-missing}, not $TARGET_SHA."
+              exit 1
+            fi
+            echo "Tag ${TAG} was created concurrently at the exact verified SHA; continuing idempotently."
+          fi
+          echo "Created lightweight tag ${TAG} at ${TARGET_SHA} through the GitHub API."
+      - name: Dispatch publish workflow
+        if: >-
+          steps.verified.outputs.matches == 'true' &&
+          steps.check.outputs.should_dispatch == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version-change.outputs.tag }}
+          TARGET_SHA: ${{ steps.check.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          github_token="${GH_TOKEN:-}"
+          unset GH_TOKEN
+          if [ -z "$github_token" ]; then
+            echo "::error::GITHUB_TOKEN is required to dispatch the protected-tag publication."
+            exit 1
+          fi
+          github_api() {
+            GH_TOKEN="$github_token" gh api "$@"
+          }
+          github_api_error_is_exact_status() {
+            local error_file="$1" expected_status="$2" observed_statuses
+            observed_statuses="$(sed -nE \
+              's/^gh: .* \(HTTP ([0-9]{3})\)$/\1/p' \
+              "$error_file" | sort -u)"
+            [ "$observed_statuses" = "$expected_status" ]
+          }
+          github_workflow() {
+            GH_TOKEN="$github_token" gh workflow "$@"
+          }
+          expected_sha="$TARGET_SHA"
+          # v04.05.26 contains the pre-fix publish workflow. GitHub executes a
+          # workflow_dispatch from the selected tag ref, so redispatching that
+          # immutable tag can only repeat Publish #119/#120's boolean-read
+          # failure. The dedicated main-only recovery workflow is the sole
+          # reviewed path for this exact release identity; later tags use the
+          # corrected publish.yml stored at their own immutable commit.
+          if [ "$TAG" = "v04.05.26" ] && \
+            [ "$TARGET_SHA" = "2b8b9b086b4ca48544e42334e7ae625f006c88ae" ]; then
+            echo "Refusing to redispatch the known-frozen publish.yml for $TAG at $TARGET_SHA; recover-v4.5.26-release.yml owns this exact historical reconciliation."
+            exit 0
+          fi
           for attempt in {1..10}; do
-            tag_sha="$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}')"
-            peeled_sha="$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}')"
-            if [ -n "${tag_sha}" ]; then
-              if [ "${tag_sha}" = "${expected_sha}" ]; then
-                echo "Tag ${TAG} is visible on origin as a lightweight tag at ${expected_sha}."
-                break
+            ref_error="$RUNNER_TEMP/dispatch-tag-${GITHUB_RUN_ID}.err"
+            if ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>"$ref_error")"; then
+              object_type="$(jq -er '.object.type' <<<"$ref_json")"
+              tag_sha="$(jq -er '.object.sha' <<<"$ref_json")"
+              for _ in {1..10}; do
+                if [ "$object_type" = "commit" ]; then
+                  break
+                fi
+                if [ "$object_type" != "tag" ]; then
+                  echo "::error::Tag $TAG resolves to unsupported Git object type '$object_type'."
+                  exit 1
+                fi
+                tag_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha")"
+                object_type="$(jq -er '.object.type' <<<"$tag_json")"
+                tag_sha="$(jq -er '.object.sha' <<<"$tag_json")"
+              done
+              if [ "$tag_sha" != "$expected_sha" ]; then
+                echo "::error::Tag $TAG resolves to $tag_sha, expected $expected_sha; refusing to dispatch publish.yml."
+                exit 1
               fi
-              if [ "${peeled_sha}" = "${expected_sha}" ]; then
-                echo "::warning::Tag ${TAG} is annotated but peels to ${expected_sha}; proceeding for compatibility. New auto-created tags are lightweight."
-                break
-              fi
-              echo "::error::Tag ${TAG} points to ${tag_sha} (peeled: ${peeled_sha:-none}), expected ${expected_sha}; refusing to dispatch publish.yml."
+              echo "Tag $TAG is visible through the authenticated API at exact target $expected_sha."
+              break
+            elif ! github_api_error_is_exact_status "$ref_error" 404; then
+              cat "$ref_error" >&2
+              echo "::error::Could not safely resolve tag $TAG before dispatch."
               exit 1
             fi
             if [ "$attempt" -eq 10 ]; then
-              echo "::error::Tag ${TAG} was not visible on origin after push; refusing to dispatch publish.yml."
+              echo "::error::Tag ${TAG} was not visible through the authenticated API after creation; refusing to dispatch publish.yml."
               exit 1
             fi
-            echo "Waiting for tag ${TAG} to become visible on origin (${attempt}/10)."
+            echo "Waiting for tag ${TAG} to become visible through the authenticated API (${attempt}/10)."
             sleep 2
           done
-          gh workflow run publish.yml --ref "${TAG}" -f tag="${TAG}"
-          echo "Dispatched publish.yml for ${TAG}; it will publish packages and create the GitHub Release."
-    timeout-minutes: 15
+          github_workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "${TAG}"
+          echo "Dispatched publish.yml on protected tag ref ${TAG}; it will publish packages and create the GitHub Release."
+    timeout-minutes: 90

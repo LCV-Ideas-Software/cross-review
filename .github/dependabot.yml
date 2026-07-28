@@ -1,27 +1,13 @@
 version: 2
 
-# StepSecurity Secure Registry auth (matches project .npmrc).
-# Dependabot needs its own auth context — Actions secrets do not
-# propagate to the Dependabot service. The `DEPENDABOT_STEPSECURITY_NPM_TOKEN`
-# org secret carries the same proxy token used by CI workflows via the
-# Actions secret `STEPSECURITY_NPM_TOKEN`. Adding this `registries:`
-# block restores Dependabot's ability to resolve versions through the
-# StepSecurity proxy after `.npmrc` switched the default registry from
-# npmjs.org to registry.stepsecurity.io/javascript.
-registries:
-  stepsecurity-javascript:
-    type: npm-registry
-    url: https://registry.stepsecurity.io/javascript
-    token: ${{ secrets.DEPENDABOT_STEPSECURITY_NPM_TOKEN }}
+# `package.json` deliberately has no Corepack `packageManager` hint: Dependabot
+# uses its supported bundled npm, while CI/Publish pin and verify npm 12.0.1.
 
 updates:
   - package-ecosystem: npm
     directory: "/"
-    registries:
-      - stepsecurity-javascript
     schedule:
       interval: "daily"
-      day: "thursday"
       time: "01:00"
       timezone: "America/Los_Angeles"
     open-pull-requests-limit: 10
@@ -47,13 +33,49 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
-      day: "thursday"
       time: "01:00"
       timezone: "America/Los_Angeles"
     open-pull-requests-limit: 10
+    groups:
+      codeql-action:
+        patterns:
+          - github/codeql-action*
     labels:
       - dependencies
       - github-actions
     commit-message:
       prefix: "chore(actions)"
+      include: scope
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "01:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    groups:
+      python-tools:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(python-deps)"
+      include: scope
+
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "01:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(pre-commit)"
       include: scope

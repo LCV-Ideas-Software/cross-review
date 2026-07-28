@@ -4,6 +4,7 @@
 // once across all three adapters. Type-only import preserves the
 // `OpenAI.ChatCompletionCreateParams*` namespace types at compile time.
 import type OpenAI from "openai";
+import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { statusInstruction } from "../core/status.js";
 import type {
   AppConfig,
@@ -19,6 +20,12 @@ import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor } from "./openai.js";
 import { withRetry } from "./retry.js";
+import {
+  assertChatCompletionTerminal,
+  assertChatStreamCompleted,
+  observeChatStreamTerminals,
+  withEstimatedTerminalBilling,
+} from "./terminal.js";
 import { userPrompt } from "./text.js";
 
 type ChatUsage = {
@@ -42,20 +49,27 @@ type DeepSeekReasoningEffort = "high" | "max";
 type DeepSeekThinkingExtension = {
   thinking: {
     type: "enabled";
-    reasoning_effort: DeepSeekReasoningEffort;
   };
+  reasoning_effort: DeepSeekReasoningEffort;
 };
-type DeepSeekChatPayload = OpenAI.ChatCompletionCreateParamsNonStreaming &
+type DeepSeekChatPayload = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, "reasoning_effort"> &
   DeepSeekThinkingExtension;
-type DeepSeekChatStreamPayload = OpenAI.ChatCompletionCreateParamsStreaming &
+type DeepSeekChatStreamPayload = Omit<
+  OpenAI.ChatCompletionCreateParamsStreaming,
+  "reasoning_effort"
+> &
   DeepSeekThinkingExtension;
 
 function usageFromChat(usage: ChatUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
   const cacheHit = usage.prompt_cache_hit_tokens ?? 0;
   const cacheMiss = usage.prompt_cache_miss_tokens ?? 0;
+  const providerInput = usage.prompt_tokens ?? 0;
   const result: TokenUsage = {
-    input_tokens: usage.prompt_tokens,
+    input_tokens:
+      usage.prompt_tokens === undefined
+        ? undefined
+        : Math.max(0, providerInput - cacheHit - cacheMiss),
     output_tokens: usage.completion_tokens,
     total_tokens: usage.total_tokens,
     reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens,
@@ -77,7 +91,7 @@ function chatText(response: {
 function deepSeekReasoningEffort(
   value: AppConfig["reasoning_effort"][PeerId],
 ): DeepSeekReasoningEffort {
-  return value === "max" || value === "xhigh" ? "max" : "high";
+  return value === "max" || value === "xhigh" || value === "ultra" ? "max" : "high";
 }
 
 function deepSeekThinking(
@@ -87,8 +101,8 @@ function deepSeekThinking(
   return {
     thinking: {
       type: "enabled",
-      reasoning_effort: deepSeekReasoningEffort(override ?? config.reasoning_effort.deepseek),
     },
+    reasoning_effort: deepSeekReasoningEffort(override ?? config.reasoning_effort.deepseek),
   };
 }
 
@@ -171,7 +185,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "user", content: `${userPrompt(prompt)}\n\n${statusInstruction()}` },
           ],
           response_format: { type: "json_object" },
-          max_tokens: this.config.max_output_tokens,
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
         // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.
@@ -191,20 +206,53 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "review",
             "chat.completion.chunk.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
+          const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage = usageFromChat(chunk.usage) ?? usage;
-            for (const choice of chunk.choices ?? []) {
-              const delta = choice.delta?.content ?? "";
-              stream_buffer.append(delta);
-              tokenStream.append(delta);
+            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+              observeChatStreamTerminals(
+                chunk.choices,
+                completedChoices,
+                {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "review",
+                  allowToolCalls: false,
+                },
+                rejectedTerminals,
+              ),
+            );
+            if (rejectedTerminals.length === 0) {
+              for (const choice of chunk.choices ?? []) {
+                const delta = choice.delta?.content ?? "";
+                stream_buffer.append(delta);
+                tokenStream.append(delta);
+              }
             }
           }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+            assertChatStreamCompleted(
+              completedChoices,
+              {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "review",
+              },
+              rejectedTerminals,
+            ),
+          );
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.resultFromText({
@@ -221,17 +269,31 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
+        const responseUsage = usageFromChat(response.usage);
+        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
+          assertChatCompletionTerminal(response.choices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "review",
+            allowToolCalls: false,
+          }),
+        );
         return this.resultFromText({
           text: chatText(response),
           raw: response,
-          usage: usageFromChat(response.usage),
+          usage: responseUsage,
           started,
           attempts: attempt,
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "review", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
+      { signal: context.signal },
     );
   }
 
@@ -254,7 +316,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             { role: "system", content: this.systemPrompt(context) },
             { role: "user", content: userPrompt(prompt) },
           ],
-          max_tokens: this.config.max_output_tokens,
+          max_tokens:
+            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
         };
         // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
         // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.
@@ -274,20 +337,53 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
             context,
             "generation",
             "chat.completion.chunk.delta",
+            attempt,
           );
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
           let chunks = 0;
+          const completedChoices = new Set<number>();
+          const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
             modelReported = chunk.model ?? modelReported;
             usage = usageFromChat(chunk.usage) ?? usage;
-            for (const choice of chunk.choices ?? []) {
-              const delta = choice.delta?.content ?? "";
-              stream_buffer.append(delta);
-              tokenStream.append(delta);
+            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+              observeChatStreamTerminals(
+                chunk.choices,
+                completedChoices,
+                {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase: "generation",
+                  allowToolCalls: false,
+                },
+                rejectedTerminals,
+              ),
+            );
+            if (rejectedTerminals.length === 0) {
+              for (const choice of chunk.choices ?? []) {
+                const delta = choice.delta?.content ?? "";
+                stream_buffer.append(delta);
+                tokenStream.append(delta);
+              }
             }
           }
+          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+            assertChatStreamCompleted(
+              completedChoices,
+              {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase: "generation",
+              },
+              rejectedTerminals,
+            ),
+          );
           const text = stream_buffer.text();
           tokenStream.complete(text.length);
           return this.generationFromText({
@@ -304,17 +400,31 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
         });
+        const responseUsage = usageFromChat(response.usage);
+        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
+          assertChatCompletionTerminal(response.choices, {
+            context,
+            peer: this.id,
+            provider: this.provider,
+            model: this.model,
+            phase: "generation",
+            allowToolCalls: false,
+          }),
+        );
         return this.generationFromText({
           text: chatText(response),
           raw: response,
-          usage: usageFromChat(response.usage),
+          usage: responseUsage,
           started,
           attempts: attempt,
           modelReported: response.model,
         });
       },
-      (error, attempt) =>
-        classifyProviderError(this.id, this.provider, this.model, error, attempt, started),
+      (error, attempt) => {
+        this.discardTokenEventBuffer(context, "generation", attempt);
+        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+      },
+      { signal: context.signal },
     );
   }
 }

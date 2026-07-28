@@ -1,4 +1,4 @@
-import type { PeerFailure, PeerId } from "../core/types.js";
+import type { CostEstimate, PeerFailure, PeerId, TokenUsage } from "../core/types.js";
 import { safeErrorMessage } from "../security/redact.js";
 
 // v2.4.0 / audit closure (P2.7): extract `Retry-After` from provider
@@ -217,18 +217,36 @@ export function classifyProviderError(
     /\b(?:401|403|unauthorized|forbidden|invalid api key|missing api key|expired api key|authentication failed|authentication required)\b/i.test(
       message,
     );
+  const errorName =
+    error && typeof error === "object" && typeof (error as { name?: unknown }).name === "string"
+      ? String((error as { name: string }).name)
+      : "";
   const cancelled =
-    /\b(?:aborterror|operation was aborted|call cancelled|session_cancelled)\b/i.test(message);
-  const providerRefusal =
-    provider.toLowerCase() === "anthropic" &&
-    (/\banthropic_refusal\b|\brefusal\b/i.test(providerSignals) ||
-      /\bstop_reason\b[^a-z0-9_]+refusal\b/i.test(message) ||
-      /\bclaude fable 5 refusal\b/i.test(message));
-  const moderation =
-    /\b(?:invalid_prompt|content_policy_violation|policy_violation)\b/i.test(providerSignals) ||
-    /\b(?:invalid_prompt|prompt[_\s-]?flagged|moderation|moderated|safety policy|safety system|usage policy|responsibleaipolicyviolation|content[_\s-]?filter|blocked by policy|policy violation|could not be processed|input was rejected)\b/i.test(
+    /\baborterror\b/i.test(errorName) ||
+    /\b(?:aborterror|(?:operation|request|call)\s+(?:was\s+)?(?:aborted|cancelled)|session_cancelled)\b/i.test(
       message,
     );
+  const errorRecord =
+    error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
+  const providerRefusal =
+    errorRecord?.code === "provider_output_refusal" ||
+    (provider.toLowerCase() === "anthropic" &&
+      (/\banthropic_refusal\b|\brefusal\b/i.test(providerSignals) ||
+        /\bstop_reason\b[^a-z0-9_]+refusal\b/i.test(message) ||
+        /\bclaude (?:fable|opus) 5 refusal\b/i.test(message)));
+  const providerTerminalRejected = errorRecord?.code === "provider_terminal_state_rejected";
+  const retryableDeepSeekInsufficientResource =
+    providerTerminalRejected &&
+    provider.toLowerCase() === "deepseek" &&
+    errorRecord?.terminal_state === "finish_reason=insufficient_system_resource";
+  const providerPromptBlocked = errorRecord?.code === "provider_prompt_blocked";
+  const moderation =
+    providerPromptBlocked ||
+    (!providerTerminalRejected &&
+      (/\b(?:invalid_prompt|content_policy_violation|policy_violation)\b/i.test(providerSignals) ||
+        /\b(?:invalid_prompt|prompt[_\s-]?flagged|moderation|moderated|safety policy|safety system|usage policy|responsibleaipolicyviolation|content[_\s-]?filter|blocked by policy|policy violation|could not be processed|input was rejected)\b/i.test(
+          message,
+        )));
   const timeout =
     /\b(?:timeout|vector_store_timeout)\b/i.test(providerSignals) ||
     /\b(?:timeout|aborted|aborterror)\b/i.test(message);
@@ -242,6 +260,32 @@ export function classifyProviderError(
   const providerOverloaded =
     /\b(?:overloaded_error|overloaded)\b/i.test(providerSignals) ||
     /\b(?:overloaded_error|overloaded)\b/i.test(message);
+  const retryableAnthropicMaxTokens =
+    /\banthropic_max_tokens_retryable\b/i.test(providerSignals) ||
+    /\banthropic_max_tokens_retryable\b/i.test(message);
+  const retryableOpenAIMaxOutputTokens =
+    /\bopenai_max_output_tokens_retryable\b/i.test(providerSignals) ||
+    /\bopenai_max_output_tokens_retryable\b/i.test(message);
+  const retryableGeminiMaxTokens =
+    /\bgemini_max_tokens_retryable\b/i.test(providerSignals) ||
+    /\bgemini_max_tokens_retryable\b/i.test(message);
+  const billedUsage =
+    errorRecord?.usage && typeof errorRecord.usage === "object"
+      ? (errorRecord.usage as TokenUsage)
+      : undefined;
+  const billedCost =
+    errorRecord?.cost && typeof errorRecord.cost === "object"
+      ? (errorRecord.cost as CostEstimate)
+      : undefined;
+  const accountedAttempts =
+    typeof errorRecord?.accounted_attempts === "number" &&
+    Number.isInteger(errorRecord.accounted_attempts) &&
+    errorRecord.accounted_attempts > 0
+      ? errorRecord.accounted_attempts
+      : typeof billedCost?.total_cost === "number" && Number.isFinite(billedCost.total_cost)
+        ? 1
+        : 0;
+  const unpricedAttempts = Math.max(0, attempts - accountedAttempts);
 
   const failureClass = auth
     ? "auth"
@@ -299,13 +343,23 @@ export function classifyProviderError(
     failure_class: failureClass,
     message,
     retryable:
+      (!providerTerminalRejected || retryableDeepSeekInsufficientResource) &&
+      !providerPromptBlocked &&
       !cancelled &&
       !auth &&
       !providerRefusal &&
-      (rateLimited || timeout || network || gateway5xx || providerOverloaded),
+      (rateLimited ||
+        timeout ||
+        network ||
+        gateway5xx ||
+        providerOverloaded ||
+        retryableAnthropicMaxTokens ||
+        retryableOpenAIMaxOutputTokens ||
+        retryableGeminiMaxTokens ||
+        retryableDeepSeekInsufficientResource),
     recovery_hint: providerRefusal
       ? "reformulate_and_retry"
-      : rateLimited || providerOverloaded
+      : rateLimited || providerOverloaded || retryableDeepSeekInsufficientResource
         ? "wait_and_retry"
         : moderation
           ? "reformulate_and_retry"
@@ -314,11 +368,15 @@ export function classifyProviderError(
             : undefined,
     reformulation_advice:
       moderation || providerRefusal
-        ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent. If Claude Fable 5 is the selected model, a deliberate Anthropic fallback model may also be configured explicitly; do not silently downgrade."
+        ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent. If an Anthropic classifier refusal persists, any model change must remain an explicit operator choice; do not silently downgrade."
         : docsAdvice,
     retry_after_ms: extractRetryAfterMs(error),
     attempts,
     latency_ms: Date.now() - started,
+    ...(billedUsage ? { usage: billedUsage } : {}),
+    ...(billedCost ? { cost: billedCost } : {}),
+    billing_status: billedUsage || billedCost ? "reported" : "unknown",
+    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
     docs_hint: docsHint,
   };
 }

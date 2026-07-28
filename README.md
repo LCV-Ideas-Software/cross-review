@@ -16,15 +16,26 @@
 [![runtime: API-only](https://img.shields.io/badge/runtime-API--only-blue.svg)](#what-it-does)
 [![license: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](./LICENSE)
 
-**Install.**
+**Upgrade from the published registry.**
 
 ```bash
-npm install -g @lcv-ideas-software/cross-review
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 # or using the GitHub Packages mirror:
-npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.github.com
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
-**Status.** Stable. Current release: **v04.04.06** (npm package `4.4.6`). See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
+npm 12 global operations evaluate the whole global dependency tree, not this
+package's project policy in isolation. The command therefore disables every
+install-time script and keeps Git and remote-URL dependencies blocked. The
+published package has no install lifecycle and is tested in this mode. Never add
+`--dangerously-allow-all-scripts`, and do not install a locally built source
+tree or tarball as a substitute for the published registry release.
+
+**Status.** Stable. The current source/release target is **v04.05.31** (package `4.5.31`).
+Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
+registry state and `server_info` for the version actually loaded by an MCP
+window. See
+[CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 > **Project renamed 2026-05-15.** This project was previously published as
 > [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2)
@@ -36,106 +47,139 @@ npm install -g @lcv-ideas-software/cross-review --registry=https://npm.pkg.githu
 
 The version history at a glance:
 
-| Release              | Scope                                                                                                                                                                                                                                                                       |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`v04.04.06`**      | Patch — close the remaining Claude re-validation tail: orchestrator attached-evidence reads now fail closed, session_doctor defaults to action-oriented findings, and T2#10 source-regex debt drops to a locked total of 160.                                               |
-| **`v04.04.05`**      | Patch — close the seven verified residual audit items: evidence fail-closed realpath handling, typed shadow-decision runtime events, derived release date, redaction-comment correction, retry/security gate verification, and a locked T2#10 smoke source-contract budget. |
-| **`v04.04.04`**      | Patch — central config can now carry model-specific rate cards, so Claude Opus 4.8 and Claude Fable 5 pricing are both stored and the active Anthropic rates follow the configured Claude model automatically.                                                              |
-| **`v04.04.03`**      | Patch — continue the T2#10 smoke-debt reduction by moving the lazy provider SDK import source contract into the dedicated source-contract smoke, preserving coverage while reducing broad smoke regex pins.                                                                 |
-| **`v04.04.02`**      | Patch — support Claude Fable 5 as an explicit Anthropic production-model option, including verified model selection, refusal handling, refusal events, docs and cost guidance.                                                                                              |
-| **`v04.04.01`**      | Patch — complete residual audit sweep: full mutating-tool identity gate, evidence attachment cache/safety, async EventLog flush, Perplexity auth-only probe mode, cache-cost correctness, dashboard report method split, and dedicated source-contract smoke isolation.     |
-| **`v04.04.00`**      | Minor — consolidated audit close-out: log-level validation, realpath containment, initial-draft fabrication guard, Perplexity probe minimization, identity audit events, derived tool list, docs and metadata guards.                                                       |
-| **`v04.03.09`**      | Patch — move `truthfulness_preflight` coverage into a focused smoke script and tighten evidence-artifact matching for path-qualified refs and `.md/.diff/.patch/.csv` files.                                                                                                |
-| **`v04.03.08`**      | Patch — move `evidence_preflight` behavior coverage into a focused smoke script and run it explicitly before the broader smoke suite.                                                                                                                                       |
-| **`v04.03.07`**      | Patch — evidence preflight now blocks paid review when the submission references an external evidence/log artifact that was not attached to the session.                                                                                                                    |
-| **`v04.03.06`**      | Patch — isolate `runtime-smoke` in a temporary data directory so harness runs do not write open sessions into the operator's real runtime corpus.                                                                                                                           |
-| **`v04.03.05`**      | Patch — filter Perplexity streaming `<think>` token events, expand `~` in central config paths, escape dashboard runtime paths, and harden smoke scripts.                                                                                                                   |
-| **`v04.03.04`**      | Patch — harden cross-process event sequencing, exact-match fabrication checks, Gemini missing-text handling, and streaming provider error retry classification.                                                                                                             |
-| **`v04.03.03`**      | Patch — add forensic diagnostics for append/event and identity failures, flush pending events on shutdown signals, retry structured provider 5xx errors, and refresh official AI provider SDKs.                                                                             |
-| **`v04.03.02`**      | Patch — harden persistence redaction, finalized-session mutation guards, side-effect identity gates, caller-token rotation output, and Windows registry config fallback.                                                                                                    |
-| **`v04.03.01`**      | Patch — tighten skip-peer classification so non-retryable provider errors block, while Anthropic overload events remain retryable and better surfaced in skip diagnostics.                                                                                                  |
-| **`v04.03.00`**      | Minor — P1/P2/P3 follow-up with unresolved-evidence close-out visibility, an offline fixture eval harness, and a read-only peer reliability report.                                                                                                                         |
-| **`v04.02.05`**      | Patch — harden session auditability with terminal events, cost split reporting, `not_resurfaced` visibility, and relator provenance checks for session IDs/GitHub URLs.                                                                                                     |
-| **`v04.02.04`**      | Patch — harden truthfulness preflight auditability, add a read-only preflight retest tool, and reduce false parser warnings for attached/log evidence.                                                                                                                      |
-| **`v04.02.03`**      | Patch — promote the Gemini canonical default to `gemini-3.1-pro-preview` and refresh the active local Gemini rate card.                                                                                                                                                     |
-| **`v04.02.02`**      | Patch — provider-doc refresh, Perplexity probe repair, current model pins, and rate-card guidance.                                                                                                                                                                          |
-| **`v04.02.01`**      | Patch — publish the workspace hard-gate cleanup as a package release.                                                                                                                                                                                                       |
-| **`v04.02.00`**      | Minor — bounded MCP session listing and cancellation semantics cleanup.                                                                                                                                                                                                     |
-| **`v04.01.01`**      | Patch — release the hard-gate cleanup as a published package.                                                                                                                                                                                                               |
-| **`v04.01.00`**      | Minor — security hardening of session-store concurrency, write-path DoS surface, and credential redaction.                                                                                                                                                                  |
-| **`v04.00.08`**      | Patch — eliminate the recurring `js/file-access-to-http` CodeQL false positive at the source.                                                                                                                                                                               |
-| **`v04.00.07`**      | Patch — bounded npm registry fetch in the post-publish verifier.                                                                                                                                                                                                            |
-| **`v04.00.06`**      | Patch — Windows-safe registry verifier.                                                                                                                                                                                                                                     |
-| **`v04.00.05`**      | Patch — hard-gate close-out for the Codex v4.0.4 audit.                                                                                                                                                                                                                     |
-| **`v04.00.04`**      | Patch — restore prettier coverage of `src/` and `scripts/` (close audit on v4.0.3 hard-gate gap).                                                                                                                                                                           |
-| **`v04.00.03`**      | Patch — biome/check gate wiring after the v4 rename.                                                                                                                                                                                                                        |
-| **`v04.00.02`**      | Patch — Codex second-pass audit close-out (6 findings).                                                                                                                                                                                                                     |
-| **`v04.00.01`**      | Patch — close-out of post-v4.0.0 audit (eight surfaces left stale by the rename bulk-replace).                                                                                                                                                                              |
-| **`v04.00.00`**      | Major — project renamed to `cross-review`                                                                                                                                                                                                                                   |
-| **`v03.07.05`**      | Patch — logs+sessions study 2026-05-15 close-out (4 surgical fixes from 244-session/429-round corpus).                                                                                                                                                                      |
-| **`v03.07.03`**      | Patch — "sem fallback é sem fallback" directive + Codex v3.7.2 parecer residuals.                                                                                                                                                                                           |
-| **`v03.07.02`**      | Patch — Codex 3rd super-audit close-out of v3.7.1                                                                                                                                                                                                                           |
-| **`v03.07.01`**      | Patch — Codex super-audit close-out of v3.7.0                                                                                                                                                                                                                               |
-| **`v03.07.00`**      | Minor — Codex super-audit close-out 2026-05-14                                                                                                                                                                                                                              |
-| **`v03.06.00`**      | Minor — observability + caller-discipline close-out 2026-05-14                                                                                                                                                                                                              |
-| **`v03.05.00`**      | Minor — Codex operational-report close-out 2026-05-14: 5 findings from sessions `f0db3970` + `df052926`.                                                                                                                                                                    |
-| **`v03.04.00`**      | Minor — Perplexity multi-failure-mode close-out 2026-05-13: 3 coordinated fixes covering 7 production sessions Codex flagged (`51973fac`, `f72e597a`, `f9a19401`, `99d46a2b`, `00d92cce`, `59776026`, `0003b2fe`).                                                          |
-| **`v03.03.00`**      | Minor — Caller peer-selection lock (operator directive 2026-05-12: "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU VONTADE DO CALLER").                                                                                                               |
-| **`v03.02.00`**      | Patch — Codex bug-report close-out 2026-05-12: three surgical fixes (Perplexity `<think>` parser + session-state invariant + orchestrator strict peers).                                                                                                                    |
-| **`v03.01.00`**      | Minor — Central config file (`config.json`). Eliminates ~700 redundant env-var declarations across the 7 MCP host configs.                                                                                                                                                  |
-| **`v03.00.00`**      | Major — Perplexity joins the sexteto. Quinteto (5 peers) → sexteto (6).                                                                                                                                                                                                     |
-| **`v02.28.00`**      | Minor — Cold-start hardening Part 3: Windows registry env-var lookup bulk-cached (3-7 s → ~100 ms).                                                                                                                                                                         |
-| **`v02.27.01`**      | Patch — Cold-start hardening Part 2: lazy-load 5 provider SDKs + defer 6 startup sweeps to setTimeout(30s).                                                                                                                                                                 |
-| **`v02.27.00`**      | Minor — Cold-start hardening Part 1: corrupted meta.json auto-quarantine + finalized-session auto-prune.                                                                                                                                                                    |
-| **`v02.26.01`**      | Patch — `max_attached_evidence_chars` default raised 80_000 → 200_000 to fix multi-file evidence truncation.                                                                                                                                                                |
-| **`v02.26.00`**      | Minor — Full pricing-model schema: base + extended-tier + cache (read/write) + promo (limited-time discount), all env-configurable, graceful fallback when fields are absent or promo expires.                                                                              |
-| **`v02.25.01`**      | Patch — `meta.json` corruption hotfix: `redact()` env-style pattern was crossing JSON-escape boundaries.                                                                                                                                                                    |
-| **`v02.25.00`**      | Third deliberation mode `circular` joins `ship` and `review`.                                                                                                                                                                                                               |
-| **`v02.24.00`**      | Evidence-provenance lock for the ship-mode relator (Codex bug report 2026-05-10).                                                                                                                                                                                           |
-| **`v02.23.00`**      | Anthropic empty-revision degenerate path detection.                                                                                                                                                                                                                         |
-| **`v02.22.00`**      | `session_doctor` drill-down + per-round cost telemetry + budget warning event.                                                                                                                                                                                              |
-| **`v02.21.00`**      | Cross-provider prompt caching across all 5 peers (OpenAI, Anthropic, Gemini, DeepSeek, Grok).                                                                                                                                                                               |
-| **`v02.18.08`**      | Site sponsor card iteration.                                                                                                                                                                                                                                                |
-| **`v02.18.07`**      | Patch — `site/index.html` visual identity refresh.                                                                                                                                                                                                                          |
-| **`v02.18.06`**      | Patch — Gemini API function-declaration compatibility for MCP tool inputSchemas.                                                                                                                                                                                            |
-| **`v02.18.05`**      | Patch — anti-drift smoke drivers for v2.18.4 audit closure (operator directive 2026-05-07).                                                                                                                                                                                 |
-| **`v02.18.04`**      | Patch — Codex external audit 2026-05-07 outcome: 6 surgical fixes (P1.1, P1.2, P1.3, P1.4, P2.1, P2.4).                                                                                                                                                                     |
-| **`v02.18.03`**      | Patch — Gemini default pin bump `gemini-3.1-pro-preview` → `gemini-2.5-pro` (operator preference 2026-05-07; coordinated with cross-review-v1 v1.12.4).                                                                                                                     |
-| **`v02.18.02`**      | Tier 5 — Windows process-tree introspection (coordinated with cross-review-v1 v1.12.2).                                                                                                                                                                                     |
-| **`v02.18.01`**      | Hotfix: closes Dependabot security advisory GHSA-v2v4-37r5-5v8g (medium severity) — `ip-address` XSS in Address6 HTML-emitting methods.                                                                                                                                     |
-| **`v02.18.00`**      | F1 caller capability tokens (coordinated with cross-review-v1 v1.11.0).                                                                                                                                                                                                     |
-| **`v02.17.00`**      | HARD GATE — identity forgery rejection (operator directive 2026-05-05).                                                                                                                                                                                                     |
-| **`v02.16.00`**      | Tribunal protocol repair plus operational doctor.                                                                                                                                                                                                                           |
-| **`v02.15.01`**      | `server_info` consensus visibility hotfix.                                                                                                                                                                                                                                  |
-| **`v02.15.00`**      | Backlog bundle for operational judge controls.                                                                                                                                                                                                                              |
-| **`v02.14.01`**      | Grok reasoning model hotfix.                                                                                                                                                                                                                                                |
-| **`v02.14.00`**      | Grok joins the tribunal.                                                                                                                                                                                                                                                    |
-| **`v02.13.00`**      | Lead meta-review drift fix.                                                                                                                                                                                                                                                 |
-| **`v02.12.00`**      | Shadow judge observability.                                                                                                                                                                                                                                                 |
-| **`v02.11.00`**      | Relator lottery plus shadow auto-wire.                                                                                                                                                                                                                                      |
-| **`v02.09.00`**      | LLM evidence-judge pass.                                                                                                                                                                                                                                                    |
-| **`v02.08.00`**      | Per-peer health and Evidence Broker lifecycle.                                                                                                                                                                                                                              |
-| **`v02.07.00`**      | Evidence Broker.                                                                                                                                                                                                                                                            |
-| **`v02.06.01`**      | Fallback/recovery budget hard gate.                                                                                                                                                                                                                                         |
-| **`v02.06.00`**      | Token-delta compaction plus v2.5 format hotfix bundle.                                                                                                                                                                                                                      |
-| **`v02.05.00`**      | Evidence and budget hardening pass.                                                                                                                                                                                                                                         |
-| **`v02.04.01`**      | CI stub fail-fast hotfix.                                                                                                                                                                                                                                                   |
-| **`v02.04.00`**      | Audit-closure hardening pass.                                                                                                                                                                                                                                               |
-| **`v02.03.03`**      | Prompt shielding and financial safety.                                                                                                                                                                                                                                      |
-| **`v02.03.02`**      | CI-green README/docs cleanup.                                                                                                                                                                                                                                               |
-| **`v02.03.01`**      | README organizational standardization.                                                                                                                                                                                                                                      |
-| **`v02.03.00`**      | Provider-neutral `review_focus`.                                                                                                                                                                                                                                            |
-| **`v02.02.00`**      | Provider token streaming.                                                                                                                                                                                                                                                   |
-| **`v02.01.01`**      | CodeQL and model-selection hardening.                                                                                                                                                                                                                                       |
-| **`v02.01.00`**      | First stable `cross-review` release.                                                                                                                                                                                                                                        |
-| **`v02.00.04`**      | Session event race hotfix.                                                                                                                                                                                                                                                  |
-| **`v02.00.03`**      | Background sessions and durable reports.                                                                                                                                                                                                                                    |
-| **`v02.00.02`**      | Publishing and dashboard sanitization.                                                                                                                                                                                                                                      |
-| **`v02.00.01`**      | Public npm/package metadata alignment.                                                                                                                                                                                                                                      |
-| **`v02.00.00`**      | Development package line hardening.                                                                                                                                                                                                                                         |
-| **`v2.0.0-alpha.2`** | Durable session recovery alpha.                                                                                                                                                                                                                                             |
-| **`v2.0.0-alpha.1`** | Model attestation and store hardening alpha.                                                                                                                                                                                                                                |
-| **`v2.0.0-alpha.0`** | Initial API/SDK-only MCP server.                                                                                                                                                                                                                                            |
+| Release              | Scope                                                                                                                                                                                                                                                                            |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.31`**      | Supersedes the unpublished 4.5.30 tag by making the clean-consumer license gate follow the exact bundled MCP SDK version instead of a stale hard-coded version.                                                                                                                  |
+| **`v04.05.30`**      | Updates the OpenAI runtime to 7.0.0 and bundled MCP SDK to 1.30.0; completely removes Socket Security and StepSecurity; prevents redundant immutable-tag publication; fails closed on ambiguous GitHub API status; and runs direct Zizmor through checksum-verified uv.          |
+| **`v04.05.29`**      | Supersedes the unpublished 4.5.28 tag and locks `brace-expansion` 5.0.8 after its newly disclosed high-severity DoS advisory blocked publication; also retains the descriptor-based caller-token TOCTOU fix verified by CodeQL.                                                  |
+| **`v04.05.28`**      | Adds opt-in Claude Opus 5 support; bounds Evidence Broker amplification without weakening blockers; repairs interrupted-session lifecycle, checklist provenance and truthfulness diagnostics; hardens caller-token ACLs; and makes event polling compact.                        |
+| **`v04.05.27`**      | Updates the Anthropic and OpenAI SDKs, makes manifests and lockfiles the dependency source of truth, and ships hardened dependency automation with verified release recovery.                                                                                                    |
+| **`v04.05.26`**      | Bundles the MCP runtime and hardens exact-SHA automation, immutable releases, and current provider dependencies.                                                                                                                                                                 |
+| **`v04.05.25`**      | Resolves the three registry advisories in the lockfile: `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7; updates the one reviewed install-script approval to `protobufjs@7.6.5`. Scorecard and Auto-tag remain fail-closed; no alert was suppressed. |
+| **`v04.05.23`**      | Accepts npm 12's one-item `npm view --json` response only when it contains one metadata object; empty, multiple, and malformed responses fail closed before the integrity-bound audit lock and mandatory `npm audit signatures` gate.                                            |
+| **`v04.05.22`**      | Decodes npm's Sigstore DSSE envelope before binding the SLSA provenance to the protected tag, publication workflow, and immutable source commit; the later cryptographic `npm audit signatures` gate remains mandatory.                                                          |
+| **`v04.05.21`**      | Aligns the durable effective-config regression with JSON semantics: unset optional properties are omitted consistently from persisted snapshots and their SHA-256 canonical form.                                                                                                |
+| **`v04.05.20`**      | Restores a deterministic CI fixture for the pre-publish budget/cache contract: Gemini has an explicit test rate and a manually known settlement cannot retain a stale unknown-spend marker. The production financial gate remains fail-closed.                                   |
+| **`v04.05.19`**      | Hardens the npm publication gate without weakening artifact verification: an integrity-bound temporary lock drives `npm ci` and `npm audit signatures`, while visibility no longer pipes downloaded data into Node.                                                              |
+| **`v04.05.18`**      | Closes the 4.5.16–4.5.17 session-audit findings: symmetric grounding for blocking verdicts, per-peer write-through durability, terminal preflight audit trails, bounded evidence judges, complete cache/config telemetry and action-oriented compact reports.                    |
+| **`v04.05.17`**      | Publishes the accumulated provider/toolchain maintenance, raises the Anthropic SDK range and keeps npm 12 dependency scripts fail-closed with an exact, reviewed Google Gen AI 2.12.0 no-op lifecycle permission.                                                                |
+| **`v04.05.16`**      | Makes background observation compact and race-safe: summary polling by default, explicit forensic detail, real HTML-neutralized Markdown, durable cross-host job status and idempotent late-cancellation results with final state.                                               |
+| **`v04.05.15`**      | Ships the Evidence Broker continuity fix with the complete Dependabot hardgate: supported npm resolver, npm 12 build/release pin, pip-compile source+hash lock, grouped Python updates and concurrent-base merge retry.                                                          |
+| **`v04.05.14`**      | Restores Evidence Broker continuity safely: clean grounded historical READY sources are replayed locally without stale prompt reuse, strict same-owner aliases collapse, `git -C ... diff --check` is recognized and final convergence is persisted consistently.                |
+| **`v04.05.13`**      | Eliminates a repeated ReDoS class in Evidence Broker symbol extraction and makes publication wait for CodeQL on the exact SHA plus zero actual open code-scanning alerts.                                                                                                        |
+| **`v04.05.12`**      | Fixes Evidence Broker convergence: direct rounds receive unresolved checklist IDs, grounded same-requester rechecks close the correct item, natural-language alternatives no longer deadlock, and irrelevant or partial evidence still fails closed.                             |
+| **`v04.05.11`**      | Makes autonomous evidence routing unambiguous in the MCP contract: AI evidence is persisted automatically through review starters, while the optional operator authority-promotion tool cannot be mistaken for a mandatory human upload step.                                    |
+| **`v04.05.10`**      | Retries npm attestation propagation independently from package visibility and follows the registry-advertised pathname on the pinned npm registry origin, preventing false-negative post-publish failures without weakening SLSA provenance requirements.                        |
+| **`v04.05.09`**      | Keeps server-authored READY remediation out of peer `caller_requests`, preventing unresolvable evidence-checklist blockers while preserving real peer asks and the complete decision audit trail.                                                                                |
+| **`v04.05.08`**      | Hash-pinned npm 12.0.1 bootstrap across CI/release jobs and trusted default-branch auto-tag checkout with exact successful-CI SHA gating; closes code-scanning alerts 32–38.                                                                                                     |
+| **`v04.05.07`**      | Complete 4.5.6 provider remediation plus CI-before-tag release ordering, npm 12.0.1 alignment, strict dependency-script review and cache exclusion.                                                                                                                              |
+| **`v04.05.06`**      | Six-provider contract remediation — provider-specific wire schemas and output budgets, controlled OpenAI/Gemini truncation recovery, safe citation/diff correlation, runtime namespace fixes, corrected FinOps, and npm 12/OIDC release hardening.                               |
+| **`v04.05.05`**      | Clean-runner publish follow-up — make cancellation, health and accounting regression fixtures independent from private operator rate cards and reject false-green preflight coverage; production financial gates remain fail-closed.                                             |
+| **`v04.05.04`**      | Runtime-hardgate remediation — fix grounding, truthfulness namespaces, consensus judging, multi-window cancellation, accounting, session ceilings, terminal reports and cross-provider `ultra` normalization.                                                                    |
+| **`v04.05.03`**      | Security/hardgate patch — remove exponential regex backtracking, trust integrity-checked attachment path/digest metadata, accept correlated single-quoted artifact literals and stop treating source-version bumps as historical runtime claims.                                 |
+| **`v04.05.02`**      | Patch release — publish the complete authenticated-evidence transport update with a hermetic clean-runner regression fixture; no operator central configuration is required by the test gate.                                                                                    |
+| **`v04.05.01`**      | Patch release — restore authenticated peer evidence transport with append-only active snapshots, combined preflight parity, strict operational records, independent relator/reviewer roles and immutable terminal outcomes; no manual operator attachment is required.           |
+| **`v04.05.00`**      | Minor release — refresh all six provider contracts and add fail-closed provider terminals, runtime config fingerprints, operator evidence custody, peer self-attestation rejection, and grounded READY votes.                                                                    |
+| **`v04.04.08`**      | Patch — raise the transitive `hono` override floor and clear the current advisory set.                                                                                                                                                                                           |
+| **`v04.04.07`**      | Patch — promote the patched `protobufjs` floor for downstream consumers.                                                                                                                                                                                                         |
+| **`v04.04.06`**      | Patch — close the remaining Claude re-validation tail: orchestrator attached-evidence reads now fail closed, session_doctor defaults to action-oriented findings, and T2#10 source-regex debt drops to a locked total of 160.                                                    |
+| **`v04.04.05`**      | Patch — close the seven verified residual audit items: evidence fail-closed realpath handling, typed shadow-decision runtime events, derived release date, redaction-comment correction, retry/security gate verification, and a locked T2#10 smoke source-contract budget.      |
+| **`v04.04.04`**      | Patch — central config can now carry model-specific rate cards, so Claude Opus 4.8 and Claude Fable 5 pricing are both stored and the active Anthropic rates follow the configured Claude model automatically.                                                                   |
+| **`v04.04.03`**      | Patch — continue the T2#10 smoke-debt reduction by moving the lazy provider SDK import source contract into the dedicated source-contract smoke, preserving coverage while reducing broad smoke regex pins.                                                                      |
+| **`v04.04.02`**      | Patch — support Claude Fable 5 as an explicit Anthropic production-model option, including verified model selection, refusal handling, refusal events, docs and cost guidance.                                                                                                   |
+| **`v04.04.01`**      | Patch — complete residual audit sweep: full mutating-tool identity gate, evidence attachment cache/safety, async EventLog flush, Perplexity auth-only probe mode, cache-cost correctness, dashboard report method split, and dedicated source-contract smoke isolation.          |
+| **`v04.04.00`**      | Minor — consolidated audit close-out: log-level validation, realpath containment, initial-draft fabrication guard, Perplexity probe minimization, identity audit events, derived tool list, docs and metadata guards.                                                            |
+| **`v04.03.09`**      | Patch — move `truthfulness_preflight` coverage into a focused smoke script and tighten evidence-artifact matching for path-qualified refs and `.md/.diff/.patch/.csv` files.                                                                                                     |
+| **`v04.03.08`**      | Patch — move `evidence_preflight` behavior coverage into a focused smoke script and run it explicitly before the broader smoke suite.                                                                                                                                            |
+| **`v04.03.07`**      | Patch — evidence preflight now blocks paid review when the submission references an external evidence/log artifact that was not attached to the session.                                                                                                                         |
+| **`v04.03.06`**      | Patch — isolate `runtime-smoke` in a temporary data directory so harness runs do not write open sessions into the operator's real runtime corpus.                                                                                                                                |
+| **`v04.03.05`**      | Patch — filter Perplexity streaming `<think>` token events, expand `~` in central config paths, escape dashboard runtime paths, and harden smoke scripts.                                                                                                                        |
+| **`v04.03.04`**      | Patch — harden cross-process event sequencing, exact-match fabrication checks, Gemini missing-text handling, and streaming provider error retry classification.                                                                                                                  |
+| **`v04.03.03`**      | Patch — add forensic diagnostics for append/event and identity failures, flush pending events on shutdown signals, retry structured provider 5xx errors, and refresh official AI provider SDKs.                                                                                  |
+| **`v04.03.02`**      | Patch — harden persistence redaction, finalized-session mutation guards, side-effect identity gates, caller-token rotation output, and Windows registry config fallback.                                                                                                         |
+| **`v04.03.01`**      | Patch — tighten skip-peer classification so non-retryable provider errors block, while Anthropic overload events remain retryable and better surfaced in skip diagnostics.                                                                                                       |
+| **`v04.03.00`**      | Minor — P1/P2/P3 follow-up with unresolved-evidence close-out visibility, an offline fixture eval harness, and a read-only peer reliability report.                                                                                                                              |
+| **`v04.02.05`**      | Patch — harden session auditability with terminal events, cost split reporting, `not_resurfaced` visibility, and relator provenance checks for session IDs/GitHub URLs.                                                                                                          |
+| **`v04.02.04`**      | Patch — harden truthfulness preflight auditability, add a read-only preflight retest tool, and reduce false parser warnings for attached/log evidence.                                                                                                                           |
+| **`v04.02.03`**      | Patch — promote the Gemini canonical default to `gemini-3.1-pro-preview` and refresh the active local Gemini rate card.                                                                                                                                                          |
+| **`v04.02.02`**      | Patch — provider-doc refresh, Perplexity probe repair, current model pins, and rate-card guidance.                                                                                                                                                                               |
+| **`v04.02.01`**      | Patch — publish the workspace hard-gate cleanup as a package release.                                                                                                                                                                                                            |
+| **`v04.02.00`**      | Minor — bounded MCP session listing and cancellation semantics cleanup.                                                                                                                                                                                                          |
+| **`v04.01.01`**      | Patch — release the hard-gate cleanup as a published package.                                                                                                                                                                                                                    |
+| **`v04.01.00`**      | Minor — security hardening of session-store concurrency, write-path DoS surface, and credential redaction.                                                                                                                                                                       |
+| **`v04.00.08`**      | Patch — eliminate the recurring `js/file-access-to-http` CodeQL false positive at the source.                                                                                                                                                                                    |
+| **`v04.00.07`**      | Patch — bounded npm registry fetch in the post-publish verifier.                                                                                                                                                                                                                 |
+| **`v04.00.06`**      | Patch — Windows-safe registry verifier.                                                                                                                                                                                                                                          |
+| **`v04.00.05`**      | Patch — hard-gate close-out for the Codex v4.0.4 audit.                                                                                                                                                                                                                          |
+| **`v04.00.04`**      | Patch — restore prettier coverage of `src/` and `scripts/` (close audit on v4.0.3 hard-gate gap).                                                                                                                                                                                |
+| **`v04.00.03`**      | Patch — biome/check gate wiring after the v4 rename.                                                                                                                                                                                                                             |
+| **`v04.00.02`**      | Patch — Codex second-pass audit close-out (6 findings).                                                                                                                                                                                                                          |
+| **`v04.00.01`**      | Patch — close-out of post-v4.0.0 audit (eight surfaces left stale by the rename bulk-replace).                                                                                                                                                                                   |
+| **`v04.00.00`**      | Major — project renamed to `cross-review`                                                                                                                                                                                                                                        |
+| **`v03.07.05`**      | Patch — logs+sessions study 2026-05-15 close-out (4 surgical fixes from 244-session/429-round corpus).                                                                                                                                                                           |
+| **`v03.07.03`**      | Patch — "sem fallback é sem fallback" directive + Codex v3.7.2 parecer residuals.                                                                                                                                                                                                |
+| **`v03.07.02`**      | Patch — Codex 3rd super-audit close-out of v3.7.1                                                                                                                                                                                                                                |
+| **`v03.07.01`**      | Patch — Codex super-audit close-out of v3.7.0                                                                                                                                                                                                                                    |
+| **`v03.07.00`**      | Minor — Codex super-audit close-out 2026-05-14                                                                                                                                                                                                                                   |
+| **`v03.06.00`**      | Minor — observability + caller-discipline close-out 2026-05-14                                                                                                                                                                                                                   |
+| **`v03.05.00`**      | Minor — Codex operational-report close-out 2026-05-14: 5 findings from sessions `f0db3970` + `df052926`.                                                                                                                                                                         |
+| **`v03.04.00`**      | Minor — Perplexity multi-failure-mode close-out 2026-05-13: 3 coordinated fixes covering 7 production sessions Codex flagged (`51973fac`, `f72e597a`, `f9a19401`, `99d46a2b`, `00d92cce`, `59776026`, `0003b2fe`).                                                               |
+| **`v03.03.00`**      | Minor — Caller peer-selection lock (operator directive 2026-05-12: "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU VONTADE DO CALLER").                                                                                                                    |
+| **`v03.02.00`**      | Patch — Codex bug-report close-out 2026-05-12: three surgical fixes (Perplexity `<think>` parser + session-state invariant + orchestrator strict peers).                                                                                                                         |
+| **`v03.01.00`**      | Minor — Central config file (`config.json`). Eliminates ~700 redundant env-var declarations across the 7 MCP host configs.                                                                                                                                                       |
+| **`v03.00.00`**      | Major — Perplexity joins the sexteto. Quinteto (5 peers) → sexteto (6).                                                                                                                                                                                                          |
+| **`v02.28.00`**      | Minor — Cold-start hardening Part 3: Windows registry env-var lookup bulk-cached (3-7 s → ~100 ms).                                                                                                                                                                              |
+| **`v02.27.01`**      | Patch — Cold-start hardening Part 2: lazy-load 5 provider SDKs + defer 6 startup sweeps to setTimeout(30s).                                                                                                                                                                      |
+| **`v02.27.00`**      | Minor — Cold-start hardening Part 1: corrupted meta.json auto-quarantine + finalized-session auto-prune.                                                                                                                                                                         |
+| **`v02.26.01`**      | Patch — `max_attached_evidence_chars` default raised 80_000 → 200_000 to fix multi-file evidence truncation.                                                                                                                                                                     |
+| **`v02.26.00`**      | Minor — Full pricing-model schema: base + extended-tier + cache (read/write) + promo (limited-time discount), all env-configurable, graceful fallback when fields are absent or promo expires.                                                                                   |
+| **`v02.25.01`**      | Patch — `meta.json` corruption hotfix: `redact()` env-style pattern was crossing JSON-escape boundaries.                                                                                                                                                                         |
+| **`v02.25.00`**      | Third deliberation mode `circular` joins `ship` and `review`.                                                                                                                                                                                                                    |
+| **`v02.24.00`**      | Evidence-provenance lock for the ship-mode relator (Codex bug report 2026-05-10).                                                                                                                                                                                                |
+| **`v02.23.00`**      | Anthropic empty-revision degenerate path detection.                                                                                                                                                                                                                              |
+| **`v02.22.00`**      | `session_doctor` drill-down + per-round cost telemetry + budget warning event.                                                                                                                                                                                                   |
+| **`v02.21.00`**      | Cross-provider prompt caching across all 5 peers (OpenAI, Anthropic, Gemini, DeepSeek, Grok).                                                                                                                                                                                    |
+| **`v02.18.08`**      | Site sponsor card iteration.                                                                                                                                                                                                                                                     |
+| **`v02.18.07`**      | Patch — `site/index.html` visual identity refresh.                                                                                                                                                                                                                               |
+| **`v02.18.06`**      | Patch — Gemini API function-declaration compatibility for MCP tool inputSchemas.                                                                                                                                                                                                 |
+| **`v02.18.05`**      | Patch — anti-drift smoke drivers for v2.18.4 audit closure (operator directive 2026-05-07).                                                                                                                                                                                      |
+| **`v02.18.04`**      | Patch — Codex external audit 2026-05-07 outcome: 6 surgical fixes (P1.1, P1.2, P1.3, P1.4, P2.1, P2.4).                                                                                                                                                                          |
+| **`v02.18.03`**      | Patch — Gemini default pin bump `gemini-3.1-pro-preview` → `gemini-2.5-pro` (operator preference 2026-05-07; coordinated with cross-review-v1 v1.12.4).                                                                                                                          |
+| **`v02.18.02`**      | Tier 5 — Windows process-tree introspection (coordinated with cross-review-v1 v1.12.2).                                                                                                                                                                                          |
+| **`v02.18.01`**      | Hotfix: closes Dependabot security advisory GHSA-v2v4-37r5-5v8g (medium severity) — `ip-address` XSS in Address6 HTML-emitting methods.                                                                                                                                          |
+| **`v02.18.00`**      | F1 caller capability tokens (coordinated with cross-review-v1 v1.11.0).                                                                                                                                                                                                          |
+| **`v02.17.00`**      | HARD GATE — identity forgery rejection (operator directive 2026-05-05).                                                                                                                                                                                                          |
+| **`v02.16.00`**      | Tribunal protocol repair plus operational doctor.                                                                                                                                                                                                                                |
+| **`v02.15.01`**      | `server_info` consensus visibility hotfix.                                                                                                                                                                                                                                       |
+| **`v02.15.00`**      | Backlog bundle for operational judge controls.                                                                                                                                                                                                                                   |
+| **`v02.14.01`**      | Grok reasoning model hotfix.                                                                                                                                                                                                                                                     |
+| **`v02.14.00`**      | Grok joins the tribunal.                                                                                                                                                                                                                                                         |
+| **`v02.13.00`**      | Lead meta-review drift fix.                                                                                                                                                                                                                                                      |
+| **`v02.12.00`**      | Shadow judge observability.                                                                                                                                                                                                                                                      |
+| **`v02.11.00`**      | Relator lottery plus shadow auto-wire.                                                                                                                                                                                                                                           |
+| **`v02.09.00`**      | LLM evidence-judge pass.                                                                                                                                                                                                                                                         |
+| **`v02.08.00`**      | Per-peer health and Evidence Broker lifecycle.                                                                                                                                                                                                                                   |
+| **`v02.07.00`**      | Evidence Broker.                                                                                                                                                                                                                                                                 |
+| **`v02.06.01`**      | Fallback/recovery budget hard gate.                                                                                                                                                                                                                                              |
+| **`v02.06.00`**      | Token-delta compaction plus v2.5 format hotfix bundle.                                                                                                                                                                                                                           |
+| **`v02.05.00`**      | Evidence and budget hardening pass.                                                                                                                                                                                                                                              |
+| **`v02.04.01`**      | CI stub fail-fast hotfix.                                                                                                                                                                                                                                                        |
+| **`v02.04.00`**      | Audit-closure hardening pass.                                                                                                                                                                                                                                                    |
+| **`v02.03.03`**      | Prompt shielding and financial safety.                                                                                                                                                                                                                                           |
+| **`v02.03.02`**      | CI-green README/docs cleanup.                                                                                                                                                                                                                                                    |
+| **`v02.03.01`**      | README organizational standardization.                                                                                                                                                                                                                                           |
+| **`v02.03.00`**      | Provider-neutral `review_focus`.                                                                                                                                                                                                                                                 |
+| **`v02.02.00`**      | Provider token streaming.                                                                                                                                                                                                                                                        |
+| **`v02.01.01`**      | CodeQL and model-selection hardening.                                                                                                                                                                                                                                            |
+| **`v02.01.00`**      | First stable `cross-review` release.                                                                                                                                                                                                                                             |
+| **`v02.00.04`**      | Session event race hotfix.                                                                                                                                                                                                                                                       |
+| **`v02.00.03`**      | Background sessions and durable reports.                                                                                                                                                                                                                                         |
+| **`v02.00.02`**      | Publishing and dashboard sanitization.                                                                                                                                                                                                                                           |
+| **`v02.00.01`**      | Public npm/package metadata alignment.                                                                                                                                                                                                                                           |
+| **`v02.00.00`**      | Development package line hardening.                                                                                                                                                                                                                                              |
+| **`v2.0.0-alpha.2`** | Durable session recovery alpha.                                                                                                                                                                                                                                                  |
+| **`v2.0.0-alpha.1`** | Model attestation and store hardening alpha.                                                                                                                                                                                                                                     |
+| **`v2.0.0-alpha.0`** | Initial API/SDK-only MCP server.                                                                                                                                                                                                                                                 |
 
 ## What It Does
 
@@ -147,12 +191,19 @@ MCP-compatible server surface.
 Runtime calls are real provider calls by default. Stubs exist only for smoke
 tests and CI when `CROSS_REVIEW_STUB=1`.
 
-- OpenAI client library for the Codex/OpenAI peer.
-- Anthropic TypeScript client library for Claude.
-- Google Gen AI client library for Gemini.
+- OpenAI client library (`openai`) for the Codex/OpenAI peer.
+- Anthropic TypeScript client library (`@anthropic-ai/sdk`) for Claude.
+- Google Gen AI client library (`@google/genai`) for Gemini.
 - OpenAI-compatible DeepSeek API through the OpenAI client library.
 - OpenAI-compatible xAI Grok API through the OpenAI client library.
 - OpenAI-compatible Perplexity Sonar API through the OpenAI client library.
+- The MCP SDK (`@modelcontextprotocol/sdk`) is declared as a
+  development dependency and bundled into the stdio artifact; its audited scope
+  is therefore `bundled/dev`, not an undeclared consumer dependency.
+
+`package.json` is the source of truth for declared dependency ranges.
+`package-lock.json` records the exact resolution for this repository checkout;
+consumers resolve those ranges through their own lockfiles.
 
 ## Quick Start
 
@@ -168,12 +219,11 @@ tests and CI when `CROSS_REVIEW_STUB=1`.
 
 Restart your terminal after changing environment variables.
 
-Build and run locally:
+Run the MCP host only from the package published by the registry; do not point a
+production host at this checkout:
 
 ```bash
-npm install
-npm --registry=https://registry.npmjs.org run build
-node dist/src/mcp/server.js
+npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 For local smoke tests (no-cost):
@@ -189,28 +239,86 @@ Model selection and runtime behaviour can be controlled with environment
 variables. Example overrides (PowerShell):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.5", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-opus-4-8", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "xhigh", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.20-multi-agent", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "high", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "sonar-reasoning-pro", "User")
 ```
 
-Claude Fable 5 is supported as an explicit Anthropic model override:
-`CROSS_REVIEW_ANTHROPIC_MODEL=claude-fable-5`. It is not the default pin; when
-selected, the runtime validates that pin and expects `provider_refusal`
-failures when the API returns `stop_reason="refusal"`. Central `config.json`
-files can store both Claude Opus 4.8 and Fable 5 rate cards under
-`model_cost_rates.claude`; the runtime chooses the active Anthropic rate card
-from the configured Claude model.
+`ultra` is a Codex product/CLI execution mode, not a literal OpenAI Responses
+API `reasoning.effort`. Cross-review nevertheless accepts it in central config,
+environment variables and per-call overrides as a compatibility alias, then
+normalizes it inside each provider adapter. For `gpt-5.6-sol`, the wire value is
+the official `max`; `ultra` is never sent to the Responses API. Using `max`
+directly remains equivalent and makes the API value explicit. The shared
+legacy value `minimal` is likewise translated to GPT-5.6's lowest active API
+effort, `low`. Explicit older-model overrides use a family-aware compatibility
+matrix: GPT-5.5/5.4/5.2 map `minimal` to `low` and `max`/`ultra` to `xhigh`;
+GPT-5.1 maps `minimal` to `low` and `xhigh`/`max`/`ultra` to `high`; original
+GPT-5 maps `none` to `minimal` and `xhigh`/`max`/`ultra` to `high`. Supported
+native values pass through unchanged.
 
-For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.3`, which
-accepts explicit `reasoning.effort` through `high`; the adapter clamps the
-shared effort scale before sending it. `grok-4-latest`, `grok-4.20`, and
-`grok-4.20-reasoning` use xAI automatic reasoning in this runtime.
-`grok-4.20-multi-agent` remains available as an explicit override for the
-multi-agent variant.
+Claude Fable 5 is the canonical Anthropic pin. Its request deliberately omits
+the explicit `thinking` field: Fable applies adaptive thinking automatically,
+while `output_config.effort` controls depth. Anthropic documents a 30-day data
+retention posture and no zero-data-retention option for this model. A response
+with `stop_reason="refusal"` is recorded as `provider_refusal`, and partial
+refusal output is not accepted as a review.
+
+Claude Opus 5 (`claude-opus-5`) is a first-class explicit override, not a
+fallback and not an automatic replacement for Fable 5. The adapter sends
+adaptive thinking with omitted thinking text and supports
+`low`/`medium`/`high`/`xhigh`/`max` effort. The maintained 64,000-token Claude
+output budget is Anthropic's recommended starting point for `xhigh` or `max`;
+the model's synchronous API ceiling is 128,000. Selecting Opus 5 also selects
+its own model-specific rate card, so Fable pricing is never borrowed.
+
+For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.5`; xAI
+accepts only `low`, `medium`, or `high` reasoning effort for it, so the adapter
+clamps the shared scale before sending the request.
+
+Central configuration is loaded once when the MCP server process starts. Use
+`server_info.config_load` to inspect the loaded path, parse result, loaded and
+current SHA-256/mtime, and `reload_required`. `live_reload_supported` is
+`false`: after editing `config.json` or host environment variables, restart or
+reload the MCP host/window. A stale or invalid central config blocks paid calls
+instead of silently spending under fallback defaults.
+
+Evidence judges have independent compact controls:
+`evidence_judge_autowire.max_output_tokens` defaults to `2048` and
+`evidence_judge_autowire.reasoning_effort` defaults to `medium`. Unknown
+in-flight provider cost blocks judge dispatch rather than being treated as
+zero. Their environment-variable equivalents are
+`CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS` and
+`CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT`; as with the other central
+settings, an explicit host environment value takes precedence over
+`config.json`.
+
+Evidence Broker admission is fail-closed and atomic. Its configurable defaults
+are `8` requests per peer per round, `24` requests per round, `64` durable
+items and `64,000` total request characters per session:
+
+```json
+{
+  "evidence_broker": {
+    "max_requests_per_peer_round": 8,
+    "max_requests_per_round": 24,
+    "max_items_per_session": 64,
+    "max_chars_per_session": 64000
+  }
+}
+```
+
+Crossing a limit never truncates, discards or auto-satisfies a blocker. The
+complete peer response remains durable, the checklist batch is rejected as a
+unit, automatic judging is skipped and the session stops with
+`evidence_checklist_contract_violation` before another paid round. Existing
+oversized sessions stop before provider dispatch.
 
 Financial and budget controls are required for paid provider calls. Configure
 these environment variables before running real sessions (example):
@@ -242,8 +350,10 @@ these environment variables before running real sessions (example):
 - `session_report`
 - `session_peer_reliability_report`
 - `session_check_convergence`
+- `session_preflight_check`
 - `session_truthfulness_preflight_check`
-- `session_attach_evidence`
+- `session_attach_evidence` — optional operator-only authority promotion; AI
+  callers use the automatic `evidence` field on review starters
 - `session_evidence_checklist_update`
 - `session_evidence_judge_pass`
 - `session_evidence_judge_consensus_pass`
@@ -253,6 +363,31 @@ these environment variables before running real sessions (example):
 - `regenerate_caller_tokens`
 - `session_sweep`
 - `session_finalize`
+
+`session_events` returns at most 200 events by default, excludes
+`peer.token.delta` telemetry unless `include_token_deltas=true`, and returns
+`next_seq` plus `has_more` for bounded pagination. Set `limit` explicitly up to
+1,000 when a larger forensic page is needed.
+
+`session_poll` uses `detail="summary"` by default. The compact response keeps
+operational progress, verdicts, bounded peer summaries and convergence data,
+but omits complete prior-round peer `text`, `raw` and `structured`
+payloads. Use `detail="full"` or `session_read` only for deliberate forensic
+inspection. `active_round_number` names the round executing now, whereas
+`latest_completed_round_number` names the newest round already appended to
+durable history; during a live round these values can differ.
+
+Every tool that accepts `response_format="markdown"` returns actual Markdown,
+not a JSON object serialized inside a text block. Strings from callers, peers
+and persisted sessions are HTML-neutralized before rendering.
+
+`session_cancel_job` is idempotent around settlement races. A late request
+for a known completed, failed or cancelled job returns `requested=false`,
+`reason="job_already_terminal"`, `terminal_job` and `final_state`. When
+the session itself is already terminal, the reason is
+`session_already_terminal`. Compact job status is persisted per session so a
+sibling MCP host or a restarted runtime can return the same answer without
+requiring process-local memory.
 
 `session_doctor` separates real and stub sessions, flags terminal outcomes that
 lack terminal events, and reports peer-call cost separately from generation
@@ -267,6 +402,92 @@ evidence was satisfied. If a session otherwise reaches unanimity with open or
 evidence event. `session_peer_reliability_report` is read-only and aggregates
 per-peer parser warnings, evidence ask status, provider failures, cost and
 latency.
+
+## Anti-deception and evidence custody
+
+The runtime does not treat a peer's claim that work was completed as proof.
+Before paid calls and again during convergence, it checks runtime/model claims,
+workflow and authorization assertions, test/build/hash claims, concrete source
+correspondence, unresolved evidence asks, model attestation, and structured
+status completeness. Authenticated caller evidence supplied inline or through
+the `evidence` field is persisted with an integrity digest and transported to
+every reviewer as `PEER-SUBMITTED / UNVERIFIED`; no manual operator attachment
+is required. Each external submission atomically supersedes the active caller
+snapshot while preserving prior manifests for audit, so retries cannot inherit
+old failures or replay old successes. Every `READY` vote must cite sources traceable to the reviewed
+artifact or admitted evidence. When operational claims depend only on
+peer-submitted material, at least two independent non-author reviewers must use
+`confidence="verified"` and cite the attachment path, SHA-256 and correlated raw
+lines; one voter, inferred confidence or narrative repetition cannot converge.
+Relator output that invents operational evidence is rejected rather than
+propagated.
+
+`READY` is intentionally not free-form. Its `summary` must be exactly
+`No blocking objections remain.`, `caller_requests` and `follow_ups` must be
+empty, and no narrative may appear outside the JSON/status envelope. Detail
+belongs in `evidence_sources`. This removes synonym/negation ambiguity: any
+noncanonical READY becomes `NEEDS_EVIDENCE` and cannot converge.
+
+Each attachment-backed `evidence_sources` item has one canonical string format:
+
+```text
+Attachment: evidence/review.txt
+sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Artifact quote: "Tests 74 passed (74)"
+```
+
+This block shows the decoded string; a raw JSON response encodes its two line
+breaks as `\n`.
+
+The path and full 64-character lowercase digest identify the same persisted
+attachment, and `Artifact quote` is a literal from that attachment. The quote
+must be at least 12 characters and must end the item. Cite the smallest
+sufficient literal (normally no more than 500 characters); the hard limits are
+2,500 characters per whole item and 30 items. Multiple sources belong in
+separate array items—never join attachments or append rationale after a quote.
+The wire type deliberately remains `string[]`, so existing string-producing
+clients remain compatible; the runtime does not require citation objects.
+
+These limits are both anti-verbosity and anti-shortcut controls. A peer must
+inspect the artifact and cite the decisive raw value, but must not replace a
+review with a full-file, full-log, or provider-output dump. A bare filename,
+digest, generic assurance, or empty code fence cannot sustain `READY`.
+
+Only the human operator may call the optional `session_attach_evidence`
+authority-promotion surface or mutate terminal state and security
+configuration. This tool is never required for an ordinary AI-initiated
+review: the runtime tool descriptions and rejected-call remediation direct AI
+callers to the automatically persisted `evidence` field. Each new attachment
+records the verified caller, origin, timestamp, byte count and SHA-256, emits a
+durable custody event, and is re-hashed on every read.
+Tampering fails closed. Peer-attributed material remains reviewable but cannot
+grant operator authority; a generic attachment does not by itself prove an
+unrelated claim.
+
+An evidence requester may automatically withdraw only its own earlier ask after
+a strictly grounded `READY/verified` recheck. That transition is recorded as
+`requester_reverified`; silence remains `not_resurfaced`, and no peer can close
+another peer's ask or an operator-terminal item.
+
+On an existing session, review starters require the persisted petitioner token
+or the dedicated operator token. Evidence is attributed to the authenticated
+invoker rather than inherited from the session owner, so a peer cannot turn its
+submission into `operator_verified` by continuing an operator-owned session.
+
+Caller identity uses seven distinct local capabilities: one for each peer and
+one for `operator`. Operator tools require the operator token even when token
+enforcement for peers is otherwise permissive. Keep that token only in a
+dedicated human-console MCP host—placing it in a model host grants that model
+operator authority. `host-tokens.json` contains secrets and assumes the local
+OS account/data directory is trusted. The runtime now removes inherited NTFS
+ACLs from this file on Windows and grants only the current user, SYSTEM and
+Administrators; on POSIX it verifies owner-only mode `0600`. This blocks direct
+read access inherited by model-sandbox groups, but it is not isolation from
+another process running as the same unrestricted OS user.
+
+`session_cancel_job` and `contest_verdict` accept only the explicitly persisted
+session petitioner with its peer token, or the dedicated operator. Legacy
+sessions without an explicit petitioner require the operator token.
 
 ## Repository conventions
 

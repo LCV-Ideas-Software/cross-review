@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyFileConfigToEnv } from "./file-config.js";
+import { resolveCostRate } from "./cost.js";
+import { applyFileConfigToEnv, inspectConfigFileFingerprint } from "./file-config.js";
 import { type AppConfig, PEERS, type PeerId } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.4.7";
+export const VERSION = "4.5.31";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -154,6 +155,17 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function optionalPositiveIntEnv(name: string): number | undefined {
+  const raw = (envValue(name) ?? "").trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  console.error(
+    `[cross-review] notice: ${name}="${raw}" must be a positive integer; ignoring this value.`,
+  );
+  return undefined;
+}
+
 function numberEnv(name: string): number | undefined {
   const raw = (envValue(name) ?? "").trim();
   if (raw === "") return undefined;
@@ -210,7 +222,7 @@ function reasoningEffort(
 ): AppConfig["reasoning_effort"][PeerId] {
   const value = envValue(name);
   if (!value) return fallback;
-  if (/^(none|minimal|low|medium|high|xhigh|max)$/i.test(value)) {
+  if (/^(none|minimal|low|medium|high|xhigh|max|ultra)$/i.test(value)) {
     return value.toLowerCase() as AppConfig["reasoning_effort"][PeerId];
   }
   return fallback;
@@ -222,10 +234,42 @@ function reasoningEffort(
 // snapshots remain backward-compatible.
 let LAST_FILE_CONFIG_RESULT: import("./file-config.js").ApplyFileConfigResult | undefined;
 
+// prettier-ignore
 export function getLastFileConfigResult():
   | import("./file-config.js").ApplyFileConfigResult
   | undefined {
   return LAST_FILE_CONFIG_RESULT;
+}
+
+export function getFileConfigRuntimeStatus():
+  | (Omit<import("./file-config.js").ApplyFileConfigResult, "parse_error" | "model_cost_rates"> & {
+      parse_error: string | null;
+      live_reload_supported: false;
+      current_file_exists: boolean;
+      current_mtime_ms?: number | undefined;
+      current_sha256?: string | undefined;
+      current_read_error?: string | undefined;
+      reload_required: boolean;
+    })
+  | undefined {
+  const loaded = LAST_FILE_CONFIG_RESULT;
+  if (!loaded) return undefined;
+  const { model_cost_rates: _modelCostRates, ...runtimeLoaded } = loaded;
+  const current = inspectConfigFileFingerprint(loaded.path);
+  const reloadRequired =
+    loaded.file_exists !== current.exists ||
+    loaded.loaded_sha256 !== current.sha256 ||
+    Boolean(current.read_error);
+  return {
+    ...runtimeLoaded,
+    parse_error: loaded.parse_error ?? null,
+    live_reload_supported: false,
+    current_file_exists: current.exists,
+    ...(current.mtime_ms === undefined ? {} : { current_mtime_ms: current.mtime_ms }),
+    ...(current.sha256 === undefined ? {} : { current_sha256: current.sha256 }),
+    ...(current.read_error === undefined ? {} : { current_read_error: current.read_error }),
+    reload_required: reloadRequired,
+  };
 }
 
 export function loadConfig(): AppConfig {
@@ -241,7 +285,8 @@ export function loadConfig(): AppConfig {
   // layer: env (process.env + Windows registry) wins, file second,
   // hardcoded defaults last. See src/core/file-config.ts for the
   // mapping table from structured JSON fields to flat env-var names.
-  LAST_FILE_CONFIG_RESULT = applyFileConfigToEnv(dataDir, envValue);
+  const fileConfigResult = applyFileConfigToEnv(dataDir, envValue);
+  LAST_FILE_CONFIG_RESULT = fileConfigResult;
 
   return {
     version: VERSION,
@@ -288,8 +333,8 @@ export function loadConfig(): AppConfig {
       max_peer_requests: intEnv("CROSS_REVIEW_MAX_PEER_REQUESTS", 8),
       // v2.14.0 (path-A structural fix): see AppConfig type docs.
       // v2.26.1 (2026-05-12): default raised 80_000 → 200_000 after the
-      // stepsecurity v0.2.0 ship empirically demonstrated that 80K is
-      // too low for multi-file evidence sets. session-store.ts:1507
+      // first large multi-file release review demonstrated that 80K is too
+      // low for multi-file evidence sets. session-store.ts:1507
       // computes `perFileCap = max(2_000, floor(totalCap * 0.6))`, then
       // each attachment consumes `min(perFileCap, totalCap - used)`. With
       // 5 attachments totaling ~95KB, the 4th+ attachments got truncated
@@ -300,7 +345,32 @@ export function loadConfig(): AppConfig {
       // can still tune via CROSS_REVIEW_MAX_ATTACHED_EVIDENCE_CHARS.
       max_attached_evidence_chars: intEnv("CROSS_REVIEW_MAX_ATTACHED_EVIDENCE_CHARS", 200_000),
     },
+    evidence_broker: {
+      // A peer can still describe every blocker in its durable structured
+      // response, but at most eight distinct asks may enter one broker round.
+      // More than that is a contract violation, not a reason to truncate.
+      max_requests_per_peer_round: intEnv(
+        "CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_PEER_ROUND",
+        8,
+      ),
+      // Five ordinary reviewers × eight asks would already create forty
+      // sticky prompt entries. Stop the round at 24 instead and preserve the
+      // full peer outputs in the terminal audit record.
+      max_requests_per_round: intEnv("CROSS_REVIEW_EVIDENCE_BROKER_MAX_REQUESTS_PER_ROUND", 24),
+      // Session-wide bounds prevent a 4.5.25-style 142-item checklist from
+      // being reinjected into every later paid provider call.
+      max_items_per_session: intEnv("CROSS_REVIEW_EVIDENCE_BROKER_MAX_ITEMS_PER_SESSION", 64),
+      max_chars_per_session: intEnv("CROSS_REVIEW_EVIDENCE_BROKER_MAX_CHARS_PER_SESSION", 64_000),
+    },
     max_output_tokens: intEnv("CROSS_REVIEW_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
+    max_output_tokens_by_peer: {
+      codex: optionalPositiveIntEnv("CROSS_REVIEW_OPENAI_MAX_OUTPUT_TOKENS"),
+      claude: optionalPositiveIntEnv("CROSS_REVIEW_ANTHROPIC_MAX_OUTPUT_TOKENS"),
+      gemini: optionalPositiveIntEnv("CROSS_REVIEW_GEMINI_MAX_OUTPUT_TOKENS"),
+      deepseek: optionalPositiveIntEnv("CROSS_REVIEW_DEEPSEEK_MAX_OUTPUT_TOKENS"),
+      grok: optionalPositiveIntEnv("CROSS_REVIEW_GROK_MAX_OUTPUT_TOKENS"),
+      perplexity: optionalPositiveIntEnv("CROSS_REVIEW_PERPLEXITY_MAX_OUTPUT_TOKENS"),
+    },
     // v3.5.0 (CRV2-4): evidence preflight gate. Default ON — the check
     // is conservative (only trips on a completed-work claim with zero
     // evidence markers) and saves a full multi-round paid cross-review
@@ -318,15 +388,14 @@ export function loadConfig(): AppConfig {
       include_text: boolEnv("CROSS_REVIEW_STREAM_TEXT", false),
     },
     models: {
-      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.5",
-      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-opus-4-8",
+      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.6-sol",
+      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
-      // v4.2.2 (provider-doc refresh 2026-06-02): grok default pinned to
-      // `grok-4.3`; xAI documents `grok-4-latest` as an alias, but using
-      // the concrete id keeps capability snapshots from looking like
-      // non-canonical overrides.
-      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.3",
+      // v4.5.0 (provider-doc refresh 2026-07-10): Grok 4.5 is xAI's
+      // frontier coding/agentic model. Keep the concrete id so model
+      // selection, reasoning clamps and model-aware pricing stay stable.
+      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.5",
       // v3.0.0 (operator directive 2026-05-12): Perplexity default
       // `sonar-reasoning-pro` — reasoning + grounding + chain-of-thought,
       // best fit for cross-review where the peer must reason about the
@@ -345,16 +414,26 @@ export function loadConfig(): AppConfig {
       perplexity: listEnv("CROSS_REVIEW_PERPLEXITY_FALLBACK_MODELS"),
     },
     reasoning_effort: {
-      codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "xhigh"),
-      claude: reasoningEffort("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "xhigh"),
+      // Sol and Fable both document `max` on their API surfaces. Central
+      // config and env inputs also accept `ultra` as an operator-facing
+      // compatibility alias; each adapter normalizes it before transmission.
+      codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max"),
+      claude: reasoningEffort("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max"),
+      // Gemini 3.1 Pro exposes native LOW/MEDIUM/HIGH thinking levels.
+      // The file-config loader already emits this environment key; keeping it
+      // here is what makes central-config reloads actually reach the adapter.
+      gemini: reasoningEffort("CROSS_REVIEW_GEMINI_REASONING_EFFORT", "high"),
       deepseek: reasoningEffort("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max"),
-      grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh"),
+      // Grok 4.5 accepts only low|medium|high. Keeping the canonical default
+      // directly representable avoids relying on adapter-side clamping.
+      grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "high"),
       // v3.0.0: Perplexity Sonar API only accepts `minimal|low|medium|high`
       // for sonar-reasoning-pro / sonar-deep-research (other models
       // ignore the field entirely). Default `high` matches the
       // canonical "max reasoning per peer" stance the other peers take
       // (xhigh/max for OpenAI/Anthropic/Grok/DeepSeek). The adapter
-      // clamps internal scale (`xhigh`/`max`) to `high` for Perplexity.
+      // clamps the internal scale (`xhigh`/`max`/`ultra`) to `high` for
+      // Perplexity.
       perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high"),
     },
     model_selection: {},
@@ -374,11 +453,34 @@ export function loadConfig(): AppConfig {
       grok: costRate(COST_RATE_ENV_PREFIX.grok),
       perplexity: costRate(COST_RATE_ENV_PREFIX.perplexity),
     },
+    model_cost_rates: normalizeModelCostRates(fileConfigResult.model_cost_rates),
     evidence_judge_autowire: loadEvidenceJudgeAutowireConfig(),
     peer_enabled: loadPeerEnabledConfig(),
     cache: loadCacheConfig(),
     perplexity: loadPerplexityConfig(),
   };
+}
+
+function normalizeModelCostRates(
+  source: import("./file-config.js").FileConfig["model_cost_rates"],
+): AppConfig["model_cost_rates"] {
+  const normalized: AppConfig["model_cost_rates"] = {};
+  if (!source) return normalized;
+  for (const [peer, cards] of Object.entries(source) as [
+    PeerId,
+    NonNullable<NonNullable<typeof source>[PeerId]>,
+  ][]) {
+    const normalizedCards: NonNullable<NonNullable<AppConfig["model_cost_rates"]>[PeerId]> = {};
+    for (const [model, rawCard] of Object.entries(cards)) {
+      const { promo_expires_at_utc: promoExpiresAt, ...card } = rawCard;
+      normalizedCards[model] = {
+        ...card,
+        ...(promoExpiresAt == null ? {} : { promo_expires_at: promoExpiresAt }),
+      };
+    }
+    normalized[peer] = normalizedCards;
+  }
+  return normalized;
 }
 
 // v3.0.0 (Perplexity 6th peer): per-call Perplexity-specific knobs.
@@ -387,8 +489,8 @@ export function loadConfig(): AppConfig {
 // / high=$12-14 depending on model). Default `low` minimizes noise
 // and cost for cross-review use (peer reasons about attached draft;
 // search is a fact-check overlay). `disable_search` turns off the
-// web-search component entirely (peer becomes a pure LLM; pricing
-// reduces to token-based only). Default `false` per operator directive
+// web-search component entirely (peer becomes a pure LLM) but does not
+// remove Perplexity's context-tier request fee. Default `false` per operator directive
 // 2026-05-12 — search-active is the differentiator versus the other 5
 // peers.
 function loadPerplexityConfig(): AppConfig["perplexity"] {
@@ -570,16 +672,71 @@ function loadEvidenceJudgeAutowireConfig(): import("./types.js").EvidenceJudgeAu
     10,
   );
   const maxItemsPerPass = Number.isFinite(rawCap) && rawCap > 0 ? rawCap : 4;
+  const rawOutputCap = Number.parseInt(
+    envValue("CROSS_REVIEW_EVIDENCE_JUDGE_MAX_OUTPUT_TOKENS") ?? "2048",
+    10,
+  );
+  const maxOutputTokens =
+    Number.isFinite(rawOutputCap) && rawOutputCap >= 256 ? rawOutputCap : 2048;
+  const judgeReasoningEffort =
+    reasoningEffort("CROSS_REVIEW_EVIDENCE_JUDGE_REASONING_EFFORT", "medium") ?? "medium";
   return {
     mode,
     peer,
     active,
     max_items_per_pass: maxItemsPerPass,
+    max_output_tokens: maxOutputTokens,
+    reasoning_effort: judgeReasoningEffort,
     configured_mode_raw: rawMode,
     configured_peer_raw: rawPeer,
     consensus_peers: consensusPeers,
     configured_consensus_peers_raw: rawConsensusPeers,
   };
+}
+
+function addMissingPerplexityDimensions(
+  config: AppConfig,
+  effectiveModel: string,
+  missing: Set<string>,
+): void {
+  const normalizedModel = effectiveModel.trim().replace(/^models\//i, "");
+  const rate = resolveCostRate(config, "perplexity", effectiveModel);
+  if (!rate) return;
+  const rateRecord = rate as unknown as Record<string, unknown>;
+  const isPrimary = normalizedModel === config.models.perplexity.trim().replace(/^models\//i, "");
+  const addField = (field: string, envSuffix: string) => {
+    if (rateRecord[field] != null) return;
+    missing.add(
+      isPrimary
+        ? `${COST_RATE_ENV_PREFIX.perplexity}_${envSuffix}`
+        : `model_cost_rates.perplexity[${JSON.stringify(effectiveModel)}].${field}`,
+    );
+  };
+
+  if (["sonar", "sonar-pro", "sonar-reasoning-pro"].includes(normalizedModel)) {
+    const size = config.perplexity.search_context_size;
+    if (size === "high") {
+      addField("request_fee_high_per_1000", "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS");
+    } else if (size === "medium") {
+      addField("request_fee_medium_per_1000", "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS");
+    } else {
+      addField("request_fee_low_per_1000", "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS");
+    }
+    return;
+  }
+
+  if (normalizedModel === "sonar-deep-research") {
+    addField("citation_tokens_per_million", "CITATION_TOKENS_USD_PER_MILLION");
+    addField(
+      "deep_research_reasoning_tokens_per_million",
+      "DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
+    );
+    addField("search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS");
+    // These three dimensions are provider-controlled and have no documented
+    // pre-dispatch cap. A rate card makes post-call accounting exact, but it
+    // cannot make a hard cost preflight truthful.
+    missing.add("CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED");
+  }
 }
 
 export function missingFinancialControlVars(
@@ -588,6 +745,13 @@ export function missingFinancialControlVars(
   options: { untilStopped?: boolean | undefined } = {},
 ): string[] {
   const missing = new Set<string>();
+  const configLoad = getFileConfigRuntimeStatus();
+  if (configLoad?.file_exists && configLoad.parse_error) {
+    missing.add("CROSS_REVIEW_CONFIG_FILE_INVALID");
+  }
+  if (configLoad?.reload_required) {
+    missing.add("CROSS_REVIEW_CONFIG_RELOAD_REQUIRED");
+  }
 
   if (config.budget.max_session_cost_usd == null) {
     missing.add("CROSS_REVIEW_MAX_SESSION_COST_USD");
@@ -600,39 +764,31 @@ export function missingFinancialControlVars(
   }
 
   for (const peer of peers) {
-    if (config.cost_rates[peer]) continue;
+    if (resolveCostRate(config, peer, config.models[peer])) continue;
     const prefix = COST_RATE_ENV_PREFIX[peer];
     missing.add(`${prefix}_INPUT_USD_PER_MILLION`);
     missing.add(`${prefix}_OUTPUT_USD_PER_MILLION`);
   }
 
-  // v3.0.0 (Perplexity 6th peer): when the perplexity peer is in scope
-  // AND search is enabled (default), the request fee for the configured
-  // search_context_size MUST be set — Perplexity bills BOTH per-token
-  // AND per-1000-requests, and the request fee is the only way the
-  // cost layer can account for the search cost dimension. When
-  // disable_search is true, the request fee is irrelevant (peer
-  // becomes pure-LLM and the missing fee is harmless). This preserves
-  // the v2.26.0 "no-hardcoded-financials" contract: every dimension of
-  // pricing that applies to the current call must be operator-
-  // configured before paid traffic is allowed.
-  if (peers.includes("perplexity") && !config.perplexity.disable_search) {
-    const rate = config.cost_rates.perplexity;
-    const size = config.perplexity.search_context_size;
-    const requestFeeField =
-      size === "high"
-        ? "request_fee_high_per_1000"
-        : size === "medium"
-          ? "request_fee_medium_per_1000"
-          : "request_fee_low_per_1000";
-    const requestFeeEnvSuffix =
-      size === "high"
-        ? "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS"
-        : size === "medium"
-          ? "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS"
-          : "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS";
-    if (!rate || rate[requestFeeField] == null) {
-      missing.add(`${COST_RATE_ENV_PREFIX.perplexity}_${requestFeeEnvSuffix}`);
+  for (const peer of peers) {
+    for (const fallbackModel of config.fallback_models[peer] ?? []) {
+      if (resolveCostRate(config, peer, fallbackModel)) continue;
+      missing.add(`model_cost_rates.${peer}[${JSON.stringify(fallbackModel)}]`);
+    }
+  }
+
+  // Perplexity has model-specific non-token dimensions. Apply the same
+  // fail-closed contract to the primary pin and every fallback: regular Sonar
+  // products require the active context-tier request fee, while Deep Research
+  // requires citation, reasoning and search-query rates. A complete
+  // input/output card alone is not a complete financial control for either.
+  if (peers.includes("perplexity")) {
+    const effectiveModels = [
+      config.models.perplexity,
+      ...(config.fallback_models.perplexity ?? []),
+    ];
+    for (const model of new Set(effectiveModels)) {
+      addMissingPerplexityDimensions(config, model, missing);
     }
   }
 
@@ -704,7 +860,7 @@ function costRate(
   for (const [key, suffix] of fields) {
     const value = opt(suffix);
     if (value != null) {
-      (rate as Record<string, unknown>)[key as string] = value;
+      (rate as unknown as Record<string, unknown>)[key as string] = value;
     }
   }
   if (thresholdTokensRaw != null && thresholdTokensRaw > 0) {

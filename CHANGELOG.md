@@ -7,23 +7,1275 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.31] — 2026-07-28
+
+### Fixed
+
+- Makes the clean-consumer license gate derive the bundled MCP SDK identity from
+  the installed lockfile resolution instead of hard-coding the previous 1.29.0
+  version.
+- Supersedes the immutable but unpublished `v04.05.30` tag. Its pre-publish
+  verification correctly stopped before creating an artifact, package or
+  GitHub Release when the stale license assertion encountered MCP SDK 1.30.0.
+
+## [v04.05.30] — 2026-07-28
+
+**Provider runtime and release automation no longer depend on the expired
+Socket/StepSecurity services and retain fail-closed release evidence.**
+
+The tag is preserved as an unpublished audit record and is superseded by
+`v04.05.31`; no 4.5.30 package or GitHub Release was created.
+
+### Changed
+
+- Updates the OpenAI runtime client to 7.0.0 and bundles MCP SDK 1.30.0 in the
+  published stdio artifact.
+- Completely removes the active Socket Security and StepSecurity integrations,
+  including their workflows, repository configuration, dependency proxy,
+  credentials and dedicated Python tooling. npm installs now use npmjs.org
+  directly, while the remaining Python quality tools retain their
+  hash-verified lock.
+- Runs pinned `zizmor==1.28.0` directly with `uvx` in the central reusable
+  workflow, without `harden-runner` or any StepSecurity integration. The
+  workflow verifies the official uv 0.11.32 Linux archive against its explicit
+  SHA-256 checksum before execution.
+
+### Fixed
+
+- Stops Auto-tag from redispatching an immutable tag that already has either an
+  exact successful Publish run or an exact immutable GitHub Release with the
+  expected uploaded asset and a valid SHA-256 digest. Recovery remains enabled
+  when neither durable proof exists.
+- Accepts only an exact HTTP 404 from `gh api` as evidence that a tag or release
+  is absent. Other statuses and malformed errors fail closed in Auto-tag and
+  Publish instead of being misclassified as a recoverable absence.
+
+## [v04.05.29] — 2026-07-24
+
+### Security
+
+- Locks transitive `brace-expansion` 5.0.8 to remediate
+  GHSA-mh99-v99m-4gvg, a high-severity denial-of-service flaw disclosed while
+  the 4.5.28 publication gate was running.
+- Supersedes the immutable but unpublished `v04.05.28` tag. No 4.5.28 package
+  reached npmjs.com or GitHub Packages.
+
+## [v04.05.28] — 2026-07-24
+
+**Provider compatibility and session safety now share one fail-closed,
+cost-bounded runtime contract.**
+
+### Added
+
+- Adds `claude-opus-5` as an explicit supported Anthropic override while
+  retaining `claude-fable-5` as the canonical pin. Opus 5 uses adaptive
+  thinking with omitted display, native effort through `max`, a 64K maintained
+  output budget, model-aware cache thresholds and its own US$5/US$25 rate card.
+- Updates `@anthropic-ai/sdk` to `0.115.0`, whose public types include Opus 5
+  and the adaptive-thinking display contract.
+- Adds configurable, atomic Evidence Broker admission limits: 8 requests per
+  peer per round, 24 per round, 64 items and 64,000 request characters per
+  session.
+- Adds bounded `session_events` pagination with token-delta telemetry excluded
+  by default and explicitly available for forensic callers.
+- Adds claim-level grounding diagnostics that identify whether caller evidence
+  or peer-submitted sources failed to corroborate each decisive claim.
+
+### Fixed
+
+- Recovers interrupted sessions automatically at startup, rejects recycled
+  process IDs, reconciles control, health, accounting and background-job state,
+  and settles orphan running jobs after terminal sessions.
+- Treats server-issued Evidence Broker checklist identifiers as provenance
+  instead of fabricated hexadecimal evidence.
+- Distinguishes a leading future prerequisite such as “after green CI, retry”
+  from a current-state assertion in the truthfulness preflight.
+- Stops legacy oversized checklists before provider dispatch and stops a
+  newly oversized round before automatic judging or later paid work, while
+  preserving complete peer responses and rejecting the checklist append
+  atomically.
+
+### Security
+
+- Removes inherited Windows ACLs from `host-tokens.json`, grants access only to
+  the current user, SYSTEM and Administrators, and verifies owner-only `0600`
+  permissions on POSIX. The documented same-OS-user isolation limitation
+  remains explicit.
+- Loads and migrates an existing token map through one verified file
+  descriptor, with no-follow opening on POSIX and descriptor/path identity
+  checks, eliminating the pathname time-of-check/time-of-use flow detected by
+  CodeQL.
+- Bounds hostile or excessively verbose Evidence Broker growth to prevent
+  repeated prompt amplification and denial-of-wallet without truncating,
+  discarding or auto-satisfying review blockers.
+
+## [v04.05.27] — 2026-07-24
+
+**Provider SDK and repository automation updates now ship from one verified
+dependency source of truth.**
+
+### Added
+
+- Updates `@anthropic-ai/sdk` to `0.114.0`, including the new
+  `model_context_window_exceeded` stop reason, and updates `openai` to `6.49.0`
+  with its latest schema helpers and upstream fixes.
+- Adds a dynamic third-party inventory regression that requires exactly one
+  entry for every direct dependency and verifies each entry's scope, resolved
+  license and canonical source.
+
+### Fixed
+
+- Removes manually mirrored dependency versions from user-facing documentation.
+  Declared ranges now come from `package.json`, while `package-lock.json`
+  remains the exact resolution for this repository checkout.
+- Sends Socket Security an explicit commit SHA and only the bounded commit
+  subject, preventing large squash messages from being serialized into API
+  requests.
+- Rolls out the guarded central Dependabot controller, including exact-head
+  approval, immutable-SHA squash merge and non-destructive recovery for a
+  falsely reported already-current branch.
+- Hardens the `v04.05.26` recovery path around exact release-note identity,
+  artifact verification and the single authorized publication transition.
+
+### Security
+
+- Updates GitPython to `3.1.55`, which prevents environment expansion in remote
+  URLs, and refreshes the dependency graph without dismissing its alerts.
+- Updates Socket Security CLI to `2.5.1` and OpenSSF Scorecard Action to `2.4.4`.
+
+## [v04.05.26] — 2026-07-22
+
+**The published MCP runtime and repository automation now fail closed at the
+same reviewed commit.**
+
+### Fixed
+
+- Bundles the MCP stdio runtime and its license inventory into the npm package,
+  then installs that package in a clean consumer fixture to prove it starts
+  without undeclared production dependencies.
+- Replaces the repository-local Dependabot mutator with the reviewed central
+  controller, bound to immutable bot identity, exact-head checks and approval,
+  guarded branch refresh, and exact-SHA squash merge.
+- Updates the Hono server override with an explicit v5 exclusion and the npm
+  v12 install-script policy with a package-wide denial for Google GenAI, so a
+  future dependency update cannot silently acquire install-time execution.
+- Serializes every tag through one repository-wide GitHub FIFO release queue,
+  preventing concurrent versions from racing npm or GitHub `latest`. Older
+  successful CI commits remain valid only while they are in live `main`
+  history, and every branch/tag identity is resolved through authenticated
+  GitHub APIs before tagging or publishing.
+- Queues every side-effect-free release validation without cancellation, while
+  keeping a historical cancelled result fail-closed instead of rerunning it in
+  a concurrency context that could cancel the current `main` gate.
+- Gates queued releases on every CodeQL SARIF category at the exact target
+  commit and on exact-SHA OpenSSF Scorecard SARIF, rather than substituting
+  mutable current-branch alert state.
+- Runs Pages and OpenSSF Scorecard on every `main` push and requires all six
+  push workflows at the exact release candidate, resolving each by its active
+  workflow path and numeric ID instead of its non-unique display name. The gate
+  allows queued workflows up to 60 minutes to finish. For GitHub-managed
+  Dependabot Updates, follows the final configuration blob across the complete
+  version epoch and requires the newest trusted success for each ecosystem,
+  preventing a later same-version recovery commit from bypassing an earlier
+  config change.
+- Publishes the generated tarball through an explicit local `./artifacts/`
+  path, preventing npm from interpreting the package argument as a GitHub
+  shorthand or Git dependency.
+- Discovers GitHub Releases (including drafts) through the complete paginated
+  collection, reconciles releases and assets only by their immutable numeric
+  IDs, and never deletes or overwrites an existing asset during recovery. A
+  newly created draft is polled with a bounded retry until its exact
+  server-issued ID is visible; a mismatched ID or an API/parse failure aborts
+  immediately before any asset upload.
+- Treats the authenticated existing tag ref—not the API's informational
+  `target_commitish` value—as release identity, so an immutable historical
+  release remains recoverable after `main` advances.
+- Re-downloads and SHA-256-verifies the exact GitHub Release asset after
+  discovery, immediately before the release PATCH, and again from the final
+  public state. A complete protected-field PATCH is restricted to drafts;
+  idempotent recovery of an already immutable release sends no mutation unless
+  its title or notes need the only documented metadata-only repair.
+- Requires the final GitHub Release to report `immutable: true`, then verifies
+  GitHub's signed release attestation and binds the local tarball to its
+  attested release asset before the workflow may close green.
+- Uses the isolated administrative automation token to prove the repository's
+  immutable-release policy is owner-enforced in the common gate before either
+  package registry can write, again before any GitHub Release write, and
+  immediately before publication, preventing a red-but-public mutable result.
+  Every multi-command GitHub step immediately copies its token into a
+  non-exported shell variable and removes the exported name before unrelated
+  subprocesses run. Tokens are injected only into the intended `gh` wrapper,
+  release-asset `curl` header, or guarded helper shell. The GitHub Packages
+  token is written once to a mode-0600 runner-temporary npmrc, removed from the
+  environment before child processes, and deleted by an unconditional cleanup
+  step.
+- Refuses release-attestation commands on GitHub CLI versions older than
+  2.93.0, the first version patched for the token-disclosure vulnerability
+  CVE-2026-48501, and records the verified runner version before use.
+
+### Changed
+
+- Updates `@anthropic-ai/sdk` to `^0.113.0` and `@google/genai` to `^2.13.0`. Keeps
+  TypeScript on the newest supported 6.0.x release because the current
+  `typescript-eslint` peer contract excludes TypeScript 7.
+- Synchronizes the public dependency inventory with the release manifest. The
+  MCP SDK remains declared at `^1.29.0` under development dependencies and is
+  incorporated into the published stdio bundle, so its documented audit scope
+  is `bundled/dev`.
+
+### Security
+
+- Standardizes `write-all` at workflow and job scope while keeping privileged
+  automation on trusted default-branch code, immutable action SHAs, blocked
+  egress, and non-persistent checkout credentials.
+- Keeps the privileged `workflow_run` auto-tag job on a constant trusted
+  `refs/heads/main` checkout. The successful CI SHA is treated only as data and
+  must be a valid full commit that is an ancestor of both that checkout and
+  authenticated live `main`; only then does the working tree detach to that
+  exact event commit before versioned repository code or metadata is read.
+- Replaces a source-text URL substring assertion with a runtime regression that
+  parses every registry-verifier request and requires exact equality with the
+  npm registry origin. This closes the CodeQL incomplete-URL-sanitization
+  finding without suppressing it or weakening the zero-SARIF release gate.
+- Measures the adversarial code-symbol extraction deadline around the production
+  algorithm itself, retaining its two-second ceiling while a separate ten-second
+  child-process watchdog prevents loader startup from producing false failures.
+- Adds Zizmor 1.28.0 analysis and retains Scorecard SARIF publication without
+  the incompatible public Scorecard-results permission mode.
+
+## [v04.05.25] — 2026-07-21
+
+**Security advisories are remediated without weakening release gates.**
+
+### Fixed
+
+- Updates the lockfile to resolve the three current registry advisories:
+  `body-parser` 2.3.0, nested `protobufjs` 7.6.5, and `brace-expansion` 5.0.7.
+  The Scorecard/Code Scanning and Auto-tag hard gates remain fail-closed; no
+  alert suppression or workflow bypass was introduced.
+- Updates the version-pinned install-script approval to `protobufjs@7.6.5`.
+  This preserves npm's strict allowlist and does not enable a global script
+  bypass.
+
+## [v04.05.23] — 2026-07-17
+
+**npm v12 registry metadata is normalized without weakening the audit gate.**
+
+### Fixed
+
+- Accepts the one-item JSON array returned by npm v12 `npm view --json` for an
+  exact package version before creating the integrity-bound temporary audit
+  lock. Empty, multiple, and malformed responses still fail closed; the
+  cryptographic `npm audit signatures` gate remains mandatory.
+
+## [v04.05.22] — 2026-07-17
+
+**npm provenance verification follows the registry DSSE envelope contract.**
+
+### Fixed
+
+- Decodes the in-toto statement from npm's published Sigstore DSSE envelope
+  before binding SLSA provenance to the release workflow, protected tag, and
+  immutable source commit. The cryptographic `npm audit signatures` gate
+  remains mandatory after this structural verification.
+
+## [v04.05.21] — 2026-07-17
+
+**Durable configuration telemetry fixture aligned with JSON semantics.**
+
+### Fixed
+
+- Normalizes the expected evidence-judge autowire object before comparing it
+  with the persisted effective-config snapshot. Unset optional properties are
+  intentionally absent from durable JSON and its SHA-256 canonical form.
+
+## [v04.05.20] — 2026-07-17
+
+**Reproducible pre-publish budget/cache regression under CI defaults.**
+
+### Fixed
+
+- Completes the isolated Gemini rate fixture used by the budget/cache release
+  regression and clears its superseded unknown-spend marker after replacing the
+  stub result with a known settlement. The financial gate remains fail-closed
+  for genuinely unpriced provider work; the valid persistence and cache-label
+  contract now runs before publication.
+
+## [v04.05.19] — 2026-07-17
+
+**Release-gate hardening without weakening provenance verification.**
+
+### Fixed
+
+- Corrects the Auto-tag/Scorecard blocker introduced by the 4.5.18 release
+  audit: the post-publish signature check no longer uses mutable `npm install`.
+  It derives an isolated lockfile-v3 fixture from the committed dependency tree,
+  binds the exact published tarball to npmjs.org and its SHA-512 SRI integrity,
+  installs only through `npm ci`, verifies the installed manifest against the
+  protected source contract, then runs `npm audit signatures`.
+- Replaces the npm visibility `curl | node` pipeline with a fixed-registry
+  metadata query, so release verification never pipes downloaded content into
+  an interpreter. The zero-open-alert publication gate remains unchanged.
+
+## [v04.05.18] — 2026-07-17
+
+**Session-audit remediation and symmetric anti-deception controls.** This patch
+closes the defects observed in the five durable sessions run by 4.5.16; the
+audited corpus contained no session run by 4.5.17. No paid review round was
+opened during remediation.
+
+### Fixed
+
+- Applies citation grounding and fabrication checks to factual blocking
+  verdicts as well as `READY`. An unsupported or falsely sourced `NOT_READY`
+  becomes `NEEDS_EVIDENCE` instead of remaining a clean veto; malformed sources
+  supplied with `NEEDS_EVIDENCE` are also visible as non-clean. The downgrade
+  carries a deduplicated, actionable citation request into the Evidence Broker.
+- Requires a factual blocking claim to correlate with the specific grounded
+  source it cites. A byte-exact but unrelated quote can no longer keep a
+  `NOT_READY` veto clean merely because both source and quote are authentic.
+- Persists each raw provider response or terminal failure immediately when that
+  peer finishes, before waiting for slower peers, and emits
+  `peer.call.completed`. Each settlement also enters the in-flight metadata
+  ledger: restart/cancellation preserves its exact usage and cost and marks
+  only genuinely unresolved peers as unknown. Paid decision/format recovery
+  calls receive their own pre-dispatch reservation and per-call settlement, so
+  a crash cannot erase or merge away the second charge.
+- Saves the caller draft before truthfulness/evidence preflight and finalizes a
+  rejected preflight as an auditable `aborted` session. Inputs no longer
+  disappear or remain open until the stale-session sweep.
+- Includes the paid review round already in flight in evidence-judge budget
+  checks without counting its durable settlements twice. Evidence judges use a
+  separate compact output ceiling, skip newly created asks until later evidence
+  can exist, and preserve the established `max-rounds` outcome contract for
+  financial stops. Their reasoning effort defaults independently to `medium`,
+  and any unpriced current or historical attempt blocks judge dispatch instead
+  of being coerced to zero.
+- Records review, generation and evidence-judge cache activity with call kind
+  and label so `cache_manifest.json` reconciles with session totals. Normal
+  generations now commit their authoritative ledger entry before cache
+  telemetry and use the same canonical label in both records.
+- Distinguishes unanimous judge rejection (`consensus_unsatisfied`) from judge
+  disagreement and removes arbitrary peer attribution from shadow telemetry.
+  The dynamic contract keeps `judge_peers` and `per_peer_verdict` in shadow
+  events without inventing a scalar author, while active promotion retains the
+  real `judge_peer`.
+- Treats a session with accounting-v2 and no provider calls as a known
+  zero-cost session instead of reporting an unknown total.
+- Closes the remaining evidence-judge durability windows: every reservation
+  records its owning process, startup accounts only dead-owner reservations,
+  recovery preserves an active judge, cancellation reaches a terminal outcome,
+  a cancellation that wins the session lock cannot promote checklist evidence,
+  and a crash after durable round append reconstructs the final artifact
+  automatically without an operator action.
+- Keeps a stale in-flight sweep from reconciling a round while a live process
+  still owns a pending paid provider reservation. The sweep rechecks that
+  ownership inside the session lock before it can mutate accounting.
+- Lets active single-peer and consensus judges resolve a pre-existing
+  `not_resurfaced` evidence ask. The state remains convergence-blocking until
+  that independent, verified judgment or another explicit disposition; it no
+  longer becomes permanently invisible to the automatic judge.
+- Preserves every operator output ceiling for evidence judges. A compact judge
+  cap is now the lower of the peer cap and judge cap, never an undocumented
+  256-token floor that could enlarge a configured 64-token peer limit.
+- Treats durable, unsettled provider reservations as unknown spend in reports.
+  A session with a live paid call can no longer report an exact/reconciled zero
+  before its result or failure is persisted.
+- Extends that fail-closed accounting to every other durable dispatch marker:
+  a lead/revision generation and every primary peer without its settlement now
+  keep the session cost unknown rather than allowing accounting-v2 to claim
+  zero or reconciliation.
+- Gives each in-flight review round and format/decision recovery reservation a
+  durable owner PID. Both interrupted-session recovery and the stale sweep
+  leave work owned by a live process intact, then recover ownerless/dead-owner
+  legacy state conservatively.
+- Blocks single and consensus evidence-judge preflight while a lead/revision
+  generation is still in flight, closing the last path that could budget a
+  paid judge against an incomplete session total.
+- Limits automatic evidence judging to historical asks that stayed unresolved
+  through the current round. A peer that reasserts an ask in this round can no
+  longer have that active request immediately promoted as addressed by a
+  judge.
+- Makes restart recovery distinguish an acknowledged cancellation from a dead
+  owner that never completed it. A durable cancellation request can no longer
+  fabricate a clean terminal state; recovery preserves interrupted work and
+  accounting conservatively.
+- Replaces a backtracking code-symbol matcher used by Evidence Broker
+  correlation with a linear scanner. It preserves camelCase and snake_case
+  matching while bounding adversarial 100,000-character input.
+
+### Changed
+
+- Persists a credential-free effective-configuration snapshot and SHA-256 in
+  every new session for reproducible audits, including prompt bounds and all
+  Perplexity transport/search controls.
+- Makes durable reports action-oriented: peer requests and follow-ups are
+  included, token-stream deltas are suppressed by default, timeline truncation
+  is explicit and undefined fields do not leak into Markdown.
+- Clarifies the session contract that ordinary unanimous reviews are finalized
+  automatically and never require a manual evidence attachment, operator
+  notification or operator-console finalization.
+- Pins OpenAI Responses calls to `service_tier: "default"` so project-level
+  Priority processing cannot silently invalidate the configured Standard rate
+  card.
+- Documents the official Grok 4.5 long-context tier above 200,000 prompt tokens
+  and corrects Perplexity comments: `disable_search` changes search behavior,
+  not the configured per-request charge.
+
+### Release security
+
+- Revalidates every publish tag against the current `main` SHA and independently
+  waits for all applicable push workflows, processed CodeQL analyses and zero
+  open code-scanning alerts. The documented `workflow_dispatch` bridge remains
+  only for the tag ref created with `GITHUB_TOKEN`: it accepts no tag input,
+  must run on the protected `refs/tags/v*` ref, and revalidates tag, checkout
+  and `main` after local verification and before every external write.
+- Installs the exact public package under npm 12's fail-closed dependency
+  controls and runs `npm audit signatures` after publication, cryptographically
+  checking registry signatures and provenance attestations. All commands in
+  the isolated verification fixture explicitly pin `registry.npmjs.org`, so
+  runner-level registry configuration cannot redirect that security check.
+
+### Provider contract audit
+
+- Reverified all six maintained pins against first-party API documentation:
+  `gpt-5.6-sol`, `claude-fable-5`, `gemini-3.1-pro-preview`,
+  `deepseek-v4-pro`, `grok-4.5` and `sonar-reasoning-pro`.
+- Confirms that OpenAI API effort `max` is the correct wire value for
+  GPT-5.6 Sol; the user-facing `ultra` alias remains normalized locally and is
+  not sent as an undocumented API value.
+- Confirms the provider-specific structured-output projections, including
+  Anthropic SDK schema sanitization and Gemini's documented JSON Schema subset.
+
+## [v04.05.17] — 2026-07-17
+
+**Provider SDK maintenance with exact install-script review.** This patch
+publishes the accumulated dependency maintenance since 4.5.16 and restores the
+strict npm 12 installation gate for the current Google Gen AI SDK.
+
+### Changed
+
+- Raises the published Anthropic SDK range from `^0.111.0` to `^0.112.1`.
+  Anthropic classifies the intervening SDK feature as MCP Tunnels support; the
+  Messages API surface used by cross-review remains compatible.
+- Validates cross-review with Google Gen AI SDK 2.12.0, OpenAI SDK 6.48.0 and
+  protobufjs 8.7.1. The OpenAI updates include streaming and header-normalizing
+  fixes relevant to provider transport, while the Google additions do not
+  change the `generateContent` surfaces currently used by cross-review.
+- Carries forward the post-4.5.16 Dependabot maintenance for TypeScript linting,
+  Biome, Socket Security, CodeQL and the Node setup action.
+
+### Security
+
+- Reviews the registry-published `@google/genai@2.12.0` lifecycle and updates
+  `allowScripts` to that exact version. Its sole install lifecycle remains the
+  literal no-op `preinstall` declared by the official package.
+- Keeps `strict-allow-scripts`, `allow-git=none` and `allow-remote=none`
+  fail-closed. No wildcard permission or
+  `--dangerously-allow-all-scripts` bypass is introduced.
+
+### Fixed
+
+- Makes the Windows parent-process smoke honor the runtime's documented
+  best-effort contract. A sandbox or host that denies `tasklist` access may
+  safely return a null executable basename instead of producing a false test
+  failure.
+
+## [v04.05.16] — 2026-07-13
+
+**Compact polling and race-safe background-job observability.** This patch
+closes three runtime contract defects reproduced in session
+`50e68ea8-8da3-4132-99b4-552a0399b72a`: repeated polls transported the
+complete prior round, Markdown requests returned JSON, and a cancellation that
+arrived after job settlement reported only `no_running_job_matched`.
+
+### Fixed
+
+- Makes `session_poll` default to `detail="summary"`, retaining progress,
+  peer verdicts, compact summaries and convergence state while excluding full
+  peer `text`, `raw` and `structured` payloads. `detail="full"` remains
+  available for explicit forensic inspection.
+- Separates the round currently executing from completed history:
+  `active_round_number` identifies live work and
+  `latest_completed_round_number` identifies the newest appended round.
+- Honors `response_format="markdown"` with real Markdown across object-returning
+  MCP tools. Persisted/caller/peer strings are HTML-neutralized before Markdown
+  rendering so untrusted markup is displayed as text.
+- Persists compact background-job status under each durable session. Polling
+  and cancellation can therefore reconcile running and terminal jobs across
+  sibling MCP hosts and runtime restarts instead of depending on one process's
+  memory.
+- Makes late cancellation idempotent and explicit. Settled jobs return
+  `requested=false`, `job_already_terminal`, the terminal job summary and
+  `final_state`; an already terminal session returns
+  `session_already_terminal` with the same compact final-state contract.
+- Closes the start/settlement TOCTOU windows around durable job ownership,
+  bounds process-local terminal-job retention and suppresses false
+  `append_event_persist_failed` noise when an authenticated post-terminal
+  operation is correctly rejected by the immutable session chain.
+
+### Field evidence
+
+- During the affected second round, each poll carried 43,326 characters;
+  34,783 belonged to the complete prior `latest_round`.
+- The JSON poll and the poll requested as Markdown were byte-identical.
+- The round completed 10.871 seconds before cancellation, proving an ordinary
+  settlement race rather than provider or state corruption.
+- All five providers completed and committed their streamed responses. The
+  second round itself was initiated unnecessarily by the caller, not by the
+  cross-review runtime.
+
+## [v04.05.15] — 2026-07-12
+
+**Release completion after the protected 4.5.14 tag.** The 4.5.14 publish run
+was cancelled before registry publication when the final Dependabot audit found
+that its npm updater still redirected Corepack through the private dependency
+proxy. Repository rules correctly prevented deleting or moving that tag, so
+4.5.15 is the first publishable artifact containing the complete continuity and
+dependency-automation fixes below.
+
+### Fixed
+
+- Keeps `packageManager` absent from the package manifest so Dependabot uses its
+  documented npm 11 resolver instead of attempting to bootstrap npm 12 through
+  StepSecurity, whose metadata endpoint does not expose Corepack's required
+  `dist.tarball` field. CI and Publish continue to download npm 12.0.1 directly,
+  verify the pinned SHA-512 and enforce the npm 12 policy.
+- Preserves the four-ecosystem Dependabot coverage, pip-compile source+hash lock,
+  grouped Python updates, real consumer checks and concurrent-base merge retry
+  introduced in the protected 4.5.14 source tag.
+- Makes Auto-tag detect a `dependabot.yml` change and wait for all four dynamic
+  ecosystem updater jobs on the exact SHA. A failed or missing updater now
+  blocks tagging instead of racing the final dependency audit.
+
+## [v04.05.14] — 2026-07-12
+
+**Durable Evidence Broker continuity fix.** Prevents immutable evidence from
+disappearing between rounds, recursive checklist aliases from multiplying and
+post-reconciliation convergence from diverging across the response, session
+metadata and health state.
+
+### Fixed
+
+- Keeps the active caller snapshot as the only evidence authority for current
+  preflight, prompt and grounding. On session resume, the broker can locally
+  replay a prior clean/verified READY source against its original immutable
+  path, SHA-256 and literal quote; old bytes never re-enter the current prompt
+  and cannot authorize a new operational claim.
+- Scopes each `Checklist-Item` id only to the source that contains it. Separate
+  generic path/SHA-256/literal-quote sources remain available for strict
+  semantic correlation with other asks instead of being discarded globally.
+- Folds only strict `same item` aliases from the same peer into an older
+  durable ancestor. Cross-peer references and an ID followed by a new
+  requirement remain first-class blockers. Active legacy sessions collapse
+  only older, acyclic, same-owner aliases with a dedicated audit log and event.
+- Recognizes `git -C <worktree> diff --check` as the same command identity as
+  `git diff --check` only when a correlated execution record carries exit code
+  zero. Missing/non-zero exits, `diff --stat` and echoed command text remain
+  rejected; explicitly captured empty stdout/stderr is valid. A `--check`
+  token after Git's `--` pathspec terminator, `--no-index`, refs and narrowed
+  pathspecs are never accepted as proof of the global command.
+- Makes formal `ready_peers` and `needs_evidence_peers` mutually exclusive
+  while preserving raw peer verdicts. A generic READY or a silent reviewer
+  still cannot satisfy its historical evidence asks.
+- Delays the single durable `appendRound` until checklist aggregation, address
+  detection and optional judge promotion finish. The in-flight journal retains
+  the exact pre-round checklist/history and rolls broker mutations back if the
+  round is interrupted before append, with a compensating audit event. The
+  lock-backed reservation is acquired before any broker/evidence mutation;
+  `appendRound` reapplies the evidence gate under that lock and keeps the
+  reservation through converged finalization. The appended convergence,
+  returned result, terminal outcome and runtime health therefore describe the
+  same state without pre-round or append-to-finalize TOCTOU windows.
+- Extends Dependabot from npm/GitHub Actions to every manifest ecosystem in the
+  repository (`pip` and `pre-commit` included), authenticates the global
+  StepSecurity registry declared by `.npmrc`, removes the weekly-only `day` key
+  from daily schedules and executes the hash-locked Python 3.12 tools plus
+  actual pre-commit hooks in ordinary CI. In accordance with GitHub's documented
+  npm registry shape, `replaces-base` is omitted when `.npmrc` already defines
+  the global registry; this prevents Corepack from trying to bootstrap the npm
+  CLI through a dependency proxy that does not expose the required
+  `dist.tarball` metadata. The manifest also omits the `packageManager` Corepack
+  hint after the remote updater proved that Dependabot otherwise redirects even
+  without `replaces-base`; CI and Publish still bootstrap npm 12.0.1 and verify
+  its pinned SHA-512 independently. Dependabot therefore resolves with its
+  supported npm 11 while the product's build/release contract remains npm 12.
+- Adds the missing pip-compile source manifest, groups compatible Python tool
+  updates and regenerates the Python 3.12 lock with hashes. This prevents a
+  direct `socketsecurity` bump from omitting a newly introduced transitive
+  package, as happened with Brotli in PR 113.
+- Retries only GitHub's transient `Base branch was modified` response while
+  preserving the exact checked Dependabot head. Concurrent green dependency
+  PRs no longer leave red automerge runs solely because another PR reached
+  `main` first.
+- Replaces the unanchored registry-URL regex introduced by that regression with
+  literal assertions while the semantic YAML parser enforces the actual
+  relationship, closing CodeQL alert 40 without suppressing the query.
+- Adds field regressions derived from session
+  `39cb7669-99c3-4ecd-a635-95103c105390`, including cumulative immutable
+  evidence replay across a runtime restart, mixed routed/generic sources,
+  safe alias chains/cycles/cross-owner cases, silent `git -C`, masked-command
+  negatives, disjoint derived states and post-judge serialization.
+
+## [v04.05.13] — 2026-07-12
+
+**ReDoS recurrence fix and fail-closed publication gate.** Closes
+code-scanning alert 39 and prevents a successful CodeQL workflow that uploaded
+findings from being mistaken for a clean security result.
+
+### Security
+
+- Replaces the ambiguous nested-quantifier camelCase matcher with a linear
+  identifier scan plus an explicit uppercase filter. This preserves checklist
+  code-symbol correlation while eliminating exponential backtracking on long
+  repeated-uppercase input.
+- Adds an adversarial 100,000-character regression for the Evidence Broker
+  symbol path.
+- Makes auto-tag wait for CodeQL on the exact CI-verified SHA and query the
+  default branch's actual open code-scanning alerts. A failed, missing or
+  incomplete CodeQL run, or any open alert, now blocks the tag and npm publish.
+  The moving-main alert query is bracketed by SHA checks, and the tag explicitly
+  names the immutable SHA whose CI and processed analyses passed.
+- Records that alert 39 repeated the `js/redos` class already fixed in alert
+  31, and codifies full-diff regex-complexity review as a release invariant.
+
+## [v04.05.12] — 2026-07-12
+
+**Evidence Broker convergence fix.** Prevents grounded requester rechecks from
+leaving historical `not_resurfaced` items stuck after a unanimous READY round,
+without allowing an item id or irrelevant evidence to manufacture satisfaction.
+
+### Fixed
+
+- Routes every unresolved checklist id into direct `ask_peers` and
+  `session_start_round` prompts, so callers do not need to reconstruct or
+  inject the broker state manually.
+- Scopes requester-reverification citations by `Checklist-Item` id before
+  correlating them, preventing evidence for one ask from closing another ask
+  owned by the same peer. Legacy sources without ids retain fail-closed
+  compatibility when no routed source is present.
+- Treats `e.g.`/`i.e.` as abbreviations rather than file anchors, recognizes
+  line-or-diff and diff-or-grep evidence alternatives, and excludes ordered-list
+  markers from value matching.
+- Adds bilingual semantic correlation for identity/injection/canonicalization,
+  redaction/secrets/assertions and required release documents. Routed but
+  irrelevant file/test output, partial document proof and explicitly
+  conjunctive code-symbol proof remain blocked.
+- Adds a five-peer offline integration regression that traverses persisted
+  evidence, real path/SHA-256/literal-quote grounding, requester reverification,
+  the durable event and final convergence from `not_resurfaced`. The adapter
+  injection seam is restricted to confirmed stub/test mode; `stub=false`
+  rejects it before probes or calls.
+- Records the 4.5.11 field incidents: session
+  `b5a73952-8236-4cdf-8e34-880624f663f4` spent seven rounds while two historical
+  asks remained stuck, and `a78aa17c-93f6-4825-89f9-b8abe1ec76d8` exposed the
+  same matcher class across additional natural-language asks.
+
+## [v04.05.11] — 2026-07-12
+
+**Autonomous evidence-routing contract fix.** Prevents AI callers from
+mistaking optional operator authority promotion for a mandatory human upload
+step.
+
+### Fixed
+
+- Renames the runtime presentation of `session_attach_evidence` to optional
+  operator evidence promotion and states explicitly that AI callers must use
+  the automatic `evidence` channel instead.
+- Describes `evidence` on `ask_peers`, `session_start_round`,
+  `run_until_unanimous` and `session_start_unanimous` as automatically
+  persisted, SHA-256-addressed `caller_submitted_unverified` material that
+  requires no manual operator attachment.
+- Routes an AI caller that nevertheless selects `session_attach_evidence` back
+  to those automatic channels in the runtime error, without suggesting human
+  intervention or exposing operator authority to a model host.
+- Adds MCP-level regression coverage for the listed tool contracts and the
+  rejected-wrong-surface remediation. The existing durable caller-evidence
+  path, independent corroboration requirements and operator-only authority
+  tier remain unchanged.
+- Records the 4.5.10 field incident accurately: Codex evidence was persisted
+  automatically in two sessions; both review attempts were blocked by budget
+  preflight, not evidence transport or authorization.
+
+## [v04.05.10] — 2026-07-12
+
+**Registry-attestation propagation fix.** Makes the npmjs post-publish gate
+resilient to the independently propagated provenance document while retaining
+strict, bounded, registry-pinned verification.
+
+### Fixed
+
+- Retries transient network failures and HTTP 404/408/425/429/5xx responses
+  from the attestation URL, incomplete JSON and a document whose SLSA predicate
+  is still propagating, all within a bounded 12-attempt window. Permanent HTTP
+  failures still fail immediately; missing SLSA provenance v1 fails closed
+  after the bounded propagation window.
+- Follows the attestation pathname supplied by npm package metadata while
+  assigning it to a URL already pinned to the configured npm registry origin.
+  This follows the official npm/Pacote pathname contract without relying on an
+  undocumented literal endpoint, while also blocking protocol-relative paths
+  and redirects from producing metadata-driven cross-origin fetches.
+- Adds deterministic behavioral regressions reproducing the 4.5.9 release race
+  and adjacent states: package metadata is visible while the attestation lookup
+  returns 404, incomplete JSON or a document without SLSA before the required
+  provenance document appears. The same regression locks the complete 5xx
+  range, protocol-relative origin pin and redirect rejection.
+
+## [v04.05.09] — 2026-07-12
+
+**Evidence-checklist provenance fix.** Prevents server-authored verdict
+remediation from becoming a permanent peer-evidence blocker while preserving
+every fail-closed grounding, truthfulness and custody rule.
+
+### Fixed
+
+- Keeps `caller_requests` exclusively peer-authored. READY invariant and
+  grounding demotions now record server guidance in
+  `decision_transformations[].details.remediation` instead of inserting it
+  into the durable evidence checklist.
+- Preserves genuine peer requests, explicit `NEEDS_EVIDENCE` verdicts,
+  `hasAskDerivedAnchor`, all-or-nothing citation grounding and unresolved-item
+  convergence blocking unchanged.
+- Repairs active legacy sessions on resume only when persisted provider output
+  proves `READY`, contains no matching request and carries the corresponding
+  server-demotion warning in the checklist item's creation round. A later
+  synthetic text collision cannot erase a genuine earlier ask. Removed
+  metadata receives a durable reclassification record and event; terminal
+  sessions remain untouched as forensic history.
+- Adds focused regressions for all five parser-side READY demotions and the
+  grounding demotion that originally produced the DEF-10 checklist deadlock,
+  plus a legacy-session resume that converges without operator intervention.
+- Makes the provider-budget contract fixture independent from additional
+  per-peer output budgets in the operator's central configuration.
+
+## [v04.05.08] — 2026-07-12
+
+**Hash-pinned release bootstrap and trusted auto-tag checkout.** Closes the
+seven code-scanning alerts opened by the 4.5.7 workflow changes without
+weakening the CI-before-tag gate.
+
+### Fixed
+
+- Replaces five `npm install --global npm@12.0.1` bootstrap calls with one
+  repository-local composite action. It downloads only the exact npm 12.0.1
+  registry tarball, verifies its pinned SHA-512 before extraction or execution,
+  confirms the extracted CLI version and activates it without running any npm
+  install lifecycle. This closes Scorecard alerts 32–35 and 37.
+- Removes the dynamic `workflow_run.head_sha` checkout from the privileged
+  auto-tag job. The workflow uses GitHub's trusted default-branch event
+  checkout, immediately compares that HEAD with the SHA from the successful CI run and gates every
+  repository-reading, tagging and publishing step on an exact match. This
+  closes Scorecard alert 36 and CodeQL alert 38 while preserving race safety.
+- Extends the release-security regression to lock the exact npm tarball digest,
+  the five shared bootstrap consumers, the absence of global npm installs, the
+  trusted checkout and the verified-SHA step gates.
+
+## [v04.05.07] — 2026-07-12
+
+**npm 12 CI alignment.** Embeds the release-pipeline correction discovered by
+the first 4.5.6 main run instead of leaving the workflow fix outside the tagged
+release.
+
+### Fixed
+
+- Pins the ordinary CI workflow to the same audited npm 12.0.1 toolchain used
+  by publishing, disables the package-manager cache, runs
+  `npm ci --strict-allow-scripts`, and scopes the StepSecurity read token to the
+  dependency-install step. This prevents the npm version bundled with Node 24
+  from misclassifying registry tarballs as disabled remote dependencies under
+  the npm 12 `.npmrc` policy (`EALLOWREMOTE`).
+- Makes auto-tagging depend on a successful `CI` `workflow_run` for a push to
+  `main`, checks out that exact verified SHA and only then dispatches publishing.
+  The CI also verifies the active npm version and runs the focused release-policy
+  regression before broader checks.
+- The 4.5.6 publish run was cancelled only after its registry publish commands
+  had started: npmjs confirms 4.5.6 with SLSA provenance, while artifact
+  verification and the GitHub Release were skipped. Package 4.5.7 supersedes
+  that partial release and is the complete target containing both the
+  six-provider remediation below and this CI correction.
+
+## [v04.05.06] — 2026-07-12
+
+**Six-provider wire-contract and field-forensics remediation.** This release
+closes the residual 4.5.5 failures observed in real hardgate sessions without
+weakening fabricated-evidence or terminal-safety gates.
+
+### Added
+
+- Added provider-specific output budgets through
+  `max_output_tokens_by_peer` and
+  `CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS`. `server_info` exposes the
+  effective six-peer map and budget preflight uses the same values as the wire.
+- Added one controlled same-model, medium-effort recovery for the officially
+  unambiguous OpenAI `max_output_tokens` and Gemini `MAX_TOKENS` terminals.
+  Token deltas are provisional and attempt-scoped; a failed attempt cancels
+  pending timers and emits `peer.token.discarded`, while only
+  `peer.token.completed` commits the stream. Every attempt retains its own
+  usage and cost.
+- Added a 22-case offline runtime-contract regression covering exact provider
+  payloads, schema subsets, output recoveries, safety terminals, evidence
+  transport, model namespaces, terminal state and FinOps behavior.
+- Added a detailed 36-hour field-forensics and official-provider audit report.
+- Added a deterministic npm 12 release-security regression covering reviewed
+  dependency scripts, registry-only lock resolution, OIDC, tag identity,
+  secret scope, cache exclusion and published provenance.
+
+### Fixed
+
+- Uses Anthropic's official JSON Schema lowering helper, removing unsupported
+  `maxItems` and `maxLength` constraints before calling Claude Fable 5 while
+  preserving the full local contract.
+- Sends Gemini, xAI and Perplexity only their documented schema/parameter
+  subsets. Gemini no longer receives `maxLength`; xAI omits undocumented
+  verbosity and stays inside its guaranteed length range; Sonar omits
+  undocumented dimensional constraints, schema name and OpenAI stream options.
+- Makes central `reasoning_effort.gemini` operative and maps it to native
+  `LOW`, `MEDIUM` or `HIGH` thinking instead of always forcing high.
+- Canonicalizes only exact case-insensitive structured enum values documented
+  by Anthropic; unrelated values remain invalid.
+- Correlates one controlled JSON-escape layer and the safe post-image of
+  unified-diff hunks. Literal matching preserves case and whitespace; removed
+  code cannot prove current state even when cited with the raw `-` marker, and
+  the all-or-nothing fabricated-source policy remains intact.
+- Carries paired, non-empty `BEGIN FILE`/`END FILE` evidence references across
+  rounds without promoting caller evidence to operator authority.
+- Restricts runtime/model-pin contradictions to syntactically attributed
+  cross-review runtime/server metadata. Merely saying “cross-review
+  submission/session” no longer makes an application's model, version or date
+  a claim about the local MCP runtime.
+- Treats canonical `server_info`, `runtime_capabilities`, `runtime_version` and
+  `model_pin` statements as current metadata even without a redundant
+  “current” adjective; explicit negation cannot smuggle the expected value into
+  a false claim, while independently attributed npm/application versions stay
+  outside the runtime namespace.
+- Removes stale `control=running` atomically before normal terminal outcomes;
+  cancellation retains its explicit cancelled control.
+- Prices Gemini visible output plus thinking tokens, calculates recovery costs
+  per attempt, preserves input/output cost breakdowns, and resolves every
+  adapter/fallback against the model actually sent on the wire. Unknown
+  effective models fail closed instead of borrowing a primary card;
+  Perplexity request/Deep Research dimensions are required for primary and
+  fallback cards, and overlapping family cards select the longest matching
+  prefix consistently in loader and runtime.
+- Fails closed before Sonar Deep Research dispatch: citation, reasoning and
+  search-query quantities are provider-controlled with no documented request
+  caps. Cards still support exact post-call accounting, but the runtime no
+  longer presents an input/output-only estimate as a hard preflight.
+- Preserves per-attempt Anthropic recovery pricing instead of repricing merged
+  usage through a possibly different long-context tier.
+- Distinguishes Gemini input rejection (`promptFeedback.blockReason`) from
+  candidate output filtering (`Candidate.finishReason=SAFETY`), raises the
+  status-envelope guard to cover the schema's maximum valid payload, keeps the
+  new per-peer output map patch-compatible, and suppresses Anthropic effort
+  recovery when medium would repeat or increase the requested effort.
+- Preserves provider-reported usage and effective-model cost when any of the
+  six adapters rejects an unusable terminal. DeepSeek drains the official
+  post-terminal `choices: []` usage chunk; retryable billed failures are merged
+  into a later success or final failure instead of becoming phantom unpriced
+  attempts.
+- Retries DeepSeek's documented `insufficient_system_resource` interruption
+  inside the existing bounded envelope, discarding partial output and retaining
+  usage; `length` and `content_filter` remain non-retryable terminals.
+- Makes retry accounting cancellation-safe: post-settle cancellation cannot
+  merge a prior attempt twice, pre-dispatch cancellation cannot lose it, and a
+  partially unpriced ledger remains `billing_status=unknown`.
+- Handles official Responses failures and SSE errors without flattening their
+  signal: every non-null non-stream `response.error` is preserved before
+  terminal-status validation (including xAI `incomplete` envelopes), while
+  stream `type=error` reads top-level code/message/param fields in OpenAI and
+  xAI.
+- Pins the release toolchain to npm 12.0.1, enforces the reviewed
+  `allowScripts` policy with strict failure on new scripts, and keeps Git and
+  remote-URL dependencies disabled.
+- Documents scoped-registry-safe `npm upgrade -g` commands that disable
+  install scripts and keep Git/remote dependencies blocked across npm 12's
+  whole global tree; `@latest` and local source/tarball installs remain
+  prohibited.
+- Prices the complete worst-case round call graph: every retry envelope on the
+  primary and declared fallbacks, plus the maximum format-recovery or
+  moderation-recovery path. The round hardgate no longer relies on a four-call
+  heuristic cap.
+- Preserves `estimateCost` compatibility with minimal/legacy test consumers by
+  resolving the default model inside the function instead of dereferencing a
+  missing `config.models` in a default parameter; explicit unknown model
+  overrides still fail closed.
+- Makes confirmed offline stubs report the configured model pin by default, so
+  FinOps preflight tests use the same effective-model identity as production;
+  explicit fallback stubs retain their separate model identity and rate card.
+- Makes `server_info.codeql_policy` and the security baseline reflect the
+  committed Advanced CodeQL workflow instead of falsely claiming Default Setup
+  and an absent workflow.
+
+### Security
+
+- Output `content_filter`, Gemini candidate `SAFETY` and other rejected terminal
+  states can no longer masquerade as input-prompt moderation and trigger
+  another paid call, fallback or context-reduced prompt retry. Gemini
+  `promptFeedback.blockReason` remains a distinct input-prompt signal.
+- OpenAI Responses `output[].content[].type=refusal` and
+  `response.refusal.delta/done` are explicit non-usable refusal terminals, not
+  malformed JSON eligible for paid format recovery; their billing is retained.
+- DeepSeek `length`, generic xAI incomplete and undocumented Sonar finish
+  reasons remain fail-closed; the runtime does not infer a retry cause absent
+  an official contract.
+- Attachment-custody claims still require strict path + full SHA-256 +
+  same-attachment literal correlation; authenticated evidence authority,
+  anti-self-review and immutable terminal controls remain enforced.
+- A generic assurance copied from the draft (for example “implementation is
+  correct and fully tested”) cannot ground its own READY vote; it must cite
+  independent, value-corresponding evidence.
+- npmjs publishing remains tokenless through Trusted Publishing/OIDC. Release
+  jobs disable package-manager caches, expose the StepSecurity read token only
+  to `npm ci`, verify the real tag points to the checked-out commit, protect the
+  temporary GitHub Packages credential file and require registry-visible SLSA
+  provenance after publication.
+
+## [v04.05.05] — 2026-07-12
+
+**Clean-runner publish follow-up.** The v04.05.04 tag passed repository CI but
+its publish-only verification exposed regression fixtures that inherited the
+operator's private rate cards before any registry package was created.
+
+### Fixed
+
+- Gives the cancellation, health/terminal-ordering and accounting/preflight
+  regression suites complete synthetic zero-cost rate cards, matching the
+  existing evidence and judge fixtures. They no longer inherit private operator
+  pricing from Windows environment or registry state and now exercise the
+  intended behavior identically on a clean Linux runner.
+- Makes the accounting preflight regression prove that a reviewer result was
+  actually produced. This prevents a missing-rate `budget_preflight` rejection
+  from looking green merely because the two gate records were persisted.
+- Preserves the production financial hard gate unchanged: real sessions still
+  stop before paid calls when required operator rate cards are absent.
+
+## [v04.05.04] — 2026-07-12
+
+**Runtime hardgate remediation — truthful evidence, cancellation and financial state.**
+
+### Added
+
+- Added focused RED/GREEN regression suites for grounding, verdict/status
+  traces, consensus judging, cancellation, durable cross-window jobs, health
+  timestamps, preflight persistence and financial reconciliation.
+- Added durable `raw_status`, `parsed_status`, `normalized_status` and decision
+  transformation records, so a provider vote and every runtime reclassification
+  remain distinguishable in reports and artifacts.
+- Added accounting schema v2 with explicit `unpriced_attempts`, failed-attempt
+  artifacts, generation/judge costs, coverage status and fail-closed legacy
+  reconciliation.
+- Added `allow_auto_extension` as the explicit opt-in for legacy automatic
+  round grants. Caller `max_rounds` is otherwise a hard ceiling.
+- Added operator-facing `ultra` reasoning compatibility to env, central config
+  and MCP schemas. Adapters normalize it to each provider's documented native
+  ceiling (`max` for GPT-5.6/Anthropic/DeepSeek, `high` for xAI/Perplexity and
+  Gemini's native high setting) and never transmit an unsupported literal.
+
+### Fixed
+
+- Validates every `evidence_sources` item independently and requires path,
+  SHA-256 and literal quote to correlate within the same attachment. Joining
+  multiple sources or splicing attachment A's digest with attachment B's quote
+  can no longer create either false grounding or false fabrication.
+- Stops interpreting instructions, questions, attributed provider
+  documentation, reviewed-product versions and database dates as local
+  cross-review runtime claims. Workflow/run/session phrases are temporal
+  markers only; the historical gate now requires an explicit cross-review,
+  MCP, `server_info`, `runtime_capabilities` or local-runtime subject. Real
+  unsupported or contradictory runtime claims still fail closed.
+- Aligns the provider JSON Schema with the Zod limits and documents one
+  canonical citation item grammar: attachment, full SHA-256 and final
+  `Artifact quote`, with separate array entries for separate sources.
+- Normalizes the shared OpenAI effort scale by selected GPT-5 family:
+  GPT-5.6 supports through `max`; GPT-5.5/5.4/5.2 through `xhigh`; GPT-5.1
+  through `high`; and original GPT-5 from `minimal` through `high`.
+- Clamps the explicit `grok-4.20-multi-agent` compatibility override to its
+  documented `low|medium|high|xhigh` enum in both review and generation
+  payloads; shared `none`/`minimal` now map to `low` instead of leaking an
+  unsupported literal.
+- Excludes an evidence-ask author before consensus-judge dispatch and before
+  calculating the unanimity denominator. Consensus now requires at least two
+  independent eligible judges, while positive and negative shadow decisions
+  remain observable without mutating checklist state.
+- Persists successful and failed judge attempts, preserves distinct repeated
+  artifacts, separates `would_promote` from actual mutations and includes
+  judge spend in session totals.
+- Threads `AbortSignal` through every provider retry path, makes backoff
+  abort-aware, blocks fallback/moderation/format/judge/relator work after a
+  durable cancellation request and lets an owner process observe cancellation
+  requested from another MCP window.
+- Persists background-job owner identity, synthesizes remote durable job state,
+  validates job identity, preserves pre-round cancellation across windows and
+  prevents a live owner from being reclaimed by restart/idle recovery.
+- Makes cancellation win atomically over a concurrent finalization, keeps
+  `events.ndjson` append-only with the terminal event last, rejects late
+  post-terminal events/results and regenerates reports for every terminal path.
+- Separates `last_activity_at` from `last_state_transition_at` while preserving
+  `last_event_at` as a compatibility alias.
+- Records the real evidence and truthfulness preflight results for execution
+  paths while keeping the explicit preflight tool read-only.
+- Accounts failed, skipped, fallback, moderation, format-recovery, judge and
+  relator/rotator calls. Skipped provider outages remain outside the vote but
+  inside the financial ledger.
+- Preserves Claude Fable 5 usage and cost across controlled `max_tokens`
+  recovery, refusal, network failure and cancellation after provider
+  settlement without double counting or retaining stale unpriced markers.
+  Early refusals remain zero-cost even when Anthropic reports input usage;
+  mid-stream refusals retain the billable input/output cost.
+- Makes persisted per-call and `until_stopped` cost ceilings authoritative for
+  review rounds, recoveries, judges and all lead/rotator generations before
+  dispatch instead of enforcing only the global ceiling after spend.
+- Recovers orphaned in-flight rounds with conservative unknown-attempt records,
+  refuses manual finalization while provider work is active and prevents idle
+  sweeps from erasing an in-flight billing boundary. A top-level durable
+  generation-dispatch marker covers synchronous and background relators until
+  the result/failure and marker settlement are persisted atomically; a job
+  control flag alone never invents spend.
+- Uses unique artifact filenames for repeated generation/failure labels and
+  represents an unavailable cache key as `null` plus a reason instead of an
+  empty hash.
+- Preserves review focus, capability snapshot and seed draft when contesting a
+  verdict, and exposes cancellation/escalation reason limits consistently in
+  both sync and async MCP schemas.
+
+### Security
+
+- Retains strict anti-fabrication, anti-self-review, immutable-terminal and
+  authenticated evidence-authority gates while removing the field-observed
+  false positives that reclassified grounded unanimous READY votes.
+- Cost reports no longer claim reconciliation when a provider attempt is
+  unpriced, belongs to a legacy ledger or was interrupted before a durable
+  result. Unknown coverage is explicit rather than silently treated as zero.
+
+## [v04.05.03] — 2026-07-11
+
+**Security and hardgate correctness — bounded parsing without false evidence rejection.**
+
+### Security
+
+- Replaced the ambiguous Git-option expression used while correlating evidence
+  checklist asks. A repeated `-- -` fragment can no longer trigger exponential
+  JavaScript-regex backtracking (`js/redos`, code-scanning alert 31).
+
+### Fixed
+
+- Treats the server-generated path and SHA-256 of every integrity-checked
+  attachment as provenance metadata. A valid citation can no longer be marked
+  fabricated merely because its generated filename contains a UUID.
+- Parses an explicit `Artifact quote:` as one paired wrapper, including
+  single-quoted, multiline and inner-quote code literals. The complete wrapped
+  value must occur in the authenticated corpus, so a truthful prefix with an
+  invented suffix can no longer ground READY.
+- Restricts historical-runtime timing detection to actual temporal language.
+  A source/package version described as `bumped` no longer requires an
+  unrelated workflow-start runtime snapshot.
+- Added RED/GREEN regressions for the hardgate failures above, altered digests,
+  ordinary apostrophes, prefix fabrication and the adversarial
+  repeated-double-hyphen ReDoS input.
+
+## [v04.05.02] — 2026-07-11
+
+**Patch — hermetic release verification for authenticated evidence transport.**
+
+### Fixed
+
+- The evidence-transport regression harness now supplies deterministic
+  synthetic zero-cost rate cards instead of inheriting the operator's central
+  runtime configuration. Clean GitHub runners therefore exercise the reviewer
+  stubs rather than failing closed at financial preflight.
+- This package includes the complete `v04.05.01` evidence-transport feature
+  set. The `v04.05.01` source tag was not published to npm because its
+  pre-publish gate correctly exposed the non-hermetic test fixture.
+
+## [v04.05.01] — 2026-07-11
+
+**Patch — authenticated evidence transport without manual operator custody.**
+
+### Added
+
+- `session_preflight_check`, which runs the same enabled evidence and
+  truthfulness gates as a real round; the legacy truthfulness-only tool name is
+  retained as a combined-gate alias.
+- Focused regression coverage for peer inline evidence, structured-evidence
+  prompt transport, combined preflight parity and terminal outcome
+  immutability.
+- Integrity/authority separation for evidence artifacts, including explicit
+  `caller_submitted` origin and `caller_submitted_unverified` prompt labeling.
+- A strict independent-panel gate for operational claims backed only by
+  peer-submitted evidence: at least two non-author reviewers must return
+  `READY/verified` and cite attachment path, SHA-256 and value-corresponding raw
+  lines.
+
+### Changed
+
+- Authenticated peer evidence supplied inline or through `evidence` is
+  persisted with SHA-256, byte count and caller identity, then transported to
+  relators and reviewers without any manual operator attachment requirement.
+- `ask_peers` and `session_start_round` now accept the same optional `evidence`
+  channel as the unanimous workflows.
+- Remediable caller preflight failures leave the durable session open for a
+  corrected authenticated submission instead of creating an unrecoverable
+  terminal abort.
+- `COMMAND` / `EXIT_CODE` / `STDOUT` records are parsed as correlated command
+  blocks; a later successful command cannot validate an earlier failed one.
+- A reviewer that opened an evidence ask may close only that same prior ask via
+  `requester_reverified` after a strictly grounded `READY/verified` vote;
+  silence remains `not_resurfaced`, and other peers' or terminal items are
+  immutable.
+- Publish metadata now requires the selected tag to match the display tag
+  derived from `package.json`, and dated changelog headings are extracted into
+  GitHub Release notes instead of falling back to a generic sentence.
+
+### Fixed
+
+- Structured `evidence` no longer disappears between the unanimous preflight
+  and reviewer prompt.
+- Inline raw evidence from a Codex caller no longer becomes invisible merely
+  because the caller is a peer.
+- Every authenticated external submission now creates an append-only evidence
+  manifest and atomically selects one active snapshot. A corrected retry no
+  longer inherits an older failure, an evidence-less retry cannot replay an
+  older success, and superseded blobs cannot consume the reviewer prompt cap.
+- Concurrent evidence writes with the same label now receive UUID-qualified
+  paths, preventing same-millisecond overwrite and digest corruption.
+- A terminal result produced inside `askPeers` can no longer be overwritten by
+  the outer loop as `max-rounds`; terminal transitions are immutable and exact
+  replays are idempotent.
+- Non-zero exit codes, explicit failure counts and conflicting runs of the same
+  command can no longer be overridden by convenient `passed`/`success` words.
+- Explicit English or Portuguese non-execution, modal failure and skipped-run
+  statements can no longer be reinterpreted as success because an unrelated
+  `ok`/`green` word appears nearby; inline command success must bind the command
+  and result in the same raw line or structured block.
+- Bare command/success phrases such as `git diff --stat`, `git status clean`,
+  `tests passed`, `build succeeded` and `all checks passed` are narrative, not
+  raw proof; the matching gate now requires an actual hunk/count/status record
+  or a correlated command plus zero exit code.
+- A correctly reverified evidence ask no longer remains trapped forever as
+  `not_resurfaced` when judge autowire is disabled.
+- A `Checklist-Item` identifier is now routing metadata, not proof: abstract
+  asks or command-name-only documentation quotes cannot auto-close a request
+  for raw execution output; execution, workflow and diff asks require their
+  corresponding record shapes.
+- Current/historical operational-state claims without a version or date no
+  longer bypass truthfulness classification, and a current `server_info`
+  snapshot cannot prove what was loaded at workflow start without temporal
+  provenance in the raw content. Temporal markers and asserted values must
+  belong to the same historically scoped record; current-only lines are
+  excluded even when a start timestamp appears elsewhere.
+- A no-claim preflight is now authority-neutral (`evidence_authority=none`);
+  absence of an assertion can no longer manufacture `operator_verified` by
+  vacuous truth.
+- Continuations can no longer attribute a peer invoker's evidence to the
+  persisted session owner. Existing-session starters enforce petitioner/operator
+  authority, and the orchestrator persists evidence under the actual invoker,
+  closing a peer-to-operator privilege-confusion path.
+- An explicit empty reviewer panel (`peers: []`) is now treated as a caller
+  override, audited and stripped so the full enabled panel is restored instead
+  of letting the caller force a no-reviewer abort.
+- A sole non-caller peer can no longer be both the relator and its own voting
+  reviewer; ship/review mode fails closed when no independent voter remains.
+- Source member calls such as `console.log(...)` are no longer misclassified as
+  unattached `.log` evidence files; artifact tokens must have independent
+  evidence context, and call syntax is excluded.
+- Malformed or externally altered sessions whose persisted `version` is
+  missing or null are rejected by direct metadata-shape validation instead of
+  throwing later during mutation-authority derivation.
+- Direct session reads now apply the same metadata-shape validation as session
+  listings, so valid JSON such as `null` cannot reach authorization callsites
+  as a falsely typed session object.
+- Durable-version metadata must keep `convergence_scope` petitioner/caller
+  consistent with the persisted session owner, preventing corrupted scope
+  data from transferring mutation authority to another peer.
+
+## [v04.05.00] — 2026-07-10
+
+**Minor — six-provider model refresh and evidence-backed truthfulness hardening.**
+This source release updates the canonical reviewer contracts for OpenAI,
+Anthropic and xAI, validates the current Google, DeepSeek and Perplexity
+choices, and makes configuration drift and ungrounded completion claims fail
+closed.
+
+### Added
+
+- Canonical pins for `gpt-5.6-sol`, `claude-fable-5` and `grok-4.5`, while
+  retaining `gemini-3.1-pro-preview`, `deepseek-v4-pro` and
+  `sonar-reasoning-pro` after an official-documentation review.
+- Provider-terminal gates that reject incomplete, truncated, filtered,
+  refused or unterminated output before it can become a verdict or relator
+  artifact.
+- Runtime configuration diagnostics in `server_info`, including the loaded and
+  current file fingerprints, parse/apply state and `reload_required` signal.
+- Evidence-attachment custody metadata (SHA-256, byte count, actor, origin and
+  timestamp), integrity verification on every read, durable attachment events
+  and explicit legacy-unverified status.
+- Focused regression suites for provider contracts, terminal states, evidence
+  preflight, truthfulness and custody.
+
+### Changed
+
+- GPT-5.6 Sol uses Responses API `reasoning.effort=max`,
+  `prompt_cache_options` and cache-write telemetry. `ultra` remains rejected:
+  it is a Codex product mode, not a valid Responses API effort value.
+- Claude Fable 5 leaves `thinking` unset so the model's adaptive thinking is
+  used, and handles the provider's refusal terminal separately from ordinary
+  completion.
+- Grok 4.5 uses its documented `low|medium|high` effort range and Responses
+  prompt-cache key without OpenAI-only retention fields.
+- DeepSeek V4 Pro now sends `reasoning_effort` at the documented top level.
+- OpenAI, Grok, DeepSeek and Gemini usage normalization separates fresh input,
+  cache reads and cache writes so cached tokens cannot be billed twice.
+- Perplexity request fees are accounted for even when search is disabled.
+- OpenAI, Anthropic and Google SDK dependencies were refreshed for the new
+  provider contracts.
+
+### Security
+
+- A structured `READY` result requires concrete, provenance-bearing evidence;
+  malformed/legacy pseudo-JSON, unsupported operational assertions, model-pin
+  contradictions and unresolved evidence cannot converge.
+- Workflow and deployment assertions must match evidence values, and
+  truthfulness/fabrication/meta-audit gates now apply to circular as well as
+  ship workflows.
+- Operator-only mutation tools reject agent callers, including forged
+  `caller=operator` input. A seventh, distinct operator capability is now
+  mandatory for privileged tools; legacy six-token files migrate in place.
+- READY runtime metadata cannot substitute for artifact evidence; lossy,
+  contradictory, noncanonical or unknown-confidence READY votes fail closed.
+  READY uses a fixed summary, empty request/follow-up fields and no prose outside
+  the structured envelope, eliminating synonym/negation bypasses. Peer/legacy
+  attachments are excluded from trusted corpora, direct `ask_peers` runs the
+  evidence preflight, and a peer cannot judge its own evidence ask.
+- Cancellation and verdict contestation require the explicit persisted
+  petitioner token or the dedicated operator; legacy sessions with ambiguous
+  ownership fail closed, and contestation cannot silently create an
+  operator-attributed successor session.
+- Invalid session metadata is quarantined before listing/sorting, zero-round
+  convergence is rejected and finalized sessions cannot accept new evidence.
+
+## [v04.04.08] — 2026-06-16
+
+**Patch — clear transitive `hono` security advisories.** Raises the `hono`
+override floor from `>=4.12.16` to `>=4.12.25`, resolving the transitive `hono`
+(pulled via `@modelcontextprotocol/sdk`, not imported by this project) to 4.12.25
+and clearing five advisories flagged by the OpenSSF Scorecard vulnerabilities
+probe: GHSA-88fw-hqm2-52qc (high — CORS middleware reflects any origin with
+credentials) plus four medium issues (Set-Cookie merging, body-limit bypass,
+repeated-header dropping, and `serve-static` path traversal on Windows). `hono`
+stays an `overrides` floor rather than a direct dependency because it is not
+imported here (a direct dependency would be an unused-dependency violation).
+Source code is unchanged.
+
 ## [v04.04.07] — 2026-06-16
 
-**Patch — clear transitive `protobufjs` and `hono` security advisories.**
-Promotes `protobufjs` to a direct dependency pinned to the patched floor `^7.6.3`
-(it is otherwise reached transitively via `@google/genai`), clearing the high-
-and medium-severity advisories that affected `<= 7.6.0` and `<= 7.6.2`
-respectively. A direct dependency — unlike an `overrides` entry, which npm honors
-only in a project's root and which is not published — is part of the published
-package, so it also enforces the patched floor for downstream consumers of this
-CLI. `^7.6.3` satisfies `@google/genai`'s declared range and dedupes to a single
-copy.
-
-Also raises the `hono` override floor from `>=4.12.16` to `>=4.12.25` (hono is a
-transitive dependency via `@modelcontextprotocol/sdk` and is not imported by this
-project, so it stays an override rather than a direct dependency), resolving it
-to 4.12.25 and clearing five hono advisories (one high CORS issue plus four
-medium issues) flagged by the OpenSSF Scorecard vulnerabilities probe. Source
+**Patch — clear a transitive `protobufjs` security advisory.** Promotes
+`protobufjs` to a direct dependency pinned to the patched floor `^7.6.3` (it is
+otherwise reached transitively via `@google/genai`), clearing the high- and
+medium-severity advisories that affected `<= 7.6.0` and `<= 7.6.2` respectively.
+A direct dependency — unlike an `overrides` entry, which npm honors only in a
+project's root and which is not published — is part of the published package, so
+it also enforces the patched floor for downstream consumers of this CLI. `^7.6.3`
+satisfies `@google/genai`'s declared range and dedupes to a single copy. Source
 code is unchanged.
 
 ## [v04.04.06] — 2026-06-12

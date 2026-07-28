@@ -2,7 +2,8 @@
 // quarteto, making it a quinteto. Per `project_cross_review_v2_grok_integration_pending.md`,
 // xAI's Grok uses the OpenAI Responses API surface at base URL
 // `https://api.x.ai/v1`. Auth is via GROK_API_KEY. Operators may choose
-// `grok-4.3` (explicit reasoning.effort supported), `grok-4-latest`
+// `grok-4.5` (canonical; explicit reasoning.effort through high),
+// `grok-4.3` (legacy explicit reasoning.effort support), `grok-4-latest`
 // / `grok-4.20` aliases (xAI automatic reasoning in this runtime), or
 // `grok-4.20-multi-agent` (explicit multi-agent reasoning effort).
 // Adapter at `peers/grok.ts` inherits the same Responses API code path
@@ -55,18 +56,49 @@ export type SessionOutcome = "converged" | "aborted" | "max-rounds";
 // approve/reject judgments over external code/artifacts, prefer ship
 // or review modes.
 export type SessionMode = "ship" | "review" | "circular";
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+// This is a shared cross-provider scale, not a promise that every literal is
+// native to every model. Provider adapters MUST normalize unsupported values
+// against the selected model family. In particular, `ultra` is an
+// operator/Codex product compatibility alias and is never sent verbatim.
+// prettier-ignore
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
+// prettier-ignore
 export type SessionControlStatus =
   | "running"
   | "cancel_requested"
   | "cancelled"
   | "recovered_after_restart";
+// prettier-ignore
 export type DecisionQuality =
   | "clean"
   | "format_warning"
   | "recovered"
   | "needs_operator_review"
   | "failed";
+
+/**
+ * Durable explanation for any server-side decision rewrite. `status` remains
+ * the effective public verdict; this trace preserves how the provider's
+ * literal value became that verdict.
+ */
+export interface DecisionTransformation {
+  stage: string;
+  from: ReviewStatus | null;
+  to: ReviewStatus | null;
+  /** Stable primary rule for machine consumers. */
+  rule?: string | undefined;
+  /** Additional rules when one transition has more than one contributing cause. */
+  reasons?: string[] | undefined;
+  details?: Record<string, unknown> | undefined;
+}
 
 export interface ModelCandidate {
   id: string;
@@ -119,15 +151,11 @@ export interface TokenUsage {
   // provider-reported costs to keep the no-hardcoded-financials
   // contract intact.
   provider_reported_total_cost_usd?: number | undefined;
-  // v3.0.0 R1 fix (codex cross-review catch 2026-05-12): per-call
-  // signal that a Perplexity Sonar call actually performed a web search
-  // on the wire. The relator (generate) role forces disable_search:true
-  // regardless of operator config; without this signal, estimateCost()
-  // would charge a request fee for searches that did not run. False
-  // means the adapter sent disable_search:true; true means search was
-  // active. Undefined (legacy/stub paths) → cost layer falls back to
-  // the global config.perplexity.disable_search check. Set only by
-  // PerplexityAdapter; ignored by all other peers' cost branches.
+  // Per-call signal that a Perplexity Sonar call actually performed a
+  // web search. This is latency/search telemetry only: Perplexity's
+  // published request pricing is unchanged when disable_search=true,
+  // so estimateCost() charges the configured request fee either way.
+  // Set only by PerplexityAdapter; ignored by other peers.
   search_performed?: boolean | undefined;
 }
 
@@ -188,7 +216,8 @@ export interface CacheManifestEntry {
   peer: PeerId;
   provider: string;
   model: string;
-  cache_key_hash: string;
+  cache_key_hash: string | null;
+  cache_key_unavailable_reason?: string | undefined;
   cache_provider_mode: "auto" | "explicit" | "implicit" | "not_supported";
   read_tokens?: number | undefined;
   write_tokens?: number | undefined;
@@ -196,6 +225,10 @@ export interface CacheManifestEntry {
   latency_ms: number;
   estimated_savings_usd?: number | undefined;
   savings_unknown?: boolean | undefined;
+  // Distinguishes the operation that consumed the cache. Older manifests
+  // omit this field and are interpreted as ordinary peer reviews.
+  call_kind?: "review" | "generation" | "evidence_judge" | undefined;
+  call_label?: string | undefined;
 }
 
 export interface CacheManifest {
@@ -221,6 +254,16 @@ export interface PeerResult {
   model: string;
   model_reported?: string | undefined;
   model_match?: boolean | undefined;
+  /** Literal status token selected from the provider response envelope. */
+  raw_status?: ReviewStatus | null | undefined;
+  /** Status after JSON/schema parsing, before semantic READY invariants. */
+  parsed_status?: ReviewStatus | null | undefined;
+  /** Status after all server-side normalization performed so far. */
+  normalized_status?: ReviewStatus | null | undefined;
+  /** Ordered, durable explanation of every status-changing rule. */
+  decision_transformations?: DecisionTransformation[] | undefined;
+  /** @deprecated Compatibility alias; use decision_transformations. */
+  status_transformations?: DecisionTransformation[] | undefined;
   status: ReviewStatus | null;
   structured: PeerStructuredStatus | null;
   text: string;
@@ -229,6 +272,7 @@ export interface PeerResult {
   cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
+  unpriced_attempts?: number | undefined;
   parser_warnings: string[];
   decision_quality: DecisionQuality;
   fallback?: FallbackEvent | undefined;
@@ -246,6 +290,7 @@ export interface GenerationResult {
   cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
+  unpriced_attempts?: number | undefined;
   fallback?: FallbackEvent | undefined;
   // v2.23.0: parser-side diagnostics produced by provider adapters when the
   // response payload was technically valid (tokens billed) but yielded a
@@ -284,7 +329,9 @@ export interface PeerFailure {
     | "unparseable_after_recovery"
     | "budget_exceeded"
     | "budget_preflight"
+    | "evidence_preflight"
     | "truthfulness_preflight"
+    | "evidence_broker_contract"
     | "cancelled"
     | "fallback_exhausted"
     | "format_recovery_exhausted"
@@ -292,6 +339,7 @@ export interface PeerFailure {
     | "unknown";
   message: string;
   retryable: boolean;
+  // prettier-ignore
   recovery_hint?:
     | "wait_and_retry"
     | "reformulate_and_retry"
@@ -301,6 +349,12 @@ export interface PeerFailure {
   retry_after_ms?: number | undefined;
   attempts: number;
   latency_ms: number;
+  /** Provider-reported billable usage captured even when no usable result exists. */
+  usage?: TokenUsage | undefined;
+  /** Cost derived from provider-reported failure usage and the configured rate card. */
+  cost?: CostEstimate | undefined;
+  billing_status?: "reported" | "unknown" | undefined;
+  unpriced_attempts?: number | undefined;
   preflight_issue_classes?: string[] | undefined;
   // v2.15.0 (item 5): when a provider 4xx error message cites a named
   // parameter (e.g. "Argument not supported on this model: reasoning.effort"),
@@ -318,11 +372,71 @@ export interface PeerFailure {
     | undefined;
 }
 
+/**
+ * Minimal durable ledger entry written as soon as one provider settles,
+ * before the all-peer barrier. The raw response/failure remains in the
+ * referenced artifact; metadata retains only the fields required to recover
+ * exact usage/cost without treating an already-settled call as unknown.
+ */
+export interface ProviderCallSettlement {
+  round: number;
+  peer: PeerId;
+  provider: string;
+  model: string;
+  kind: "result" | "failure";
+  artifact_path: string;
+  settled_at: string;
+  status?: ReviewStatus | null | undefined;
+  usage?: TokenUsage | undefined;
+  cost?: CostEstimate | undefined;
+  attempts: number;
+  latency_ms: number;
+  billing_status?: "reported" | "unknown" | undefined;
+  unpriced_attempts?: number | undefined;
+  /** Links a secondary provider call to the reservation created before dispatch. */
+  reservation_id?: string | undefined;
+}
+
+export interface ProviderCallReservation {
+  id: string;
+  peer: PeerId;
+  provider: string;
+  model: string;
+  label: string;
+  started_at: string;
+  /** Process that owns this secondary call while its round remains active. */
+  owner_pid?: number | undefined;
+}
+
+/** A paid non-review call reserved before dispatch (generation or evidence judge). */
+export interface PendingProviderCallReservation extends ProviderCallReservation {
+  round: number;
+  call_kind: "generation" | "evidence_judge";
+  /** Process that owns the in-flight call; prevents another live host from
+   * conservatively reconciling a provider call that is still running. */
+  owner_pid: number;
+}
+
 export interface InFlightRound {
   round: number;
   peers: PeerId[];
   started_at: string;
   status: "running";
+  /** Process that owns the review round after the session lock is released. */
+  owner_pid?: number | undefined;
+  /** Settled calls awaiting atomic promotion into a completed round. */
+  provider_settlements?: ProviderCallSettlement[] | undefined;
+  /** Secondary calls (for example format recovery) reserved before dispatch. */
+  provider_call_reservations?: ProviderCallReservation[] | undefined;
+  /** Journal baseline for broker mutations made before the round is appended.
+   * `null` preserves the distinction between an absent field and an empty
+   * collection so interrupted recovery can restore the exact prior state. */
+  evidence_broker_snapshot?:
+    | {
+        evidence_checklist: EvidenceChecklistItem[] | null;
+        evidence_status_history: EvidenceStatusHistoryEntry[] | null;
+      }
+    | undefined;
 }
 
 export interface ConvergenceScope {
@@ -354,6 +468,7 @@ export interface ConvergenceScope {
   lead_peer_role?: "relator_non_voting" | undefined;
   voting_peers?: PeerId[] | undefined;
   quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready" | undefined;
+  // prettier-ignore
   anti_self_review_exclusion_reason?:
     | "lead_peer_authored_or_revised_artifact_under_review"
     | undefined;
@@ -367,17 +482,79 @@ export interface ConvergenceScope {
 }
 
 export interface ConvergenceHealth {
-  state: "idle" | "running" | "converged" | "blocked" | "stale";
+  state: "idle" | "running" | "converged" | "blocked" | "stale" | "aborted" | "cancelled";
+  // Backward-compatible alias for last_activity_at. Kept because durable
+  // sessions written before v4.5.4 and external consumers still read it.
   last_event_at: string;
+  // Updated for every event that is successfully appended to events.ndjson,
+  // independently of whether the convergence state changed.
+  last_activity_at?: string | undefined;
+  // Updated only by an explicit health/state mutation. Legacy sessions seed
+  // this from last_event_at the first time a new event is persisted.
+  last_state_transition_at?: string | undefined;
   detail: string;
   idle_ms?: number | undefined;
 }
 
+// prettier-ignore
+export type EvidenceAttachmentOrigin =
+  | "session_attach_evidence"
+  | "caller_submitted"
+  | "runtime_generated";
+
+// Attachments written by the current runtime carry a complete custody
+// envelope. `sha256` and `bytes` describe the exact redacted UTF-8 bytes
+// persisted at `path`; attached_by is the already-verified tool caller.
 export interface EvidenceAttachment {
+  ts: string;
+  attached_at: string;
+  attached_by: PeerId | "operator";
+  origin: EvidenceAttachmentOrigin;
+  integrity_version: 1;
+  sha256: string;
+  bytes: number;
+  label: string;
+  path: string;
+  content_type?: string | undefined;
+}
+
+// Every authenticated external submission creates an immutable manifest.
+// The active pointer selects exactly one automatic caller-evidence snapshot
+// for review; older manifests and blobs remain append-only audit history.
+export interface CallerEvidenceSubmission {
+  submission_id: string;
+  submitted_at: string;
+  submitted_by: PeerId | "operator";
+  artifact_sha256: string;
+  attachment_paths: string[];
+}
+
+// Pre-custody metadata remains readable for backwards compatibility, but
+// readers must never treat it as provenance-grade evidence because it has
+// neither an authenticated caller nor a persisted digest/byte count.
+export interface LegacyEvidenceAttachment {
   ts: string;
   label: string;
   path: string;
   content_type?: string | undefined;
+}
+
+export interface ResolvedEvidenceAttachment {
+  label: string;
+  relative_path: string;
+  content: string;
+  bytes: number;
+  truncated: boolean;
+  provenance_status: "verified" | "legacy_unverified";
+  // Integrity and authority are deliberately separate. `verified` above
+  // means the persisted bytes still match their custody digest; it does not
+  // mean a human operator vouched for caller-supplied content.
+  authority_status: "operator_verified" | "caller_submitted_unverified" | "legacy_unverified";
+  content_type?: string | undefined;
+  sha256?: string | undefined;
+  attached_by?: PeerId | "operator" | undefined;
+  attached_at?: string | undefined;
+  origin?: EvidenceAttachmentOrigin | undefined;
 }
 
 // v2.7.0 Evidence Broker: when a peer returns NEEDS_EVIDENCE with
@@ -391,7 +568,8 @@ export interface EvidenceAttachment {
 // subsequent round goes by without the peer resurfacing the same ask,
 // the runtime marks it "not_resurfaced" (v3.5.0 / CRV2-2 — NOT
 // "addressed"; non-resurfacing is not proof of satisfaction). "addressed"
-// is reserved for the judge-autowire verified-satisfied path. The
+// is reserved for a judge verified-satisfied decision or a strictly grounded
+// READY/verified recheck by the same peer that authored the ask. The
 // operator can move items to terminal states via
 // session_evidence_checklist_update. Conflict rule: when a peer
 // resurfaces a "not_resurfaced" OR "addressed" item it reverts to "open"
@@ -405,11 +583,11 @@ export interface EvidenceAttachment {
 // the ask — but "the peer did not re-ask" is NOT proof the evidence was
 // satisfied. That promotion produced a false-positive audit trail.
 // `not_resurfaced` now carries that inference honestly: it is NOT
-// `open` (so it does not block the `=== "open"` convergence gate, i.e.
-// the runtime still does not hard-block on inference) and it is NOT
-// `addressed` (so the audit trail no longer claims the evidence was
-// confirmed). `addressed` is now reserved for judge verified-satisfied
-// promotions and explicit operator action — paths with real signal.
+// `open` and it is NOT `addressed`; both `open` and `not_resurfaced` block
+// convergence. `addressed` is reserved for judge verified-satisfied or
+// requester-reverified promotions, while explicit operator actions use the
+// terminal satisfied/deferred/rejected states.
+// prettier-ignore
 export type EvidenceChecklistStatus =
   | "open"
   | "addressed"
@@ -443,18 +621,32 @@ export interface EvidenceChecklistItem {
   // v2.8.0: round in which the runtime auto-promoted the item to
   // "addressed". Cleared when the item reverts to "open".
   addressed_at_round?: number | undefined;
-  // v2.9.0: how the runtime promoted the item. "resurfacing" is the
-  // v2.8.0 inference (peer did not bring the ask back); "judge" is the
-  // v2.9.0 LLM judgment (judge peer ruled the new draft satisfies the
-  // ask). Operator-set terminal statuses do not populate this field.
+  // How the runtime transitioned the item: "resurfacing" records only
+  // silence, "judge" is an independent judge decision, and
+  // "requester_reverified" means the same peer that opened the ask later
+  // returned a strictly grounded READY/verified verdict. Operator-set
+  // terminal statuses do not populate this field.
   // Cleared together with addressed_at_round on revert to "open".
-  address_method?: "resurfacing" | "judge" | undefined;
+  address_method?: "resurfacing" | "judge" | "requester_reverified" | undefined;
   // v2.9.0: brief verbatim rationale string returned by the judge peer
   // when address_method === "judge". Capped to keep the checklist
   // payload bounded; full rationale lives in the round's prompt/draft
   // artifacts and the evidence_status_history note. Undefined for
   // resurfacing-promoted items.
   judge_rationale?: string | undefined;
+}
+
+/**
+ * Evidence Broker admission limits. They bound model-authored checklist
+ * growth without weakening the checklist itself: an over-limit round is
+ * retained for audit and the session stops fail-closed instead of silently
+ * dropping blocker text.
+ */
+export interface EvidenceBrokerLimits {
+  max_requests_per_peer_round: number;
+  max_requests_per_round: number;
+  max_items_per_session: number;
+  max_chars_per_session: number;
 }
 
 // v2.8.0: durable audit trail for every status transition on an
@@ -471,6 +663,43 @@ export interface EvidenceStatusHistoryEntry {
   note?: string | undefined;
 }
 
+/**
+ * Audit record for an item removed from the active checklist after proving
+ * that the runtime, rather than the attributed peer, authored the request.
+ * The original peer result and round remain immutable forensic evidence.
+ */
+export interface EvidenceChecklistRuntimeReclassification {
+  ts: string;
+  item_id: string;
+  peer: PeerId;
+  ask: string;
+  first_round: number;
+  last_round: number;
+  previous_status: "open" | "not_resurfaced";
+  proof_round: number;
+  proof_rule: string;
+  reason: "runtime_remediation_misattributed_as_peer_request";
+}
+
+export type EvidenceChecklistRuntimeReclassificationLog =
+  EvidenceChecklistRuntimeReclassification[];
+
+/** Audit record for an unresolved legacy alias removed only when the same peer
+ * strictly restated the same older checklist item. The round response remains
+ * the immutable source of the alias wording. */
+export interface EvidenceChecklistAliasCollapse {
+  ts: string;
+  alias_item_id: string;
+  peer: PeerId;
+  ask: string;
+  first_round: number;
+  last_round: number;
+  previous_status: "open" | "not_resurfaced";
+  referenced_item_ids: string[];
+  merged_into_item_id?: string | undefined;
+  reason: "checklist_item_reference_alias";
+}
+
 export interface GenerationArtifact {
   ts: string;
   round: number;
@@ -480,6 +709,7 @@ export interface GenerationArtifact {
   usage?: TokenUsage | undefined;
   cost?: CostEstimate | undefined;
   latency_ms?: number | undefined;
+  unpriced_attempts?: number | undefined;
 }
 
 export interface OperatorEscalation {
@@ -488,12 +718,50 @@ export interface OperatorEscalation {
   severity: "info" | "warning" | "critical";
 }
 
+export interface PreflightCheckRecord {
+  ts: string;
+  gate: "evidence" | "truthfulness";
+  phase: string;
+  pass: boolean;
+  round?: number | undefined;
+  details: Record<string, unknown>;
+}
+
+export interface BackgroundGenerationInFlight {
+  peer: PeerId;
+  provider: string;
+  model: string;
+  label: string;
+  round: number;
+  started_at: string;
+  owner_pid: number;
+}
+
 export interface SessionControl {
   status: SessionControlStatus;
   reason?: string | undefined;
   job_id?: string | undefined;
+  owner_pid?: number | undefined;
   requested_at?: string | undefined;
   updated_at: string;
+}
+
+export type BackgroundJobKind = "ask_peers" | "run_until_unanimous" | "durable_session_round";
+
+/**
+ * Compact operational state persisted outside terminal session metadata so a
+ * sibling/restarted MCP host can distinguish a finished job from an unknown
+ * id without reopening the immutable session event chain.
+ */
+export interface BackgroundJobStatus {
+  job_id: string;
+  kind: BackgroundJobKind;
+  session_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  started_at: string;
+  completed_at?: string | undefined;
+  error?: string | undefined;
+  result_summary?: Record<string, unknown> | undefined;
 }
 
 export interface RuntimeCapabilities {
@@ -561,6 +829,7 @@ export interface EvidenceAskJudgment {
   cost?: CostEstimate | undefined;
   latency_ms: number;
   attempts: number;
+  unpriced_attempts?: number | undefined;
   // Parser warnings encountered while extracting structured fields from
   // the provider response. Non-empty does not invalidate the judgment;
   // it surfaces format-stability concerns to the dashboard.
@@ -578,13 +847,13 @@ export interface PeerCallContext {
   // v2.15.0 (item 2): per-call reasoning_effort override. When supplied,
   // the adapter reads this instead of `config.reasoning_effort[peer_id]`
   // for the current call. Operator uses this to dial down expensive
-  // peers (e.g. Grok grok-4.20-multi-agent xhigh = 16 agents = $1+/call)
-  // for routine cross-reviews while keeping the global default at xhigh
-  // for ship-critical paths. The adapter is responsible for honoring
-  // the field; OpenAI/Anthropic/Gemini/DeepSeek treat it as
-  // chain-of-thought depth, Grok treats it as agent count (semantic
-  // divergence per peers/grok.ts header).
+  // peers for routine cross-reviews while retaining deeper settings for
+  // ship-critical paths. Each adapter maps the shared scale to its provider
+  // contract; the canonical Grok 4.5 adapter clamps it to low/medium/high.
   reasoning_effort_override?: ReasoningEffort | undefined;
+  // Per-operation output budget. Evidence judges use a compact cap rather
+  // than inheriting the much larger full-review budget.
+  max_output_tokens_override?: number | undefined;
   // v2.21.0 (caching): caller identity plumbed to the adapter so
   // OpenAI/Grok adapters can build a pair-scoped prompt_cache_key
   // (peer:caller:vN). Defaults to "operator" when omitted by the
@@ -603,6 +872,7 @@ export interface PeerProbeResult {
   message?: string | undefined;
 }
 
+// prettier-ignore
 export type RuntimeEventType =
   | "append_event_persist_failed"
   | `${"session" | "round" | "peer" | "provider"}.${string}`;
@@ -642,6 +912,24 @@ export interface RuntimeEventDataByType {
     satisfied?: boolean | undefined;
     confidence?: Confidence | undefined;
   };
+  "session.evidence_attached": {
+    label: string;
+    path: string;
+    content_type?: string | undefined;
+    sha256: string;
+    bytes: number;
+    attached_by: PeerId | "operator";
+    attached_at: string;
+    origin: EvidenceAttachmentOrigin;
+    authority_status?: "operator_verified" | "caller_submitted_unverified" | undefined;
+  };
+  "session.caller_evidence_submission_activated": {
+    submission_id: string;
+    submitted_by: PeerId | "operator";
+    artifact_sha256: string;
+    attachment_paths: string[];
+    attachment_count: number;
+  };
   "provider.cache.usage": {
     peer: PeerId;
     cache_read_tokens: number;
@@ -680,6 +968,12 @@ export interface SessionEvent extends RuntimeEvent {
 export interface SessionMeta {
   session_id: string;
   version: string;
+  /** v2 records every known billable path and marks unknown attempts explicitly. */
+  accounting_schema_version?: 2 | undefined;
+  /** Redacted, credential-free settings actually used when the session began. */
+  effective_config_snapshot?: Record<string, unknown> | undefined;
+  /** SHA-256 of the canonical JSON form of effective_config_snapshot. */
+  effective_config_sha256?: string | undefined;
   created_at: string;
   updated_at: string;
   task: string;
@@ -689,16 +983,30 @@ export interface SessionMeta {
   outcome_reason?: string | undefined;
   capability_snapshot: PeerProbeResult[];
   in_flight?: InFlightRound | undefined;
+  /**
+   * Exact provider settlements recovered from an interrupted, non-appended
+   * round. They affect accounting but never masquerade as completed votes.
+   */
+  interrupted_provider_settlements?: ProviderCallSettlement[] | undefined;
+  /** Paid non-review calls reserved before dispatch and not yet settled. */
+  pending_provider_call_reservations?: PendingProviderCallReservation[] | undefined;
+  /** Provider dispatch marker, independent from async background-job control. */
+  generation_in_flight?: BackgroundGenerationInFlight | undefined;
   convergence_scope?: ConvergenceScope | undefined;
   convergence_health?: ConvergenceHealth | undefined;
   failed_attempts?: Array<PeerFailure & { round: number }> | undefined;
-  evidence_files?: EvidenceAttachment[] | undefined;
+  evidence_files?: Array<EvidenceAttachment | LegacyEvidenceAttachment> | undefined;
+  caller_evidence_submissions?: CallerEvidenceSubmission[] | undefined;
+  active_caller_evidence_submission_id?: string | undefined;
   evidence_checklist?: EvidenceChecklistItem[] | undefined;
+  evidence_checklist_runtime_reclassifications?: EvidenceChecklistRuntimeReclassificationLog;
+  evidence_checklist_alias_collapses?: EvidenceChecklistAliasCollapse[] | undefined;
   // v2.8.0: durable audit trail for every status transition on an
   // evidence checklist item (auto + operator). Newest entries appended.
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;
   generation_files?: GenerationArtifact[] | undefined;
   operator_escalations?: OperatorEscalation[] | undefined;
+  preflight_checks?: PreflightCheckRecord[] | undefined;
   control?: SessionControl | undefined;
   fallback_events?: FallbackEvent[] | undefined;
   rounds: ReviewRound[];
@@ -806,6 +1114,39 @@ export interface ConvergenceResult {
   blocking_details: string[];
 }
 
+/** Operator-supplied USD rate card for one concrete model or model family. */
+export interface CostRateConfig {
+  input_per_million: number;
+  output_per_million: number;
+  input_extended_per_million?: number | undefined;
+  output_extended_per_million?: number | undefined;
+  cache_read_per_million?: number | undefined;
+  cache_write_per_million?: number | undefined;
+  cache_read_extended_per_million?: number | undefined;
+  cache_write_extended_per_million?: number | undefined;
+  promo_input_per_million?: number | undefined;
+  promo_output_per_million?: number | undefined;
+  promo_input_extended_per_million?: number | undefined;
+  promo_output_extended_per_million?: number | undefined;
+  promo_cache_read_per_million?: number | undefined;
+  promo_cache_write_per_million?: number | undefined;
+  promo_cache_read_extended_per_million?: number | undefined;
+  promo_cache_write_extended_per_million?: number | undefined;
+  promo_expires_at?: string | undefined;
+  threshold_tokens?: number | undefined;
+  request_fee_low_per_1000?: number | undefined;
+  request_fee_medium_per_1000?: number | undefined;
+  request_fee_high_per_1000?: number | undefined;
+  citation_tokens_per_million?: number | undefined;
+  deep_research_reasoning_tokens_per_million?: number | undefined;
+  search_queries_per_1000?: number | undefined;
+}
+
+/** Retained even when incomplete so an unusable model card fails closed. */
+export type ModelCostRateConfig = {
+  [Field in keyof CostRateConfig]?: CostRateConfig[Field] | undefined;
+};
+
 export interface AppConfig {
   version: string;
   data_dir: string;
@@ -836,16 +1177,21 @@ export interface AppConfig {
     max_draft_chars: number;
     max_prior_rounds: number;
     max_peer_requests: number;
-    // v2.14.0 (path-A structural fix): cap on the total bytes of
-    // attached evidence inlined into peer-facing prompts. The caller
-    // anexa via `session_attach_evidence` (existing MCP tool); the
-    // attachedEvidenceBlock helper walks meta.evidence_files, reads
-    // each file from disk, and inlines up to this cap. Default 80_000
-    // bytes balances "enough room for codex's literal evidence asks"
-    // against "fits comfortably in the smaller peer context windows".
+    // Cap on total persisted evidence inlined into peer-facing prompts.
+    // Authenticated caller evidence is persisted automatically; optional
+    // operator artifacts share the same bounded read path. Default 80_000
+    // bytes balances literal evidence needs against provider context limits.
     max_attached_evidence_chars: number;
   };
+  evidence_broker: EvidenceBrokerLimits;
+  /** Legacy global output ceiling used when a peer has no explicit override. */
   max_output_tokens: number;
+  /**
+   * Provider/model-specific output ceilings. Reasoning-token guidance and
+   * published model caps differ, so one global value cannot safely satisfy
+   * every peer. Missing entries fall back to max_output_tokens.
+   */
+  max_output_tokens_by_peer?: Partial<Record<PeerId, number | undefined>> | undefined;
   // v3.5.0 (CRV2-4): when true (default), run_until_unanimous runs a
   // pure-textual evidence preflight before any paid peer call and fails
   // under-evidenced submissions locally with `needs_evidence_preflight`.
@@ -872,62 +1218,9 @@ export interface AppConfig {
   // `output_per_million` are required (backward compat with v2.0.0+); every
   // other field is optional. The cost layer's selectRate() chooses the right
   // value per (category, tier, promo-active?) at estimateCost() time.
-  cost_rates: Partial<
-    Record<
-      PeerId,
-      | {
-          input_per_million: number;
-          output_per_million: number;
-          // Extended-tier rates (used when total input tokens exceed
-          // threshold_tokens; e.g., Gemini ≤200K vs >200K).
-          input_extended_per_million?: number | undefined;
-          output_extended_per_million?: number | undefined;
-          // Cache rates (read = cache hit, write = cache creation).
-          // For Anthropic, cache_write reflects 1h TTL pricing per workspace
-          // policy (most common server-default); operators can set a lower
-          // value if they exclusively use 5m TTL.
-          cache_read_per_million?: number | undefined;
-          cache_write_per_million?: number | undefined;
-          cache_read_extended_per_million?: number | undefined;
-          cache_write_extended_per_million?: number | undefined;
-          // Promo rates (limited-time discounts; e.g., DeepSeek v4-pro 75% off
-          // until 2026-05-31). Selection requires promo_expires_at to be present
-          // AND today < promo_expires_at AND the corresponding promo field set.
-          promo_input_per_million?: number | undefined;
-          promo_output_per_million?: number | undefined;
-          promo_input_extended_per_million?: number | undefined;
-          promo_output_extended_per_million?: number | undefined;
-          promo_cache_read_per_million?: number | undefined;
-          promo_cache_write_per_million?: number | undefined;
-          promo_cache_read_extended_per_million?: number | undefined;
-          promo_cache_write_extended_per_million?: number | undefined;
-          promo_expires_at?: string | undefined; // ISO 8601 UTC timestamp
-          // Threshold for extended tier (in tokens). When total input >
-          // threshold, *_extended_per_million fields are used (when set). Null
-          // or undefined means no tier split for this provider.
-          threshold_tokens?: number | undefined;
-          // v3.0.0 (Perplexity 6th peer): Perplexity bills BOTH per-token
-          // AND per-request, where the request fee scales with
-          // `search_context_size` (low/medium/high). Other providers bill
-          // only per-token, so these fields are undefined for them.
-          // Operator configures via
-          // CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_<LOW|MEDIUM|HIGH>_USD_PER_1000_REQUESTS.
-          request_fee_low_per_1000?: number | undefined;
-          request_fee_medium_per_1000?: number | undefined;
-          request_fee_high_per_1000?: number | undefined;
-          // v3.0.0 (Perplexity Sonar Deep Research only): citation_tokens
-          // and search_queries are billed separately from
-          // input/output/reasoning. Other Sonar models (sonar / sonar-pro /
-          // sonar-reasoning-pro) leave these undefined. reasoning_tokens
-          // for Sonar Deep Research are also billed separately from output
-          // (other peers fold reasoning into output billing).
-          citation_tokens_per_million?: number | undefined;
-          deep_research_reasoning_tokens_per_million?: number | undefined;
-          search_queries_per_1000?: number | undefined;
-        }
-      | undefined
-    >
-  >;
+  cost_rates: Partial<Record<PeerId, CostRateConfig | undefined>>;
+  /** All validated central-config cards, not only the active model pin. */
+  model_cost_rates?: Partial<Record<PeerId, Record<string, ModelCostRateConfig>>> | undefined;
   // v2.12.0: judge auto-wire surfaced as first-class config so server_info,
   // dashboard and orchestrator share one source of truth instead of each
   // call site re-reading env vars. The boot notice and the shadow path in
@@ -974,9 +1267,8 @@ export interface AppConfig {
   // v3.0.0 (Perplexity 6th peer): per-call knobs that are specific to
   // Perplexity Sonar API. `search_context_size` controls the breadth of
   // the underlying web search (low/medium/high) and drives both quality
-  // AND per-1000-request fee. `disable_search` turns off the web-search
-  // component entirely (peer becomes a pure LLM reasoning over the
-  // attached evidence; pricing reduces to token-based only). Set via
+  // AND per-1000-request fee. `disable_search` turns off retrieval but does
+  // not waive Perplexity's documented request fee. Set via
   // CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE (default "low") and
   // CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH (default false).
   // `probe_mode` defaults to auth_only so probe_peers never burns Sonar
@@ -1000,6 +1292,9 @@ export interface EvidenceJudgeAutowireConfig {
   peer: PeerId | undefined;
   active: boolean;
   max_items_per_pass: number;
+  max_output_tokens: number;
+  /** Deliberately independent from the primary reviewer effort. */
+  reasoning_effort?: ReasoningEffort | undefined;
   configured_mode_raw: string;
   configured_peer_raw: string;
   // v2.15.0 (item 1): consensus-based autowire. When set (>=2 enabled
@@ -1219,6 +1514,9 @@ export interface SessionDoctorReport {
     total_cost_usd: number | null;
     peer_call_cost_usd: number | null;
     generation_cost_usd: number | null;
+    failed_attempt_cost_usd: number | null;
+    unpriced_provider_attempts: number;
+    legacy_accounting_sessions: number;
   };
   findings: {
     open_sessions: SessionDoctorEntry[];
