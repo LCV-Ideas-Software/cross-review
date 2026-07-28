@@ -7,10 +7,24 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.31] — 2026-07-28
+
+### Fixed
+
+- Makes the clean-consumer license gate derive the bundled MCP SDK identity from
+  the installed lockfile resolution instead of hard-coding the previous 1.29.0
+  version.
+- Supersedes the immutable but unpublished `v04.05.30` tag. Its pre-publish
+  verification correctly stopped before creating an artifact, package or
+  GitHub Release when the stale license assertion encountered MCP SDK 1.30.0.
+
 ## [v04.05.30] — 2026-07-28
 
 **Provider runtime and release automation no longer depend on the expired
 Socket/StepSecurity services and retain fail-closed release evidence.**
+
+The tag is preserved as an unpublished audit record and is superseded by
+`v04.05.31`; no 4.5.30 package or GitHub Release was created.
 
 ### Changed
 

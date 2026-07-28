@@ -163,7 +163,18 @@ try {
     path.join(installedRoot, "dist", "THIRD_PARTY_LICENSES.txt"),
     "utf8",
   );
-  assert.match(licenses, /@modelcontextprotocol\/sdk@1\.29\.0/);
+  const bundledSdkPackage = JSON.parse(
+    await readFile(
+      path.join(root, "node_modules", "@modelcontextprotocol", "sdk", "package.json"),
+      "utf8",
+    ),
+  );
+  assert.equal(bundledSdkPackage.name, "@modelcontextprotocol/sdk");
+  assert.match(bundledSdkPackage.version, /^\d+\.\d+\.\d+(?:[-+].+)?$/);
+  assert.ok(
+    licenses.includes(`${bundledSdkPackage.name}@${bundledSdkPackage.version}`),
+    `third-party licenses must identify ${bundledSdkPackage.name}@${bundledSdkPackage.version}`,
+  );
   assert.match(licenses, /Permission is hereby granted/);
 
   const stateDirectory = path.join(tempRoot, "state");

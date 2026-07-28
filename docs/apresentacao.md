@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-07-28: `4.5.30`. O registro pode ficar
+> Estado do source/release target em 2026-07-28: `4.5.31`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -628,6 +628,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.31`      | Substitui a tag 4.5.30 não publicada e torna a validação de licenças sensível à versão exata do SDK MCP empacotado.                                                                                                                    |
 | `v04.05.30`      | Atualiza OpenAI para 7.0.0 e o SDK MCP empacotado para 1.30.0; remove Socket/Step; impede redispatch imutável; exige status GitHub exato; e executa Zizmor direto via uv com checksum.                                                 |
 | `v04.05.29`      | Substitui a tag 4.5.28 não publicada, fixa `brace-expansion` 5.0.8 após o novo advisory de DoS bloquear o release e preserva a correção TOCTOU dos caller tokens validada pelo CodeQL.                                                 |
 | `v04.05.28`      | Prepara Claude Opus 5 como override explícito; limita amplificação do Evidence Broker sem enfraquecer blockers; corrige provenance, truthfulness e lifecycle interrompido; protege ACLs de tokens; e pagina eventos de forma compacta. |

@@ -2,12 +2,14 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.30 for package 4.5.30. This
+Current supported source/release target: v04.05.31 for package 4.5.31. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.30 updates the OpenAI runtime client to 7.0.0 and bundles MCP SDK 1.30.0.
+v04.05.31 supersedes the unpublished v04.05.30 tag after its fail-closed
+pre-publish gate detected a stale SDK-license assertion. It updates the OpenAI
+runtime client to 7.0.0 and bundles MCP SDK 1.30.0.
 It completely removes the active Socket Security and StepSecurity integrations,
 including their dependency proxy and dedicated tooling. Zizmor now runs
 directly at the centrally pinned version after uv's official archive passes an
