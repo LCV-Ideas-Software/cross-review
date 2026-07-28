@@ -74,7 +74,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@google/genai": "^2.13.0",
-    "openai": "^6.46.0",
+    "openai": "^7.0.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^8.6.4",
