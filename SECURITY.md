@@ -2,10 +2,20 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.29 for package 4.5.29. This
+Current supported source/release target: v04.05.30 for package 4.5.30. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.05.30 updates the OpenAI runtime client to 7.0.0 and bundles MCP SDK 1.30.0.
+It completely removes the active Socket Security and StepSecurity integrations,
+including their dependency proxy and dedicated tooling. Zizmor now runs
+directly at the centrally pinned version after uv's official archive passes an
+explicit SHA-256 check. Auto-tag suppresses an immutable-tag redispatch only
+when an exact successful Publish run or an exact immutable Release with the
+expected uploaded asset and valid SHA-256 digest proves completion. Auto-tag
+and Publish treat only an exact `gh api` HTTP 404 as absence; every other API
+failure remains fatal.
 
 v04.05.29 resolves GHSA-mh99-v99m-4gvg by locking `brace-expansion` 5.0.8.
 The advisory was published while the 4.5.28 release gate was running, so the

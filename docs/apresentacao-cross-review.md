@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 2026-07-21.
+Data de referência desta apresentação: 2026-07-28.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.29`                        |
-| Data do source/release target | `2026-07-24`                       |
+| Versão preparada pelo source  | `v04.05.30`                        |
+| Data do source/release target | `2026-07-28`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -827,6 +827,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.30`      | 2026-07-28    | Atualiza OpenAI para 7.0.0 e o SDK MCP empacotado para 1.30.0; remove Socket/Step; impede redispatch imutável; exige status GitHub exato; e executa Zizmor direto via uv com checksum.                                                                                 |
 | `v04.05.29`      | 2026-07-24    | Substitui a tag 4.5.28 não publicada, fixa `brace-expansion` 5.0.8 após o advisory de DoS divulgado durante o release e preserva a correção TOCTOU dos caller tokens validada pelo CodeQL.                                                                             |
 | `v04.05.28`      | 2026-07-24    | Prepara Claude Opus 5 como override, limita a amplificação do Evidence Broker, repara lifecycle/provenance/truthfulness, protege caller tokens e pagina eventos; a tag foi preservada, mas não publicada.                                                              |
 | `v04.05.27`      | 2026-07-24    | Atualiza os SDKs Anthropic e OpenAI, centraliza as versões nos manifests e reforça as automações de dependências e recuperação de release.                                                                                                                             |

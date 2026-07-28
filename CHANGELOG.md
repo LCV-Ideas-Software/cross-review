@@ -7,6 +7,35 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.30] — 2026-07-28
+
+**Provider runtime and release automation no longer depend on the expired
+Socket/StepSecurity services and retain fail-closed release evidence.**
+
+### Changed
+
+- Updates the OpenAI runtime client to 7.0.0 and bundles MCP SDK 1.30.0 in the
+  published stdio artifact.
+- Completely removes the active Socket Security and StepSecurity integrations,
+  including their workflows, repository configuration, dependency proxy,
+  credentials and dedicated Python tooling. npm installs now use npmjs.org
+  directly, while the remaining Python quality tools retain their
+  hash-verified lock.
+- Runs pinned `zizmor==1.28.0` directly with `uvx` in the central reusable
+  workflow, without `harden-runner` or any StepSecurity integration. The
+  workflow verifies the official uv 0.11.32 Linux archive against its explicit
+  SHA-256 checksum before execution.
+
+### Fixed
+
+- Stops Auto-tag from redispatching an immutable tag that already has either an
+  exact successful Publish run or an exact immutable GitHub Release with the
+  expected uploaded asset and a valid SHA-256 digest. Recovery remains enabled
+  when neither durable proof exists.
+- Accepts only an exact HTTP 404 from `gh api` as evidence that a tag or release
+  is absent. Other statuses and malformed errors fail closed in Auto-tag and
+  Publish instead of being misclassified as a recoverable absence.
+
 ## [v04.05.29] — 2026-07-24
 
 ### Security

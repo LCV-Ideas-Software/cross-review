@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.29** (package `4.5.29`).
+**Status.** Stable. The current source/release target is **v04.05.30** (package `4.5.30`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.30`**      | Updates the OpenAI runtime to 7.0.0 and bundled MCP SDK to 1.30.0; completely removes Socket Security and StepSecurity; prevents redundant immutable-tag publication; fails closed on ambiguous GitHub API status; and runs direct Zizmor through checksum-verified uv.          |
 | **`v04.05.29`**      | Supersedes the unpublished 4.5.28 tag and locks `brace-expansion` 5.0.8 after its newly disclosed high-severity DoS advisory blocked publication; also retains the descriptor-based caller-token TOCTOU fix verified by CodeQL.                                                  |
 | **`v04.05.28`**      | Adds opt-in Claude Opus 5 support; bounds Evidence Broker amplification without weakening blockers; repairs interrupted-session lifecycle, checklist provenance and truthfulness diagnostics; hardens caller-token ACLs; and makes event polling compact.                        |
 | **`v04.05.27`**      | Updates the Anthropic and OpenAI SDKs, makes manifests and lockfiles the dependency source of truth, and ships hardened dependency automation with verified release recovery.                                                                                                    |
