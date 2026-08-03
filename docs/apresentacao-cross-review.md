@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.31`                        |
-| Data do source/release target | `2026-07-28`                       |
+| Versão preparada pelo source  | `v04.05.32`                        |
+| Data do source/release target | `2026-08-03`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -827,6 +827,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.32`      | 2026-08-03    | Atualiza o npm verificado para 12.0.2, prova os contextos negado e autorizado do Trusted Publisher antes de executar código do projeto, separa escrita e verificação pós-publicação e corrige brace-expansion, fast-uri e ip-address.                                  |
 | `v04.05.31`      | 2026-07-28    | Substitui a tag 4.5.30 não publicada e torna a validação de licenças sensível à versão exata do SDK MCP empacotado.                                                                                                                                                    |
 | `v04.05.30`      | 2026-07-28    | Atualiza OpenAI para 7.0.0 e o SDK MCP empacotado para 1.30.0; remove Socket/Step; impede redispatch imutável; exige status GitHub exato; e executa Zizmor direto via uv com checksum.                                                                                 |
 | `v04.05.29`      | 2026-07-24    | Substitui a tag 4.5.28 não publicada, fixa `brace-expansion` 5.0.8 após o advisory de DoS divulgado durante o release e preserva a correção TOCTOU dos caller tokens validada pelo CodeQL.                                                                             |

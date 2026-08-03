@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.31** (package `4.5.31`).
+**Status.** Stable. The current source/release target is **v04.05.32** (package `4.5.32`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.32`**      | Bootstraps checksum-verified npm 12.0.2, proves both npm OIDC environment boundaries before source execution, splits privileged publication from verification, and remediates the current Hono, brace-expansion, fast-uri and ip-address advisories.                             |
 | **`v04.05.31`**      | Supersedes the unpublished 4.5.30 tag by making the clean-consumer license gate follow the exact bundled MCP SDK version instead of a stale hard-coded version.                                                                                                                  |
 | **`v04.05.30`**      | Updates the OpenAI runtime to 7.0.0 and bundled MCP SDK to 1.30.0; completely removes Socket Security and StepSecurity; prevents redundant immutable-tag publication; fails closed on ambiguous GitHub API status; and runs direct Zizmor through checksum-verified uv.          |
 | **`v04.05.29`**      | Supersedes the unpublished 4.5.28 tag and locks `brace-expansion` 5.0.8 after its newly disclosed high-severity DoS advisory blocked publication; also retains the descriptor-based caller-token TOCTOU fix verified by CodeQL.                                                  |

@@ -12,13 +12,195 @@ concurrency:
   cancel-in-progress: false
 env:
   # Pin the npm release toolchain so the gate exercises npm v12 install-time defaults.
-  NPM_CLI_VERSION: "12.0.1"
-  NPM_CLI_SHA512: "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140"
+  NPM_CLI_VERSION: "12.0.2"
+  NPM_CLI_SHA512: "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
 jobs:
+  assert-npm-environment-boundary:
+    name: Assert npm Trusted Publisher environment boundary
+    runs-on: ubuntu-latest
+    permissions: write-all
+    env:
+      PACKAGE_NAME: "@lcv-ideas-software/cross-review"
+    steps:
+      - name: Prove npm rejects this workflow outside npm-production
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+
+          oidc_response="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm%3Aregistry.npmjs.org")"
+          oidc_id_token="$(jq -er '.value | select(type == "string" and length > 0)' <<<"$oidc_response")"
+          unset oidc_response
+          echo "::add-mask::$oidc_id_token"
+
+          payload_segment="${oidc_id_token#*.}"
+          payload_segment="${payload_segment%%.*}"
+          payload_base64="${payload_segment//-/+}"
+          payload_base64="${payload_base64//_/\/}"
+          case $((${#payload_base64} % 4)) in
+            0) ;;
+            2) payload_base64+="==" ;;
+            3) payload_base64+="=" ;;
+            *)
+              echo "::error::GitHub OIDC token has invalid base64url length."
+              exit 1
+              ;;
+          esac
+          payload_json="$(printf '%s' "$payload_base64" | base64 --decode)"
+          unset payload_segment payload_base64
+          jq -e \
+            --arg audience "npm:registry.npmjs.org" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" \
+            --arg workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml@$GITHUB_REF" \
+            '
+              ((.aud == $audience) or
+                ((.aud | type) == "array" and (.aud | index($audience) != null))) and
+              .repository == $repository and
+              .ref == $ref and
+              .workflow_ref == $workflow and
+              (.environment? == null) and
+              ((.sub | contains(":environment:")) | not)
+            ' <<<"$payload_json" >/dev/null
+          unset payload_json
+
+          encoded_package="$(jq -nr --arg value "$PACKAGE_NAME" '$value | @uri')"
+          exchange_url="https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$encoded_package"
+          http_code="000"
+          for attempt in 1 2 3; do
+            set +e
+            http_code="$(curl --proto '=https' --tlsv1.2 --silent --show-error \
+              --output /dev/null --write-out '%{http_code}' --request POST \
+              --header "Authorization: Bearer $oidc_id_token" "$exchange_url")"
+            curl_status=$?
+            set -e
+            if [ "$curl_status" -ne 0 ]; then
+              http_code="000"
+            fi
+            if { [ "$http_code" = "000" ] || [ "$http_code" = "408" ] ||
+              [ "$http_code" = "425" ] || [ "$http_code" = "429" ] ||
+              [[ "$http_code" =~ ^5[0-9][0-9]$ ]]; } &&
+              [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+              continue
+            fi
+            break
+          done
+          unset oidc_id_token
+
+          case "$http_code" in
+            401)
+              echo "npm correctly rejected OIDC outside the npm-production environment."
+              ;;
+            201)
+              echo "::error::npm issued a publishing credential outside npm-production; refusing to execute project code or publish."
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not prove the npm environment boundary (HTTP $http_code); refusing to execute project code or publish."
+              exit 1
+              ;;
+          esac
+    timeout-minutes: 5
+
+  assert-npm-production-boundary:
+    name: Assert exact npm-production Trusted Publisher boundary
+    needs: assert-npm-environment-boundary
+    runs-on: ubuntu-latest
+    environment: npm-production
+    permissions: write-all
+    env:
+      PACKAGE_NAME: "@lcv-ideas-software/cross-review"
+    steps:
+      - name: Prove npm authorizes only the npm-production context
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+
+          oidc_response="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm%3Aregistry.npmjs.org")"
+          oidc_id_token="$(jq -er '.value | select(type == "string" and length > 0)' <<<"$oidc_response")"
+          unset oidc_response
+          echo "::add-mask::$oidc_id_token"
+
+          payload_segment="${oidc_id_token#*.}"
+          payload_segment="${payload_segment%%.*}"
+          payload_base64="${payload_segment//-/+}"
+          payload_base64="${payload_base64//_/\/}"
+          case $((${#payload_base64} % 4)) in
+            0) ;;
+            2) payload_base64+="==" ;;
+            3) payload_base64+="=" ;;
+            *)
+              echo "::error::GitHub OIDC token has invalid base64url length."
+              exit 1
+              ;;
+          esac
+          payload_json="$(printf '%s' "$payload_base64" | base64 --decode)"
+          unset payload_segment payload_base64
+          jq -e \
+            --arg audience "npm:registry.npmjs.org" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" \
+            --arg workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml@$GITHUB_REF" \
+            '
+              ((.aud == $audience) or
+                ((.aud | type) == "array" and (.aud | index($audience) != null))) and
+              .repository == $repository and
+              .ref == $ref and
+              .workflow_ref == $workflow and
+              .environment == "npm-production" and
+              (.sub | endswith(":environment:npm-production"))
+            ' <<<"$payload_json" >/dev/null
+          unset payload_json
+
+          encoded_package="$(jq -nr --arg value "$PACKAGE_NAME" '$value | @uri')"
+          exchange_url="https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$encoded_package"
+          http_code="000"
+          for attempt in 1 2 3; do
+            set +e
+            http_code="$(curl --proto '=https' --tlsv1.2 --silent --show-error \
+              --output /dev/null --write-out '%{http_code}' --request POST \
+              --header "Authorization: Bearer $oidc_id_token" "$exchange_url")"
+            curl_status=$?
+            set -e
+            if [ "$curl_status" -ne 0 ]; then
+              http_code="000"
+            fi
+            if { [ "$http_code" = "000" ] || [ "$http_code" = "408" ] ||
+              [ "$http_code" = "425" ] || [ "$http_code" = "429" ] ||
+              [[ "$http_code" =~ ^5[0-9][0-9]$ ]]; } &&
+              [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+              continue
+            fi
+            break
+          done
+          unset oidc_id_token
+
+          case "$http_code" in
+            201)
+              echo "npm authorized the exact npm-production OIDC context; the issued credential was discarded."
+              ;;
+            401)
+              echo "::error::npm rejected the required npm-production OIDC context; refusing to execute project code or publish."
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not prove the npm-production boundary (HTTP $http_code); refusing to execute project code or publish."
+              exit 1
+              ;;
+          esac
+    timeout-minutes: 5
+
   gate:
     name: Pre-publish gate (test + immutable artifact)
+    needs: assert-npm-production-boundary
     runs-on: ubuntu-latest
-    environment: release-validation
     permissions: write-all
     outputs:
       name: ${{ steps.meta.outputs.name }}
@@ -460,6 +642,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-production
     permissions: write-all
+    outputs:
+      prior_latest: ${{ steps.npmjs-tag.outputs.prior_latest }}
+      publish_tag: ${{ steps.npmjs-tag.outputs.publish_tag }}
     steps:
       - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -505,8 +690,6 @@ jobs:
             exit 1
           fi
           echo "Verified npm $ACTUAL_NPM_VERSION for Trusted Publishing and npm v12 policy."
-      - name: Install dependencies
-        run: npm ci --strict-allow-scripts --no-audit --no-fund
       - name: Check npmjs.com package version
         id: npmjs-version
         env:
@@ -619,6 +802,30 @@ jobs:
           DIST_TAG: ${{ steps.npmjs-tag.outputs.publish_tag }}
           PACKAGE_TARBALL: ${{ needs.gate.outputs.package_tarball }}
         run: npm --registry=https://registry.npmjs.org publish "./artifacts/$PACKAGE_TARBALL" --access public --provenance --tag "$DIST_TAG" --ignore-scripts
+    timeout-minutes: 30
+
+  verify-npmjs:
+    name: Verify npmjs.com publication
+    needs: [gate, publish-npmjs]
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Checkout immutable release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+      - name: Setup Node.js 24 for npmjs verification
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Setup hash-verified npm v12 toolchain
+        uses: ./.github/actions/setup-npm-toolchain
+        with:
+          version: ${{ env.NPM_CLI_VERSION }}
+          sha512: ${{ env.NPM_CLI_SHA512 }}
       - name: Verify npmjs.com public visibility
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
@@ -650,8 +857,8 @@ jobs:
         env:
           PACKAGE_NAME: ${{ needs.gate.outputs.name }}
           PACKAGE_VERSION: ${{ needs.gate.outputs.version }}
-          PRIOR_LATEST: ${{ steps.npmjs-tag.outputs.prior_latest }}
-          PUBLISH_TAG: ${{ steps.npmjs-tag.outputs.publish_tag }}
+          PRIOR_LATEST: ${{ needs.publish-npmjs.outputs.prior_latest }}
+          PUBLISH_TAG: ${{ needs.publish-npmjs.outputs.publish_tag }}
         run: |
           set -euo pipefail
           tags_view="$(npm --registry=https://registry.npmjs.org view "$PACKAGE_NAME" dist-tags --json)"
@@ -668,7 +875,7 @@ jobs:
           EXPECTED_GIT_TAG: refs/tags/${{ needs.gate.outputs.tag }}
           EXPECTED_GIT_REPOSITORY: https://github.com/LCV-Ideas-Software/cross-review
           EXPECTED_GITHUB_WORKFLOW_PATH: .github/workflows/publish.yml
-        run: npm --registry=https://registry.npmjs.org run release:verify-registry
+        run: node scripts/verify-registry-dist.mjs
       - name: Cryptographically audit npm registry signatures and provenance
         env:
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
@@ -748,8 +955,6 @@ jobs:
           test -f "artifacts/$PACKAGE_TARBALL"
           echo "$PACKAGE_SHA256  artifacts/$PACKAGE_TARBALL" | sha256sum --check --strict
           node scripts/release-policy.mjs verify-file-sri "artifacts/$PACKAGE_TARBALL" "$PACKAGE_INTEGRITY"
-      - name: Install dependencies
-        run: npm ci --strict-allow-scripts --no-audit --no-fund
       - name: Select GitHub Packages registry for publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -943,7 +1148,7 @@ jobs:
     timeout-minutes: 60
   create-github-release:
     name: Reconcile GitHub Release from immutable artifact
-    needs: [gate, publish-npmjs, publish-gh-packages]
+    needs: [gate, verify-npmjs, publish-gh-packages]
     runs-on: ubuntu-latest
     environment: github-release-production
     permissions: write-all
@@ -979,8 +1184,6 @@ jobs:
           test -f "artifacts/$PACKAGE_TARBALL"
           echo "$PACKAGE_SHA256  artifacts/$PACKAGE_TARBALL" | sha256sum --check --strict
           node scripts/release-policy.mjs verify-file-sri "artifacts/$PACKAGE_TARBALL" "$PACKAGE_INTEGRITY"
-      - name: Install dependencies
-        run: npm ci --strict-allow-scripts --no-audit --no-fund
       - name: Extract release notes from CHANGELOG.md
         env:
           TAG: ${{ needs.gate.outputs.tag }}

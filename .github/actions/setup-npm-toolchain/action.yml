@@ -10,7 +10,8 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Download, verify and activate npm
+    - name: Download, verify and activate npm on Unix
+      if: runner.os != 'Windows'
       shell: bash
       env:
         NPM_CLI_VERSION: ${{ inputs.version }}
@@ -55,3 +56,54 @@ runs:
         echo "$wrapper_dir" >> "$GITHUB_PATH"
         echo "NPM_CLI_PATH=$npm_cli" >> "$GITHUB_ENV"
         echo "Activated hash-verified npm $actual_version."
+    - name: Download, verify and activate npm on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        NPM_CLI_VERSION: ${{ inputs.version }}
+        NPM_CLI_SHA512: ${{ inputs.sha512 }}
+      run:
+        | # zizmor: ignore[github-env] Exact version/SHA-512 inputs are validated; only RUNNER_TEMP paths are exported.
+        $ErrorActionPreference = "Stop"
+
+        if ($env:NPM_CLI_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+          Write-Error "Invalid npm CLI version: $env:NPM_CLI_VERSION"
+        }
+        if ($env:NPM_CLI_SHA512 -notmatch '^[a-f0-9]{128}$') {
+          Write-Error "Invalid npm CLI SHA-512 digest."
+        }
+
+        $archive = Join-Path $env:RUNNER_TEMP "npm-$env:NPM_CLI_VERSION.tgz"
+        $toolchainDir = Join-Path $env:RUNNER_TEMP "npm-toolchain-$env:NPM_CLI_VERSION"
+        $wrapperDir = Join-Path $env:RUNNER_TEMP "npm-toolchain-bin"
+        $registryUrl = "https://registry.npmjs.org/npm/-/npm-$env:NPM_CLI_VERSION.tgz"
+
+        & curl.exe --proto '=https' --tlsv1.2 --fail --silent --show-error --location --output $archive $registryUrl
+        if ($LASTEXITCODE -ne 0) {
+          throw "Could not download the exact npm CLI archive."
+        }
+        $actualSha512 = (Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash.ToLowerInvariant()
+        if ($actualSha512 -cne $env:NPM_CLI_SHA512) {
+          throw "npm CLI SHA-512 verification failed."
+        }
+
+        New-Item -ItemType Directory -Force -Path $toolchainDir, $wrapperDir | Out-Null
+        & tar.exe -xzf $archive -C $toolchainDir
+        if ($LASTEXITCODE -ne 0) {
+          throw "Could not extract the verified npm CLI archive."
+        }
+        $npmCli = Join-Path $toolchainDir "package\bin\npm-cli.js"
+        if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+          throw "Verified npm archive does not contain package/bin/npm-cli.js."
+        }
+
+        $actualVersion = (& node $npmCli --version).Trim()
+        if ($actualVersion -cne $env:NPM_CLI_VERSION) {
+          throw "Expected npm $env:NPM_CLI_VERSION, got $actualVersion."
+        }
+
+        $wrapper = Join-Path $wrapperDir "npm.cmd"
+        "@echo off`r`nnode `"$npmCli`" %*`r`n" | Set-Content -LiteralPath $wrapper -Encoding utf8NoBOM
+        $wrapperDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        "NPM_CLI_PATH=$npmCli" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        Write-Output "Activated hash-verified npm $actualVersion."

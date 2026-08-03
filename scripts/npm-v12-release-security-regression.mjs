@@ -70,9 +70,9 @@ const expectedAllowScripts = {
   "fsevents@2.3.3": true,
   "protobufjs@7.6.5": true,
 };
-const expectedNpmCliVersion = "12.0.1";
+const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
-  "2f94fd8bf600416416a934bfc59c4991e8bff7372ef7d842784e2a8b8d48c81555ee645069ddea73625fb8e92dc261feab0188fd5dab6c22fefd46316f5f9140";
+  "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
 const expectedDependabotController =
   "LCV-Ideas-Software/.github/dependabot-automerge@75beaff4ad7f49ea1018ccbac1c4e3201f037394";
 
@@ -86,6 +86,16 @@ assert.deepEqual(
   packageJson.allowScripts,
   expectedAllowScripts,
   "package.json must retain the exact reviewed npm v12 install-script policy; @google/genai is explicitly denied so future Dependabot versions cannot gain install-time execution",
+);
+assert.equal(
+  packageJson.overrides?.["express-rate-limit"]?.["ip-address"],
+  "10.4.0",
+  "the MCP SDK rate-limit chain must retain the scoped ip-address 10.4.0 security override",
+);
+assert.equal(
+  packageLock.packages?.["node_modules/ip-address"]?.version,
+  "10.4.0",
+  "the lockfile must resolve the reviewed ip-address 10.4.0 security override",
 );
 
 for (const lifecycle of ["preinstall", "install", "postinstall"]) {
@@ -211,6 +221,121 @@ assert.doesNotMatch(
   "Dependabot daily schedules must not carry the weekly-only day option",
 );
 
+const npmBoundaryJobBlock = publishWorkflow.match(
+  /\n {2}assert-npm-environment-boundary:[\s\S]*?(?=\n {2}assert-npm-production-boundary:)/,
+)?.[0];
+assert.ok(
+  npmBoundaryJobBlock,
+  "publication must start with a fail-closed npm Trusted Publisher boundary probe",
+);
+assert.match(
+  npmBoundaryJobBlock,
+  new RegExp(`PACKAGE_NAME:\\s*["']${packageJson.name.replace("/", "\\/")}["']`),
+  "the pre-checkout boundary probe package must match package.json",
+);
+assert.doesNotMatch(
+  npmBoundaryJobBlock,
+  /\n\s+(?:uses:|environment:)/,
+  "the boundary probe must not checkout code, invoke an action, or enter an environment",
+);
+assert.match(
+  npmBoundaryJobBlock,
+  /oidc\/token\/exchange\/package\/\$encoded_package/,
+  "the boundary probe must call npm's documented OIDC exchange endpoint",
+);
+assert.match(
+  npmBoundaryJobBlock,
+  /\.workflow_ref == \$workflow/,
+  "the boundary probe must bind the standard workflow_ref claim for a non-reusable workflow",
+);
+assert.doesNotMatch(
+  npmBoundaryJobBlock,
+  /job_workflow_ref/,
+  "job_workflow_ref is reserved for reusable workflows and would fail closed incorrectly here",
+);
+assert.match(
+  npmBoundaryJobBlock,
+  /401\)[\s\S]*?correctly rejected[\s\S]*?201\)[\s\S]*?refusing/,
+  "only npm rejection may pass; issuance outside npm-production must fail",
+);
+for (const transientStatus of ["000", "408", "425", "429"]) {
+  assert.ok(
+    npmBoundaryJobBlock.includes(`[ "$http_code" = "${transientStatus}" ]`),
+    `the boundary probe must retry transient status ${transientStatus} before failing closed`,
+  );
+}
+
+const npmProductionBoundaryJobBlock = publishWorkflow.match(
+  /\n {2}assert-npm-production-boundary:[\s\S]*?(?=\n {2}gate:)/,
+)?.[0];
+assert.ok(
+  npmProductionBoundaryJobBlock,
+  "publication must prove the exact authorized npm-production context before executing project code",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /\n {4}needs: assert-npm-environment-boundary/,
+  "the authorized-context probe must run only after npm rejects the no-environment context",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /\n {4}environment: npm-production/,
+  "the authorized-context probe must enter exactly npm-production",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  new RegExp(`PACKAGE_NAME:\\s*["']${packageJson.name.replace("/", "\\/")}["']`),
+  "the authorized-context probe package must match package.json",
+);
+assert.doesNotMatch(
+  npmProductionBoundaryJobBlock,
+  /\n\s+uses:/,
+  "the authorized-context probe must not checkout code or invoke any action",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /oidc\/token\/exchange\/package\/\$encoded_package/,
+  "the authorized-context probe must call npm's documented OIDC exchange endpoint",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /\.workflow_ref == \$workflow/,
+  "the authorized-context probe must bind the standard workflow_ref claim",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /\.environment == "npm-production"/,
+  "the authorized-context probe must bind the exact environment claim",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /\.sub \| endswith\(":environment:npm-production"\)/,
+  "the authorized-context probe must bind the exact environment subject suffix",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /201\)[\s\S]*?authorized the exact[\s\S]*?401\)[\s\S]*?refusing/,
+  "only credential issuance in npm-production may pass; rejection must fail closed",
+);
+for (const transientStatus of ["000", "408", "425", "429"]) {
+  assert.ok(
+    npmProductionBoundaryJobBlock.includes(`[ "$http_code" = "${transientStatus}" ]`),
+    `the authorized-context probe must retry transient status ${transientStatus} before failing closed`,
+  );
+}
+assert.match(
+  publishWorkflow,
+  /\n {2}gate:[\s\S]*?\n {4}needs: assert-npm-production-boundary[\s\S]*?(?=\n {2}publish-npmjs:)/,
+  "no project checkout or dependency execution may precede both npm environment-boundary proofs",
+);
+const npmGateJobBlock = publishWorkflow.match(/\n {2}gate:[\s\S]*?(?=\n {2}publish-npmjs:)/)?.[0];
+assert.ok(npmGateJobBlock, "the npm publication gate must remain a distinct job");
+assert.doesNotMatch(
+  npmGateJobBlock,
+  /\n {4}environment:/,
+  "the project-code gate must use the same no-environment OIDC context rejected by the boundary probe",
+);
+
 assert.match(
   publishWorkflow,
   /publish-npmjs:[\s\S]*?permissions:\s*write-all[\s\S]*?publish-gh-packages:/,
@@ -225,6 +350,29 @@ assert.match(
   publishWorkflow,
   /environment:\s*npm-production/,
   "npmjs publishing must use the protected npm-production environment",
+);
+const npmPublishJobBlock = publishWorkflow.match(
+  /\n {2}publish-npmjs:[\s\S]*?(?=\n {2}verify-npmjs:)/,
+)?.[0];
+assert.ok(npmPublishJobBlock, "npmjs publishing must remain a distinct privileged job");
+assert.doesNotMatch(
+  npmPublishJobBlock,
+  /\bnpm\s+(?:ci|install|run)\b/,
+  "the npm-production job must not install dependencies or execute project lifecycle scripts",
+);
+assert.match(
+  publishWorkflow,
+  /\n {2}verify-npmjs:[\s\S]*?\n {4}needs: \[gate, publish-npmjs\][\s\S]*?(?=\n {2}publish-gh-packages:)/,
+  "post-publication npm verification must run in a separate unprivileged-environment job",
+);
+const npmVerificationJobBlock = publishWorkflow.match(
+  /\n {2}verify-npmjs:[\s\S]*?(?=\n {2}publish-gh-packages:)/,
+)?.[0];
+assert.ok(npmVerificationJobBlock, "npmjs verification job must be present");
+assert.doesNotMatch(
+  npmVerificationJobBlock,
+  /\n {4}environment:/,
+  "post-publication verification must not enter the npm-production environment",
 );
 assert.match(
   publishWorkflow,
@@ -337,7 +485,7 @@ assert.ok(
   "the owner-enforced immutable-release preflight must remain independently auditable",
 );
 const preflightAdminTokenCopy = immutableReleasePreflightBlock.indexOf(
-  'immutability_token="${ADMIN_GH_TOKEN:-}"',
+  'immutability_token="$' + '{ADMIN_GH_TOKEN:-}"',
 );
 const preflightAdminTokenUnset = immutableReleasePreflightBlock.indexOf("unset ADMIN_GH_TOKEN");
 const preflightFirstSubprocess = immutableReleasePreflightBlock.indexOf(
@@ -452,7 +600,7 @@ assert.equal(
 for (const step of exportedGithubTokenSteps) {
   const stepName = step.match(/- name:\s*([^\r\n]+)/)?.[1] ?? "unnamed GITHUB_TOKEN step";
   const runBody = step.match(/run: \|\r?\n([\s\S]*)/)?.[1] ?? "";
-  const tokenCopy = runBody.indexOf('github_token="${GH_TOKEN:-}"');
+  const tokenCopy = runBody.indexOf('github_token="$' + '{GH_TOKEN:-}"');
   const tokenUnset = runBody.indexOf("unset GH_TOKEN");
   assert.ok(
     tokenCopy >= 0 && tokenUnset > tokenCopy,
@@ -1390,7 +1538,9 @@ assert.ok(
   githubReleaseReconciliationBlock,
   "the GitHub Release reconciliation step must remain independently auditable",
 );
-const githubTokenCopy = githubReleaseReconciliationBlock.indexOf('github_token="${GH_TOKEN:-}"');
+const githubTokenCopy = githubReleaseReconciliationBlock.indexOf(
+  'github_token="$' + '{GH_TOKEN:-}"',
+);
 const githubTokenUnset = githubReleaseReconciliationBlock.indexOf("unset GH_TOKEN");
 const firstGithubReconciliationSubprocess =
   githubReleaseReconciliationBlock.indexOf('ref_json="$(github_api');
@@ -1757,8 +1907,8 @@ assert.match(
 const cacheDisabledCount = (publishWorkflow.match(/package-manager-cache:\s*false/g) ?? []).length;
 assert.equal(
   cacheDisabledCount,
-  4,
-  "all four release jobs must explicitly disable package-manager caching",
+  5,
+  "all five release-pipeline jobs that use Node must explicitly disable package-manager caching",
 );
 
 for (const [workflow, label] of [
@@ -1798,7 +1948,7 @@ assert.doesNotMatch(
 
 assert.match(
   publishWorkflow,
-  /NPM_CLI_VERSION:\s*["']12\.0\.1["']/,
+  /NPM_CLI_VERSION:\s*["']12\.0\.2["']/,
   "release jobs must pin the audited npm v12 toolchain",
 );
 assert.match(
@@ -1808,8 +1958,8 @@ assert.match(
 );
 assert.equal(
   (publishWorkflow.match(/uses:\s*\.\/\.github\/actions\/setup-npm-toolchain/g) ?? []).length,
-  4,
-  "every release job must activate the hash-verified npm v12 toolchain before npm ci",
+  5,
+  "every release-pipeline job that invokes npm must activate the hash-verified npm v12 toolchain",
 );
 assert.doesNotMatch(
   publishWorkflow,
@@ -1818,8 +1968,13 @@ assert.doesNotMatch(
 );
 assert.equal(
   (publishWorkflow.match(/npm ci --strict-allow-scripts --no-audit --no-fund/g) ?? []).length,
-  4,
-  "every release install must fail closed when an unreviewed dependency script appears",
+  1,
+  "release automation must install dependencies exactly once, inside the unprivileged source gate",
+);
+assert.match(
+  npmGateJobBlock,
+  /npm ci --strict-allow-scripts --no-audit --no-fund/,
+  "the sole release dependency install must remain in the unprivileged source gate",
 );
 assert.doesNotMatch(
   publishWorkflow,
@@ -1829,7 +1984,7 @@ assert.doesNotMatch(
 
 assert.match(
   ciWorkflow,
-  /NPM_CLI_VERSION:\s*["']12\.0\.1["']/,
+  /NPM_CLI_VERSION:\s*["']12\.0\.2["']/,
   "ordinary CI must pin the same audited npm v12 toolchain as release jobs",
 );
 assert.match(

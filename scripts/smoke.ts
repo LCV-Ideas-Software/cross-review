@@ -7614,7 +7614,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "utf8",
   );
   const pkg = JSON.parse(pkgRaw) as {
-    overrides?: Record<string, string> | undefined;
+    overrides?:
+      | {
+          hono?: string | undefined;
+          "express-rate-limit"?: { "ip-address"?: string | undefined } | undefined;
+          [dependency: string]: unknown;
+        }
+      | undefined;
   };
   const lock = JSON.parse(lockRaw) as {
     packages?: Record<string, { version?: string | undefined }> | undefined;
@@ -7703,9 +7709,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     compareStableSemver(resolvedHono, configuredHonoFloor) >= 0,
     `v2.18.5 / P1.1: resolved Hono ${resolvedHonoVersion} must satisfy override ${overrides.hono}`,
   );
-  assert.ok(
-    overrides["ip-address"],
-    "v2.18.5 / P1.1: package.json overrides retains `ip-address` (the v2.18.1 precedent)",
+  assert.equal(
+    overrides["express-rate-limit"]?.["ip-address"],
+    "10.4.0",
+    "v2.18.5 / P1.1: express-rate-limit must retain the scoped ip-address 10.4.0 security override",
+  );
+  assert.equal(
+    lock.packages?.["node_modules/ip-address"]?.version,
+    "10.4.0",
+    "v2.18.5 / P1.1: package-lock.json must resolve the reviewed ip-address 10.4.0 override",
   );
   console.log("[smoke] hono_override_anti_drift_test: PASS");
 }
@@ -10359,10 +10371,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "utf8",
   );
   assert.ok(
-    publishWorkflow.includes(
-      "npm --registry=https://registry.npmjs.org run release:verify-registry",
-    ),
-    "v4.0.5 / AUDIT-6: publish workflow must verify npm registry artifact metadata after publication.",
+    publishWorkflow.includes("run: node scripts/verify-registry-dist.mjs"),
+    "v4.0.5 / AUDIT-6: the unprivileged post-publication job must verify npm registry artifact metadata without invoking a project lifecycle script.",
   );
   assert.ok(
     /if \[ "\$PUBLISH_REF" != "\$DISPLAY_TAG" \]/.test(publishWorkflow),

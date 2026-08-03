@@ -1,7 +1,7 @@
 version: 2
 
 # `package.json` deliberately has no Corepack `packageManager` hint: Dependabot
-# uses its supported bundled npm, while CI/Publish pin and verify npm 12.0.1.
+# uses its supported bundled npm, while CI/Publish pin and verify npm 12.0.2.
 
 updates:
   - package-ecosystem: npm

@@ -2,10 +2,20 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.31 for package 4.5.31. This
+Current supported source/release target: v04.05.32 for package 4.5.32. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.05.32 upgrades the SHA-512-verified npm toolchain to 12.0.2 on Linux and
+Windows and requires two clean-room OIDC exchange proofs before any checkout or
+dependency execution: npm must reject the context outside `npm-production` and
+authorize the exact context inside it. The positive probe discards its issued
+credential without checking out code or invoking an action; only the immutable
+npmjs writer uses an npm OIDC credential to publish. Registry/provenance
+verification runs afterward without that environment. It also resolves the current
+Hono, `brace-expansion`, `fast-uri` and `ip-address` advisories with 4.12.34,
+5.0.9, 3.1.5 and 10.4.0 respectively, including GHSA-8j4g-w8fx-2239.
 
 v04.05.31 supersedes the unpublished v04.05.30 tag after its fail-closed
 pre-publish gate detected a stale SDK-license assertion. It updates the OpenAI
@@ -117,7 +127,7 @@ npm, GitHub Actions, pip/pip-compile and pre-commit. The committed `.npmrc`
 declares npmjs.org as npm's global dependency registry. `package.json`
 intentionally does not carry a `packageManager` Corepack hint: Dependabot uses
 its supported npm resolver, while CI and Publish independently bootstrap npm
-12.0.1 from the npm registry tarball and verify its pinned SHA-512. Ordinary CI
+12.0.2 from the npm registry tarball and verify its pinned SHA-512. Ordinary CI
 installs the Python tool lock with `--require-hashes` under the centrally pinned
 Python 3.12 and executes the pre-commit hooks, so those bot updates are not
 auto-merged on skipped consumer checks. `python-tools-requirements.in` is the

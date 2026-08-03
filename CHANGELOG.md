@@ -7,6 +7,39 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.32] — 2026-08-03
+
+### Security
+
+- Upgrades the hash-verified CI and release toolchain to npm 12.0.2 and adds
+  an equivalent checksum-verified PowerShell bootstrap for the Windows matrix.
+- Makes two clean-room OIDC boundary jobs run before any checkout or dependency
+  execution. They fail closed unless npm rejects credential exchange outside
+  `npm-production` and authorizes the exact context inside it, proving both
+  halves of the configured Trusted Publisher boundary.
+- Discards the positive probe's issued credential without checking out code or
+  invoking an action. Only the immutable npmjs writer uses an npm OIDC
+  credential to publish;
+  registry and provenance verification run later without `npm-production`, and
+  the GitHub Release waits for that verification.
+- Updates transitive Hono to 4.12.34, `brace-expansion` to 5.0.9, `fast-uri`
+  to 3.1.5 and the scoped `express-rate-limit → ip-address` chain to 10.4.0 for
+  GHSA-8j4g-w8fx-2239,
+  GHSA-rgw5-rvv9-x895, GHSA-7p8r-x3mc-p8w7, GHSA-mwp4-54f8-5fhr,
+  GHSA-4xrf-jv44-h6hh and GHSA-22jq-vg5j-6vgg.
+
+No public MCP API, tool schema, configuration format or persisted-state format
+changes in this patch.
+
+### Validation
+
+- Full `npm test` and `npm run check` passed.
+- The release-security regression proves the negative and positive npm OIDC
+  environment boundaries and enforces that the sole dependency install occurs
+  only in the unprivileged source gate.
+- Zizmor, Actionlint (with the documented `concurrency.queue` schema lag
+  ignored), ShellCheck and the clean Windows npm bootstrap passed.
+
 ## [v04.05.31] — 2026-07-28
 
 ### Fixed
