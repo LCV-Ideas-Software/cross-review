@@ -241,7 +241,7 @@ jobs:
           echo "Validated publish ref: $PUBLISH_REF"
       - name: Require owner-enforced immutable GitHub Releases
         env:
-          ADMIN_GH_TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+          ADMIN_GH_TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }} # zizmor: ignore[secrets-outside-env] This gate intentionally stays outside npm-production; the token only verifies immutable GitHub release policy.
         run: |
           set -euo pipefail
           immutability_token="${ADMIN_GH_TOKEN:-}"
