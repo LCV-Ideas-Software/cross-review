@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.32`                        |
+| Versão preparada pelo source  | `v04.05.33`                        |
 | Data do source/release target | `2026-08-03`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -827,6 +827,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.33`      | 2026-08-03    | Substitui a tag 4.5.32 não publicada, reconhece o `404` documentado do npm apenas no probe OIDC negativo, preserva o gate positivo em `201`, usa escaping idêntico ao npm e atualiza a resolução do OpenAI para 7.3.0.                                                 |
 | `v04.05.32`      | 2026-08-03    | Atualiza o npm verificado para 12.0.2, prova os contextos negado e autorizado do Trusted Publisher antes de executar código do projeto, separa escrita e verificação pós-publicação e corrige brace-expansion, fast-uri e ip-address.                                  |
 | `v04.05.31`      | 2026-07-28    | Substitui a tag 4.5.30 não publicada e torna a validação de licenças sensível à versão exata do SDK MCP empacotado.                                                                                                                                                    |
 | `v04.05.30`      | 2026-07-28    | Atualiza OpenAI para 7.0.0 e o SDK MCP empacotado para 1.30.0; remove Socket/Step; impede redispatch imutável; exige status GitHub exato; e executa Zizmor direto via uv com checksum.                                                                                 |

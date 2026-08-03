@@ -7,6 +7,39 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.33] — 2026-08-03
+
+### Security
+
+- Aligns both clean-room OIDC probes with npm 12's `npm-package-arg`
+  `escapedName` encoding for scoped packages.
+- Accepts only npm's documented `401 Unauthorized` or identity-concealing
+  `404 Not Found` response in the negative, no-environment probe. Credential
+  issuance (`201`) there remains a hard failure, while the positive
+  `npm-production` probe still requires exactly `201` before any project code
+  can execute.
+- Keeps the GitHub release-policy token outside `npm-production` by means of a
+  single, documented Zizmor exception; the token can verify immutable GitHub
+  policy but never enters an npm publishing environment.
+
+### Dependencies
+
+- Refreshes the resolved OpenAI runtime client from 7.2.0 to 7.3.0 through
+  Dependabot PR #163.
+
+### Release
+
+- Supersedes the unpublished `v04.05.32` tag. Its fail-closed negative OIDC
+  probe observed npm's documented `404` identity concealment and stopped
+  before checkout, project execution, artifact creation, GitHub Release, or
+  npm publication.
+
+### Validation
+
+- The npm release-security regression covers both documented negative statuses,
+  npm-compatible scoped-name encoding, and the unchanged positive `201` gate.
+- Zizmor 1.28.0 reports zero active findings in a clean checkout.
+
 ## [v04.05.32] — 2026-08-03
 
 ### Security

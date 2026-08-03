@@ -255,8 +255,13 @@ assert.doesNotMatch(
 );
 assert.match(
   npmBoundaryJobBlock,
-  /401\)[\s\S]*?correctly rejected[\s\S]*?201\)[\s\S]*?refusing/,
-  "only npm rejection may pass; issuance outside npm-production must fail",
+  /401\|404\)[\s\S]*?correctly rejected or concealed[\s\S]*?201\)[\s\S]*?refusing/,
+  "only npm's documented identity rejection or concealment may pass; issuance outside npm-production must fail",
+);
+assert.match(
+  npmBoundaryJobBlock,
+  /encoded_package="\$\{PACKAGE_NAME\/\\\/\/%2f\}"/,
+  "the boundary probe must match npm-package-arg escapedName semantics for scoped packages",
 );
 for (const transientStatus of ["000", "408", "425", "429"]) {
   assert.ok(
@@ -296,6 +301,11 @@ assert.match(
   npmProductionBoundaryJobBlock,
   /oidc\/token\/exchange\/package\/\$encoded_package/,
   "the authorized-context probe must call npm's documented OIDC exchange endpoint",
+);
+assert.match(
+  npmProductionBoundaryJobBlock,
+  /encoded_package="\$\{PACKAGE_NAME\/\\\/\/%2f\}"/,
+  "the authorized-context probe must match npm-package-arg escapedName semantics for scoped packages",
 );
 assert.match(
   npmProductionBoundaryJobBlock,

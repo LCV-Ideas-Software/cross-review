@@ -2,12 +2,20 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.32 for package 4.5.32. This
+Current supported source/release target: v04.05.33 for package 4.5.33. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.32 upgrades the SHA-512-verified npm toolchain to 12.0.2 on Linux and
+v04.05.33 supersedes the unpublished v04.05.32 tag after its fail-closed
+negative OIDC probe observed npm's documented `404` concealment for a trusted
+publisher identity mismatch. It accepts only `401` or `404` outside
+`npm-production`, still requires exactly `201` inside that environment, and
+uses npm-compatible scoped-package escaping. The failed v04.05.32 run stopped
+before checkout, project execution, artifact creation, GitHub Release, or npm
+publication. v04.05.33 also resolves OpenAI 7.3.0 through Dependabot PR #163.
+
+The v04.05.32 source upgrades the SHA-512-verified npm toolchain to 12.0.2 on Linux and
 Windows and requires two clean-room OIDC exchange proofs before any checkout or
 dependency execution: npm must reject the context outside `npm-production` and
 authorize the exact context inside it. The positive probe discards its issued

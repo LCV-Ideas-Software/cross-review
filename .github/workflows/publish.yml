@@ -66,7 +66,13 @@ jobs:
             ' <<<"$payload_json" >/dev/null
           unset payload_json
 
-          encoded_package="$(jq -nr --arg value "$PACKAGE_NAME" '$value | @uri')"
+          # Match npm-package-arg's escapedName: preserve the scope marker and
+          # percent-encode the single scope separator.
+          encoded_package="${PACKAGE_NAME/\//%2f}"
+          if [[ "$encoded_package" == */* ]]; then
+            echo "::error::Package name contains more than one path separator."
+            exit 1
+          fi
           exchange_url="https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$encoded_package"
           http_code="000"
           for attempt in 1 2 3; do
@@ -91,8 +97,8 @@ jobs:
           unset oidc_id_token
 
           case "$http_code" in
-            401)
-              echo "npm correctly rejected OIDC outside the npm-production environment."
+            401|404)
+              echo "npm correctly rejected or concealed the mismatched OIDC identity outside npm-production."
               ;;
             201)
               echo "::error::npm issued a publishing credential outside npm-production; refusing to execute project code or publish."
@@ -158,7 +164,13 @@ jobs:
             ' <<<"$payload_json" >/dev/null
           unset payload_json
 
-          encoded_package="$(jq -nr --arg value "$PACKAGE_NAME" '$value | @uri')"
+          # Match npm-package-arg's escapedName: preserve the scope marker and
+          # percent-encode the single scope separator.
+          encoded_package="${PACKAGE_NAME/\//%2f}"
+          if [[ "$encoded_package" == */* ]]; then
+            echo "::error::Package name contains more than one path separator."
+            exit 1
+          fi
           exchange_url="https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$encoded_package"
           http_code="000"
           for attempt in 1 2 3; do
