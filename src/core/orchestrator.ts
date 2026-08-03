@@ -5971,9 +5971,7 @@ export class CrossReviewOrchestrator {
     const message =
       preflightEstimate == null
         ? "Budget preflight cannot estimate this round because one or more peers have no configured rate card."
-        : roundPreflightLimit != null &&
-            preflightEstimate != null &&
-            preflightEstimate > roundPreflightLimit
+        : roundPreflightLimit != null && preflightEstimate > roundPreflightLimit
           ? `Budget preflight blocked the round: estimated round cost $${preflightEstimate.toFixed(
               6,
             )} exceeds round limit $${roundPreflightLimit.toFixed(6)}.`
@@ -8094,9 +8092,10 @@ export class CrossReviewOrchestrator {
       }
       let initialAttachments: ReturnType<SessionStore["readEvidenceAttachments"]> | undefined;
       if (this.config.truthfulness_preflight_enabled) {
-        initialAttachments =
-          initialAttachments ??
-          this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId);
+        initialAttachments = this.safeReadEvidenceAttachments(
+          session.session_id,
+          callerSubmissionId,
+        );
         const attachmentsPresent = initialAttachments.length > 0;
         const truthfulness = truthfulnessPreflight({
           task: input.task,

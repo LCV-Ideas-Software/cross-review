@@ -7,6 +7,25 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.34] — 2026-08-03
+
+### Maintenance
+
+- Removes two redundant control-flow expressions reported by GitHub Code
+  Quality: the budget preflight now relies on the ternary's existing
+  `preflightEstimate` narrowing, and the truthfulness path reads its initial
+  evidence attachments directly.
+- Preserves the later lazy attachment fallback used when truthfulness preflight
+  is disabled; no MCP API, configuration, persistence or runtime-behavior
+  contract changes in this patch.
+
+### Validation
+
+- Type, lint, format, configuration and release-metadata gates pass through
+  `npm run check`.
+- Directed smoke and runtime regression suites cover the budget and
+  truthfulness paths changed by this maintenance patch.
+
 ## [v04.05.33] — 2026-08-03
 
 ### Security

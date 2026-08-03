@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.33** (package `4.5.33`).
+**Status.** Stable. The current source/release target is **v04.05.34** (package `4.5.34`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.34`**      | Removes two redundant control-flow expressions reported by GitHub Code Quality while preserving the budget-preflight behavior and the lazy evidence-attachment fallback used when truthfulness preflight is disabled.                                                            |
 | **`v04.05.33`**      | Supersedes the unpublished 4.5.32 tag by recognizing npm's documented `404` identity concealment only in the negative OIDC probe, matching npm's scoped-package escaping, retaining an exact-`201` positive gate, and resolving OpenAI 7.3.0.                                    |
 | **`v04.05.32`**      | Bootstraps checksum-verified npm 12.0.2, proves both npm OIDC environment boundaries before source execution, splits privileged publication from verification, and remediates the current Hono, brace-expansion, fast-uri and ip-address advisories.                             |
 | **`v04.05.31`**      | Supersedes the unpublished 4.5.30 tag by making the clean-consumer license gate follow the exact bundled MCP SDK version instead of a stale hard-coded version.                                                                                                                  |
