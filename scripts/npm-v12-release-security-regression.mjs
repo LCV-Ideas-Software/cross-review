@@ -1117,11 +1117,7 @@ for (const immutableOutput of [
   );
 }
 assert.equal(
-  (
-    publishWorkflow.match(
-      /npm pack --pack-destination artifacts/g,
-    ) ?? []
-  ).length,
+  (publishWorkflow.match(/npm pack --pack-destination artifacts/g) ?? []).length,
   1,
   "the release package must be packed exactly once in the trusted gate",
 );

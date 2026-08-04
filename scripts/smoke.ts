@@ -10397,8 +10397,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
 {
   const npmjsRegistryArg = "--registry=https://registry.npmjs.org";
-  const npmjsScopeRegistryArg =
-    "--@lcv-ideas-software:registry=https://registry.npmjs.org";
+  const npmjsScopeRegistryArg = "--@lcv-ideas-software:registry=https://registry.npmjs.org";
   const githubPackagesRegistryArg = "--registry=https://npm.pkg.github.com";
   const githubPackagesScopeRegistryArg =
     "--@lcv-ideas-software:registry=https://npm.pkg.github.com";
@@ -10430,9 +10429,18 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       if (tokens[0] === "publish" && !/^['"]?\.\/artifacts\//.test(tokens[1] ?? "")) {
         return false;
       }
-      return ["audit", "ci", "config", "install", "pack", "publish", "run", "test", "update", "view"].includes(
-        tokens[0] ?? "",
-      );
+      return [
+        "audit",
+        "ci",
+        "config",
+        "install",
+        "pack",
+        "publish",
+        "run",
+        "test",
+        "update",
+        "view",
+      ].includes(tokens[0] ?? "");
     }
 
     if (tokens[0] !== "view" && tokens[0] !== "publish") return false;
