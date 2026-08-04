@@ -209,12 +209,12 @@ normalize_registry_field() {
 
 verify_registry_integrity() {
   local phase="$1" npmjs_json github_json npmjs_version github_version npmjs_sri github_sri npmjs_tags github_tags
-  npmjs_json="$(npm view "$package_name@$version" version dist.integrity --json --registry=https://registry.npmjs.org)"
+  npmjs_json="$(npm view "$package_name@$version" version dist.integrity --json)"
   npmjs_version="$(normalize_registry_field "$npmjs_json" version)"
   npmjs_sri="$(normalize_registry_field "$npmjs_json" dist.integrity)"
   [ "$npmjs_version" = "$version" ] || die "$phase: npmjs.com returned version $npmjs_version."
   node scripts/release-policy.mjs verify-sri "$package_sri" "$npmjs_sri" "npmjs.com during $phase"
-  npmjs_tags="$(npm view "$package_name" dist-tags --json --registry=https://registry.npmjs.org)"
+  npmjs_tags="$(npm view "$package_name" dist-tags --json)"
   [ "$(normalize_registry_field "$npmjs_tags" latest)" = "$version" ] || die "$phase: npmjs.com latest is not $version."
 
   umask 077

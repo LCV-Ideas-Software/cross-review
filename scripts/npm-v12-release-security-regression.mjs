@@ -74,7 +74,7 @@ const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
 const expectedDependabotController =
-  "LCV-Ideas-Software/.github/dependabot-automerge@75beaff4ad7f49ea1018ccbac1c4e3201f037394";
+  "LCV-Ideas-Software/.github/dependabot-automerge@fe11bf9e3022a598ce90360f4490641285ab2f5f";
 
 assert.equal(
   packageJson.packageManager,
@@ -125,6 +125,11 @@ assert.match(
   npmrc,
   /^registry=https:\/\/registry\.npmjs\.org\/$/m,
   ".npmrc must use npmjs.org as the global npm dependency registry",
+);
+assert.doesNotMatch(
+  npmrc,
+  /^@lcv-ideas-software:registry=/m,
+  ".npmrc must leave the organization scope unmapped so setup-node can select GitHub Packages for the mirror job",
 );
 for (const ecosystem of ["npm", "github-actions", "pip", "pre-commit"]) {
   assert.match(
@@ -639,7 +644,7 @@ assert.equal(
   "the GitHub Packages write token must enter only the credential-file setup step",
 );
 const githubPackagesCredentialBlock = githubPackagesJobBlock.match(
-  /- name: Select GitHub Packages registry for publish[\s\S]*?(?=\n\s+# The `--registry`)/,
+  /- name: Select GitHub Packages registry for publish[\s\S]*?(?=\n\s+# Keep both command-line GitHub Packages overrides)/,
 )?.[0];
 assert.ok(
   githubPackagesCredentialBlock,
@@ -1072,23 +1077,28 @@ assert.doesNotMatch(
 );
 assert.match(
   publishWorkflow,
-  /npm --registry=https:\/\/registry\.npmjs\.org audit signatures/,
+  /npm audit signatures/,
   "post-publish verification must cryptographically audit registry signatures and provenance",
 );
 assert.match(
   publishWorkflow,
-  /npm --registry=https:\/\/registry\.npmjs\.org view "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}" --json[\s\S]*?create-signature-audit-lock\.mjs[\s\S]*?npm --registry=https:\/\/registry\.npmjs\.org ci --omit=dev --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none[\s\S]*?verify-published-package-runtime-contract\.mjs[\s\S]*?npm --registry=https:\/\/registry\.npmjs\.org audit signatures/,
+  /npm view "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}" --json[\s\S]*?create-signature-audit-lock\.mjs[\s\S]*?npm ci --omit=dev --ignore-scripts --no-audit --no-fund --allow-git=none --allow-remote=none[\s\S]*?verify-published-package-runtime-contract\.mjs[\s\S]*?npm audit signatures/,
   "signature audit must install the exact published package through a validated lockfile and npm ci",
 );
 assert.match(
   publishWorkflow,
-  /npm --registry=https:\/\/registry\.npmjs\.org view "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}" version/,
-  "public visibility must query the fixed npmjs.org registry without downloading executable content",
+  /npm view "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}" version/,
+  "public visibility must query the configured npmjs.org registry without downloading executable content",
 );
 assert.doesNotMatch(
   publishWorkflow,
-  /npm --registry=https:\/\/registry\.npmjs\.org install[^\n]*"\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}"/,
+  /npm install[^\n]*"\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}"/,
   "published-package signature verification must not use a mutable npm install command",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /--(?:@lcv-ideas-software:)?registry=https:\/\/registry\.npmjs\.org\/?/,
+  "npmjs.org must come from the reviewed project/setup-node configuration instead of command-line overrides",
 );
 assert.doesNotMatch(
   publishWorkflow,
@@ -1109,7 +1119,7 @@ for (const immutableOutput of [
 assert.equal(
   (
     publishWorkflow.match(
-      /npm --registry=https:\/\/registry\.npmjs\.org pack --pack-destination artifacts/g,
+      /npm pack --pack-destination artifacts/g,
     ) ?? []
   ).length,
   1,
@@ -3383,7 +3393,7 @@ for (const [document, label] of [
 }
 
 const globalInstallPolicy = "--ignore-scripts --allow-git=none --allow-remote=none";
-const npmjsUpgrade = `npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org ${globalInstallPolicy}`;
+const npmjsUpgrade = `npm upgrade -g @lcv-ideas-software/cross-review ${globalInstallPolicy}`;
 const githubUpgrade = `npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com ${globalInstallPolicy}`;
 for (const [document, label] of [
   [readme, "README"],
@@ -3393,7 +3403,7 @@ for (const [document, label] of [
   const lines = document.split(/\r?\n/);
   assert.ok(
     lines.includes(npmjsUpgrade),
-    `${label} must override the scoped registry explicitly for npmjs upgrades`,
+    `${label} must use the configured public registry for npmjs upgrades`,
   );
   assert.ok(
     lines.includes(githubUpgrade),

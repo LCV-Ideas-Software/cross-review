@@ -23,6 +23,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+          check-latest: true
           package-manager-cache: false
       - name: Setup Python 3.12
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -43,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ACTUAL_NPM_VERSION="$(npm --registry=https://registry.npmjs.org --version)"
+          ACTUAL_NPM_VERSION="$(npm --version)"
           if [ "$ACTUAL_NPM_VERSION" != "$NPM_CLI_VERSION" ]; then
             echo "::error::Expected npm $NPM_CLI_VERSION, got $ACTUAL_NPM_VERSION."
             exit 1
@@ -52,21 +53,21 @@ jobs:
       - name: Install dependencies
         run: npm ci --strict-allow-scripts --no-audit --no-fund
       - name: Verify npm v12 CI and release policy
-        run: npm --registry=https://registry.npmjs.org run npm-v12-release-security-regression
+        run: npm run npm-v12-release-security-regression
       - name: Format check (prettier)
-        run: npm --registry=https://registry.npmjs.org run format:check
+        run: npm run format:check
       - name: Lint (eslint)
-        run: npm --registry=https://registry.npmjs.org run lint
+        run: npm run lint
       - name: Biome (lint + format)
-        run: npm --registry=https://registry.npmjs.org run biome
+        run: npm run biome
       - name: Typecheck
-        run: npm --registry=https://registry.npmjs.org run typecheck
+        run: npm run typecheck
       - name: Poll and cancellation runtime regression
         run: |
-          npm --registry=https://registry.npmjs.org run build
-          npm --registry=https://registry.npmjs.org run v4.5.16-poll-cancel-regression
+          npm run build
+          npm run v4.5.16-poll-cancel-regression
       - name: Smoke tests
-        run: npm --registry=https://registry.npmjs.org run smoke
+        run: npm run smoke
         env:
           CROSS_REVIEW_STUB: "1"
           # v2.4.0 / P1.1 fail-fast: stub activation requires explicit

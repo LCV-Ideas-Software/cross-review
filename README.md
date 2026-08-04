@@ -19,7 +19,7 @@
 **Upgrade from the published registry.**
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
+npm upgrade -g @lcv-ideas-software/cross-review --ignore-scripts --allow-git=none --allow-remote=none
 # or using the GitHub Packages mirror:
 npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com --ignore-scripts --allow-git=none --allow-remote=none
 ```
@@ -226,14 +226,14 @@ Run the MCP host only from the package published by the registry; do not point a
 production host at this checkout:
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
+npm upgrade -g @lcv-ideas-software/cross-review --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 For local smoke tests (no-cost):
 
 ```powershell
 $env:CROSS_REVIEW_STUB = "1"
-npm --registry=https://registry.npmjs.org test
+npm test
 ```
 
 ## Configuration

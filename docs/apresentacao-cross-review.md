@@ -334,7 +334,7 @@ existe para impedir que uma sessão paga avance com afirmações sem base.
 ### Instalação global via npm
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
+npm upgrade -g @lcv-ideas-software/cross-review --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 Esse comando usa somente o pacote publicado. Não instale o runtime globalmente
@@ -362,7 +362,7 @@ publicado pelo registro.
 ```powershell
 $env:CROSS_REVIEW_STUB = "1"
 $env:CROSS_REVIEW_STUB_CONFIRMED = "1"
-npm --registry=https://registry.npmjs.org test
+npm test
 ```
 
 Stubs só devem ser usados em desenvolvimento, CI e smoke tests. O contrato atual

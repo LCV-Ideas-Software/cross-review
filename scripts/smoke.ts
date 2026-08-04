@@ -10396,7 +10396,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 {
-  const npmRegistryArg = "--registry=https://registry.npmjs.org";
+  const npmjsRegistryArg = "--registry=https://registry.npmjs.org";
+  const npmjsScopeRegistryArg =
+    "--@lcv-ideas-software:registry=https://registry.npmjs.org";
   const githubPackagesRegistryArg = "--registry=https://npm.pkg.github.com";
   const githubPackagesScopeRegistryArg =
     "--@lcv-ideas-software:registry=https://npm.pkg.github.com";
@@ -10405,13 +10407,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     if (!trimmed.startsWith("npm ")) return false;
 
     const afterNpm = trimmed.slice("npm ".length);
-    if (/^(ci|install|update)\b/.test(afterNpm)) return true;
-    if (afterNpm === npmRegistryArg || afterNpm.startsWith(`${npmRegistryArg} `)) return true;
-
     const tokens = afterNpm.split(/\s+/);
-    if (tokens[0] !== "view" && tokens[0] !== "publish") return false;
     if (/[;&|\r\n]/.test(afterNpm)) return false;
-    if (tokens[0] === "publish" && !/^['"]?\.\/artifacts\//.test(tokens[1] ?? "")) return false;
+    if (
+      tokens.includes(npmjsRegistryArg) ||
+      tokens.includes(`${npmjsRegistryArg}/`) ||
+      tokens.includes(npmjsScopeRegistryArg) ||
+      tokens.includes(`${npmjsScopeRegistryArg}/`)
+    ) {
+      return false;
+    }
 
     const registryArgs = tokens.filter(
       (token) => token === "--registry" || token.startsWith("--registry="),
@@ -10421,6 +10426,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         token === "--@lcv-ideas-software:registry" ||
         token.startsWith("--@lcv-ideas-software:registry="),
     );
+    if (registryArgs.length === 0 && scopeRegistryArgs.length === 0) {
+      if (tokens[0] === "publish" && !/^['"]?\.\/artifacts\//.test(tokens[1] ?? "")) {
+        return false;
+      }
+      return ["audit", "ci", "config", "install", "pack", "publish", "run", "test", "update", "view"].includes(
+        tokens[0] ?? "",
+      );
+    }
+
+    if (tokens[0] !== "view" && tokens[0] !== "publish") return false;
+    if (tokens[0] === "publish" && !/^['"]?\.\/artifacts\//.test(tokens[1] ?? "")) return false;
     return (
       registryArgs.length === 1 &&
       registryArgs[0] === githubPackagesRegistryArg &&
@@ -10446,12 +10462,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       if (!command) return;
       assert.ok(
         isAllowedNpmCommand(command),
-        `v4.0.5 / npm-registry: ${path.basename(workflowPath)}:${index + 1} must pass ${npmRegistryArg} unless it is dependency install/update.`,
+        `v4.0.5 / npm-registry: ${path.basename(workflowPath)}:${index + 1} must use project npmjs configuration or the exact dual GitHub Packages override.`,
       );
     });
     assert.ok(
       !workflowSrc.includes("execFileSync('npm', ['--version']"),
-      `v4.0.5 / npm-registry: ${path.basename(workflowPath)} npm subprocess checks must pass ${npmRegistryArg}.`,
+      `v4.0.5 / npm-registry: ${path.basename(workflowPath)} must not bypass the reviewed npm command policy.`,
     );
   }
 
@@ -10464,7 +10480,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       if (!trimmed.startsWith("npm ")) continue;
       assert.ok(
         isAllowedNpmCommand(trimmed),
-        `v4.0.5 / npm-registry: package script ${name} must pass ${npmRegistryArg} unless it is dependency install/update.`,
+        `v4.0.5 / npm-registry: package script ${name} must use project npmjs configuration or the exact dual GitHub Packages override.`,
       );
     }
   }
@@ -10479,6 +10495,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
   }
   for (const command of [
+    `npm view "@lcv-ideas-software/cross-review@4.5.26" version ${npmjsRegistryArg}`,
+    `npm publish "./artifacts/cross-review-4.5.26.tgz" ${npmjsScopeRegistryArg} --ignore-scripts`,
     `npm publish "artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg}`,
     `npm publish "artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg}`,
     `npm view "@lcv-ideas-software/cross-review@4.5.26" version ${githubPackagesScopeRegistryArg}`,

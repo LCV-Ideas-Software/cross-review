@@ -476,7 +476,7 @@ grava ainda um log NDJSON por processo sob `<data_dir>/logs`.
 ### Instalação via npm
 
 ```bash
-npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://registry.npmjs.org --ignore-scripts --allow-git=none --allow-remote=none
+npm upgrade -g @lcv-ideas-software/cross-review --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
 Use somente o pacote publicado pelo registro; não instale o runtime globalmente
