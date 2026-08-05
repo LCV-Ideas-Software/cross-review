@@ -942,6 +942,7 @@ function quotedEvidencePhrases(source: string): string[] {
   const explicitMarker = /\b(?:Artifact quote|verbatim|literal quote|quote)\s*:\s*/i.exec(source);
   if (explicitMarker) {
     const wrapped = source.slice((explicitMarker.index ?? 0) + explicitMarker[0].length).trim();
+    const phrases = wrapped.length >= 12 ? [wrapped] : [];
     const pairs = [
       ['"', '"'],
       ["'", "'"],
@@ -951,9 +952,14 @@ function quotedEvidencePhrases(source: string): string[] {
     for (const [open, close] of pairs) {
       if (!wrapped.startsWith(open) || !wrapped.endsWith(close)) continue;
       const phrase = wrapped.slice(open.length, -close.length);
-      return phrase.trim().length >= 12 ? [phrase] : [];
+      if (phrase.trim().length >= 12) phrases.push(phrase);
     }
-    return [];
+    // The first quote in a JSON fragment is usually data, not an outer
+    // delimiter (`"org":{"activeCount":11}`). Preserve the complete marker
+    // payload as a candidate and additionally offer a genuinely paired
+    // unwrapped form. Both still have to match the same path+digest attachment
+    // byte-for-byte, so this removes false negatives without weakening custody.
+    return [...new Set(phrases)];
   }
 
   const phrases: string[] = [];
@@ -3002,21 +3008,25 @@ function buildFormatRecoveryPrompt(
   ].join("\n");
 }
 
-function buildDecisionRetryPrompt(
+export function buildDecisionRetryPrompt(
   meta: SessionMeta,
   draft: string,
   priorResponse: string,
   config: AppConfig,
-  reviewFocus?: string,
+  reviewFocus: string | undefined,
+  attachments: ResolvedEvidenceAttachment[],
 ): string {
   return [
     "# Cross Review - Decision Retry",
     "",
+    ...sessionContractDirectives(),
     "Your previous provider response contained no usable peer-review decision.",
     "Re-review the artifact now instead of trying to recover the empty response.",
     "Return exactly one compact JSON decision using the required response schema.",
     "",
     ...reviewFocusBlock(meta, config, reviewFocus),
+    ...attachedEvidenceBlock(attachments),
+    ...evidenceChecklistBlock(meta),
     "## Original Task",
     safePromptText(meta.task, Math.min(config.prompt.max_task_chars, 4_000)),
     "",
@@ -6224,6 +6234,7 @@ export class CrossReviewOrchestrator {
                   peerResult.text,
                   this.config,
                   input.review_focus,
+                  attachments,
                 )
               : buildFormatRecoveryPrompt(
                   session,

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { groundReadyPeerEvidence, truthfulnessPreflight } from "../src/core/orchestrator.js";
+import {
+  buildDecisionRetryPrompt,
+  groundReadyPeerEvidence,
+  truthfulnessPreflight,
+} from "../src/core/orchestrator.js";
 import type { PeerResult, ReviewStatus } from "../src/core/types.js";
 
 type Regression = {
@@ -238,6 +242,157 @@ const regressions: Regression[] = [
           ?.failed_claim_diagnostics,
         grounding.failed_claim_diagnostics,
         "claim-level diagnostics must be persisted with the status transformation",
+      );
+    },
+  },
+  {
+    name: "full decision retry preserves the active caller evidence snapshot",
+    run: () => {
+      const config = {
+        prompt: {
+          max_task_chars: 8_000,
+          max_review_focus_chars: 2_000,
+          max_history_chars: 20_000,
+          max_draft_chars: 40_000,
+          max_prior_rounds: 5,
+          max_peer_requests: 8,
+          max_attached_evidence_chars: 200_000,
+        },
+      } as Parameters<typeof buildDecisionRetryPrompt>[3];
+      const attachment = {
+        label: "caller-structured-evidence",
+        relative_path: "evidence/caller-structured-evidence.txt",
+        content: "PROOF_ACTIVE_ATTACHMENT: sha256 bytes survived recovery",
+        bytes: 54,
+        truncated: false,
+        provenance_status: "verified" as const,
+        authority_status: "caller_submitted_unverified" as const,
+        sha256: "b".repeat(64),
+        attached_by: "codex" as const,
+      };
+      const prompt = buildDecisionRetryPrompt(
+        {
+          task: "Review a rollout from raw evidence.",
+          rounds: [],
+          evidence_checklist: [
+            {
+              id: "ev-1",
+              peer: "perplexity",
+              first_round: 1,
+              round_count: 1,
+              status: "open",
+              ask: "Show the raw SHA-256-backed log.",
+            },
+          ],
+        } as unknown as Parameters<typeof buildDecisionRetryPrompt>[0],
+        "The rollout is ready for closure.",
+        "",
+        config,
+        undefined,
+        [attachment],
+      );
+
+      assert.match(prompt, /## Peer-Submitted Evidence \(UNVERIFIED\)/);
+      assert.ok(prompt.includes(attachment.relative_path));
+      assert.match(prompt, /PROOF_ACTIVE_ATTACHMENT: sha256 bytes survived recovery/);
+      assert.match(prompt, new RegExp(attachment.sha256));
+      assert.match(prompt, /## Outstanding Evidence Asks/);
+      assert.match(prompt, /Checklist-Item: ev-1/);
+    },
+  },
+  {
+    name: "literal JSON fragments remain groundable without artificial quote wrappers",
+    run: () => {
+      const jsonAttachment = {
+        relative_path: "evidence/session-snapshot.txt",
+        sha256: "e00bdc6d3f29e682e7e6586c09eba32ed57521d11d56404545939f95370e132e",
+        content: [
+          '"org":{"activeCount":11,"allMainVerified":true,"openPR":0}',
+          '"process": {',
+          '  "package_version": "1.2.10",',
+          '  "bundle_matches_release_checkout": true',
+          "}",
+        ].join("\n"),
+      };
+      const sources = [
+        [
+          `Attachment: ${jsonAttachment.relative_path}`,
+          `sha256=${jsonAttachment.sha256}`,
+          'Artifact quote: "org":{"activeCount":11,"allMainVerified":true,"openPR":0}',
+        ].join("\n"),
+        [
+          `Attachment: ${jsonAttachment.relative_path}`,
+          `sha256=${jsonAttachment.sha256}`,
+          [
+            'Artifact quote: "package_version": "1.2.10",',
+            '  "bundle_matches_release_checkout": true',
+          ].join("\n"),
+        ].join("\n"),
+      ];
+
+      const grounding = groundReadyPeerEvidence(peerResult("READY", sources), {
+        ...groundingInput(),
+        attachmentRefs: [jsonAttachment.relative_path],
+        evidenceAttachments: [jsonAttachment],
+        callerSubmittedAttachments: [jsonAttachment],
+      });
+
+      assert.equal(
+        grounding.result.status,
+        "READY",
+        "byte-exact JSON fragments must not require an extra pair of artificial wrapper quotes",
+      );
+      assert.deepEqual(
+        grounding.source_diagnostics.map((diagnostic) => diagnostic.supported),
+        [true, true],
+      );
+
+      const inventedSuffix = groundReadyPeerEvidence(
+        peerResult("READY", [`${sources[0]} INVENTED_SUFFIX`]),
+        {
+          ...groundingInput(),
+          attachmentRefs: [jsonAttachment.relative_path],
+          evidenceAttachments: [jsonAttachment],
+          callerSubmittedAttachments: [jsonAttachment],
+        },
+      );
+      assert.equal(
+        inventedSuffix.result.status,
+        "NEEDS_EVIDENCE",
+        "a JSON-looking quote with invented bytes must remain fail-closed",
+      );
+
+      const wrongDigest = sources[0]?.replace(jsonAttachment.sha256, "f".repeat(64)) ?? "";
+      const wrongCustody = groundReadyPeerEvidence(peerResult("READY", [wrongDigest]), {
+        ...groundingInput(),
+        attachmentRefs: [jsonAttachment.relative_path],
+        evidenceAttachments: [jsonAttachment],
+        callerSubmittedAttachments: [jsonAttachment],
+      });
+      assert.equal(
+        wrongCustody.result.status,
+        "NEEDS_EVIDENCE",
+        "literal bytes with an incorrect digest must remain fail-closed",
+      );
+
+      const coalescedSource = [
+        `Attachment: ${jsonAttachment.relative_path}`,
+        `sha256=${jsonAttachment.sha256}`,
+        'Artifact quote: "org":{"activeCount":11}, "package_version":"1.2.10"',
+      ].join("\n");
+      const mixedSources = groundReadyPeerEvidence(
+        peerResult("READY", [sources[0] ?? "", coalescedSource]),
+        {
+          ...groundingInput(),
+          attachmentRefs: [jsonAttachment.relative_path],
+          evidenceAttachments: [jsonAttachment],
+          callerSubmittedAttachments: [jsonAttachment],
+        },
+      );
+      assert.equal(
+        mixedSources.result.status,
+        "NEEDS_EVIDENCE",
+        "one valid source must not mask a second non-contiguous source",
       );
     },
   },

@@ -7,6 +7,43 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.36] — 05/08/2026
+
+### Fixed
+
+- Grounds byte-exact JSON citation fragments even when their leading quote is
+  part of the JSON key and the fragment legitimately ends in `}`, a number, or
+  a boolean. Path, SHA-256, literal-contiguity, removed-hunk and fabrication
+  checks remain fail-closed for every supplied source.
+- Preserves the active authenticated caller-evidence snapshot, session contract
+  and Evidence Broker checklist when an empty provider response triggers a full
+  decision retry. No manual operator attachment is required.
+- Accepts Perplexity's documented aggregate `message.content` from a terminal
+  `chat.completion.done` event only when streamed deltas yield no usable text,
+  preventing a valid terminal-only response from becoming an unnecessary paid
+  retry. Reviewer and relator paths share the same fallback.
+
+### Observability
+
+- Persists bounded Perplexity stream diagnostics—request ID, finish reasons,
+  character counts, fallback use and empty-output state—without persisting raw
+  chain-of-thought content.
+- Adds a forensic field report for session `90e5c3eb`, explicitly separating
+  documented API behavior, observed provider telemetry and deterministic
+  cross-review defects.
+
+### Automation
+
+- Refreshes the centrally reviewed Dependabot automerge controller and reusable
+  Zizmor workflow to their signed immutable `v1.0.1` commit, and keeps the local
+  security regression pinned to that exact SHA.
+
+### Validation
+
+- Adds regressions for raw and multi-line JSON citations, invented/coalesced
+  sources, wrong digests, decision-retry evidence custody, and Perplexity
+  terminal aggregate content across reviewer and relator streaming paths.
+
 ## [v04.05.35] — 05/08/2026
 
 ### Fixed

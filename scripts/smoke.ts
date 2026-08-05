@@ -8954,10 +8954,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // `stream_buffer.text()` directly without stripping, causing the
 // `<think>` reasoning preamble emitted by sonar-reasoning-pro to reach
 // the status parser. v3.4.0 wraps the streaming text with
-// `stripPerplexityThinkingBlock(...)` so both paths strip uniformly.
+// `stripPerplexityThinkingBlock(...)` so both paths strip uniformly. v4.5.36
+// first names the raw delta buffer for bounded telemetry and then strips it;
+// terminal aggregate content is a fallback only when no usable delta remains.
 //
 // Source-level pins prevent regressions: (a) both streaming branches
-// MUST wrap with `stripPerplexityThinkingBlock`; (b) the negative form
+// MUST read and wrap the raw delta buffer with `stripPerplexityThinkingBlock`;
+// (b) the negative form
 // (bare `stream_buffer.text()` flowing to `resultFromText`/
 // `generationFromText` without strip) MUST NOT reappear; (c) dist
 // parity — same invariants in compiled JS.
@@ -8966,12 +8969,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     new URL("../src/peers/perplexity.ts", import.meta.url),
     "utf8",
   );
+  const rawDeltaReads = perplexitySrc.match(/const rawDeltaText = stream_buffer\.text\(\);/g);
   const strippedStreamMatches = perplexitySrc.match(
-    /stripPerplexityThinkingBlock\(stream_buffer\.text\(\)\)/g,
+    /stripPerplexityThinkingBlock\(rawDeltaText\)/g,
   );
   assert.ok(
-    strippedStreamMatches !== null && strippedStreamMatches.length >= 2,
-    `v3.4.0 / perplexity_streaming_strip_parity: src/peers/perplexity.ts must wrap stream_buffer.text() with stripPerplexityThinkingBlock at BOTH call() and generate() streaming branches (found ${strippedStreamMatches?.length ?? 0})`,
+    rawDeltaReads !== null &&
+      rawDeltaReads.length >= 2 &&
+      strippedStreamMatches !== null &&
+      strippedStreamMatches.length >= 2,
+    `v4.5.36 / perplexity_streaming_strip_parity: src/peers/perplexity.ts must read and strip the delta buffer at BOTH call() and generate() streaming branches (reads=${rawDeltaReads?.length ?? 0}, strips=${strippedStreamMatches?.length ?? 0})`,
+  );
+  assert.ok(
+    (perplexitySrc.match(/terminalMessageFallbackUsed/g)?.length ?? 0) >= 2,
+    "v4.5.36 / perplexity_terminal_message_fallback: reviewer and relator paths must retain the documented terminal aggregate fallback",
   );
   // Negative pin: bare `const text = stream_buffer.text();` must not
   // appear (it would mean a streaming branch is bypassing the strip).
@@ -8991,12 +9002,22 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const perplexityDistPath = new URL("../dist/src/peers/perplexity.js", import.meta.url);
   try {
     const perplexityDist = fs.readFileSync(perplexityDistPath, "utf8");
+    const distRawDeltaReads = perplexityDist.match(
+      /const rawDeltaText = stream_buffer\.text\(\);/g,
+    );
     const distStrippedMatches = perplexityDist.match(
-      /stripPerplexityThinkingBlock\(stream_buffer\.text\(\)\)/g,
+      /stripPerplexityThinkingBlock\(rawDeltaText\)/g,
     );
     assert.ok(
-      distStrippedMatches !== null && distStrippedMatches.length >= 2,
-      `v3.4.0 / perplexity_streaming_strip_parity: dist must mirror source — stripPerplexityThinkingBlock(stream_buffer.text()) ≥ 2 occurrences (found ${distStrippedMatches?.length ?? 0})`,
+      distRawDeltaReads !== null &&
+        distRawDeltaReads.length >= 2 &&
+        distStrippedMatches !== null &&
+        distStrippedMatches.length >= 2,
+      `v4.5.36 / perplexity_streaming_strip_parity: dist must mirror source delta reads and strips (reads=${distRawDeltaReads?.length ?? 0}, strips=${distStrippedMatches?.length ?? 0})`,
+    );
+    assert.ok(
+      (perplexityDist.match(/terminalMessageFallbackUsed/g)?.length ?? 0) >= 2,
+      "v4.5.36 / perplexity_terminal_message_fallback: dist must retain reviewer and relator terminal aggregate fallbacks",
     );
     assert.ok(
       !/const\s+text\s*=\s*stream_buffer\.text\(\)\s*;/.test(perplexityDist),

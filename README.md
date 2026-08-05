@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.35** (package `4.5.35`).
+**Status.** Stable. The current source/release target is **v04.05.36** (package `4.5.36`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.36`**      | Repairs byte-exact JSON citation grounding, preserves active caller evidence during full decision retry, accepts documented terminal Perplexity aggregate content, and refreshes the signed immutable central automation pins.                                                   |
 | **`v04.05.35`**      | Hardens the public-package boundary, moves administrative release checks into the protected non-deployment environment, updates TypeScript ESLint to 8.66.0, and makes Windows parent-process forensics tests deterministic without changing the 500 ms best-effort runtime cap. |
 | **`v04.05.34`**      | Removes two redundant control-flow expressions reported by GitHub Code Quality while preserving the budget-preflight behavior and the lazy evidence-attachment fallback used when truthfulness preflight is disabled.                                                            |
 | **`v04.05.33`**      | Supersedes the unpublished 4.5.32 tag by recognizing npm's documented `404` identity concealment only in the negative OIDC probe, matching npm's scoped-package escaping, retaining an exact-`201` positive gate, and resolving OpenAI 7.3.0.                                    |

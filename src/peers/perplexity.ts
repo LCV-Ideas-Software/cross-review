@@ -445,11 +445,15 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           const perplexityTokenStream = createPerplexityTokenEventBuffer(tokenStream);
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
+          let requestId: string | undefined;
+          let terminalMessageText: string | undefined;
           let chunks = 0;
           const completedChoices = new Set<number>();
+          const finishReasons = new Set<string>();
           const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
+            requestId = chunk.id ?? requestId;
             modelReported = chunk.model ?? modelReported;
             usage =
               usageFromSonar(chunk.usage as SonarUsage | null | undefined, searchPerformed) ??
@@ -471,6 +475,13 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             );
             if (rejectedTerminals.length === 0) {
               for (const choice of chunk.choices ?? []) {
+                if (choice.finish_reason) finishReasons.add(choice.finish_reason);
+                const terminalContent = (
+                  choice as typeof choice & { message?: { content?: string | null } }
+                ).message?.content;
+                if (typeof terminalContent === "string" && terminalContent.length > 0) {
+                  terminalMessageText = terminalContent;
+                }
                 const delta = choice.delta?.content ?? "";
                 stream_buffer.append(delta);
                 perplexityTokenStream.append(delta);
@@ -501,11 +512,31 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           // sessions: f72e597a, 99d46a2b, 00d92cce, 59776026, 41244a1c,
           // e23d6920. Perplexity ready_rate was 0.28125 vs ~1.0 for
           // other peers; this restores parity at the streaming path.
-          const text = stripPerplexityThinkingBlock(stream_buffer.text());
+          const rawDeltaText = stream_buffer.text();
+          const visibleDeltaText = stripPerplexityThinkingBlock(rawDeltaText);
+          const visibleTerminalText = stripPerplexityThinkingBlock(terminalMessageText ?? "");
+          const terminalMessageFallbackUsed =
+            visibleDeltaText.length === 0 && visibleTerminalText.length > 0;
+          if (terminalMessageFallbackUsed && terminalMessageText) {
+            perplexityTokenStream.append(terminalMessageText);
+          }
+          const text = terminalMessageFallbackUsed ? visibleTerminalText : visibleDeltaText;
           perplexityTokenStream.complete(text.length);
           return this.resultFromText({
             text,
-            raw: { streamed: true, provider: this.provider, chunks, model: modelReported },
+            raw: {
+              streamed: true,
+              provider: this.provider,
+              chunks,
+              model: modelReported,
+              request_id: requestId,
+              finish_reasons: [...finishReasons],
+              raw_delta_chars: rawDeltaText.length,
+              terminal_message_chars: terminalMessageText?.length ?? 0,
+              visible_chars: text.length,
+              terminal_message_fallback_used: terminalMessageFallbackUsed,
+              empty_usable_output: text.length === 0,
+            },
             usage,
             started,
             attempts: attempt,
@@ -601,11 +632,15 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           const perplexityTokenStream = createPerplexityTokenEventBuffer(tokenStream);
           let usage: TokenUsage | undefined;
           let modelReported: string | undefined;
+          let requestId: string | undefined;
+          let terminalMessageText: string | undefined;
           let chunks = 0;
           const completedChoices = new Set<number>();
+          const finishReasons = new Set<string>();
           const rejectedTerminals: string[] = [];
           for await (const chunk of stream) {
             chunks += 1;
+            requestId = chunk.id ?? requestId;
             modelReported = chunk.model ?? modelReported;
             usage =
               usageFromSonar(chunk.usage as SonarUsage | null | undefined, searchPerformed) ??
@@ -627,6 +662,13 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             );
             if (rejectedTerminals.length === 0) {
               for (const choice of chunk.choices ?? []) {
+                if (choice.finish_reason) finishReasons.add(choice.finish_reason);
+                const terminalContent = (
+                  choice as typeof choice & { message?: { content?: string | null } }
+                ).message?.content;
+                if (typeof terminalContent === "string" && terminalContent.length > 0) {
+                  terminalMessageText = terminalContent;
+                }
                 const delta = choice.delta?.content ?? "";
                 stream_buffer.append(delta);
                 perplexityTokenStream.append(delta);
@@ -653,11 +695,31 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           // verbatim and confused downstream reviewers into reviewing
           // the think reasoning itself. Strip at the streaming boundary
           // so the relator artifact is clean before persistence.
-          const text = stripPerplexityThinkingBlock(stream_buffer.text());
+          const rawDeltaText = stream_buffer.text();
+          const visibleDeltaText = stripPerplexityThinkingBlock(rawDeltaText);
+          const visibleTerminalText = stripPerplexityThinkingBlock(terminalMessageText ?? "");
+          const terminalMessageFallbackUsed =
+            visibleDeltaText.length === 0 && visibleTerminalText.length > 0;
+          if (terminalMessageFallbackUsed && terminalMessageText) {
+            perplexityTokenStream.append(terminalMessageText);
+          }
+          const text = terminalMessageFallbackUsed ? visibleTerminalText : visibleDeltaText;
           perplexityTokenStream.complete(text.length);
           return this.generationFromText({
             text,
-            raw: { streamed: true, provider: this.provider, chunks, model: modelReported },
+            raw: {
+              streamed: true,
+              provider: this.provider,
+              chunks,
+              model: modelReported,
+              request_id: requestId,
+              finish_reasons: [...finishReasons],
+              raw_delta_chars: rawDeltaText.length,
+              terminal_message_chars: terminalMessageText?.length ?? 0,
+              visible_chars: text.length,
+              terminal_message_fallback_used: terminalMessageFallbackUsed,
+              empty_usable_output: text.length === 0,
+            },
             usage,
             started,
             attempts: attempt,

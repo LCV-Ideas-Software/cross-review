@@ -2,10 +2,17 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.35 for package 4.5.35. This
+Current supported source/release target: v04.05.36 for package 4.5.36. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.05.36 preserves fail-closed path, SHA-256, literal-contiguity and
+fabrication checks while correcting false-negative JSON quote extraction. It
+also keeps authenticated caller evidence in full decision retries and accepts
+documented terminal Perplexity aggregate content only when streamed deltas
+contain no usable post-reasoning text. No operator evidence promotion or raw
+chain-of-thought persistence is introduced.
 
 v04.05.35 keeps the public npm artifact free of internal field reports, binds
 administrative release checks to the protected `github-administration`

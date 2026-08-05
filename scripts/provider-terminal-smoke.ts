@@ -348,6 +348,62 @@ async function assertBilledTerminalRejection(
   await assertTerminalRejection(() => adapter.generate("fixture", context(true)));
 }
 
+// Perplexity's documented `chat.completion.done` event may carry the complete
+// assistant payload in `message.content` while its terminal delta is empty.
+// The adapter must not mistake that terminal representation for a blank model
+// response and trigger a second paid decision-retry call.
+{
+  const adapter = new PerplexityAdapter(config);
+  setClient(adapter, {
+    chat: {
+      completions: {
+        create: async () =>
+          events([
+            {
+              id: "fixture-perplexity-terminal-message",
+              object: "chat.completion.done",
+              model: adapter.model,
+              choices: [
+                {
+                  finish_reason: "stop",
+                  delta: { content: "" },
+                  message: { role: "assistant", content: READY },
+                },
+              ],
+              usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+            },
+          ]),
+      },
+    },
+  });
+  const result = await adapter.call("fixture", context(true));
+  assert.equal(result.text, READY);
+  assert.equal(result.raw_status, "READY");
+  const rawTelemetry = result.raw as Record<string, unknown>;
+  assert.deepEqual(
+    {
+      request_id: rawTelemetry.request_id,
+      finish_reasons: rawTelemetry.finish_reasons,
+      raw_delta_chars: rawTelemetry.raw_delta_chars,
+      terminal_message_chars: rawTelemetry.terminal_message_chars,
+      visible_chars: rawTelemetry.visible_chars,
+      terminal_message_fallback_used: rawTelemetry.terminal_message_fallback_used,
+      empty_usable_output: rawTelemetry.empty_usable_output,
+    },
+    {
+      request_id: "fixture-perplexity-terminal-message",
+      finish_reasons: ["stop"],
+      raw_delta_chars: 0,
+      terminal_message_chars: READY.length,
+      visible_chars: READY.length,
+      terminal_message_fallback_used: true,
+      empty_usable_output: false,
+    },
+  );
+  const generated = await adapter.generate("fixture", context(true));
+  assert.equal(generated.text, READY);
+}
+
 // Gemini exposes blocking and termination metadata separately from text.
 // Either signal wins over a plausible READY prefix.
 {
