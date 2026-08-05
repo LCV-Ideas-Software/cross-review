@@ -1,6 +1,6 @@
 # Auditoria circunstanciada de sessões — cross-review 4.5.16 e 4.5.17
 
-Data da auditoria: 2026-07-17  
+Data da auditoria: 17/07/2026
 Escopo: todas as sessões duráveis criadas desde a publicação de
 `v04.05.16`, logs correspondentes, source `v04.05.16..v04.05.17`, contratos
 oficiais das seis APIs e correções preparadas para `v04.05.18`.

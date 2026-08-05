@@ -1,4 +1,4 @@
-# cross-review-v2 Official Provider Docs Refresh — 2026-05-05
+# cross-review-v2 Official Provider Docs Refresh — 05/05/2026
 
 Scope: official documentation check for the five cross-review-v2 peers before
 the v2.16.0 protocol repair release.
@@ -41,7 +41,7 @@ the v2.16.0 protocol repair release.
   `gemini-3-pro-preview` is deprecated/shut down and remains excluded.
 - DeepSeek: `deepseek-v4-pro` and `deepseek-v4-flash` are the current V4 API
   models. Legacy `deepseek-chat` and `deepseek-reasoner` are scheduled for
-  discontinuation on 2026-07-24 and remain excluded from priority fallbacks.
+  discontinuation on 24/07/2026 and remain excluded from priority fallbacks.
 - Grok: `GROK_API_KEY` is canonical in this project. The xAI model catalog
   currently recommends `grok-4.3` for general Chat API use, while the reasoning
   docs identify `grok-4.20-multi-agent` as the only Grok model that accepts

@@ -345,10 +345,10 @@ assert.match(
 );
 const npmGateJobBlock = publishWorkflow.match(/\n {2}gate:[\s\S]*?(?=\n {2}publish-npmjs:)/)?.[0];
 assert.ok(npmGateJobBlock, "the npm publication gate must remain a distinct job");
-assert.doesNotMatch(
+assert.match(
   npmGateJobBlock,
-  /\n {4}environment:/,
-  "the project-code gate must use the same no-environment OIDC context rejected by the boundary probe",
+  /\n {4}environment:\n {6}name: github-administration\n {6}deployment: false/,
+  "the project-code gate must obtain its administrative token from the protected non-deployment environment",
 );
 
 assert.match(
@@ -1121,6 +1121,39 @@ assert.equal(
   1,
   "the release package must be packed exactly once in the trusted gate",
 );
+assert.match(
+  publishWorkflow,
+  /TARBALL_CONTENTS="\$RUNNER_TEMP\/package-contents-\$\{GITHUB_RUN_ID\}\.txt"[\s\S]*?tar -tzf "\$TARBALL" > "\$TARBALL_CONTENTS"[\s\S]*?grep -q '\^package\/docs\/reports\/' "\$TARBALL_CONTENTS"/,
+  "the release gate must materialize the complete tar listing before rejecting internal field reports",
+);
+assert.doesNotMatch(
+  publishWorkflow,
+  /tar -tzf "\$TARBALL"\s*\|\s*grep/,
+  "the release gate must not combine tar, grep -q and pipefail because an early match can turn tar's SIGPIPE into a false negative",
+);
+
+const forbiddenPackageFixture = await mkdtemp(
+  path.join(os.tmpdir(), "cross-review-package-policy-"),
+);
+try {
+  const forbiddenReportDirectory = path.join(forbiddenPackageFixture, "package", "docs", "reports");
+  await mkdir(forbiddenReportDirectory, { recursive: true });
+  await writeFile(path.join(forbiddenReportDirectory, "internal.md"), "fixture only\n", "utf8");
+  const forbiddenTarball = path.join(forbiddenPackageFixture, "forbidden-package.tgz");
+  execFileSync("tar", ["-czf", forbiddenTarball, "-C", forbiddenPackageFixture, "package"], {
+    stdio: "pipe",
+  });
+  const forbiddenListing = execFileSync("tar", ["-tzf", forbiddenTarball], {
+    encoding: "utf8",
+  });
+  assert.equal(
+    forbiddenListing.split(/\r?\n/).some((entry) => entry.startsWith("package/docs/reports/")),
+    true,
+    "a package containing docs/reports must be detected by the materialized tar listing",
+  );
+} finally {
+  await rm(forbiddenPackageFixture, { recursive: true, force: true });
+}
 assert.equal(
   (publishWorkflow.match(/actions\/upload-artifact@[a-f0-9]{40}/g) ?? []).length,
   1,

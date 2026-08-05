@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 2026-08-03: `4.5.34`. O registro pode ficar
+> Estado do source/release target em 05/08/2026: `4.5.35`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -628,6 +628,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.35`      | Protege o conteúdo do pacote público, isola o token administrativo em ambiente sem Deployment, atualiza TypeScript ESLint para 8.66.0 e torna determinístico o teste forense de processo pai no Windows.                               |
 | `v04.05.34`      | Remove duas expressões redundantes apontadas pelo GitHub Code Quality, preservando o comportamento do preflight de orçamento e o fallback tardio de anexos quando o preflight de veracidade está desativado.                           |
 | `v04.05.33`      | Substitui a tag 4.5.32 não publicada, reconhece o `404` documentado do npm apenas no probe OIDC negativo, preserva o gate positivo em `201`, usa escaping idêntico ao npm e atualiza a resolução do OpenAI para 7.3.0.                 |
 | `v04.05.32`      | Atualiza o npm verificado para 12.0.2, prova os contextos negado e autorizado do Trusted Publisher antes de executar código do projeto, separa escrita e verificação pós-publicação e corrige brace-expansion, fast-uri e ip-address.  |

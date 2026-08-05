@@ -1,6 +1,6 @@
 # Cross Review v2 - API Capability Smoke
 
-Date: 2026-04-30, America/Sao_Paulo
+Date: 30/04/2026, America/Sao_Paulo
 Runtime under test: local `cross-review-v2` source, package version `2.1.1`
 
 ## Purpose
@@ -39,14 +39,14 @@ Relevant current documentation observations:
   metadata for `gemini-3.1-pro-preview` reports `thinking: true`.
 - DeepSeek documents `deepseek-v4-pro`, `thinking.type=enabled`,
   `reasoning_effort=high|max`, JavaScript OpenAI-client examples with
-  top-level `thinking` and `reasoning_effort`, the 2026-07-24 deprecation of
+  top-level `thinking` and `reasoning_effort`, the 24/07/2026 deprecation of
   `deepseek-chat` and `deepseek-reasoner`, and stateless multi-round chat
   behavior.
 
 ## Model Exclusion Rationale
 
 - `deepseek-chat` and `deepseek-reasoner` are excluded because DeepSeek marks
-  both names for deprecation on 2026-07-24 and maps them to compatibility names
+  both names for deprecation on 24/07/2026 and maps them to compatibility names
   for `deepseek-v4-flash`.
 - `claude-haiku-4-5` is excluded because the cross-review role requires the
   advanced Opus/Sonnet adaptive-thinking line. Anthropic documents adaptive

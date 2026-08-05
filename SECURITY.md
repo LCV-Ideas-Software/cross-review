@@ -2,15 +2,17 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.34 for package 4.5.34. This
+Current supported source/release target: v04.05.35 for package 4.5.35. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
 
-v04.05.34 is a behavior-preserving Code Quality maintenance patch. It removes
-two redundant control-flow expressions while retaining the existing budget
-preflight decisions and the lazy evidence-attachment fallback used when
-truthfulness preflight is disabled.
+v04.05.35 keeps the public npm artifact free of internal field reports, binds
+administrative release checks to the protected `github-administration`
+environment without creating a Deployment, and preserves the isolated
+`npm-production` Trusted Publishing boundary. The Windows parent-process
+snapshot remains best-effort and time-bounded; its deterministic parser test
+does not weaken caller-token validation or change persisted-state contracts.
 
 v04.05.33 supersedes the unpublished v04.05.32 tag after its fail-closed
 negative OIDC probe observed npm's documented `404` concealment for a trusted

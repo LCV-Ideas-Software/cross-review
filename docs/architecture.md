@@ -381,7 +381,7 @@ Raw chain-of-thought is not persisted. Session continuity is represented through
 
 ## Stable Rename
 
-The v4.0.0 release on 2026-05-15 renamed the product from `cross-review-v2` to
+The v4.0.0 release on 15/05/2026 renamed the product from `cross-review-v2` to
 `cross-review` (npm package, GitHub repo, GitHub Pages domain, MCP server key
 in host configs, env-var prefix, binaries). The companion `cross-review-v1`
 package was discontinued and archived on the same date. Prior names remain

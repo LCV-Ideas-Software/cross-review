@@ -1,6 +1,6 @@
 # Cross Review v2 - Token Streaming Smoke
 
-Date: 2026-04-30, America/Sao_Paulo
+Date: 30/04/2026, America/Sao_Paulo
 Runtime under test: local `cross-review-v2` source, package version `2.2.0`
 
 ## Purpose

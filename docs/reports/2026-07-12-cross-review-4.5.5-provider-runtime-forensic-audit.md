@@ -1,6 +1,6 @@
 # Auditoria forense e contratual do cross-review 4.5.5
 
-Data: 2026-07-12
+Data: 12/07/2026
 Escopo: runtime 4.5.5, seis APIs de IA, sessões e logs das 36 horas anteriores,
 configuração central, custos, mecanismos anti-fabricação e preparação da
 correção final 4.5.7 (contratos introduzidos no source 4.5.6).
@@ -65,7 +65,7 @@ Foram usados:
 
 ## Estado de runtime e configuração
 
-O `server_info` consultado em 2026-07-12 confirmou:
+O `server_info` consultado em 12/07/2026 confirmou:
 
 | Campo                       | Valor                                                              |
 | --------------------------- | ------------------------------------------------------------------ |

@@ -7545,11 +7545,18 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
     const tasklistStdout = String(tasklistProbe.stdout || "").trim();
     if (tasklistProbe.status === 0 && tasklistStdout.startsWith('"')) {
-      assert.ok(
-        typeof snap.parent_exe_basename === "string" && snap.parent_exe_basename.length > 0,
-        `v2.18.2 Tier 5: when tasklist exposes parent_pid=${snap.parent_pid}, parent_exe_basename should be populated`,
+      assert.equal(
+        f1.parseWindowsTasklistImageName(tasklistStdout),
+        tasklistStdout.match(/^"([^"]+)"/)?.[1] ?? null,
+        "v2.18.2 Tier 5: the same tasklist output consumed in production must parse deterministically",
       );
     }
+    assert.equal(f1.parseWindowsTasklistImageName("INFO: no tasks are running"), null);
+    assert.equal(
+      f1.parseWindowsTasklistImageName(`"${"x".repeat(128)}","1"`),
+      null,
+      "v2.18.2 Tier 5: implausibly long executable names must fail closed",
+    );
   }
   // Anti-drift: source-level guards.
   const callerTokensSrc = (await import("node:fs")).readFileSync(
@@ -7563,6 +7570,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(
     /timeout:\s*500/.test(callerTokensSrc),
     "v2.18.2 Tier 5: spawnSync timeout cap is 500ms",
+  );
+  assert.ok(
+    /parent_exe_basename\s*=\s*parseWindowsTasklistImageName\(r\.stdout\)/.test(callerTokensSrc),
+    "v2.18.2 Tier 5: the time-bounded tasklist result must use the tested parser",
   );
 
   // Restore env.
@@ -10048,16 +10059,18 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.match(
     RELEASE_DATE,
     /^\d{4}-\d{2}-\d{2}$/,
-    `v4.4.0 / release_metadata: RELEASE_DATE must use YYYY-MM-DD; got ${RELEASE_DATE}.`,
+    `v4.4.0 / release_metadata: internal RELEASE_DATE must use YYYY-MM-DD; got ${RELEASE_DATE}.`,
   );
   const displayVersion = `v${pjVer
     .split(".")
     .map((part: string) => part.padStart(2, "0"))
     .join(".")}`;
   const changelogSrc = fs.readFileSync(path.join(process.cwd(), "CHANGELOG.md"), "utf8");
+  const [releaseYear, releaseMonth, releaseDay] = RELEASE_DATE.split("-");
+  const displayReleaseDate = `${releaseDay}/${releaseMonth}/${releaseYear}`;
   assert.ok(
-    changelogSrc.includes(`## [${displayVersion}] — ${RELEASE_DATE}`),
-    `v4.4.0 / release_metadata: CHANGELOG.md must contain heading "## [${displayVersion}] — ${RELEASE_DATE}".`,
+    changelogSrc.includes(`## [${displayVersion}] — ${displayReleaseDate}`),
+    `v4.4.0 / release_metadata: CHANGELOG.md must contain pt-BR heading "## [${displayVersion}] — ${displayReleaseDate}".`,
   );
   const securitySrc = fs.readFileSync(path.join(process.cwd(), "SECURITY.md"), "utf8");
   assert.ok(

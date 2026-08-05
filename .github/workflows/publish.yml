@@ -213,6 +213,9 @@ jobs:
     name: Pre-publish gate (test + immutable artifact)
     needs: assert-npm-production-boundary
     runs-on: ubuntu-latest
+    environment:
+      name: github-administration
+      deployment: false
     permissions: write-all
     outputs:
       name: ${{ steps.meta.outputs.name }}
@@ -630,6 +633,12 @@ jobs:
           fi
           TARBALL="${tarballs[0]}"
           TARBALL_NAME="$(basename "$TARBALL")"
+          TARBALL_CONTENTS="$RUNNER_TEMP/package-contents-${GITHUB_RUN_ID}.txt"
+          tar -tzf "$TARBALL" > "$TARBALL_CONTENTS"
+          if grep -q '^package/docs/reports/' "$TARBALL_CONTENTS"; then
+            echo "::error::The public package contains internal field reports."
+            exit 1
+          fi
           TARBALL_SHA256="$(sha256sum "$TARBALL" | awk '{print $1}')"
           TARBALL_INTEGRITY="$(node -e '
             const { createHash } = require("node:crypto");

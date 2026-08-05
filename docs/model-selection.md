@@ -1,7 +1,7 @@
 # Model Selection
 
 The server pins each peer to ONE canonical model per the no-downgrade policy
-(operator directive 2026-05-14). The runtime never silently chains a
+(operator directive 14/05/2026). The runtime never silently chains a
 multi-model downgrade path. An explicit operator override via
 `CROSS_REVIEW_<PROVIDER>_MODEL` env-var is the only way to deviate from the
 canonical pin.
@@ -29,7 +29,7 @@ The no-downgrade behavior is covered by `scripts/smoke.ts`: when a provider
 returns only a weak/deprecated candidate such as `claude-haiku-4-5`,
 selection stays on the canonical pin and records `confidence=unknown`.
 
-## Current Canonical Pins (no-fallback policy, operator directive 2026-05-14)
+## Current Canonical Pins (no-fallback policy, operator directive 14/05/2026)
 
 Each peer is pinned to exactly ONE canonical model — the most advanced "pro
 with reasoning" model available from the provider. The runtime no longer
@@ -73,7 +73,7 @@ ceiling. Anthropic recommends starting with 64K `max_tokens` at `xhigh` or
 `max`, which matches the maintained Claude budget.
 
 Google's deprecation schedule lists `gemini-2.5-pro` for shutdown on
-2026-10-16 and recommends `gemini-3.1-pro-preview` as the replacement.
+16/10/2026 and recommends `gemini-3.1-pro-preview` as the replacement.
 Workspace policy remains: only `gemini-*-pro` variants >= 2.5 are permitted
 for this peer; no `*-flash` variants and no models below 2.5. Operators can
 still override the pin explicitly, but the default/canonical path follows the
@@ -177,7 +177,7 @@ preflight.
   the [request schema](https://docs.perplexity.ai/api-reference/sonar-post), and
   [pricing](https://docs.perplexity.ai/docs/getting-started/pricing).
 
-## Historical Documentation Refresh — 2026-05-05
+## Historical Documentation Refresh — 05/05/2026
 
 This section is historical context for the v2.16.0 protocol repair. Do not
 read it as the current pin list; the authoritative current pins are listed
@@ -194,7 +194,7 @@ above and enforced by `src/peers/model-selection.ts`.
   out of current pins and downgrade chains.
 - DeepSeek: DeepSeek-V4 exposes `deepseek-v4-pro` and `deepseek-v4-flash`;
   legacy `deepseek-chat` and `deepseek-reasoner` were scheduled for
-  discontinuation on 2026-07-24 and must stay out of current pins and
+  discontinuation on 24/07/2026 and must stay out of current pins and
   downgrade chains.
 - xAI Grok: historical Grok notes covered aliases and the earlier concrete
   `grok-4.3` pin. Current runtime behavior is defined above by the

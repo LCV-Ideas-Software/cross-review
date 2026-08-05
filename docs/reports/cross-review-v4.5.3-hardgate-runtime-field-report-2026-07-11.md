@@ -1,6 +1,6 @@
 # Cross Review v4.5.3 - Runtime Hardgate Field Report
 
-Date: 2026-07-11, America/Sao_Paulo  
+Date: 11/07/2026, America/Sao_Paulo
 Observation window: 2026-07-12 01:41-02:13 UTC  
 Runtime: cross-review 4.5.3  
 Reviewed commit: `165c6805e75bc64d11f773907e45f1b645c58b1c`
@@ -50,7 +50,7 @@ Fresh `server_info` returned:
 | Field                  | Observed value                                                     |
 | ---------------------- | ------------------------------------------------------------------ |
 | Version                | `4.5.3`                                                            |
-| Release date           | `2026-07-11`                                                       |
+| Release date           | `11/07/2026`                                                       |
 | Transport              | `stdio`                                                            |
 | Stub mode              | `false`                                                            |
 | Config applied         | `true`                                                             |

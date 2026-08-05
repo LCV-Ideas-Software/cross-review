@@ -45,6 +45,13 @@ export interface ParentProcessSnapshot {
   parent_exe_basename: string | null;
 }
 
+export function parseWindowsTasklistImageName(output: unknown): string | null {
+  const stdout = String(output ?? "").trim();
+  if (!stdout.startsWith('"')) return null;
+  const parentExeBasename = stdout.match(/^"([^"]+)"/)?.[1];
+  return parentExeBasename && parentExeBasename.length < 128 ? parentExeBasename : null;
+}
+
 // prettier-ignore
 export type TokenVerification =
   | { method: "token"; verified: true }
@@ -422,14 +429,7 @@ export function getParentProcessSnapshot(): ParentProcessSnapshot {
         ["/FI", `PID eq ${snapshot.parent_pid}`, "/FO", "CSV", "/NH"],
         { encoding: "utf8", timeout: 500, windowsHide: true },
       );
-      const stdout = String(r.stdout || "").trim();
-      if (stdout.startsWith('"')) {
-        const m = stdout.match(/^"([^"]+)"/);
-        const parentExeBasename = m?.[1];
-        if (parentExeBasename && parentExeBasename.length < 128) {
-          snapshot.parent_exe_basename = parentExeBasename;
-        }
-      }
+      snapshot.parent_exe_basename = parseWindowsTasklistImageName(r.stdout);
     } catch {
       /* best-effort */
     }

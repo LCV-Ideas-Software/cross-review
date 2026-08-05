@@ -1,6 +1,6 @@
 # Cross Review v2 - Format Recovery Findings
 
-Date: 2026-04-28, America/Sao_Paulo
+Date: 28/04/2026, America/Sao_Paulo
 Runtime: pre-stable API-first runtime 2.0.0-alpha.2
 
 ## Context

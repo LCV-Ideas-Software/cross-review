@@ -1,6 +1,6 @@
 # Cross-Review 4.5.x — Relatório de Campo (Field Report)
 
-**Data:** 2026-07-11 / 2026-07-12 / 2026-07-13 UTC
+**Data:** 11/07/2026 / 12/07/2026 / 13/07/2026 UTC
 **Autor:** Claude (caller=claude, host claude-code) — sessão de trabalho da calculadora-app
 **Contexto:** hardgate pré/pós-ship do workspace exigiu submeter dois ships da calculadora-app
 (v04.02.00 e o retro-review de v04.02.01, commit `8eee516`) ao cross-review. Durante a execução,
@@ -210,7 +210,7 @@ stable, and ready for scaled production use." ... preflight_issue_classes:
 
 ---
 
-## 3.5. Adendo 4.5.5 (2026-07-12) — reteste pós-fix e defeitos residuais
+## 3.5. Adendo 4.5.5 (12/07/2026) — reteste pós-fix e defeitos residuais
 
 Retestado com duas sessões na 4.5.5 (`04691dd6` via loop unânime; `741b69bc` via round único
 controlado, sem relator entre rounds). **Progresso real e mensurável**, mas ainda sem convergência.
@@ -275,7 +275,7 @@ segue bloqueado pelos defeitos acima.
 
 ---
 
-## 3.6. Fechamento preparado para 4.5.6 (2026-07-12)
+## 3.6. Fechamento preparado para 4.5.6 (12/07/2026)
 
 A remediação preserva as sessões acima como evidência histórica e não abriu uma nova rodada paga.
 Os três defeitos residuais ganharam regressões offline:
@@ -298,11 +298,11 @@ streaming provisional/commit/discard por tentativa e precificação do modelo ef
 em adapters e fallbacks. A rodada final de auditoria acrescentou: bloqueio de READY
 auto-referencial genérico, call graph integral no hardgate, fail-closed de Sonar Deep Research sem
 teto oficial e preservação de billing/erros/recusas nos terminais oficiais dos seis adapters. O
-relatório forense de 2026-07-12 contém a matriz oficial e a auditoria das 36 horas.
+relatório forense de 12/07/2026 contém a matriz oficial e a auditoria das 36 horas.
 
 ---
 
-## 3.7. Desfecho 4.5.8 (2026-07-12) — convergência formal atingida
+## 3.7. Desfecho 4.5.8 (12/07/2026) — convergência formal atingida
 
 Sessão limpa `4ed963d4` (round único, `session_start_round`): **outcome `converged |
 unanimous_ready` — caller + 5 peers READY raw+final, zero warnings, checklist vazio.** O finding
@@ -328,7 +328,7 @@ Correção de estado após confronto com a fonte 4.5.8:
   `decision_transformations[].details.remediation` e reservando `caller_requests` a pedidos reais
   dos peers.
 
-## 3.8. Fechamento preparado para 4.5.9 (2026-07-12)
+## 3.8. Fechamento preparado para 4.5.9 (12/07/2026)
 
 O DEF-10 ganhou regressões vermelha/verde para as cinco demoções READY do parser e para a demoção
 de grounding. A correção não altera `hasAskDerivedAnchor`, não autoencerra asks genéricos reais e
@@ -624,7 +624,7 @@ quatro updater jobs dinâmicos do mesmo SHA; resultado ausente, pendente ou
 vermelho bloqueia o tag. Isso elimina a corrida que chegou a criar o tag 4.5.14
 antes de a falha do updater npm ficar visível.
 
-## 3.15. Adendo 4.5.16 (2026-07-13) — poll excessivo, Markdown e cancelamento tardio
+## 3.15. Adendo 4.5.16 (13/07/2026) — poll excessivo, Markdown e cancelamento tardio
 
 **Sessão observada:** `50e68ea8-8da3-4132-99b4-552a0399b72a`
 

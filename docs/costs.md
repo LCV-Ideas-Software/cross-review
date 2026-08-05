@@ -38,7 +38,7 @@ artifacts when present.
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
 Current reference values verified against official provider documentation on
-2026-07-24 for the maintained model pins and supported Claude Opus 5 override:
+24/07/2026 for the maintained model pins and supported Claude Opus 5 override:
 
 | Provider/model                   | Input   | Output | Cached input / cache hit | Extended tier                                                      |
 | -------------------------------- | ------- | ------ | ------------------------ | ------------------------------------------------------------------ |

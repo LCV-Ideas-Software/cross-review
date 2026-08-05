@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.5.34";
+export const VERSION = "4.5.35";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -58,12 +58,21 @@ function releaseDateFromChangelog(version: string): string {
   const displayPattern = displayVersion.replaceAll(".", "\\.");
   const changelog = fs.readFileSync(path.join(PROJECT_ROOT, "CHANGELOG.md"), "utf8");
   const match = changelog.match(
-    new RegExp(`^## \\[${displayPattern}\\] — (\\d{4}-\\d{2}-\\d{2})$`, "m"),
+    new RegExp(`^## \\[${displayPattern}\\] — (\\d{2})/(\\d{2})/(\\d{4})$`, "m"),
   );
-  if (!match?.[1]) {
+  const [, day, month, year] = match ?? [];
+  if (!day || !month || !year) {
     throw new Error(`CHANGELOG.md missing release heading for ${displayVersion}`);
   }
-  return match[1];
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (
+    parsed.getUTCFullYear() !== Number(year) ||
+    parsed.getUTCMonth() + 1 !== Number(month) ||
+    parsed.getUTCDate() !== Number(day)
+  ) {
+    throw new Error(`CHANGELOG.md has an invalid pt-BR release date for ${displayVersion}`);
+  }
+  return `${year}-${month}-${day}`;
 }
 
 // v2.28.0 (cold-start hardening Part 3): single bulk read of the Windows
