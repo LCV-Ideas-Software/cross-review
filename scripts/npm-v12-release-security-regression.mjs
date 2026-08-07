@@ -74,7 +74,7 @@ const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
 const expectedDependabotController =
-  "LCV-Ideas-Software/.github/dependabot-automerge@f696635ed718dfb1b9576a1e9bcb1173cc278901";
+  "LCV-Ideas-Software/.github/dependabot-automerge@ac3d4ad22073ee419cb9b861c38fe7bfa93b132a";
 
 assert.equal(
   packageJson.packageManager,
