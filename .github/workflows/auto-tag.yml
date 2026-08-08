@@ -424,7 +424,7 @@ jobs:
           # Workflow completion and SARIF processing are distinct states. Read
           # the immutable analyses for TARGET_SHA itself: current main alert
           # state cannot prove that an older queued release commit was clean.
-          required_codeql_categories=("/language:actions" "/language:javascript-typescript")
+          required_codeql_categories=("/language:actions" "/language:javascript-typescript" "/language:python")
           for attempt in {1..12}; do
             analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
             target_analyses="$(jq -c --arg sha "$TARGET_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL")]' <<<"$analyses_json")"

@@ -2804,7 +2804,7 @@ const configuredCodeqlLanguages = [
 ].map((match) => match[1]);
 assert.deepEqual(
   configuredCodeqlLanguages,
-  ["actions", "javascript-typescript"],
+  ["actions", "javascript-typescript", "python"],
   "the CodeQL release-category contract must exactly match the committed analysis matrix",
 );
 for (const [gate, label] of [
@@ -2813,7 +2813,7 @@ for (const [gate, label] of [
 ]) {
   assert.ok(
     gate.includes(
-      'required_codeql_categories=("/language:actions" "/language:javascript-typescript")',
+      'required_codeql_categories=("/language:actions" "/language:javascript-typescript" "/language:python")',
     ),
     `${label} must require every category configured by the CodeQL matrix`,
   );
@@ -3457,8 +3457,8 @@ for (const [document, label] of [
 
 assert.match(
   codeqlWorkflow,
-  /queries:\s*security-extended/,
-  "the committed Advanced CodeQL workflow must retain security-extended queries",
+  /queries:\s*security-and-quality/,
+  "the committed Advanced CodeQL workflow must retain security-and-quality queries",
 );
 assert.doesNotMatch(
   securityBaseline,
