@@ -50,7 +50,7 @@ API-first package is separate from the archived CLI package
 `@lcv-ideas-software/cross-review-v1`.
 
 CodeQL Advanced Setup is committed for GitHub Actions and
-JavaScript/TypeScript, with `security-extended` queries. Any change to that
+JavaScript/TypeScript, and Python, with `security-and-quality` queries. Any change to that
 workflow or a migration to Default Setup must be proposed with justification;
 the two modes must not run duplicate analyses.
 

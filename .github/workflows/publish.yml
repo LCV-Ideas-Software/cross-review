@@ -392,7 +392,7 @@ jobs:
           # and evaluate the SARIF tied to TAG_SHA itself. The alert state of a
           # newer main commit is not historical evidence for this release.
           target_codeql="[]"
-          required_codeql_categories=("/language:actions" "/language:javascript-typescript")
+          required_codeql_categories=("/language:actions" "/language:javascript-typescript" "/language:python")
           for attempt in {1..12}; do
             assert_target_on_live_main
             analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"

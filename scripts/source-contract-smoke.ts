@@ -150,8 +150,8 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   );
   const ciSrc = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
   assert.ok(
-    ciSrc.includes("run v4.5.16-poll-cancel-regression"),
-    "v4.5.16 / CI: the focused runtime regression must pass before tagging.",
+    ciSrc.includes("run: npm test"),
+    "v4.5.16 / CI: the complete regression suite, including the focused runtime regression, must pass before tagging.",
   );
 
   const runtimeSmokeSrc = fs.readFileSync(
