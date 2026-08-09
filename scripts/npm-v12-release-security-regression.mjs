@@ -27,7 +27,7 @@ const [
   serverSource,
   dependabotConfig,
   pythonVersion,
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   scorecardWorkflow,
   zizmorWorkflow,
   pagesWorkflow,
@@ -54,7 +54,7 @@ const [
   read("src/mcp/server.ts"),
   read(".github/dependabot.yml"),
   read(".python-version"),
-  read(".github/workflows/dependabot-automerge.yml"),
+  read(".github/workflows/native-auto-merge.yml"),
   read(".github/workflows/scorecard.yml"),
   read(".github/workflows/zizmor.yml"),
   read(".github/workflows/pages.yml"),
@@ -73,8 +73,8 @@ const expectedAllowScripts = {
 const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
-const expectedDependabotController =
-  "LCV-Ideas-Software/.github/dependabot-automerge@ac3d4ad22073ee419cb9b861c38fe7bfa93b132a";
+const expectedNativeAutoMergeAction =
+  "LCV-Ideas-Software/.github/native-auto-merge@4058fad11eca7c2eb4e9296108667ef6199a6356";
 
 assert.equal(
   packageJson.packageManager,
@@ -144,31 +144,42 @@ assert.ok(
   "Dependabot must group Python tool updates instead of racing independent lockfile merges",
 );
 assert.match(
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   /workflow_run:/,
   "Dependabot automation must run in the privileged default-branch context only after untrusted PR checks complete",
 );
 assert.match(
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   /workflows:\s*\r?\n\s+- CodeQL\s*\r?\n\s+types:/,
   "Dependabot automation workflow_run must be triggered only by CodeQL completion",
 );
 assert.doesNotMatch(
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   /pull_request_target:/,
   "Dependabot automation must not execute directly in the pull_request_target event context",
 );
 assert.ok(
-  dependabotAutomergeWorkflow.includes(expectedDependabotController),
-  "Dependabot automation must pin the reviewed central controller to its immutable commit SHA",
+  nativeAutoMergeWorkflow.includes(expectedNativeAutoMergeAction),
+  "Native auto-merge must pin the reviewed central action to its immutable commit SHA",
 );
 assert.ok(
-  dependabotAutomergeWorkflow.includes(
+  nativeAutoMergeWorkflow.includes(
     ["automation_token: $", "{{ secrets.LCV_AUTOMATION_TOKEN }}"].join(""),
   ) &&
-    dependabotAutomergeWorkflow.includes("Build, lint and smoke") &&
-    dependabotAutomergeWorkflow.includes("cancel-in-progress: false"),
-  "Dependabot automation must retain the guarded queue credential, repository gate, and serialization policy",
+    nativeAutoMergeWorkflow.includes("environment: dependabot-automation") &&
+    nativeAutoMergeWorkflow.includes("event_repository:") &&
+    nativeAutoMergeWorkflow.includes("workflow_name:") &&
+    nativeAutoMergeWorkflow.includes("workflow_status:") &&
+    nativeAutoMergeWorkflow.includes("workflow_event:") &&
+    nativeAutoMergeWorkflow.includes("workflow_head_sha:") &&
+    nativeAutoMergeWorkflow.includes("workflow_pull_requests:") &&
+    nativeAutoMergeWorkflow.includes("cancel-in-progress: false"),
+  "Native auto-merge must retain the protected credential, explicit event binding, and serialization policy",
+);
+assert.doesNotMatch(
+  nativeAutoMergeWorkflow,
+  /schedule:|workflow_dispatch:|actions\/checkout|dependabot-automerge@|required_checks_json:/,
+  "Native auto-merge must remain event-driven and delegate policy to the immutable central action",
 );
 assert.ok(
   autoTagWorkflow.includes("Require triggered Dependabot updates to pass") &&
