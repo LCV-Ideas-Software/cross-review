@@ -27,7 +27,7 @@ const [
   serverSource,
   dependabotConfig,
   pythonVersion,
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   scorecardWorkflow,
   zizmorWorkflow,
   pagesWorkflow,
@@ -54,7 +54,7 @@ const [
   read("src/mcp/server.ts"),
   read(".github/dependabot.yml"),
   read(".python-version"),
-  read(".github/workflows/dependabot-automerge.yml"),
+  read(".github/workflows/native-auto-merge.yml"),
   read(".github/workflows/scorecard.yml"),
   read(".github/workflows/zizmor.yml"),
   read(".github/workflows/pages.yml"),
@@ -73,8 +73,8 @@ const expectedAllowScripts = {
 const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
-const expectedDependabotController =
-  "LCV-Ideas-Software/.github/dependabot-automerge@ac3d4ad22073ee419cb9b861c38fe7bfa93b132a";
+const expectedNativeAutoMergeAction =
+  "LCV-Ideas-Software/.github/native-auto-merge@4058fad11eca7c2eb4e9296108667ef6199a6356";
 
 assert.equal(
   packageJson.packageManager,
@@ -144,32 +144,96 @@ assert.ok(
   "Dependabot must group Python tool updates instead of racing independent lockfile merges",
 );
 assert.match(
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   /workflow_run:/,
   "Dependabot automation must run in the privileged default-branch context only after untrusted PR checks complete",
 );
 assert.match(
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   /workflows:\s*\r?\n\s+- CodeQL\s*\r?\n\s+types:/,
   "Dependabot automation workflow_run must be triggered only by CodeQL completion",
 );
 assert.doesNotMatch(
-  dependabotAutomergeWorkflow,
+  nativeAutoMergeWorkflow,
   /pull_request_target:/,
   "Dependabot automation must not execute directly in the pull_request_target event context",
 );
 assert.ok(
-  dependabotAutomergeWorkflow.includes(expectedDependabotController),
-  "Dependabot automation must pin the reviewed central controller to its immutable commit SHA",
+  nativeAutoMergeWorkflow.includes(expectedNativeAutoMergeAction),
+  "Native auto-merge must pin the reviewed central action to its immutable commit SHA",
 );
 assert.ok(
-  dependabotAutomergeWorkflow.includes(
+  nativeAutoMergeWorkflow.includes(
     ["automation_token: $", "{{ secrets.LCV_AUTOMATION_TOKEN }}"].join(""),
   ) &&
-    dependabotAutomergeWorkflow.includes("Build, lint and smoke") &&
-    dependabotAutomergeWorkflow.includes("cancel-in-progress: false"),
-  "Dependabot automation must retain the guarded queue credential, repository gate, and serialization policy",
+    nativeAutoMergeWorkflow.includes("environment: dependabot-automation") &&
+    nativeAutoMergeWorkflow.includes("cancel-in-progress: false"),
+  "Native auto-merge must retain the protected credential, environment, and serialization policy",
 );
+for (const [inputName, expectedAssignment] of [
+  ["event_repository", ["event_repository: $", "{{ github.event.repository.full_name }}"].join("")],
+  ["workflow_name", ["workflow_name: $", "{{ github.event.workflow_run.name }}"].join("")],
+  ["workflow_status", ["workflow_status: $", "{{ github.event.workflow_run.status }}"].join("")],
+  ["workflow_event", ["workflow_event: $", "{{ github.event.workflow_run.event }}"].join("")],
+  [
+    "workflow_head_sha",
+    ["workflow_head_sha: $", "{{ github.event.workflow_run.head_sha }}"].join(""),
+  ],
+  [
+    "workflow_pull_requests",
+    ["workflow_pull_requests: $", "{{ toJSON(github.event.workflow_run.pull_requests) }}"].join(""),
+  ],
+]) {
+  assert.equal(
+    nativeAutoMergeWorkflow.split(/\r?\n/).filter((line) => line.trim() === expectedAssignment)
+      .length,
+    1,
+    `Native auto-merge must bind ${inputName} exactly once to its trusted workflow_run field`,
+  );
+}
+assert.doesNotMatch(
+  nativeAutoMergeWorkflow,
+  /schedule:|workflow_dispatch:|actions\/checkout|dependabot-automerge@|required_checks_json:/,
+  "Native auto-merge must remain event-driven and delegate policy to the immutable central action",
+);
+function assertCodeqlReadyForReviewTrigger(workflow) {
+  const lines = workflow.split(/\r?\n/);
+  const pullRequestStart = lines.indexOf("  pull_request:");
+  assert.notEqual(pullRequestStart, -1, "CodeQL must retain a block-form pull_request trigger");
+  const nextEventOffset = lines
+    .slice(pullRequestStart + 1)
+    .findIndex((line) => /^ {2}[A-Za-z0-9_-]+:/.test(line));
+  const pullRequestEnd =
+    nextEventOffset === -1 ? lines.length : pullRequestStart + 1 + nextEventOffset;
+  const pullRequestBlock = lines.slice(pullRequestStart + 1, pullRequestEnd);
+  const typesStart = pullRequestBlock.indexOf("    types:");
+  assert.notEqual(typesStart, -1, "CodeQL pull_request must retain a block-form types filter");
+  const nextFieldOffset = pullRequestBlock
+    .slice(typesStart + 1)
+    .findIndex((line) => /^ {4}[A-Za-z0-9_-]+:/.test(line));
+  const typesEnd =
+    nextFieldOffset === -1 ? pullRequestBlock.length : typesStart + 1 + nextFieldOffset;
+  assert.equal(
+    pullRequestBlock
+      .slice(typesStart + 1, typesEnd)
+      .filter((line) => line.trim() === "- ready_for_review").length,
+    1,
+    "CodeQL pull_request.types must include ready_for_review exactly once",
+  );
+}
+assertCodeqlReadyForReviewTrigger(codeqlWorkflow);
+const codeqlWithoutReadyForReview = codeqlWorkflow.replace(/^ {6}- ready_for_review\r?\n/m, "");
+const codeqlWithReadyForReviewMoved = codeqlWithoutReadyForReview.replace(
+  /^ {6}- checks_requested$/m,
+  "$&\n      - ready_for_review",
+);
+for (const mutation of [codeqlWithoutReadyForReview, codeqlWithReadyForReviewMoved]) {
+  assert.throws(
+    () => assertCodeqlReadyForReviewTrigger(mutation),
+    /CodeQL pull_request\.types must include ready_for_review exactly once/,
+    "CodeQL trigger regression guard must reject ready_for_review when absent or outside pull_request.types",
+  );
+}
 assert.ok(
   autoTagWorkflow.includes("Require triggered Dependabot updates to pass") &&
     autoTagWorkflow.includes("require-dependabot-release-evidence.sh require") &&
