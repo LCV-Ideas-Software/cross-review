@@ -167,15 +167,30 @@ assert.ok(
     ["automation_token: $", "{{ secrets.LCV_AUTOMATION_TOKEN }}"].join(""),
   ) &&
     nativeAutoMergeWorkflow.includes("environment: dependabot-automation") &&
-    nativeAutoMergeWorkflow.includes("event_repository:") &&
-    nativeAutoMergeWorkflow.includes("workflow_name:") &&
-    nativeAutoMergeWorkflow.includes("workflow_status:") &&
-    nativeAutoMergeWorkflow.includes("workflow_event:") &&
-    nativeAutoMergeWorkflow.includes("workflow_head_sha:") &&
-    nativeAutoMergeWorkflow.includes("workflow_pull_requests:") &&
     nativeAutoMergeWorkflow.includes("cancel-in-progress: false"),
-  "Native auto-merge must retain the protected credential, explicit event binding, and serialization policy",
+  "Native auto-merge must retain the protected credential, environment, and serialization policy",
 );
+for (const [inputName, expectedAssignment] of [
+  ["event_repository", ["event_repository: $", "{{ github.event.repository.full_name }}"].join("")],
+  ["workflow_name", ["workflow_name: $", "{{ github.event.workflow_run.name }}"].join("")],
+  ["workflow_status", ["workflow_status: $", "{{ github.event.workflow_run.status }}"].join("")],
+  ["workflow_event", ["workflow_event: $", "{{ github.event.workflow_run.event }}"].join("")],
+  [
+    "workflow_head_sha",
+    ["workflow_head_sha: $", "{{ github.event.workflow_run.head_sha }}"].join(""),
+  ],
+  [
+    "workflow_pull_requests",
+    ["workflow_pull_requests: $", "{{ toJSON(github.event.workflow_run.pull_requests) }}"].join(""),
+  ],
+]) {
+  assert.equal(
+    nativeAutoMergeWorkflow.split(/\r?\n/).filter((line) => line.trim() === expectedAssignment)
+      .length,
+    1,
+    `Native auto-merge must bind ${inputName} exactly once to its trusted workflow_run field`,
+  );
+}
 assert.doesNotMatch(
   nativeAutoMergeWorkflow,
   /schedule:|workflow_dispatch:|actions\/checkout|dependabot-automerge@|required_checks_json:/,
