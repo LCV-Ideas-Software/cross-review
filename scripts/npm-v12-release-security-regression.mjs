@@ -75,6 +75,8 @@ const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
 const expectedNativeAutoMergeAction =
   "LCV-Ideas-Software/.github/native-auto-merge@4058fad11eca7c2eb4e9296108667ef6199a6356";
+const expectedCodeqlSarifGateAction =
+  "LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e";
 
 assert.equal(
   packageJson.packageManager,
@@ -234,6 +236,20 @@ for (const mutation of [codeqlWithoutReadyForReview, codeqlWithReadyForReviewMov
     "CodeQL trigger regression guard must reject ready_for_review when absent or outside pull_request.types",
   );
 }
+assert.ok(
+  codeqlWorkflow.includes(`uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-v1.0.0`),
+  "CodeQL must enforce SARIF through the reviewed central action pinned to its immutable release commit",
+);
+assert.match(
+  codeqlWorkflow,
+  /uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-v1\.0\.0\r?\n\s+with:\r?\n\s+sarif-directory: \$\{\{ runner\.temp \}\}\/codeql-results/,
+  "CodeQL must pass the analyzer's exact SARIF output directory to the central gate",
+);
+assert.doesNotMatch(
+  codeqlWorkflow,
+  /mapfile\s+-d|find\s+"\$CODEQL_RESULTS"|jq\s+-s\s+'\[\.\[\]\.runs|CODEQL_RESULTS:/,
+  "CodeQL must not retain a weaker inline SARIF gate beside the central policy action",
+);
 assert.ok(
   autoTagWorkflow.includes("Require triggered Dependabot updates to pass") &&
     autoTagWorkflow.includes("require-dependabot-release-evidence.sh require") &&
