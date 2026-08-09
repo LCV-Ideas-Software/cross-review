@@ -196,6 +196,44 @@ assert.doesNotMatch(
   /schedule:|workflow_dispatch:|actions\/checkout|dependabot-automerge@|required_checks_json:/,
   "Native auto-merge must remain event-driven and delegate policy to the immutable central action",
 );
+function assertCodeqlReadyForReviewTrigger(workflow) {
+  const lines = workflow.split(/\r?\n/);
+  const pullRequestStart = lines.indexOf("  pull_request:");
+  assert.notEqual(pullRequestStart, -1, "CodeQL must retain a block-form pull_request trigger");
+  const nextEventOffset = lines
+    .slice(pullRequestStart + 1)
+    .findIndex((line) => /^ {2}[A-Za-z0-9_-]+:/.test(line));
+  const pullRequestEnd =
+    nextEventOffset === -1 ? lines.length : pullRequestStart + 1 + nextEventOffset;
+  const pullRequestBlock = lines.slice(pullRequestStart + 1, pullRequestEnd);
+  const typesStart = pullRequestBlock.indexOf("    types:");
+  assert.notEqual(typesStart, -1, "CodeQL pull_request must retain a block-form types filter");
+  const nextFieldOffset = pullRequestBlock
+    .slice(typesStart + 1)
+    .findIndex((line) => /^ {4}[A-Za-z0-9_-]+:/.test(line));
+  const typesEnd =
+    nextFieldOffset === -1 ? pullRequestBlock.length : typesStart + 1 + nextFieldOffset;
+  assert.equal(
+    pullRequestBlock
+      .slice(typesStart + 1, typesEnd)
+      .filter((line) => line.trim() === "- ready_for_review").length,
+    1,
+    "CodeQL pull_request.types must include ready_for_review exactly once",
+  );
+}
+assertCodeqlReadyForReviewTrigger(codeqlWorkflow);
+const codeqlWithoutReadyForReview = codeqlWorkflow.replace(/^ {6}- ready_for_review\r?\n/m, "");
+const codeqlWithReadyForReviewMoved = codeqlWithoutReadyForReview.replace(
+  /^ {6}- checks_requested$/m,
+  "$&\n      - ready_for_review",
+);
+for (const mutation of [codeqlWithoutReadyForReview, codeqlWithReadyForReviewMoved]) {
+  assert.throws(
+    () => assertCodeqlReadyForReviewTrigger(mutation),
+    /CodeQL pull_request\.types must include ready_for_review exactly once/,
+    "CodeQL trigger regression guard must reject ready_for_review when absent or outside pull_request.types",
+  );
+}
 assert.ok(
   autoTagWorkflow.includes("Require triggered Dependabot updates to pass") &&
     autoTagWorkflow.includes("require-dependabot-release-evidence.sh require") &&
