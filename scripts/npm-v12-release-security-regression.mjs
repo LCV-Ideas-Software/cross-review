@@ -274,7 +274,7 @@ function assertStrictCodeqlSarifGate(workflow) {
   const nextStepOffset = lines.slice(gateStart + 1).findIndex((line) => /^ {6}- /.test(line));
   const gateEnd = nextStepOffset === -1 ? lines.length : gateStart + 1 + nextStepOffset;
   const gateLines = lines.slice(gateStart + 1, gateEnd);
-  const expectedUsesLine = `        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-v1.0.0`;
+  const expectedUsesLine = `        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0`;
   assert.deepEqual(
     gateLines.filter((line) => /^ {8}uses\s*:/.test(line)),
     [expectedUsesLine],
@@ -315,9 +315,9 @@ function assertStrictCodeqlSarifGate(workflow) {
 }
 assertStrictCodeqlSarifGate(codeqlWorkflow);
 const codeqlWithCommentedPinDecoy = codeqlWorkflow.replace(
-  /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-v1\.0\.0$/m,
+  /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate\/v1\.0\.0$/m,
   `        uses: LCV-Ideas-Software/.github/codeql-sarif-gate@main
-        # uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-v1.0.0`,
+        # uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0`,
 );
 assert.throws(
   () => assertStrictCodeqlSarifGate(codeqlWithCommentedPinDecoy),
@@ -326,12 +326,12 @@ assert.throws(
 );
 const codeqlWithPinOutsideGate =
   codeqlWorkflow.replace(
-    /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-v1\.0\.0$/m,
+    /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate\/v1\.0\.0$/m,
     "        uses: LCV-Ideas-Software/.github/codeql-sarif-gate@main",
   ) +
   `
       - name: Decoy SARIF step
-        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-v1.0.0
+        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0
         with:
           sarif-directory: \${{ runner.temp }}/codeql-results`;
 assert.throws(
