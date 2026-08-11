@@ -74,7 +74,7 @@ const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
 const expectedNativeAutoMergeAction =
-  "LCV-Ideas-Software/.github/native-auto-merge@4058fad11eca7c2eb4e9296108667ef6199a6356";
+  "LCV-Ideas-Software/.github/native-auto-merge@231cd33f27c260a6b01fec26aa1d0eb606e1ee2d";
 const expectedCodeqlSarifGateAction =
   "LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e";
 
@@ -155,10 +155,10 @@ assert.match(
   /workflows:\s*\r?\n\s+- CodeQL\s*\r?\n\s+types:/,
   "Dependabot automation workflow_run must be triggered only by CodeQL completion",
 );
-assert.doesNotMatch(
+assert.match(
   nativeAutoMergeWorkflow,
-  /pull_request_target:/,
-  "Dependabot automation must not execute directly in the pull_request_target event context",
+  /pull_request_target:[\s\S]*types:[\s\S]*- review_requested/,
+  "Native auto-merge must reconcile the trusted Copilot review-request wake-up",
 );
 assert.ok(
   nativeAutoMergeWorkflow.includes(expectedNativeAutoMergeAction),
@@ -172,9 +172,18 @@ assert.ok(
     nativeAutoMergeWorkflow.includes("cancel-in-progress: false"),
   "Native auto-merge must retain the protected credential, environment, and serialization policy",
 );
-for (const [inputName, expectedAssignment] of [
-  ["event_repository", ["event_repository: $", "{{ github.event.repository.full_name }}"].join("")],
+for (const [inputName, expectedAssignment, expectedCount = 1] of [
+  [
+    "event_repository",
+    ["event_repository: $", "{{ github.event.repository.full_name }}"].join(""),
+    2,
+  ],
   ["workflow_name", ["workflow_name: $", "{{ github.event.workflow_run.name }}"].join("")],
+  ["workflow_path", ["workflow_path: $", "{{ github.event.workflow_run.path }}"].join("")],
+  [
+    "workflow_display_title",
+    ["workflow_display_title: $", "{{ github.event.workflow_run.display_title }}"].join(""),
+  ],
   ["workflow_status", ["workflow_status: $", "{{ github.event.workflow_run.status }}"].join("")],
   ["workflow_event", ["workflow_event: $", "{{ github.event.workflow_run.event }}"].join("")],
   [
@@ -182,15 +191,32 @@ for (const [inputName, expectedAssignment] of [
     ["workflow_head_sha: $", "{{ github.event.workflow_run.head_sha }}"].join(""),
   ],
   [
+    "workflow_actor_id",
+    ["workflow_actor_id: $", "{{ github.event.workflow_run.actor.id }}"].join(""),
+  ],
+  [
     "workflow_pull_requests",
     ["workflow_pull_requests: $", "{{ toJSON(github.event.workflow_run.pull_requests) }}"].join(""),
   ],
+  ["event_action", ["event_action: $", "{{ github.event.action }}"].join("")],
+  ["pull_number", ["pull_number: $", "{{ github.event.pull_request.number }}"].join("")],
+  ["pull_head_sha", ["pull_head_sha: $", "{{ github.event.pull_request.head.sha }}"].join("")],
+  [
+    "pull_head_repository",
+    ["pull_head_repository: $", "{{ github.event.pull_request.head.repo.full_name }}"].join(""),
+  ],
+  ["pull_base_ref", ["pull_base_ref: $", "{{ github.event.pull_request.base.ref }}"].join("")],
+  [
+    "requested_reviewer_id",
+    ["requested_reviewer_id: $", "{{ github.event.requested_reviewer.id }}"].join(""),
+  ],
+  ["trigger_run_id", ["trigger_run_id: $", "{{ github.run_id }}"].join("")],
 ]) {
   assert.equal(
     nativeAutoMergeWorkflow.split(/\r?\n/).filter((line) => line.trim() === expectedAssignment)
       .length,
-    1,
-    `Native auto-merge must bind ${inputName} exactly once to its trusted workflow_run field`,
+    expectedCount,
+    `Native auto-merge must bind ${inputName} exactly ${expectedCount} time(s) to its trusted event field`,
   );
 }
 assert.doesNotMatch(
@@ -248,7 +274,7 @@ function assertStrictCodeqlSarifGate(workflow) {
   const nextStepOffset = lines.slice(gateStart + 1).findIndex((line) => /^ {6}- /.test(line));
   const gateEnd = nextStepOffset === -1 ? lines.length : gateStart + 1 + nextStepOffset;
   const gateLines = lines.slice(gateStart + 1, gateEnd);
-  const expectedUsesLine = `        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-v1.0.0`;
+  const expectedUsesLine = `        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0`;
   assert.deepEqual(
     gateLines.filter((line) => /^ {8}uses\s*:/.test(line)),
     [expectedUsesLine],
@@ -289,9 +315,9 @@ function assertStrictCodeqlSarifGate(workflow) {
 }
 assertStrictCodeqlSarifGate(codeqlWorkflow);
 const codeqlWithCommentedPinDecoy = codeqlWorkflow.replace(
-  /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-v1\.0\.0$/m,
+  /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate\/v1\.0\.0$/m,
   `        uses: LCV-Ideas-Software/.github/codeql-sarif-gate@main
-        # uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-v1.0.0`,
+        # uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0`,
 );
 assert.throws(
   () => assertStrictCodeqlSarifGate(codeqlWithCommentedPinDecoy),
@@ -300,12 +326,12 @@ assert.throws(
 );
 const codeqlWithPinOutsideGate =
   codeqlWorkflow.replace(
-    /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-v1\.0\.0$/m,
+    /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate\/v1\.0\.0$/m,
     "        uses: LCV-Ideas-Software/.github/codeql-sarif-gate@main",
   ) +
   `
       - name: Decoy SARIF step
-        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-v1.0.0
+        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0
         with:
           sarif-directory: \${{ runner.temp }}/codeql-results`;
 assert.throws(
