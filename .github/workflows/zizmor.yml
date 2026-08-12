@@ -12,7 +12,8 @@ on:
     - cron: "43 5 * * 1"
   workflow_dispatch:
 
-permissions: write-all
+permissions:
+  contents: read
 
 concurrency:
   group: zizmor-${{ github.ref }}
@@ -22,5 +23,6 @@ concurrency:
 jobs:
   zizmor:
     name: Run zizmor
-    permissions: write-all
+    permissions:
+      contents: read
     uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@97627f2a1d70e59d6868e0d682c988d05b63e88c # zizmor/v2.2.0
