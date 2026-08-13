@@ -52,7 +52,6 @@ sessions/**/*.response.ndjson
 # Local AI memories must remain local
 AGENTS.local.md
 .ai/
-CLAUDE.md
 GEMINI.md
 memory/
 memories/
@@ -71,5 +70,6 @@ desktop.ini
 !.vscode/settings.example.json
 .github/copilot-instructions.md
 
-# Local AI agent instructions (kept out of version control by organization convention)
-AGENTS.md
+# Instrucoes de agente versionadas: AGENTS.md e CLAUDE.md sao rastreados por este
+# repositorio (ritual de registro G1..G4). Somente as instrucoes locais do Copilot
+# permanecem fora de versao.

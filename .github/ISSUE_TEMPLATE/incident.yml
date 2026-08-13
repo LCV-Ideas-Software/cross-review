@@ -42,6 +42,20 @@ body:
     validations:
       required: true
   - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction or trigger
+      description: How to reproduce it, or what triggered it. Write "unknown" if not yet known.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What was attempted
+      description: Every action already tried and its outcome. Write "none yet" if nothing was tried.
+    validations:
+      required: true
+  - type: textarea
     id: mitigation
     attributes:
       label: Mitigation applied

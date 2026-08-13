@@ -1,7 +1,6 @@
 name: Maintenance
 description: Dependency bumps, lockfiles, version bumps and routine upkeep
 title: "[Maintenance]: "
-labels: ["dependencies"]
 type: Maintenance
 body:
   - type: textarea

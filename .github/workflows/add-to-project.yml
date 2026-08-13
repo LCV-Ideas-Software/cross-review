@@ -3,17 +3,28 @@ name: Add to project
 # Coloca toda issue e todo pull request nos quadros do repositorio e do portfolio.
 # Inerte enquanto a variavel LCV_PROJECTS_APP_CLIENT_ID nao estiver definida na organizacao.
 #
-# Pre-requisito (acao do operador): GitHub App da organizacao com permissao de leitura e
-# escrita em **projects de organizacao** (permissao de projects de repositorio nao basta),
-# instalado neste repositorio, com:
+# Pre-requisito (acao do operador): GitHub App da organizacao instalado neste repositorio.
+# O passo de mint abaixo solicita tres permissoes e o token NAO e emitido se a instalacao
+# nao conceder cada uma delas:
+#   - projects de organizacao: leitura e escrita (permissao de projects de repositorio nao basta)
+#   - issues: leitura
+#   - pull requests: leitura
+# Alem do App, precisam existir:
 #   - variavel de organizacao LCV_PROJECTS_APP_CLIENT_ID
 #   - secret LCV_PROJECTS_APP_PRIVATE_KEY no environment 'projects-automation' deste repo
 # GITHUB_TOKEN nao acessa Projects v2, por isso o App e obrigatorio.
+#
+# Por que pull_request_target: o evento pull_request nao entrega secrets a PR de fork nem
+# do Dependabot, e o mint da chave do App falharia exatamente nos PRs externos. Este
+# workflow roda no contexto da base, usa somente metadados do evento e NAO faz checkout
+# nem executa codigo do PR. Essa invariante e o que mantem o gatilho privilegiado seguro
+# e justifica a excecao estreita do zizmor na linha do gatilho. Se algum passo futuro
+# precisar de checkout, a excecao deixa de valer e o gatilho deve voltar a pull_request.
 
 on:
   issues:
     types: [opened, reopened, transferred]
-  pull_request:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- sem checkout e sem execucao de codigo do PR; somente metadados; secrets necessarios para PR de fork/Dependabot
     types: [opened, reopened, ready_for_review]
 
 # Escopo de workflow E de job, por politica da organizacao (regra TokenPermissions do
@@ -32,6 +43,7 @@ jobs:
     name: Add item to projects
     if: ${{ vars.LCV_PROJECTS_APP_CLIENT_ID != '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions: write-all
     # Confina a chave privada do App a este job (zizmor secrets-outside-env).
     # Mesmo padrao ja usado pela organizacao para credenciais de automacao.
