@@ -14,6 +14,12 @@ name: Add to project
 #   - secret LCV_PROJECTS_APP_PRIVATE_KEY no environment 'projects-automation' deste repo
 # GITHUB_TOKEN nao acessa Projects v2, por isso o App e obrigatorio.
 #
+# Backfill na ativacao (uma unica vez): definir a variavel NAO reprocessa eventos
+# passados — issues/PRs abertos enquanto o workflow esteve inerte nao entram nos quadros
+# por este gatilho. Ao ativar, adicionar aos dois quadros os itens abertos que ainda nao
+# estejam neles (addProjectV2ItemById), conforme checklist da issue de rastreamento desta
+# implantacao.
+#
 # Por que pull_request_target: o evento pull_request nao entrega secrets a PR de fork nem
 # do Dependabot, e o mint da chave do App falharia exatamente nos PRs externos. Este
 # workflow roda no contexto da base, usa somente metadados do evento e NAO faz checkout
