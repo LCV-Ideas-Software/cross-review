@@ -27,9 +27,11 @@ on:
   pull_request_target: # zizmor: ignore[dangerous-triggers] -- sem checkout e sem execucao de codigo do PR; somente metadados; secrets necessarios para PR de fork/Dependabot
     types: [opened, reopened, ready_for_review]
 
-# Escopo de workflow E de job, por politica da organizacao (regra TokenPermissions do
-# OpenSSF Scorecard exige um bloco permissions em escopo de workflow).
-permissions: write-all
+# Scorecard TokenPermissions exige um bloco permissions em escopo de workflow; a politica
+# enterprise revogou write-all (Discussion .github#150, 11/08/2026). Nenhum passo deste
+# workflow usa o GITHUB_TOKEN — o token do App e emitido e repassado explicitamente —,
+# entao o conjunto vazio e o privilegio minimo real.
+permissions: {}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -44,7 +46,7 @@ jobs:
     if: ${{ vars.LCV_PROJECTS_APP_CLIENT_ID != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions: write-all
+    permissions: {}
     # Confina a chave privada do App a este job (zizmor secrets-outside-env).
     # Mesmo padrao ja usado pela organizacao para credenciais de automacao.
     environment: projects-automation
