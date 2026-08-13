@@ -47,7 +47,7 @@ Quadro consolidado da organizacao: `https://github.com/orgs/LCV-Ideas-Software/p
 
 ### Os quatro gatilhos
 
-**G1 — fim de bloco de trabalho.** Publique um *status update* no quadro deste repositorio,
+**G1 — fim de bloco de trabalho.** Publique um _status update_ no quadro deste repositorio,
 dizendo o que foi feito, o que ficou pendente e o que o proximo agente precisa saber:
 
 ```bash
@@ -58,6 +58,7 @@ gh api graphql -f query='
     }
   }' -f id="$PROJECT_ID" -f body="..."
 ```
+
 Use `AT_RISK` ou `OFF_TRACK` quando for o caso. O `PROJECT_ID` sai de
 `gh api graphql -f query='query{organization(login:"LCV-Ideas-Software"){projectV2(number:6){id}}}'`.
 
@@ -66,14 +67,15 @@ inesperado que voce encontrar e **nao** resolver na hora vira issue imediatament
 reproducao, ambiente, evidencia, o que ja foi tentado e a hipotese de causa. Use o
 formulario adequado em `.github/ISSUE_TEMPLATE/`.
 
-**G3 — decisao ou aprendizado duravel.** Criterio objetivo: *"isto seria util para quem
-enfrentar este problema daqui a tres meses?"* Se sim, vira Discussion.
+**G3 — decisao ou aprendizado duravel.** Criterio objetivo: _"isto seria util para quem
+enfrentar este problema daqui a tres meses?"_ Se sim, vira Discussion.
+
 - Conhecimento especifico deste repo -> Discussions **deste repositorio** (Q&A ou Ideas).
 - Conhecimento transversal a varios repos (politica de release, regra de ruleset, restricao
   de plataforma) -> Discussions **da organizacao**.
 
 **G4 — trabalho nao-trivial.** Abra a issue **antes** do PR e referencie com `Closes #N`.
-Isso ativa o fechamento automatico, o campo *Linked pull requests* e a progressao de Status.
+Isso ativa o fechamento automatico, o campo _Linked pull requests_ e a progressao de Status.
 
 ### Valvula de escape
 
