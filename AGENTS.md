@@ -30,7 +30,8 @@ touches a guarded contract must run the matching regression before closure.
 
 ## Workspace Policy
 
-Follow the root `C:\Users\leona\lcv-workspace\AGENTS.md` directives. In
+Follow the workspace-root `AGENTS.md` directives of the private workspace that
+hosts this checkout (not versioned in this public repository). In
 particular: no self-review in cross-review gates, `ultrabrain` plus
 `cross-review-v2` before substantive closure, `cross-review-v1` only as fallback
 for v2, `main` as the deployment branch, and Commit & Sync only after final

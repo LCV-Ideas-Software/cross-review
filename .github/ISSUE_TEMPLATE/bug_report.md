@@ -4,6 +4,7 @@ about: Report a reproducible defect
 title: "[Bug]: "
 labels: ["bug"]
 assignees: []
+type: Bug
 ---
 
 ## Summary

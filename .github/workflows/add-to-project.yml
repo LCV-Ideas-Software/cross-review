@@ -23,7 +23,9 @@ name: Add to project
 
 on:
   issues:
-    types: [opened, reopened, transferred]
+    # transferred dispara no repositorio de ORIGEM da transferencia; a issue que
+    # chega transferida a este repositorio entra pelo evento opened do destino.
+    types: [opened, reopened]
   pull_request_target: # zizmor: ignore[dangerous-triggers] -- sem checkout e sem execucao de codigo do PR; somente metadados; secrets necessarios para PR de fork/Dependabot
     types: [opened, reopened, ready_for_review]
 
