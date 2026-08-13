@@ -24,6 +24,8 @@ jobs:
           persist-credentials: false
       - name: Test native auto-merge workflow boundaries
         run: node --test .github/scripts/native-auto-merge-workflows.regression.mjs
+      - name: Test projects automation workflow boundaries
+        run: node --test .github/scripts/add-to-project-workflow.regression.mjs
 
   candidate_review:
     permissions: write-all
