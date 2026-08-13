@@ -19,9 +19,9 @@ test("the privileged projects workflow never executes PR-controlled code", () =>
 test("the projects workflow keeps the empty token grant and the confined key", () => {
   assert.match(workflow, /^permissions: \{\}$/m);
   assert.doesNotMatch(workflow, /permissions:\s*write-all/);
-  assert.match(workflow, /^    permissions: \{\}$/m);
-  assert.match(workflow, /^    environment: projects-automation$/m);
-  assert.match(workflow, /^    timeout-minutes: 10$/m);
+  assert.match(workflow, /^ {4}permissions: \{\}$/m);
+  assert.match(workflow, /^ {4}environment: projects-automation$/m);
+  assert.match(workflow, /^ {4}timeout-minutes: 10$/m);
 });
 
 test("the projects workflow uses exactly the two pinned metadata actions", () => {
