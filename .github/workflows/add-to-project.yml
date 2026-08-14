@@ -33,6 +33,15 @@ name: Add to project
 # cobertura desses PRs vem de reconciliacao por evento confiavel (workflow_run ou
 # agendado, sem executar codigo do PR), e nao deste gatilho.
 #
+# Segunda lacuna conhecida do gatilho, esta documentada pelo GitHub: "branches with names
+# that match certain patterns (such as those which look similar to SHAs) may not trigger
+# workflows with the pull_request_target event". PR aberto de um branch com nome parecido
+# com SHA pode simplesmente nao disparar este workflow. Vale a mesma saida do caso
+# Dependabot: reconciliacao por evento confiavel cobre o que o gatilho nao alcanca.
+#
+# Em resumo, este gatilho garante PR de fork com nome de branch comum; Dependabot e
+# branch com cara de SHA sao lacunas conhecidas e declaradas, nao promessas quebradas.
+#
 # Este workflow usa somente metadados e NAO faz checkout nem executa codigo do PR —
 # invariante que mantem o gatilho privilegiado seguro e justifica a excecao estreita do
 # zizmor na linha do gatilho. Se algum passo futuro precisar de checkout, a excecao deixa
