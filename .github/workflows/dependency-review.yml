@@ -142,6 +142,11 @@ jobs:
       # confiavel vem do ref base protegido (main). Bootstrap: enquanto main ainda
       # nao contiver o verificador (este PR o introduz), usa-se a copia do
       # candidato — desvio que morre no primeiro merge.
+      # Destinacao limpa e nao-symlinkada: um .trusted-boundary pre-colocado pelo
+      # candidato como symlink faria o checkout de main seguir o link e sobrescrever
+      # a arvore do candidato. rm -rf sobre um symlink desfaz o link, nao o alvo.
+      - name: Ensure a clean, non-symlinked trusted destination
+        run: rm -rf .trusted-boundary
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -149,6 +154,10 @@ jobs:
           path: .trusted-boundary
       - name: Test projects automation workflow boundaries
         run: |
+          if [ -L .trusted-boundary ]; then
+            echo "::error::.trusted-boundary must be a real directory, not a symlink"
+            exit 1
+          fi
           verificador=".github/scripts/add-to-project-workflow.regression.mjs"
           confiavel=".trusted-boundary/${verificador}"
           if [ -f "${confiavel}" ]; then
