@@ -67,9 +67,9 @@ Use `AT_RISK` ou `OFF_TRACK` quando for o caso. O `PROJECT_ID` sai de
 **G2 — achado nao corrigido.** Todo bug, falha, limitacao de plataforma ou comportamento
 inesperado que voce encontrar e **nao** resolver na hora vira issue imediatamente, com
 reproducao, ambiente, evidencia, o que ja foi tentado e a hipotese de causa. Use o
-formulario adequado em `.github/ISSUE_TEMPLATE/`. **Excecao de seguranca**: vulnerabilidade,
-exposicao de segredo ou suspeita de qualquer um dos dois nunca vira issue
-publica — siga o reporte privado de `SECURITY.md`.
+formulario adequado em `.github/ISSUE_TEMPLATE/`. **Excecao de seguranca**: nenhum caso coberto
+pelo reporte privado de `SECURITY.md` — nem a suspeita de um deles — vira issue
+publica; siga o canal privado de la.
 
 **G3 — decisao ou aprendizado duravel.** Criterio objetivo: _"isto seria util para quem
 enfrentar este problema daqui a tres meses?"_ Se sim, vira Discussion.
@@ -80,10 +80,14 @@ enfrentar este problema daqui a tres meses?"_ Se sim, vira Discussion.
 
 **G4 — trabalho nao-trivial.** Abra a issue **antes** do PR e referencie com `Closes #N`.
 Isso ativa o fechamento automatico, o campo _Linked pull requests_ e a progressao de Status.
-**Excecao de seguranca** (tambem no G4): correcao de vulnerabilidade nao abre issue
-publica nem carrega `Closes #N` de superficie publica — o rastreio segue o reporte
-privado de `SECURITY.md` e o advisory correspondente; o PR referencia o advisory,
-sem detalhes de exploracao.
+**Excecao de seguranca** (tambem no G4): trabalho que remedia **qualquer caso coberto
+pelo reporte privado de `SECURITY.md`** — a lista de la, nao uma mais estreita: suspeita
+de vulnerabilidade, vazamento de credencial, exposicao de dado privado, bypass de
+autenticacao, problema em fluxo de pagamento, questao de cadeia de suprimentos ou
+configuracao incorreta de deploy — nao abre issue publica nem carrega `Closes #N` de
+superficie publica. O rastreio segue o canal privado do `SECURITY.md` e o advisory
+correspondente; o PR referencia o advisory, sem detalhes de exploracao. Se `SECURITY.md`
+mudar de escopo, vale o texto de la.
 
 ### Valvula de escape
 
