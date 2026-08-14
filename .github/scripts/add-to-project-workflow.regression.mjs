@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const workflow = readFileSync(".github/workflows/add-to-project.yml", "utf8");
+// readFileSync segue symlink: um PR poderia trocar um arquivo protegido por um
+// link para outro que contenha o texto aprovado — o teste passaria, mas o
+// GitHub NAO carrega entradas symlinkadas sob .github/workflows, desativando a
+// automacao em silencio. Toda leitura de arquivo protegido exige arquivo comum.
+const lerRegular = (p) => {
+  const st = lstatSync(p);
+  if (!st.isFile() || st.isSymbolicLink())
+    throw new Error(p + " must be a regular file, not a symlink");
+  return readFileSync(p, "utf8");
+};
+
+const workflow = lerRegular(".github/workflows/add-to-project.yml");
 
 // Normalizacao anti-evasao: YAML aceita a MESMA chave em varias grafias.
 const normaliza = (s) => s.replace(/(["'])([\w-]+)\1(\s*:)/g, "$2$3");
@@ -157,7 +168,7 @@ test("inbound transfers stay covered, per the pinned action contract", () => {
   assert.match(workflow, /types: \[opened, reopened, transferred\]/);
 });
 
-const carrier = readFileSync(".github/workflows/dependency-review.yml", "utf8");
+const carrier = lerRegular(".github/workflows/dependency-review.yml");
 const carrierNorm = normaliza(carrier);
 
 // Predicados canonicos do agregador — a UNICA forma aceita neste repositorio,
@@ -396,6 +407,6 @@ test("the boundary job feeds the required aggregator for every origin", () => {
 // com decisao humana explicita na admissao da queue (tamper-evidence, nao lock).
 test("the candidate verifier is byte-identical to the trusted verifier", () => {
   const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
-  const candidato = readFileSync(".github/scripts/add-to-project-workflow.regression.mjs", "utf8");
+  const candidato = lerRegular(".github/scripts/add-to-project-workflow.regression.mjs");
   assert.equal(candidato, self);
 });
