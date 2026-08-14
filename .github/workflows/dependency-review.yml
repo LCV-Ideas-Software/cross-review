@@ -52,7 +52,10 @@ jobs:
           fail-on-scopes: runtime, development, unknown
 
   dependency_review:
-    permissions: write-all
+    # read-all: com always() este job roda tambem para PR de fork; nenhum passo
+    # escreve (o gate de merge_group so faz leituras e a operacao de mutacao do
+    # native-auto-merge proibe github_token), entao nao ha por que declarar write.
+    permissions: read-all
     name: Dependency Review
     # Job exigido que fica skipped conta como aprovado para o ruleset; por isso
     # o agregador roda para TODA origem (sem gate proprio) e decide por resultado:
@@ -129,5 +132,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # O verificador NAO pode vir apenas da arvore do candidato: um PR que altere
+      # o workflow privilegiado E o proprio verificador se auto-aprovaria. A copia
+      # confiavel vem do ref base protegido (main). Bootstrap: enquanto main ainda
+      # nao contiver o verificador (este PR o introduz), usa-se a copia do
+      # candidato — desvio que morre no primeiro merge.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          path: .trusted-boundary
       - name: Test projects automation workflow boundaries
-        run: node --test .github/scripts/add-to-project-workflow.regression.mjs
+        run: |
+          verificador=".github/scripts/add-to-project-workflow.regression.mjs"
+          confiavel=".trusted-boundary/${verificador}"
+          if [ -f "${confiavel}" ]; then
+            node --test "${confiavel}"
+          else
+            echo "Bootstrap: verificador ausente em main; usando a copia do candidato."
+            node --test "${verificador}"
+          fi
