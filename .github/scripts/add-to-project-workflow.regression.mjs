@@ -22,11 +22,24 @@ test("the privileged projects workflow never executes PR-controlled code", () =>
   assert.doesNotMatch(normalized, /uses\s*:\s*\.\//);
   assert.doesNotMatch(normalized, /\bcontainer\s*:/);
   assert.doesNotMatch(normalized, /\bservices\s*:/);
+  assert.doesNotMatch(normalized, /NODE_OPTIONS/i);
+  // env e obrigatorio para o segredo (zizmor secrets-outside-env), entao as
+  // chaves de ambiente sao PINADAS: qualquer variavel nova (NODE_OPTIONS,
+  // LD_PRELOAD, PATH...) muda a lista e reprova. Em runner Linux, variaveis
+  // eficazes sao case-sensitive e maiusculas — o coletor cobre exatamente isso.
+  const envKeys = [...normalized.matchAll(/^\s*([A-Z][A-Z0-9_]+)\s*:/gm)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(envKeys, [
+    "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
+    "APP_PRIVATE_KEY",
+  ]);
 });
 
 test("the projects workflow bans YAML mechanics that could disguise a key", () => {
-  assert.doesNotMatch(workflow, /\\x|\\u|\\N\{/);
-  assert.doesNotMatch(workflow, /&[A-Za-z]|\*[A-Za-z]/);
+  assert.doesNotMatch(workflow, /\\/);
+  assert.doesNotMatch(workflow, /&/);
+  assert.doesNotMatch(workflow, /\*/);
   assert.doesNotMatch(workflow, /^\s*\?/m);
   assert.doesNotMatch(workflow, /^\s*<</m);
   assert.doesNotMatch(workflow, /!![A-Za-z]/);
@@ -71,7 +84,8 @@ const carrier = readFileSync(".github/workflows/dependency-review.yml", "utf8");
 test("the boundary job feeds the required aggregator for every origin", () => {
   assert.match(carrier, /^ {2}projects_workflow_boundaries:$/m);
   const bloco = carrier.slice(carrier.indexOf("  projects_workflow_boundaries:"));
-  assert.doesNotMatch(bloco, /^ {4}if:/m);
+  assert.doesNotMatch(bloco, /^\s*if\s*:/m);
+  assert.doesNotMatch(bloco, /continue-on-error/);
   assert.match(bloco, /ref: main/);
   assert.match(bloco, /path: \.trusted-boundary/);
   assert.match(bloco, /\.trusted-boundary\/\$\{verificador\}/);
