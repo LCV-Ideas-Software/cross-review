@@ -36,3 +36,16 @@ test("the projects workflow uses exactly the two pinned metadata actions", () =>
 test("inbound transfers stay covered, per the pinned action contract", () => {
   assert.match(workflow, /types: \[opened, reopened, transferred\]/);
 });
+
+const carrier = readFileSync(".github/workflows/dependency-review.yml", "utf8");
+
+// A assercao do invariante so bloqueia merge se o job dedicado alimentar o contexto
+// exigido: precisa estar no needs do agregador e em toda condicao de resultado.
+test("the boundary job feeds the required aggregator", () => {
+  assert.match(carrier, /^ {2}projects_workflow_boundaries:$/m);
+  const bloco = carrier.slice(carrier.indexOf("  projects_workflow_boundaries:"));
+  assert.doesNotMatch(bloco, /^ {4}if:/m);
+  assert.match(carrier, /needs:[\s\S]{0,200}- projects_workflow_boundaries/);
+  assert.match(carrier, /needs\.projects_workflow_boundaries\.result != 'success'/);
+  assert.match(carrier, /needs\.projects_workflow_boundaries\.result == 'success'/);
+});
