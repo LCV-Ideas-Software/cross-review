@@ -47,8 +47,8 @@ const ESPERADO = [
   "on:",
   "  issues:",
   "    # transferred cobre a issue transferida PARA este repositorio: o README da action",
-  "    # pinada lista o evento como o caminho suportado para \"Issues... transferred into",
-  "    # your repository\", e a adicao e idempotente (re-adicionar devolve o mesmo item).",
+  '    # pinada lista o evento como o caminho suportado para "Issues... transferred into',
+  '    # your repository", e a adicao e idempotente (re-adicionar devolve o mesmo item).',
   "    types: [opened, reopened, transferred]",
   "  pull_request_target: # zizmor: ignore[dangerous-triggers] -- sem checkout e sem execucao de codigo do PR; somente metadados; secrets necessarios para PR de fork/Dependabot",
   "    types: [opened, reopened, ready_for_review]",
@@ -60,7 +60,7 @@ const ESPERADO = [
   "permissions: {}",
   "",
   "env:",
-  "  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: \"true\"",
+  '  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"',
   "",
   "concurrency:",
   "  group: add-to-project-${{ github.event.issue.number || github.event.pull_request.number }}",
@@ -111,12 +111,7 @@ const ESPERADO = [
   "          github-token: ${{ steps.token.outputs.token }}",
 ].join("\n");
 const template = new RegExp(
-  "^" +
-    ESPERADO.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(
-      "__QUADRO__",
-      QUADRO,
-    ) +
-    "\\n$",
+  "^" + ESPERADO.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("__QUADRO__", QUADRO) + "\\n$",
 );
 
 test("the privileged projects workflow matches its approved template exactly", () => {
@@ -134,13 +129,8 @@ test("the privileged projects workflow never executes PR-controlled code", () =>
   assert.doesNotMatch(normalized, /\bcontainer\s*:/);
   assert.doesNotMatch(normalized, /\bservices\s*:/);
   assert.doesNotMatch(normalized, /NODE_OPTIONS/i);
-  const envKeys = [...normalized.matchAll(/^\s*([A-Z][A-Z0-9_]+)\s*:/gm)].map(
-    (m) => m[1],
-  );
-  assert.deepEqual(envKeys, [
-    "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
-    "APP_PRIVATE_KEY",
-  ]);
+  const envKeys = [...normalized.matchAll(/^\s*([A-Z][A-Z0-9_]+)\s*:/gm)].map((m) => m[1]);
+  assert.deepEqual(envKeys, ["FORCE_JAVASCRIPT_ACTIONS_TO_NODE24", "APP_PRIVATE_KEY"]);
 });
 
 test("the projects workflow bans YAML mechanics that could disguise a key", () => {
@@ -154,9 +144,7 @@ test("the projects workflow bans YAML mechanics that could disguise a key", () =
 });
 
 test("the projects workflow uses exactly the two pinned metadata actions", () => {
-  const uses = [...normalized.matchAll(/uses\s*:\s*["']?([^\s,"'}\]]+)/g)].map(
-    (m) => m[1],
-  );
+  const uses = [...normalized.matchAll(/uses\s*:\s*["']?([^\s,"'}\]]+)/g)].map((m) => m[1]);
   assert.deepEqual(uses, [
     "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
     "actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd",
@@ -240,23 +228,23 @@ const CANON_BOUNDARY = [
   "          path: .trusted-boundary",
   "      - name: Test projects automation workflow boundaries",
   "        run: |",
-  "          verificador=\".github/scripts/add-to-project-workflow.regression.mjs\"",
-  "          confiavel=\".trusted-boundary/${verificador}\"",
-  "          if [ -f \"${confiavel}\" ]; then",
-  "            node --test \"${confiavel}\"",
+  '          verificador=".github/scripts/add-to-project-workflow.regression.mjs"',
+  '          confiavel=".trusted-boundary/${verificador}"',
+  '          if [ -f "${confiavel}" ]; then',
+  '            node --test "${confiavel}"',
   "          else",
-  "            echo \"Bootstrap: verificador ausente em main; usando a copia do candidato.\"",
-  "            node --test \"${verificador}\"",
+  '            echo "Bootstrap: verificador ausente em main; usando a copia do candidato."',
+  '            node --test "${verificador}"',
   "          fi",
 ].join("\n");
 
 const PERMISSOES_AGREGADOR = [
   "    permissions:",
-  "      actions: read",
-  "      checks: read",
-  "      contents: read",
-  "      pull-requests: read",
-  "      statuses: read",
+  "      actions: read # associacao do merge group com runs/attempts do workflow",
+  "      checks: read # estado dos check runs do feedback dos bots",
+  "      contents: read # dados de repositorio e refs",
+  "      pull-requests: read # associacao do PR e reviews dos bots",
+  "      statuses: read # commit statuses do head do merge group",
 ].join("\n");
 
 test("the boundary job feeds the required aggregator for every origin", () => {
@@ -267,10 +255,7 @@ test("the boundary job feeds the required aggregator for every origin", () => {
     CANON_BOUNDARY.trimEnd(),
     "boundary job must equal its canonical block exactly",
   );
-  const agregador = carrierNorm.slice(
-    carrierNorm.indexOf("  dependency_review:"),
-    inicioBoundary,
-  );
+  const agregador = carrierNorm.slice(carrierNorm.indexOf("  dependency_review:"), inicioBoundary);
   assert.match(agregador, /^ {4}if: \$\{\{ always\(\) \}\}$/m);
   assert.ok(
     agregador.includes(PERMISSOES_AGREGADOR),

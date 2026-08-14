@@ -56,11 +56,11 @@ jobs:
     # feedback, runs): com always() este job roda tambem para PR de fork; nenhum
     # passo escreve e a operacao de mutacao do native-auto-merge proibe github_token.
     permissions:
-      actions: read
-      checks: read
-      contents: read
-      pull-requests: read
-      statuses: read
+      actions: read # associacao do merge group com runs/attempts do workflow
+      checks: read # estado dos check runs do feedback dos bots
+      contents: read # dados de repositorio e refs
+      pull-requests: read # associacao do PR e reviews dos bots
+      statuses: read # commit statuses do head do merge group
     name: Dependency Review
     # Job exigido que fica skipped conta como aprovado para o ruleset; por isso
     # o agregador roda para TODA origem (sem gate proprio) e decide por resultado:
