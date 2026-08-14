@@ -66,7 +66,7 @@ const [
 
 const expectedAllowScripts = {
   "@google/genai": false,
-  "esbuild@0.28.1": true,
+  "esbuild@0.28.2": true,
   "fsevents@2.3.3": true,
   "protobufjs@7.6.5": true,
 };
