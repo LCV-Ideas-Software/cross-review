@@ -21,6 +21,10 @@ by the package: `cross-review` and `cross-review-dashboard`.
 ```bash
 npm test
 npm run check
+npm run lint
+npm run biome
+npm run typecheck
+npm run format:check
 npm run format:public:check
 npm pack --dry-run
 npm run projects:boundaries
