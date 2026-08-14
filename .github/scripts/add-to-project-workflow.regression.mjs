@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const workflow = readFileSync(".github/workflows/add-to-project.yml", "utf8");
 
@@ -238,6 +239,105 @@ const CANON_BOUNDARY = [
   "          fi",
 ].join("\n");
 
+// Cabecalho canonico do carrier (inicio -> jobs:): congela triggers (nada de
+// paths-ignore), permissions de workflow e concurrency, e impede env:/defaults:
+// de nivel de workflow — NODE_OPTIONS/BASH_ENV/shell poisoning do contexto que
+// executa o proprio verificador confiavel.
+const CANON_HEAD = [
+  "name: Dependency Review",
+  "on:",
+  "  pull_request:",
+  "    branches:",
+  "      - main",
+  "  merge_group:",
+  "    types:",
+  "      - checks_requested",
+  "permissions: write-all",
+  "concurrency:",
+  "  group: dependency-review-${{ github.ref }}",
+  "  cancel-in-progress: true",
+  "jobs:",
+].join("\n");
+
+// Job do agregador INTEIRO: igualdade exata — defaults.run.shell, passos extras
+// ou qualquer contrabando dentro do job reprovam por construcao.
+const CANON_AGG = [
+  "  dependency_review:",
+  "    # Somente os reads que o gate de merge_group usa (associacao do PR, estado de",
+  "    # feedback, runs): com always() este job roda tambem para PR de fork; nenhum",
+  "    # passo escreve e a operacao de mutacao do native-auto-merge proibe github_token.",
+  "    permissions:",
+  "      actions: read # associacao do merge group com runs/attempts do workflow",
+  "      checks: read # estado dos check runs do feedback dos bots",
+  "      contents: read # dados de repositorio e refs",
+  "      pull-requests: read # associacao do PR e reviews dos bots",
+  "      statuses: read # commit statuses do head do merge group",
+  "    name: Dependency Review",
+  "    # Job exigido que fica skipped conta como aprovado para o ruleset; por isso",
+  "    # o agregador roda para TODA origem (sem gate proprio) e decide por resultado:",
+  "    # o invariante projects_workflow_boundaries e exigido incondicionalmente e os",
+  "    # jobs com gate de origem so sao exigidos quando a origem os executa.",
+  "    if: ${{ always() }}",
+  "    needs:",
+  "      - workflow_boundaries",
+  "      - candidate_review",
+  "      - projects_workflow_boundaries",
+  "    runs-on: ubuntu-latest",
+  "    timeout-minutes: 30",
+  "    steps:",
+  "      - name: Reject unsuccessful dependency review prerequisite",
+  "        if: >-",
+  "          ${{",
+  "            needs.projects_workflow_boundaries.result != 'success' ||",
+  "            (",
+  "              (",
+  "                github.event_name == 'merge_group' ||",
+  "                github.event.pull_request.head.repo.full_name == github.repository",
+  "              ) &&",
+  "              (",
+  "                needs.workflow_boundaries.result != 'success' ||",
+  "                needs.candidate_review.result != 'success'",
+  "              )",
+  "            )",
+  "          }}",
+  "        run: exit 1",
+  "",
+  "      - name: Preserve the required dependency review context",
+  "        if: >-",
+  "          ${{",
+  "            github.event_name != 'merge_group' &&",
+  "            needs.projects_workflow_boundaries.result == 'success' &&",
+  "            (",
+  "              github.event.pull_request.head.repo.full_name != github.repository ||",
+  "              (",
+  "                needs.workflow_boundaries.result == 'success' &&",
+  "                needs.candidate_review.result == 'success'",
+  "              )",
+  "            )",
+  "          }}",
+  '        run: echo "Dependency review candidate passed."',
+  "",
+  "      - name: Enforce merge-group feedback gate",
+  "        if: >-",
+  "          ${{",
+  "            github.event_name == 'merge_group' &&",
+  "            needs.workflow_boundaries.result == 'success' &&",
+  "            needs.candidate_review.result == 'success' &&",
+  "            needs.projects_workflow_boundaries.result == 'success'",
+  "          }}",
+  "        uses: LCV-Ideas-Software/.github/native-auto-merge@231cd33f27c260a6b01fec26aa1d0eb606e1ee2d # native-auto-merge/v2.1.4",
+  "        with:",
+  "          operation: merge-group-feedback-gate",
+  "          github_token: ${{ github.token }}",
+  "          event_repository: ${{ github.event.repository.full_name }}",
+  "          event_action: ${{ github.event.action }}",
+  "          merge_group_head_sha: ${{ github.event.merge_group.head_sha }}",
+  "          merge_group_base_sha: ${{ github.event.merge_group.base_sha }}",
+  "          merge_group_base_ref: ${{ github.event.merge_group.base_ref }}",
+  "          merge_group_head_ref: ${{ github.event.merge_group.head_ref }}",
+  "",
+].join("\n");
+
 const PERMISSOES_AGREGADOR = [
   "    permissions:",
   "      actions: read # associacao do merge group com runs/attempts do workflow",
@@ -248,6 +348,10 @@ const PERMISSOES_AGREGADOR = [
 ].join("\n");
 
 test("the boundary job feeds the required aggregator for every origin", () => {
+  assert.ok(
+    carrierNorm.startsWith(CANON_HEAD),
+    "carrier head (triggers/permissions/concurrency, no workflow-level env or defaults) must equal its canonical block",
+  );
   const inicioBoundary = carrierNorm.indexOf("  projects_workflow_boundaries:");
   assert.ok(inicioBoundary >= 0, "boundary job missing");
   assert.equal(
@@ -256,6 +360,11 @@ test("the boundary job feeds the required aggregator for every origin", () => {
     "boundary job must equal its canonical block exactly",
   );
   const agregador = carrierNorm.slice(carrierNorm.indexOf("  dependency_review:"), inicioBoundary);
+  assert.equal(
+    agregador.trimEnd(),
+    CANON_AGG.trimEnd(),
+    "aggregator job must equal its canonical block exactly",
+  );
   assert.match(agregador, /^ {4}if: \$\{\{ always\(\) \}\}$/m);
   assert.ok(
     agregador.includes(PERMISSOES_AGREGADOR),
@@ -279,4 +388,14 @@ test("the boundary job feeds the required aggregator for every origin", () => {
   }
   const reject = passos.find((p) => p.startsWith("Reject"));
   assert.match(reject, /^ {8}run: exit 1$/m, "reject step must actually fail");
+});
+
+// Anti-enfraquecimento em dois passos: a copia candidata do verificador precisa
+// ser byte a byte igual ao verificador confiavel em execucao. Atualizar o
+// verificador e LEGITIMO, mas fica vermelho de proposito — a mudanca so entra
+// com decisao humana explicita na admissao da queue (tamper-evidence, nao lock).
+test("the candidate verifier is byte-identical to the trusted verifier", () => {
+  const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const candidato = readFileSync(".github/scripts/add-to-project-workflow.regression.mjs", "utf8");
+  assert.equal(candidato, self);
 });
