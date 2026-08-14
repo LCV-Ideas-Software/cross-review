@@ -66,7 +66,9 @@ Use `AT_RISK` ou `OFF_TRACK` quando for o caso. O `PROJECT_ID` sai de
 **G2 — achado nao corrigido.** Todo bug, falha, limitacao de plataforma ou comportamento
 inesperado que voce encontrar e **nao** resolver na hora vira issue imediatamente, com
 reproducao, ambiente, evidencia, o que ja foi tentado e a hipotese de causa. Use o
-formulario adequado em `.github/ISSUE_TEMPLATE/`.
+formulario adequado em `.github/ISSUE_TEMPLATE/`. **Excecao de seguranca**: vulnerabilidade,
+exposicao de segredo ou suspeita de qualquer um dos dois nunca vira issue
+publica — siga o reporte privado de `SECURITY.md`.
 
 **G3 — decisao ou aprendizado duravel.** Criterio objetivo: _"isto seria util para quem
 enfrentar este problema daqui a tres meses?"_ Se sim, vira Discussion.
