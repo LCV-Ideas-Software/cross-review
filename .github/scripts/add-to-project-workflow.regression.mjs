@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
-import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -426,12 +438,88 @@ test("the boundary job feeds the required aggregator for every origin", () => {
   assert.match(reject, /^ {8}run: exit 1$/m, "reject step must actually fail");
 });
 
-// Anti-enfraquecimento em dois passos: a copia candidata do verificador precisa
-// ser byte a byte igual ao verificador confiavel em execucao. Atualizar o
-// verificador e LEGITIMO, mas fica vermelho de proposito — a mudanca so entra
-// com decisao humana explicita na admissao da queue (tamper-evidence, nao lock).
-test("the candidate verifier is byte-identical to the trusted verifier", () => {
+// Anti-enfraquecimento em dois passos (PR1 troca o verificador por um no-op,
+// PR2 explora o workflow privilegiado) SEM travar a rotacao legitima: se a
+// copia candidata diferir do verificador confiavel em execucao, o confiavel
+// EXECUTA o candidato contra um par legitimo e contra mutantes conhecidos. Um
+// candidato que continue matando os mutantes passa; um no-op reprova. Nao ha
+// deadlock: atualizar o verificador e possivel enquanto as defesas ficarem de pe.
+test("a candidate verifier rotation keeps killing the known mutants", () => {
   const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const candidato = lerRegular(".github/scripts/add-to-project-workflow.regression.mjs");
-  assert.equal(candidato, self);
+  if (candidato === self) return;
+
+  const raiz = mkdtempSync(join(tmpdir(), "rotacao-"));
+  const escreve = (wfTexto, carrierTexto) => {
+    const base = mkdtempSync(join(raiz, "caso-"));
+    mkdirSync(join(base, ".github", "workflows"), { recursive: true });
+    mkdirSync(join(base, ".github", "scripts"), { recursive: true });
+    writeFileSync(join(base, ".github", "workflows", "add-to-project.yml"), wfTexto);
+    writeFileSync(join(base, ".github", "workflows", "dependency-review.yml"), carrierTexto);
+    writeFileSync(
+      join(base, ".github", "scripts", "add-to-project-workflow.regression.mjs"),
+      candidato,
+    );
+    return base;
+  };
+  // O filho NAO pode herdar o contexto do test runner: com NODE_TEST_CONTEXT
+  // herdado, o node --test aninhado reporta como subteste e devolve exit 0
+  // mesmo com falhas — o que faria todo mutante "passar" em silencio.
+  const envLimpo = { ...process.env };
+  delete envLimpo.NODE_TEST_CONTEXT;
+  delete envLimpo.NODE_OPTIONS;
+  const roda = (base) => {
+    try {
+      execFileSync(
+        process.execPath,
+        ["--test", ".github/scripts/add-to-project-workflow.regression.mjs"],
+        { cwd: base, encoding: "utf8", stdio: "pipe", env: envLimpo },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // O par atual ja foi validado pelos testes acima deste mesmo verificador
+  // confiavel, entao serve de caso positivo para o candidato.
+  assert.ok(
+    roda(escreve(workflow, carrier)),
+    "candidate verifier must accept the current, already-validated pair",
+  );
+
+  const mutantes = [
+    [
+      "passo run",
+      workflow.replace("    steps:", "    steps:\n      - { run: echo pwned }"),
+      carrier,
+    ],
+    [
+      "input extra na action de mint",
+      workflow.replace(
+        "          owner:",
+        "          github-api-url: https://attacker.example\n          owner:",
+      ),
+      carrier,
+    ],
+    [
+      "quadro do repositorio trocado",
+      workflow.replace("/projects/" + QUADRO + "\n", "/projects/999999\n"),
+      carrier,
+    ],
+    [
+      "boundary fora do needs",
+      workflow,
+      carrier.replace("\n      - projects_workflow_boundaries", ""),
+    ],
+    [
+      "reject que nao falha",
+      workflow,
+      carrier.replace("        run: exit 1", "        run: exit 0"),
+    ],
+  ];
+  for (const [nome, wfM, caM] of mutantes) {
+    assert.ok(wfM !== workflow || caM !== carrier, "mutant not applied: " + nome);
+    assert.ok(!roda(escreve(wfM, caM)), "candidate verifier must reject the mutant: " + nome);
+  }
 });
