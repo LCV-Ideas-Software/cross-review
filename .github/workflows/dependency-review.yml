@@ -52,10 +52,15 @@ jobs:
           fail-on-scopes: runtime, development, unknown
 
   dependency_review:
-    # read-all: com always() este job roda tambem para PR de fork; nenhum passo
-    # escreve (o gate de merge_group so faz leituras e a operacao de mutacao do
-    # native-auto-merge proibe github_token), entao nao ha por que declarar write.
-    permissions: read-all
+    # Somente os reads que o gate de merge_group usa (associacao do PR, estado de
+    # feedback, runs): com always() este job roda tambem para PR de fork; nenhum
+    # passo escreve e a operacao de mutacao do native-auto-merge proibe github_token.
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+      statuses: read
     name: Dependency Review
     # Job exigido que fica skipped conta como aprovado para o ruleset; por isso
     # o agregador roda para TODA origem (sem gate proprio) e decide por resultado:

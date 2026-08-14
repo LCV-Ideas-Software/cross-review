@@ -5,16 +5,15 @@ import test from "node:test";
 const workflow = readFileSync(".github/workflows/add-to-project.yml", "utf8");
 
 // Normalizacao anti-evasao: YAML aceita a MESMA chave em varias grafias.
-// Chaves com aspas sao normalizadas para a forma plana antes de todo exame.
 const normaliza = (s) => s.replace(/(["'])([\w-]+)\1(\s*:)/g, "$2$3");
 const normalized = normaliza(workflow);
 
+// Quadro dedicado DESTE repositorio — pinado; retargeting reprova.
+const QUADRO = "6";
+
 // O martelo: o workflow privilegiado precisa casar EXATAMENTE com o template
-// aprovado — linha a linha, do inicio ao fim. So o numero do quadro do
-// repositorio varia. Qualquer passo, input (ex.: github-api-url), env, comentario
-// ou grafia YAML fora do template reprova, o que fecha por construcao toda a
-// classe de contrabando textual (chaves explicitas, escapes, continuacoes,
-// inputs novos em actions pinadas).
+// aprovado — linha a linha, arquivo inteiro, quadro pinado. Qualquer input,
+// passo, env, comentario ou grafia YAML fora do template reprova por construcao.
 const ESPERADO = [
   "name: Add to project",
   "",
@@ -115,7 +114,7 @@ const template = new RegExp(
   "^" +
     ESPERADO.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(
       "__QUADRO__",
-      "\\d+",
+      QUADRO,
     ) +
     "\\n$",
 );
@@ -172,115 +171,127 @@ test("inbound transfers stay covered, per the pinned action contract", () => {
 const carrier = readFileSync(".github/workflows/dependency-review.yml", "utf8");
 const carrierNorm = normaliza(carrier);
 
-// Predicados canonicos do agregador — unica forma aceita por passo, em bloco
-// contiguo (comentario nao satisfaz: o passo nao pode conter '#', e o passo
-// tem exatamente UM if, que precisa ser o bloco canonico inteiro).
-const REJECT_Q = [
- "        if: >-",
- "          ${{",
- "            needs.projects_workflow_boundaries.result != 'success' ||",
- "            (",
- "              (",
- "                github.event_name == 'merge_group' ||",
- "                github.event.pull_request.head.repo.full_name == github.repository",
- "              ) &&",
- "              (",
- "                needs.workflow_boundaries.result != 'success' ||",
- "                needs.candidate_review.result != 'success'",
- "              )",
- "            )",
- "          }}",
+// Predicados canonicos do agregador — a UNICA forma aceita neste repositorio,
+// em bloco contiguo com a propria linha "if: >-" (comentario nao falsifica).
+const REJECT_CANON = [
+  "        if: >-",
+  "          ${{",
+  "            needs.projects_workflow_boundaries.result != 'success' ||",
+  "            (",
+  "              (",
+  "                github.event_name == 'merge_group' ||",
+  "                github.event.pull_request.head.repo.full_name == github.repository",
+  "              ) &&",
+  "              (",
+  "                needs.workflow_boundaries.result != 'success' ||",
+  "                needs.candidate_review.result != 'success'",
+  "              )",
+  "            )",
+  "          }}",
 ].join("\n");
-const REJECT_O = [
- "        if: >-",
- "          ${{",
- "            needs.projects_workflow_boundaries.result != 'success' ||",
- "            (",
- "              (",
- "                github.event_name == 'merge_group' ||",
- "                github.event.pull_request.head.repo.full_name == github.repository",
- "              ) &&",
- "              needs.candidate_review.result != 'success'",
- "            )",
- "          }}",
+const PRESERVE_CANON = [
+  "        if: >-",
+  "          ${{",
+  "            github.event_name != 'merge_group' &&",
+  "            needs.projects_workflow_boundaries.result == 'success' &&",
+  "            (",
+  "              github.event.pull_request.head.repo.full_name != github.repository ||",
+  "              (",
+  "                needs.workflow_boundaries.result == 'success' &&",
+  "                needs.candidate_review.result == 'success'",
+  "              )",
+  "            )",
+  "          }}",
 ].join("\n");
-const PRESERVE_Q = [
- "        if: >-",
- "          ${{",
- "            github.event_name != 'merge_group' &&",
- "            needs.projects_workflow_boundaries.result == 'success' &&",
- "            (",
- "              github.event.pull_request.head.repo.full_name != github.repository ||",
- "              (",
- "                needs.workflow_boundaries.result == 'success' &&",
- "                needs.candidate_review.result == 'success'",
- "              )",
- "            )",
- "          }}",
-].join("\n");
-const PRESERVE_O = [
- "        if: >-",
- "          ${{",
- "            github.event_name != 'merge_group' &&",
- "            needs.projects_workflow_boundaries.result == 'success' &&",
- "            (",
- "              github.event.pull_request.head.repo.full_name != github.repository ||",
- "              needs.candidate_review.result == 'success'",
- "            )",
- "          }}",
-].join("\n");
-const ENFORCE_Q = [
- "        if: >-",
- "          ${{",
- "            github.event_name == 'merge_group' &&",
- "            needs.workflow_boundaries.result == 'success' &&",
- "            needs.candidate_review.result == 'success' &&",
- "            needs.projects_workflow_boundaries.result == 'success'",
- "          }}",
-].join("\n");
-const ENFORCE_O = [
- "        if: ${{ github.event_name == 'merge_group' && needs.candidate_review.result == 'success' && needs.projects_workflow_boundaries.result == 'success' }}",
+const ENFORCE_CANON = [
+  "        if: >-",
+  "          ${{",
+  "            github.event_name == 'merge_group' &&",
+  "            needs.workflow_boundaries.result == 'success' &&",
+  "            needs.candidate_review.result == 'success' &&",
+  "            needs.projects_workflow_boundaries.result == 'success'",
+  "          }}",
 ].join("\n");
 
-const TRUSTED_CHECKOUT = [
-  '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
-  '        with:',
-  '          persist-credentials: false',
-  '          ref: main',
-  '          path: .trusted-boundary',
+// Bloco canonico INTEIRO do job de boundary: igualdade exata — sufixos de shell
+// ("|| true"), inputs extras no checkout, troca de comando, tudo reprova.
+const CANON_BOUNDARY = [
+  "  projects_workflow_boundaries:",
+  "    name: Projects workflow boundaries",
+  "    # Sem gate de origem: a assercao do invariante privilegiado roda para TODO PR,",
+  "    # inclusive de fork (evento sem secrets), e tambem no merge_group.",
+  "    runs-on: ubuntu-latest",
+  "    timeout-minutes: 10",
+  "    permissions:",
+  "      contents: read",
+  "    steps:",
+  "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+  "        with:",
+  "          persist-credentials: false",
+  "      # O verificador NAO pode vir apenas da arvore do candidato: um PR que altere",
+  "      # o workflow privilegiado E o proprio verificador se auto-aprovaria. A copia",
+  "      # confiavel vem do ref base protegido (main). Bootstrap: enquanto main ainda",
+  "      # nao contiver o verificador (este PR o introduz), usa-se a copia do",
+  "      # candidato — desvio que morre no primeiro merge.",
+  "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+  "        with:",
+  "          persist-credentials: false",
+  "          ref: main",
+  "          path: .trusted-boundary",
+  "      - name: Test projects automation workflow boundaries",
+  "        run: |",
+  "          verificador=\".github/scripts/add-to-project-workflow.regression.mjs\"",
+  "          confiavel=\".trusted-boundary/${verificador}\"",
+  "          if [ -f \"${confiavel}\" ]; then",
+  "            node --test \"${confiavel}\"",
+  "          else",
+  "            echo \"Bootstrap: verificador ausente em main; usando a copia do candidato.\"",
+  "            node --test \"${verificador}\"",
+  "          fi",
+].join("\n");
+
+const PERMISSOES_AGREGADOR = [
+  "    permissions:",
+  "      actions: read",
+  "      checks: read",
+  "      contents: read",
+  "      pull-requests: read",
+  "      statuses: read",
 ].join("\n");
 
 test("the boundary job feeds the required aggregator for every origin", () => {
-  assert.match(carrierNorm, /^ {2}projects_workflow_boundaries:$/m);
-  const bloco = carrierNorm.slice(
-    carrierNorm.indexOf("  projects_workflow_boundaries:"),
+  const inicioBoundary = carrierNorm.indexOf("  projects_workflow_boundaries:");
+  assert.ok(inicioBoundary >= 0, "boundary job missing");
+  assert.equal(
+    carrierNorm.slice(inicioBoundary).trimEnd(),
+    CANON_BOUNDARY.trimEnd(),
+    "boundary job must equal its canonical block exactly",
   );
-  assert.doesNotMatch(bloco, /^\s*if\s*:/m);
-  assert.doesNotMatch(bloco, /continue-on-error/);
-  assert.ok(bloco.includes(TRUSTED_CHECKOUT), "trusted checkout block missing");
-  assert.match(bloco, /\.trusted-boundary\/\$\{verificador\}/);
   const agregador = carrierNorm.slice(
     carrierNorm.indexOf("  dependency_review:"),
-    carrierNorm.indexOf("  projects_workflow_boundaries:"),
+    inicioBoundary,
   );
   assert.match(agregador, /^ {4}if: \$\{\{ always\(\) \}\}$/m);
-  assert.match(agregador, /^ {4}permissions: read-all$/m);
-  assert.doesNotMatch(agregador, /write-all/);
+  assert.ok(
+    agregador.includes(PERMISSOES_AGREGADOR),
+    "aggregator permissions must be the scoped read block",
+  );
+  assert.doesNotMatch(agregador, /read-all|write-all/);
+  assert.doesNotMatch(agregador, /continue-on-error/);
   assert.match(agregador, /needs:[\s\S]{0,200}- projects_workflow_boundaries/);
   const passos = agregador.split(/^ {6}- name: /m).slice(1);
   const casos = [
-    ["Reject", [REJECT_Q, REJECT_O]],
-    ["Preserve", [PRESERVE_Q, PRESERVE_O]],
-    ["Enforce", [ENFORCE_Q, ENFORCE_O]],
+    ["Reject", REJECT_CANON],
+    ["Preserve", PRESERVE_CANON],
+    ["Enforce", ENFORCE_CANON],
   ];
-  for (const [prefixo, formas] of casos) {
+  for (const [prefixo, canon] of casos) {
     const passo = passos.find((p) => p.startsWith(prefixo));
     assert.ok(passo, prefixo + " step missing");
     const ifs = passo.match(/\bif\s*:/g) || [];
     assert.equal(ifs.length, 1, prefixo + " step must have exactly one if");
-    assert.ok(
-      formas.some((f) => passo.includes(f.replace(/^\n/, ""))),
-      prefixo + " predicate is not canonical",
-    );
+    assert.ok(passo.includes(canon), prefixo + " predicate is not canonical");
   }
+  const reject = passos.find((p) => p.startsWith("Reject"));
+  assert.match(reject, /^ {8}run: exit 1$/m, "reject step must actually fail");
 });
