@@ -4,6 +4,7 @@ import {
   closeSync,
   constants as fsConstants,
   fstatSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -19,10 +20,20 @@ import { fileURLToPath } from "node:url";
 // readFileSync segue symlink: um PR poderia trocar um arquivo protegido por um
 // link para outro que contenha o texto aprovado — o teste passaria, mas o
 // GitHub NAO carrega entradas symlinkadas sob .github/workflows, desativando a
-// automacao em silencio. Abrimos UMA vez com O_NOFOLLOW (recusa symlink no
-// proprio open, sem janela TOCTOU entre checar e ler), validamos o descritor
-// com fstatSync e lemos do mesmo descritor.
+// automacao em silencio. O_NOFOLLOW protege apenas o ULTIMO componente, entao
+// cada diretorio ancestral e verificado antes (trocar .github por um link para
+// a arvore confiavel faria as leituras compararem main consigo mesma). Os
+// ancestrais sao checados por lstat e o arquivo e aberto com O_NOFOLLOW — sao
+// caminhos distintos, sem check-then-use do mesmo alvo.
 const lerRegular = (p) => {
+  const partes = p.split("/");
+  let ancestral = "";
+  for (const parte of partes.slice(0, -1)) {
+    ancestral = ancestral ? ancestral + "/" + parte : parte;
+    const st = lstatSync(ancestral);
+    if (st.isSymbolicLink() || !st.isDirectory())
+      throw new Error(ancestral + " must be a real directory, not a symlink");
+  }
   const fd = openSync(p, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
     if (!fstatSync(fd).isFile()) throw new Error(p + " must be a regular file, not a symlink");
