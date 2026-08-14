@@ -12,7 +12,7 @@ test("the privileged projects workflow never executes PR-controlled code", () =>
   assert.match(workflow, /pull_request_target: # zizmor: ignore\[dangerous-triggers\]/);
   assert.doesNotMatch(
     workflow,
-    /actions\/checkout|actions\/cache|download-artifact|upload-artifact|uses:\s*\.\/|continue-on-error:|^\s*run:/m,
+    /actions\/checkout|actions\/cache|download-artifact|upload-artifact|uses:\s*\.\/|continue-on-error:|^\s*(?:-\s*)?run:/m,
   );
 });
 

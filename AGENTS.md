@@ -98,6 +98,10 @@ com desvios `Bloqueado` e `Descartado`.
 > **Invariante**: as opcoes `Triagem` e `Concluido` estao vinculadas **por ID** a workflows
 > internos do GitHub que nao sao editaveis por API. Podem ser renomeadas; **nunca apagadas**.
 
+> **Atualizacao por quadro**: `Status`, `Area` e `Ciclo` sao campos de projeto com IDs
+> proprios em cada quadro. Atualize os DOIS quadros — o deste repositorio e o portfolio
+> #17 — a cada transicao; ID de opcao de um quadro nunca vale no outro (Discussion org#176).
+
 ### Nada de identificador real em repositorio publico
 
 Issues, PRs e Discussions deste repositorio sao publicos e permanentes. Use placeholders
