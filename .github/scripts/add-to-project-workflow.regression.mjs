@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -438,12 +439,20 @@ test("the boundary job feeds the required aggregator for every origin", () => {
   assert.match(reject, /^ {8}run: exit 1$/m, "reject step must actually fail");
 });
 
-// Anti-enfraquecimento em dois passos (PR1 troca o verificador por um no-op,
-// PR2 explora o workflow privilegiado) SEM travar a rotacao legitima: se a
-// copia candidata diferir do verificador confiavel em execucao, o confiavel
-// EXECUTA o candidato contra um par legitimo e contra mutantes conhecidos. Um
-// candidato que continue matando os mutantes passa; um no-op reprova. Nao ha
-// deadlock: atualizar o verificador e possivel enquanto as defesas ficarem de pe.
+// Rotacao do verificador — DEFESA EM PROFUNDIDADE, NAO PROVA.
+//
+// Se a copia candidata diferir do verificador confiavel, o confiavel executa o
+// candidato contra o par legitimo e contra mutantes conhecidos. Isso mata a
+// rotacao trivialmente vazia (no-op), e so isso. Um corpus finito de mutantes
+// NAO estabelece equivalencia semantica contra entrada adversarial: um
+// candidato malicioso pode reconhecer estas fixtures (ou o diretorio temporario)
+// e aceitar todo o resto. Byte-igualdade tambem nao serve — cria deadlock
+// permanente de rotacao, porque o check exigido nunca mais fica verde.
+//
+// O gate REAL da rotacao e humano e fica fora do candidato: CODEOWNERS marca
+// .github/scripts/ e .github/workflows/ como propriedade do operador, e a
+// aprovacao obrigatoria de code owner (ruleset) e a admissao na merge queue sao
+// o que efetivamente autoriza trocar este arquivo.
 test("a candidate verifier rotation keeps killing the known mutants", () => {
   const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const candidato = lerRegular(".github/scripts/add-to-project-workflow.regression.mjs");
