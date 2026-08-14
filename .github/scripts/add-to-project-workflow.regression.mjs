@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 // readFileSync segue symlink: um PR poderia trocar um arquivo protegido por um
 // link para outro que contenha o texto aprovado — o teste passaria, mas o
 // GitHub NAO carrega entradas symlinkadas sob .github/workflows, desativando a
-// automacao em silencio. Toda leitura de arquivo protegido exige arquivo comum.
+// automacao em silencio. Abrimos UMA vez com O_NOFOLLOW (recusa symlink no
+// proprio open, sem janela TOCTOU entre checar e ler), validamos o descritor
+// com fstatSync e lemos do mesmo descritor.
 const lerRegular = (p) => {
-  const st = lstatSync(p);
-  if (!st.isFile() || st.isSymbolicLink())
-    throw new Error(p + " must be a regular file, not a symlink");
-  return readFileSync(p, "utf8");
+  const fd = openSync(p, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(p + " must be a regular file, not a symlink");
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
 };
 
 const workflow = lerRegular(".github/workflows/add-to-project.yml");
@@ -49,12 +54,18 @@ const ESPERADO = [
   "# estejam neles (addProjectV2ItemById), conforme checklist da issue de rastreamento desta",
   "# implantacao.",
   "#",
-  "# Por que pull_request_target: o evento pull_request nao entrega secrets a PR de fork nem",
-  "# do Dependabot, e o mint da chave do App falharia exatamente nos PRs externos. Este",
-  "# workflow roda no contexto da base, usa somente metadados do evento e NAO faz checkout",
-  "# nem executa codigo do PR. Essa invariante e o que mantem o gatilho privilegiado seguro",
-  "# e justifica a excecao estreita do zizmor na linha do gatilho. Se algum passo futuro",
-  "# precisar de checkout, a excecao deixa de valer e o gatilho deve voltar a pull_request.",
+  "# Por que pull_request_target: em PR de fork o evento pull_request roda sem os secrets do",
+  "# repositorio e o mint da chave do App falharia; pull_request_target roda no contexto da",
+  "# base e alcanca o secret do environment. PR do Dependabot e caso a parte: mesmo em",
+  "# pull_request_target ele so enxerga Dependabot secrets, nao os de Actions/environment",
+  '# (GitHub Docs: "Your secrets are available in Dependabot secrets rather than as GitHub',
+  '# Actions secrets"). Cobertura de Dependabot exige, na ativacao, a MESMA chave privada',
+  "# tambem como Dependabot secret de mesmo nome (secrets.<nome> resolve o Dependabot secret",
+  "# nesse contexto), ou reconciliacao por evento confiavel. Este workflow usa somente",
+  "# metadados e NAO faz checkout nem executa codigo do PR — invariante que mantem o gatilho",
+  "# privilegiado seguro e justifica a excecao estreita do zizmor na linha do gatilho. Se",
+  "# algum passo futuro precisar de checkout, a excecao deixa de valer e o gatilho volta a",
+  "# pull_request.",
   "",
   "on:",
   "  issues:",
@@ -62,7 +73,7 @@ const ESPERADO = [
   '    # pinada lista o evento como o caminho suportado para "Issues... transferred into',
   '    # your repository", e a adicao e idempotente (re-adicionar devolve o mesmo item).',
   "    types: [opened, reopened, transferred]",
-  "  pull_request_target: # zizmor: ignore[dangerous-triggers] -- sem checkout e sem execucao de codigo do PR; somente metadados; secrets necessarios para PR de fork/Dependabot",
+  "  pull_request_target: # zizmor: ignore[dangerous-triggers] -- sem checkout e sem execucao de codigo do PR; somente metadados; secret do environment para PR de fork (Dependabot ve apenas Dependabot secrets, provisionados na ativacao)",
   "    types: [opened, reopened, ready_for_review]",
   "",
   "# Scorecard TokenPermissions exige um bloco permissions em escopo de workflow; a politica",
