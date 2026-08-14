@@ -82,6 +82,12 @@ enfrentar este problema daqui a tres meses?"_ Se sim, vira Discussion.
 - Conhecimento transversal a varios repos (politica de release, regra de ruleset, restricao
   de plataforma) -> Discussions **da organizacao**.
 
+
+**Excecao de seguranca** (tambem no G3): causa raiz, caminho de exploracao ou licao de
+remediacao ligada a **qualquer caso coberto pelo reporte privado de `SECURITY.md`** nao
+vira Discussion publica antes da divulgacao coordenada. Registre no canal privado de
+`SECURITY.md`/advisory correspondente; apos a divulgacao, publique a versao saneada como
+Discussion, sem detalhes de exploracao.
 **G4 — trabalho nao-trivial.** Abra a issue **antes** do PR e referencie com `Closes #N`.
 Isso ativa o fechamento automatico, o campo _Linked pull requests_ e a progressao de Status.
 **Excecao de seguranca** (tambem no G4): trabalho que remedia **qualquer caso coberto
