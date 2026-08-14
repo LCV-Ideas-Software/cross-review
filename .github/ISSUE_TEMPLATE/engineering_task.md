@@ -17,7 +17,6 @@ type: Task
 > account, or deployment configuration, describe scope and validation with placeholder
 > identifiers (e.g. `proj-x`, `exemplo-projeto-000`), never real operational identifiers.
 
-
 ## Objective
 
 ## Scope
