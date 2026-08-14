@@ -6,7 +6,9 @@ on:
   merge_group:
     types:
       - checks_requested
-permissions: write-all
+# Politica enterprise (.github#150): sem write-all. Conjunto vazio no escopo do
+# workflow e grant minimo declarado em cada job.
+permissions: {}
 concurrency:
   group: dependency-review-${{ github.ref }}
   cancel-in-progress: true
@@ -26,7 +28,8 @@ jobs:
         run: node --test .github/scripts/native-auto-merge-workflows.regression.mjs
 
   candidate_review:
-    permissions: write-all
+    permissions:
+      contents: read # a dependency-review-action apenas le diff e manifests
     name: Dependency Review candidate
     runs-on: ubuntu-latest
     timeout-minutes: 10
