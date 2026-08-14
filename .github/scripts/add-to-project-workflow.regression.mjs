@@ -21,7 +21,10 @@ test("the projects workflow keeps the empty token grant and the confined key", (
   assert.match(workflow, /^permissions: \{\}$/m);
   assert.doesNotMatch(workflow, /permissions:\s*write-all/);
   assert.match(workflow, /^ {4}permissions: \{\}$/m);
-  assert.match(workflow, /^ {4}environment: projects-automation$/m);
+  assert.match(
+    workflow,
+    /^ {4}environment:\n {6}name: projects-automation\n {6}deployment: false$/m,
+  );
   assert.match(workflow, /^ {4}timeout-minutes: 10$/m);
 });
 

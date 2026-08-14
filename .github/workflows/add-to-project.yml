@@ -58,7 +58,12 @@ jobs:
     permissions: {}
     # Confina a chave privada do App a este job (zizmor secrets-outside-env).
     # Mesmo padrao ja usado pela organizacao para credenciais de automacao.
-    environment: projects-automation
+    # deployment: false — usa os secrets do environment sem criar um deployment
+    # object por evento de issue/PR (senao cada evento polui o historico de
+    # deployments e aciona integracoes de deployment).
+    environment:
+      name: projects-automation
+      deployment: false
     steps:
       - name: Mint installation token
         id: token
