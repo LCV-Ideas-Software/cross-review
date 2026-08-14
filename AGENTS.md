@@ -23,6 +23,7 @@ npm test
 npm run check
 npm run format:public:check
 npm pack --dry-run
+npm run projects:boundaries
 ```
 
 Regression suites are versioned (`npm run` lists the full set); a change that
