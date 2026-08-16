@@ -8,7 +8,7 @@ import { URL } from "node:url";
 const NATIVE_REF =
   "LCV-Ideas-Software/.github/native-auto-merge@231cd33f27c260a6b01fec26aa1d0eb606e1ee2d # native-auto-merge/v2.1.4";
 const ZIZMOR_REF =
-  "LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@4058fad11eca7c2eb4e9296108667ef6199a6356 # zizmor/v2.0.0";
+  "LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@f90943a06122468b316c05bb88403d2df451b9f8 # zizmor/v2.3.1";
 const CODEQL_SARIF_REF =
   "LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate/v1.0.0";
 
