@@ -12,7 +12,7 @@ on:
     - cron: "43 5 * * 1"
   workflow_dispatch:
 
-permissions: write-all
+permissions: {}
 
 concurrency:
   group: zizmor-${{ github.ref }}
@@ -22,5 +22,44 @@ concurrency:
 jobs:
   zizmor:
     name: Run zizmor
-    permissions: write-all
-    uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@4058fad11eca7c2eb4e9296108667ef6199a6356 # zizmor/v2.0.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # Check out the repository workflows for analysis.
+      security-events: write # Upload the complete Zizmor SARIF result.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enforce Zizmor findings
+        id: enforce
+        continue-on-error: true
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          advanced-security: false
+          annotations: false
+          collect: all
+          persona: auditor
+
+      - name: Publish the complete Zizmor SARIF result
+        if: >-
+          ${{
+            always() &&
+            (
+              github.event_name != 'pull_request' ||
+              (
+                github.event.pull_request.head.repo.full_name == github.repository &&
+                github.event.pull_request.user.login != 'dependabot[bot]'
+              )
+            )
+          }}
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          collect: all
+          persona: auditor
+
+      - name: Preserve the fail-closed Zizmor result
+        if: ${{ always() && steps.enforce.outcome != 'success' }}
+        run: exit 1

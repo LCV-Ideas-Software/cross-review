@@ -7,8 +7,7 @@ import { URL } from "node:url";
 
 const NATIVE_REF =
   "LCV-Ideas-Software/.github/native-auto-merge@231cd33f27c260a6b01fec26aa1d0eb606e1ee2d # native-auto-merge/v2.1.4";
-const ZIZMOR_REF =
-  "LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@4058fad11eca7c2eb4e9296108667ef6199a6356 # zizmor/v2.0.0";
+const ZIZMOR_REF = "zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2";
 const CODEQL_SARIF_REF =
   "LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate/v1.0.0";
 
@@ -38,6 +37,21 @@ function jobBody(workflow, jobName) {
     .findIndex((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line));
   const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
   return lines.slice(start + 1, end).join("\n");
+}
+
+function namedStepBody(job, stepName) {
+  const lines = job.split(/\r?\n/);
+  const start = lines.indexOf(`      - name: ${stepName}`);
+  assert.notEqual(start, -1, `${stepName} step must be present`);
+  const relativeEnd = lines.slice(start + 1).findIndex((line) => /^ {6}- name:\s+/.test(line));
+  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
+  return lines.slice(start, end).join("\n");
+}
+
+function shouldPublishZizmorSarif({ eventName, headRepository, repository, actor }) {
+  return (
+    eventName !== "pull_request" || (headRepository === repository && actor !== "dependabot[bot]")
+  );
 }
 
 function escapeRegex(value) {
@@ -159,7 +173,77 @@ test("the privileged-trigger exception documents both trusted paths", () => {
   assert.match(zizmorConfig, /never check out or\s*#\s*execute pull-request content/);
 });
 
-test("internal reusable Actions identify their component release families", () => {
-  assert.match(zizmorWorkflow, new RegExp(ZIZMOR_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+test("workflow Actions identify their reviewed release families", () => {
+  const zizmor = jobBody(zizmorWorkflow, "zizmor");
+  const enforcement = namedStepBody(zizmor, "Enforce Zizmor findings");
+  const sarif = namedStepBody(zizmor, "Publish the complete Zizmor SARIF result");
+  const failClosed = namedStepBody(zizmor, "Preserve the fail-closed Zizmor result");
+
+  assert.equal(
+    (zizmorWorkflow.match(new RegExp(ZIZMOR_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? [])
+      .length,
+    2,
+  );
+  assert.match(zizmorWorkflow, /permissions:\s*\{\}/);
+  assert.match(zizmorWorkflow, /contents: read/);
+  assert.match(zizmorWorkflow, /security-events: write/);
+  assert.match(enforcement, /id: enforce[\s\S]*continue-on-error: true/);
+  assert.match(enforcement, /advanced-security: false/);
+  assert.match(enforcement, /annotations: false/);
+  assert.doesNotMatch(enforcement, /head\.repo\.full_name|dependabot\[bot\]/);
+  assert.match(sarif, /always\(\)/);
+  assert.match(sarif, /github\.event_name != 'pull_request'/);
+  assert.match(sarif, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+  assert.match(sarif, /github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'/);
+  assert.match(failClosed, /always\(\) && steps\.enforce\.outcome != 'success'/);
+  assert.match(failClosed, /run: exit 1/);
+  assert.match(zizmorWorkflow, /collect: all/);
+  assert.match(zizmorWorkflow, /persona: auditor/);
+  assert.equal((zizmorWorkflow.match(/advanced-security: false/g) ?? []).length, 1);
+  assert.doesNotMatch(
+    zizmorWorkflow,
+    /LCV-Ideas-Software\/\.github\/\.github\/workflows\/zizmor\.yml|write-all/,
+  );
   assert.match(codeqlWorkflow, new RegExp(CODEQL_SARIF_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("Zizmor SARIF publication skips only pull requests with read-only tokens", () => {
+  const repository = "LCV-Ideas-Software/cross-review";
+
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "push",
+      headRepository: repository,
+      repository,
+      actor: "dependabot[bot]",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "pull_request",
+      headRepository: repository,
+      repository,
+      actor: "lcv-leo",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "pull_request",
+      headRepository: "contributor/cross-review",
+      repository,
+      actor: "contributor",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "pull_request",
+      headRepository: repository,
+      repository,
+      actor: "dependabot[bot]",
+    }),
+    false,
+  );
 });
