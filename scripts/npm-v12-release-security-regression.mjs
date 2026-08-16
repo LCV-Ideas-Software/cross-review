@@ -261,14 +261,14 @@ assert.doesNotMatch(
 );
 assert.match(zizmorConfig, /- auto-tag\.yml/);
 
-const repository = "LCV-Ideas-Software/cross-review";
+const repository = "example-owner/example-repository";
 for (const [input, expected] of [
   [{ eventName: "push", headRepository: repository, repository, actor: "dependabot[bot]" }, true],
   [{ eventName: "pull_request", headRepository: repository, repository, actor: "lcv-leo" }, true],
   [
     {
       eventName: "pull_request",
-      headRepository: "contributor/cross-review",
+      headRepository: "contributor/example-repository",
       repository,
       actor: "contributor",
     },
