@@ -12,7 +12,7 @@ on:
     - cron: "43 5 * * 1"
   workflow_dispatch:
 
-permissions: write-all
+permissions: {}
 
 concurrency:
   group: zizmor-${{ github.ref }}
@@ -22,5 +22,19 @@ concurrency:
 jobs:
   zizmor:
     name: Run zizmor
-    permissions: write-all
-    uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@f90943a06122468b316c05bb88403d2df451b9f8 # zizmor/v2.3.1
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Zizmor
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          collect: all
+          persona: auditor

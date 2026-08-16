@@ -7,8 +7,7 @@ import { URL } from "node:url";
 
 const NATIVE_REF =
   "LCV-Ideas-Software/.github/native-auto-merge@231cd33f27c260a6b01fec26aa1d0eb606e1ee2d # native-auto-merge/v2.1.4";
-const ZIZMOR_REF =
-  "LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@f90943a06122468b316c05bb88403d2df451b9f8 # zizmor/v2.3.1";
+const ZIZMOR_REF = "zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2";
 const CODEQL_SARIF_REF =
   "LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate/v1.0.0";
 
@@ -159,7 +158,16 @@ test("the privileged-trigger exception documents both trusted paths", () => {
   assert.match(zizmorConfig, /never check out or\s*#\s*execute pull-request content/);
 });
 
-test("internal reusable Actions identify their component release families", () => {
+test("workflow Actions identify their reviewed release families", () => {
   assert.match(zizmorWorkflow, new RegExp(ZIZMOR_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(zizmorWorkflow, /permissions:\s*\{\}/);
+  assert.match(zizmorWorkflow, /contents: read/);
+  assert.match(zizmorWorkflow, /security-events: write/);
+  assert.match(zizmorWorkflow, /collect: all/);
+  assert.match(zizmorWorkflow, /persona: auditor/);
+  assert.doesNotMatch(
+    zizmorWorkflow,
+    /LCV-Ideas-Software\/\.github\/\.github\/workflows\/zizmor\.yml|write-all/,
+  );
   assert.match(codeqlWorkflow, new RegExp(CODEQL_SARIF_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
