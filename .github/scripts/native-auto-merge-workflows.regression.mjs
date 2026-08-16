@@ -159,12 +159,23 @@ test("the privileged-trigger exception documents both trusted paths", () => {
 });
 
 test("workflow Actions identify their reviewed release families", () => {
-  assert.match(zizmorWorkflow, new RegExp(ZIZMOR_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(
+    (zizmorWorkflow.match(new RegExp(ZIZMOR_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? [])
+      .length,
+    2,
+  );
   assert.match(zizmorWorkflow, /permissions:\s*\{\}/);
   assert.match(zizmorWorkflow, /contents: read/);
   assert.match(zizmorWorkflow, /security-events: write/);
+  assert.match(zizmorWorkflow, /id: enforce[\s\S]*continue-on-error: true/);
+  assert.match(zizmorWorkflow, /advanced-security: false/);
+  assert.match(zizmorWorkflow, /annotations: false/);
   assert.match(zizmorWorkflow, /collect: all/);
   assert.match(zizmorWorkflow, /persona: auditor/);
+  assert.match(
+    zizmorWorkflow,
+    /always\(\) && steps\.enforce\.outcome != 'success'[\s\S]*run: exit 1/,
+  );
   assert.doesNotMatch(
     zizmorWorkflow,
     /LCV-Ideas-Software\/\.github\/\.github\/workflows\/zizmor\.yml|write-all/,

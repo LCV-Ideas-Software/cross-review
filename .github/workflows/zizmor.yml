@@ -33,8 +33,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run Zizmor
+      - name: Enforce Zizmor findings
+        id: enforce
+        continue-on-error: true
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          advanced-security: false
+          annotations: false
+          collect: all
+          persona: auditor
+
+      - name: Publish the complete Zizmor SARIF result
+        if: ${{ always() }}
         uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
           collect: all
           persona: auditor
+
+      - name: Preserve the fail-closed Zizmor result
+        if: ${{ always() && steps.enforce.outcome != 'success' }}
+        run: exit 1
