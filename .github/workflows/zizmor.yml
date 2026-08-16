@@ -44,7 +44,17 @@ jobs:
           persona: auditor
 
       - name: Publish the complete Zizmor SARIF result
-        if: ${{ always() }}
+        if: >-
+          ${{
+            always() &&
+            (
+              github.event_name != 'pull_request' ||
+              (
+                github.event.pull_request.head.repo.full_name == github.repository &&
+                github.event.pull_request.user.login != 'dependabot[bot]'
+              )
+            )
+          }}
         uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
           collect: all

@@ -39,6 +39,21 @@ function jobBody(workflow, jobName) {
   return lines.slice(start + 1, end).join("\n");
 }
 
+function namedStepBody(job, stepName) {
+  const lines = job.split(/\r?\n/);
+  const start = lines.indexOf(`      - name: ${stepName}`);
+  assert.notEqual(start, -1, `${stepName} step must be present`);
+  const relativeEnd = lines.slice(start + 1).findIndex((line) => /^ {6}- name:\s+/.test(line));
+  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
+  return lines.slice(start, end).join("\n");
+}
+
+function shouldPublishZizmorSarif({ eventName, headRepository, repository, actor }) {
+  return (
+    eventName !== "pull_request" || (headRepository === repository && actor !== "dependabot[bot]")
+  );
+}
+
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -159,6 +174,11 @@ test("the privileged-trigger exception documents both trusted paths", () => {
 });
 
 test("workflow Actions identify their reviewed release families", () => {
+  const zizmor = jobBody(zizmorWorkflow, "zizmor");
+  const enforcement = namedStepBody(zizmor, "Enforce Zizmor findings");
+  const sarif = namedStepBody(zizmor, "Publish the complete Zizmor SARIF result");
+  const failClosed = namedStepBody(zizmor, "Preserve the fail-closed Zizmor result");
+
   assert.equal(
     (zizmorWorkflow.match(new RegExp(ZIZMOR_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? [])
       .length,
@@ -167,18 +187,63 @@ test("workflow Actions identify their reviewed release families", () => {
   assert.match(zizmorWorkflow, /permissions:\s*\{\}/);
   assert.match(zizmorWorkflow, /contents: read/);
   assert.match(zizmorWorkflow, /security-events: write/);
-  assert.match(zizmorWorkflow, /id: enforce[\s\S]*continue-on-error: true/);
-  assert.match(zizmorWorkflow, /advanced-security: false/);
-  assert.match(zizmorWorkflow, /annotations: false/);
+  assert.match(enforcement, /id: enforce[\s\S]*continue-on-error: true/);
+  assert.match(enforcement, /advanced-security: false/);
+  assert.match(enforcement, /annotations: false/);
+  assert.doesNotMatch(enforcement, /head\.repo\.full_name|dependabot\[bot\]/);
+  assert.match(sarif, /always\(\)/);
+  assert.match(sarif, /github\.event_name != 'pull_request'/);
+  assert.match(sarif, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+  assert.match(sarif, /github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'/);
+  assert.match(failClosed, /always\(\) && steps\.enforce\.outcome != 'success'/);
+  assert.match(failClosed, /run: exit 1/);
   assert.match(zizmorWorkflow, /collect: all/);
   assert.match(zizmorWorkflow, /persona: auditor/);
-  assert.match(
-    zizmorWorkflow,
-    /always\(\) && steps\.enforce\.outcome != 'success'[\s\S]*run: exit 1/,
-  );
+  assert.equal((zizmorWorkflow.match(/advanced-security: false/g) ?? []).length, 1);
   assert.doesNotMatch(
     zizmorWorkflow,
     /LCV-Ideas-Software\/\.github\/\.github\/workflows\/zizmor\.yml|write-all/,
   );
   assert.match(codeqlWorkflow, new RegExp(CODEQL_SARIF_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("Zizmor SARIF publication skips only pull requests with read-only tokens", () => {
+  const repository = "LCV-Ideas-Software/cross-review";
+
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "push",
+      headRepository: repository,
+      repository,
+      actor: "dependabot[bot]",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "pull_request",
+      headRepository: repository,
+      repository,
+      actor: "lcv-leo",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "pull_request",
+      headRepository: "contributor/cross-review",
+      repository,
+      actor: "contributor",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPublishZizmorSarif({
+      eventName: "pull_request",
+      headRepository: repository,
+      repository,
+      actor: "dependabot[bot]",
+    }),
+    false,
+  );
 });
