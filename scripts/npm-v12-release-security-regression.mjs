@@ -146,6 +146,26 @@ assert.ok(
     dependabotConfig.includes('patterns:\n          - "*"'),
   "Dependabot must group Python tool updates instead of racing independent lockfile merges",
 );
+assert.doesNotMatch(
+  securityBaseline,
+  /Dependabot auto-merge workflow/i,
+  "the current security baseline must not instruct operators to restore the retired controller",
+);
+assert.match(
+  securityBaseline,
+  /explicit human action in\s+GitHub's native merge queue/,
+  "the current security baseline must preserve explicit native queue admission",
+);
+assert.doesNotMatch(
+  presentation,
+  /automerge de Dependabot/i,
+  "the current presentation must not advertise the retired controller",
+);
+assert.match(
+  presentation,
+  /admissao humana pela merge queue nativa/,
+  "the current presentation must describe explicit native queue admission",
+);
 function topLevelBody(workflow, key) {
   const lines = workflow.split(/\r?\n/);
   const start = lines.indexOf(`${key}:`);
@@ -264,7 +284,10 @@ assert.match(zizmorConfig, /- auto-tag\.yml/);
 const repository = "example-owner/example-repository";
 for (const [input, expected] of [
   [{ eventName: "push", headRepository: repository, repository, actor: "dependabot[bot]" }, true],
-  [{ eventName: "pull_request", headRepository: repository, repository, actor: "lcv-leo" }, true],
+  [
+    { eventName: "pull_request", headRepository: repository, repository, actor: "example-user" },
+    true,
+  ],
   [
     {
       eventName: "pull_request",
