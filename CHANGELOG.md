@@ -14,6 +14,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
 ### Changed
 
 - Substitui o caller reutilizavel interno do Zizmor pela Action oficial `zizmorcore/zizmor-action` fixada em SHA, com checkout sem credenciais, permissoes minimas e publicacao SARIF; aposenta o workflow customizado de Projects que permanecia inerte depois da ativacao das automacoes nativas dos quadros.
+- Aposenta o controlador customizado de Native Auto-merge e seu gate privilegiado de `merge_group`; a admissao continua humana pela merge queue nativa, e o Dependency Review passa a usar somente a Action oficial com permissao de leitura.
 
 ## [v04.05.36] — 05/08/2026
 

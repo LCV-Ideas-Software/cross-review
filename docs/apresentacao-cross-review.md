@@ -808,7 +808,7 @@ O repositório usa workflows para:
 - auto-tag somente após CI verde de um push em `main` e publicação pela tag
   verificada;
 - publicação manual somente por dispatch explícito de uma tag existente;
-- Pages, Scorecard, dependency review e automerge de Dependabot.
+- Pages, Scorecard, dependency review e admissão humana pela merge queue nativa.
 
 O gate de CI executa:
 

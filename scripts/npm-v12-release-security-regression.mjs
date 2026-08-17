@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,8 @@ const [
   serverSource,
   dependabotConfig,
   pythonVersion,
-  nativeAutoMergeWorkflow,
+  dependencyReviewWorkflow,
+  zizmorConfig,
   scorecardWorkflow,
   zizmorWorkflow,
   pagesWorkflow,
@@ -54,7 +55,8 @@ const [
   read("src/mcp/server.ts"),
   read(".github/dependabot.yml"),
   read(".python-version"),
-  read(".github/workflows/native-auto-merge.yml"),
+  read(".github/workflows/dependency-review.yml"),
+  read(".github/zizmor.yml"),
   read(".github/workflows/scorecard.yml"),
   read(".github/workflows/zizmor.yml"),
   read(".github/workflows/pages.yml"),
@@ -73,8 +75,7 @@ const expectedAllowScripts = {
 const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
-const expectedNativeAutoMergeAction =
-  "LCV-Ideas-Software/.github/native-auto-merge@231cd33f27c260a6b01fec26aa1d0eb606e1ee2d";
+const expectedZizmorAction = "zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054";
 const expectedCodeqlSarifGateAction =
   "LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e";
 
@@ -145,85 +146,173 @@ assert.ok(
     dependabotConfig.includes('patterns:\n          - "*"'),
   "Dependabot must group Python tool updates instead of racing independent lockfile merges",
 );
-assert.match(
-  nativeAutoMergeWorkflow,
-  /workflow_run:/,
-  "Dependabot automation must run in the privileged default-branch context only after untrusted PR checks complete",
+assert.doesNotMatch(
+  securityBaseline,
+  /Dependabot auto-merge workflow/i,
+  "the current security baseline must not instruct operators to restore the retired controller",
 );
 assert.match(
-  nativeAutoMergeWorkflow,
-  /workflows:\s*\r?\n\s+- CodeQL\s*\r?\n\s+types:/,
-  "Dependabot automation workflow_run must be triggered only by CodeQL completion",
+  securityBaseline,
+  /explicit human action in\s+GitHub's native merge queue/,
+  "the current security baseline must preserve explicit native queue admission",
+);
+assert.doesNotMatch(
+  presentation,
+  /automerge de Dependabot/i,
+  "the current presentation must not advertise the retired controller",
 );
 assert.match(
-  nativeAutoMergeWorkflow,
-  /pull_request_target:[\s\S]*types:[\s\S]*- review_requested/,
-  "Native auto-merge must reconcile the trusted Copilot review-request wake-up",
+  presentation,
+  /admissão humana pela merge queue nativa/,
+  "the current presentation must describe explicit native queue admission",
 );
-assert.ok(
-  nativeAutoMergeWorkflow.includes(expectedNativeAutoMergeAction),
-  "Native auto-merge must pin the reviewed central action to its immutable commit SHA",
-);
-assert.ok(
-  nativeAutoMergeWorkflow.includes(
-    ["automation_token: $", "{{ secrets.LCV_AUTOMATION_TOKEN }}"].join(""),
-  ) &&
-    nativeAutoMergeWorkflow.includes("environment: dependabot-automation") &&
-    nativeAutoMergeWorkflow.includes("cancel-in-progress: false"),
-  "Native auto-merge must retain the protected credential, environment, and serialization policy",
-);
-for (const [inputName, expectedAssignment, expectedCount = 1] of [
-  [
-    "event_repository",
-    ["event_repository: $", "{{ github.event.repository.full_name }}"].join(""),
-    2,
-  ],
-  ["workflow_name", ["workflow_name: $", "{{ github.event.workflow_run.name }}"].join("")],
-  ["workflow_path", ["workflow_path: $", "{{ github.event.workflow_run.path }}"].join("")],
-  [
-    "workflow_display_title",
-    ["workflow_display_title: $", "{{ github.event.workflow_run.display_title }}"].join(""),
-  ],
-  ["workflow_status", ["workflow_status: $", "{{ github.event.workflow_run.status }}"].join("")],
-  ["workflow_event", ["workflow_event: $", "{{ github.event.workflow_run.event }}"].join("")],
-  [
-    "workflow_head_sha",
-    ["workflow_head_sha: $", "{{ github.event.workflow_run.head_sha }}"].join(""),
-  ],
-  [
-    "workflow_actor_id",
-    ["workflow_actor_id: $", "{{ github.event.workflow_run.actor.id }}"].join(""),
-  ],
-  [
-    "workflow_pull_requests",
-    ["workflow_pull_requests: $", "{{ toJSON(github.event.workflow_run.pull_requests) }}"].join(""),
-  ],
-  ["event_action", ["event_action: $", "{{ github.event.action }}"].join("")],
-  ["pull_number", ["pull_number: $", "{{ github.event.pull_request.number }}"].join("")],
-  ["pull_head_sha", ["pull_head_sha: $", "{{ github.event.pull_request.head.sha }}"].join("")],
-  [
-    "pull_head_repository",
-    ["pull_head_repository: $", "{{ github.event.pull_request.head.repo.full_name }}"].join(""),
-  ],
-  ["pull_base_ref", ["pull_base_ref: $", "{{ github.event.pull_request.base.ref }}"].join("")],
-  [
-    "requested_reviewer_id",
-    ["requested_reviewer_id: $", "{{ github.event.requested_reviewer.id }}"].join(""),
-  ],
-  ["trigger_run_id", ["trigger_run_id: $", "{{ github.run_id }}"].join("")],
-]) {
-  assert.equal(
-    nativeAutoMergeWorkflow.split(/\r?\n/).filter((line) => line.trim() === expectedAssignment)
-      .length,
-    expectedCount,
-    `Native auto-merge must bind ${inputName} exactly ${expectedCount} time(s) to its trusted event field`,
+function topLevelBody(workflow, key) {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.indexOf(`${key}:`);
+  assert.notEqual(start, -1, `${key} must be present`);
+  const relativeEnd = lines.slice(start + 1).findIndex((line) => /^[A-Za-z0-9_-]+:/.test(line));
+  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
+  return lines.slice(start + 1, end).join("\n");
+}
+
+function jobBody(workflow, jobName) {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.indexOf(`  ${jobName}:`);
+  assert.notEqual(start, -1, `${jobName} job must be present`);
+  const relativeEnd = lines
+    .slice(start + 1)
+    .findIndex((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line));
+  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
+  return lines.slice(start + 1, end).join("\n");
+}
+
+function namedStepBody(job, stepName) {
+  const lines = job.split(/\r?\n/);
+  const start = lines.indexOf(`      - name: ${stepName}`);
+  assert.notEqual(start, -1, `${stepName} step must be present`);
+  const relativeEnd = lines.slice(start + 1).findIndex((line) => /^ {6}- name:\s+/.test(line));
+  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
+  return lines.slice(start, end).join("\n");
+}
+
+function shouldPublishZizmorSarif({ eventName, headRepository, repository, actor }) {
+  return (
+    eventName !== "pull_request" || (headRepository === repository && actor !== "dependabot[bot]")
   );
 }
-assert.doesNotMatch(
-  nativeAutoMergeWorkflow,
-  /schedule:|workflow_dispatch:|actions\/checkout|dependabot-automerge@|required_checks_json:/,
-  "Native auto-merge must remain event-driven and delegate policy to the immutable central action",
+
+await assert.rejects(
+  access(path.join(root, ".github/workflows/native-auto-merge.yml")),
+  { code: "ENOENT" },
+  "the retired Native Auto-merge controller must stay absent",
 );
+
+const dependencyReviewJob = jobBody(dependencyReviewWorkflow, "dependency_review");
+assert.match(
+  topLevelBody(dependencyReviewWorkflow, "on"),
+  /pull_request:[\s\S]*merge_group:[\s\S]*checks_requested/,
+  "Dependency Review must validate both pull requests and merge groups",
+);
+assert.match(dependencyReviewWorkflow, /^permissions: \{\}$/m);
+assert.match(dependencyReviewJob, /^ {4}name: Dependency Review$/m);
+assert.match(dependencyReviewJob, /permissions:[\s\S]*contents: read/);
+assert.match(
+  dependencyReviewJob,
+  /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1[\s\S]*persist-credentials: false/,
+);
+assert.equal(
+  (
+    dependencyReviewJob.match(
+      /actions\/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294/g,
+    ) ?? []
+  ).length,
+  2,
+  "Dependency Review must pin the official action for PR and merge-group paths",
+);
+assert.match(dependencyReviewJob, /base-ref: \$\{\{ github\.event\.merge_group\.base_sha \}\}/);
+assert.match(dependencyReviewJob, /head-ref: \$\{\{ github\.event\.merge_group\.head_sha \}\}/);
+assert.match(
+  topLevelBody(dependencyReviewWorkflow, "concurrency"),
+  /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
+  "merge-group evidence must never be cancelled by PR concurrency",
+);
+assert.doesNotMatch(
+  dependencyReviewWorkflow,
+  /native-auto-merge|merge-group-feedback-gate|write-all|Dependency Review candidate|Native auto-merge workflow boundaries|secrets\./,
+  "Dependency Review must not retain the privileged custom controller or its legacy contexts",
+);
+
+const zizmorJob = jobBody(zizmorWorkflow, "zizmor");
+const zizmorEnforcement = namedStepBody(zizmorJob, "Enforce Zizmor findings");
+const zizmorSarif = namedStepBody(zizmorJob, "Publish the complete Zizmor SARIF result");
+const zizmorFailClosed = namedStepBody(zizmorJob, "Preserve the fail-closed Zizmor result");
+assert.equal(
+  (zizmorWorkflow.match(new RegExp(expectedZizmorAction, "g")) ?? []).length,
+  2,
+  "Zizmor enforcement and SARIF publication must use the exact official Action pin",
+);
+assert.match(zizmorWorkflow, /permissions:\s*\{\}/);
+assert.match(zizmorWorkflow, /contents: read/);
+assert.match(zizmorWorkflow, /security-events: write/);
+assert.match(zizmorEnforcement, /id: enforce[\s\S]*continue-on-error: true/);
+assert.match(zizmorEnforcement, /advanced-security: false/);
+assert.match(zizmorEnforcement, /annotations: false/);
+assert.doesNotMatch(zizmorEnforcement, /head\.repo\.full_name|dependabot\[bot\]/);
+assert.match(zizmorSarif, /always\(\)/);
+assert.match(zizmorSarif, /github\.event_name != 'pull_request'/);
+assert.match(
+  zizmorSarif,
+  /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+);
+assert.match(zizmorSarif, /github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'/);
+assert.match(zizmorFailClosed, /always\(\) && steps\.enforce\.outcome != 'success'/);
+assert.match(zizmorFailClosed, /run: exit 1/);
+assert.match(zizmorWorkflow, /collect: all/);
+assert.match(zizmorWorkflow, /persona: auditor/);
+assert.equal((zizmorWorkflow.match(/advanced-security: false/g) ?? []).length, 1);
+assert.doesNotMatch(
+  zizmorWorkflow,
+  /write-all|LCV-Ideas-Software\/\.github\/\.github\/workflows\/zizmor\.yml/,
+);
+assert.doesNotMatch(
+  zizmorConfig,
+  /native-auto-merge\.yml/,
+  "Zizmor must not waive the retired privileged trigger",
+);
+assert.match(zizmorConfig, /- auto-tag\.yml/);
+
+const repository = "example-owner/example-repository";
+for (const [input, expected] of [
+  [{ eventName: "push", headRepository: repository, repository, actor: "dependabot[bot]" }, true],
+  [
+    { eventName: "pull_request", headRepository: repository, repository, actor: "example-user" },
+    true,
+  ],
+  [
+    {
+      eventName: "pull_request",
+      headRepository: "contributor/example-repository",
+      repository,
+      actor: "contributor",
+    },
+    false,
+  ],
+  [
+    {
+      eventName: "pull_request",
+      headRepository: repository,
+      repository,
+      actor: "dependabot[bot]",
+    },
+    false,
+  ],
+]) {
+  assert.equal(
+    shouldPublishZizmorSarif(input),
+    expected,
+    "Zizmor SARIF publication must skip only PR origins with read-only tokens",
+  );
+}
 function assertCodeqlReadyForReviewTrigger(workflow) {
   const lines = workflow.split(/\r?\n/);
   const pullRequestStart = lines.indexOf("  pull_request:");

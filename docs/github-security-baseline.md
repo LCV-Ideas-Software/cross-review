@@ -14,7 +14,9 @@ Required repository settings after the remote is created:
 5. Enable Dependabot alerts.
 6. Enable Dependabot security updates.
 7. Enable Dependabot version updates from `.github/dependabot.yml`.
-8. Enable Dependabot auto-merge workflow only after branch rules are active.
+8. Admit Dependabot pull requests only through an explicit human action in
+   GitHub's native merge queue after branch rules are active; do not enable a
+   repository-owned auto-merge controller.
 9. Protect `main` with a repository ruleset.
 10. Require code scanning results with CodeQL security alerts: All / alerts: All.
 11. Require code quality thresholds: Any / Any.
