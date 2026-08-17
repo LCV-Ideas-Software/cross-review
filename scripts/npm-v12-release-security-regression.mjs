@@ -163,7 +163,7 @@ assert.doesNotMatch(
 );
 assert.match(
   presentation,
-  /admissao humana pela merge queue nativa/,
+  /admissão humana pela merge queue nativa/,
   "the current presentation must describe explicit native queue admission",
 );
 function topLevelBody(workflow, key) {
