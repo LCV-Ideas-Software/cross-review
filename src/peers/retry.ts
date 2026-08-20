@@ -274,9 +274,20 @@ export async function withRetry<T>(
       const currentRetryBilling = retryBillingFromError(error);
       if (currentRetryBilling) priorRetryBilling.push(currentRetryBilling);
       // Record this try's own spend before retrying: one unpriced attempt
-      // unless its billing was captured as priced, carrying its own class's
-      // indeterminate share into the aggregate marker.
-      if (!currentRetryBilling || currentRetryBilling.accountedAttempts === 0) {
+      // unless its billing was captured, carrying its own class's
+      // indeterminate share into the aggregate marker. Captured billing
+      // means the try's spend is KNOWN even when it is not counted in
+      // accounted_attempts (truncation recoveries bill the failed try's
+      // tokens): the classified failure reports it (billing_status
+      // "reported" when the error carried usage/cost), and adapters that
+      // accumulate internally flag it on the retry-billing record.
+      const billingCaptured =
+        last.billing_status === "reported" ||
+        (currentRetryBilling !== undefined &&
+          (currentRetryBilling.accountedAttempts > 0 ||
+            currentRetryBilling.usage !== undefined ||
+            currentRetryBilling.cost !== undefined));
+      if (!billingCaptured) {
         priorTrySpend.unpricedAttempts += 1;
         priorTrySpend.indeterminateAttempts += indeterminateSpendMarkerFor(
           last.failure_class,

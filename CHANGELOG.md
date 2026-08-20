@@ -35,6 +35,12 @@ standard `v00.00.00`; npm package versions remain SemVer.
   `[timeout, auth]` keeps the timeout try indeterminate instead of settling
   it as zero under the terminal final class. (PR #214 gate, round-1 codex
   finding)
+- A failed try whose billing WAS captured is not counted as unpriced by the
+  per-try accumulator: truncation recoveries (OpenAI `max_output_tokens`,
+  Gemini `MAX_TOKENS`) bill the failed try's tokens, so the classified
+  failure reports the spend and the wrapper no longer stamps
+  `unpriced_attempts`/`indeterminate_spend_attempts` on the recovered
+  result. (v4.5.6 runtime-contract regressions, caught by CI on this PR)
 
 ## [v04.05.41] — 20/08/2026
 
