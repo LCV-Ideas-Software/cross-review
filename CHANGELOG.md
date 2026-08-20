@@ -21,6 +21,14 @@ standard `v00.00.00`; npm package versions remain SemVer.
   `startsWith`: records read from disk are not shape-validated, so a legacy
   record lacking `message` no longer crashes the merge. (PR #212 gate,
   round-3 perplexity finding)
+- Every failure producer now stamps `indeterminate_spend_attempts` alongside
+  `unpriced_attempts` through a shared helper: the central provider-error
+  classifier, the Gemini/Anthropic/retry billing mergers and the fabricated
+  interrupted-attempt records. Freshly produced quota/auth skips no longer
+  match the legacy fail-closed trio and stop blocking generation — observed
+  live in the PR #214 gate session, where a single-attempt auth skip
+  finalized the session as `generation_budget_preflight` despite three raw
+  READY votes.
 
 ## [v04.05.41] — 20/08/2026
 
