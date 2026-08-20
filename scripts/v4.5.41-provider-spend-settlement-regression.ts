@@ -355,6 +355,38 @@ const regressions: Regression[] = [
         1,
         "a success after an indeterminate try must stamp the per-try share on the result",
       );
+      // Round-2 grok finding: a PRICED success whose shape declares no
+      // unpriced_attempts of its own must still persist the wrapper-observed
+      // shares — deleting both fields dropped the earlier indeterminate try.
+      const cfg3 = fixtureConfig("retry-aggregation-priced-success");
+      cfg3.retry = { ...cfg3.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let tries3 = 0;
+      const pricedResult = await withRetry(
+        cfg3,
+        async () => {
+          tries3 += 1;
+          if (tries3 === 1) throw new Error("Request timeout");
+          return {
+            cost: { currency: "USD", estimated: false, source: "configured-rate", total_cost: 0.2 },
+          } as {
+            cost?: unknown;
+            unpriced_attempts?: number;
+            indeterminate_spend_attempts?: number;
+          };
+        },
+        (error, attempt, startedAt) =>
+          classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+      );
+      assert.equal(
+        pricedResult.unpriced_attempts,
+        1,
+        "the wrapper-observed unpriced try must persist on a priced success",
+      );
+      assert.equal(
+        pricedResult.indeterminate_spend_attempts,
+        1,
+        "the earlier indeterminate try must persist on a priced success",
+      );
     },
   },
   {

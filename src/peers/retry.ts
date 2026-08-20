@@ -57,7 +57,13 @@ function mergeRetryBillingIntoResult<T>(
   const costItems = [...prior.map((item) => item.cost), record.cost];
   if (costItems.some(Boolean)) record.cost = mergeCost(costItems);
   const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
-  const unpriced = Math.max(0, (record.unpriced_attempts ?? 0) - priorAccounted);
+  // The adapter may or may not have counted the earlier failed tries in the
+  // result's own unpriced_attempts; the wrapper observed them directly, so
+  // take the larger of the two views instead of dropping the wrapper's
+  // (round-2 grok finding, session f131f43f: deleting both fields on a
+  // priced success fail-opened an earlier indeterminate try).
+  const declaredUnpriced = Math.max(0, (record.unpriced_attempts ?? 0) - priorAccounted);
+  const unpriced = Math.max(declaredUnpriced, priorSpend.unpricedAttempts);
   if (unpriced > 0) {
     record.unpriced_attempts = unpriced;
     // Settlement writers derive an unknown billing status from unpriced
