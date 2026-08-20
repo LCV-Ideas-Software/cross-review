@@ -6,9 +6,9 @@ import path from "node:path";
 import {
   ensureHostTokens,
   executeWindowsTokensFileAclCommands,
+  getWindowsCurrentUserSid,
   getWindowsTokensFileAclCommands,
   getWindowsTokensFileAclVerificationCommand,
-  getWindowsCurrentUserSid,
   getWindowsTokensFileProtectedEmptyDaclRecoveryCommand,
   type HostTokensLoadDiagnostics,
   loadHostTokens,
