@@ -10,8 +10,9 @@ for security fixes after publication.
 v04.05.39 closes three residual caller-token recovery gaps found after the
 v04.05.37 merge. One boot never repeats a failed permission recovery; a file
 that is confirmed missing after an existence precheck may safely reach the
-exclusive-create path; and the trusted-console Windows recipe verifies the
-exact protected DACL before restart. Other failures remain fail-closed.
+exclusive-create path; and the trusted-console Windows recipe replaces only an
+observed protected-empty DACL, then verifies the exact protected DACL before
+restart. Other failures remain fail-closed.
 
 v04.05.38 does not change runtime behavior. It locks the T2#10 source-regex
 test debt at the current `smoke=129`, `source-contract=29`, total `158`

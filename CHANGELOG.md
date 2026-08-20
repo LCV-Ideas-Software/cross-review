@@ -16,7 +16,8 @@ standard `v00.00.00`; npm package versions remain SemVer.
   Windows recovery is no longer repeated in one boot, while an entry that
   disappears between the existence precheck and load reaches the exclusive
   create path instead of remaining unavailable.
-- Extends the trusted-console Windows recovery block to read the descriptor
+- Extends the trusted-console Windows recovery block to refuse replacement
+  unless the existing descriptor is protected and empty, then read the result
   back and require the protected, explicit, deduplicated FullControl allowlist
   for the current user, SYSTEM and Administrators before recommending restart.
 
