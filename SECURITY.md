@@ -2,10 +2,15 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.37 for package 4.5.37. This
+Current supported source/release target: v04.05.38 for package 4.5.38. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.05.38 does not change runtime behavior. It locks the T2#10 source-regex
+test debt at the current `smoke=129`, `source-contract=29`, total `158`
+baseline, preventing future broad source-style regex pins from consuming the
+two-pin allowance retained by the older gate.
 
 v04.05.37 makes Windows caller-token ACL hardening interruption-tolerant and
 self-healing for one initial `EACCES`/`EPERM` without rotating the capability

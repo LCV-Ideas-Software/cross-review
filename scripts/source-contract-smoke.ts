@@ -529,12 +529,12 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     `T2#10 / source-contract split: scripts/smoke.ts has ${sourceStylePins} source-style regex pins; keep new static contracts in scripts/source-contract-smoke.ts.`,
   );
   assert.ok(
-    sourceContractStylePins <= 31,
-    `T2#10 / source-contract split: scripts/source-contract-smoke.ts has ${sourceContractStylePins} source-style regex pins; keep the contract file below the corrected baseline.`,
+    sourceContractStylePins <= 29,
+    `T2#10 / source-contract split: scripts/source-contract-smoke.ts has ${sourceContractStylePins} source-style regex pins; keep the contract file at or below the locked 29-pin baseline.`,
   );
   assert.ok(
-    totalSourceStylePins <= 160,
-    `T2#10 / source-contract split: combined smoke source-style regex pins are ${totalSourceStylePins}; keep the total below the corrected v4.4.4 baseline.`,
+    totalSourceStylePins <= 158,
+    `T2#10 / source-contract split: combined smoke source-style regex pins are ${totalSourceStylePins}; keep the total at or below the locked 158-pin baseline.`,
   );
   console.log("[source-contract-smoke] smoke_source_contract_budget_test: PASS");
 }

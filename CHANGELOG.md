@@ -7,6 +7,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.38] — 20/08/2026
+
+### Changed
+
+- Locks the T2#10 source-regex debt at its current `smoke=129`,
+  `source-contract=29`, total `158` baseline. The prior `31`/`160` ceilings
+  accepted one or two new broad source-style regex pins after the incidental
+  reduction, so they no longer preserved the lower debt level.
+
+### Verification
+
+- The source-contract smoke passes at `129`/`29`/`158`; an in-memory mutation
+  that adds one source-style regex pin is rejected by the tightened budget but
+  was accepted by the previous ceilings.
+
 ## [v04.05.37] — 20/08/2026
 
 ### Added
