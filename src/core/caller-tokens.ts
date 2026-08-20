@@ -37,6 +37,51 @@ export const TOKEN_FILE_MANUAL_RECOVERY = [
   "Never paste resolved paths or token values into issues, prompts, or logs.",
 ].join(" ");
 
+export type HostTokensLoadFailure =
+  | "missing"
+  | "permission_denied"
+  | "permission_hardening_failed"
+  | "invalid_content"
+  | "unsafe_entry"
+  | "io_error";
+
+export interface HostTokensLoadDiagnostics {
+  failure: HostTokensLoadFailure | null;
+}
+
+export interface TokenFileRecoveryContext {
+  failure?: HostTokensLoadFailure | null;
+  platform?: NodeJS.Platform;
+}
+
+const TOKEN_FILE_POSIX_PERMISSION_RECOVERY = [
+  "Manual recovery from a trusted human console only: stop the MCP host; verify that the configured entry is the intended regular, non-symlink token file owned by the service account;",
+  "restore owner-only access with `chmod 600 '<token-file>'`; restart the host and verify that server_info reports caller_tokens.loaded=true.",
+  "Never paste resolved paths or token values into issues, prompts, or logs.",
+].join(" ");
+
+const TOKEN_FILE_INVALID_CONTENT_RECOVERY = [
+  "The caller-token record has invalid content; ACL replacement cannot repair it.",
+  "From a trusted human console, stop the MCP host and restore a known-good protected backup, or move the invalid record aside locally, restart once without CROSS_REVIEW_CALLER_TOKEN to generate a new record, redistribute the rotated tokens to their matching hosts, then restart and verify caller_tokens.loaded=true with server_info.",
+  "Never paste the record path, contents, or token values into issues, prompts, or logs.",
+].join(" ");
+
+function getTokenFileRecoveryGuidance(context: TokenFileRecoveryContext): string {
+  const failure = context.failure ?? null;
+  const platform = context.platform ?? process.platform;
+  if (failure === "permission_denied" || failure === "permission_hardening_failed") {
+    return platform === "win32" ? TOKEN_FILE_MANUAL_RECOVERY : TOKEN_FILE_POSIX_PERMISSION_RECOVERY;
+  }
+  if (failure === "invalid_content") return TOKEN_FILE_INVALID_CONTENT_RECOVERY;
+  if (failure === "unsafe_entry") {
+    return "The configured caller-token entry is a symlink, non-regular file, or could not be verified safely. Stop the MCP host and inspect the configured entry locally; replace it only with a known-good protected regular file or correct CROSS_REVIEW_TOKENS_FILE, then restart and verify caller_tokens.loaded=true with server_info. Never paste resolved paths or token values into issues, prompts, or logs.";
+  }
+  if (failure === "missing") {
+    return "The caller-token record is missing. From a trusted human console, stop the MCP host and confirm the configured data directory or CROSS_REVIEW_TOKENS_FILE location. If the record was lost, keep the target absent, restart once without CROSS_REVIEW_CALLER_TOKEN to generate a new record, redistribute the rotated tokens, then restart and verify caller_tokens.loaded=true with server_info.";
+  }
+  return "The caller-token record failed for a non-permission I/O or unknown reason. Stop the MCP host and inspect the configured local storage without exposing its path or contents; restore a known-good protected regular file or correct the storage/configuration error, then restart and verify caller_tokens.loaded=true with server_info. Do not apply an ACL replacement unless the failure is confirmed as the documented permission-recovery case.";
+}
+
 export type CallerIdentity = PeerId | "operator";
 export const CALLER_IDENTITIES: readonly CallerIdentity[] = [...PEERS, "operator"];
 export type HostTokensMap = Record<CallerIdentity, string>;
@@ -65,7 +110,7 @@ export interface OpenedTokensFile {
 export interface TokensFilePermissionRecoveryOperations {
   platform?: NodeJS.Platform;
   openFile?: (filePath: string) => number;
-  hardenPermissions?: (filePath: string) => boolean;
+  repairProtectedEmptyDacl?: (filePath: string) => boolean;
   captureSafeIdentity?: (filePath: string) => TokensFileIdentity | null;
   openedFileMatchesIdentity?: (
     filePath: string,
@@ -79,6 +124,7 @@ export interface EnsureHostTokensOperations {
   load?: (dataDir: string) => HostTokensRecord | null;
   generate?: (dataDir: string, options?: { overwrite?: boolean }) => HostTokensRecord | null;
   tokensFileEntryExists?: (filePath: string) => boolean;
+  diagnostics?: HostTokensLoadDiagnostics;
 }
 
 export interface WindowsTokensFileAclCommand {
@@ -197,6 +243,46 @@ export function getWindowsTokensFileAclVerificationCommand(
   };
 }
 
+export function getWindowsTokensFileProtectedEmptyDaclRecoveryCommand(
+  filePath: string,
+  currentUserSid: string,
+): WindowsTokensFileAclCommand {
+  const recoveryScript = [
+    "$ErrorActionPreference = 'Stop'",
+    "& {",
+    ...getWindowsTokensFileAclBindingScript(),
+    "$fileInfo = New-Object System.IO.FileInfo($Path)",
+    "if ($null -ne $fileInfo.PSObject.Methods['GetAccessControl']) {",
+    "  $observedAcl = $fileInfo.GetAccessControl()",
+    "} else {",
+    "  $observedAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo)",
+    "}",
+    "if (-not $observedAcl.AreAccessRulesProtected) { exit 21 }",
+    "$observedRules = @($observedAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+    "if ($observedRules.Count -ne 0) { exit 22 }",
+    "$acl = New-Object System.Security.AccessControl.FileSecurity",
+    "$acl.SetAccessRuleProtection($true, $false)",
+    "$allowed = New-Object 'System.Collections.Generic.HashSet[string]'",
+    "foreach ($sidText in @($CurrentUserSid, 'S-1-5-18', 'S-1-5-32-544')) { $null = $allowed.Add($sidText) }",
+    "foreach ($sidText in $allowed) {",
+    "  $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText)",
+    "  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)",
+    "  $null = $acl.AddAccessRule($rule)",
+    "}",
+    "if ($null -ne $fileInfo.PSObject.Methods['SetAccessControl']) {",
+    "  $fileInfo.SetAccessControl($acl)",
+    "} else {",
+    "  [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $acl)",
+    "}",
+    "}",
+  ].join("; ");
+  return {
+    executable: "powershell.exe",
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", recoveryScript],
+    input: getWindowsTokensFileAclInput(filePath, currentUserSid),
+  };
+}
+
 export function executeWindowsTokensFileAclCommands(
   commands: readonly WindowsTokensFileAclCommand[],
   execute: WindowsTokensFileAclCommandExecutor = (command) =>
@@ -228,6 +314,23 @@ function verifyWindowsTokensFilePermissions(filePath: string, currentUserSid: st
   return executeWindowsTokensFileAclCommands([
     getWindowsTokensFileAclVerificationCommand(filePath, currentUserSid),
   ]);
+}
+
+function repairWindowsProtectedEmptyTokensFileDacl(filePath: string): boolean {
+  try {
+    const currentUserSid = getWindowsCurrentUserSid();
+    if (!currentUserSid) return false;
+    if (
+      !executeWindowsTokensFileAclCommands([
+        getWindowsTokensFileProtectedEmptyDaclRecoveryCommand(filePath, currentUserSid),
+      ])
+    ) {
+      return false;
+    }
+    return verifyWindowsTokensFilePermissions(filePath, currentUserSid);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -323,7 +426,8 @@ export function openTokensFileWithPermissionRecovery(
 ): OpenedTokensFile {
   const platform = operations.platform ?? process.platform;
   const openFile = operations.openFile ?? openTokensFile;
-  const hardenPermissions = operations.hardenPermissions ?? hardenTokensFilePermissions;
+  const repairProtectedEmptyDacl =
+    operations.repairProtectedEmptyDacl ?? repairWindowsProtectedEmptyTokensFileDacl;
   const captureSafeIdentity = operations.captureSafeIdentity ?? captureSafeTokensFileIdentity;
   const matchesIdentity = operations.openedFileMatchesIdentity ?? openedFileMatchesIdentity;
   const closeFile = operations.closeFile ?? fs.closeSync;
@@ -334,7 +438,7 @@ export function openTokensFileWithPermissionRecovery(
     if (platform !== "win32" || !isPermissionDenied(initialError)) throw initialError;
 
     const identity = captureSafeIdentity(filePath);
-    if (!identity || !hardenPermissions(filePath)) throw initialError;
+    if (!identity || !repairProtectedEmptyDacl(filePath)) throw initialError;
 
     const fd = openFile(filePath);
     if (!matchesIdentity(filePath, fd, identity)) {
@@ -454,14 +558,26 @@ export function generateHostTokens(
   return { filePath, map, generated_at: payload.generated_at };
 }
 
-export function loadHostTokens(dataDir: string): HostTokensRecord | null {
+function failHostTokensLoad(
+  diagnostics: HostTokensLoadDiagnostics | undefined,
+  failure: HostTokensLoadFailure,
+): null {
+  if (diagnostics) diagnostics.failure = failure;
+  return null;
+}
+
+export function loadHostTokens(
+  dataDir: string,
+  diagnostics?: HostTokensLoadDiagnostics,
+): HostTokensRecord | null {
   const filePath = getTokensFilePath(dataDir);
   let fd: number | null = null;
+  if (diagnostics) diagnostics.failure = null;
   try {
     const opened = openTokensFileWithPermissionRecovery(filePath);
     fd = opened.fd;
     if (!hardenOpenedTokensFilePermissions(filePath, fd, opened.permissionsHardened)) {
-      return null;
+      return failHostTokensLoad(diagnostics, "permission_hardening_failed");
     }
 
     const raw = fs.readFileSync(fd, "utf8");
@@ -469,7 +585,7 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      return null;
+      return failHostTokensLoad(diagnostics, "invalid_content");
     }
     if (
       typeof parsed !== "object" ||
@@ -478,7 +594,7 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
       typeof (parsed as { tokens?: unknown }).tokens !== "object" ||
       (parsed as { tokens?: unknown }).tokens === null
     ) {
-      return null;
+      return failHostTokensLoad(diagnostics, "invalid_content");
     }
     const tokensIn = (parsed as { tokens: Record<string, unknown> }).tokens;
     const map = {} as HostTokensMap;
@@ -486,11 +602,11 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
     for (const identity of PEERS) {
       const tok = tokensIn[identity];
       if (typeof tok !== "string" || tok.length !== TOKEN_HEX_LENGTH || !/^[0-9a-f]+$/i.test(tok)) {
-        return null;
+        return failHostTokensLoad(diagnostics, "invalid_content");
       }
       const normalizedToken = tok.toLowerCase();
       if (seen.has(normalizedToken)) {
-        return null;
+        return failHostTokensLoad(diagnostics, "invalid_content");
       }
       seen.add(normalizedToken);
       map[identity] = normalizedToken;
@@ -503,7 +619,7 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
       !seen.has(storedOperatorToken.toLowerCase())
         ? storedOperatorToken.toLowerCase()
         : crypto.randomBytes(TOKEN_BYTES).toString("hex");
-    if (seen.has(operatorToken)) return null;
+    if (seen.has(operatorToken)) return failHostTokensLoad(diagnostics, "invalid_content");
     seen.add(operatorToken);
     map.operator = operatorToken;
 
@@ -532,15 +648,18 @@ export function loadHostTokens(dataDir: string): HostTokensRecord | null {
       generated_at: typeof generated_at === "string" ? generated_at : null,
     };
   } catch (err: unknown) {
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      "code" in err &&
-      (err as { code?: string }).code === "ENOENT"
-    ) {
-      return null;
+    const code =
+      typeof err === "object" && err !== null && "code" in err
+        ? String((err as { code?: unknown }).code)
+        : "";
+    if (code === "ENOENT") return failHostTokensLoad(diagnostics, "missing");
+    if (["EACCES", "EPERM"].includes(code)) {
+      return failHostTokensLoad(diagnostics, "permission_denied");
     }
-    return null;
+    if (["ELOOP", "ENOTDIR", "EISDIR"].includes(code)) {
+      return failHostTokensLoad(diagnostics, "unsafe_entry");
+    }
+    return failHostTokensLoad(diagnostics, "io_error");
   } finally {
     if (fd !== null) {
       try {
@@ -570,19 +689,30 @@ export function ensureHostTokens(
   dataDir: string,
   operations: EnsureHostTokensOperations = {},
 ): HostTokensRecord | null {
-  const load = operations.load ?? loadHostTokens;
+  const diagnostics = operations.diagnostics;
+  const load =
+    operations.load ?? ((targetDataDir: string) => loadHostTokens(targetDataDir, diagnostics));
   const generate = operations.generate ?? generateHostTokens;
   const entryExists = operations.tokensFileEntryExists ?? tokensFileEntryExists;
+  const filePath = getTokensFilePath(dataDir);
+  const entryExistedBeforeLoad = entryExists(filePath);
 
   const existing = load(dataDir);
   if (existing) return existing;
   // An existing but unreadable/invalid/symlinked entry must remain fail-closed.
   // In particular, do not invoke load a second time and repeat ACL recovery in
   // one boot. A second load is reserved for the genuine concurrent-create race.
-  if (entryExists(getTokensFilePath(dataDir))) return null;
+  if (entryExistedBeforeLoad) return null;
+  // Another host may have created a complete record after the first absence
+  // probe or while the first load observed ENOENT. Load that newly appeared
+  // entry once before attempting our own exclusive create.
+  if (entryExists(filePath)) return load(dataDir);
 
   const generated = generate(dataDir);
-  if (generated) return generated;
+  if (generated) {
+    if (diagnostics) diagnostics.failure = null;
+    return generated;
+  }
   return load(dataDir);
 }
 
@@ -628,12 +758,13 @@ export function isHardEnforceMode(): boolean {
 export function verifyTokenForCaller(
   declaredCaller: CallerIdentity,
   tokensRecord: HostTokensRecord | null,
+  recoveryContext: TokenFileRecoveryContext = {},
 ): TokenVerification {
   const presented = getEnvToken();
   if (!presented) return { method: "absent", verified: false };
   if (!tokensRecord?.map) {
     throw new Error(
-      `identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN is set but the local caller-token record could not be loaded. Automatic Windows access repair is attempted once only for EACCES/EPERM; invalid content, unsafe paths and persistent denials remain fail-closed. ${TOKEN_FILE_MANUAL_RECOVERY}`,
+      `identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN is set but the local caller-token record could not be loaded. ${getTokenFileRecoveryGuidance(recoveryContext)}`,
     );
   }
   const identity = resolveAgentForToken(presented, tokensRecord.map);

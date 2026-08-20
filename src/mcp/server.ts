@@ -353,6 +353,8 @@ import {
   ensureHostTokens,
   generateHostTokens as f1GenerateHostTokens,
   getParentProcessSnapshot,
+  type HostTokensLoadDiagnostics,
+  type HostTokensLoadFailure,
   type HostTokensRecord,
   isHardEnforceMode,
   type ParentProcessSnapshot,
@@ -360,19 +362,24 @@ import {
 } from "../core/caller-tokens.js";
 
 let HOST_TOKENS_RECORD: HostTokensRecord | null = null;
+let HOST_TOKENS_LOAD_FAILURE: HostTokensLoadFailure | null = null;
 
 export function getHostTokensRecord(): HostTokensRecord | null {
   return HOST_TOKENS_RECORD;
 }
 export function setHostTokensRecord(record: HostTokensRecord | null): void {
   HOST_TOKENS_RECORD = record;
+  HOST_TOKENS_LOAD_FAILURE = null;
 }
 export function initHostTokensRecord(dataDir: string): void {
+  const diagnostics: HostTokensLoadDiagnostics = { failure: null };
   try {
-    const record = ensureHostTokens(dataDir);
+    const record = ensureHostTokens(dataDir, { diagnostics });
     HOST_TOKENS_RECORD = record || null;
+    HOST_TOKENS_LOAD_FAILURE = record ? null : diagnostics.failure;
   } catch {
     HOST_TOKENS_RECORD = null;
+    HOST_TOKENS_LOAD_FAILURE = "io_error";
   }
 }
 
@@ -426,7 +433,9 @@ export function verifyCallerIdentity(
         `identity_forgery_blocked: caller='operator' is not permitted from an agent-identified host. clientInfo.name='${clientInfo?.name}' resolves to ${candidates.join(", ")}; declare the actual peer identity (and present its token when required).`,
       );
     }
-    const tokenResult = verifyTokenForCaller("operator", HOST_TOKENS_RECORD);
+    const tokenResult = verifyTokenForCaller("operator", HOST_TOKENS_RECORD, {
+      failure: HOST_TOKENS_LOAD_FAILURE,
+    });
     if (!tokenResult.verified) {
       throw new Error(
         "operator_authority_required: caller='operator' requires the dedicated operator capability token in CROSS_REVIEW_CALLER_TOKEN. Use a separate human-console MCP host; never place this token in a model host.",
@@ -455,7 +464,9 @@ export function verifyCallerIdentity(
   let identity_verified = candidates.length === 1;
 
   // Token overlay (v2.18.0 F1).
-  const tokenResult = verifyTokenForCaller(declaredCaller, HOST_TOKENS_RECORD);
+  const tokenResult = verifyTokenForCaller(declaredCaller, HOST_TOKENS_RECORD, {
+    failure: HOST_TOKENS_LOAD_FAILURE,
+  });
   if (tokenResult.verified) {
     verification_method = "token";
     identity_verified = true;

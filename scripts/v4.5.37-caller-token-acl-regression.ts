@@ -8,6 +8,8 @@ import {
   executeWindowsTokensFileAclCommands,
   getWindowsTokensFileAclCommands,
   getWindowsTokensFileAclVerificationCommand,
+  getWindowsTokensFileProtectedEmptyDaclRecoveryCommand,
+  type HostTokensLoadDiagnostics,
   loadHostTokens,
   openTokensFileWithPermissionRecovery,
   TOKEN_FILE_MANUAL_RECOVERY,
@@ -43,6 +45,11 @@ assert.equal(portablePlan[0]?.executable, "powershell.exe");
 const portableReplacementScript = portablePlan[0]?.args[4] ?? "";
 const portableVerificationScript =
   getWindowsTokensFileAclVerificationCommand("<token-file>", "S-1-5-21-1000").args[4] ?? "";
+const portableRecoveryCommand = getWindowsTokensFileProtectedEmptyDaclRecoveryCommand(
+  "<token-file>",
+  "S-1-5-21-1000",
+);
+const portableRecoveryScript = portableRecoveryCommand.args[4] ?? "";
 assert.match(portableReplacementScript, /FileSecurity/);
 assert.match(portableReplacementScript, /SetAccessRuleProtection\(\$true, \$false\)/);
 assert.match(portableReplacementScript, /SetAccessControl/);
@@ -54,6 +61,21 @@ assert.match(
 assert.match(portableVerificationScript, /\$seen\.Add\(\$sid\)/);
 assert.match(portableVerificationScript, /\$allowed\.Contains\(\$sid\)/);
 assert.match(portableVerificationScript, /foreach \(\$required in \$allowed\)/);
+assert.ok(
+  portableRecoveryScript.indexOf("AreAccessRulesProtected") <
+    portableRecoveryScript.indexOf("SetAccessControl"),
+  "recovery must validate the protected descriptor before replacing it",
+);
+assert.ok(
+  portableRecoveryScript.indexOf("$observedRules.Count -ne 0") <
+    portableRecoveryScript.indexOf("SetAccessControl"),
+  "recovery must reject every non-empty DACL before replacement",
+);
+assert.doesNotMatch(
+  JSON.stringify(portableRecoveryCommand.args),
+  /<token-file>|S-1-5-21-1000/,
+  "recovery path and SID must never enter PowerShell's command text or argv parser",
+);
 assert.doesNotMatch(
   JSON.stringify(portablePlan[0]?.args),
   /<token-file>|S-1-5-21-1000/,
@@ -106,7 +128,7 @@ const portableRecovered = openTokensFileWithPermissionRecovery("fixture", {
     if (portableOpenCalls === 1) throw eacces();
     return 71;
   },
-  hardenPermissions: () => {
+  repairProtectedEmptyDacl: () => {
     portableHardenCalls += 1;
     return true;
   },
@@ -127,7 +149,7 @@ assert.throws(
         persistentOpenCalls += 1;
         throw eacces();
       },
-      hardenPermissions: () => {
+      repairProtectedEmptyDacl: () => {
         persistentHardenCalls += 1;
         return true;
       },
@@ -139,6 +161,29 @@ assert.throws(
 );
 assert.equal(persistentOpenCalls, 2, "persistent EACCES must not loop beyond one reopen");
 assert.equal(persistentHardenCalls, 1, "persistent EACCES must not reharden in a loop");
+
+let unrelatedDenyRepairCalls = 0;
+const unrelatedDenyOperations = {
+  platform: "win32" as const,
+  openFile: () => {
+    throw eacces();
+  },
+  repairProtectedEmptyDacl: () => {
+    unrelatedDenyRepairCalls += 1;
+    return false;
+  },
+  captureSafeIdentity: () => fakeIdentity,
+};
+assert.throws(
+  () => openTokensFileWithPermissionRecovery("fixture", unrelatedDenyOperations),
+  /fixture access denied/,
+  "an unrelated Windows denial must remain fail-closed",
+);
+assert.equal(
+  unrelatedDenyRepairCalls,
+  1,
+  "Windows denial recovery must inspect and repair only the protected-empty-DACL state",
+);
 
 let ensureLoadCalls = 0;
 let ensureGenerateCalls = 0;
@@ -180,6 +225,40 @@ assert.equal(
 assert.equal(raceLoadCalls, 2, "only the genuine concurrent-create path may load twice");
 assert.equal(raceGenerateCalls, 1, "the concurrent-create path must attempt generation once");
 
+let appearedLoadCalls = 0;
+let appearedEntryChecks = 0;
+let appearedGenerateCalls = 0;
+const appearedRecord = {
+  filePath: "fixture",
+  map: {} as never,
+  generated_at: null,
+};
+assert.deepEqual(
+  ensureHostTokens("fixture", {
+    load: () => {
+      appearedLoadCalls += 1;
+      return appearedLoadCalls === 1 ? null : appearedRecord;
+    },
+    generate: () => {
+      appearedGenerateCalls += 1;
+      throw new Error("generation must not run after a concurrently created entry is observed");
+    },
+    tokensFileEntryExists: () => {
+      appearedEntryChecks += 1;
+      return appearedEntryChecks >= 2;
+    },
+  }),
+  appearedRecord,
+  "a token file created between the initial load and the post-load existence check must be loaded",
+);
+assert.equal(appearedEntryChecks, 2, "the concurrent-appearance path must bracket the first load");
+assert.equal(
+  appearedLoadCalls,
+  2,
+  "the newly appeared valid entry must receive one bounded reload",
+);
+assert.equal(appearedGenerateCalls, 0, "a newly appeared entry must be loaded before generation");
+
 for (const platform of ["linux", "darwin"] as const) {
   let hardenCalls = 0;
   assert.throws(
@@ -189,7 +268,7 @@ for (const platform of ["linux", "darwin"] as const) {
         openFile: () => {
           throw eacces();
         },
-        hardenPermissions: () => {
+        repairProtectedEmptyDacl: () => {
           hardenCalls += 1;
           return true;
         },
@@ -208,7 +287,7 @@ assert.throws(
       openFile: () => {
         throw Object.assign(new Error("fixture missing"), { code: "ENOENT" });
       },
-      hardenPermissions: () => {
+      repairProtectedEmptyDacl: () => {
         otherErrorHardenCalls += 1;
         return true;
       },
@@ -226,7 +305,7 @@ assert.throws(
       openFile: () => {
         throw eacces();
       },
-      hardenPermissions: () => {
+      repairProtectedEmptyDacl: () => {
         unsafePathHardenCalls += 1;
         return true;
       },
@@ -250,7 +329,7 @@ assert.throws(
           return 72;
         };
       })(),
-      hardenPermissions: () => true,
+      repairProtectedEmptyDacl: () => true,
       captureSafeIdentity: () => fakeIdentity,
       openedFileMatchesIdentity: () => false,
       closeFile: () => {
@@ -270,7 +349,10 @@ process.env.CROSS_REVIEW_CALLER_TOKEN = sentinelToken;
 process.env.CROSS_REVIEW_TOKENS_FILE = sentinelPath;
 let recoveryMessage = "";
 try {
-  verifyTokenForCaller("codex", null);
+  verifyTokenForCaller("codex", null, {
+    failure: "permission_denied",
+    platform: "win32",
+  });
 } catch (error: unknown) {
   recoveryMessage = String((error as Error).message);
 }
@@ -282,10 +364,62 @@ assert.match(recoveryMessage, /restart the host/);
 assert.match(recoveryMessage, /server_info.*caller_tokens\.loaded=true/);
 assert.doesNotMatch(recoveryMessage, new RegExp(sentinelToken));
 assert.doesNotMatch(recoveryMessage, /private-sentinel/i);
+
+let invalidContentMessage = "";
+try {
+  verifyTokenForCaller("codex", null, {
+    failure: "invalid_content",
+    platform: "win32",
+  });
+} catch (error: unknown) {
+  invalidContentMessage = String((error as Error).message);
+}
+assert.match(invalidContentMessage, /invalid content/i);
+assert.match(invalidContentMessage, /known-good|generate a new/i);
+assert.doesNotMatch(
+  invalidContentMessage,
+  /FileSecurity|SetAccessControl/,
+  "invalid JSON must not suggest Windows ACL replacement",
+);
+
+let posixPermissionMessage = "";
+try {
+  verifyTokenForCaller("codex", null, {
+    failure: "permission_denied",
+    platform: "linux",
+  });
+} catch (error: unknown) {
+  posixPermissionMessage = String((error as Error).message);
+}
+assert.match(posixPermissionMessage, /chmod 600/);
+assert.doesNotMatch(
+  posixPermissionMessage,
+  /FileSecurity|SetAccessControl/,
+  "POSIX access denial must not suggest Windows ACL replacement",
+);
 if (previousPortableToken === undefined) delete process.env.CROSS_REVIEW_CALLER_TOKEN;
 else process.env.CROSS_REVIEW_CALLER_TOKEN = previousPortableToken;
 if (previousPortablePath === undefined) delete process.env.CROSS_REVIEW_TOKENS_FILE;
 else process.env.CROSS_REVIEW_TOKENS_FILE = previousPortablePath;
+
+const invalidRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v4537-invalid-token-"));
+const invalidPath = path.join(invalidRoot, "host-tokens.json");
+const previousInvalidPath = process.env.CROSS_REVIEW_TOKENS_FILE;
+try {
+  fs.writeFileSync(invalidPath, "{invalid-json", { mode: 0o600 });
+  process.env.CROSS_REVIEW_TOKENS_FILE = invalidPath;
+  const diagnostics: HostTokensLoadDiagnostics = { failure: null };
+  assert.equal(loadHostTokens(invalidRoot, diagnostics), null);
+  assert.equal(
+    diagnostics.failure,
+    "invalid_content",
+    "invalid JSON must be classified independently from permission failures",
+  );
+} finally {
+  if (previousInvalidPath === undefined) delete process.env.CROSS_REVIEW_TOKENS_FILE;
+  else process.env.CROSS_REVIEW_TOKENS_FILE = previousInvalidPath;
+  fs.rmSync(invalidRoot, { recursive: true, force: true });
+}
 
 if (process.platform !== "win32") {
   console.log(
@@ -366,6 +500,10 @@ try {
   runIcacls([tokenPath, "/reset"]);
   const plannedCommands = getWindowsTokensFileAclCommands(tokenPath, currentUserSid);
   const verificationCommand = getWindowsTokensFileAclVerificationCommand(tokenPath, currentUserSid);
+  const protectedEmptyRecoveryCommand = getWindowsTokensFileProtectedEmptyDaclRecoveryCommand(
+    tokenPath,
+    currentUserSid,
+  );
   const manualRecipeTemplate = TOKEN_FILE_MANUAL_RECOVERY.match(/`([^`]+)`/)?.[1];
   assert.ok(manualRecipeTemplate, "manual recovery guidance must contain one PowerShell block");
   if (!manualRecipeTemplate) throw new Error("manual recovery PowerShell block is unavailable");
@@ -411,6 +549,17 @@ try {
     assert.doesNotThrow(
       () => fs.readFileSync(tokenPath, "utf8"),
       `${engineName} ACL replacement must leave the token file readable`,
+    );
+    const unrelatedAclRecoveryResult = executeWithEngine(protectedEmptyRecoveryCommand);
+    assert.notEqual(
+      unrelatedAclRecoveryResult.status,
+      0,
+      `${engineName} must refuse recovery when the protected DACL is non-empty`,
+    );
+    assert.equal(
+      executeWithEngine(verificationCommand).status,
+      0,
+      `${engineName} refusal must leave the existing exact DACL unchanged`,
     );
     runIcacls([tokenPath, "/reset"]);
     const manualRecoveryResult = spawnSync(
