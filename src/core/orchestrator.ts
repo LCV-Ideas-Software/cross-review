@@ -4199,6 +4199,7 @@ export class CrossReviewOrchestrator {
                 latency_ms: judgment.latency_ms,
                 attempts: judgment.attempts,
                 unpriced_attempts: judgment.unpriced_attempts,
+                indeterminate_spend_attempts: judgment.indeterminate_spend_attempts,
                 parser_warnings:
                   judgment.parser_warnings.length > 0 ? judgment.parser_warnings : undefined,
               },
@@ -4696,6 +4697,7 @@ export class CrossReviewOrchestrator {
             latency_ms: judgment.latency_ms,
             attempts: judgment.attempts,
             unpriced_attempts: judgment.unpriced_attempts,
+            indeterminate_spend_attempts: judgment.indeterminate_spend_attempts,
             parser_warnings:
               judgment.parser_warnings.length > 0 ? judgment.parser_warnings : undefined,
           },
