@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 20/08/2026: `4.5.41`. O registro pode ficar
+> Estado do source/release target em 20/08/2026: `4.5.42`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -628,6 +628,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                    |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.42`      | Registros legados de gasto mesclados preservam o estado fail-closed em re-merges (tentativas não-precificadas sem marcador contam como indeterminadas) e o sentinel de interrupção tolera registro legado sem message.                                                                   |
 | `v04.05.41`      | Falha terminal de provedor sem usage liquida como custo zero (destrava o preflight de orçamento que matava sessões com peer sem quota); receita manual dedicada para falha de hardening; receitas verificam o descritor por handle exclusivo e comparam FullControl por igualdade exata. |
 | `v04.05.40`      | Resolve whoami/powershell por caminho absoluto de System32 (o whoami GNU do Git Bash quebrava o boot; PATH gravável não substitui mais o motor da DACL), eleva os tetos dos spawns de boot (10s→60s; 5s→15s) e classifica a etapa/causa da falha no erro.                                |
 | `v04.05.39`      | Impede retry de recuperação de caller token no mesmo boot, recria somente após desaparecimento confirmado e faz a receita manual substituir apenas uma DACL protegida e vazia antes de validar o resultado exato.                                                                        |

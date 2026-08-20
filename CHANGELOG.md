@@ -7,6 +7,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.42] — 20/08/2026
+
+### Fixed
+
+- Legacy merged spend records (explicit unpriced attempts without the
+  `indeterminate_spend_attempts` marker) now keep their fail-closed state
+  when merged again at either merge boundary: their unpriced attempts count
+  as indeterminate in the re-merged record instead of being re-stamped as a
+  zero marker that hid them as new-format settled spend. (PR #212 gate,
+  round-3 codex finding)
+- The interrupted-attempt sentinel check guards `message` before calling
+  `startsWith`: records read from disk are not shape-validated, so a legacy
+  record lacking `message` no longer crashes the merge. (PR #212 gate,
+  round-3 perplexity finding)
+
 ## [v04.05.41] — 20/08/2026
 
 ### Fixed
