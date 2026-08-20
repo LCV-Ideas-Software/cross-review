@@ -29,10 +29,57 @@ import { PEERS } from "./types.js";
 
 export const TOKEN_BYTES = 32;
 export const TOKEN_HEX_LENGTH = TOKEN_BYTES * 2;
+
+// Shared PowerShell body for both Windows manual-recovery recipes. The first
+// descriptor application must go by name: a quarantined protected-empty DACL
+// denies every data-handle open (FileStream always requests SYNCHRONIZE,
+// which owner-implicit READ_CONTROL/WRITE_DAC never cover), so no handle can
+// exist before the descriptor grants the console user access again. The
+// recipe then binds to one exclusively held ChangePermissions handle and
+// re-applies and verifies the descriptor through it, so the object that ends
+// up verified is the object the handle holds — a pathname swap after the
+// bind can neither be modified nor pass verification.
+function buildWindowsManualRecoveryBlock(requireProtectedEmptyDacl: boolean): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$path = '<token-file>'",
+    "$currentUserSid = '<current-user-SID>'",
+    "$entry = Get-Item -LiteralPath $path -Force",
+    "if ($entry -isnot [System.IO.FileInfo] -or ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { throw 'caller-tokens: manual ACL recovery refused; expected a regular non-reparse token file' }",
+    "$fileInfo = New-Object System.IO.FileInfo($path)",
+    ...(requireProtectedEmptyDacl
+      ? [
+          "if ($null -ne $fileInfo.PSObject.Methods['GetAccessControl']) { $observedAcl = $fileInfo.GetAccessControl() } else { $observedAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo) }",
+          "if (-not $observedAcl.AreAccessRulesProtected) { throw 'caller-tokens: manual ACL recovery refused; expected protected empty DACL' }",
+          "$observedRules = @($observedAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+          "if ($observedRules.Count -ne 0) { throw 'caller-tokens: manual ACL recovery refused; expected protected empty DACL' }",
+        ]
+      : []),
+    "$acl = New-Object System.Security.AccessControl.FileSecurity",
+    "$acl.SetAccessRuleProtection($true, $false)",
+    "$allowed = New-Object 'System.Collections.Generic.HashSet[string]'",
+    "foreach ($sidText in @($currentUserSid, 'S-1-5-18', 'S-1-5-32-544')) { $null = $allowed.Add($sidText) }",
+    "foreach ($sidText in $allowed) { $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText); $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow); $null = $acl.AddAccessRule($rule) }",
+    "if ($null -ne $fileInfo.PSObject.Methods['SetAccessControl']) { $fileInfo.SetAccessControl($acl) } else { [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $acl) }",
+    "$aclRights = [System.Security.AccessControl.FileSystemRights]'ReadData, ReadPermissions, ChangePermissions'",
+    "if ($PSVersionTable.PSVersion.Major -ge 6) { $stream = [System.IO.FileSystemAclExtensions]::Create((New-Object System.IO.FileInfo($path)), [System.IO.FileMode]::Open, $aclRights, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $null) } else { $stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::Open, $aclRights, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None) }",
+    "try { if ($null -ne $stream.PSObject.Methods['SetAccessControl']) { $stream.SetAccessControl($acl) } else { [System.IO.FileSystemAclExtensions]::SetAccessControl($stream, $acl) }; if ($null -ne $stream.PSObject.Methods['GetAccessControl']) { $verifiedAcl = $stream.GetAccessControl() } else { $verifiedAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($stream) }; if (-not $verifiedAcl.AreAccessRulesProtected) { throw 'caller-tokens: manual ACL verification failed' }; $rules = @($verifiedAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); if ($rules.Count -ne $allowed.Count) { throw 'caller-tokens: manual ACL verification failed' }; $seen = New-Object 'System.Collections.Generic.HashSet[string]'; foreach ($rule in $rules) { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (-not $allowed.Contains($sid)) { throw 'caller-tokens: manual ACL verification failed' }; if (-not $seen.Add($sid)) { throw 'caller-tokens: manual ACL verification failed' }; if ($rule.IsInherited) { throw 'caller-tokens: manual ACL verification failed' }; if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { throw 'caller-tokens: manual ACL verification failed' }; if ($rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'caller-tokens: manual ACL verification failed' } }; foreach ($required in $allowed) { if (-not $seen.Contains($required)) { throw 'caller-tokens: manual ACL verification failed' } } } finally { $stream.Dispose() }",
+  ].join("; ");
+}
+
 export const TOKEN_FILE_MANUAL_RECOVERY = [
   "Manual recovery from a trusted human console only: stop the MCP host; resolve the configured token file locally without copying its path or contents into logs;",
-  "run one PowerShell block that first requires the existing descriptor to be protected and empty, then builds, applies and verifies the complete protected descriptor:",
-  "`$ErrorActionPreference = 'Stop'; $path = '<token-file>'; $currentUserSid = '<current-user-SID>'; $fileInfo = New-Object System.IO.FileInfo($path); if ($null -ne $fileInfo.PSObject.Methods['GetAccessControl']) { $observedAcl = $fileInfo.GetAccessControl() } else { $observedAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo) }; if (-not $observedAcl.AreAccessRulesProtected) { throw 'caller-tokens: manual ACL recovery refused; expected protected empty DACL' }; $observedRules = @($observedAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); if ($observedRules.Count -ne 0) { throw 'caller-tokens: manual ACL recovery refused; expected protected empty DACL' }; $acl = New-Object System.Security.AccessControl.FileSecurity; $acl.SetAccessRuleProtection($true, $false); $allowed = New-Object 'System.Collections.Generic.HashSet[string]'; foreach ($sidText in @($currentUserSid, 'S-1-5-18', 'S-1-5-32-544')) { $null = $allowed.Add($sidText) }; foreach ($sidText in $allowed) { $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText); $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow); $null = $acl.AddAccessRule($rule) }; if ($null -ne $fileInfo.PSObject.Methods['SetAccessControl']) { $fileInfo.SetAccessControl($acl) } else { [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $acl) }; if ($null -ne $fileInfo.PSObject.Methods['GetAccessControl']) { $verifiedAcl = $fileInfo.GetAccessControl() } else { $verifiedAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo) }; if (-not $verifiedAcl.AreAccessRulesProtected) { throw 'caller-tokens: manual ACL verification failed' }; $rules = @($verifiedAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); if ($rules.Count -ne $allowed.Count) { throw 'caller-tokens: manual ACL verification failed' }; $seen = New-Object 'System.Collections.Generic.HashSet[string]'; foreach ($rule in $rules) { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (-not $allowed.Contains($sid)) { throw 'caller-tokens: manual ACL verification failed' }; if (-not $seen.Add($sid)) { throw 'caller-tokens: manual ACL verification failed' }; if ($rule.IsInherited) { throw 'caller-tokens: manual ACL verification failed' }; if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { throw 'caller-tokens: manual ACL verification failed' }; if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'caller-tokens: manual ACL verification failed' } }; foreach ($required in $allowed) { if (-not $seen.Contains($required)) { throw 'caller-tokens: manual ACL verification failed' } }`;",
+  "run one PowerShell block that refuses reparse points, requires the existing descriptor to be protected and empty, applies the complete protected descriptor, and then re-applies and verifies it through a single exclusively held handle:",
+  `\`${buildWindowsManualRecoveryBlock(true)}\`;`,
+  "restart the host and verify that server_info reports caller_tokens.loaded=true.",
+  "Never paste resolved paths or token values into issues, prompts, or logs.",
+].join(" ");
+
+export const TOKEN_FILE_HARDENING_FAILED_MANUAL_RECOVERY = [
+  "Manual recovery from a trusted human console only: automated permission hardening failed, so the descriptor state is indeterminate (inherited, partial, or already protected).",
+  "Stop the MCP host; resolve the configured token file locally without copying its path or contents into logs;",
+  "run one PowerShell block that refuses reparse points, replaces whatever descriptor is present with the complete protected descriptor, and then re-applies and verifies it through a single exclusively held handle:",
+  `\`${buildWindowsManualRecoveryBlock(false)}\`;`,
   "restart the host and verify that server_info reports caller_tokens.loaded=true.",
   "Never paste resolved paths or token values into issues, prompts, or logs.",
 ].join(" ");
@@ -66,11 +113,20 @@ const TOKEN_FILE_INVALID_CONTENT_RECOVERY = [
   "Never paste the record path, contents, or token values into issues, prompts, or logs.",
 ].join(" ");
 
-function getTokenFileRecoveryGuidance(context: TokenFileRecoveryContext): string {
+export function getTokenFileRecoveryGuidance(context: TokenFileRecoveryContext): string {
   const failure = context.failure ?? null;
   const platform = context.platform ?? process.platform;
-  if (failure === "permission_denied" || failure === "permission_hardening_failed") {
+  if (failure === "permission_denied") {
     return platform === "win32" ? TOKEN_FILE_MANUAL_RECOVERY : TOKEN_FILE_POSIX_PERMISSION_RECOVERY;
+  }
+  if (failure === "permission_hardening_failed") {
+    // Hardening failures leave the descriptor in an indeterminate state
+    // (inherited, partial, or already protected); the protected-empty
+    // precondition of TOKEN_FILE_MANUAL_RECOVERY would refuse every one of
+    // them, so this failure class carries its own recipe.
+    return platform === "win32"
+      ? TOKEN_FILE_HARDENING_FAILED_MANUAL_RECOVERY
+      : TOKEN_FILE_POSIX_PERMISSION_RECOVERY;
   }
   if (failure === "invalid_content") return TOKEN_FILE_INVALID_CONTENT_RECOVERY;
   if (failure === "unsafe_entry") {
@@ -273,7 +329,7 @@ export function getWindowsTokensFileAclVerificationCommand(
     "  if (-not $seen.Add($sid)) { exit 17 }",
     "  if ($rule.IsInherited) { exit 14 }",
     "  if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { exit 15 }",
-    "  if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { exit 16 }",
+    "  if ($rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { exit 16 }",
     "}",
     "foreach ($required in $allowed) { if (-not $seen.Contains($required)) { exit 18 } }",
     "}",

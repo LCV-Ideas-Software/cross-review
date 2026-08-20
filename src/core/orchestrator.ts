@@ -48,7 +48,7 @@ import type {
   SessionMeta,
   TokenUsage,
 } from "./types.js";
-import { PEERS } from "./types.js";
+import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
 
 export interface AskPeersInput {
   session_id?: string | undefined;
@@ -3188,6 +3188,47 @@ interface ProviderSpendEvidence {
   cost?: CostEstimate | undefined;
   billing_status?: "reported" | "unknown" | undefined;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
+  failure_class?: PeerFailure["failure_class"] | undefined;
+  message?: string | undefined;
+}
+
+// Failure classes whose provider-side outcome never became durable: the call
+// may have reached the provider and billed work that was never reported back,
+// so their spend stays indeterminate and keeps blocking the budget gates.
+const INDETERMINATE_SPEND_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_class"]> = new Set([
+  "network",
+  "timeout",
+  "stream_buffer_overflow",
+  "unknown",
+]);
+
+function providerSpendEvidenceIsIndeterminate(evidence: ProviderSpendEvidence): boolean {
+  // Merged chains keep only the last failure's class; this marker preserves
+  // indeterminate attempts from earlier links (e.g. [timeout, provider_error]).
+  if ((evidence.indeterminate_spend_attempts ?? 0) > 0) return true;
+  if (evidence.message?.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX)) return true;
+  // Review finding (session c47016e4, codex): a legacy merged record carries
+  // unpriced attempts and an explicit unknown billing marker but no
+  // indeterminate marker — its earlier links' classes are unrecoverable, so
+  // the explicit unknown keeps its conservative fail-closed meaning.
+  if (
+    (evidence.unpriced_attempts ?? 0) > 0 &&
+    evidence.indeterminate_spend_attempts == null &&
+    evidence.billing_status === "unknown"
+  ) {
+    return true;
+  }
+  if (evidence.failure_class !== undefined) {
+    return INDETERMINATE_SPEND_FAILURE_CLASSES.has(evidence.failure_class);
+  }
+  // Legacy or merged records without a failure class: an explicit unknown
+  // billing marker with no observed work keeps its conservative meaning.
+  return (
+    evidence.billing_status === "unknown" &&
+    !usageShowsProviderWork(evidence.usage) &&
+    evidence.cost == null
+  );
 }
 
 function usageShowsProviderWork(usage: TokenUsage | undefined): boolean {
@@ -3205,11 +3246,23 @@ function usageShowsProviderWork(usage: TokenUsage | undefined): boolean {
 }
 
 function providerSpendIsUnknown(evidence: ProviderSpendEvidence): boolean {
-  const attempts =
-    evidence.attempts ?? (usageShowsProviderWork(evidence.usage) || evidence.cost ? 1 : 0);
-  if ((evidence.unpriced_attempts ?? 0) > 0) return true;
-  if (attempts <= 0) return false;
-  if (evidence.billing_status === "unknown") return true;
+  const observedWork = usageShowsProviderWork(evidence.usage) || evidence.cost != null;
+  if (!observedWork) {
+    // A durable terminal outcome that reported no usage and no cost settles
+    // as zero spend — providers report usage on billable outcomes. Blocking
+    // here would be a livelock: no future event can price such an attempt
+    // (issue #211). Only indeterminate outcomes stay blocking.
+    const attempts = (evidence.attempts ?? 0) + (evidence.unpriced_attempts ?? 0);
+    return attempts > 0 && providerSpendEvidenceIsIndeterminate(evidence);
+  }
+  if ((evidence.unpriced_attempts ?? 0) > 0) {
+    // Priced work merged with terminal zero-billed retries stays settled;
+    // merged chains keep the last failure's class, so indeterminate retries
+    // still poison the record.
+    if (providerSpendEvidenceIsIndeterminate(evidence)) return true;
+  } else if (evidence.billing_status === "unknown") {
+    return true;
+  }
   return evidence.cost?.total_cost == null || !Number.isFinite(evidence.cost.total_cost);
 }
 
@@ -3436,7 +3489,19 @@ function unpricedAttemptsForFailure(failure: PeerFailure): number {
     : Math.max(0, failure.attempts);
 }
 
-function mergeFailureChain(
+// Merged chains keep only the last failure's class, so indeterminate spend
+// from earlier links (a client-side timeout the provider may have billed)
+// must survive the merge as an explicit count or the budget gates would
+// settle it as zero.
+function indeterminateSpendAttemptsForFailure(failure: PeerFailure): number {
+  if (failure.indeterminate_spend_attempts != null) return failure.indeterminate_spend_attempts;
+  const indeterminate =
+    INDETERMINATE_SPEND_FAILURE_CLASSES.has(failure.failure_class) ||
+    failure.message.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX);
+  return indeterminate ? unpricedAttemptsForFailure(failure) : 0;
+}
+
+export function mergeFailureChain(
   failures: readonly PeerFailure[],
   overrides: Partial<PeerFailure> = {},
 ): PeerFailure {
@@ -3450,6 +3515,10 @@ function mergeFailureChain(
     (sum, failure) => sum + unpricedAttemptsForFailure(failure),
     0,
   );
+  const indeterminateAttempts = failures.reduce(
+    (sum, failure) => sum + indeterminateSpendAttemptsForFailure(failure),
+    0,
+  );
   return {
     ...last,
     ...overrides,
@@ -3458,7 +3527,15 @@ function mergeFailureChain(
     ...(hasUsage ? { usage: mergeUsage(usageItems) } : {}),
     ...(hasCost ? { cost: mergeCost(costItems) } : {}),
     billing_status: unpricedAttempts === 0 && hasCost ? "reported" : "unknown",
-    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+    // The marker is stamped whenever unpriced attempts exist — an explicit
+    // zero marks a new-format record whose links were all terminal; its
+    // absence marks a legacy record whose links are unrecoverable.
+    ...(unpricedAttempts > 0
+      ? {
+          unpriced_attempts: unpricedAttempts,
+          indeterminate_spend_attempts: indeterminateAttempts,
+        }
+      : {}),
   };
 }
 
@@ -3474,13 +3551,21 @@ function mergePeerResultWithFailures(
   const unpricedAttempts =
     (result.unpriced_attempts ?? 0) +
     failures.reduce((sum, failure) => sum + unpricedAttemptsForFailure(failure), 0);
+  const indeterminateAttempts =
+    (result.indeterminate_spend_attempts ?? 0) +
+    failures.reduce((sum, failure) => sum + indeterminateSpendAttemptsForFailure(failure), 0);
   return {
     ...result,
     attempts: result.attempts + failures.reduce((sum, failure) => sum + failure.attempts, 0),
     latency_ms: result.latency_ms + failures.reduce((sum, failure) => sum + failure.latency_ms, 0),
     usage: hasFailureUsage ? mergeUsage([...failureUsage, result.usage]) : result.usage,
     cost: hasFailureCost ? mergeCost([...failureCost, result.cost]) : result.cost,
-    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+    ...(unpricedAttempts > 0
+      ? {
+          unpriced_attempts: unpricedAttempts,
+          indeterminate_spend_attempts: indeterminateAttempts,
+        }
+      : {}),
   };
 }
 

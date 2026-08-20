@@ -51,7 +51,7 @@ import type {
   ShadowJudgmentPeerStats,
   ShadowJudgmentRollup,
 } from "./types.js";
-import { PEERS } from "./types.js";
+import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
 
 export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
@@ -1164,7 +1164,7 @@ export class SessionStore {
         model: snapshot?.model ?? this.config.models[peer],
         failure_class: "provider_error" as const,
         message:
-          `possible_provider_attempt_interrupted: ${reason}; ` +
+          `${POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX}: ${reason}; ` +
           `round ${inFlight.round} ended without a durable provider result. ` +
           "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
         retryable: false,
@@ -1181,7 +1181,7 @@ export class SessionStore {
       model: reservation.model,
       failure_class: "provider_error" as const,
       message:
-        `possible_provider_attempt_interrupted: ${reason}; ` +
+        `${POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX}: ${reason}; ` +
         `round ${inFlight.round} ${reservation.label} call ${reservation.id} ended without a durable provider result. ` +
         "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
       retryable: false,
@@ -1344,7 +1344,7 @@ export class SessionStore {
         model: reservation.model,
         failure_class: "provider_error" as const,
         message:
-          `possible_provider_attempt_interrupted: ${reason}; ` +
+          `${POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX}: ${reason}; ` +
           `${reservation.call_kind}/${reservation.label} call ${reservation.id} ended without a durable result. ` +
           "At least one attempt is conservatively marked unpriced; exact billing requires provider reconciliation.",
         retryable: false,
