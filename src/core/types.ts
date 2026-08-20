@@ -273,6 +273,7 @@ export interface PeerResult {
   latency_ms: number;
   attempts: number;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
   parser_warnings: string[];
   decision_quality: DecisionQuality;
   fallback?: FallbackEvent | undefined;
@@ -361,6 +362,7 @@ export interface PeerFailure {
   cost?: CostEstimate | undefined;
   billing_status?: "reported" | "unknown" | undefined;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
   preflight_issue_classes?: string[] | undefined;
   // v2.15.0 (item 5): when a provider 4xx error message cites a named
   // parameter (e.g. "Argument not supported on this model: reasoning.effort"),

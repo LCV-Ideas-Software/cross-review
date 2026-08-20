@@ -3188,6 +3188,7 @@ interface ProviderSpendEvidence {
   cost?: CostEstimate | undefined;
   billing_status?: "reported" | "unknown" | undefined;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
   failure_class?: PeerFailure["failure_class"] | undefined;
   message?: string | undefined;
 }
@@ -3203,6 +3204,9 @@ const INDETERMINATE_SPEND_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_clas
 ]);
 
 function providerSpendEvidenceIsIndeterminate(evidence: ProviderSpendEvidence): boolean {
+  // Merged chains keep only the last failure's class; this marker preserves
+  // indeterminate attempts from earlier links (e.g. [timeout, provider_error]).
+  if ((evidence.indeterminate_spend_attempts ?? 0) > 0) return true;
   if (evidence.message?.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX)) return true;
   if (evidence.failure_class !== undefined) {
     return INDETERMINATE_SPEND_FAILURE_CLASSES.has(evidence.failure_class);
@@ -3474,7 +3478,19 @@ function unpricedAttemptsForFailure(failure: PeerFailure): number {
     : Math.max(0, failure.attempts);
 }
 
-function mergeFailureChain(
+// Merged chains keep only the last failure's class, so indeterminate spend
+// from earlier links (a client-side timeout the provider may have billed)
+// must survive the merge as an explicit count or the budget gates would
+// settle it as zero.
+function indeterminateSpendAttemptsForFailure(failure: PeerFailure): number {
+  if (failure.indeterminate_spend_attempts != null) return failure.indeterminate_spend_attempts;
+  const indeterminate =
+    INDETERMINATE_SPEND_FAILURE_CLASSES.has(failure.failure_class) ||
+    failure.message.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX);
+  return indeterminate ? unpricedAttemptsForFailure(failure) : 0;
+}
+
+export function mergeFailureChain(
   failures: readonly PeerFailure[],
   overrides: Partial<PeerFailure> = {},
 ): PeerFailure {
@@ -3488,6 +3504,10 @@ function mergeFailureChain(
     (sum, failure) => sum + unpricedAttemptsForFailure(failure),
     0,
   );
+  const indeterminateAttempts = failures.reduce(
+    (sum, failure) => sum + indeterminateSpendAttemptsForFailure(failure),
+    0,
+  );
   return {
     ...last,
     ...overrides,
@@ -3497,6 +3517,7 @@ function mergeFailureChain(
     ...(hasCost ? { cost: mergeCost(costItems) } : {}),
     billing_status: unpricedAttempts === 0 && hasCost ? "reported" : "unknown",
     ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+    ...(indeterminateAttempts > 0 ? { indeterminate_spend_attempts: indeterminateAttempts } : {}),
   };
 }
 

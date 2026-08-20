@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
-import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
+import { CrossReviewOrchestrator, mergeFailureChain } from "../src/core/orchestrator.js";
 import type {
   AppConfig,
   EvidenceAskJudgment,
@@ -215,6 +215,51 @@ const regressions: Regression[] = [
       );
       await assert.rejects(() => runGeneration(harness), /generation_budget_preflight/);
       assert.equal(harness.calls(), 0, "generation dispatched despite interrupted-attempt spend");
+    },
+  },
+  {
+    name: "mixed-chain-merge-preserves-indeterminate-attempts",
+    run: () => {
+      // A merged chain keeps only the last failure's class; without a
+      // dedicated marker, [timeout, provider_error] would settle as zero and
+      // under-count a client-side abort the provider may have billed.
+      const timeoutFailure: PeerFailure = {
+        ...terminalCapacityFailure(),
+        failure_class: "timeout",
+        message: "fixture: first attempt aborted client-side",
+      };
+      const merged = mergeFailureChain([timeoutFailure, terminalCapacityFailure()]);
+      assert.equal(merged.failure_class, "provider_error", "merge must keep the last class");
+      assert.equal(
+        merged.indeterminate_spend_attempts,
+        1,
+        "the indeterminate timeout attempt must survive the merge as a spend marker",
+      );
+    },
+  },
+  {
+    name: "merged-record-with-indeterminate-attempts-still-blocks-generation",
+    run: async () => {
+      const harness = await generationHarness("mixed-chain-blocks");
+      await harness.orchestrator.store.recordPeerFailureAccounting(
+        harness.sessionId,
+        1,
+        {
+          ...terminalCapacityFailure(),
+          message: "fixture: merged chain ending in a terminal rejection",
+          attempts: 2,
+          unpriced_attempts: 2,
+          billing_status: "unknown",
+          indeterminate_spend_attempts: 1,
+        },
+        "mixed-chain",
+      );
+      await assert.rejects(() => runGeneration(harness), /generation_budget_preflight/);
+      assert.equal(
+        harness.calls(),
+        0,
+        "generation dispatched despite an indeterminate attempt inside a merged chain",
+      );
     },
   },
   {
