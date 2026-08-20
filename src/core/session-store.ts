@@ -1172,6 +1172,7 @@ export class SessionStore {
         latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
         billing_status: "unknown" as const,
         unpriced_attempts: 1,
+        indeterminate_spend_attempts: 1,
         round: inFlight.round,
       };
     });
@@ -1189,6 +1190,7 @@ export class SessionStore {
       latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
       billing_status: "unknown" as const,
       unpriced_attempts: 1,
+      indeterminate_spend_attempts: 1,
       round: inFlight.round,
     }));
     meta.failed_attempts = [
@@ -1227,6 +1229,7 @@ export class SessionStore {
       latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
       billing_status: "unknown",
       unpriced_attempts: 1,
+      indeterminate_spend_attempts: 1,
       round: pending.round,
     };
     meta.failed_attempts = [...(meta.failed_attempts ?? []), unknownAttempt];
@@ -1352,6 +1355,7 @@ export class SessionStore {
         latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
         billing_status: "unknown" as const,
         unpriced_attempts: 1,
+        indeterminate_spend_attempts: 1,
         round: reservation.round,
       };
     });

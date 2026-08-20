@@ -319,6 +319,29 @@ export interface FallbackEvent {
 // blocking while durable terminal failures without usage settle as zero).
 export const POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX = "possible_provider_attempt_interrupted";
 
+// Failure classes whose provider-side outcome never became durable: the call
+// may have reached the provider and billed work that was never reported back,
+// so their spend stays indeterminate and keeps blocking the budget gates.
+export const INDETERMINATE_SPEND_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_class"]> =
+  new Set(["network", "timeout", "stream_buffer_overflow", "unknown"]);
+
+// Indeterminate share of a freshly produced failure's unpriced attempts.
+// Every producer that stamps unpriced_attempts must stamp
+// indeterminate_spend_attempts with this value (an explicit zero marks an
+// all-terminal record) — the marker's absence is reserved for legacy records
+// persisted before v04.05.41, which the budget classifier keeps fail-closed.
+export function indeterminateSpendMarkerFor(
+  failureClass: PeerFailure["failure_class"],
+  message: string | undefined,
+  unpricedAttempts: number,
+): number {
+  const indeterminate =
+    INDETERMINATE_SPEND_FAILURE_CLASSES.has(failureClass) ||
+    (typeof message === "string" &&
+      message.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX));
+  return indeterminate ? unpricedAttempts : 0;
+}
+
 export interface PeerFailure {
   peer: PeerId;
   provider: string;

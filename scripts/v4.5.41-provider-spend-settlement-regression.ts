@@ -30,6 +30,7 @@ import type {
   PeerId,
   PeerResult,
 } from "../src/core/types.js";
+import { classifyProviderError } from "../src/peers/errors.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 const previousStubConfirmation = process.env.CROSS_REVIEW_STUB_CONFIRMED;
@@ -248,6 +249,48 @@ const regressions: Regression[] = [
         allTerminal.indeterminate_spend_attempts,
         0,
         "an all-terminal merged chain must carry the marker stamped as zero",
+      );
+    },
+  },
+  {
+    name: "producers-stamp-the-indeterminate-marker-alongside-unpriced-attempts",
+    run: () => {
+      // Production evidence (session 9dbeef72, PR #214 gate): a single-attempt
+      // auth skip was stamped with unpriced_attempts and unknown billing but
+      // no indeterminate marker — indistinguishable from a legacy record, so
+      // the classifier's legacy fail-closed rule blocked generation forever.
+      // Every producer that stamps unpriced_attempts must stamp the marker.
+      const authError = Object.assign(new Error("403 Forbidden: spend cap breached"), {
+        status: 403,
+      });
+      const authFailure = classifyProviderError(
+        "gemini",
+        "google",
+        "fixture-model",
+        authError,
+        1,
+        Date.now(),
+      );
+      assert.equal(authFailure.unpriced_attempts, 1, "auth skip must stay unpriced");
+      assert.equal(
+        authFailure.indeterminate_spend_attempts,
+        0,
+        "a terminal auth skip must stamp an explicit zero marker",
+      );
+      const networkError = new Error("fetch failed: network connection lost");
+      const networkFailure = classifyProviderError(
+        "grok",
+        "xai",
+        "fixture-model",
+        networkError,
+        1,
+        Date.now(),
+      );
+      assert.equal(networkFailure.failure_class, "network", "fixture must classify as network");
+      assert.equal(
+        networkFailure.indeterminate_spend_attempts,
+        networkFailure.unpriced_attempts,
+        "an indeterminate-class failure must stamp its unpriced attempts as indeterminate",
       );
     },
   },

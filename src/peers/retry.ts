@@ -1,5 +1,6 @@
 import { mergeCost, mergeUsage } from "../core/cost.js";
 import type { AppConfig, CostEstimate, PeerFailure, TokenUsage } from "../core/types.js";
+import { indeterminateSpendMarkerFor } from "../core/types.js";
 
 type RetryBilling = {
   usage?: TokenUsage | undefined;
@@ -63,7 +64,16 @@ function mergeRetryBillingIntoFailure(
     ...(usage ? { usage } : {}),
     ...(cost ? { cost } : {}),
     billing_status: unpriced > 0 ? "unknown" : usage || cost ? "reported" : failure.billing_status,
-    ...(unpriced > 0 ? { unpriced_attempts: unpriced } : { unpriced_attempts: undefined }),
+    ...(unpriced > 0
+      ? {
+          unpriced_attempts: unpriced,
+          indeterminate_spend_attempts: indeterminateSpendMarkerFor(
+            failure.failure_class,
+            failure.message,
+            unpriced,
+          ),
+        }
+      : { unpriced_attempts: undefined, indeterminate_spend_attempts: undefined }),
   };
 }
 

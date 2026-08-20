@@ -48,7 +48,11 @@ import type {
   SessionMeta,
   TokenUsage,
 } from "./types.js";
-import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
+import {
+  INDETERMINATE_SPEND_FAILURE_CLASSES,
+  PEERS,
+  POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX,
+} from "./types.js";
 
 export interface AskPeersInput {
   session_id?: string | undefined;
@@ -3192,16 +3196,6 @@ interface ProviderSpendEvidence {
   failure_class?: PeerFailure["failure_class"] | undefined;
   message?: string | undefined;
 }
-
-// Failure classes whose provider-side outcome never became durable: the call
-// may have reached the provider and billed work that was never reported back,
-// so their spend stays indeterminate and keeps blocking the budget gates.
-const INDETERMINATE_SPEND_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_class"]> = new Set([
-  "network",
-  "timeout",
-  "stream_buffer_overflow",
-  "unknown",
-]);
 
 function providerSpendEvidenceIsIndeterminate(evidence: ProviderSpendEvidence): boolean {
   // Merged chains keep only the last failure's class; this marker preserves

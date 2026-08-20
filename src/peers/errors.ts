@@ -1,4 +1,5 @@
 import type { CostEstimate, PeerFailure, PeerId, TokenUsage } from "../core/types.js";
+import { indeterminateSpendMarkerFor } from "../core/types.js";
 import { safeErrorMessage } from "../security/redact.js";
 
 // v2.4.0 / audit closure (P2.7): extract `Retry-After` from provider
@@ -376,7 +377,16 @@ export function classifyProviderError(
     ...(billedUsage ? { usage: billedUsage } : {}),
     ...(billedCost ? { cost: billedCost } : {}),
     billing_status: billedUsage || billedCost ? "reported" : "unknown",
-    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+    ...(unpricedAttempts > 0
+      ? {
+          unpriced_attempts: unpricedAttempts,
+          indeterminate_spend_attempts: indeterminateSpendMarkerFor(
+            failureClass,
+            message,
+            unpricedAttempts,
+          ),
+        }
+      : {}),
     docs_hint: docsHint,
   };
 }
