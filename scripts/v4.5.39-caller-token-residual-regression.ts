@@ -67,12 +67,31 @@ test("an entry that disappears between the precheck and load is regenerated safe
 
 test("the manual Windows recovery block verifies the exact DACL before restart", () => {
   const setAccessControlIndex = TOKEN_FILE_MANUAL_RECOVERY.indexOf("SetAccessControl($acl)");
+  const observedAclReadIndex = TOKEN_FILE_MANUAL_RECOVERY.indexOf("$observedAcl =");
+  const observedProtectedCheckIndex = TOKEN_FILE_MANUAL_RECOVERY.indexOf(
+    "$observedAcl.AreAccessRulesProtected",
+  );
+  const observedEmptyCheckIndex = TOKEN_FILE_MANUAL_RECOVERY.indexOf("$observedRules.Count -ne 0");
   const protectedAclCheckIndex = TOKEN_FILE_MANUAL_RECOVERY.indexOf(
     "AreAccessRulesProtected",
     setAccessControlIndex,
   );
 
   assert.ok(setAccessControlIndex >= 0, "the manual recipe must apply the replacement DACL");
+  assert.ok(
+    observedAclReadIndex >= 0 && observedAclReadIndex < setAccessControlIndex,
+    "the manual recipe must inspect the existing descriptor before replacing it",
+  );
+  assert.ok(
+    observedProtectedCheckIndex > observedAclReadIndex &&
+      observedProtectedCheckIndex < setAccessControlIndex,
+    "the manual recipe must require the observed descriptor to be protected",
+  );
+  assert.ok(
+    observedEmptyCheckIndex > observedAclReadIndex &&
+      observedEmptyCheckIndex < setAccessControlIndex,
+    "the manual recipe must replace only the observed protected-empty interrupted state",
+  );
   assert.ok(
     protectedAclCheckIndex > setAccessControlIndex,
     "the manual recipe must verify protection after applying the replacement DACL",
