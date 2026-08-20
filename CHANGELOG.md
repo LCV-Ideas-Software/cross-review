@@ -20,7 +20,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
   indeterminate — and keeps blocking — only for outcomes that never became
   durable: `network`/`timeout`/`stream_buffer_overflow`/`unknown` failure
   classes and interrupted-attempt records stamped with the
-  `possible_provider_attempt_interrupted` sentinel. (#211)
+  `possible_provider_attempt_interrupted` sentinel. Merged failure chains
+  stamp an `indeterminate_spend_attempts` marker (explicitly zero when every
+  link was terminal); legacy merged records without the marker keep their
+  explicit unknown-billing meaning and stay blocking, because their earlier
+  links' classes are unrecoverable. (#211)
 - Routes `permission_hardening_failed` to a dedicated Windows manual-recovery
   recipe: hardening failures leave an indeterminate DACL, so the
   protected-empty precondition of the `permission_denied` recipe refused

@@ -3208,6 +3208,17 @@ function providerSpendEvidenceIsIndeterminate(evidence: ProviderSpendEvidence): 
   // indeterminate attempts from earlier links (e.g. [timeout, provider_error]).
   if ((evidence.indeterminate_spend_attempts ?? 0) > 0) return true;
   if (evidence.message?.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX)) return true;
+  // Review finding (session c47016e4, codex): a legacy merged record carries
+  // unpriced attempts and an explicit unknown billing marker but no
+  // indeterminate marker — its earlier links' classes are unrecoverable, so
+  // the explicit unknown keeps its conservative fail-closed meaning.
+  if (
+    (evidence.unpriced_attempts ?? 0) > 0 &&
+    evidence.indeterminate_spend_attempts == null &&
+    evidence.billing_status === "unknown"
+  ) {
+    return true;
+  }
   if (evidence.failure_class !== undefined) {
     return INDETERMINATE_SPEND_FAILURE_CLASSES.has(evidence.failure_class);
   }
@@ -3516,8 +3527,15 @@ export function mergeFailureChain(
     ...(hasUsage ? { usage: mergeUsage(usageItems) } : {}),
     ...(hasCost ? { cost: mergeCost(costItems) } : {}),
     billing_status: unpricedAttempts === 0 && hasCost ? "reported" : "unknown",
-    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
-    ...(indeterminateAttempts > 0 ? { indeterminate_spend_attempts: indeterminateAttempts } : {}),
+    // The marker is stamped whenever unpriced attempts exist — an explicit
+    // zero marks a new-format record whose links were all terminal; its
+    // absence marks a legacy record whose links are unrecoverable.
+    ...(unpricedAttempts > 0
+      ? {
+          unpriced_attempts: unpricedAttempts,
+          indeterminate_spend_attempts: indeterminateAttempts,
+        }
+      : {}),
   };
 }
 
@@ -3542,8 +3560,12 @@ function mergePeerResultWithFailures(
     latency_ms: result.latency_ms + failures.reduce((sum, failure) => sum + failure.latency_ms, 0),
     usage: hasFailureUsage ? mergeUsage([...failureUsage, result.usage]) : result.usage,
     cost: hasFailureCost ? mergeCost([...failureCost, result.cost]) : result.cost,
-    ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
-    ...(indeterminateAttempts > 0 ? { indeterminate_spend_attempts: indeterminateAttempts } : {}),
+    ...(unpricedAttempts > 0
+      ? {
+          unpriced_attempts: unpricedAttempts,
+          indeterminate_spend_attempts: indeterminateAttempts,
+        }
+      : {}),
   };
 }
 

@@ -235,6 +235,68 @@ const regressions: Regression[] = [
         1,
         "the indeterminate timeout attempt must survive the merge as a spend marker",
       );
+      // All-terminal chains must stamp the marker explicitly (as zero): its
+      // presence distinguishes a new-format record from a legacy one, and
+      // legacy merged records stay conservatively blocking.
+      const allTerminal = mergeFailureChain([terminalCapacityFailure(), terminalCapacityFailure()]);
+      assert.equal(
+        allTerminal.indeterminate_spend_attempts,
+        0,
+        "an all-terminal merged chain must carry the marker stamped as zero",
+      );
+    },
+  },
+  {
+    name: "legacy-merged-record-without-marker-stays-blocked",
+    run: async () => {
+      // Review finding (session c47016e4, codex): a legacy merged record has
+      // no indeterminate_spend_attempts marker, so its earlier links' classes
+      // are unrecoverable — an explicit unknown billing marker must keep its
+      // conservative fail-closed meaning.
+      const harness = await generationHarness("legacy-merged-blocks");
+      await harness.orchestrator.store.recordPeerFailureAccounting(
+        harness.sessionId,
+        1,
+        {
+          ...terminalCapacityFailure(),
+          message: "fixture: legacy merged chain persisted before the marker existed",
+          attempts: 2,
+          unpriced_attempts: 2,
+          billing_status: "unknown",
+        },
+        "legacy-merged-chain",
+      );
+      await assert.rejects(() => runGeneration(harness), /generation_budget_preflight/);
+      assert.equal(
+        harness.calls(),
+        0,
+        "generation dispatched on a legacy merged record whose links are unrecoverable",
+      );
+    },
+  },
+  {
+    name: "new-format-all-terminal-merged-chain-settles-zero",
+    run: async () => {
+      const harness = await generationHarness("new-format-settles");
+      await harness.orchestrator.store.recordPeerFailureAccounting(
+        harness.sessionId,
+        1,
+        {
+          ...terminalCapacityFailure(),
+          message: "fixture: post-fix merged chain of terminal rejections",
+          attempts: 2,
+          unpriced_attempts: 2,
+          billing_status: "unknown",
+          indeterminate_spend_attempts: 0,
+        },
+        "new-format-terminal-chain",
+      );
+      await assert.rejects(() => runGeneration(harness), /generation_dispatched_past_preflight/);
+      assert.equal(
+        harness.calls(),
+        1,
+        "generation stayed blocked by a marker-stamped all-terminal merged chain",
+      );
     },
   },
   {
