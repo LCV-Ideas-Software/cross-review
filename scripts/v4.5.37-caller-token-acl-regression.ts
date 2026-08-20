@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   ensureHostTokens,
   executeWindowsTokensFileAclCommands,
+  getWindowsCurrentUserSid,
   getWindowsTokensFileAclCommands,
   getWindowsTokensFileAclVerificationCommand,
   getWindowsTokensFileProtectedEmptyDaclRecoveryCommand,
@@ -14,6 +15,9 @@ import {
   openTokensFileWithPermissionRecovery,
   TOKEN_FILE_MANUAL_RECOVERY,
   verifyTokenForCaller,
+  WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS,
+  WINDOWS_TOKENS_FILE_ACL_SPAWN_TIMEOUT_MS,
+  type WindowsTokensFileAclExecutionDiagnostics,
 } from "../src/core/caller-tokens.js";
 
 const ciWorkflow = fs.readFileSync(
@@ -41,7 +45,14 @@ assert.equal(
   1,
   "production ACL replacement must have one external-process interruption boundary",
 );
-assert.equal(portablePlan[0]?.executable, "powershell.exe");
+// Issue #209: the executable must be the absolute System32 engine — PATH
+// resolution let GNU coreutils' whoami/other shadows (Git Bash parents) or a
+// writable PATH entry substitute the security-critical tool.
+assert.match(
+  portablePlan[0]?.executable ?? "",
+  /[\\/]System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i,
+  "ACL commands must invoke the absolute System32 PowerShell engine",
+);
 const portableReplacementScript = portablePlan[0]?.args[4] ?? "";
 const portableVerificationScript =
   getWindowsTokensFileAclVerificationCommand("<token-file>", "S-1-5-21-1000").args[4] ?? "";
@@ -114,6 +125,106 @@ assert.equal(
   executeWindowsTokensFileAclCommands(portablePlan, () => ({ status: 0 })),
   true,
   "the atomic ACL replacement must succeed only when its process succeeds",
+);
+
+// Issue #209: an executor timeout is an infrastructure failure and must be
+// classified as such — never surfaced as a security policy rejection.
+const timeoutDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  executeWindowsTokensFileAclCommands(
+    portablePlan,
+    () => ({
+      status: null,
+      error: Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    }),
+    timeoutDiagnostics,
+  ),
+  false,
+  "an executor timeout must still fail closed",
+);
+assert.equal(
+  timeoutDiagnostics.failure?.kind,
+  "timeout",
+  "an executor timeout must be classified as timeout, not policy rejection",
+);
+const exitDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  executeWindowsTokensFileAclCommands(portablePlan, () => ({ status: 12 }), exitDiagnostics),
+  false,
+  "a non-zero exit must still fail closed",
+);
+assert.equal(exitDiagnostics.failure?.kind, "exit_status");
+assert.equal(exitDiagnostics.failure?.status, 12);
+// Cold-start floor on hosted runners: the first powershell.exe spawn of a
+// process can exceed 10s under load (observed twice on 20/08 runs), so the
+// one-shot boot spawns must allow generous ceilings while staying fail-closed.
+assert.ok(
+  WINDOWS_TOKENS_FILE_ACL_SPAWN_TIMEOUT_MS >= 60_000,
+  "ACL spawn timeout must absorb PowerShell cold start on loaded runners",
+);
+assert.ok(
+  WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS >= 15_000,
+  "whoami spawn timeout must absorb process cold start on loaded runners",
+);
+
+// Issue #209 (round 2): the SID lookup must classify its own failure causes so
+// stage=sid carries the same failure-kind detail as apply/verify.
+const sidTimeout: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidTimeout, () => ({
+    status: null,
+    error: Object.assign(new Error("spawnSync whoami.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+  })),
+  null,
+  "an identity lookup timeout must fail closed",
+);
+assert.equal(sidTimeout.failure?.kind, "timeout", "identity timeout must be classified");
+const sidExit: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidExit, () => ({ status: 1, stdout: "" })),
+  null,
+);
+assert.equal(sidExit.failure?.kind, "exit_status");
+assert.equal(sidExit.failure?.status, 1);
+const sidSpawnError: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidSpawnError, () => ({
+    status: null,
+    error: Object.assign(new Error("spawnSync whoami.exe EACCES"), { code: "EACCES" }),
+  })),
+  null,
+  "a non-timeout spawn error must fail closed",
+);
+assert.equal(sidSpawnError.failure?.kind, "spawn_error");
+assert.equal(sidSpawnError.failure?.code, "EACCES");
+const sidCodelessError: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidCodelessError, () => ({
+    status: null,
+    error: new Error("fixture interrupted"),
+  })),
+  null,
+  "a codeless spawn error must fail closed",
+);
+assert.equal(
+  sidCodelessError.failure?.kind,
+  "spawn_error",
+  "a spawn error without a code must still be classified as spawn_error",
+);
+const sidGarbage: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidGarbage, () => ({ status: 0, stdout: "no sid here" })),
+  null,
+);
+assert.equal(
+  sidGarbage.failure?.kind,
+  "invalid_output",
+  "unparseable identity output must be classified distinctly",
+);
+assert.equal(
+  getWindowsCurrentUserSid(undefined, () => ({ status: 0, stdout: '"user","S-1-5-21-1000"' })),
+  "S-1-5-21-1000",
+  "a valid identity row must still parse",
 );
 
 const fakeIdentity = { dev: 1n, ino: 2n };
@@ -489,7 +600,8 @@ try {
 
   assert.ok(ensureHostTokens(tmpRoot), "fixture token file must be generated");
 
-  const identity = spawnSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
+  const systemWhoami = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "whoami.exe");
+  const identity = spawnSync(systemWhoami, ["/user", "/fo", "csv", "/nh"], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 5_000,
@@ -609,7 +721,7 @@ try {
   }
 
   const aclProbe = spawnSync(
-    "powershell.exe",
+    windowsPowerShell,
     [
       "-NoLogo",
       "-NoProfile",

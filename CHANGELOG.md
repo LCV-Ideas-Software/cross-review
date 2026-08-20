@@ -7,6 +7,27 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.40] — 20/08/2026
+
+### Fixed
+
+- Resolves the security-critical helper tools by absolute `System32` path
+  instead of `PATH` lookup. Under an MSYS/Git Bash parent process, GNU
+  coreutils' `whoami.exe` shadowed the Windows one, rejected `/user` and made
+  every boot fail with the ACL-rejection error; a writable `PATH` entry ahead
+  of `System32` could likewise substitute the PowerShell engine that applies
+  the protected DACL. (#209)
+- Raises the one-shot boot spawn ceilings (ACL commands 10s → 60s; identity
+  lookup 5s → 15s). The first `powershell.exe` of a process exceeded 10s on
+  loaded hosted runners and the resulting `spawnSync` timeout surfaced as the
+  ACL-rejection error — observed twice on 20/08 (merge-queue and `main` CI
+  runs of the Windows caller-token ACL regression). Every failure mode still
+  fails closed. (#209)
+- Classifies ACL execution failures (timeout, spawn error, exit status) and
+  the hardening stage (identity, apply, verify) in optional diagnostics; the
+  boot rejection error now appends `stage=`/detail so an infrastructure
+  timeout is distinguishable from a genuine policy rejection. (#209)
+
 ## [v04.05.39] — 20/08/2026
 
 ### Fixed

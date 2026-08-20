@@ -142,6 +142,18 @@ function getWindowsTokensFileAclInput(filePath: string, currentUserSid: string):
   return JSON.stringify({ Path: filePath, CurrentUserSid: currentUserSid });
 }
 
+/**
+ * Absolute System32 path for the security-critical helper tools. PATH-based
+ * resolution is wrong twice here: under an MSYS/Git Bash parent, GNU
+ * coreutils' `whoami.exe` shadows the Windows one and rejects `/user`
+ * (observed: boot fails with the ACL-rejection error); and a writable PATH
+ * entry ahead of System32 could substitute the binary that sets the DACL.
+ */
+function getWindowsSystemToolPath(...segments: string[]): string {
+  const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  return path.join(systemRoot, "System32", ...segments);
+}
+
 function getWindowsTokensFileAclBindingScript(): readonly string[] {
   return [
     "$binding = [Console]::In.ReadToEnd() | ConvertFrom-Json",
@@ -171,6 +183,36 @@ export function getTokensFilePath(dataDir: string): string {
   return path.join(dataDir, "host-tokens.json");
 }
 
+// One-shot boot spawns: the first powershell.exe of a process can exceed 10s
+// on loaded hosted runners (observed on windows-latest, 20/08/2026), so these
+// ceilings stay generous; every failure mode still fails closed.
+export const WINDOWS_TOKENS_FILE_ACL_SPAWN_TIMEOUT_MS = 60_000;
+export const WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS = 15_000;
+
+export interface WindowsTokensFileAclExecutionDiagnostics {
+  failure?: {
+    kind: "timeout" | "spawn_error" | "exit_status" | "invalid_output";
+    code?: string;
+    status?: number | null;
+  };
+}
+
+function classifySpawnFailure(
+  error: unknown,
+): NonNullable<WindowsTokensFileAclExecutionDiagnostics["failure"]> {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  if (code === "ETIMEDOUT") return { kind: "timeout", code };
+  return code ? { kind: "spawn_error", code } : { kind: "spawn_error" };
+}
+
+export interface TokensFileHardenDiagnostics {
+  stage?: "sid" | "apply" | "verify" | "exception";
+  detail?: string;
+}
+
 export function getWindowsTokensFileAclCommands(
   filePath: string,
   currentUserSid: string,
@@ -198,7 +240,7 @@ export function getWindowsTokensFileAclCommands(
   ].join("; ");
   return [
     {
-      executable: "powershell.exe",
+      executable: getWindowsSystemToolPath("WindowsPowerShell", "v1.0", "powershell.exe"),
       args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", replaceAclScript],
       input: getWindowsTokensFileAclInput(filePath, currentUserSid),
     },
@@ -237,7 +279,7 @@ export function getWindowsTokensFileAclVerificationCommand(
     "}",
   ].join("; ");
   return {
-    executable: "powershell.exe",
+    executable: getWindowsSystemToolPath("WindowsPowerShell", "v1.0", "powershell.exe"),
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", verificationScript],
     input: getWindowsTokensFileAclInput(filePath, currentUserSid),
   };
@@ -277,7 +319,7 @@ export function getWindowsTokensFileProtectedEmptyDaclRecoveryCommand(
     "}",
   ].join("; ");
   return {
-    executable: "powershell.exe",
+    executable: getWindowsSystemToolPath("WindowsPowerShell", "v1.0", "powershell.exe"),
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", recoveryScript],
     input: getWindowsTokensFileAclInput(filePath, currentUserSid),
   };
@@ -290,30 +332,72 @@ export function executeWindowsTokensFileAclCommands(
       encoding: "utf8",
       input: command.input,
       windowsHide: true,
-      timeout: 10_000,
+      timeout: WINDOWS_TOKENS_FILE_ACL_SPAWN_TIMEOUT_MS,
     }),
+  diagnostics?: WindowsTokensFileAclExecutionDiagnostics,
 ): boolean {
   for (const command of commands) {
     const result = execute(command);
-    if (result.status !== 0 || result.error) return false;
+    if (result.error) {
+      if (diagnostics) diagnostics.failure = classifySpawnFailure(result.error);
+      return false;
+    }
+    if (result.status !== 0) {
+      if (diagnostics) diagnostics.failure = { kind: "exit_status", status: result.status };
+      return false;
+    }
   }
   return true;
 }
 
-function getWindowsCurrentUserSid(): string | null {
-  const identity = spawnSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 5_000,
-  });
+export function getWindowsCurrentUserSid(
+  diagnostics?: WindowsTokensFileAclExecutionDiagnostics,
+  spawnIdentity: () => { status: number | null; error?: Error; stdout?: string } = () =>
+    spawnSync(getWindowsSystemToolPath("whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS,
+    }),
+): string | null {
+  const identity = spawnIdentity();
+  if (identity.error) {
+    if (diagnostics) diagnostics.failure = classifySpawnFailure(identity.error);
+    return null;
+  }
+  if (identity.status !== 0) {
+    if (diagnostics) diagnostics.failure = { kind: "exit_status", status: identity.status };
+    return null;
+  }
   const currentUserSid = identity.stdout?.match(/"(S-\d+(?:-\d+)+)"/i)?.[1];
-  return identity.status === 0 && currentUserSid ? currentUserSid : null;
+  if (!currentUserSid) {
+    if (diagnostics) diagnostics.failure = { kind: "invalid_output" };
+    return null;
+  }
+  return currentUserSid;
 }
 
-function verifyWindowsTokensFilePermissions(filePath: string, currentUserSid: string): boolean {
-  return executeWindowsTokensFileAclCommands([
-    getWindowsTokensFileAclVerificationCommand(filePath, currentUserSid),
-  ]);
+function describeAclExecutionFailure(
+  diagnostics: WindowsTokensFileAclExecutionDiagnostics,
+): string {
+  const failure = diagnostics.failure;
+  if (!failure) return "unclassified";
+  if (failure.kind === "timeout") return "spawn timeout (ETIMEDOUT)";
+  if (failure.kind === "spawn_error")
+    return `spawn error${failure.code ? ` (${failure.code})` : ""}`;
+  if (failure.kind === "invalid_output") return "unparseable identity output";
+  return `exit status ${failure.status ?? "unknown"}`;
+}
+
+function verifyWindowsTokensFilePermissions(
+  filePath: string,
+  currentUserSid: string,
+  diagnostics?: WindowsTokensFileAclExecutionDiagnostics,
+): boolean {
+  return executeWindowsTokensFileAclCommands(
+    [getWindowsTokensFileAclVerificationCommand(filePath, currentUserSid)],
+    undefined,
+    diagnostics,
+  );
 }
 
 function repairWindowsProtectedEmptyTokensFileDacl(filePath: string): boolean {
@@ -338,15 +422,25 @@ function repairWindowsProtectedEmptyTokensFileDacl(filePath: string): boolean {
  * POSIX mode bits are applied by Node. Windows needs an explicit protected
  * DACL because `mode: 0o600` does not override inherited NTFS access entries.
  */
-export function hardenTokensFilePermissions(filePath: string): boolean {
+export function hardenTokensFilePermissions(
+  filePath: string,
+  diagnostics?: TokensFileHardenDiagnostics,
+): boolean {
   try {
     if (process.platform !== "win32") {
       fs.chmodSync(filePath, 0o600);
       return (fs.statSync(filePath).mode & 0o077) === 0;
     }
 
-    const currentUserSid = getWindowsCurrentUserSid();
-    if (!currentUserSid) return false;
+    const sidDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+    const currentUserSid = getWindowsCurrentUserSid(sidDiagnostics);
+    if (!currentUserSid) {
+      if (diagnostics) {
+        diagnostics.stage = "sid";
+        diagnostics.detail = describeAclExecutionFailure(sidDiagnostics);
+      }
+      return false;
+    }
 
     // Replace the complete protected DACL in one OS access-control update.
     // The PowerShell process performs one FileInfo/FileSystemAclExtensions
@@ -354,10 +448,26 @@ export function hardenTokensFilePermissions(filePath: string): boolean {
     // ACL window created by a separate `icacls /reset` process. The final
     // verifier remains authoritative and rejects every extra or missing ACE.
     const commands = getWindowsTokensFileAclCommands(filePath, currentUserSid);
-    if (!executeWindowsTokensFileAclCommands(commands)) return false;
+    const applyDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+    if (!executeWindowsTokensFileAclCommands(commands, undefined, applyDiagnostics)) {
+      if (diagnostics) {
+        diagnostics.stage = "apply";
+        diagnostics.detail = describeAclExecutionFailure(applyDiagnostics);
+      }
+      return false;
+    }
 
-    return verifyWindowsTokensFilePermissions(filePath, currentUserSid);
+    const verifyDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+    if (!verifyWindowsTokensFilePermissions(filePath, currentUserSid, verifyDiagnostics)) {
+      if (diagnostics) {
+        diagnostics.stage = "verify";
+        diagnostics.detail = describeAclExecutionFailure(verifyDiagnostics);
+      }
+      return false;
+    }
+    return true;
   } catch {
+    if (diagnostics) diagnostics.stage = "exception";
     return false;
   }
 }
@@ -545,14 +655,20 @@ export function generateHostTokens(
     }
     throw err;
   }
-  if (!hardenTokensFilePermissions(filePath)) {
+  const hardenDiagnostics: TokensFileHardenDiagnostics = {};
+  if (!hardenTokensFilePermissions(filePath, hardenDiagnostics)) {
     try {
       fs.rmSync(filePath, { force: true });
     } catch {
       /* the caller still fails closed below */
     }
+    // Keep the original sentence stable for downstream matchers; append the
+    // failing stage so an infrastructure timeout is distinguishable from a
+    // genuine ACL policy rejection.
+    const stage = hardenDiagnostics.stage ?? "unknown";
+    const detail = hardenDiagnostics.detail ? `: ${hardenDiagnostics.detail}` : "";
     throw new Error(
-      "caller-tokens: could not apply owner-only permissions; insecure token file was rejected",
+      `caller-tokens: could not apply owner-only permissions; insecure token file was rejected (stage=${stage}${detail})`,
     );
   }
   return { filePath, map, generated_at: payload.generated_at };

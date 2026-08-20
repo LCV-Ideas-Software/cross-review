@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.39** (package `4.5.39`).
+**Status.** Stable. The current source/release target is **v04.05.40** (package `4.5.40`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
