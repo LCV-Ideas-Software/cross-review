@@ -186,6 +186,31 @@ assert.equal(
 );
 assert.equal(sidExit.failure?.kind, "exit_status");
 assert.equal(sidExit.failure?.status, 1);
+const sidSpawnError: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidSpawnError, () => ({
+    status: null,
+    error: Object.assign(new Error("spawnSync whoami.exe EACCES"), { code: "EACCES" }),
+  })),
+  null,
+  "a non-timeout spawn error must fail closed",
+);
+assert.equal(sidSpawnError.failure?.kind, "spawn_error");
+assert.equal(sidSpawnError.failure?.code, "EACCES");
+const sidCodelessError: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidCodelessError, () => ({
+    status: null,
+    error: new Error("fixture interrupted"),
+  })),
+  null,
+  "a codeless spawn error must fail closed",
+);
+assert.equal(
+  sidCodelessError.failure?.kind,
+  "spawn_error",
+  "a spawn error without a code must still be classified as spawn_error",
+);
 const sidGarbage: WindowsTokensFileAclExecutionDiagnostics = {};
 assert.equal(
   getWindowsCurrentUserSid(sidGarbage, () => ({ status: 0, stdout: "no sid here" })),
