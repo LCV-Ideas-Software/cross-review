@@ -7,6 +7,8 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.37] — 20/08/2026
+
 ### Added
 
 - Governanca de trabalho sobre GitHub Projects, Issues e Discussions: quadro dedicado do repositorio, formularios de issue para Incident, Maintenance e Spike, atalhos para Discussions no seletor de issues, automacoes nativas dos Projects para inclusao e progressao de itens e o ritual de registro G1..G4 versionado em `AGENTS.md` e `CLAUDE.md` para Claude Code e ChatGPT-Codex.
@@ -15,6 +17,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 - Substitui o caller reutilizavel interno do Zizmor pela Action oficial `zizmorcore/zizmor-action` fixada em SHA, com checkout sem credenciais, permissoes minimas e publicacao SARIF; aposenta o workflow customizado de Projects que permanecia inerte depois da ativacao das automacoes nativas dos quadros.
 - Aposenta o controlador customizado de Native Auto-merge e seu gate privilegiado de `merge_group`; a admissao continua humana pela merge queue nativa, e o Dependency Review passa a usar somente a Action oficial com permissao de leitura.
+- Adiciona um job `windows-latest`, restrito a `contents: read`, focalizado na regressao de ACL do arquivo de caller tokens; os contratos puros de planejamento, retry e redacao continuam rodando no job Linux da suite completa.
+
+### Fixed
+
+- Torna o endurecimento da DACL de `host-tokens.json` tolerante a interrupcao no Windows: substitui a sequencia de tres processos `icacls` por uma unica aplicacao completa de `FileSecurity`, protegida e limitada ao usuario atual, SYSTEM e Administrators. A mesma rotina funciona em Windows PowerShell 5.1 e PowerShell 7.
+- Recupera uma unica vez um `EACCES`/`EPERM` no primeiro open do token file, somente no Windows. A recuperacao rejeita symlink/non-file, captura a identidade do arquivo antes da mudanca de ACL, reabre uma vez e valida descriptor, pathname e identidade; erro persistente, troca de arquivo e qualquer outra classe continuam fail-closed. POSIX conserva o fluxo por descriptor sem chmod por pathname.
+- Impede `ensureHostTokens` de repetir a recuperacao na mesma inicializacao quando ja existe uma entrada ilegivel ou invalida; o segundo load fica reservado exclusivamente a corrida em que outro processo cria o arquivo entre load e generate.
+- Substitui a rota de reparo circular de `identity_forgery_blocked` por uma receita manual segura, com placeholders e ordem interruption-tolerant, sem interpolar token nem caminho resolvido.
+- Transporta caminho e SID para os scripts de ACL como JSON por entrada padrao, fora do parser de `-Command`; caminhos Windows validos com metacaracteres como `;` nao viram comandos nem argumentos PowerShell.
+- Compara a DACL final como conjunto exato: deduplica identidades obrigatorias, rejeita ACE repetida e exige cada SID restante, inclusive quando o host roda como SYSTEM ou Administrator.
+
+### Verification
+
+- A regressao versionada prova o RED da antiga ordem, uma unica fronteira externa de substituicao, remocao de uma DACL herdada ampla, passagem literal de caminho com `;`, execucao identificada em Windows PowerShell 5.1 e PowerShell 7, conjunto final protegido e exato de ACEs FullControl, deduplicacao de SID, retry unico, ausencia de loop, rejeicao de erros nao-permissao/path swap e redacao de sentinelas.
+- A substituicao completa da DACL nao e apresentada como serializacao entre hosts concorrentes; a verificacao final fail-closed continua sendo a autoridade sobre o estado concluido.
 
 ## [v04.05.36] — 05/08/2026
 

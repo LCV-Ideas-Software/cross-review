@@ -73,6 +73,32 @@ jobs:
           # confirmation. The smoke harness is a legitimate stub consumer.
           CROSS_REVIEW_STUB_CONFIRMED: "1"
     timeout-minutes: 45
+  caller-token-acl-windows:
+    permissions:
+      contents: read
+    name: Windows caller-token ACL regression
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - name: Setup hash-verified npm v12 toolchain
+        uses: ./.github/actions/setup-npm-toolchain
+        with:
+          version: ${{ env.NPM_CLI_VERSION }}
+          sha512: ${{ env.NPM_CLI_SHA512 }}
+      - name: Install dependencies
+        run: npm ci --strict-allow-scripts --no-audit --no-fund
+      - name: Verify interruption-tolerant caller-token ACL recovery
+        run: npm run v4.5.37-caller-token-acl-regression
+    timeout-minutes: 15
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   queue: max
