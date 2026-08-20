@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.38`                        |
+| Versão preparada pelo source  | `v04.05.39`                        |
 | Data do source/release target | `20/08/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -827,6 +827,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.39`      | 20/08/2026    | Impede retry de recuperação de caller token no mesmo boot, recria somente após desaparecimento confirmado e exige que a receita manual valide a DACL protegida e exata antes do restart.                                                                               |
 | `v04.05.38`      | 20/08/2026    | Trava a dívida T2#10 de regexes amplas de source no baseline atual `smoke=129`, `source-contract=29`, total `158`, impedindo que novos pins consumam a folga deixada pelos tetos anteriores.                                                                           |
 | `v04.05.37`      | 20/08/2026    | Torna a ACL dos caller tokens no Windows tolerante a interrupção, recupera uma única negação de acesso sem rotação ou loop e passa caminho/SID fora do parser de comandos, preservando os gates fail-closed de identidade e caminho.                                   |
 | `v04.05.36`      | 05/08/2026    | Corrige citações JSON byte-exatas, preserva evidência ativa no retry de decisão e aceita o conteúdo terminal agregado documentado do Perplexity sem enfraquecer os gates anti-fabricação.                                                                              |

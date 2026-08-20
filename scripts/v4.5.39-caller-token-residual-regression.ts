@@ -77,9 +77,9 @@ test("the manual Windows recovery block verifies the exact DACL before restart",
     protectedAclCheckIndex > setAccessControlIndex,
     "the manual recipe must verify protection after applying the replacement DACL",
   );
-  assert.match(TOKEN_FILE_MANUAL_RECOVERY, /\$rules\.Count -ne \$allowed\.Count/u);
-  assert.match(TOKEN_FILE_MANUAL_RECOVERY, /\$seen\.Add\(\$sid\)/u);
-  assert.match(TOKEN_FILE_MANUAL_RECOVERY, /foreach \(\$required in \$allowed\)/u);
+  assert.ok(TOKEN_FILE_MANUAL_RECOVERY.includes("$rules.Count -ne $allowed.Count"));
+  assert.ok(TOKEN_FILE_MANUAL_RECOVERY.includes("$seen.Add($sid)"));
+  assert.ok(TOKEN_FILE_MANUAL_RECOVERY.includes("foreach ($required in $allowed)"));
   assert.ok(
     TOKEN_FILE_MANUAL_RECOVERY.indexOf("caller_tokens.loaded=true") > protectedAclCheckIndex,
     "restart guidance must follow successful descriptor verification",

@@ -32,7 +32,7 @@ export const TOKEN_HEX_LENGTH = TOKEN_BYTES * 2;
 export const TOKEN_FILE_MANUAL_RECOVERY = [
   "Manual recovery from a trusted human console only: stop the MCP host; resolve the configured token file locally without copying its path or contents into logs;",
   "run one PowerShell block that builds the complete protected descriptor and performs one runtime SetAccessControl operation:",
-  "`$path = '<token-file>'; $currentUserSid = '<current-user-SID>'; $acl = New-Object System.Security.AccessControl.FileSecurity; $acl.SetAccessRuleProtection($true, $false); $allowed = New-Object 'System.Collections.Generic.HashSet[string]'; foreach ($sidText in @($currentUserSid, 'S-1-5-18', 'S-1-5-32-544')) { $null = $allowed.Add($sidText) }; foreach ($sidText in $allowed) { $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText); $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow); $null = $acl.AddAccessRule($rule) }; $fileInfo = New-Object System.IO.FileInfo($path); if ($null -ne $fileInfo.PSObject.Methods['SetAccessControl']) { $fileInfo.SetAccessControl($acl) } else { [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $acl) }`;",
+  "`$path = '<token-file>'; $currentUserSid = '<current-user-SID>'; $acl = New-Object System.Security.AccessControl.FileSecurity; $acl.SetAccessRuleProtection($true, $false); $allowed = New-Object 'System.Collections.Generic.HashSet[string]'; foreach ($sidText in @($currentUserSid, 'S-1-5-18', 'S-1-5-32-544')) { $null = $allowed.Add($sidText) }; foreach ($sidText in $allowed) { $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText); $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow); $null = $acl.AddAccessRule($rule) }; $fileInfo = New-Object System.IO.FileInfo($path); if ($null -ne $fileInfo.PSObject.Methods['SetAccessControl']) { $fileInfo.SetAccessControl($acl) } else { [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $acl) }; if ($null -ne $fileInfo.PSObject.Methods['GetAccessControl']) { $verifiedAcl = $fileInfo.GetAccessControl() } else { $verifiedAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo) }; if (-not $verifiedAcl.AreAccessRulesProtected) { throw 'caller-tokens: manual ACL verification failed' }; $rules = @($verifiedAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); if ($rules.Count -ne $allowed.Count) { throw 'caller-tokens: manual ACL verification failed' }; $seen = New-Object 'System.Collections.Generic.HashSet[string]'; foreach ($rule in $rules) { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (-not $allowed.Contains($sid)) { throw 'caller-tokens: manual ACL verification failed' }; if (-not $seen.Add($sid)) { throw 'caller-tokens: manual ACL verification failed' }; if ($rule.IsInherited) { throw 'caller-tokens: manual ACL verification failed' }; if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { throw 'caller-tokens: manual ACL verification failed' }; if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'caller-tokens: manual ACL verification failed' } }; foreach ($required in $allowed) { if (-not $seen.Contains($required)) { throw 'caller-tokens: manual ACL verification failed' } }`;",
   "restart the host and verify that server_info reports caller_tokens.loaded=true.",
   "Never paste resolved paths or token values into issues, prompts, or logs.",
 ].join(" ");
@@ -699,14 +699,19 @@ export function ensureHostTokens(
 
   const existing = load(dataDir);
   if (existing) return existing;
+  const firstLoadFailure = diagnostics?.failure ?? null;
+  // Only ENOENT authorizes create/reload after a failed first load. Every
+  // permission, content, path-safety or I/O failure remains fail-closed and
+  // must not repeat the bounded recovery path in the same boot.
+  if (firstLoadFailure !== null && firstLoadFailure !== "missing") return null;
   // An existing but unreadable/invalid/symlinked entry must remain fail-closed.
-  // In particular, do not invoke load a second time and repeat ACL recovery in
-  // one boot. A second load is reserved for the genuine concurrent-create race.
-  if (entryExistedBeforeLoad) return null;
+  // If the prechecked entry instead disappeared before load, exclusive create
+  // is safe; a concurrent recreation still falls through to the final load.
+  if (entryExistedBeforeLoad && firstLoadFailure !== "missing") return null;
   // Another host may have created a complete record after the first absence
   // probe or while the first load observed ENOENT. Load that newly appeared
   // entry once before attempting our own exclusive create.
-  if (entryExists(filePath)) return load(dataDir);
+  if (!entryExistedBeforeLoad && entryExists(filePath)) return load(dataDir);
 
   const generated = generate(dataDir);
   if (generated) {
