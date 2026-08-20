@@ -413,6 +413,86 @@ const regressions: Regression[] = [
         1,
         "an adapter-stamped positive marker must survive the wrapper merger",
       );
+      // Round-8 codex finding (session f131f43f): the FAILURE merger must
+      // also trust an explicit producer-stamped marker instead of
+      // recomputing from the final class alone. A failure whose own
+      // sub-attempts were of mixed classes carries a positive marker under
+      // a terminal final class - both merger branches rewrote it to zero.
+      const stampedFailure = (
+        message: string,
+        attempts: number,
+        unpriced: number,
+        marker: number,
+      ): PeerFailure => ({
+        peer: "gemini",
+        provider: "google",
+        model: "fixture-model",
+        failure_class: "provider_error",
+        message,
+        retryable: false,
+        attempts,
+        latency_ms: 5,
+        billing_status: "unknown",
+        unpriced_attempts: unpriced,
+        indeterminate_spend_attempts: marker,
+      });
+      // Branch without wrapper-observed spend: single non-retryable failure.
+      const cfg5 = fixtureConfig("retry-failure-explicit-marker");
+      cfg5.retry = { ...cfg5.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let caught5: unknown;
+      try {
+        await withRetry(
+          cfg5,
+          async () => {
+            throw new Error("terminal after mixed sub-attempts");
+          },
+          () => stampedFailure("terminal after mixed sub-attempts", 1, 1, 1),
+        );
+      } catch (error) {
+        caught5 = error;
+      }
+      const failure5 = (caught5 as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+      assert.equal(
+        failure5?.indeterminate_spend_attempts,
+        1,
+        "an explicit positive marker must survive the early-return failure merge",
+      );
+      // Branch with wrapper-observed spend: an unbilled timeout try, then a
+      // final failure carrying its own intra-attempt indeterminate share.
+      const cfg6 = fixtureConfig("retry-failure-explicit-marker-aggregated");
+      cfg6.retry = { ...cfg6.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let tries6 = 0;
+      let caught6: unknown;
+      try {
+        await withRetry(
+          cfg6,
+          async () => {
+            tries6 += 1;
+            if (tries6 === 1) throw new Error("Request timeout");
+            throw new Error("terminal after mixed sub-attempts");
+          },
+          (error, attempt, startedAt) =>
+            tries6 === 1
+              ? classifyProviderError(
+                  "gemini",
+                  "google",
+                  "fixture-model",
+                  error,
+                  attempt,
+                  startedAt,
+                )
+              : stampedFailure("terminal after mixed sub-attempts", attempt, 2, 1),
+        );
+      } catch (error) {
+        caught6 = error;
+      }
+      const failure6 = (caught6 as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+      assert.equal(failure6?.unpriced_attempts, 2, "both tries must stay unpriced");
+      assert.equal(
+        failure6?.indeterminate_spend_attempts,
+        2,
+        "the wrapper try's share must compose with the failure's own explicit marker",
+      );
     },
   },
   {

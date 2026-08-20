@@ -91,6 +91,10 @@ function mergeRetryBillingIntoFailure(
 ): PeerFailure {
   if (prior.length === 0 && priorSpend.unpricedAttempts === 0) {
     if ((failure.unpriced_attempts ?? 0) === 0) return failure;
+    // Trust an explicit producer-stamped marker (round-8 codex finding):
+    // recomputing from the final class alone rewrote a positive marker as
+    // zero when the failure's own sub-attempts were of mixed classes.
+    if (failure.indeterminate_spend_attempts != null) return failure;
     return {
       ...failure,
       indeterminate_spend_attempts: indeterminateSpendMarkerFor(
@@ -107,9 +111,15 @@ function mergeRetryBillingIntoFailure(
   const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
   const unpriced = Math.max(0, (failure.unpriced_attempts ?? 0) - priorAccounted);
   const finalOwnUnpriced = Math.max(0, unpriced - priorSpend.unpricedAttempts);
-  const indeterminate =
-    priorSpend.indeterminateAttempts +
-    indeterminateSpendMarkerFor(failure.failure_class, failure.message, finalOwnUnpriced);
+  // The failure's own explicit marker (adapter mergers compose it from
+  // intra-attempt sub-calls the wrapper never saw) takes precedence over a
+  // recomputation from the final class, capped at the failure's own share
+  // of the unpriced total (round-8 codex finding).
+  const finalOwnIndeterminate =
+    failure.indeterminate_spend_attempts != null
+      ? Math.min(finalOwnUnpriced, failure.indeterminate_spend_attempts)
+      : indeterminateSpendMarkerFor(failure.failure_class, failure.message, finalOwnUnpriced);
+  const indeterminate = priorSpend.indeterminateAttempts + finalOwnIndeterminate;
   return {
     ...failure,
     ...(usage ? { usage } : {}),

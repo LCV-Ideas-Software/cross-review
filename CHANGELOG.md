@@ -45,6 +45,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
   marker with the wrapper-observed share instead of replacing it: an
   adapter-stamped positive marker no longer becomes an explicit zero when no
   wrapper-level prior try exists. (PR #214 gate, round-7 codex finding)
+- The retry wrapper's failure merger likewise trusts an explicit
+  producer-stamped marker instead of recomputing it from the final failure
+  class: a failure whose own sub-attempts were of mixed classes keeps its
+  positive marker under a terminal final class, in both merger branches.
+  (PR #214 gate, round-8 codex finding)
 
 ## [v04.05.41] — 20/08/2026
 
