@@ -3492,13 +3492,28 @@ function unpricedAttemptsForFailure(failure: PeerFailure): number {
 // Merged chains keep only the last failure's class, so indeterminate spend
 // from earlier links (a client-side timeout the provider may have billed)
 // must survive the merge as an explicit count or the budget gates would
-// settle it as zero.
+// settle it as zero. Round-3 review findings (session 6fae863d): a legacy
+// merged link — explicit unpriced attempts without the marker — must stay
+// conservative when merged again (its sub-links are unrecoverable), and a
+// legacy record read from disk may lack `message` despite the type, so the
+// sentinel check is guarded.
 function indeterminateSpendAttemptsForFailure(failure: PeerFailure): number {
   if (failure.indeterminate_spend_attempts != null) return failure.indeterminate_spend_attempts;
   const indeterminate =
     INDETERMINATE_SPEND_FAILURE_CLASSES.has(failure.failure_class) ||
-    failure.message.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX);
+    (typeof failure.message === "string" &&
+      failure.message.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX)) ||
+    ((failure.unpriced_attempts ?? 0) > 0 && failure.billing_status === "unknown");
   return indeterminate ? unpricedAttemptsForFailure(failure) : 0;
+}
+
+// Same legacy rule for a PeerResult being merged again: a legacy result
+// carrying explicit unpriced attempts without the marker keeps them
+// indeterminate — its sub-links are unrecoverable, so the re-merged record
+// must not stamp a marker that hides them as settled.
+function indeterminateSpendAttemptsForResult(result: PeerResult): number {
+  if (result.indeterminate_spend_attempts != null) return result.indeterminate_spend_attempts;
+  return result.unpriced_attempts ?? 0;
 }
 
 export function mergeFailureChain(
@@ -3539,7 +3554,7 @@ export function mergeFailureChain(
   };
 }
 
-function mergePeerResultWithFailures(
+export function mergePeerResultWithFailures(
   result: PeerResult,
   failures: readonly PeerFailure[],
 ): PeerResult {
@@ -3552,7 +3567,7 @@ function mergePeerResultWithFailures(
     (result.unpriced_attempts ?? 0) +
     failures.reduce((sum, failure) => sum + unpricedAttemptsForFailure(failure), 0);
   const indeterminateAttempts =
-    (result.indeterminate_spend_attempts ?? 0) +
+    indeterminateSpendAttemptsForResult(result) +
     failures.reduce((sum, failure) => sum + indeterminateSpendAttemptsForFailure(failure), 0);
   return {
     ...result,

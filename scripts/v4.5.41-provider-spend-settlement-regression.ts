@@ -16,7 +16,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
-import { CrossReviewOrchestrator, mergeFailureChain } from "../src/core/orchestrator.js";
+import {
+  CrossReviewOrchestrator,
+  mergeFailureChain,
+  mergePeerResultWithFailures,
+} from "../src/core/orchestrator.js";
 import type {
   AppConfig,
   EvidenceAskJudgment,
@@ -24,6 +28,7 @@ import type {
   PeerAdapter,
   PeerFailure,
   PeerId,
+  PeerResult,
 } from "../src/core/types.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
@@ -243,6 +248,69 @@ const regressions: Regression[] = [
         allTerminal.indeterminate_spend_attempts,
         0,
         "an all-terminal merged chain must carry the marker stamped as zero",
+      );
+    },
+  },
+  {
+    name: "re-merging-legacy-links-preserves-their-fail-closed-state",
+    run: () => {
+      // Round-3 findings (session 6fae863d): a legacy merged link (explicit
+      // unpriced attempts, unknown billing, no marker) must contribute its
+      // unpriced attempts as indeterminate when merged again — otherwise the
+      // re-merge stamps a marker of zero and hidden indeterminate spend
+      // becomes new-format settled spend. A missing message on a legacy
+      // record must not crash the merge either.
+      const legacyMergedLink: PeerFailure = {
+        ...terminalCapacityFailure(),
+        message: "fixture: legacy merged chain persisted before the marker existed",
+        attempts: 2,
+        unpriced_attempts: 2,
+        billing_status: "unknown",
+      };
+      const remerged = mergeFailureChain([legacyMergedLink, terminalCapacityFailure()]);
+      assert.equal(
+        remerged.indeterminate_spend_attempts,
+        2,
+        "re-merging a legacy link must carry its unpriced attempts as indeterminate",
+      );
+      const messagelessLegacy = {
+        ...legacyMergedLink,
+        message: undefined,
+      } as unknown as PeerFailure;
+      const guarded = mergeFailureChain([messagelessLegacy, terminalCapacityFailure()]);
+      assert.equal(
+        guarded.indeterminate_spend_attempts,
+        2,
+        "a legacy record without a message must merge without crashing and stay conservative",
+      );
+      const legacyResult: PeerResult = {
+        peer: "perplexity",
+        provider: "fixture-provider",
+        model: "fixture-model",
+        status: "READY",
+        structured: {
+          status: "READY",
+          summary: "No blocking objections remain.",
+          confidence: "verified",
+          evidence_sources: [],
+          caller_requests: [],
+          follow_ups: [],
+        },
+        text: "fixture",
+        raw: {},
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        cost: { currency: "USD", estimated: false, source: "configured-rate", total_cost: 0.5 },
+        latency_ms: 1,
+        attempts: 2,
+        unpriced_attempts: 1,
+        parser_warnings: [],
+        decision_quality: "clean",
+      };
+      const remergedResult = mergePeerResultWithFailures(legacyResult, [terminalCapacityFailure()]);
+      assert.equal(
+        remergedResult.indeterminate_spend_attempts,
+        1,
+        "a legacy priced result with hidden unpriced spend must stay indeterminate on re-merge",
       );
     },
   },
