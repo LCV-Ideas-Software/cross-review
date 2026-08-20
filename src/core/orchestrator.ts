@@ -3533,6 +3533,9 @@ function mergePeerResultWithFailures(
   const unpricedAttempts =
     (result.unpriced_attempts ?? 0) +
     failures.reduce((sum, failure) => sum + unpricedAttemptsForFailure(failure), 0);
+  const indeterminateAttempts =
+    (result.indeterminate_spend_attempts ?? 0) +
+    failures.reduce((sum, failure) => sum + indeterminateSpendAttemptsForFailure(failure), 0);
   return {
     ...result,
     attempts: result.attempts + failures.reduce((sum, failure) => sum + failure.attempts, 0),
@@ -3540,6 +3543,7 @@ function mergePeerResultWithFailures(
     usage: hasFailureUsage ? mergeUsage([...failureUsage, result.usage]) : result.usage,
     cost: hasFailureCost ? mergeCost([...failureCost, result.cost]) : result.cost,
     ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+    ...(indeterminateAttempts > 0 ? { indeterminate_spend_attempts: indeterminateAttempts } : {}),
   };
 }
 
