@@ -14,20 +14,18 @@ const fixtureRecord: HostTokensRecord = {
 };
 
 test("a failed first load is never retried after a late existence probe", () => {
-  const diagnostics: HostTokensLoadDiagnostics = { failure: null };
   let entryChecks = 0;
   let loadCalls = 0;
   let generateCalls = 0;
 
   const result = ensureHostTokens("fixture", {
-    diagnostics,
     tokensFileEntryExists: () => {
       entryChecks += 1;
       return entryChecks > 1;
     },
-    load: () => {
+    load: (_dataDir, diagnostics?: HostTokensLoadDiagnostics) => {
       loadCalls += 1;
-      diagnostics.failure = "permission_denied";
+      if (diagnostics) diagnostics.failure = "permission_denied";
       return null;
     },
     generate: () => {
@@ -42,16 +40,14 @@ test("a failed first load is never retried after a late existence probe", () => 
 });
 
 test("an entry that disappears between the precheck and load is regenerated safely", () => {
-  const diagnostics: HostTokensLoadDiagnostics = { failure: null };
   let loadCalls = 0;
   let generateCalls = 0;
 
   const result = ensureHostTokens("fixture", {
-    diagnostics,
     tokensFileEntryExists: () => true,
-    load: () => {
+    load: (_dataDir, diagnostics?: HostTokensLoadDiagnostics) => {
       loadCalls += 1;
-      diagnostics.failure = "missing";
+      if (diagnostics) diagnostics.failure = "missing";
       return null;
     },
     generate: () => {
