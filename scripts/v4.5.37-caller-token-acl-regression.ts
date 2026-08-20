@@ -8,6 +8,7 @@ import {
   executeWindowsTokensFileAclCommands,
   getWindowsTokensFileAclCommands,
   getWindowsTokensFileAclVerificationCommand,
+  getWindowsCurrentUserSid,
   getWindowsTokensFileProtectedEmptyDaclRecoveryCommand,
   type HostTokensLoadDiagnostics,
   loadHostTokens,
@@ -164,6 +165,41 @@ assert.ok(
 assert.ok(
   WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS >= 15_000,
   "whoami spawn timeout must absorb process cold start on loaded runners",
+);
+
+// Issue #209 (round 2): the SID lookup must classify its own failure causes so
+// stage=sid carries the same failure-kind detail as apply/verify.
+const sidTimeout: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidTimeout, () => ({
+    status: null,
+    error: Object.assign(new Error("spawnSync whoami.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+  })),
+  null,
+  "an identity lookup timeout must fail closed",
+);
+assert.equal(sidTimeout.failure?.kind, "timeout", "identity timeout must be classified");
+const sidExit: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidExit, () => ({ status: 1, stdout: "" })),
+  null,
+);
+assert.equal(sidExit.failure?.kind, "exit_status");
+assert.equal(sidExit.failure?.status, 1);
+const sidGarbage: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  getWindowsCurrentUserSid(sidGarbage, () => ({ status: 0, stdout: "no sid here" })),
+  null,
+);
+assert.equal(
+  sidGarbage.failure?.kind,
+  "invalid_output",
+  "unparseable identity output must be classified distinctly",
+);
+assert.equal(
+  getWindowsCurrentUserSid(undefined, () => ({ status: 0, stdout: '"user","S-1-5-21-1000"' })),
+  "S-1-5-21-1000",
+  "a valid identity row must still parse",
 );
 
 const fakeIdentity = { dev: 1n, ino: 2n };

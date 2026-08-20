@@ -191,10 +191,21 @@ export const WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS = 15_000;
 
 export interface WindowsTokensFileAclExecutionDiagnostics {
   failure?: {
-    kind: "timeout" | "spawn_error" | "exit_status";
+    kind: "timeout" | "spawn_error" | "exit_status" | "invalid_output";
     code?: string;
     status?: number | null;
   };
+}
+
+function classifySpawnFailure(
+  error: unknown,
+): NonNullable<WindowsTokensFileAclExecutionDiagnostics["failure"]> {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  if (code === "ETIMEDOUT") return { kind: "timeout", code };
+  return code ? { kind: "spawn_error", code } : { kind: "spawn_error" };
 }
 
 export interface TokensFileHardenDiagnostics {
@@ -328,18 +339,7 @@ export function executeWindowsTokensFileAclCommands(
   for (const command of commands) {
     const result = execute(command);
     if (result.error) {
-      const code =
-        typeof result.error === "object" && result.error !== null && "code" in result.error
-          ? String((result.error as { code?: unknown }).code ?? "")
-          : "";
-      if (diagnostics) {
-        diagnostics.failure =
-          code === "ETIMEDOUT"
-            ? { kind: "timeout", code }
-            : code
-              ? { kind: "spawn_error", code }
-              : { kind: "spawn_error" };
-      }
+      if (diagnostics) diagnostics.failure = classifySpawnFailure(result.error);
       return false;
     }
     if (result.status !== 0) {
@@ -350,18 +350,30 @@ export function executeWindowsTokensFileAclCommands(
   return true;
 }
 
-function getWindowsCurrentUserSid(): string | null {
-  const identity = spawnSync(
-    getWindowsSystemToolPath("whoami.exe"),
-    ["/user", "/fo", "csv", "/nh"],
-    {
+export function getWindowsCurrentUserSid(
+  diagnostics?: WindowsTokensFileAclExecutionDiagnostics,
+  spawnIdentity: () => { status: number | null; error?: Error; stdout?: string } = () =>
+    spawnSync(getWindowsSystemToolPath("whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
       encoding: "utf8",
       windowsHide: true,
       timeout: WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS,
-    },
-  );
+    }),
+): string | null {
+  const identity = spawnIdentity();
+  if (identity.error) {
+    if (diagnostics) diagnostics.failure = classifySpawnFailure(identity.error);
+    return null;
+  }
+  if (identity.status !== 0) {
+    if (diagnostics) diagnostics.failure = { kind: "exit_status", status: identity.status };
+    return null;
+  }
   const currentUserSid = identity.stdout?.match(/"(S-\d+(?:-\d+)+)"/i)?.[1];
-  return identity.status === 0 && currentUserSid ? currentUserSid : null;
+  if (!currentUserSid) {
+    if (diagnostics) diagnostics.failure = { kind: "invalid_output" };
+    return null;
+  }
+  return currentUserSid;
 }
 
 function describeAclExecutionFailure(
@@ -372,6 +384,7 @@ function describeAclExecutionFailure(
   if (failure.kind === "timeout") return "spawn timeout (ETIMEDOUT)";
   if (failure.kind === "spawn_error")
     return `spawn error${failure.code ? ` (${failure.code})` : ""}`;
+  if (failure.kind === "invalid_output") return "unparseable identity output";
   return `exit status ${failure.status ?? "unknown"}`;
 }
 
@@ -419,9 +432,13 @@ export function hardenTokensFilePermissions(
       return (fs.statSync(filePath).mode & 0o077) === 0;
     }
 
-    const currentUserSid = getWindowsCurrentUserSid();
+    const sidDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+    const currentUserSid = getWindowsCurrentUserSid(sidDiagnostics);
     if (!currentUserSid) {
-      if (diagnostics) diagnostics.stage = "sid";
+      if (diagnostics) {
+        diagnostics.stage = "sid";
+        diagnostics.detail = describeAclExecutionFailure(sidDiagnostics);
+      }
       return false;
     }
 
