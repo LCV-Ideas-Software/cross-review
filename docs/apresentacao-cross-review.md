@@ -1,6 +1,6 @@
 # Apresentação do cross-review
 
-Data de referência desta apresentação: 05/08/2026.
+Data de referência desta apresentação: 20/08/2026.
 
 Este documento apresenta o `cross-review` para dois públicos:
 
@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.36`                        |
-| Data do source/release target | `05/08/2026`                       |
+| Versão preparada pelo source  | `v04.05.37`                        |
+| Data do source/release target | `20/08/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -827,6 +827,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.37`      | 20/08/2026    | Torna a ACL dos caller tokens no Windows tolerante a interrupção, recupera uma única negação de acesso sem rotação ou loop e passa caminho/SID fora do parser de comandos, preservando os gates fail-closed de identidade e caminho.                                   |
 | `v04.05.36`      | 05/08/2026    | Corrige citações JSON byte-exatas, preserva evidência ativa no retry de decisão e aceita o conteúdo terminal agregado documentado do Perplexity sem enfraquecer os gates anti-fabricação.                                                                              |
 | `v04.05.35`      | 05/08/2026    | Protege o conteúdo do pacote público, isola o token administrativo em ambiente sem Deployment, atualiza TypeScript ESLint para 8.66.0 e torna determinístico o teste forense de processo pai no Windows.                                                               |
 | `v04.05.34`      | 03/08/2026    | Remove duas expressões redundantes apontadas pelo GitHub Code Quality, preservando o comportamento do preflight de orçamento e o fallback tardio de anexos quando o preflight de veracidade está desativado.                                                           |

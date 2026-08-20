@@ -2,10 +2,22 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.36 for package 4.5.36. This
+Current supported source/release target: v04.05.37 for package 4.5.37. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.05.37 makes Windows caller-token ACL hardening interruption-tolerant and
+self-healing for one initial `EACCES`/`EPERM` without rotating the capability
+record. It replaces the prior three-process `icacls` sequence with one complete
+protected-DACL application compatible with Windows PowerShell 5.1 and
+PowerShell 7. Paths and SIDs reach the ACL scripts as JSON over standard input,
+outside PowerShell's command parser. Required identities are deduplicated and
+the final DACL is verified as an exact set. The recovery is Windows-only,
+rejects non-files and symbolic links, binds the reopened descriptor to the pre-repair file identity and
+current path, and never retries persistent or unrelated failures. POSIX retains
+descriptor-based mode hardening. This is not a cross-process serialization
+claim; the final exact-ACL verifier continues to fail closed.
 
 v04.05.36 preserves fail-closed path, SHA-256, literal-contiguity and
 fabrication checks while correcting false-negative JSON quote extraction. It

@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 05/08/2026: `4.5.36`. O registro pode ficar
+> Estado do source/release target em 20/08/2026: `4.5.37`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -628,6 +628,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.37`      | Torna a ACL dos caller tokens no Windows tolerante a interrupção, recupera uma única negação de acesso sem rotação ou loop e passa caminho/SID fora do parser de comandos, preservando os gates fail-closed de identidade e caminho.   |
 | `v04.05.36`      | Corrige citações JSON byte-exatas, preserva evidência ativa no retry de decisão e aceita o conteúdo terminal agregado documentado do Perplexity sem enfraquecer os gates anti-fabricação.                                              |
 | `v04.05.35`      | Protege o conteúdo do pacote público, isola o token administrativo em ambiente sem Deployment, atualiza TypeScript ESLint para 8.66.0 e torna determinístico o teste forense de processo pai no Windows.                               |
 | `v04.05.34`      | Remove duas expressões redundantes apontadas pelo GitHub Code Quality, preservando o comportamento do preflight de orçamento e o fallback tardio de anexos quando o preflight de veracidade está desativado.                           |

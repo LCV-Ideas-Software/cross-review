@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.05.36** (package `4.5.36`).
+**Status.** Stable. The current source/release target is **v04.05.37** (package `4.5.37`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.05.37`**      | Makes Windows caller-token ACL hardening interruption-tolerant, repairs one protected-empty-DACL denial without looping or rotating tokens, binds path/SID data outside the PowerShell command parser, and adds a dedicated Windows regression gate.                             |
 | **`v04.05.36`**      | Repairs byte-exact JSON citation grounding, preserves active caller evidence during full decision retry, accepts documented terminal Perplexity aggregate content, and refreshes the signed immutable central automation pins.                                                   |
 | **`v04.05.35`**      | Hardens the public-package boundary, moves administrative release checks into the protected non-deployment environment, updates TypeScript ESLint to 8.66.0, and makes Windows parent-process forensics tests deterministic without changing the 500 ms best-effort runtime cap. |
 | **`v04.05.34`**      | Removes two redundant control-flow expressions reported by GitHub Code Quality while preserving the budget-preflight behavior and the lazy evidence-attachment fallback used when truthfulness preflight is disabled.                                                            |
