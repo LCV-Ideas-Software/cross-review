@@ -7,6 +7,34 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.41] — 20/08/2026
+
+### Fixed
+
+- Terminal provider failures that reported no usage and no cost (quota skip,
+  immediate capacity rejection, provider error before generation) now settle
+  as zero spend instead of permanently blocking the generation and
+  evidence-judge budget preflights as "unpriced or still unsettled" — a
+  livelock that finalized real sessions as `max-rounds` /
+  `generation_budget_preflight` whenever a peer was unavailable. Spend stays
+  indeterminate — and keeps blocking — only for outcomes that never became
+  durable: `network`/`timeout`/`stream_buffer_overflow`/`unknown` failure
+  classes and interrupted-attempt records stamped with the
+  `possible_provider_attempt_interrupted` sentinel. (#211)
+- Routes `permission_hardening_failed` to a dedicated Windows manual-recovery
+  recipe: hardening failures leave an indeterminate DACL, so the
+  protected-empty precondition of the `permission_denied` recipe refused
+  every such state and the reported guidance could never recover it.
+- Both Windows manual-recovery recipes now refuse reparse-point entries and
+  re-apply and verify the final descriptor through a single exclusively held
+  `ChangePermissions` handle, so the object that ends up verified is the
+  object the handle holds — a pathname swap after the bind can neither be
+  modified nor pass verification.
+- The manual recipes and the production ACL verification command compare the
+  complete ACE rights value against `FullControl` instead of a bitwise
+  subset, so an ACE carrying extra access-mask bits no longer passes
+  verification.
+
 ## [v04.05.40] — 20/08/2026
 
 ### Fixed

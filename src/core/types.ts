@@ -312,6 +312,12 @@ export interface FallbackEvent {
   ts: string;
 }
 
+// Message prefix stamped on conservatively fabricated failure records for
+// attempts whose round died without a durable provider result; billing on
+// such attempts stays indeterminate until reconciled (issue #211 keeps them
+// blocking while durable terminal failures without usage settle as zero).
+export const POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX = "possible_provider_attempt_interrupted";
+
 export interface PeerFailure {
   peer: PeerId;
   provider: string;

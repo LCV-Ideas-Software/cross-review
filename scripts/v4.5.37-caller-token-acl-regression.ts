@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   ensureHostTokens,
   executeWindowsTokensFileAclCommands,
+  getTokenFileRecoveryGuidance,
   getWindowsCurrentUserSid,
   getWindowsTokensFileAclCommands,
   getWindowsTokensFileAclVerificationCommand,
@@ -13,6 +14,7 @@ import {
   type HostTokensLoadDiagnostics,
   loadHostTokens,
   openTokensFileWithPermissionRecovery,
+  TOKEN_FILE_HARDENING_FAILED_MANUAL_RECOVERY,
   TOKEN_FILE_MANUAL_RECOVERY,
   verifyTokenForCaller,
   WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS,
@@ -100,6 +102,88 @@ assert.doesNotMatch(
   portableReplacementScript,
   /icacls|\/reset|\/inheritance:r/,
   "production replacement must not recreate a broad or empty intermediate DACL",
+);
+
+// PR #208 review threads (routing, TOCTOU binding, exact-ACE comparison):
+// hardening failures leave an indeterminate DACL, so they must never route to
+// the protected-empty recovery recipe that refuses every such state; both
+// manual recipes must bind the final descriptor to one exclusively held
+// handle; and every rights check must compare the complete ACE value instead
+// of a FullControl subset.
+assert.equal(
+  getTokenFileRecoveryGuidance({ failure: "permission_denied", platform: "win32" }),
+  TOKEN_FILE_MANUAL_RECOVERY,
+  "permission_denied must keep routing to the protected-empty recovery recipe",
+);
+assert.equal(
+  getTokenFileRecoveryGuidance({ failure: "permission_hardening_failed", platform: "win32" }),
+  TOKEN_FILE_HARDENING_FAILED_MANUAL_RECOVERY,
+  "permission_hardening_failed must route to its dedicated recovery recipe",
+);
+assert.notEqual(
+  TOKEN_FILE_HARDENING_FAILED_MANUAL_RECOVERY,
+  TOKEN_FILE_MANUAL_RECOVERY,
+  "the hardening-failure recipe must not reuse the protected-empty precondition",
+);
+const manualRecipeBlock = TOKEN_FILE_MANUAL_RECOVERY.match(/`([^`]+)`/)?.[1] ?? "";
+const hardeningRecipeBlock =
+  TOKEN_FILE_HARDENING_FAILED_MANUAL_RECOVERY.match(/`([^`]+)`/)?.[1] ?? "";
+assert.ok(manualRecipeBlock, "manual recovery guidance must contain one PowerShell block");
+assert.ok(hardeningRecipeBlock, "hardening recovery guidance must contain one PowerShell block");
+assert.match(
+  manualRecipeBlock,
+  /expected protected empty DACL/,
+  "permission_denied recovery must keep requiring the quarantined protected-empty state",
+);
+assert.doesNotMatch(
+  hardeningRecipeBlock,
+  /expected protected empty DACL/,
+  "hardening failures leave an indeterminate DACL; requiring protected-empty always refuses",
+);
+for (const [recipeLabel, recipeBlock] of [
+  ["permission_denied", manualRecipeBlock],
+  ["permission_hardening_failed", hardeningRecipeBlock],
+] as const) {
+  assert.match(
+    recipeBlock,
+    /ReparsePoint/,
+    `${recipeLabel} recovery must refuse reparse-point entries before touching the DACL`,
+  );
+  assert.match(
+    recipeBlock,
+    /'ReadData, ReadPermissions, ChangePermissions'/,
+    `${recipeLabel} recovery must open one handle carrying WRITE_DAC (ChangePermissions)`,
+  );
+  assert.match(
+    recipeBlock,
+    /FileShare\]::None/,
+    `${recipeLabel} recovery must hold the handle exclusively while verifying`,
+  );
+  assert.match(
+    recipeBlock,
+    /SetAccessControl\(\$stream, \$acl\)/,
+    `${recipeLabel} recovery must re-apply the descriptor through the held handle`,
+  );
+  assert.match(
+    recipeBlock,
+    /\$rule\.FileSystemRights -ne \[System\.Security\.AccessControl\.FileSystemRights\]::FullControl/,
+    `${recipeLabel} recovery must compare the complete ACE rights value`,
+  );
+  assert.doesNotMatch(
+    recipeBlock,
+    /-band \[System\.Security\.AccessControl\.FileSystemRights\]::FullControl/,
+    `${recipeLabel} recovery must not accept a FullControl superset ACE`,
+  );
+}
+assert.match(
+  portableVerificationScript,
+  /\$rule\.FileSystemRights -ne \[System\.Security\.AccessControl\.FileSystemRights\]::FullControl/,
+  "production verification must compare the complete ACE rights value (exit 16)",
+);
+assert.doesNotMatch(
+  portableVerificationScript,
+  /-band \[System\.Security\.AccessControl\.FileSystemRights\]::FullControl/,
+  "production verification must not accept a FullControl superset ACE",
 );
 let failedExecutionCalls = 0;
 assert.equal(
@@ -626,6 +710,17 @@ try {
   const manualRecipe = manualRecipeTemplate
     .replace("'<token-file>'", `'${tokenPath.replaceAll("'", "''")}'`)
     .replace("'<current-user-SID>'", `'${currentUserSid}'`);
+  const hardeningRecipeTemplate =
+    TOKEN_FILE_HARDENING_FAILED_MANUAL_RECOVERY.match(/`([^`]+)`/)?.[1];
+  assert.ok(
+    hardeningRecipeTemplate,
+    "hardening recovery guidance must contain one PowerShell block",
+  );
+  if (!hardeningRecipeTemplate)
+    throw new Error("hardening recovery PowerShell block is unavailable");
+  const hardeningRecipe = hardeningRecipeTemplate
+    .replace("'<token-file>'", `'${tokenPath.replaceAll("'", "''")}'`)
+    .replace("'<current-user-SID>'", `'${currentUserSid}'`);
   assert.equal(
     plannedCommands.length,
     1,
@@ -718,6 +813,91 @@ try {
       0,
       `${engineName} must verify the exact ACL after manual recovery (stdout=${manualVerificationResult.stdout}; stderr=${manualVerificationResult.stderr})`,
     );
+
+    // PR #208 thread (routing): the hardening-failure recipe must converge on
+    // the exact descriptor from every state hardening can leave behind —
+    // broad inherited, quarantined protected-empty, and already-exact.
+    const hardeningStates: ReadonlyArray<[string, () => void]> = [
+      ["broad inherited DACL", () => runIcacls([tokenPath, "/reset"])],
+      [
+        "quarantined protected-empty DACL",
+        () => {
+          runIcacls([tokenPath, "/reset"]);
+          runIcacls([tokenPath, "/inheritance:r"]);
+        },
+      ],
+      ["already-exact descriptor", () => {}],
+    ];
+    for (const [stateLabel, arrange] of hardeningStates) {
+      arrange();
+      const hardeningRecoveryResult = spawnSync(
+        enginePath,
+        ["-NoLogo", "-NoProfile", "-Command", hardeningRecipe],
+        { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+      );
+      assert.equal(
+        hardeningRecoveryResult.status,
+        0,
+        `hardening recovery must repair a ${stateLabel} in ${engineName} (stdout=${hardeningRecoveryResult.stdout}; stderr=${hardeningRecoveryResult.stderr})`,
+      );
+      assert.equal(
+        executeWithEngine(verificationCommand).status,
+        0,
+        `${engineName} must verify the exact ACL after hardening recovery from a ${stateLabel}`,
+      );
+    }
+
+    // PR #208 thread (TOCTOU): a pathname redirected to another file must be
+    // refused before any descriptor is touched. Symlink creation needs a
+    // privilege the local console may not hold; the CI runner has it.
+    const victimPath = path.join(tmpRoot, "victim-file.json");
+    const linkPath = path.join(tmpRoot, "redirected-entry.json");
+    fs.rmSync(victimPath, { force: true });
+    fs.rmSync(linkPath, { force: true });
+    fs.writeFileSync(victimPath, "{}");
+    let symlinkAvailable = false;
+    try {
+      fs.symlinkSync(victimPath, linkPath, "file");
+      symlinkAvailable = true;
+    } catch {
+      console.log(
+        `[v4.5.37-caller-token-acl-regression] SKIP: ${engineName} symlink-refusal scenario (symlink creation unavailable)`,
+      );
+    }
+    if (symlinkAvailable) {
+      const victimAclBefore = fs.statSync(victimPath).mode;
+      for (const [recipeLabel, recipeText] of [
+        ["manual", manualRecipe],
+        ["hardening", hardeningRecipe],
+      ] as const) {
+        const redirectedRecipe = recipeText.replace(
+          `'${tokenPath.replaceAll("'", "''")}'`,
+          `'${linkPath.replaceAll("'", "''")}'`,
+        );
+        const redirectedResult = spawnSync(
+          enginePath,
+          ["-NoLogo", "-NoProfile", "-Command", redirectedRecipe],
+          { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+        );
+        assert.notEqual(
+          redirectedResult.status,
+          0,
+          `${recipeLabel} recovery must refuse a symlinked entry in ${engineName}`,
+        );
+        assert.match(
+          `${redirectedResult.stdout}\n${redirectedResult.stderr}`,
+          /regular non-reparse token file/,
+          `${recipeLabel} recovery refusal must name the reparse precondition in ${engineName}`,
+        );
+      }
+      assert.equal(
+        fs.statSync(victimPath).mode,
+        victimAclBefore,
+        `symlink refusal must leave the redirect target untouched in ${engineName}`,
+      );
+      fs.rmSync(linkPath, { force: true });
+    }
+    fs.rmSync(victimPath, { force: true });
   }
 
   const aclProbe = spawnSync(

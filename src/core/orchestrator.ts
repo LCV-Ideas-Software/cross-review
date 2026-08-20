@@ -48,7 +48,7 @@ import type {
   SessionMeta,
   TokenUsage,
 } from "./types.js";
-import { PEERS } from "./types.js";
+import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
 
 export interface AskPeersInput {
   session_id?: string | undefined;
@@ -3188,6 +3188,32 @@ interface ProviderSpendEvidence {
   cost?: CostEstimate | undefined;
   billing_status?: "reported" | "unknown" | undefined;
   unpriced_attempts?: number | undefined;
+  failure_class?: PeerFailure["failure_class"] | undefined;
+  message?: string | undefined;
+}
+
+// Failure classes whose provider-side outcome never became durable: the call
+// may have reached the provider and billed work that was never reported back,
+// so their spend stays indeterminate and keeps blocking the budget gates.
+const INDETERMINATE_SPEND_FAILURE_CLASSES: ReadonlySet<PeerFailure["failure_class"]> = new Set([
+  "network",
+  "timeout",
+  "stream_buffer_overflow",
+  "unknown",
+]);
+
+function providerSpendEvidenceIsIndeterminate(evidence: ProviderSpendEvidence): boolean {
+  if (evidence.message?.startsWith(POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX)) return true;
+  if (evidence.failure_class !== undefined) {
+    return INDETERMINATE_SPEND_FAILURE_CLASSES.has(evidence.failure_class);
+  }
+  // Legacy or merged records without a failure class: an explicit unknown
+  // billing marker with no observed work keeps its conservative meaning.
+  return (
+    evidence.billing_status === "unknown" &&
+    !usageShowsProviderWork(evidence.usage) &&
+    evidence.cost == null
+  );
 }
 
 function usageShowsProviderWork(usage: TokenUsage | undefined): boolean {
@@ -3205,11 +3231,23 @@ function usageShowsProviderWork(usage: TokenUsage | undefined): boolean {
 }
 
 function providerSpendIsUnknown(evidence: ProviderSpendEvidence): boolean {
-  const attempts =
-    evidence.attempts ?? (usageShowsProviderWork(evidence.usage) || evidence.cost ? 1 : 0);
-  if ((evidence.unpriced_attempts ?? 0) > 0) return true;
-  if (attempts <= 0) return false;
-  if (evidence.billing_status === "unknown") return true;
+  const observedWork = usageShowsProviderWork(evidence.usage) || evidence.cost != null;
+  if (!observedWork) {
+    // A durable terminal outcome that reported no usage and no cost settles
+    // as zero spend — providers report usage on billable outcomes. Blocking
+    // here would be a livelock: no future event can price such an attempt
+    // (issue #211). Only indeterminate outcomes stay blocking.
+    const attempts = (evidence.attempts ?? 0) + (evidence.unpriced_attempts ?? 0);
+    return attempts > 0 && providerSpendEvidenceIsIndeterminate(evidence);
+  }
+  if ((evidence.unpriced_attempts ?? 0) > 0) {
+    // Priced work merged with terminal zero-billed retries stays settled;
+    // merged chains keep the last failure's class, so indeterminate retries
+    // still poison the record.
+    if (providerSpendEvidenceIsIndeterminate(evidence)) return true;
+  } else if (evidence.billing_status === "unknown") {
+    return true;
+  }
   return evidence.cost?.total_cost == null || !Number.isFinite(evidence.cost.total_cost);
 }
 
