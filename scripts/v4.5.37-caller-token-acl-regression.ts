@@ -406,8 +406,12 @@ const invalidRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v4537-invalid-token-"
 const invalidPath = path.join(invalidRoot, "host-tokens.json");
 const previousInvalidPath = process.env.CROSS_REVIEW_TOKENS_FILE;
 try {
-  fs.writeFileSync(invalidPath, "{invalid-json", { mode: 0o600 });
   process.env.CROSS_REVIEW_TOKENS_FILE = invalidPath;
+  assert.ok(
+    ensureHostTokens(invalidRoot),
+    "invalid-content fixture must begin with the production-hardened ACL",
+  );
+  fs.writeFileSync(invalidPath, "{invalid-json", "utf8");
   const diagnostics: HostTokensLoadDiagnostics = { failure: null };
   assert.equal(loadHostTokens(invalidRoot, diagnostics), null);
   assert.equal(
