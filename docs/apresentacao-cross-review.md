@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.39`                        |
+| Versão preparada pelo source  | `v04.05.40`                        |
 | Data do source/release target | `20/08/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -827,6 +827,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                               |
 | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.40`      | 20/08/2026    | Resolve whoami/powershell por caminho absoluto de System32 (o whoami GNU do Git Bash quebrava o boot; PATH gravável não substitui mais o motor da DACL), eleva os tetos dos spawns de boot (10s→60s; 5s→15s) e classifica a etapa/causa da falha no erro.              |
 | `v04.05.39`      | 20/08/2026    | Impede retry de recuperação de caller token no mesmo boot, recria somente após desaparecimento confirmado e faz a receita manual substituir apenas uma DACL protegida e vazia antes de validar o resultado exato.                                                      |
 | `v04.05.38`      | 20/08/2026    | Trava a dívida T2#10 de regexes amplas de source no baseline atual `smoke=129`, `source-contract=29`, total `158`, impedindo que novos pins consumam a folga deixada pelos tetos anteriores.                                                                           |
 | `v04.05.37`      | 20/08/2026    | Torna a ACL dos caller tokens no Windows tolerante a interrupção, recupera uma única negação de acesso sem rotação ou loop e passa caminho/SID fora do parser de comandos, preservando os gates fail-closed de identidade e caminho.                                   |

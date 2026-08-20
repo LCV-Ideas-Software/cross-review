@@ -14,6 +14,9 @@ import {
   openTokensFileWithPermissionRecovery,
   TOKEN_FILE_MANUAL_RECOVERY,
   verifyTokenForCaller,
+  WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS,
+  WINDOWS_TOKENS_FILE_ACL_SPAWN_TIMEOUT_MS,
+  type WindowsTokensFileAclExecutionDiagnostics,
 } from "../src/core/caller-tokens.js";
 
 const ciWorkflow = fs.readFileSync(
@@ -41,7 +44,14 @@ assert.equal(
   1,
   "production ACL replacement must have one external-process interruption boundary",
 );
-assert.equal(portablePlan[0]?.executable, "powershell.exe");
+// Issue #209: the executable must be the absolute System32 engine — PATH
+// resolution let GNU coreutils' whoami/other shadows (Git Bash parents) or a
+// writable PATH entry substitute the security-critical tool.
+assert.match(
+  portablePlan[0]?.executable ?? "",
+  /[\\/]System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i,
+  "ACL commands must invoke the absolute System32 PowerShell engine",
+);
 const portableReplacementScript = portablePlan[0]?.args[4] ?? "";
 const portableVerificationScript =
   getWindowsTokensFileAclVerificationCommand("<token-file>", "S-1-5-21-1000").args[4] ?? "";
@@ -114,6 +124,46 @@ assert.equal(
   executeWindowsTokensFileAclCommands(portablePlan, () => ({ status: 0 })),
   true,
   "the atomic ACL replacement must succeed only when its process succeeds",
+);
+
+// Issue #209: an executor timeout is an infrastructure failure and must be
+// classified as such — never surfaced as a security policy rejection.
+const timeoutDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  executeWindowsTokensFileAclCommands(
+    portablePlan,
+    () => ({
+      status: null,
+      error: Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    }),
+    timeoutDiagnostics,
+  ),
+  false,
+  "an executor timeout must still fail closed",
+);
+assert.equal(
+  timeoutDiagnostics.failure?.kind,
+  "timeout",
+  "an executor timeout must be classified as timeout, not policy rejection",
+);
+const exitDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+assert.equal(
+  executeWindowsTokensFileAclCommands(portablePlan, () => ({ status: 12 }), exitDiagnostics),
+  false,
+  "a non-zero exit must still fail closed",
+);
+assert.equal(exitDiagnostics.failure?.kind, "exit_status");
+assert.equal(exitDiagnostics.failure?.status, 12);
+// Cold-start floor on hosted runners: the first powershell.exe spawn of a
+// process can exceed 10s under load (observed twice on 20/08 runs), so the
+// one-shot boot spawns must allow generous ceilings while staying fail-closed.
+assert.ok(
+  WINDOWS_TOKENS_FILE_ACL_SPAWN_TIMEOUT_MS >= 60_000,
+  "ACL spawn timeout must absorb PowerShell cold start on loaded runners",
+);
+assert.ok(
+  WINDOWS_CURRENT_USER_SID_SPAWN_TIMEOUT_MS >= 15_000,
+  "whoami spawn timeout must absorb process cold start on loaded runners",
 );
 
 const fakeIdentity = { dev: 1n, ino: 2n };
@@ -489,7 +539,8 @@ try {
 
   assert.ok(ensureHostTokens(tmpRoot), "fixture token file must be generated");
 
-  const identity = spawnSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
+  const systemWhoami = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "whoami.exe");
+  const identity = spawnSync(systemWhoami, ["/user", "/fo", "csv", "/nh"], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 5_000,
@@ -609,7 +660,7 @@ try {
   }
 
   const aclProbe = spawnSync(
-    "powershell.exe",
+    windowsPowerShell,
     [
       "-NoLogo",
       "-NoProfile",
