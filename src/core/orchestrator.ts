@@ -6462,6 +6462,9 @@ export class CrossReviewOrchestrator {
                     unpriced_attempts:
                       (originalPeerResult.unpriced_attempts ?? 0) +
                       (recovered.unpriced_attempts ?? 0),
+                    indeterminate_spend_attempts:
+                      indeterminateSpendAttemptsForResult(originalPeerResult) +
+                      indeterminateSpendAttemptsForResult(recovered),
                   }
                 : {}),
               parser_warnings: parserWarnings,

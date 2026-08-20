@@ -23,6 +23,7 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
+import { indeterminateSpendMarkerFor } from "../core/types.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { withRetry } from "./retry.js";
@@ -417,7 +418,16 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
       usage: combinedOpenAIUsage([priorUsage, failure.usage]),
       cost: mergeCost([priorCost, failure.cost]),
       billing_status: unpricedAttempts === 0 ? ("reported" as const) : ("unknown" as const),
-      ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+      ...(unpricedAttempts > 0
+        ? {
+            unpriced_attempts: unpricedAttempts,
+            indeterminate_spend_attempts: indeterminateSpendMarkerFor(
+              failure.failure_class,
+              failure.message,
+              unpricedAttempts,
+            ),
+          }
+        : {}),
     };
   }
 

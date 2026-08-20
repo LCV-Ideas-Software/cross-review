@@ -1940,6 +1940,7 @@ export class SessionStore {
         cost: result.cost,
         latency_ms: result.latency_ms,
         unpriced_attempts: result.unpriced_attempts,
+        indeterminate_spend_attempts: result.indeterminate_spend_attempts,
       };
       meta.generation_files = [...(meta.generation_files ?? []), artifact];
       this.consumePendingProviderCallReservation(meta, pendingReservationId, result.peer, round);
@@ -2190,6 +2191,7 @@ export class SessionStore {
                 ? "unknown"
                 : undefined,
         unpriced_attempts: result.unpriced_attempts,
+        indeterminate_spend_attempts: result.indeterminate_spend_attempts,
       },
       reservationId,
     );
@@ -2228,6 +2230,7 @@ export class SessionStore {
                   ? "unknown"
                   : undefined)),
         unpriced_attempts: failure.unpriced_attempts,
+        indeterminate_spend_attempts: failure.indeterminate_spend_attempts,
       },
       reservationId,
     );

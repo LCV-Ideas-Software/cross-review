@@ -292,6 +292,7 @@ export interface GenerationResult {
   latency_ms: number;
   attempts: number;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
   fallback?: FallbackEvent | undefined;
   // v2.23.0: parser-side diagnostics produced by provider adapters when the
   // response payload was technically valid (tokens billed) but yielded a
@@ -424,6 +425,7 @@ export interface ProviderCallSettlement {
   latency_ms: number;
   billing_status?: "reported" | "unknown" | undefined;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
   /** Links a secondary provider call to the reservation created before dispatch. */
   reservation_id?: string | undefined;
 }
@@ -741,6 +743,7 @@ export interface GenerationArtifact {
   cost?: CostEstimate | undefined;
   latency_ms?: number | undefined;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
 }
 
 export interface OperatorEscalation {
@@ -861,6 +864,7 @@ export interface EvidenceAskJudgment {
   latency_ms: number;
   attempts: number;
   unpriced_attempts?: number | undefined;
+  indeterminate_spend_attempts?: number | undefined;
   // Parser warnings encountered while extracting structured fields from
   // the provider response. Non-empty does not invalidate the judgment;
   // it surfaces format-stability concerns to the dashboard.

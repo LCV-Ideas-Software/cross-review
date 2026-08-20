@@ -30,24 +30,6 @@ function retryBillingFromError(error: unknown): RetryBilling | undefined {
   return { usage, cost, accountedAttempts };
 }
 
-function mergeRetryBillingIntoResult<T>(result: T, prior: readonly RetryBilling[]): T {
-  if (prior.length === 0 || !result || typeof result !== "object") return result;
-  const record = result as T & {
-    usage?: TokenUsage | undefined;
-    cost?: CostEstimate | undefined;
-    unpriced_attempts?: number | undefined;
-  };
-  const usageItems = [...prior.map((item) => item.usage), record.usage];
-  if (usageItems.some(Boolean)) record.usage = mergeUsage(usageItems);
-  const costItems = [...prior.map((item) => item.cost), record.cost];
-  if (costItems.some(Boolean)) record.cost = mergeCost(costItems);
-  const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
-  const unpriced = Math.max(0, (record.unpriced_attempts ?? 0) - priorAccounted);
-  if (unpriced > 0) record.unpriced_attempts = unpriced;
-  else delete record.unpriced_attempts;
-  return result;
-}
-
 // Aggregated spend of the tries that failed before the final one. The final
 // failure's cumulative unpriced count blends tries of different classes, so
 // the aggregate marker must compose each earlier try's own indeterminate
@@ -57,6 +39,37 @@ type PriorTrySpend = {
   unpricedAttempts: number;
   indeterminateAttempts: number;
 };
+
+function mergeRetryBillingIntoResult<T>(
+  result: T,
+  prior: readonly RetryBilling[],
+  priorSpend: PriorTrySpend = { unpricedAttempts: 0, indeterminateAttempts: 0 },
+): T {
+  if (!result || typeof result !== "object") return result;
+  const record = result as T & {
+    usage?: TokenUsage | undefined;
+    cost?: CostEstimate | undefined;
+    unpriced_attempts?: number | undefined;
+    indeterminate_spend_attempts?: number | undefined;
+  };
+  const usageItems = [...prior.map((item) => item.usage), record.usage];
+  if (usageItems.some(Boolean)) record.usage = mergeUsage(usageItems);
+  const costItems = [...prior.map((item) => item.cost), record.cost];
+  if (costItems.some(Boolean)) record.cost = mergeCost(costItems);
+  const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
+  const unpriced = Math.max(0, (record.unpriced_attempts ?? 0) - priorAccounted);
+  if (unpriced > 0) {
+    record.unpriced_attempts = unpriced;
+    // Settlement writers derive an unknown billing status from unpriced
+    // attempts, so the result must carry the per-try indeterminate share or
+    // it would persist as the legacy fail-closed trio (session f131f43f).
+    record.indeterminate_spend_attempts = Math.min(unpriced, priorSpend.indeterminateAttempts);
+  } else {
+    delete record.unpriced_attempts;
+    delete record.indeterminate_spend_attempts;
+  }
+  return result;
+}
 
 function mergeRetryBillingIntoFailure(
   failure: PeerFailure,
@@ -220,7 +233,11 @@ export async function withRetry<T>(
     }
     try {
       const result = await run(attempt);
-      const resultWithRetryBilling = mergeRetryBillingIntoResult(result, priorRetryBilling);
+      const resultWithRetryBilling = mergeRetryBillingIntoResult(
+        result,
+        priorRetryBilling,
+        priorTrySpend,
+      );
       if (options.signal?.aborted) {
         throw attachSettledBilling(
           cancellationError(options.signal),

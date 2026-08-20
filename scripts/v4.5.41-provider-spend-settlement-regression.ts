@@ -331,6 +331,30 @@ const regressions: Regression[] = [
         1,
         "the earlier timeout try must survive aggregation as indeterminate",
       );
+      // A SUCCESS after an indeterminate failed try must carry the same
+      // per-try share on the result: the settlement writer derives an
+      // unknown billing status from unpriced_attempts, so a result without
+      // the marker would persist the legacy fail-closed trio.
+      const cfg2 = fixtureConfig("retry-aggregation-result");
+      cfg2.retry = { ...cfg2.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let tries = 0;
+      const result = await withRetry(
+        cfg2,
+        async () => {
+          tries += 1;
+          if (tries === 1) throw new Error("Request timeout");
+          return { unpriced_attempts: 1 } as { unpriced_attempts?: number } & {
+            indeterminate_spend_attempts?: number;
+          };
+        },
+        (error, attempt, startedAt) =>
+          classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+      );
+      assert.equal(
+        result.indeterminate_spend_attempts,
+        1,
+        "a success after an indeterminate try must stamp the per-try share on the result",
+      );
     },
   },
   {
