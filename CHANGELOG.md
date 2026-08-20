@@ -7,6 +7,50 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.42] — 20/08/2026
+
+### Fixed
+
+- Legacy merged spend records (explicit unpriced attempts without the
+  `indeterminate_spend_attempts` marker) now keep their fail-closed state
+  when merged again at either merge boundary: their unpriced attempts count
+  as indeterminate in the re-merged record instead of being re-stamped as a
+  zero marker that hid them as new-format settled spend. (PR #212 gate,
+  round-3 codex finding)
+- The interrupted-attempt sentinel check guards `message` before calling
+  `startsWith`: records read from disk are not shape-validated, so a legacy
+  record lacking `message` no longer crashes the merge. (PR #212 gate,
+  round-3 perplexity finding)
+- Every failure producer now stamps `indeterminate_spend_attempts` alongside
+  `unpriced_attempts` through a shared helper: the central provider-error
+  classifier, the Gemini/Anthropic/retry billing mergers and the fabricated
+  interrupted-attempt records. Freshly produced quota/auth skips no longer
+  match the legacy fail-closed trio and stop blocking generation — observed
+  live in the PR #214 gate session, where a single-attempt auth skip
+  finalized the session as `generation_budget_preflight` despite three raw
+  READY votes.
+- The retry wrapper composes the aggregate marker per try instead of deriving
+  it from the final failure's class alone: each failed try contributes its
+  own indeterminate share before the next attempt, so a chain like
+  `[timeout, auth]` keeps the timeout try indeterminate instead of settling
+  it as zero under the terminal final class. (PR #214 gate, round-1 codex
+  finding)
+- A failed try whose billing WAS captured is not counted as unpriced by the
+  per-try accumulator: truncation recoveries (OpenAI `max_output_tokens`,
+  Gemini `MAX_TOKENS`) bill the failed try's tokens, so the classified
+  failure reports the spend and the wrapper no longer stamps
+  `unpriced_attempts`/`indeterminate_spend_attempts` on the recovered
+  result. (v4.5.6 runtime-contract regressions, caught by CI on this PR)
+- The retry wrapper's result merger composes the result's own indeterminate
+  marker with the wrapper-observed share instead of replacing it: an
+  adapter-stamped positive marker no longer becomes an explicit zero when no
+  wrapper-level prior try exists. (PR #214 gate, round-7 codex finding)
+- The retry wrapper's failure merger likewise trusts an explicit
+  producer-stamped marker instead of recomputing it from the final failure
+  class: a failure whose own sub-attempts were of mixed classes keeps its
+  positive marker under a terminal final class, in both merger branches.
+  (PR #214 gate, round-8 codex finding)
+
 ## [v04.05.41] — 20/08/2026
 
 ### Fixed

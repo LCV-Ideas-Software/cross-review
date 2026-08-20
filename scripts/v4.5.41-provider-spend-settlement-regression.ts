@@ -16,7 +16,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
-import { CrossReviewOrchestrator, mergeFailureChain } from "../src/core/orchestrator.js";
+import {
+  CrossReviewOrchestrator,
+  mergeFailureChain,
+  mergePeerResultWithFailures,
+} from "../src/core/orchestrator.js";
 import type {
   AppConfig,
   EvidenceAskJudgment,
@@ -24,7 +28,10 @@ import type {
   PeerAdapter,
   PeerFailure,
   PeerId,
+  PeerResult,
 } from "../src/core/types.js";
+import { classifyProviderError } from "../src/peers/errors.js";
+import { withRetry } from "../src/peers/retry.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 const previousStubConfirmation = process.env.CROSS_REVIEW_STUB_CONFIRMED;
@@ -243,6 +250,311 @@ const regressions: Regression[] = [
         allTerminal.indeterminate_spend_attempts,
         0,
         "an all-terminal merged chain must carry the marker stamped as zero",
+      );
+    },
+  },
+  {
+    name: "producers-stamp-the-indeterminate-marker-alongside-unpriced-attempts",
+    run: () => {
+      // Production evidence (session 9dbeef72, PR #214 gate): a single-attempt
+      // auth skip was stamped with unpriced_attempts and unknown billing but
+      // no indeterminate marker — indistinguishable from a legacy record, so
+      // the classifier's legacy fail-closed rule blocked generation forever.
+      // Every producer that stamps unpriced_attempts must stamp the marker.
+      const authError = Object.assign(new Error("403 Forbidden: spend cap breached"), {
+        status: 403,
+      });
+      const authFailure = classifyProviderError(
+        "gemini",
+        "google",
+        "fixture-model",
+        authError,
+        1,
+        Date.now(),
+      );
+      assert.equal(authFailure.unpriced_attempts, 1, "auth skip must stay unpriced");
+      assert.equal(
+        authFailure.indeterminate_spend_attempts,
+        0,
+        "a terminal auth skip must stamp an explicit zero marker",
+      );
+      const networkError = new Error("fetch failed: network connection lost");
+      const networkFailure = classifyProviderError(
+        "grok",
+        "xai",
+        "fixture-model",
+        networkError,
+        1,
+        Date.now(),
+      );
+      assert.equal(networkFailure.failure_class, "network", "fixture must classify as network");
+      assert.equal(
+        networkFailure.indeterminate_spend_attempts,
+        networkFailure.unpriced_attempts,
+        "an indeterminate-class failure must stamp its unpriced attempts as indeterminate",
+      );
+    },
+  },
+  {
+    name: "retry-aggregation-preserves-indeterminate-attempts-of-earlier-tries",
+    run: async () => {
+      // Review finding (session f131f43f, codex): the retry wrapper derived
+      // the marker for the AGGREGATED unpriced attempts solely from the final
+      // failure's class/message — a chain of [timeout, auth] settled the
+      // timeout try as zero. Each failed try must contribute its own
+      // indeterminate share to the aggregate marker.
+      const config = fixtureConfig("retry-aggregation");
+      config.retry = { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let attemptNo = 0;
+      let caught: unknown;
+      try {
+        await withRetry(
+          config,
+          async () => {
+            attemptNo += 1;
+            if (attemptNo === 1) {
+              throw new Error("Request timeout");
+            }
+            throw Object.assign(new Error("403 Forbidden: spend cap breached"), { status: 403 });
+          },
+          (error, attempt, startedAt) =>
+            classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      const failure = (caught as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+      assert.ok(failure, "withRetry must attach the aggregated failure");
+      assert.equal(failure?.unpriced_attempts, 2, "both tries must stay unpriced");
+      assert.equal(
+        failure?.indeterminate_spend_attempts,
+        1,
+        "the earlier timeout try must survive aggregation as indeterminate",
+      );
+      // A SUCCESS after an indeterminate failed try must carry the same
+      // per-try share on the result: the settlement writer derives an
+      // unknown billing status from unpriced_attempts, so a result without
+      // the marker would persist the legacy fail-closed trio.
+      const cfg2 = fixtureConfig("retry-aggregation-result");
+      cfg2.retry = { ...cfg2.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let tries = 0;
+      const result = await withRetry(
+        cfg2,
+        async () => {
+          tries += 1;
+          if (tries === 1) throw new Error("Request timeout");
+          return { unpriced_attempts: 1 } as { unpriced_attempts?: number } & {
+            indeterminate_spend_attempts?: number;
+          };
+        },
+        (error, attempt, startedAt) =>
+          classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+      );
+      assert.equal(
+        result.indeterminate_spend_attempts,
+        1,
+        "a success after an indeterminate try must stamp the per-try share on the result",
+      );
+      // Round-2 grok finding: a PRICED success whose shape declares no
+      // unpriced_attempts of its own must still persist the wrapper-observed
+      // shares — deleting both fields dropped the earlier indeterminate try.
+      const cfg3 = fixtureConfig("retry-aggregation-priced-success");
+      cfg3.retry = { ...cfg3.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let tries3 = 0;
+      const pricedResult = await withRetry(
+        cfg3,
+        async () => {
+          tries3 += 1;
+          if (tries3 === 1) throw new Error("Request timeout");
+          return {
+            cost: { currency: "USD", estimated: false, source: "configured-rate", total_cost: 0.2 },
+          } as {
+            cost?: unknown;
+            unpriced_attempts?: number;
+            indeterminate_spend_attempts?: number;
+          };
+        },
+        (error, attempt, startedAt) =>
+          classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+      );
+      assert.equal(
+        pricedResult.unpriced_attempts,
+        1,
+        "the wrapper-observed unpriced try must persist on a priced success",
+      );
+      assert.equal(
+        pricedResult.indeterminate_spend_attempts,
+        1,
+        "the earlier indeterminate try must persist on a priced success",
+      );
+      // Round-7 codex finding (session f131f43f): a result that arrives with
+      // its OWN positive marker (adapter-stamped) must keep it when no
+      // wrapper-level prior try exists — replacing it solely from priorSpend
+      // rewrote a positive marker as an explicit zero, fail-opening spend.
+      const cfg4 = fixtureConfig("retry-aggregation-adapter-stamped-result");
+      cfg4.retry = { ...cfg4.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      const stampedResult = await withRetry(
+        cfg4,
+        async () =>
+          ({
+            unpriced_attempts: 1,
+            indeterminate_spend_attempts: 1,
+          }) as { unpriced_attempts?: number; indeterminate_spend_attempts?: number },
+        (error, attempt, startedAt) =>
+          classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+      );
+      assert.equal(
+        stampedResult.unpriced_attempts,
+        1,
+        "an adapter-declared unpriced attempt must persist without wrapper tries",
+      );
+      assert.equal(
+        stampedResult.indeterminate_spend_attempts,
+        1,
+        "an adapter-stamped positive marker must survive the wrapper merger",
+      );
+      // Round-8 codex finding (session f131f43f): the FAILURE merger must
+      // also trust an explicit producer-stamped marker instead of
+      // recomputing from the final class alone. A failure whose own
+      // sub-attempts were of mixed classes carries a positive marker under
+      // a terminal final class - both merger branches rewrote it to zero.
+      const stampedFailure = (
+        message: string,
+        attempts: number,
+        unpriced: number,
+        marker: number,
+      ): PeerFailure => ({
+        peer: "gemini",
+        provider: "google",
+        model: "fixture-model",
+        failure_class: "provider_error",
+        message,
+        retryable: false,
+        attempts,
+        latency_ms: 5,
+        billing_status: "unknown",
+        unpriced_attempts: unpriced,
+        indeterminate_spend_attempts: marker,
+      });
+      // Branch without wrapper-observed spend: single non-retryable failure.
+      const cfg5 = fixtureConfig("retry-failure-explicit-marker");
+      cfg5.retry = { ...cfg5.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let caught5: unknown;
+      try {
+        await withRetry(
+          cfg5,
+          async () => {
+            throw new Error("terminal after mixed sub-attempts");
+          },
+          () => stampedFailure("terminal after mixed sub-attempts", 1, 1, 1),
+        );
+      } catch (error) {
+        caught5 = error;
+      }
+      const failure5 = (caught5 as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+      assert.equal(
+        failure5?.indeterminate_spend_attempts,
+        1,
+        "an explicit positive marker must survive the early-return failure merge",
+      );
+      // Branch with wrapper-observed spend: an unbilled timeout try, then a
+      // final failure carrying its own intra-attempt indeterminate share.
+      const cfg6 = fixtureConfig("retry-failure-explicit-marker-aggregated");
+      cfg6.retry = { ...cfg6.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let tries6 = 0;
+      let caught6: unknown;
+      try {
+        await withRetry(
+          cfg6,
+          async () => {
+            tries6 += 1;
+            if (tries6 === 1) throw new Error("Request timeout");
+            throw new Error("terminal after mixed sub-attempts");
+          },
+          (error, attempt, startedAt) =>
+            tries6 === 1
+              ? classifyProviderError(
+                  "gemini",
+                  "google",
+                  "fixture-model",
+                  error,
+                  attempt,
+                  startedAt,
+                )
+              : stampedFailure("terminal after mixed sub-attempts", attempt, 2, 1),
+        );
+      } catch (error) {
+        caught6 = error;
+      }
+      const failure6 = (caught6 as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+      assert.equal(failure6?.unpriced_attempts, 2, "both tries must stay unpriced");
+      assert.equal(
+        failure6?.indeterminate_spend_attempts,
+        2,
+        "the wrapper try's share must compose with the failure's own explicit marker",
+      );
+    },
+  },
+  {
+    name: "re-merging-legacy-links-preserves-their-fail-closed-state",
+    run: () => {
+      // Round-3 findings (session 6fae863d): a legacy merged link (explicit
+      // unpriced attempts, unknown billing, no marker) must contribute its
+      // unpriced attempts as indeterminate when merged again — otherwise the
+      // re-merge stamps a marker of zero and hidden indeterminate spend
+      // becomes new-format settled spend. A missing message on a legacy
+      // record must not crash the merge either.
+      const legacyMergedLink: PeerFailure = {
+        ...terminalCapacityFailure(),
+        message: "fixture: legacy merged chain persisted before the marker existed",
+        attempts: 2,
+        unpriced_attempts: 2,
+        billing_status: "unknown",
+      };
+      const remerged = mergeFailureChain([legacyMergedLink, terminalCapacityFailure()]);
+      assert.equal(
+        remerged.indeterminate_spend_attempts,
+        2,
+        "re-merging a legacy link must carry its unpriced attempts as indeterminate",
+      );
+      const messagelessLegacy = {
+        ...legacyMergedLink,
+        message: undefined,
+      } as unknown as PeerFailure;
+      const guarded = mergeFailureChain([messagelessLegacy, terminalCapacityFailure()]);
+      assert.equal(
+        guarded.indeterminate_spend_attempts,
+        2,
+        "a legacy record without a message must merge without crashing and stay conservative",
+      );
+      const legacyResult: PeerResult = {
+        peer: "perplexity",
+        provider: "fixture-provider",
+        model: "fixture-model",
+        status: "READY",
+        structured: {
+          status: "READY",
+          summary: "No blocking objections remain.",
+          confidence: "verified",
+          evidence_sources: [],
+          caller_requests: [],
+          follow_ups: [],
+        },
+        text: "fixture",
+        raw: {},
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        cost: { currency: "USD", estimated: false, source: "configured-rate", total_cost: 0.5 },
+        latency_ms: 1,
+        attempts: 2,
+        unpriced_attempts: 1,
+        parser_warnings: [],
+        decision_quality: "clean",
+      };
+      const remergedResult = mergePeerResultWithFailures(legacyResult, [terminalCapacityFailure()]);
+      assert.equal(
+        remergedResult.indeterminate_spend_attempts,
+        1,
+        "a legacy priced result with hidden unpriced spend must stay indeterminate on re-merge",
       );
     },
   },

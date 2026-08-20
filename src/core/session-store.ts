@@ -1172,6 +1172,7 @@ export class SessionStore {
         latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
         billing_status: "unknown" as const,
         unpriced_attempts: 1,
+        indeterminate_spend_attempts: 1,
         round: inFlight.round,
       };
     });
@@ -1189,6 +1190,7 @@ export class SessionStore {
       latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
       billing_status: "unknown" as const,
       unpriced_attempts: 1,
+      indeterminate_spend_attempts: 1,
       round: inFlight.round,
     }));
     meta.failed_attempts = [
@@ -1227,6 +1229,7 @@ export class SessionStore {
       latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
       billing_status: "unknown",
       unpriced_attempts: 1,
+      indeterminate_spend_attempts: 1,
       round: pending.round,
     };
     meta.failed_attempts = [...(meta.failed_attempts ?? []), unknownAttempt];
@@ -1352,6 +1355,7 @@ export class SessionStore {
         latency_ms: Number.isFinite(elapsed) ? elapsed : 0,
         billing_status: "unknown" as const,
         unpriced_attempts: 1,
+        indeterminate_spend_attempts: 1,
         round: reservation.round,
       };
     });
@@ -1936,6 +1940,7 @@ export class SessionStore {
         cost: result.cost,
         latency_ms: result.latency_ms,
         unpriced_attempts: result.unpriced_attempts,
+        indeterminate_spend_attempts: result.indeterminate_spend_attempts,
       };
       meta.generation_files = [...(meta.generation_files ?? []), artifact];
       this.consumePendingProviderCallReservation(meta, pendingReservationId, result.peer, round);
@@ -2186,6 +2191,7 @@ export class SessionStore {
                 ? "unknown"
                 : undefined,
         unpriced_attempts: result.unpriced_attempts,
+        indeterminate_spend_attempts: result.indeterminate_spend_attempts,
       },
       reservationId,
     );
@@ -2224,6 +2230,7 @@ export class SessionStore {
                   ? "unknown"
                   : undefined)),
         unpriced_attempts: failure.unpriced_attempts,
+        indeterminate_spend_attempts: failure.indeterminate_spend_attempts,
       },
       reservationId,
     );

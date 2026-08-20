@@ -1,5 +1,6 @@
 import { mergeCost, mergeUsage } from "../core/cost.js";
 import type { AppConfig, CostEstimate, PeerFailure, TokenUsage } from "../core/types.js";
+import { indeterminateSpendMarkerFor } from "../core/types.js";
 
 type RetryBilling = {
   usage?: TokenUsage | undefined;
@@ -29,41 +30,107 @@ function retryBillingFromError(error: unknown): RetryBilling | undefined {
   return { usage, cost, accountedAttempts };
 }
 
-function mergeRetryBillingIntoResult<T>(result: T, prior: readonly RetryBilling[]): T {
-  if (prior.length === 0 || !result || typeof result !== "object") return result;
+// Aggregated spend of the tries that failed before the final one. The final
+// failure's cumulative unpriced count blends tries of different classes, so
+// the aggregate marker must compose each earlier try's own indeterminate
+// share (review finding, session f131f43f) instead of deriving everything
+// from the final class/message.
+type PriorTrySpend = {
+  unpricedAttempts: number;
+  indeterminateAttempts: number;
+};
+
+function mergeRetryBillingIntoResult<T>(
+  result: T,
+  prior: readonly RetryBilling[],
+  priorSpend: PriorTrySpend = { unpricedAttempts: 0, indeterminateAttempts: 0 },
+): T {
+  if (!result || typeof result !== "object") return result;
   const record = result as T & {
     usage?: TokenUsage | undefined;
     cost?: CostEstimate | undefined;
     unpriced_attempts?: number | undefined;
+    indeterminate_spend_attempts?: number | undefined;
   };
   const usageItems = [...prior.map((item) => item.usage), record.usage];
   if (usageItems.some(Boolean)) record.usage = mergeUsage(usageItems);
   const costItems = [...prior.map((item) => item.cost), record.cost];
   if (costItems.some(Boolean)) record.cost = mergeCost(costItems);
   const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
-  const unpriced = Math.max(0, (record.unpriced_attempts ?? 0) - priorAccounted);
-  if (unpriced > 0) record.unpriced_attempts = unpriced;
-  else delete record.unpriced_attempts;
+  // The adapter may or may not have counted the earlier failed tries in the
+  // result's own unpriced_attempts; the wrapper observed them directly, so
+  // take the larger of the two views instead of dropping the wrapper's
+  // (round-2 grok finding, session f131f43f: deleting both fields on a
+  // priced success fail-opened an earlier indeterminate try).
+  const declaredUnpriced = Math.max(0, (record.unpriced_attempts ?? 0) - priorAccounted);
+  const unpriced = Math.max(declaredUnpriced, priorSpend.unpricedAttempts);
+  if (unpriced > 0) {
+    record.unpriced_attempts = unpriced;
+    // Settlement writers derive an unknown billing status from unpriced
+    // attempts, so the result must carry the per-try indeterminate share or
+    // it would persist as the legacy fail-closed trio (session f131f43f).
+    // Compose the record's OWN marker with the wrapper-observed one instead
+    // of replacing it (round-7 codex finding): an adapter-stamped positive
+    // marker covers intra-attempt sub-calls the wrapper never saw, so the
+    // shares are disjoint and sum, capped at the unpriced total.
+    record.indeterminate_spend_attempts = Math.min(
+      unpriced,
+      (record.indeterminate_spend_attempts ?? 0) + priorSpend.indeterminateAttempts,
+    );
+  } else {
+    delete record.unpriced_attempts;
+    delete record.indeterminate_spend_attempts;
+  }
   return result;
 }
 
 function mergeRetryBillingIntoFailure(
   failure: PeerFailure,
   prior: readonly RetryBilling[],
+  priorSpend: PriorTrySpend = { unpricedAttempts: 0, indeterminateAttempts: 0 },
 ): PeerFailure {
-  if (prior.length === 0) return failure;
+  if (prior.length === 0 && priorSpend.unpricedAttempts === 0) {
+    if ((failure.unpriced_attempts ?? 0) === 0) return failure;
+    // Trust an explicit producer-stamped marker (round-8 codex finding):
+    // recomputing from the final class alone rewrote a positive marker as
+    // zero when the failure's own sub-attempts were of mixed classes.
+    if (failure.indeterminate_spend_attempts != null) return failure;
+    return {
+      ...failure,
+      indeterminate_spend_attempts: indeterminateSpendMarkerFor(
+        failure.failure_class,
+        failure.message,
+        failure.unpriced_attempts ?? 0,
+      ),
+    };
+  }
   const usageItems = [...prior.map((item) => item.usage), failure.usage];
   const costItems = [...prior.map((item) => item.cost), failure.cost];
   const usage = usageItems.some(Boolean) ? mergeUsage(usageItems) : undefined;
   const cost = costItems.some(Boolean) ? mergeCost(costItems) : undefined;
   const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);
   const unpriced = Math.max(0, (failure.unpriced_attempts ?? 0) - priorAccounted);
+  const finalOwnUnpriced = Math.max(0, unpriced - priorSpend.unpricedAttempts);
+  // The failure's own explicit marker (adapter mergers compose it from
+  // intra-attempt sub-calls the wrapper never saw) takes precedence over a
+  // recomputation from the final class, capped at the failure's own share
+  // of the unpriced total (round-8 codex finding).
+  const finalOwnIndeterminate =
+    failure.indeterminate_spend_attempts != null
+      ? Math.min(finalOwnUnpriced, failure.indeterminate_spend_attempts)
+      : indeterminateSpendMarkerFor(failure.failure_class, failure.message, finalOwnUnpriced);
+  const indeterminate = priorSpend.indeterminateAttempts + finalOwnIndeterminate;
   return {
     ...failure,
     ...(usage ? { usage } : {}),
     ...(cost ? { cost } : {}),
     billing_status: unpriced > 0 ? "unknown" : usage || cost ? "reported" : failure.billing_status,
-    ...(unpriced > 0 ? { unpriced_attempts: unpriced } : { unpriced_attempts: undefined }),
+    ...(unpriced > 0
+      ? {
+          unpriced_attempts: unpriced,
+          indeterminate_spend_attempts: indeterminate,
+        }
+      : { unpriced_attempts: undefined, indeterminate_spend_attempts: undefined }),
   };
 }
 
@@ -174,11 +241,12 @@ export async function withRetry<T>(
   const started = Date.now();
   let last: PeerFailure | null = null;
   const priorRetryBilling: RetryBilling[] = [];
+  const priorTrySpend = { unpricedAttempts: 0, indeterminateAttempts: 0 };
   for (let attempt = 1; attempt <= config.retry.max_attempts; attempt++) {
     if (options.signal?.aborted) {
       const error = cancellationError(options.signal);
       const failure = onFailure(error, attempt - 1, started);
-      const billedFailure = mergeRetryBillingIntoFailure(failure, priorRetryBilling);
+      const billedFailure = mergeRetryBillingIntoFailure(failure, priorRetryBilling, priorTrySpend);
       throw attachPeerFailure(error, {
         ...billedFailure,
         failure_class: "cancelled",
@@ -188,7 +256,11 @@ export async function withRetry<T>(
     }
     try {
       const result = await run(attempt);
-      const resultWithRetryBilling = mergeRetryBillingIntoResult(result, priorRetryBilling);
+      const resultWithRetryBilling = mergeRetryBillingIntoResult(
+        result,
+        priorRetryBilling,
+        priorTrySpend,
+      );
       if (options.signal?.aborted) {
         throw attachSettledBilling(
           cancellationError(options.signal),
@@ -202,7 +274,7 @@ export async function withRetry<T>(
       if (options.signal?.aborted) {
         const billedFailure = hasSettledProviderResult(error)
           ? last
-          : mergeRetryBillingIntoFailure(last, priorRetryBilling);
+          : mergeRetryBillingIntoFailure(last, priorRetryBilling, priorTrySpend);
         throw attachPeerFailure(error, {
           ...billedFailure,
           failure_class: "cancelled",
@@ -211,17 +283,42 @@ export async function withRetry<T>(
         });
       }
       if (!last.retryable || attempt >= config.retry.max_attempts) {
-        throw attachPeerFailure(error, mergeRetryBillingIntoFailure(last, priorRetryBilling));
+        throw attachPeerFailure(
+          error,
+          mergeRetryBillingIntoFailure(last, priorRetryBilling, priorTrySpend),
+        );
       }
       const currentRetryBilling = retryBillingFromError(error);
       if (currentRetryBilling) priorRetryBilling.push(currentRetryBilling);
+      // Record this try's own spend before retrying: one unpriced attempt
+      // unless its billing was captured, carrying its own class's
+      // indeterminate share into the aggregate marker. Captured billing
+      // means the try's spend is KNOWN even when it is not counted in
+      // accounted_attempts (truncation recoveries bill the failed try's
+      // tokens): the classified failure reports it (billing_status
+      // "reported" when the error carried usage/cost), and adapters that
+      // accumulate internally flag it on the retry-billing record.
+      const billingCaptured =
+        last.billing_status === "reported" ||
+        (currentRetryBilling !== undefined &&
+          (currentRetryBilling.accountedAttempts > 0 ||
+            currentRetryBilling.usage !== undefined ||
+            currentRetryBilling.cost !== undefined));
+      if (!billingCaptured) {
+        priorTrySpend.unpricedAttempts += 1;
+        priorTrySpend.indeterminateAttempts += indeterminateSpendMarkerFor(
+          last.failure_class,
+          last.message,
+          1,
+        );
+      }
       const wait = last.retry_after_ms ?? backoffWithJitter(attempt, config);
       try {
         await delay(wait, options.signal);
       } catch (delayError) {
         const failure = onFailure(delayError, attempt, started);
         throw attachPeerFailure(delayError, {
-          ...mergeRetryBillingIntoFailure(failure, priorRetryBilling),
+          ...mergeRetryBillingIntoFailure(failure, priorRetryBilling, priorTrySpend),
           failure_class: "cancelled",
           retryable: false,
           attempts: attempt,

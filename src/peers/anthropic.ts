@@ -34,6 +34,7 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../core/types.js";
+import { indeterminateSpendMarkerFor } from "../core/types.js";
 import { redact } from "../security/redact.js";
 import { BasePeerAdapter, STREAM_TEXT_MAX_BYTES, StreamBufferOverflowError } from "./base.js";
 import { classifyProviderError } from "./errors.js";
@@ -413,8 +414,17 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
       cost: mergeCost([priorCost, failure.cost]),
       billing_status: unpricedAttempts === 0 ? ("reported" as const) : ("unknown" as const),
     };
-    if (unpricedAttempts > 0) merged.unpriced_attempts = unpricedAttempts;
-    else delete merged.unpriced_attempts;
+    if (unpricedAttempts > 0) {
+      merged.unpriced_attempts = unpricedAttempts;
+      merged.indeterminate_spend_attempts = indeterminateSpendMarkerFor(
+        failure.failure_class,
+        failure.message,
+        unpricedAttempts,
+      );
+    } else {
+      delete merged.unpriced_attempts;
+      delete merged.indeterminate_spend_attempts;
+    }
     return merged;
   }
 

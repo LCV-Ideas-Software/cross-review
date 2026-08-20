@@ -635,6 +635,7 @@ export abstract class BasePeerAdapter {
       latency_ms: generation.latency_ms,
       attempts: generation.attempts,
       unpriced_attempts: generation.unpriced_attempts,
+      indeterminate_spend_attempts: generation.indeterminate_spend_attempts,
       parser_warnings: parserWarnings,
     };
   }
