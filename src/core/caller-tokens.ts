@@ -121,7 +121,7 @@ export interface TokensFilePermissionRecoveryOperations {
 }
 
 export interface EnsureHostTokensOperations {
-  load?: (dataDir: string) => HostTokensRecord | null;
+  load?: (dataDir: string, diagnostics?: HostTokensLoadDiagnostics) => HostTokensRecord | null;
   generate?: (dataDir: string, options?: { overwrite?: boolean }) => HostTokensRecord | null;
   tokensFileEntryExists?: (filePath: string) => boolean;
   diagnostics?: HostTokensLoadDiagnostics;
@@ -689,15 +689,14 @@ export function ensureHostTokens(
   dataDir: string,
   operations: EnsureHostTokensOperations = {},
 ): HostTokensRecord | null {
-  const diagnostics = operations.diagnostics;
-  const load =
-    operations.load ?? ((targetDataDir: string) => loadHostTokens(targetDataDir, diagnostics));
+  const diagnostics = operations.diagnostics ?? { failure: null };
+  const load = operations.load ?? loadHostTokens;
   const generate = operations.generate ?? generateHostTokens;
   const entryExists = operations.tokensFileEntryExists ?? tokensFileEntryExists;
   const filePath = getTokensFilePath(dataDir);
   const entryExistedBeforeLoad = entryExists(filePath);
 
-  const existing = load(dataDir);
+  const existing = load(dataDir, diagnostics);
   if (existing) return existing;
   const firstLoadFailure = diagnostics?.failure ?? null;
   // Only ENOENT authorizes create/reload after a failed first load. Every
@@ -711,14 +710,14 @@ export function ensureHostTokens(
   // Another host may have created a complete record after the first absence
   // probe or while the first load observed ENOENT. Load that newly appeared
   // entry once before attempting our own exclusive create.
-  if (!entryExistedBeforeLoad && entryExists(filePath)) return load(dataDir);
+  if (!entryExistedBeforeLoad && entryExists(filePath)) return load(dataDir, diagnostics);
 
   const generated = generate(dataDir);
   if (generated) {
     if (diagnostics) diagnostics.failure = null;
     return generated;
   }
-  return load(dataDir);
+  return load(dataDir, diagnostics);
 }
 
 export function tokensMatch(a: unknown, b: unknown): boolean {
