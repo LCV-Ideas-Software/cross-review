@@ -41,6 +41,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   failure reports the spend and the wrapper no longer stamps
   `unpriced_attempts`/`indeterminate_spend_attempts` on the recovered
   result. (v4.5.6 runtime-contract regressions, caught by CI on this PR)
+- The retry wrapper's result merger composes the result's own indeterminate
+  marker with the wrapper-observed share instead of replacing it: an
+  adapter-stamped positive marker no longer becomes an explicit zero when no
+  wrapper-level prior try exists. (PR #214 gate, round-7 codex finding)
 
 ## [v04.05.41] — 20/08/2026
 

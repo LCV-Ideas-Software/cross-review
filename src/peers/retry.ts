@@ -69,7 +69,14 @@ function mergeRetryBillingIntoResult<T>(
     // Settlement writers derive an unknown billing status from unpriced
     // attempts, so the result must carry the per-try indeterminate share or
     // it would persist as the legacy fail-closed trio (session f131f43f).
-    record.indeterminate_spend_attempts = Math.min(unpriced, priorSpend.indeterminateAttempts);
+    // Compose the record's OWN marker with the wrapper-observed one instead
+    // of replacing it (round-7 codex finding): an adapter-stamped positive
+    // marker covers intra-attempt sub-calls the wrapper never saw, so the
+    // shares are disjoint and sum, capped at the unpriced total.
+    record.indeterminate_spend_attempts = Math.min(
+      unpriced,
+      (record.indeterminate_spend_attempts ?? 0) + priorSpend.indeterminateAttempts,
+    );
   } else {
     delete record.unpriced_attempts;
     delete record.indeterminate_spend_attempts;

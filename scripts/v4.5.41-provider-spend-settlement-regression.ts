@@ -387,6 +387,32 @@ const regressions: Regression[] = [
         1,
         "the earlier indeterminate try must persist on a priced success",
       );
+      // Round-7 codex finding (session f131f43f): a result that arrives with
+      // its OWN positive marker (adapter-stamped) must keep it when no
+      // wrapper-level prior try exists — replacing it solely from priorSpend
+      // rewrote a positive marker as an explicit zero, fail-opening spend.
+      const cfg4 = fixtureConfig("retry-aggregation-adapter-stamped-result");
+      cfg4.retry = { ...cfg4.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      const stampedResult = await withRetry(
+        cfg4,
+        async () =>
+          ({
+            unpriced_attempts: 1,
+            indeterminate_spend_attempts: 1,
+          }) as { unpriced_attempts?: number; indeterminate_spend_attempts?: number },
+        (error, attempt, startedAt) =>
+          classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+      );
+      assert.equal(
+        stampedResult.unpriced_attempts,
+        1,
+        "an adapter-declared unpriced attempt must persist without wrapper tries",
+      );
+      assert.equal(
+        stampedResult.indeterminate_spend_attempts,
+        1,
+        "an adapter-stamped positive marker must survive the wrapper merger",
+      );
     },
   },
   {
