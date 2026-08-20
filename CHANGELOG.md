@@ -7,6 +7,26 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.39] — 20/08/2026
+
+### Fixed
+
+- Distinguishes a genuinely missing caller-token file from permission, content,
+  path-safety and I/O failures before the concurrent-create decision. A failed
+  Windows recovery is no longer repeated in one boot, while an entry that
+  disappears between the existence precheck and load reaches the exclusive
+  create path instead of remaining unavailable.
+- Extends the trusted-console Windows recovery block to refuse replacement
+  unless the existing descriptor is protected and empty, then read the result
+  back and require the protected, explicit, deduplicated FullControl allowlist
+  for the current user, SYSTEM and Administrators before recommending restart.
+
+### Verification
+
+- The versioned v4.5.39 regression records three independent REDs against
+  v4.5.38 and now passes all three contracts. The existing v4.5.37 portable and
+  live Windows ACL suite also passes unchanged.
+
 ## [v04.05.38] — 20/08/2026
 
 ### Changed

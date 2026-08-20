@@ -565,7 +565,27 @@ try {
       0,
       `${engineName} refusal must leave the existing exact DACL unchanged`,
     );
+    const unrelatedManualRecoveryResult = spawnSync(
+      enginePath,
+      ["-NoLogo", "-NoProfile", "-Command", manualRecipe],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      },
+    );
+    assert.notEqual(
+      unrelatedManualRecoveryResult.status,
+      0,
+      `manual recovery must refuse a non-empty protected DACL in ${engineName}`,
+    );
+    assert.equal(
+      executeWithEngine(verificationCommand).status,
+      0,
+      `${engineName} manual refusal must leave the existing exact DACL unchanged`,
+    );
     runIcacls([tokenPath, "/reset"]);
+    runIcacls([tokenPath, "/inheritance:r"]);
     const manualRecoveryResult = spawnSync(
       enginePath,
       ["-NoLogo", "-NoProfile", "-Command", manualRecipe],

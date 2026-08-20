@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 20/08/2026: `4.5.38`. O registro pode ficar
+> Estado do source/release target em 20/08/2026: `4.5.39`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -628,6 +628,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                  |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.39`      | Impede retry de recuperação de caller token no mesmo boot, recria somente após desaparecimento confirmado e faz a receita manual substituir apenas uma DACL protegida e vazia antes de validar o resultado exato.                      |
 | `v04.05.38`      | Trava a dívida T2#10 de regexes amplas de source no baseline atual `smoke=129`, `source-contract=29`, total `158`, impedindo que novos pins consumam a folga deixada pelos tetos anteriores.                                           |
 | `v04.05.37`      | Torna a ACL dos caller tokens no Windows tolerante a interrupção, recupera uma única negação de acesso sem rotação ou loop e passa caminho/SID fora do parser de comandos, preservando os gates fail-closed de identidade e caminho.   |
 | `v04.05.36`      | Corrige citações JSON byte-exatas, preserva evidência ativa no retry de decisão e aceita o conteúdo terminal agregado documentado do Perplexity sem enfraquecer os gates anti-fabricação.                                              |
