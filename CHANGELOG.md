@@ -29,6 +29,12 @@ standard `v00.00.00`; npm package versions remain SemVer.
   live in the PR #214 gate session, where a single-attempt auth skip
   finalized the session as `generation_budget_preflight` despite three raw
   READY votes.
+- The retry wrapper composes the aggregate marker per try instead of deriving
+  it from the final failure's class alone: each failed try contributes its
+  own indeterminate share before the next attempt, so a chain like
+  `[timeout, auth]` keeps the timeout try indeterminate instead of settling
+  it as zero under the terminal final class. (PR #214 gate, round-1 codex
+  finding)
 
 ## [v04.05.41] — 20/08/2026
 

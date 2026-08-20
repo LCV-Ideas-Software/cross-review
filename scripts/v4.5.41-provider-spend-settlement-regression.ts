@@ -31,6 +31,7 @@ import type {
   PeerResult,
 } from "../src/core/types.js";
 import { classifyProviderError } from "../src/peers/errors.js";
+import { withRetry } from "../src/peers/retry.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 const previousStubConfirmation = process.env.CROSS_REVIEW_STUB_CONFIRMED;
@@ -291,6 +292,44 @@ const regressions: Regression[] = [
         networkFailure.indeterminate_spend_attempts,
         networkFailure.unpriced_attempts,
         "an indeterminate-class failure must stamp its unpriced attempts as indeterminate",
+      );
+    },
+  },
+  {
+    name: "retry-aggregation-preserves-indeterminate-attempts-of-earlier-tries",
+    run: async () => {
+      // Review finding (session f131f43f, codex): the retry wrapper derived
+      // the marker for the AGGREGATED unpriced attempts solely from the final
+      // failure's class/message — a chain of [timeout, auth] settled the
+      // timeout try as zero. Each failed try must contribute its own
+      // indeterminate share to the aggregate marker.
+      const config = fixtureConfig("retry-aggregation");
+      config.retry = { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 };
+      let attemptNo = 0;
+      let caught: unknown;
+      try {
+        await withRetry(
+          config,
+          async () => {
+            attemptNo += 1;
+            if (attemptNo === 1) {
+              throw new Error("Request timeout");
+            }
+            throw Object.assign(new Error("403 Forbidden: spend cap breached"), { status: 403 });
+          },
+          (error, attempt, startedAt) =>
+            classifyProviderError("gemini", "google", "fixture-model", error, attempt, startedAt),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      const failure = (caught as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+      assert.ok(failure, "withRetry must attach the aggregated failure");
+      assert.equal(failure?.unpriced_attempts, 2, "both tries must stay unpriced");
+      assert.equal(
+        failure?.indeterminate_spend_attempts,
+        1,
+        "the earlier timeout try must survive aggregation as indeterminate",
       );
     },
   },
