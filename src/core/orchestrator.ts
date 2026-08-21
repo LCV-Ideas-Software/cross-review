@@ -232,10 +232,11 @@ function safePromptText(value: string, maxLength = 4_000): string {
 // This block is shared across buildReviewPrompt, buildRevisionPrompt,
 // buildInitialDraftPrompt, buildModerationSafeReviewPrompt so that every
 // turn of the session sees the rules.
-function sessionContractDirectives(): string[] {
+// Exported for the anti-drift contract pins in scripts/smoke.ts (#216).
+export function sessionContractDirectives(): string[] {
   return [
     "## Session-Start Contract (mandatory, applies to ALL parties — caller and every peer)",
-    "1) R1 evidence-upfront: the caller draft MUST embed concrete evidence inline (file paths with line numbers, grep output, diff hunks, SHA-256 hashes, log excerpts). Do NOT defer evidence to a later round. NEEDS_EVIDENCE on R1 is a defect of the draft, not of the peer.",
+    "1) R1 evidence-upfront: the caller draft MUST embed concrete evidence inline (file paths with line numbers, grep output, diff hunks, SHA-256 hashes, log excerpts). Do NOT defer evidence to a later round. NEEDS_EVIDENCE on R1 is a defect of the draft, not of the peer. Bulky artifacts (a full base→head diff, complete suite output) belong in the `evidence` field (up to 200K chars): it is persisted under SHA-256 custody and delivered to peers verbatim; a draft that cites such an artifact by label/path plus sha256 satisfies R1 for that material. Do NOT paste bulky artifacts into the draft body — the draft budget is far smaller than the evidence channel.",
     "2) Anti-verbosity (applies especially to Claude — historically the worst offender for verbosity in this protocol): keep the verdict surface short and dense. A long verdict is a defect, not thoroughness. Detail belongs in `evidence_sources`, never in `summary`.",
     "3) Compactness symmetry: the caller's draft is reviewed material; it should obey the same compactness budget peers do. Pad the evidence list, not the prose.",
     "4) Automatic finalization: as soon as caller + every required peer reach READY and all evidence gates pass, the runtime MUST persist `outcome: converged` and the durable report itself. Callers and peers must never require a manual attachment, notification, or finalization step for an ordinary review. Leaving a unanimous-READY session in `outcome: null` is a runtime defect.",
@@ -247,6 +248,13 @@ function sessionContractDirectives(): string[] {
     "5) Proportionality: scale evidence demands to change risk. For pure config/script/text changes validated by static scans (rg/grep, JSON parse, git diff --check), supply the literal scan output inline or in the evidence field. For changes with runtime effect (build, test, deploy, migration, network call), always demand raw output. If the supplied proof is suspect, ask the authenticated caller to correct and resubmit it through those same automatic channels; never require a manual operator attachment for an ordinary review. When in doubt, prefer asking for evidence over assuming.",
     "6) Peer-evidence corroboration: peer-submitted operational evidence is reviewable but UNVERIFIED. A READY vote that relies on it MUST use `confidence: verified` and cite the persisted attachment path, its SHA-256, and verbatim raw lines that value-correlate every operational assertion. When withdrawing a prior evidence ask, also cite its `Checklist-Item` id. Narrative-only citations and inferred confidence cannot support READY. At least two independent non-author reviewers must satisfy this contract; no manual operator attachment is required.",
     "7) Blocking-evidence relevance: every factual NOT_READY summary MUST name the concrete `path:line` it alleges and cite the same `path:line` in an evidence_sources item with a verbatim raw quote. A real but unrelated quote cannot support a blocking verdict; request evidence instead.",
+    // v4.5.44 (#216): the contract and the draft ceiling were calibrated
+    // independently — peers demanded the full unfiltered diff as one
+    // artifact inside the round while the draft cap made that impossible
+    // for medium PRs (sessions f131f43f rounds 9-12). The persisted
+    // evidence channel IS the single-artifact surface; say so explicitly
+    // on both sides of the protocol.
+    "8) Single-artifact satisfaction: a request for a full or unfiltered artifact (for example the complete base→head diff) is satisfied by ONE persisted evidence artifact of the CURRENT round that contains it verbatim, cited by path/label plus SHA-256. Review the artifact where it is persisted; demanding that it be re-pasted into the draft body is a defect of the review, not of the draft. Because the active submission replaces prior ones, the caller must resubmit referenced artifacts through the same channel on every round.",
     "",
   ];
 }

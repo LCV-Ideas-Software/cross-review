@@ -165,6 +165,7 @@ export function statusInstruction(): string {
     "You must end with one machine-readable JSON object that matches this shape:",
     JSON.stringify(statusJsonSchema),
     "Do not invent evidence. If evidence is missing, use NEEDS_EVIDENCE.",
+    "A NEEDS_EVIDENCE that asks for material already delivered verbatim in the current round's attached evidence (same path and sha256, shown under Attached/Peer-Submitted Evidence above) is a defect of the review: cite that attachment instead of re-asking for it inside the draft body.",
     '`confidence:"verified"` is allowed ONLY when `evidence_sources` contains concrete source citations or quotes. Empty or generic `evidence_sources` means the decision is not verified; use `confidence:"inferred"` or NEEDS_EVIDENCE instead.',
     "READY always requires at least one concrete evidence source, including when confidence is inferred. A filename or digest without its correlated literal quote, an empty list, a generic assurance, or an otherwise empty code fence is a shortcut non-decision and will be downgraded to NEEDS_EVIDENCE.",
     "NOT_READY is also a definitive factual verdict: every concrete blocker must be supported by at least one canonical literal evidence source. If you cannot cite the blocker from the reviewed artifact or a persisted attachment, use NEEDS_EVIDENCE and put the exact missing proof in `caller_requests`; an uncited NOT_READY will be downgraded automatically.",
