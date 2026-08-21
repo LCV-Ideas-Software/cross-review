@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 21/08/2026: `4.5.43`. O registro pode ficar
+> Estado do source/release target em 21/08/2026: `4.5.44`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -628,6 +628,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.44`      | O scrubber ganha padrão dedicado para o formato stateless (JWT) dos tokens de instalação de GitHub Apps (`ghs_` com segmentos base64url): o token inteiro é redigido numa única correspondência, sem depender do comprimento do primeiro segmento no padrão genérico de JWT (issue #215).                             |
 | `v04.05.43`      | O evidence preflight corrobora contagens de teste por registro: a prova RED de um TDD (`N failed` com o próprio run) passa como material do caller e um registro RED deliberado não veta contagens verdes de outros registros; o veto de sinal de falha segue valendo dentro do registro correspondente (issue #217). |
 | `v04.05.42`      | Registros legados de gasto mesclados preservam o estado fail-closed em re-merges (tentativas não-precificadas sem marcador contam como indeterminadas) e o sentinel de interrupção tolera registro legado sem message.                                                                                                |
 | `v04.05.41`      | Falha terminal de provedor sem usage liquida como custo zero (destrava o preflight de orçamento que matava sessões com peer sem quota); receita manual dedicada para falha de hardening; receitas verificam o descritor por handle exclusivo e comparam FullControl por igualdade exata.                              |

@@ -7,6 +7,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.44] — 21/08/2026
+
+### Fixed
+
+- The dedicated GitHub-token scrubber pattern now consumes the stateless
+  JWT shape of App installation tokens (`ghs_` with base64url segments)
+  in a single match (issue #215). Previously the opaque pattern redacted
+  only the first segment, stranding the payload and signature while also
+  breaking the generic JWT pattern's 32-char first-segment expectation.
+  Classic opaque `ghs_` tokens remain covered by the same pattern.
+
 ## [v04.05.43] — 21/08/2026
 
 ### Fixed

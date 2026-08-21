@@ -3,6 +3,13 @@ const SECRET_PATTERNS = [
   /sk-ant-[A-Za-z0-9_-]{20,}/g,
   /AIza[A-Za-z0-9_-]{20,}/g,
   /cfut_[A-Za-z0-9_-]{30,}/g,
+  // v4.5.44 / issue #215: ghs_ installation tokens migrated to a stateless
+  // JWT shape (base64url segments joined by dots). The extended class MUST
+  // run before the opaque gh-prefix pattern below: a partial match of the
+  // first segment would strand the payload/signature AND break the generic
+  // JWT pattern's 32-char first-segment expectation. {30,} keeps classic
+  // opaque ghs_ tokens covered by this same pattern.
+  /ghs_[A-Za-z0-9._-]{30,}/g,
   /gh[pousr]_[A-Za-z0-9]{30,}/g,
   /github_pat_[A-Za-z0-9_]{20,}/g,
   /npm_[A-Za-z0-9]{30,}/g,

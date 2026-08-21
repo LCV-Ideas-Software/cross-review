@@ -512,6 +512,23 @@ assert.equal(redact(xaiKey), "[REDACTED]");
 const shortXai = "xai-short";
 assert.equal(redact(`prefix ${shortXai} suffix`), `prefix ${shortXai} suffix`);
 
+// v4.5.44 / issue #215: GitHub App installation tokens migrated to a
+// stateless JWT shape (ghs_ prefix kept; body has base64url segments with
+// dots). The dedicated gh-token pattern must consume the WHOLE token in one
+// match: a partial redaction of the first segment would leave the payload
+// and signature behind while also breaking the generic JWT pattern's
+// 32-char first-segment expectation. Synthetic token, no real material.
+const statelessGhs = [
+  "ghs_" + "eyJhbGc".padEnd(36, "A"),
+  "eyJpc3M".padEnd(40, "B"),
+  "sig".padEnd(24, "C"),
+].join(".");
+assert.equal(redact(statelessGhs), "[REDACTED]");
+assert.equal(redact(`token ${statelessGhs} trailing`), "token [REDACTED] trailing");
+// Classic opaque ghs_ tokens (36 alphanumerics, no dots) remain covered.
+const classicGhs = "ghs_" + "D".repeat(36);
+assert.equal(redact(classicGhs), "[REDACTED]");
+
 // v2.25.1 (2026-05-11): regression — env-style pattern must NOT consume
 // the JSON-escape backslash in `token: write\"` (peer-response YAML
 // excerpts that survived round-1 serialization quoted `id-token: write`
