@@ -1986,6 +1986,21 @@ function evidenceHasStructuredSuccessRecord(evidenceText: string, subject: RegEx
   });
 }
 
+// Records are the framed COMMAND:/prompt blocks when the evidence carries
+// them; unframed evidence stays a single record so its strictness is
+// unchanged. Scoping matters for count corroboration (#217): the veto for
+// failure signals applies within the record that carries the matching count
+// (docs/evidence-preflight.md, "within command records"), never across
+// records — otherwise a deliberate RED record poisons every other claim and
+// an honest "N failed" claim is unfalsifiable by construction.
+function splitEvidenceRecords(evidenceText: string): string[] {
+  const normalized = evidenceText.replace(/\r\n?/g, "\n");
+  const framed = normalized
+    .split(/(?=^\s*(?:COMMAND\s*:|[$>]\s+\S))/gim)
+    .filter((block) => block.trim().length > 0);
+  return framed.length > 0 ? framed : [normalized];
+}
+
 function evidenceCorroboratesOperationalAssertion(
   assertion: EvidenceOperationalAssertion,
   evidenceText: string,
@@ -1993,12 +2008,19 @@ function evidenceCorroboratesOperationalAssertion(
   if (!evidenceText.trim()) return false;
   if (assertion.kind === "count") {
     const exact = new RegExp(`\\b${assertion.value}\\s+${assertion.outcome}\\b`, "i");
-    if (!exact.test(evidenceText) || evidenceHasExplicitFailureSignal(evidenceText)) return false;
-    return (
-      /\b(?:tests?|test files)\s*:?\s*\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i.test(
-        evidenceText,
-      ) || evidenceHasSuccessfulCommandRecord(evidenceText, /\btest\b/i)
-    );
+    return splitEvidenceRecords(evidenceText).some((record) => {
+      if (!exact.test(record)) return false;
+      const testFormatted =
+        /\b(?:tests?|test files)\s*:?\s*\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i.test(
+          record,
+        ) || evidenceHasSuccessfulCommandRecord(record, /\btest\b/i);
+      if (!testFormatted) return false;
+      // A failure count is corroborated BY its own failure signal: the RED
+      // record that proves "N failed" necessarily contains it (#217). The
+      // veto still protects success counts within their record.
+      if (assertion.outcome === "failed") return true;
+      return !evidenceHasExplicitFailureSignal(record);
+    });
   }
   if (assertion.kind === "command") {
     const explicitBlocks = evidenceText

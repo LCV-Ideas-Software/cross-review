@@ -53,6 +53,15 @@ modal failure and skipped runs are non-execution too, and an unrelated
 result in the same raw line or structured command block. Conflicting executions
 of the same command do not prove success.
 
+That precedence is scoped to the record carrying the matching count, never to
+the whole corpus (v4.5.43, issue #217). An honest failure count — the RED half
+of a TDD proof — is corroborated by its own failing record: `1 failed` claimed
+in the draft and backed by a dedicated `COMMAND:`/`EXIT_CODE: 1` record with
+the same count passes as caller-submitted material. A deliberate RED record
+likewise does not veto `passed` counts that carry their own clean records.
+Unframed evidence (no `COMMAND:`/prompt blocks) remains a single record and
+keeps the strict corpus-wide behavior.
+
 Mere keyword presence does **not** trip it. "I plan to write a patch"
 or "here is the test plan" is a design review with legitimately no diff
 — it passes.

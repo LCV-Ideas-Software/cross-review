@@ -311,6 +311,46 @@ assert.equal(
   "v4.4.9 / evidence_preflight: a matching number with the opposite outcome must not pass",
 );
 
+// v4.5.43 (#217): an honest failure count backed by its own RED record must
+// be corroborable — the failing run IS the corroboration. Before the fix the
+// corpus-wide failure-signal veto made every "N failed" claim unfalsifiable:
+// the exact evidence that proves the claim also vetoed it, so a TDD caller
+// could never present a RED run.
+const honestRedCount = evidencePreflight({
+  task: "TDD proof: the new regression fails against main - 1 failed.",
+  initialDraft:
+    "COMMAND: npx vitest run notification-regression\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed (1)",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  honestRedCount.pass,
+  true,
+  "v4.5.43 / evidence_preflight (#217): an honest failure count with its own RED record must pass",
+);
+assert.equal(
+  honestRedCount.evidence_authority,
+  "caller_submitted_unverified",
+  "v4.5.43 / evidence_preflight (#217): honest RED evidence is caller-submitted, not authority none",
+);
+
+// v4.5.43 (#217): a deliberate RED record must not poison passed counts that
+// carry their own clean records — the failure-signal veto is scoped to the
+// record holding the matching count (docs/evidence-preflight.md: "within
+// command records"), not the whole corpus.
+const redRecordDoesNotPoisonGreen = evidencePreflight({
+  task: "Review: full suite green with 88 passed; the new regression shows 1 failed against main.",
+  initialDraft:
+    "COMMAND: npm run smoke\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed\n\nCOMMAND: npx vitest run red-proof\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed (1)",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  redRecordDoesNotPoisonGreen.pass,
+  true,
+  "v4.5.43 / evidence_preflight (#217): a separate RED record must not veto passed counts backed by clean records",
+);
+
 // (e2) attached evidence is not a blank cheque: if the review text
 //      explicitly points to another evidence artifact that is not attached,
 //      the preflight must block before paid calls.

@@ -7,6 +7,19 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.43] — 21/08/2026
+
+### Fixed
+
+- Evidence preflight scopes count corroboration to individual evidence
+  records (issue #217): an honest failure count backed by its own RED
+  record — the TDD proof the peers ask for — now passes as
+  caller-submitted material instead of being unfalsifiable by
+  construction, and a deliberate RED record no longer vetoes passed
+  counts carried by their own clean records. The failure-signal
+  precedence still applies within the record holding the matching count;
+  unframed evidence keeps the strict corpus-wide behavior.
+
 ## [v04.05.42] — 20/08/2026
 
 ### Fixed
