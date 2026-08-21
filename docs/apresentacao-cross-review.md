@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.44`                        |
+| Versão preparada pelo source  | `v04.05.45`                        |
 | Data do source/release target | `21/08/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -827,6 +827,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                                                                              |
 | ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.05.45`      | 21/08/2026    | O contrato de sessão e a instrução dos peers reconhecem o canal de evidência persistido (200K, custódia SHA-256) como o artefato único não-filtrado: pedido de re-colagem no corpo do draft passa a ser defeito da revisão, destravando a convergência de PRs médios (issue #216).                                    |
 | `v04.05.44`      | 21/08/2026    | O scrubber ganha padrão dedicado para o formato stateless (JWT) dos tokens de instalação de GitHub Apps (`ghs_` com segmentos base64url): o token inteiro é redigido numa única correspondência, sem depender do comprimento do primeiro segmento no padrão genérico de JWT (issue #215).                             |
 | `v04.05.43`      | 21/08/2026    | O evidence preflight corrobora contagens de teste por registro: a prova RED de um TDD (`N failed` com o próprio run) passa como material do caller e um registro RED deliberado não veta contagens verdes de outros registros; o veto de sinal de falha segue valendo dentro do registro correspondente (issue #217). |
 | `v04.05.42`      | 20/08/2026    | Registros legados de gasto mesclados preservam o estado fail-closed em re-merges (tentativas não-precificadas sem marcador contam como indeterminadas) e o sentinel de interrupção tolera registro legado sem message.                                                                                                |
