@@ -1,3 +1,5 @@
+# This workflow is managed by gh actions-lock.
+
 name: Auto-tag on version bump
 # Organization version display convention: public tags/releases use
 # vXX.XX.XX with zero-padded numeric segments. package.json keeps npm SemVer
