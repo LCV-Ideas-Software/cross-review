@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Current supported source/release target: v04.05.44 for package 4.5.44. This
+Current supported source/release target: v04.05.45 for package 4.5.45. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.

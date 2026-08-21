@@ -73,6 +73,15 @@ but must not claim they independently executed the command. Optional operator
 material is labeled `OPERATOR-VERIFIED`; it is a higher authority tier, not a
 routine prerequisite for review or convergence.
 
+The persisted evidence channel is also the single-artifact surface (v4.5.44,
+issue #216): a request for a full or unfiltered artifact — such as the
+complete base→head diff — is satisfied by one persisted evidence artifact of
+the current round containing it verbatim, cited by path/label plus SHA-256.
+The `evidence` field carries up to 200K chars per round versus the much
+smaller draft budget, so bulky artifacts belong there, never re-pasted into
+the draft body. The active submission replaces prior ones, so the caller
+resubmits referenced artifacts through the same channel on every round.
+
 Integrity does not turn peer text into truth. Operational claims supported only
 by `PEER-SUBMITTED / UNVERIFIED` material require at least two independent
 non-author reviewers. Each qualifying vote must remain `READY`, use

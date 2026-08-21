@@ -7,6 +7,20 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.05.45] — 21/08/2026
+
+### Fixed
+
+- The session contract and the peer status instruction now recognize the
+  persisted evidence channel (200K chars, SHA-256 custody, delivered to
+  peers verbatim) as the single unfiltered artifact surface (issue #216):
+  bulky artifacts belong in the `evidence` field, a draft citing them by
+  path/label plus sha256 satisfies R1, peers must not demand a re-paste
+  into the 40K draft body, and the caller resubmits referenced artifacts
+  through the same channel on every round. This closes the structural
+  contract-vs-ceiling deadlock that prevented convergence on medium PRs
+  (sessions f131f43f rounds 9-12).
+
 ## [v04.05.44] — 21/08/2026
 
 ### Fixed

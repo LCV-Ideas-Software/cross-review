@@ -3005,6 +3005,32 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     /smallest sufficient literal, normally target at most 500 characters[\s\S]*hard limit is 2500 characters[\s\S]*30 items total/i,
     "statusInstruction must prefer compact proof while retaining schema hard limits",
   );
+  // v4.5.44 (#216): a persisted current-round evidence artifact satisfies a
+  // full-artifact request — peers must not demand its re-paste into the
+  // 40K draft body, which made convergence structurally impossible for
+  // medium-size diffs (the ~60KB package of PR #214 vs the 40K draft cap).
+  assert.match(
+    instruction,
+    /already delivered verbatim in the current round's attached evidence/i,
+    "statusInstruction must forbid NEEDS_EVIDENCE re-asking for material already attached in the round (#216)",
+  );
+  const { sessionContractDirectives } = await import("../src/core/orchestrator.js");
+  const contract = sessionContractDirectives().join("\n");
+  assert.match(
+    contract,
+    /`evidence` field \(up to 200K chars\)/,
+    "session contract must route bulky artifacts to the 200K evidence field (#216)",
+  );
+  assert.match(
+    contract,
+    /Single-artifact satisfaction/,
+    "session contract must declare that one persisted artifact satisfies a full-artifact request (#216)",
+  );
+  assert.match(
+    contract,
+    /resubmit referenced artifacts through the same channel on every round/i,
+    "session contract must tell the caller to resubmit referenced artifacts each round (#216)",
+  );
   console.log("[smoke] session_contract_directives_test: PASS");
 }
 
