@@ -2276,7 +2276,7 @@ function assertExactToolchainJobs(workflow, expectedJobIds, label) {
   for (const line of lines.slice(jobsIndex + 1)) {
     if (/^\S/.test(line)) break;
 
-    const jobMatch = line.match(/^  ([A-Za-z0-9_-]+):[ \t]*$/);
+    const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):[ \t]*$/);
     if (jobMatch) {
       currentJobId = jobMatch[1];
       jobBlocks.set(currentJobId, `${line}\n`);
