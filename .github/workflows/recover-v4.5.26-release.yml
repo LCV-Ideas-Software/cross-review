@@ -1,3 +1,5 @@
+# This workflow is managed by gh actions-lock.
+
 name: Recover v04.05.26 GitHub Release
 
 on:
