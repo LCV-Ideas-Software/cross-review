@@ -2264,7 +2264,32 @@ assert.doesNotMatch(
 );
 
 const exactSameRepositoryToolchainUse =
-  /^[ \t]*uses:[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/gm;
+  /^(?: {6}-[ \t]+uses| {8}uses):[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/;
+const yamlBlockScalarStart = /^[ ]*(?:-[ \t]+)?[A-Za-z0-9_-]+:[ \t]*[>|][^#\s]*[ \t]*(?:#.*)?$/;
+
+function countExactToolchainStepUses(block) {
+  let blockScalarIndent;
+  let count = 0;
+
+  for (const line of block.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+
+    const indent = line.search(/\S|$/);
+    if (blockScalarIndent !== undefined) {
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = undefined;
+    }
+
+    if (yamlBlockScalarStart.test(line)) {
+      blockScalarIndent = indent;
+      continue;
+    }
+
+    if (exactSameRepositoryToolchainUse.test(line)) count += 1;
+  }
+
+  return count;
+}
 
 function assertExactToolchainJobs(workflow, expectedJobIds, label) {
   const jobBlocks = new Map();
@@ -2290,14 +2315,14 @@ function assertExactToolchainJobs(workflow, expectedJobIds, label) {
 
   for (const jobId of expectedJobIds) {
     assert.equal(
-      (jobBlocks.get(jobId)?.match(exactSameRepositoryToolchainUse) ?? []).length,
+      countExactToolchainStepUses(jobBlocks.get(jobId) ?? ""),
       1,
       `${label} job ${jobId} must activate the hash-verified npm v12 toolchain exactly once`,
     );
   }
 
   const actualJobIds = [...jobBlocks]
-    .filter(([, block]) => (block.match(exactSameRepositoryToolchainUse) ?? []).length > 0)
+    .filter(([, block]) => countExactToolchainStepUses(block) > 0)
     .map(([jobId]) => jobId)
     .sort();
   assert.deepEqual(
@@ -2307,10 +2332,7 @@ function assertExactToolchainJobs(workflow, expectedJobIds, label) {
   );
 }
 
-assert.throws(
-  () =>
-    assertExactToolchainJobs(
-      `jobs:
+const redistributedToolchainFixture = `jobs:
   first:
     steps:
       - uses: $/.github/actions/setup-npm-toolchain
@@ -2318,7 +2340,28 @@ assert.throws(
   second:
     steps:
       - run: npm --version
-`,
+`;
+assert.equal(
+  countExactToolchainStepUses(redistributedToolchainFixture),
+  2,
+  "the redistributed toolchain fixture must exercise two recognized toolchain steps",
+);
+
+const blockScalarToolchainFixture = `jobs:
+  only:
+    steps:
+      - run: |
+          uses: $/.github/actions/setup-npm-toolchain
+`;
+assert.equal(
+  countExactToolchainStepUses(blockScalarToolchainFixture),
+  0,
+  "toolchain-like text inside a YAML block scalar must not count as an action step",
+);
+assert.throws(
+  () =>
+    assertExactToolchainJobs(
+      redistributedToolchainFixture,
       ["first", "second"],
       "redistributed toolchain fixture",
     ),
