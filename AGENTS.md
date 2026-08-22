@@ -36,10 +36,20 @@ touches a guarded contract must run the matching regression before closure.
 
 Follow the workspace-root `AGENTS.md` directives of the private workspace that
 hosts this checkout (not versioned in this public repository). In
-particular: no self-review in cross-review gates, `ultrabrain` plus
-`cross-review-v2` before substantive closure, `cross-review-v1` only as fallback
-for v2, `main` as the deployment branch, and Commit & Sync only after final
-audit when requested.
+particular: use `ultrabrain`, never allow self-review when a cross-review gate
+is applicable, keep `main` as the deployment branch, and use Commit & Sync only
+after the requested final audit.
+
+Cross-review is a proportional gate, not a universal ceremony. Require it for
+changes with material implementation, architecture, security, privacy,
+financial, data-integrity, release-safety, or cross-system risk, and whenever
+the operator explicitly requests it. Dispense it for simple mechanical work
+such as documentation-only corrections, typo or formatting fixes, immutable
+action/dependency pin updates, lockfile regeneration, and equivalent action
+substitution when the relevant static validators and CI gates cover the
+change. When in doubt, justify the risk classification from the actual diff;
+do not invoke cross-review merely because this repository implements the
+cross-review product. Do not use historical versioned names for the gate.
 
 ## Registro de trabalho (GitHub Projects, Issues e Discussions)
 
