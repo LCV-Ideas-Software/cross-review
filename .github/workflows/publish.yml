@@ -1,3 +1,5 @@
+# This workflow is managed by gh actions-lock.
+
 name: Publish
 on:
   push:
@@ -518,7 +520,7 @@ jobs:
           scope: "@lcv-ideas-software"
           package-manager-cache: false
       - name: Setup hash-verified npm v12 toolchain
-        uses: ./.github/actions/setup-npm-toolchain
+        uses: $/.github/actions/setup-npm-toolchain
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
@@ -691,7 +693,7 @@ jobs:
           scope: "@lcv-ideas-software"
           package-manager-cache: false
       - name: Setup hash-verified npm v12 toolchain
-        uses: ./.github/actions/setup-npm-toolchain
+        uses: $/.github/actions/setup-npm-toolchain
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
@@ -855,7 +857,7 @@ jobs:
           scope: "@lcv-ideas-software"
           package-manager-cache: false
       - name: Setup hash-verified npm v12 toolchain
-        uses: ./.github/actions/setup-npm-toolchain
+        uses: $/.github/actions/setup-npm-toolchain
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
@@ -979,7 +981,7 @@ jobs:
           check-latest: true
           package-manager-cache: false
       - name: Setup hash-verified npm v12 toolchain
-        uses: ./.github/actions/setup-npm-toolchain
+        uses: $/.github/actions/setup-npm-toolchain
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
@@ -1209,7 +1211,7 @@ jobs:
           check-latest: true
           package-manager-cache: false
       - name: Setup hash-verified npm v12 toolchain
-        uses: ./.github/actions/setup-npm-toolchain
+        uses: $/.github/actions/setup-npm-toolchain
         with:
           version: ${{ env.NPM_CLI_VERSION }}
           sha512: ${{ env.NPM_CLI_SHA512 }}
