@@ -7,6 +7,13 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- CI now uses Linear's official `linear-release-action` at the verified
+  `v0.16.0` commit while preserving the existing full-history, least-privilege,
+  protected-environment, and best-effort release synchronization contract
+  (CROSREV-17, issue #230).
+
 ## [v04.05.45] — 21/08/2026
 
 ### Fixed
