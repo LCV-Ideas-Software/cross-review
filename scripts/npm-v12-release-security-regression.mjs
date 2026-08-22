@@ -2265,7 +2265,8 @@ assert.doesNotMatch(
 
 const exactSameRepositoryToolchainUse =
   /^(?: {6}-[ \t]+uses| {8}uses):[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/;
-const yamlBlockScalarStart = /^[ ]*(?:-[ \t]+)?[A-Za-z0-9_-]+:[ \t]*[>|][^#\s]*[ \t]*(?:#.*)?$/;
+const yamlBlockScalarStart =
+  /^[ ]*(?:-[ \t]+)?(?:.*:[ \t]*)?[>|](?:(?:[1-9][+-]?)|(?:[+-][1-9]?))?[ \t]*(?:#.*)?$/;
 
 function countExactToolchainStepUses(block) {
   let blockScalarIndent;
@@ -2357,6 +2358,35 @@ assert.equal(
   countExactToolchainStepUses(blockScalarToolchainFixture),
   0,
   "toolchain-like text inside a YAML block scalar must not count as an action step",
+);
+
+const quotedBlockScalarToolchainFixture = `jobs:
+  only:
+    env:
+      "SCRIPT": |
+        uses: $/.github/actions/setup-npm-toolchain
+    steps:
+      - run: npm --version
+`;
+assert.equal(
+  countExactToolchainStepUses(quotedBlockScalarToolchainFixture),
+  0,
+  "toolchain-like text inside a quoted-key YAML block scalar must not count as an action step",
+);
+
+const explicitBlockScalarToolchainFixture = `jobs:
+  only:
+    env:
+      ? "SCRIPT"
+      : >2-
+        uses: $/.github/actions/setup-npm-toolchain
+    steps:
+      - run: npm --version
+`;
+assert.equal(
+  countExactToolchainStepUses(explicitBlockScalarToolchainFixture),
+  0,
+  "toolchain-like text inside an explicit-key folded YAML block scalar must not count as an action step",
 );
 assert.throws(
   () =>
