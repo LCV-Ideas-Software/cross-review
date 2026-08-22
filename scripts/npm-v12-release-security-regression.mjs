@@ -2274,13 +2274,17 @@ assert.match(
   "release jobs must pin the npm v12 tarball by SHA-512",
 );
 assert.equal(
-  (publishWorkflow.match(/uses:\s*\$\/\.github\/actions\/setup-npm-toolchain/g) ?? []).length,
+  (
+    publishWorkflow.match(
+      /^[ \t]*uses:[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/gm,
+    ) ?? []
+  ).length,
   5,
   "every release-pipeline job that invokes npm must activate the hash-verified npm v12 toolchain through the inherently pinned same-repository reference",
 );
 assert.doesNotMatch(
   publishWorkflow,
-  /uses:\s*\.\/\.github\/actions\/setup-npm-toolchain/,
+  /^[ \t]*uses:[ \t]+\.\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/m,
   "release jobs must not regress to the legacy local-path action reference that cannot be represented in actions.lock",
 );
 assert.doesNotMatch(
@@ -2320,13 +2324,17 @@ assert.match(
   "ordinary CI must explicitly disable package-manager caching",
 );
 assert.equal(
-  (ciWorkflow.match(/uses:\s*\$\/\.github\/actions\/setup-npm-toolchain/g) ?? []).length,
+  (
+    ciWorkflow.match(
+      /^[ \t]*uses:[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/gm,
+    ) ?? []
+  ).length,
   2,
   "every ordinary CI job must activate the hash-verified npm v12 toolchain through the inherently pinned same-repository reference",
 );
 assert.doesNotMatch(
   ciWorkflow,
-  /uses:\s*\.\/\.github\/actions\/setup-npm-toolchain/,
+  /^[ \t]*uses:[ \t]+\.\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/m,
   "ordinary CI must not regress to the legacy local-path action reference that cannot be represented in actions.lock",
 );
 assert.doesNotMatch(
