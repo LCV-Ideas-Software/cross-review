@@ -12,7 +12,7 @@ workflows:
         - 'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97'
     '.github/workflows/codeql.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'github/codeql-action@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd'
+        - 'github/codeql-action@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28'
         - 'lcv-ideas-software/.github@24b0bcc09a48b47f740b8a8bd972374f7289e48e'
     '.github/workflows/dependency-review.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
@@ -35,7 +35,7 @@ workflows:
     '.github/workflows/scorecard.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
-        - 'github/codeql-action@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd'
+        - 'github/codeql-action@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28'
         - 'ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc'
     '.github/workflows/zizmor.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
@@ -98,9 +98,9 @@ dependencies:
         commit: 'sha1-7188fc363630916deb702c7fdcf4e481b751f97a'
         owner_id: 9919
         repo_id: 259445878
-    'github/codeql-action@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd':
-        ref: 'v4.37.7'
-        commit: 'sha1-ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd'
+    'github/codeql-action@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28':
+        ref: 'v4.37.8'
+        commit: 'sha1-db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28'
         owner_id: 9919
         repo_id: 259445878
     'lcv-ideas-software/.github@24b0bcc09a48b47f740b8a8bd972374f7289e48e':
