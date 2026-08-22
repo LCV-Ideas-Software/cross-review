@@ -2263,6 +2263,69 @@ assert.doesNotMatch(
   "the hash-verified npm bootstrap must not recursively invoke npm install",
 );
 
+const exactSameRepositoryToolchainUse =
+  /^[ \t]*uses:[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/gm;
+
+function assertExactToolchainJobs(workflow, expectedJobIds, label) {
+  const jobBlocks = new Map();
+  const lines = workflow.split(/\r?\n/);
+  const jobsIndex = lines.findIndex((line) => line === "jobs:");
+  assert.notEqual(jobsIndex, -1, `${label} must define a jobs mapping`);
+
+  let currentJobId;
+  for (const line of lines.slice(jobsIndex + 1)) {
+    if (/^\S/.test(line)) break;
+
+    const jobMatch = line.match(/^  ([A-Za-z0-9_-]+):[ \t]*$/);
+    if (jobMatch) {
+      currentJobId = jobMatch[1];
+      jobBlocks.set(currentJobId, `${line}\n`);
+      continue;
+    }
+
+    if (currentJobId) {
+      jobBlocks.set(currentJobId, `${jobBlocks.get(currentJobId)}${line}\n`);
+    }
+  }
+
+  for (const jobId of expectedJobIds) {
+    assert.equal(
+      (jobBlocks.get(jobId)?.match(exactSameRepositoryToolchainUse) ?? []).length,
+      1,
+      `${label} job ${jobId} must activate the hash-verified npm v12 toolchain exactly once`,
+    );
+  }
+
+  const actualJobIds = [...jobBlocks]
+    .filter(([, block]) => (block.match(exactSameRepositoryToolchainUse) ?? []).length > 0)
+    .map(([jobId]) => jobId)
+    .sort();
+  assert.deepEqual(
+    actualJobIds,
+    [...expectedJobIds].sort(),
+    `${label} must not activate the npm toolchain in an unexpected job`,
+  );
+}
+
+assert.throws(
+  () =>
+    assertExactToolchainJobs(
+      `jobs:
+  first:
+    steps:
+      - uses: $/.github/actions/setup-npm-toolchain
+      - uses: $/.github/actions/setup-npm-toolchain
+  second:
+    steps:
+      - run: npm --version
+`,
+      ["first", "second"],
+      "redistributed toolchain fixture",
+    ),
+  /job first must activate the hash-verified npm v12 toolchain exactly once/,
+  "duplicating the toolchain in one job must not compensate for omitting it from another",
+);
+
 assert.match(
   publishWorkflow,
   /NPM_CLI_VERSION:\s*["']12\.0\.2["']/,
@@ -2273,14 +2336,10 @@ assert.match(
   /NPM_CLI_SHA512:\s*["'][a-f0-9]{128}["']/,
   "release jobs must pin the npm v12 tarball by SHA-512",
 );
-assert.equal(
-  (
-    publishWorkflow.match(
-      /^[ \t]*uses:[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/gm,
-    ) ?? []
-  ).length,
-  5,
-  "every release-pipeline job that invokes npm must activate the hash-verified npm v12 toolchain through the inherently pinned same-repository reference",
+assertExactToolchainJobs(
+  publishWorkflow,
+  ["gate", "publish-npmjs", "verify-npmjs", "publish-gh-packages", "create-github-release"],
+  "release workflow",
 );
 assert.doesNotMatch(
   publishWorkflow,
@@ -2323,15 +2382,7 @@ assert.match(
   /package-manager-cache:\s*false/,
   "ordinary CI must explicitly disable package-manager caching",
 );
-assert.equal(
-  (
-    ciWorkflow.match(
-      /^[ \t]*uses:[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/gm,
-    ) ?? []
-  ).length,
-  2,
-  "every ordinary CI job must activate the hash-verified npm v12 toolchain through the inherently pinned same-repository reference",
-);
+assertExactToolchainJobs(ciWorkflow, ["verify", "caller-token-acl-windows"], "CI workflow");
 assert.doesNotMatch(
   ciWorkflow,
   /^[ \t]*uses:[ \t]+\.\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/m,
