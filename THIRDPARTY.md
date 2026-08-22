@@ -23,6 +23,7 @@ Direct dependencies declared by this repository:
 | tsx                       | MIT               | development | https://www.npmjs.com/package/tsx                       |
 | typescript                | Apache-2.0        | development | https://www.npmjs.com/package/typescript                |
 | typescript-eslint         | MIT               | development | https://www.npmjs.com/package/typescript-eslint         |
+| yaml                      | ISC               | development | https://www.npmjs.com/package/yaml                      |
 
 `package.json` is the source of truth for declared ranges.
 `package-lock.json` records the exact resolution for this repository checkout;
