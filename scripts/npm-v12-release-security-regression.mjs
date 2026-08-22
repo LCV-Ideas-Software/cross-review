@@ -4,6 +4,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseDocument } from "yaml";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => readFile(path.join(root, file), "utf8");
@@ -2263,162 +2264,384 @@ assert.doesNotMatch(
   "the hash-verified npm bootstrap must not recursively invoke npm install",
 );
 
-const exactSameRepositoryToolchainUse =
-  /^(?: {6}-[ \t]+uses| {8}uses):[ \t]+\$\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/;
-const yamlBlockScalarStart =
-  /^[ ]*(?:-[ \t]+)?(?:.*:[ \t]*)?[>|](?:(?:[1-9][+-]?)|(?:[+-][1-9]?))?[ \t]*(?:#.*)?$/;
+const sameRepositoryToolchainAction = "$/.github/actions/setup-npm-toolchain";
+const legacyWorkspaceToolchainAction = "./.github/actions/setup-npm-toolchain";
+const maxWorkflowAliasCount = 100;
 
-function countExactToolchainStepUses(block) {
-  let blockScalarIndent;
-  let count = 0;
-
-  for (const line of block.split(/\r?\n/)) {
-    if (line.trim() === "") continue;
-
-    const indent = line.search(/\S|$/);
-    if (blockScalarIndent !== undefined) {
-      if (indent > blockScalarIndent) continue;
-      blockScalarIndent = undefined;
-    }
-
-    if (yamlBlockScalarStart.test(line)) {
-      blockScalarIndent = indent;
-      continue;
-    }
-
-    if (exactSameRepositoryToolchainUse.test(line)) count += 1;
-  }
-
-  return count;
+function workflowDiagnostic(error) {
+  const code = error?.code ? `${error.code}: ` : "";
+  return `${code}${error?.message ?? String(error)}`;
 }
 
-function assertExactToolchainJobs(workflow, expectedJobIds, label) {
-  const jobBlocks = new Map();
-  const lines = workflow.split(/\r?\n/);
-  const jobsIndex = lines.findIndex((line) => line === "jobs:");
-  assert.notEqual(jobsIndex, -1, `${label} must define a jobs mapping`);
+function assertNoYamlMergeKeys(value, label, seen = new Set()) {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
 
-  let currentJobId;
-  for (const line of lines.slice(jobsIndex + 1)) {
-    if (/^\S/.test(line)) break;
-
-    const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):[ \t]*$/);
-    if (jobMatch) {
-      currentJobId = jobMatch[1];
-      jobBlocks.set(currentJobId, `${line}\n`);
-      continue;
-    }
-
-    if (currentJobId) {
-      jobBlocks.set(currentJobId, `${jobBlocks.get(currentJobId)}${line}\n`);
-    }
+  if (value instanceof Map) {
+    assert.equal(value.has("<<"), false, `${label} must not use YAML merge keys`);
+    for (const child of value.values()) assertNoYamlMergeKeys(child, label, seen);
+    return;
   }
 
-  for (const jobId of expectedJobIds) {
+  if (Array.isArray(value)) {
+    for (const child of value) assertNoYamlMergeKeys(child, label, seen);
+  }
+}
+
+function parseWorkflowForToolchainAudit(workflow, label) {
+  let document;
+  try {
+    document = parseDocument(workflow, {
+      version: "1.2",
+      schema: "core",
+      strict: true,
+      stringKeys: true,
+      uniqueKeys: true,
+      merge: false,
+      resolveKnownTags: false,
+    });
+  } catch (error) {
+    assert.fail(`${label} must be valid YAML: ${workflowDiagnostic(error)}`);
+  }
+
+  const diagnostics = [...document.errors, ...document.warnings];
+  assert.equal(
+    diagnostics.length,
+    0,
+    `${label} must be valid, unambiguous YAML: ${diagnostics.map(workflowDiagnostic).join("; ")}`,
+  );
+
+  let parsed;
+  try {
+    parsed = document.toJS({ mapAsMap: true, maxAliasCount: maxWorkflowAliasCount });
+  } catch (error) {
+    assert.fail(`${label} must have bounded YAML aliases: ${workflowDiagnostic(error)}`);
+  }
+
+  assert.ok(parsed instanceof Map, `${label} must define a YAML mapping`);
+  assertNoYamlMergeKeys(parsed, label);
+  return parsed;
+}
+
+function inspectWorkflowToolchainSteps(workflow, label) {
+  const parsed = parseWorkflowForToolchainAudit(workflow, label);
+  const jobs = parsed.get("jobs");
+  assert.ok(jobs instanceof Map, `${label} must define a jobs mapping`);
+
+  const toolchainStepsByJob = new Map();
+  for (const [jobId, job] of jobs) {
+    assert.equal(typeof jobId, "string", `${label} job identifiers must be strings`);
+    assert.ok(job instanceof Map, `${label} job ${jobId} must be a mapping`);
+
+    const steps = job.get("steps");
+    if (steps === undefined) {
+      toolchainStepsByJob.set(jobId, []);
+      continue;
+    }
+    assert.ok(Array.isArray(steps), `${label} job ${jobId} steps must be a sequence`);
+
+    const toolchainSteps = [];
+    for (const [index, step] of steps.entries()) {
+      assert.ok(step instanceof Map, `${label} job ${jobId} step ${index} must be a mapping`);
+      if (!step.has("uses")) continue;
+      const uses = step.get("uses");
+      assert.equal(
+        typeof uses,
+        "string",
+        `${label} job ${jobId} step ${index} uses must be a string`,
+      );
+      assert.notEqual(
+        uses,
+        legacyWorkspaceToolchainAction,
+        `${label} job ${jobId} step ${index} must not use the legacy workspace-relative toolchain action`,
+      );
+      if (uses === sameRepositoryToolchainAction) toolchainSteps.push(step);
+    }
+    toolchainStepsByJob.set(jobId, toolchainSteps);
+  }
+  return { parsed, jobs, toolchainStepsByJob };
+}
+
+function toolchainUseCountsByJob(workflow, label) {
+  const { toolchainStepsByJob } = inspectWorkflowToolchainSteps(workflow, label);
+  return new Map([...toolchainStepsByJob].map(([jobId, steps]) => [jobId, steps.length]));
+}
+
+function assertNoToolchainPinShadow(mapping, label) {
+  if (mapping === undefined) return;
+  assert.ok(mapping instanceof Map, `${label} env must be a mapping`);
+  for (const pin of ["NPM_CLI_VERSION", "NPM_CLI_SHA512"]) {
+    assert.equal(mapping.has(pin), false, `${label} must not shadow ${pin}`);
+  }
+}
+
+function assertExactToolchainJobs(workflow, manifest, label) {
+  const { parsed, jobs, toolchainStepsByJob } = inspectWorkflowToolchainSteps(workflow, label);
+  const requiredJobIds = [...manifest.required];
+  const exemptJobIds = [...manifest.exempt];
+  const classifiedJobIds = [...requiredJobIds, ...exemptJobIds];
+  assert.equal(
+    new Set(classifiedJobIds).size,
+    classifiedJobIds.length,
+    `${label} job manifest must not contain duplicates or overlap`,
+  );
+  assert.deepEqual(
+    [...jobs.keys()].sort(),
+    classifiedJobIds.sort(),
+    `${label} job manifest must classify every job as required or exempt`,
+  );
+
+  const workflowEnv = parsed.get("env");
+  assert.ok(workflowEnv instanceof Map, `${label} must define a workflow env mapping`);
+  assert.equal(
+    workflowEnv.get("NPM_CLI_VERSION"),
+    expectedNpmCliVersion,
+    `${label} must pin the audited npm CLI version semantically`,
+  );
+  assert.equal(
+    workflowEnv.get("NPM_CLI_SHA512"),
+    expectedNpmCliSha512,
+    `${label} must pin the audited npm CLI SHA-512 semantically`,
+  );
+
+  for (const jobId of requiredJobIds) {
+    const job = jobs.get(jobId);
+    const toolchainSteps = toolchainStepsByJob.get(jobId);
     assert.equal(
-      countExactToolchainStepUses(jobBlocks.get(jobId) ?? ""),
+      toolchainSteps.length,
       1,
       `${label} job ${jobId} must activate the hash-verified npm v12 toolchain exactly once`,
     );
+    assert.equal(job.has("if"), false, `${label} job ${jobId} must not be conditionally disabled`);
+    assert.equal(
+      job.has("continue-on-error"),
+      false,
+      `${label} job ${jobId} must not declare continue-on-error`,
+    );
+    assertNoToolchainPinShadow(job.get("env"), `${label} job ${jobId}`);
+
+    const [toolchainStep] = toolchainSteps;
+    assert.equal(
+      toolchainStep.has("if"),
+      false,
+      `${label} job ${jobId} toolchain step must not be conditionally disabled`,
+    );
+    assert.equal(
+      toolchainStep.has("continue-on-error"),
+      false,
+      `${label} job ${jobId} toolchain step must not declare continue-on-error`,
+    );
+    assertNoToolchainPinShadow(toolchainStep.get("env"), `${label} job ${jobId} toolchain step`);
+
+    const inputs = toolchainStep.get("with");
+    assert.ok(inputs instanceof Map, `${label} job ${jobId} toolchain step must define inputs`);
+    assert.deepEqual(
+      [...inputs.keys()].sort(),
+      ["sha512", "version"],
+      `${label} job ${jobId} toolchain step must define only the audited inputs`,
+    );
+    assert.equal(
+      inputs.get("version"),
+      "${{ env.NPM_CLI_VERSION }}",
+      `${label} job ${jobId} toolchain version input must reference the workflow pin`,
+    );
+    assert.equal(
+      inputs.get("sha512"),
+      "${{ env.NPM_CLI_SHA512 }}",
+      `${label} job ${jobId} toolchain SHA-512 input must reference the workflow pin`,
+    );
   }
 
-  const actualJobIds = [...jobBlocks]
-    .filter(([, block]) => countExactToolchainStepUses(block) > 0)
-    .map(([jobId]) => jobId)
-    .sort();
-  assert.deepEqual(
-    actualJobIds,
-    [...expectedJobIds].sort(),
-    `${label} must not activate the npm toolchain in an unexpected job`,
-  );
+  for (const jobId of exemptJobIds) {
+    assert.equal(
+      toolchainStepsByJob.get(jobId).length,
+      0,
+      `${label} exempt job ${jobId} must not activate the npm toolchain`,
+    );
+  }
 }
 
-const redistributedToolchainFixture = `jobs:
+const semanticToolchainFixture = `jobs:
+  block:
+    steps:
+      - uses: $/.github/actions/setup-npm-toolchain
+  flow: { steps: [{ uses: "$/.github/actions/setup-npm-toolchain" }] }
+  anchor-source:
+    steps:
+      - &toolchain-step
+        uses: $/.github/actions/setup-npm-toolchain
+  anchor-copy:
+    steps:
+      - *toolchain-step
+  scalar-source:
+    steps:
+      - uses: &toolchain-ref $/.github/actions/setup-npm-toolchain
+  scalar-copy:
+    steps:
+      - uses: *toolchain-ref
+`;
+assert.deepEqual(
+  [...toolchainUseCountsByJob(semanticToolchainFixture, "semantic toolchain fixture")],
+  [
+    ["block", 1],
+    ["flow", 1],
+    ["anchor-source", 1],
+    ["anchor-copy", 1],
+    ["scalar-source", 1],
+    ["scalar-copy", 1],
+  ],
+  "semantic YAML forms must resolve to the same exact toolchain step",
+);
+
+const nonStepToolchainFixture = `jobs:
+  only:
+    env:
+      TOOLCHAIN: $/.github/actions/setup-npm-toolchain
+    steps:
+      - run: |
+          uses: $/.github/actions/setup-npm-toolchain
+      - uses: actions/example@0123456789abcdef0123456789abcdef01234567
+        with:
+          uses: $/.github/actions/setup-npm-toolchain
+  reusable-like:
+    uses: $/.github/actions/setup-npm-toolchain
+`;
+assert.deepEqual(
+  [...toolchainUseCountsByJob(nonStepToolchainFixture, "non-step toolchain fixture")],
+  [
+    ["only", 0],
+    ["reusable-like", 0],
+  ],
+  "toolchain-like values outside steps[*].uses must not count as action execution",
+);
+
+const redistributedToolchainFixture = `env:
+  NPM_CLI_VERSION: "12.0.2"
+  NPM_CLI_SHA512: "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
+jobs:
   first:
     steps:
       - uses: $/.github/actions/setup-npm-toolchain
+        with:
+          version: \${{ env.NPM_CLI_VERSION }}
+          sha512: \${{ env.NPM_CLI_SHA512 }}
       - uses: $/.github/actions/setup-npm-toolchain
+        with:
+          version: \${{ env.NPM_CLI_VERSION }}
+          sha512: \${{ env.NPM_CLI_SHA512 }}
   second:
     steps:
       - run: npm --version
 `;
-assert.equal(
-  countExactToolchainStepUses(redistributedToolchainFixture),
-  2,
-  "the redistributed toolchain fixture must exercise two recognized toolchain steps",
-);
-
-const blockScalarToolchainFixture = `jobs:
-  only:
-    steps:
-      - run: |
-          uses: $/.github/actions/setup-npm-toolchain
-`;
-assert.equal(
-  countExactToolchainStepUses(blockScalarToolchainFixture),
-  0,
-  "toolchain-like text inside a YAML block scalar must not count as an action step",
-);
-
-const quotedBlockScalarToolchainFixture = `jobs:
-  only:
-    env:
-      "SCRIPT": |
-        uses: $/.github/actions/setup-npm-toolchain
-    steps:
-      - run: npm --version
-`;
-assert.equal(
-  countExactToolchainStepUses(quotedBlockScalarToolchainFixture),
-  0,
-  "toolchain-like text inside a quoted-key YAML block scalar must not count as an action step",
-);
-
-const explicitBlockScalarToolchainFixture = `jobs:
-  only:
-    env:
-      ? "SCRIPT"
-      : >2-
-        uses: $/.github/actions/setup-npm-toolchain
-    steps:
-      - run: npm --version
-`;
-assert.equal(
-  countExactToolchainStepUses(explicitBlockScalarToolchainFixture),
-  0,
-  "toolchain-like text inside an explicit-key folded YAML block scalar must not count as an action step",
-);
 assert.throws(
   () =>
     assertExactToolchainJobs(
       redistributedToolchainFixture,
-      ["first", "second"],
+      { required: ["first", "second"], exempt: [] },
       "redistributed toolchain fixture",
     ),
   /job first must activate the hash-verified npm v12 toolchain exactly once/,
   "duplicating the toolchain in one job must not compensate for omitting it from another",
 );
 
-assert.match(
-  publishWorkflow,
-  /NPM_CLI_VERSION:\s*["']12\.0\.2["']/,
-  "release jobs must pin the audited npm v12 toolchain",
-);
-assert.match(
-  publishWorkflow,
-  /NPM_CLI_SHA512:\s*["'][a-f0-9]{128}["']/,
-  "release jobs must pin the npm v12 tarball by SHA-512",
-);
-assertExactToolchainJobs(
-  publishWorkflow,
-  ["gate", "publish-npmjs", "verify-npmjs", "publish-gh-packages", "create-github-release"],
-  "release workflow",
-);
-assert.doesNotMatch(
-  publishWorkflow,
-  /^[ \t]*uses:[ \t]+\.\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/m,
-  "release jobs must not regress to the legacy local-path action reference that cannot be represented in actions.lock",
-);
+const invalidToolchainWorkflowFixtures = [
+  {
+    label: "duplicate uses key",
+    workflow: `jobs:
+  only:
+    steps:
+      - uses: $/.github/actions/setup-npm-toolchain
+        uses: actions/example@0123456789abcdef0123456789abcdef01234567
+`,
+    expected: /DUPLICATE_KEY/,
+  },
+  {
+    label: "custom YAML tag",
+    workflow: `jobs: !unsupported
+  only:
+    steps: []
+`,
+    expected: /TAG_RESOLVE_FAILED/,
+  },
+  {
+    label: "YAML merge key",
+    workflow: `base: &base
+  steps: []
+jobs:
+  only:
+    <<: *base
+`,
+    expected: /must not use YAML merge keys/,
+  },
+  {
+    label: "multiple YAML documents",
+    workflow: `jobs: {}
+---
+jobs: {}
+`,
+    expected: /MULTIPLE_DOCS/,
+  },
+  {
+    label: "non-mapping jobs",
+    workflow: `jobs: []
+`,
+    expected: /must define a jobs mapping/,
+  },
+  {
+    label: "non-sequence steps",
+    workflow: `jobs:
+  only:
+    steps: {}
+`,
+    expected: /steps must be a sequence/,
+  },
+  {
+    label: "non-mapping step",
+    workflow: `jobs:
+  only:
+    steps:
+      - not-a-step
+`,
+    expected: /step 0 must be a mapping/,
+  },
+  {
+    label: "non-string step uses",
+    workflow: `jobs:
+  only:
+    steps:
+      - uses: 42
+`,
+    expected: /step 0 uses must be a string/,
+  },
+  {
+    label: "excessive alias expansion",
+    workflow: `base: &base [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+level1: &level1 [*base, *base, *base, *base, *base, *base, *base, *base, *base, *base]
+level2: [*level1, *level1, *level1, *level1, *level1, *level1, *level1, *level1, *level1, *level1]
+jobs: {}
+`,
+    expected: /Excessive alias count/,
+  },
+];
+for (const { label, workflow, expected } of invalidToolchainWorkflowFixtures) {
+  assert.throws(
+    () => toolchainUseCountsByJob(workflow, `${label} fixture`),
+    expected,
+    `${label} must fail closed`,
+  );
+}
+
+const publishToolchainManifest = {
+  required: [
+    "gate",
+    "publish-npmjs",
+    "verify-npmjs",
+    "publish-gh-packages",
+    "create-github-release",
+  ],
+  exempt: ["assert-npm-environment-boundary", "assert-npm-production-boundary"],
+};
+assertExactToolchainJobs(publishWorkflow, publishToolchainManifest, "release workflow");
 assert.doesNotMatch(
   publishWorkflow,
   /npm[^\n]*install --global/,
@@ -2442,25 +2665,99 @@ assert.doesNotMatch(
 
 assert.match(
   ciWorkflow,
-  /NPM_CLI_VERSION:\s*["']12\.0\.2["']/,
-  "ordinary CI must pin the same audited npm v12 toolchain as release jobs",
-);
-assert.match(
-  ciWorkflow,
-  /NPM_CLI_SHA512:\s*["'][a-f0-9]{128}["']/,
-  "ordinary CI must pin the npm v12 tarball by SHA-512",
-);
-assert.match(
-  ciWorkflow,
   /package-manager-cache:\s*false/,
   "ordinary CI must explicitly disable package-manager caching",
 );
-assertExactToolchainJobs(ciWorkflow, ["verify", "caller-token-acl-windows"], "CI workflow");
-assert.doesNotMatch(
-  ciWorkflow,
-  /^[ \t]*uses:[ \t]+\.\/\.github\/actions\/setup-npm-toolchain[ \t]*(?:#.*)?$/m,
-  "ordinary CI must not regress to the legacy local-path action reference that cannot be represented in actions.lock",
-);
+const ciToolchainManifest = {
+  required: ["verify", "caller-token-acl-windows"],
+  exempt: [],
+};
+assertExactToolchainJobs(ciWorkflow, ciToolchainManifest, "CI workflow");
+
+function mutateWorkflowOnce(workflow, search, replacement, label) {
+  assert.ok(workflow.includes(search), `${label} mutation must match its source fixture`);
+  return workflow.replace(search, replacement);
+}
+
+const ciToolchainContractMutations = [
+  {
+    label: "unclassified job",
+    workflow: mutateWorkflowOnce(
+      ciWorkflow,
+      "jobs:\n  verify:",
+      "jobs:\n  unclassified:\n    runs-on: ubuntu-latest\n    steps: []\n  verify:",
+      "unclassified job",
+    ),
+    expected: /job manifest must classify every job/,
+  },
+  {
+    label: "conditional toolchain step",
+    workflow: mutateWorkflowOnce(
+      ciWorkflow,
+      "      - name: Setup hash-verified npm v12 toolchain\n        uses:",
+      "      - name: Setup hash-verified npm v12 toolchain\n        if: false\n        uses:",
+      "conditional toolchain step",
+    ),
+    expected: /toolchain step must not be conditionally disabled/,
+  },
+  {
+    label: "conditional required job",
+    workflow: mutateWorkflowOnce(
+      ciWorkflow,
+      "jobs:\n  verify:",
+      "jobs:\n  verify:\n    if: false",
+      "conditional required job",
+    ),
+    expected: /job verify must not be conditionally disabled/,
+  },
+  {
+    label: "ignored toolchain failure",
+    workflow: mutateWorkflowOnce(
+      ciWorkflow,
+      "      - name: Setup hash-verified npm v12 toolchain\n        uses:",
+      "      - name: Setup hash-verified npm v12 toolchain\n        continue-on-error: ${{ true }}\n        uses:",
+      "ignored toolchain failure",
+    ),
+    expected: /toolchain step must not declare continue-on-error/,
+  },
+  {
+    label: "shadowed toolchain pin",
+    workflow: mutateWorkflowOnce(
+      ciWorkflow,
+      "        uses: $/.github/actions/setup-npm-toolchain\n        with:",
+      "        uses: $/.github/actions/setup-npm-toolchain\n        env:\n          NPM_CLI_VERSION: 11.0.0\n        with:",
+      "shadowed toolchain pin",
+    ),
+    expected: /must not shadow NPM_CLI_VERSION/,
+  },
+  {
+    label: "unbound toolchain input",
+    workflow: mutateWorkflowOnce(
+      ciWorkflow,
+      "          version: ${{ env.NPM_CLI_VERSION }}",
+      '          version: "11.0.0"',
+      "unbound toolchain input",
+    ),
+    expected: /version input must reference the workflow pin/,
+  },
+  {
+    label: "quoted legacy toolchain action",
+    workflow: mutateWorkflowOnce(
+      ciWorkflow,
+      "          sha512: ${{ env.NPM_CLI_SHA512 }}\n      - name: Verify npm v12 toolchain",
+      '          sha512: ${{ env.NPM_CLI_SHA512 }}\n      - uses: "./.github/actions/setup-npm-toolchain"\n      - name: Verify npm v12 toolchain',
+      "quoted legacy toolchain action",
+    ),
+    expected: /must not use the legacy workspace-relative toolchain action/,
+  },
+];
+for (const { label, workflow, expected } of ciToolchainContractMutations) {
+  assert.throws(
+    () => assertExactToolchainJobs(workflow, ciToolchainManifest, `${label} fixture`),
+    expected,
+    `${label} must fail closed`,
+  );
+}
 assert.doesNotMatch(
   ciWorkflow,
   /npm[^\n]*install --global/,
