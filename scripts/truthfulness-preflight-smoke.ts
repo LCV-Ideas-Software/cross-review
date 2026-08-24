@@ -480,6 +480,27 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a standalone native occurrence next to a routed claim must still contradict",
   );
+  // Codex review round 5: the provider segment is part of the routed claim —
+  // asserting a DIFFERENT route than the pinned one must contradict.
+  const wrongRouteLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft: "The currently loaded cross-review runtime perplexity model is xai/gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(wrongRouteLie.pass, false, "a different provider route must contradict the pin");
+  // And routed syntax inside a NATIVE claim stays attributed to that peer.
+  const nativeRoutedLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime codex model.",
+    initialDraft: "The currently loaded cross-review runtime codex model is openai/gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    nativeRoutedLie.pass,
+    false,
+    "provider-qualified native claims must still contradict the native pin",
+  );
   // And the wrapped `models/provider/model` pin form is normalized before
   // comparison, so a truthful claim of the routed model still passes.
   const wrappedPins = { ...modelPins, perplexity: "models/perplexity/kimi-k3" } as const;

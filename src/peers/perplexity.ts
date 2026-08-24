@@ -263,8 +263,13 @@ function createPerplexityTokenEventBuffer(tokenStream: TokenEventBuffer): TokenE
 function agentText(response: { output?: unknown; output_text?: unknown }): string {
   const messageText = agentOutputText(response.output).trim();
   const helperText = typeof response.output_text === "string" ? response.output_text.trim() : "";
-  const raw = messageText || helperText || JSON.stringify(response);
-  return stripPerplexityThinkingBlock(raw);
+  // Codex review of PR #234 (head 633f543): a completed response without
+  // assistant message text (degenerate reasoning- or tool-only terminal)
+  // must surface as EMPTY text — the status parser and the orchestrator's
+  // empty-generation guards handle that — never as a nonempty JSON
+  // serialization of the provider envelope that could be promoted as a
+  // relator draft. The full envelope stays available in `raw`.
+  return stripPerplexityThinkingBlock(messageText || helperText);
 }
 
 // Agent API `reasoning.effort` enum (API reference; verified live with

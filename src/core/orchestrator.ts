@@ -2724,41 +2724,76 @@ export function truthfulnessPreflight(params: {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(line)) continue;
         const expected = normalizeModelPin(expectedModel);
+        // v4.6.0 (Codex review of PR #234, rounds 3-5): the Perplexity peer
+        // may be routed to a documented Agent API model of another family
+        // (`openai/gpt-5.5`). A routed `provider/model` occurrence carries
+        // the provider segment as part of the claim, so (a) it is accepted
+        // for the Perplexity peer whatever its family, (b) claiming a
+        // DIFFERENT route than the pinned one contradicts, and (c) native
+        // attribution is suppressed only for the exact route that belongs
+        // to the Perplexity pin on a line that names the Perplexity claim —
+        // provider-qualified syntax in a native claim ("the codex model is
+        // openai/gpt-5.5") stays attributed to that native peer.
+        const perplexityPinRaw = modelPins.perplexity;
+        const perplexityUnwrapped = perplexityPinRaw?.replace(/^models\//i, "");
+        const perplexityRoutedPin =
+          perplexityUnwrapped && perplexityUnwrapped.includes("/")
+            ? normalizeVersionToken(perplexityUnwrapped)
+            : undefined;
+        const perplexityNamed = MODEL_CLAIM_ALIASES.perplexity.test(line);
+        const routedTextFor = (candidate: string): string | undefined => {
+          const match = line.match(
+            new RegExp(`\\b([a-z0-9._-]+/${escapeRegExp(candidate)})\\b`, "i"),
+          );
+          return match?.[1] ? normalizeVersionToken(match[1]) : undefined;
+        };
+        const expectedSet =
+          peer === "perplexity"
+            ? new Set([expected, ...(perplexityRoutedPin ? [perplexityRoutedPin] : [])])
+            : new Set([expected]);
         const candidates = uniqueMatches(MODEL_TOKEN_PATTERN, line)
           .map(normalizeVersionToken)
           .filter((candidate) => {
-            // v4.6.0 (Codex review of PR #234): the Perplexity peer may be
-            // routed to a documented Agent API model of another family
-            // (e.g. `openai/gpt-5.5`). A token written in that routed
-            // `provider/model` form belongs to the Perplexity claim, so it
-            // is accepted for Perplexity whatever its family and never
-            // attributed to the native peer of that family.
-            const routedForm = new RegExp(`\\b[a-z0-9._-]+/${escapeRegExp(candidate)}\\b`, "i");
+            const routedText = routedTextFor(candidate);
             if (peer === "perplexity") {
               return (
                 candidate === expected ||
-                routedForm.test(line) ||
+                routedText !== undefined ||
                 MODEL_TOKEN_PREFIXES.perplexity.some((prefix) => candidate.startsWith(prefix))
               );
             }
             // Attribution is per occurrence, not per line: a token written
-            // only in routed `provider/model` form belongs to the routed
-            // claim, but any standalone occurrence of the same token still
-            // belongs to the native peer (mixed sentences keep both claims).
+            // only in routed form belongs to the routed claim IFF that route
+            // is the Perplexity pin's route and the line names Perplexity;
+            // any standalone occurrence still belongs to the native peer.
             const nativeOccurrence = new RegExp(`(?<!/)\\b${escapeRegExp(candidate)}\\b`, "i").test(
               line,
             );
-            if (routedForm.test(line) && !nativeOccurrence && candidate !== expected) return false;
+            if (
+              routedText !== undefined &&
+              !nativeOccurrence &&
+              candidate !== expected &&
+              perplexityNamed &&
+              perplexityRoutedPin !== undefined &&
+              routedText === perplexityRoutedPin
+            ) {
+              return false;
+            }
             return MODEL_TOKEN_PREFIXES[peer].some((prefix) => candidate.startsWith(prefix));
           });
         if (!candidates.length) continue;
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
         const claims = partitionCurrentModelClaims(candidates, line);
-        const assertedContradictions = claims.asserted.filter(
-          (candidate) => candidate !== expected,
+        const assertedContradictions = claims.asserted.filter((candidate) => {
+          // A routed occurrence asserts the full route; a bare occurrence
+          // asserts the model segment. Either must match the pin.
+          const routedText = peer === "perplexity" ? routedTextFor(candidate) : undefined;
+          return !expectedSet.has(routedText ?? candidate);
+        });
+        const expectedExplicitlyDenied = claims.non_current.some((candidate) =>
+          expectedSet.has(candidate),
         );
-        const expectedExplicitlyDenied = claims.non_current.includes(expected);
         if (assertedContradictions.length > 0 || expectedExplicitlyDenied) {
           addIssueClass(issueClasses, "runtime_contradiction");
           contradictions.push(

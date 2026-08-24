@@ -336,6 +336,26 @@ async function assertBilledTerminalRejection(
   await assertTerminalRejection(() => adapter.call("fixture", context()));
 }
 
+// Codex review round 5: a completed Agent API response without assistant
+// message text must surface as EMPTY text (handled by the status parser and
+// the orchestrator's empty-generation guards), never as a JSON serialization
+// of the provider envelope that could be promoted as a relator draft.
+{
+  const adapter = new PerplexityAdapter(config);
+  setClient(adapter, {
+    responses: {
+      create: async () => ({
+        status: "completed",
+        model: adapter.model,
+        output: [{ type: "search_results", queries: ["fixture"], results: [] }],
+        usage: { input_tokens: 5, output_tokens: 0, total_tokens: 5 },
+      }),
+    },
+  });
+  const degenerate = await adapter.generate("fixture", context());
+  assert.equal(degenerate.text, "", "tool-only terminals must yield empty text, not raw JSON");
+}
+
 // A `failed` terminal carries the provider error; the rejection must surface
 // that message instead of a bare status (parity with openai.ts/grok.ts).
 {
