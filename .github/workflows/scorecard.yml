@@ -11,12 +11,13 @@ concurrency:
   group: scorecard-${{ github.ref }}
   queue: max
   cancel-in-progress: false
-permissions: write-all
+permissions:
+  contents: read
+  security-events: write
 
 jobs:
   scorecard:
     name: OpenSSF Scorecard
-    permissions: write-all
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

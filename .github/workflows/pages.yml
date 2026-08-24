@@ -5,14 +5,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-permissions: write-all
+permissions:
+  contents: read
+  id-token: write
+  pages: write
 concurrency:
   group: pages
   queue: max
   cancel-in-progress: false
 jobs:
   deploy:
-    permissions: write-all
     name: Deploy GitHub Pages
     runs-on: ubuntu-latest
     environment:

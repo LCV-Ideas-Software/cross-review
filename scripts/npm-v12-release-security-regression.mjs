@@ -622,8 +622,8 @@ assert.match(
 
 assert.match(
   publishWorkflow,
-  /publish-npmjs:[\s\S]*?permissions:\s*write-all[\s\S]*?publish-gh-packages:/,
-  "npmjs publishing must retain the organization-wide write-all policy, including OIDC",
+  /publish-npmjs:[\s\S]*?permissions:\s*\n\s+contents: read\s*\n\s+id-token: write[\s\S]*?publish-gh-packages:/,
+  "npmjs publishing must run with the minimal OIDC grant (contents:read + id-token:write) and nothing more",
 );
 assert.doesNotMatch(
   publishWorkflow,
@@ -741,8 +741,8 @@ assert.match(
 );
 assert.match(
   publishWorkflow,
-  /gate:[\s\S]*?permissions:\s*write-all/,
-  "the publish gate must retain organization-wide authorization to verify Actions and CodeQL state",
+  /gate:[\s\S]*?permissions:\s*\n\s+actions: read\s*\n\s+contents: read\s*\n\s+security-events: read/,
+  "the publish gate must hold read-only Actions, contents and code-scanning authorization - nothing more",
 );
 const publicationGateBlock = publishWorkflow.match(
   /\n {2}gate:[\s\S]*?(?=\n {2}publish-npmjs:)/,
@@ -879,7 +879,7 @@ const exportedGithubTokenSteps = [
 assert.equal(
   exportedGithubTokenSteps.length,
   12,
-  "the secret-scope regression must audit every write-all GITHUB_TOKEN shell step",
+  "the secret-scope regression must audit every minimal-permission GITHUB_TOKEN shell step",
 );
 for (const step of exportedGithubTokenSteps) {
   const stepName = step.match(/- name:\s*([^\r\n]+)/)?.[1] ?? "unnamed GITHUB_TOKEN step";
@@ -1589,8 +1589,13 @@ assert.match(
 );
 assert.equal(
   (releaseRecoveryWorkflow.match(/permissions:\s*write-all/g) ?? []).length,
-  2,
-  "the recovery workflow and its only job must retain the organization-wide write-all policy",
+  0,
+  "the abolished write-all grant must never return to the recovery workflow",
+);
+assert.match(
+  releaseRecoveryWorkflow,
+  /permissions:\s*\n\s+actions: read\s*\n\s+contents: write\s*\n\s+packages: read/,
+  "the recovery job must hold the minimal grant: contents:write for the Release, read-only Actions and Packages",
 );
 assert.match(
   releaseRecoveryWorkflow,
@@ -3484,7 +3489,7 @@ printf '%s\n' "$*" >>"$MOCK_SLEEP_LOG"
 }
 
 for (const codeScanningGate of [
-  "permissions: write-all",
+  "security-events: read",
   "Wait for exact CodeQL analyses and require zero results",
   'github_run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA"',
   "code-scanning/analyses?per_page=100",

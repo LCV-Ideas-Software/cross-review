@@ -5,7 +5,7 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-permissions: write-all
+permissions: {}
 concurrency:
   # One repository-wide release transaction at a time. Per-tag groups would
   # allow two versions to race the monotonic npm/GitHub `latest` decisions.
@@ -20,7 +20,8 @@ jobs:
   assert-npm-environment-boundary:
     name: Assert npm Trusted Publisher environment boundary
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      id-token: write
     env:
       PACKAGE_NAME: "@lcv-ideas-software/cross-review"
     steps:
@@ -118,7 +119,8 @@ jobs:
     needs: assert-npm-environment-boundary
     runs-on: ubuntu-latest
     environment: npm-production
-    permissions: write-all
+    permissions:
+      id-token: write
     env:
       PACKAGE_NAME: "@lcv-ideas-software/cross-review"
     steps:
@@ -218,7 +220,10 @@ jobs:
     environment:
       name: github-administration
       deployment: false
-    permissions: write-all
+    permissions:
+      actions: read
+      contents: read
+      security-events: read
     outputs:
       name: ${{ steps.meta.outputs.name }}
       version: ${{ steps.meta.outputs.version }}
@@ -451,6 +456,21 @@ jobs:
 
           # Scorecard's intentionally accepted solo-maintainer findings are
           # narrow and explicit. Every other exact-SHA result fails closed.
+          #
+          # v04.06.01: PinnedDependenciesID joined the accepted list ONLY
+          # because Scorecard misreads the immutable same-repository
+          # `uses: $/...` references (#224/#225) as unpinned third-party
+          # actions. The real property is revalidated independently right
+          # here, against the checked-out tag content, before the SARIF
+          # allowlist is applied: any non-local, non-`$/` uses reference
+          # without a full 40-hex commit pin fails the release closed.
+          unpinned_uses="$(grep -RhoE 'uses:[[:space:]]*[^[:space:]]+' .github/workflows .github/actions 2>/dev/null | grep -vE 'uses:[[:space:]]*(\\.?/|\\$/)' | grep -vE '@[0-9a-f]{40}$' || true)"
+          if [ -n "$unpinned_uses" ]; then
+            echo "::error::Unpinned non-local action references found in the tagged tree:"
+            echo "$unpinned_uses"
+            exit 1
+          fi
+          echo "All non-local action references are pinned to 40-hex commits in the tagged tree."
           target_scorecard="[]"
           for attempt in {1..12}; do
             assert_target_on_live_main
@@ -492,7 +512,7 @@ jobs:
                   .ruleId != "CIIBestPracticesID" and
                   .ruleId != "FuzzingID" and
                   .ruleId != "BranchProtectionID" and
-                  .ruleId != "TokenPermissionsID"
+                  .ruleId != "PinnedDependenciesID"
                 )
             ] | length' "$sarif_file")"
             if [ "$unexpected_results" -ne 0 ]; then
@@ -667,7 +687,9 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     environment: npm-production
-    permissions: write-all
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       prior_latest: ${{ steps.npmjs-tag.outputs.prior_latest }}
       publish_tag: ${{ steps.npmjs-tag.outputs.publish_tag }}
@@ -840,7 +862,8 @@ jobs:
     name: Verify npmjs.com publication
     needs: [gate, publish-npmjs]
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      contents: read
     steps:
       - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -961,7 +984,10 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     environment: github-packages-production
-    permissions: write-all
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
     steps:
       - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1191,7 +1217,8 @@ jobs:
     needs: [gate, verify-npmjs, publish-gh-packages]
     runs-on: ubuntu-latest
     environment: github-release-production
-    permissions: write-all
+    permissions:
+      contents: write
     steps:
       - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1555,7 +1582,7 @@ jobs:
           }
 
           # This administrative read uses a step-scoped token because
-          # GITHUB_TOKEN write-all does not grant Administration: read.
+          # The GITHUB_TOKEN grant (minimal since v04.06.01) does not include Administration: read.
           # Nothing is created or uploaded unless owner enforcement is proven.
           assert_immutable_release_policy "release-reconciliation"
 

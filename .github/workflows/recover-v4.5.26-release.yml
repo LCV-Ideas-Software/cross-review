@@ -10,7 +10,7 @@ on:
         required: true
         type: string
 
-permissions: write-all
+permissions: {}
 
 # Share the publication FIFO. A recovery must never race a newer tag's npm or
 # GitHub latest transition.
@@ -24,7 +24,10 @@ jobs:
     name: Recover exact v04.05.26 release without overwrite
     runs-on: ubuntu-latest
     environment: github-release-recovery
-    permissions: write-all
+    permissions:
+      actions: read
+      contents: write
+      packages: read
     steps:
       - name: Checkout trusted main recovery implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

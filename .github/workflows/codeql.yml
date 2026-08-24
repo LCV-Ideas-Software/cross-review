@@ -17,14 +17,15 @@ on:
       - checks_requested
   schedule:
     - cron: "35 6 * * 2"
-permissions: write-all
+permissions:
+  contents: read
+  security-events: write
 concurrency:
   group: codeql-${{ github.ref }}
   queue: max
   cancel-in-progress: false
 jobs:
   analyze:
-    permissions: write-all
     name: Analyze ${{ matrix.language }}
     runs-on: ubuntu-latest
     timeout-minutes: 20

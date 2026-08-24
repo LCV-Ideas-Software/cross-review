@@ -7,6 +7,22 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.06.01] — 24/08/2026
+
+### Fixed
+
+- Republish of v04.06.00: the Publish gate correctly failed the immutable
+  `v04.06.00` tag after OpenSSF Scorecard misread the immutable
+  same-repository `uses: $/...` references (#224/#225) as unpinned
+  third-party actions. The gate now revalidates the REAL pinning property
+  against the checked-out tag (any non-local, non-`$/` `uses:` without a
+  40-hex commit pin fails closed) and only then accepts
+  `PinnedDependenciesID` results; `TokenPermissionsID` left the accepted
+  list (operator directive), so Scorecard guards token permissions again.
+- All seven workflows dropped the abolished top-level and job-level
+  `permissions: write-all` in favor of per-job minimal GITHUB_TOKEN
+  permissions mapped from the exact API calls each job performs.
+
 ## [v04.06.00] — 23/08/2026
 
 ### Changed

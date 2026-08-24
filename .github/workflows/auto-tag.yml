@@ -16,7 +16,10 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
-permissions: write-all
+permissions:
+  actions: write
+  contents: write
+  security-events: read
 concurrency:
   group: auto-tag-main
   queue: max
@@ -30,7 +33,6 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    permissions: write-all
     steps:
       - name: Checkout trusted main with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
