@@ -529,6 +529,16 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       );
       return undefined;
     }
+    // Codex review of PR #240 round 3: a cancellation that lands while the
+    // FREE countTokens call is pending must not be followed by the BILLED
+    // caches.create call — recheck the signal between the two.
+    if (context.signal?.aborted) {
+      notice(
+        "Gemini explicit cache creation skipped: the session was cancelled before the billable caches.create call.",
+        { model: this.model, key_hash: cacheKeyHash },
+      );
+      return undefined;
+    }
     if (countedTokens < GEMINI_EXPLICIT_CACHE_MIN_TOKENS) {
       // Codex review of PR #240 round 2: the authoritative count decides
       // eligibility — a token-sparse head below the provider minimum would
@@ -683,14 +693,24 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         let cacheEntry: GeminiExplicitCacheEntry | undefined;
         let cacheKeyHash: string | undefined;
         if (explicitCacheEligible) {
-          const stableHead = prompt.slice(0, stablePrefixChars);
+          // Codex review of PR #240 round 3: hashStablePrefix normalizes
+          // CRLF to LF defensively, so the STORED payload must be the same
+          // LF-normalized bytes — otherwise two resubmissions differing
+          // only in line endings share a key while the cached bytes match
+          // just one of them (stale-evidence reuse). Normalize the payload
+          // once and use those exact bytes for the key, countTokens and
+          // caches.create.
+          const lfNormalize = (value: string): string => value.replace(/\r\n?/g, "\n");
+          const normalizedStableSystem = lfNormalize(stableSystem);
+          const stableHead = lfNormalize(prompt.slice(0, stablePrefixChars));
+          const cachePayload = `${normalizedStableSystem}\n\n${stableHead}`;
           const ttl = this.config.cache.ttl.gemini;
           // The cache holds stableSystem + head, so the key must cover both
           // (length-prefixed to keep the boundary unambiguous). Session id
           // and task live in stableSystem: reuse spans the rounds of one
           // session — exactly where the repeated-prefix savings are.
           cacheKeyHash = hashStablePrefix(
-            `${this.config.cache.schema_version}\n${this.model}\n${ttl}\n${stableSystem.length}\n${stableSystem}\n${stableHead}`,
+            `${this.config.cache.schema_version}\n${this.model}\n${ttl}\n${normalizedStableSystem.length}\n${cachePayload}`,
           );
           const existing = geminiExplicitCacheIndex.get(cacheKeyHash);
           // A 15s guard band avoids referencing an entry that expires while
@@ -708,7 +728,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             } else {
               const creation = this.createExplicitCacheEntry({
                 reviewClient,
-                cacheContents: `${stableSystem}\n\n${stableHead}`,
+                cacheContents: cachePayload,
                 ttl,
                 cacheKeyHash,
                 context,
@@ -859,8 +879,10 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               : {}),
             started,
             // Ambiguous cache creations are provider calls whose spend never
-            // became durable; they surface as unpriced attempts.
+            // became durable; they surface as unpriced attempts AND as an
+            // indeterminate floor so settlement keeps the spend unknown.
             attempts: attempt + indeterminateCacheCreateAttempts,
+            indeterminateSpendFloor: indeterminateCacheCreateAttempts,
             modelReported: last?.modelVersion,
             extraParserWarnings: normalized.parser_warnings,
           });
@@ -913,6 +935,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             : {}),
           started,
           attempts: attempt + indeterminateCacheCreateAttempts,
+          indeterminateSpendFloor: indeterminateCacheCreateAttempts,
           modelReported: response.modelVersion,
           extraParserWarnings: normalized.parser_warnings,
         });

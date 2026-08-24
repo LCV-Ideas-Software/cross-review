@@ -52,9 +52,18 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in-flight promise; insertion evicts expired index entries; the stable
   `cache_key_hash` is published in usage telemetry. Creation failures fall
   back to the uncached request with a `provider.cache.notice` —
-  transport-ambiguous ones surface as an unpriced attempt (the server may
-  have created and billed the entry); a lost cache is dropped from the
-  index and the failure is marked retryable so the retry re-creates it.
+  transport-ambiguous ones surface as an unpriced attempt WITH a positive
+  indeterminate-spend marker on the successful result, so settlement keeps
+  the potentially billed orphaned cache unknown; a lost cache is dropped
+  from the index and the failure is marked retryable so the retry
+  re-creates it. Round 3 hardening: the preflight envelope prices the FULL
+  cached payload (prompt plus the stable-system ceiling — the 32K-char
+  task bound and role/session framing); the storage-rate requirement is
+  reviewer-role-aware (a Gemini lead/relator never creates a cache); the
+  stored payload is LF-normalized to the exact bytes the key hash covers
+  (line-ending resubmissions can no longer reuse stale cached bytes); and
+  a cancellation observed after the free countTokens call stops before the
+  billable creation.
 
 ## [v04.06.02] — 24/08/2026
 

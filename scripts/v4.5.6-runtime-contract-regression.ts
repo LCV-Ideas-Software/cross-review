@@ -1978,12 +1978,35 @@ const regressions: Regression[] = [
       assert.ok(armedEnvelope != null && disarmedEnvelope != null);
       // Codex review of PR #240 round 2: the stale-cache retry path can
       // re-create (and re-bill) the resource on every attempt, so the
-      // envelope prices one creation PER attempt.
+      // envelope prices one creation PER attempt. Round 3: the cached
+      // payload also carries the session-stable system parts (full task up
+      // to the 32K MCP bound plus role/session framing), so the envelope
+      // prices prompt tokens PLUS that ceiling.
       const geminiEnvelopeAttempts = Math.max(1, geminiPreflightPriced.retry.max_attempts);
+      const geminiStorageTokens = 1 + Math.ceil(33_000 / 4);
       assert.ok(
-        Math.abs(armedEnvelope - disarmedEnvelope - (geminiEnvelopeAttempts * 4.5) / 1_000_000) <
-          1e-15,
-        `the armed envelope prices one creation per attempt (prompt tokens x TTL hours x rate x attempts): ${armedEnvelope} vs ${disarmedEnvelope}`,
+        Math.abs(
+          armedEnvelope -
+            disarmedEnvelope -
+            (geminiEnvelopeAttempts * geminiStorageTokens * 4.5) / 1_000_000,
+        ) < 1e-12,
+        `the armed envelope prices one creation per attempt over the full cached payload: ${armedEnvelope} vs ${disarmedEnvelope}`,
+      );
+      // Codex round 3: the storage rate is a REVIEWER-role dimension — a
+      // Gemini lead/relator (generate()) never creates a cache, so a
+      // reviewer set that excludes Gemini must not demand the rate.
+      assert.equal(
+        missingFinancialControlVars(geminiArmedConfig, ["gemini"], {
+          reviewerPeers: [],
+        }).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+        false,
+        "a non-reviewer Gemini role does not require the storage rate",
+      );
+      assert.ok(
+        missingFinancialControlVars(geminiArmedConfig, ["gemini"], {
+          reviewerPeers: ["gemini"],
+        }).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+        "the reviewer role keeps requiring the storage rate",
       );
       const generationEnvelopeWithCache = estimatedPeerRoundCost(
         geminiPreflightPriced,

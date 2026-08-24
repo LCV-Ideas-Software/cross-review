@@ -901,8 +901,14 @@ export function missingFinancialControlVars(
   // deterministically at creation (cached tokens x TTL hours); the storage
   // rate is then part of the financial controls, fail-closed like every
   // other price dimension.
+  // Codex review of PR #240 round 3: only the reviewer role can create an
+  // explicit cache (generate()/lead paths never do), so the storage-rate
+  // requirement is role-aware like the Perplexity search dimension —
+  // fail-closed default when the reviewer set is unknown.
+  const geminiCanReview = options.reviewerPeers ? options.reviewerPeers.includes("gemini") : true;
   if (
     peers.includes("gemini") &&
+    geminiCanReview &&
     config.cache.enabled &&
     config.cache.gemini_explicit &&
     !config.cache.disable_per_peer.gemini

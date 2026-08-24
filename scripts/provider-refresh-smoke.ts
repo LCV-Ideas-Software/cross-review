@@ -1044,6 +1044,56 @@ function capturePerplexityProbe(
     1,
     "an ambiguous creation is an unpriced provider attempt",
   );
+  assert.equal(
+    ambiguous.indeterminate_spend_attempts,
+    1,
+    "the successful result carries the positive indeterminate marker so settlement keeps the orphaned-cache spend unknown",
+  );
+
+  // Round 3: line-ending resubmissions — the key hash normalizes CRLF, so
+  // the STORED payload must be the same LF-normalized bytes.
+  __resetGeminiExplicitCacheIndexForTests();
+  const crlfMock = makeClient();
+  const crlfAdapter = new GeminiAdapter(geminiCacheConfig);
+  (crlfAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    crlfMock.client;
+  const crlfHead = `${"S".repeat(GEMINI_EXPLICIT_CACHE_MIN_TOKENS * 4)}\r\n`;
+  await crlfAdapter.call(`${crlfHead}dynamic tail of round 1`, context(crlfHead.length));
+  assert.equal(crlfMock.createCalls.length, 1);
+  const crlfPayload = String(
+    (crlfMock.createCalls[0]?.config as { contents?: Array<{ parts?: Array<{ text?: string }> }> })
+      ?.contents?.[0]?.parts?.[0]?.text ?? "",
+  );
+  assert.equal(
+    crlfPayload.includes("\r"),
+    false,
+    "the stored cache payload is LF-normalized to match the normalized key hash",
+  );
+
+  // Round 3: a cancellation landing during the free countTokens call must
+  // stop before the BILLED caches.create call.
+  __resetGeminiExplicitCacheIndexForTests();
+  const cancelController = new AbortController();
+  const cancelMock = makeClient();
+  const originalCountTokens = cancelMock.client.ai.models.countTokens;
+  cancelMock.client.ai.models.countTokens = async (p: Record<string, unknown>) => {
+    cancelController.abort();
+    return originalCountTokens(p);
+  };
+  const cancelAdapter = new GeminiAdapter(geminiCacheConfig);
+  (cancelAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    cancelMock.client;
+  await cancelAdapter
+    .call(prompt, {
+      ...context(stableHead.length),
+      signal: cancelController.signal,
+    })
+    .catch(() => undefined);
+  assert.equal(
+    cancelMock.createCalls.length,
+    0,
+    "a cancellation observed after countTokens must prevent the billable creation",
+  );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 

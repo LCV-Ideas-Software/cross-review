@@ -3661,6 +3661,12 @@ function budgetExceeded(session: SessionMeta, limit?: number): boolean {
 // declares the web_search tool; relator generation and evidence judges route
 // through `generate()` and never incur the per-invocation search fee, so
 // their preflights must not price it.
+//
+// v4.7.0 (CROSREV-6, Codex round 3): ceiling for the session-stable system
+// parts that live inside the Gemini explicit-cache payload — the 32K-char
+// MCP task bound plus role/session framing.
+const GEMINI_CACHED_SYSTEM_CHARS_CEILING = 33_000;
+
 export function estimatedPeerRoundCost(
   config: AppConfig,
   peers: PeerId[],
@@ -3736,7 +3742,14 @@ export function estimatedPeerRoundCost(
         // legitimately re-creates (and re-bills) the resource on a later
         // attempt, so the envelope prices up to one creation PER attempt —
         // the same per-attempt multiplication the token envelope uses.
-        storageEnvelope += ((inputTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
+        // Round 3: the cached payload is stableSystem + head, and
+        // stableSystem carries the FULL session task while the prompt
+        // embeds a truncated copy (prompt.max_task_chars). The envelope
+        // cannot see the adapter-side system text, so it prices a ceiling
+        // on top of the whole prompt: the 32K-char MCP task bound plus
+        // role/session framing, at the same 4 chars/token convention.
+        const storageTokens = inputTokens + Math.ceil(GEMINI_CACHED_SYSTEM_CHARS_CEILING / 4);
+        storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
       }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {
         primaryEnvelope = estimate.total_cost;

@@ -407,6 +407,14 @@ export abstract class BasePeerAdapter {
     attempts: number;
     accounted_prior_attempts?: number | undefined;
     accountedAttemptsOverride?: number | undefined;
+    /**
+     * v4.7.0 (CROSREV-6): minimum indeterminate share of the unpriced
+     * attempts — sub-calls (e.g. an ambiguous cache creation) whose
+     * server-side spend never became durable. Settlement derives unknown
+     * billing from this marker, so a successful result must carry it; the
+     * retry wrapper COMPOSES its own observed share with this one.
+     */
+    indeterminateSpendFloor?: number | undefined;
     modelReported?: string | undefined;
     // v2.23.0: provider-side parser diagnostics (e.g. Anthropic
     // thinking-only response with no final text block). Merged AFTER
@@ -467,7 +475,19 @@ export abstract class BasePeerAdapter {
       cost,
       latency_ms: Date.now() - params.started,
       attempts: params.attempts,
-      ...(unpricedAttempts > 0 ? { unpriced_attempts: unpricedAttempts } : {}),
+      ...(unpricedAttempts > 0
+        ? {
+            unpriced_attempts: unpricedAttempts,
+            ...((params.indeterminateSpendFloor ?? 0) > 0
+              ? {
+                  indeterminate_spend_attempts: Math.min(
+                    params.indeterminateSpendFloor ?? 0,
+                    unpricedAttempts,
+                  ),
+                }
+              : {}),
+          }
+        : {}),
       parser_warnings: parserWarnings,
       decision_quality:
         modelMatch === false
