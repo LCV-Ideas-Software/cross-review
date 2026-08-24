@@ -54,11 +54,12 @@ no-fallback pins.
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_REASONING_EFFORT", "high", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.5", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "high", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "sonar-reasoning-pro", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.6", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "perplexity/kimi-k3", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE", "low", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MAX_STEPS", "1", "User")
 ```
 
 Provider-specific output ceilings can coexist with the legacy global fallback:

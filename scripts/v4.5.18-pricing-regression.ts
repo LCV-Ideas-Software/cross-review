@@ -34,11 +34,11 @@ assert.deepEqual(selectRate(grok45OfficialRate, "cache_read", 200_001), {
 const costsDoc = await readFile(new URL("../docs/costs.md", import.meta.url), "utf8");
 assert.match(
   costsDoc,
-  /xAI `grok-4\.5`[\s\S]*?`>200000`[\s\S]*?input `4`[\s\S]*?output `12`[\s\S]*?cached input `1`/,
+  /xAI `grok-4\.6`[\s\S]*?`>200000`[\s\S]*?input `4`[\s\S]*?output `12`[\s\S]*?cached input `1`/,
 );
 assert.match(
   costsDoc,
-  /"grok-4\.5": \{[\s\S]*?"threshold_tokens": 200000,[\s\S]*?"input_extended_per_million": 4,[\s\S]*?"output_extended_per_million": 12,[\s\S]*?"cache_read_extended_per_million": 1/,
+  /"grok-4\.6": \{[\s\S]*?"threshold_tokens": 200000,[\s\S]*?"input_extended_per_million": 4,[\s\S]*?"output_extended_per_million": 12,[\s\S]*?"cache_read_extended_per_million": 1/,
 );
 
 console.log("v4.5.18 pricing regression: 6/6 passed");

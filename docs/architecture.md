@@ -199,10 +199,11 @@ provider exposes a model-list surface:
 - Gemini: `models.list`.
 - DeepSeek: OpenAI-compatible `/models`.
 - xAI: OpenAI-compatible `/models`.
-- Perplexity: no public Sonar `models.list`; the runtime keeps the officially
-  documented pin with inferred confidence. Its default `auth_only` probe checks
-  key presence without buying a completion, while `live` deliberately performs
-  a minimal paid request.
+- Perplexity: the Agent API catalog is not exposed through the shared
+  OpenAI-SDK `models.list` path; the runtime keeps the officially documented
+  pin with inferred confidence. Its default `auth_only` probe checks key
+  presence without buying a completion, while `live` deliberately performs a
+  minimal paid request without tools.
 
 The selected model and selection evidence are persisted in the session capability snapshot.
 
@@ -303,16 +304,17 @@ The peer adapters use the strongest official reasoning controls available for ea
 - DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows
   the official multi-round guidance by resending summarized context in each
   stateless request.
-- Grok runs pinned `grok-4.5` with explicit `reasoning.effort` clamped to
-  `low`, `medium`, or `high` (`ultra` becomes `high`).
-- Perplexity runs the pinned `sonar-reasoning-pro` model with an explicit
-  `reasoning_effort` (`minimal`/`low`/`medium`/`high`); the shared effort scale
-  is clamped down into that range (`ultra` becomes `high`).
+- Grok runs pinned `grok-4.6` with explicit `reasoning.effort` at `low`,
+  `medium`, `high`, or `xhigh` (`max`/`ultra` become `xhigh`).
+- Perplexity runs the pinned `perplexity/kimi-k3` model on the Agent API with
+  an explicit `reasoning.effort` (`minimal`/`low`/`medium`/`high`/`xhigh`/`max`,
+  default `max`); the shared effort scale is mapped onto that enum (`none`
+  becomes `minimal`, `ultra` becomes `max`).
 
 The internal `ReasoningEffort` scale therefore includes the compatibility
 alias `ultra`, but adapters own the provider-specific normalization boundary:
-OpenAI GPT-5.6, Anthropic and DeepSeek use `max`; Grok 4.5 and Perplexity use
-`high`; Gemini maps the shared setting to its native `ThinkingLevel` enum and
+OpenAI GPT-5.6, Anthropic, DeepSeek and Perplexity use `max`; Grok 4.6 uses
+`xhigh`; Gemini maps the shared setting to its native `ThinkingLevel` enum and
 receives no shared effort string. Older explicit OpenAI model overrides use their own
 family-specific effort enum instead of the GPT-5.6 enum.
 
@@ -333,8 +335,10 @@ the JSON Schema subset documented by each provider:
 - xAI retains documented limits, with evidence-item `maxLength` constrained to
   the guaranteed 2,048-character range, and omits undocumented
   `text.verbosity`.
-- Perplexity receives the minimal documented Sonar JSON Schema wrapper without
-  undocumented dimensional constraints or OpenAI-only streaming options.
+- Perplexity receives the documented Agent API top-level `response_format`
+  wrapper (name + schema) without undocumented dimensional constraints or
+  OpenAI-only streaming options, because the model behind the Agent API is
+  provider-agnostic.
 
 One canonical schema is therefore never assumed to be a universal wire
 contract.
@@ -349,9 +353,9 @@ single recovery only from `high`/`xhigh`/`max`; `low` and `medium` do not retry,
 because medium would increase or repeat effort. The second request keeps the
 same prompt and output ceiling, records discarded partial streaming output,
 and preserves per-attempt usage and cost. A second truncation ends the call.
-DeepSeek `length`, generic xAI incomplete responses and Perplexity finish
-reasons remain non-retryable because their public contracts do not distinguish
-every cause safely.
+DeepSeek `length` and generic xAI and Perplexity Agent API incomplete responses
+remain non-retryable because their public contracts do not distinguish every
+cause safely.
 
 `content_filter`, Gemini candidate `SAFETY`, refusals and other filtered output
 terminals never enter generic retry, fallback or moderation-safe prompt

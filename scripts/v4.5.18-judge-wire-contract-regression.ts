@@ -25,8 +25,8 @@ function fixtureConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       claude: "claude-fable-5",
       gemini: "gemini-3.1-pro-preview",
       deepseek: "deepseek-v4-pro",
-      grok: "grok-4.5",
-      perplexity: "sonar-reasoning-pro",
+      grok: "grok-4.6",
+      perplexity: "perplexity/kimi-k3",
     },
     api_keys: {
       codex: "fixture-openai",
@@ -232,7 +232,7 @@ const regressions: Regression[] = [
     },
   },
   {
-    name: "Grok judge uses Responses max_output_tokens and Grok 4.5 medium effort",
+    name: "Grok judge uses Responses max_output_tokens and Grok 4.6 medium effort",
     run: async () => {
       const adapter = new GrokAdapter(fixtureConfig());
       let payload: Record<string, unknown> | undefined;
@@ -256,35 +256,36 @@ const regressions: Regression[] = [
         judgeContext("grok"),
       );
 
-      assert.equal(payload?.model, "grok-4.5");
+      assert.equal(payload?.model, "grok-4.6");
       assert.equal(payload?.max_output_tokens, 2_048);
       assert.deepEqual(payload?.reasoning, { effort: "medium" });
       assert.equal(Object.hasOwn(payload ?? {}, "max_tokens"), false);
     },
   },
   {
-    name: "Perplexity judge uses max_tokens and Sonar medium reasoning effort",
+    name: "Perplexity judge uses Agent API max_output_tokens and medium reasoning effort",
     run: async () => {
       const config = fixtureConfig({
         perplexity: {
           search_context_size: "high",
           disable_search: false,
           probe_mode: "auth_only",
+          max_steps: 1,
+          web_search_invocations_estimate: 3,
         },
       });
       const adapter = new PerplexityAdapter(config);
       let payload: Record<string, unknown> | undefined;
       setClient(adapter, {
-        chat: {
-          completions: {
-            create: async (body: Record<string, unknown>) => {
-              payload = body;
-              return {
-                model: adapter.model,
-                choices: [{ finish_reason: "stop", message: { content: JUDGE_JSON } }],
-                usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-              };
-            },
+        responses: {
+          create: async (body: Record<string, unknown>) => {
+            payload = body;
+            return {
+              status: "completed",
+              model: adapter.model,
+              output: [{ type: "message", content: [{ type: "output_text", text: JUDGE_JSON }] }],
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+            };
           },
         },
       });
@@ -295,16 +296,17 @@ const regressions: Regression[] = [
         judgeContext("perplexity"),
       );
 
-      assert.equal(payload?.model, "sonar-reasoning-pro");
-      assert.equal(payload?.max_tokens, 2_048);
-      assert.equal(payload?.reasoning_effort, "medium");
+      assert.equal(payload?.model, "perplexity/kimi-k3");
+      assert.equal(payload?.max_output_tokens, 2_048);
+      assert.deepEqual(payload?.reasoning, { effort: "medium" });
       assert.equal(
-        payload?.disable_search,
-        true,
-        "judgeEvidenceAsk routes through generation; relator/judge synthesis must not launch search",
+        Object.hasOwn(payload ?? {}, "tools"),
+        false,
+        "judgeEvidenceAsk routes through generation; relator/judge synthesis must not declare web_search",
       );
-      assert.deepEqual(payload?.web_search_options, { search_context_size: "high" });
-      assert.equal(Object.hasOwn(payload ?? {}, "max_output_tokens"), false);
+      assert.equal(Object.hasOwn(payload ?? {}, "max_steps"), false);
+      assert.equal(typeof payload?.instructions, "string");
+      assert.equal(Object.hasOwn(payload ?? {}, "max_tokens"), false);
     },
   },
   {

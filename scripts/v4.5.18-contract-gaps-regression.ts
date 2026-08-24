@@ -58,6 +58,9 @@ function fixtureConfig(
       perplexity: {
         input_per_million: 0,
         output_per_million: 0,
+        // v4.6.0: the canonical Agent API pin bills web_search per
+        // invocation; the fee dimension must exist for paid readiness.
+        search_queries_per_1000: 0,
         request_fee_low_per_1000: 0,
         request_fee_medium_per_1000: 0,
         request_fee_high_per_1000: 0,
@@ -592,6 +595,8 @@ const regressions: Regression[] = [
           max_attached_evidence_chars: 54_321,
         },
         perplexity: {
+          max_steps: 1,
+          web_search_invocations_estimate: 3,
           search_context_size: "high",
           disable_search: true,
           probe_mode: "live",

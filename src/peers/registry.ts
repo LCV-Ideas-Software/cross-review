@@ -76,9 +76,10 @@ export function createAdapters(
     deepseek: new DeepSeekAdapter(config, modelOverrides.deepseek),
     // v2.14.0: Grok via xAI's OpenAI-Responses-API surface.
     grok: new GrokAdapter(config, modelOverrides.grok),
-    // v3.0.0: Perplexity via Sonar API at https://api.perplexity.ai
-    // (OpenAI-Chat-Completions compatible; uses the shared
-    // loadOpenAICtor helper from peers/openai.ts).
+    // v3.0.0 / v4.6.0: Perplexity via the Agent API at
+    // https://api.perplexity.ai/v1 (OpenAI-Responses compatible alias
+    // /v1/responses; uses the shared loadOpenAICtor helper from
+    // peers/openai.ts).
     perplexity: new PerplexityAdapter(config, modelOverrides.perplexity),
   };
 }

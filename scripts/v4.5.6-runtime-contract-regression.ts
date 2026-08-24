@@ -24,11 +24,7 @@ import { GrokAdapter } from "../src/peers/grok.js";
 import { OpenAIAdapter } from "../src/peers/openai.js";
 import { PerplexityAdapter } from "../src/peers/perplexity.js";
 import { StubAdapter } from "../src/peers/stub.js";
-import {
-  assertChatCompletionTerminal,
-  assertGeminiCompletion,
-  assertResponsesCompletion,
-} from "../src/peers/terminal.js";
+import { assertGeminiCompletion, assertResponsesCompletion } from "../src/peers/terminal.js";
 
 process.env.ANTHROPIC_API_KEY = "fixture-anthropic-key";
 
@@ -289,38 +285,61 @@ const regressions: Regression[] = [
     },
   },
   {
-    name: "Perplexity wire uses the minimal documented Sonar schema wrapper",
+    name: "Perplexity wire uses the documented Agent API structured-output wrapper",
     run: async () => {
-      const perplexity = new PerplexityAdapter(offlineConfig());
+      // Explicit knobs so the wire assertions never depend on the host's
+      // central config.json.
+      const base = offlineConfig({ efforts: { perplexity: "max" } });
+      const perplexity = new PerplexityAdapter({
+        ...base,
+        perplexity: {
+          ...base.perplexity,
+          search_context_size: "low",
+          disable_search: false,
+          max_steps: 1,
+        },
+      });
       let perplexityRequest: Record<string, unknown> | undefined;
       Object.defineProperty(perplexity, "client", {
         configurable: true,
         value: async () => ({
-          chat: {
-            completions: {
-              create: async (body: Record<string, unknown>) => {
-                perplexityRequest = body;
-                return completedChatResult(perplexity.model);
-              },
+          responses: {
+            create: async (body: Record<string, unknown>) => {
+              perplexityRequest = body;
+              return completedResponsesResult(perplexity.model);
             },
           },
         }),
       });
       await perplexity.call("fixture", context());
       const responseFormat = perplexityRequest?.response_format as {
+        type?: unknown;
         json_schema?: { name?: unknown; schema?: unknown };
       };
       assert.deepEqual(
         {
+          type: responseFormat.type,
           name: responseFormat.json_schema?.name,
+          textFormat: perplexityRequest?.text,
           forbiddenKeywords: schemaKeywordPaths(
             responseFormat.json_schema?.schema,
             new Set(["maxItems", "minLength", "maxLength"]),
           ),
         },
-        { name: undefined, forbiddenKeywords: [] },
-        "Sonar publishes no closed dimensional-keyword contract",
+        {
+          type: "json_schema",
+          name: "cross_review_status",
+          textFormat: undefined,
+          forbiddenKeywords: [],
+        },
+        "Agent API documents a top-level response_format wrapper; the backend model is provider-agnostic so no closed dimensional-keyword contract is assumed",
       );
+      assert.equal(typeof perplexityRequest?.instructions, "string");
+      assert.deepEqual(perplexityRequest?.reasoning, { effort: "max" });
+      assert.deepEqual(perplexityRequest?.tools, [
+        { type: "web_search", search_context_size: "low" },
+      ]);
+      assert.equal(perplexityRequest?.max_steps, 1);
     },
   },
   {
@@ -331,18 +350,21 @@ const regressions: Regression[] = [
       Object.defineProperty(perplexity, "client", {
         configurable: true,
         value: async () => ({
-          chat: {
-            completions: {
-              create: async (body: Record<string, unknown>) => {
-                perplexityRequest = body;
-                return (async function* () {
-                  yield {
+          responses: {
+            create: async (body: Record<string, unknown>) => {
+              perplexityRequest = body;
+              return (async function* () {
+                yield { type: "response.output_text.delta", delta: READY };
+                yield {
+                  type: "response.completed",
+                  response: {
+                    status: "completed",
                     model: perplexity.model,
-                    choices: [{ index: 0, finish_reason: "stop", delta: { content: READY } }],
-                    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-                  };
-                })();
-              },
+                    output: [{ type: "message", content: [{ type: "output_text", text: READY }] }],
+                    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+                  },
+                };
+              })();
             },
           },
         }),
@@ -1134,13 +1156,19 @@ const regressions: Regression[] = [
         {
           peer: "perplexity" as const,
           reject: (callContext: PeerCallContext): void =>
-            assertChatCompletionTerminal([{ finish_reason: "content_filter" }], {
-              context: callContext,
-              peer: "perplexity",
-              provider: "perplexity",
-              model: "sonar-reasoning-pro",
-              phase: "review",
-            }),
+            assertResponsesCompletion(
+              {
+                status: "incomplete",
+                incomplete_details: { reason: "content_filter" },
+              } as { status?: unknown },
+              {
+                context: callContext,
+                peer: "perplexity",
+                provider: "perplexity",
+                model: "perplexity/kimi-k3",
+                phase: "review",
+              },
+            ),
         },
       ];
       const observed: Record<string, { calls: number; failureClass?: string }> = {};
@@ -1651,47 +1679,129 @@ const regressions: Regression[] = [
         { citationTokens: 7, searchQueries: 7, searchPerformed: true },
       );
 
-      const deepResearchAdapter = new PerplexityAdapter(modelAwareConfig, "sonar-deep-research");
-      Object.defineProperty(deepResearchAdapter, "client", {
+      // v4.6.0: legacy Sonar ids are rejected before any network call.
+      // The guard runs inside the real client() factory before the SDK is
+      // loaded, so no fixture client is installed here: a missing guard would
+      // surface as a network/auth failure instead of the migration diagnostic.
+      const retiredAdapter = new PerplexityAdapter(modelAwareConfig, "sonar-deep-research");
+      const retired = await retiredAdapter.call("fixture", context()).catch((error) => error);
+      assert.match(
+        String((retired as { message?: unknown }).message ?? retired),
+        /perplexity_model_unsupported/,
+      );
+
+      // v4.6.0: Agent API accounting — cached input is split out of
+      // input_tokens, and web_search invocations reported by the provider
+      // are billed at the search_queries_per_1000 rate. Fixture rates:
+      // $3 input, $15 output, $0.30 cache read, $2.50 per 1000 searches.
+      const kimiRate = {
+        input_per_million: 3,
+        output_per_million: 15,
+        cache_read_per_million: 0.3,
+        search_queries_per_1000: 2.5,
+      };
+      const agentConfig = {
+        ...modelAwareConfig,
+        models: { ...modelAwareConfig.models, perplexity: "perplexity/kimi-k3" },
+        cost_rates: { ...modelAwareConfig.cost_rates, perplexity: kimiRate },
+        fallback_models: { ...modelAwareConfig.fallback_models, perplexity: [] },
+      } as AppConfig;
+      const agentAdapter = new PerplexityAdapter(agentConfig);
+      Object.defineProperty(agentAdapter, "client", {
         configurable: true,
         value: async () => ({
-          chat: {
-            completions: {
-              create: async () => ({
-                model: "sonar-deep-research",
-                choices: [{ index: 0, finish_reason: "stop", message: { content: READY } }],
-                usage: {
-                  prompt_tokens: 1_000_000,
-                  completion_tokens: 1_000_000,
-                  total_tokens: 2_000_000,
-                  citation_tokens: 1_000_000,
-                  reasoning_tokens: 1_000_000,
-                  num_search_queries: 1_000,
+          responses: {
+            create: async () => ({
+              status: "completed",
+              model: "perplexity/kimi-k3",
+              output: [
+                { type: "search_results", queries: ["fixture"], results: [] },
+                { type: "message", content: [{ type: "output_text", text: READY }] },
+              ],
+              usage: {
+                input_tokens: 1_000_000,
+                output_tokens: 1_000_000,
+                total_tokens: 2_000_000,
+                input_tokens_details: {
+                  cached_tokens: 200_000,
+                  cache_read_input_tokens: 200_000,
+                  cache_creation_input_tokens: 0,
                 },
-              }),
-            },
+                output_tokens_details: { reasoning_tokens: 10 },
+                tool_calls_details: { search_web: { invocation: 1_000 } },
+                cost: { currency: "USD", total_cost: 19.96 },
+              },
+            }),
           },
         }),
       });
-      const overrideResult = await deepResearchAdapter.call("fixture", context());
-      assert.ok(overrideResult.cost, "effective-model pricing must produce a cost estimate");
+      const agentResult = await agentAdapter.call("fixture", context());
+      assert.ok(agentResult.cost, "Agent API pricing must produce a cost estimate");
       assert.deepEqual(
         {
-          model: overrideResult.model,
-          total: overrideResult.cost.total_cost,
-          request: overrideResult.cost.request_cost,
-          citation: overrideResult.cost.citation_tokens_cost,
-          reasoning: overrideResult.cost.deep_research_reasoning_tokens_cost,
-          searches: overrideResult.cost.search_queries_cost,
+          model: agentResult.model,
+          input: agentResult.usage?.input_tokens,
+          cacheRead: agentResult.usage?.cache_read_tokens,
+          searches: agentResult.usage?.num_search_queries,
+          providerTotal: agentResult.usage?.provider_reported_total_cost_usd,
+          total: Number((agentResult.cost.total_cost ?? 0).toFixed(6)),
+          request: agentResult.cost.request_cost,
+          citation: agentResult.cost.citation_tokens_cost,
+          reasoning: agentResult.cost.deep_research_reasoning_tokens_cost,
+          searchCost: agentResult.cost.search_queries_cost,
         },
         {
-          model: "sonar-deep-research",
-          total: 20,
+          model: "perplexity/kimi-k3",
+          input: 800_000,
+          cacheRead: 200_000,
+          searches: 1_000,
+          providerTotal: 19.96,
+          total: 19.96,
           request: undefined,
-          citation: 2,
-          reasoning: 3,
-          searches: 5,
+          citation: undefined,
+          reasoning: undefined,
+          searchCost: 2.5,
         },
+      );
+      assert.deepEqual(
+        missingFinancialControlVars(agentConfig, ["perplexity"]),
+        [],
+        "a complete Agent API card (input/output/search fee) is a complete financial control",
+      );
+      assert.ok(
+        missingFinancialControlVars(
+          {
+            ...agentConfig,
+            cost_rates: {
+              ...agentConfig.cost_rates,
+              perplexity: { input_per_million: 3, output_per_million: 15 },
+            },
+          } as AppConfig,
+          ["perplexity"],
+        ).includes("CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS"),
+        "an Agent API card without the web_search fee must fail closed while search is enabled",
+      );
+      assert.ok(
+        missingFinancialControlVars(modelAwareConfig, ["perplexity"]).includes(
+          "CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID",
+        ),
+        "a retired Sonar pin must be reported as a missing financial control",
+      );
+      const agentPreflight = estimatedPeerRoundCost(agentConfig, ["perplexity"], "four");
+      const agentEnvelope = estimateCost(
+        agentConfig,
+        "perplexity",
+        {
+          input_tokens: 1,
+          output_tokens: maxOutputTokensForPeer(agentConfig, "perplexity"),
+          num_search_queries: agentConfig.perplexity.web_search_invocations_estimate,
+        },
+        "perplexity/kimi-k3",
+      ).total_cost;
+      assert.ok(agentEnvelope != null && agentPreflight != null);
+      assert.ok(
+        Math.abs(agentPreflight - 3 * agentEnvelope) < 1e-9,
+        `Agent API preflight must price the declared web_search estimate per attempt: ${agentPreflight} vs ${3 * agentEnvelope}`,
       );
 
       const retryConfig: AppConfig = {

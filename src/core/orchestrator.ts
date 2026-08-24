@@ -12,6 +12,7 @@ import {
 import {
   estimateCacheSavings,
   estimateCost,
+  isPerplexityAgentModel,
   mergeCost,
   mergeUsage,
   resolveCostRate,
@@ -2369,10 +2370,10 @@ const MODEL_CLAIM_ALIASES: Record<PeerId, RegExp> = {
   gemini: /\b(?:gemini|google)\b/i,
   deepseek: /\bdeepseek\b/i,
   grok: /\b(?:grok|xai|x\.ai)\b/i,
-  perplexity: /\b(?:perplexity|sonar)\b/i,
+  perplexity: /\b(?:perplexity|sonar|kimi|moonshot)\b/i,
 };
 const MODEL_TOKEN_SOURCE =
-  "(?:gpt|chatgpt|codex|claude|gemini|deepseek|grok|sonar|perplexity)(?:[-._][a-z0-9]+)+";
+  "(?:gpt|chatgpt|codex|claude|gemini|deepseek|grok|sonar|perplexity|kimi)(?:[-._][a-z0-9]+)+";
 const MODEL_TOKEN_PATTERN = new RegExp(`\\b${MODEL_TOKEN_SOURCE}\\b`, "gi");
 const NON_CURRENT_MODEL_TOKEN_PATTERN = new RegExp(
   `\\b(?:not|rather\\s+than|instead\\s+of|no\\s+longer|formerly|previously|from|nao|não|em\\s+vez\\s+de|anteriormente)\\s+(?:the\\s+|o\\s+|a\\s+)?(${MODEL_TOKEN_SOURCE})\\b`,
@@ -2384,7 +2385,10 @@ const MODEL_TOKEN_PREFIXES: Record<PeerId, readonly string[]> = {
   gemini: ["gemini-"],
   deepseek: ["deepseek-"],
   grok: ["grok-"],
-  perplexity: ["sonar-", "perplexity-"],
+  // v4.6.0: Agent API ids are `provider/model`; the provider segment is
+  // stripped before comparison (see normalizeModelPin), so the canonical
+  // `perplexity/kimi-k3` pin is matched by the `kimi-` token prefix.
+  perplexity: ["sonar-", "perplexity-", "kimi-"],
 };
 const OPERATIONAL_VALUE_PATTERN =
   /https?:\/\/[^\s)\]}>'"]+|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b[0-9a-f]{12,64}\b|\b(?:run|task|workflow|deployment|session)[_-]?id\s*[:=#]\s*[a-z0-9_-]+/gi;
@@ -2546,6 +2550,13 @@ function addIssueClass(
 
 function normalizeVersionToken(value: string): string {
   return value.trim().replace(/^v/i, "").toLowerCase();
+}
+
+// Model pins may carry a `provider/` routing prefix (Perplexity Agent API
+// ids such as `perplexity/kimi-k3`). Drafts name the model itself, so the
+// comparison runs on the model segment.
+function normalizeModelPin(value: string): string {
+  return normalizeVersionToken(value.replace(/^[a-z0-9._-]+\//i, ""));
 }
 
 function uniqueMatches(pattern: RegExp, text: string): string[] {
@@ -2713,7 +2724,7 @@ export function truthfulnessPreflight(params: {
         if (!candidates.length) continue;
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
-        const expected = normalizeVersionToken(expectedModel);
+        const expected = normalizeModelPin(expectedModel);
         const claims = partitionCurrentModelClaims(candidates, line);
         const assertedContradictions = claims.asserted.filter(
           (candidate) => candidate !== expected,
@@ -3371,10 +3382,20 @@ export function estimatedPeerRoundCost(
       ) {
         return undefined;
       }
+      // v4.6.0: Perplexity Agent API reviewer requests declare the
+      // web_search tool, billed per invocation. The API does not cap
+      // invocations per step, so the envelope prices the declared
+      // estimate; post-call accounting uses the reported count.
+      const searchEstimate =
+        peer === "perplexity" &&
+        isPerplexityAgentModel(pricedModel) &&
+        !config.perplexity.disable_search
+          ? { num_search_queries: config.perplexity.web_search_invocations_estimate }
+          : {};
       const estimate = estimateCost(
         config,
         peer,
-        { input_tokens: inputTokens, output_tokens: outputTokens },
+        { input_tokens: inputTokens, output_tokens: outputTokens, ...searchEstimate },
         pricedModel,
       );
       if (estimate.total_cost == null) return undefined;

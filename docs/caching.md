@@ -18,18 +18,18 @@ This document describes:
 
 ## Per-provider behavior matrix
 
-| Peer (Provider)           | Cache mode      | Default participation | Threshold       | TTL surface                                     | Telemetry source                                                      |
-| ------------------------- | --------------- | --------------------- | --------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
-| `codex` (OpenAI)          | `auto`          | on                    | ~1k tokens      | Sol: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
-| `claude` (Anthropic)      | `explicit`      | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)               | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
-| `gemini` (Google)         | `implicit`      | on                    | service-managed | n/a                                             | `usageMetadata.cachedContentTokenCount`                               |
-| `deepseek` (DeepSeek)     | `auto`          | on                    | service-managed | n/a                                             | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
-| `grok` (xAI)              | `auto`          | on                    | service-managed | `prompt_cache_key`; no client TTL               | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
-| `perplexity` (Perplexity) | `not_supported` | off by capability     | n/a             | n/a                                             | none — Sonar API exposes no prompt-cache surface                      |
+| Peer (Provider)           | Cache mode | Default participation | Threshold       | TTL surface                                     | Telemetry source                                                      |
+| ------------------------- | ---------- | --------------------- | --------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
+| `codex` (OpenAI)          | `auto`     | on                    | ~1k tokens      | Sol: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
+| `claude` (Anthropic)      | `explicit` | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)               | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
+| `gemini` (Google)         | `implicit` | on                    | service-managed | n/a                                             | `usageMetadata.cachedContentTokenCount`                               |
+| `deepseek` (DeepSeek)     | `auto`     | on                    | service-managed | n/a                                             | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
+| `grok` (xAI)              | `auto`     | on                    | service-managed | `prompt_cache_key`; no client TTL               | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
+| `perplexity` (Perplexity) | `auto`     | on                    | service-managed | n/a                                             | Agent API `usage.input_tokens_details.cache_read_input_tokens`        |
 
 `mode` values follow the canonical `TokenUsage.cache_provider_mode` enum:
 
-- `auto` — provider auto-detects cacheable prefix (OpenAI, DeepSeek, Grok)
+- `auto` — provider auto-detects cacheable prefix (OpenAI, DeepSeek, Grok, Perplexity)
 - `explicit` — runtime places cache_control breakpoints in the body (Anthropic only)
 - `implicit` — provider transparently caches and reports tokens read (Gemini)
 - `not_supported` — peer call did not produce cache telemetry

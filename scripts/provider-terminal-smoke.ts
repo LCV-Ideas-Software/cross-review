@@ -315,16 +315,19 @@ async function assertBilledTerminalRejection(
   assert.ok(ctx.events.some((event) => event.type === "peer.token.discarded"));
 }
 
+// v4.6.0: Perplexity speaks the Agent API (Responses protocol). A
+// non-completed terminal — content filtering or output exhaustion — must be
+// rejected even when a plausible READY payload is present.
 {
   const adapter = new PerplexityAdapter(config);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () => ({
-          model: adapter.model,
-          choices: [{ finish_reason: "content_filter", message: { content: READY } }],
-        }),
-      },
+    responses: {
+      create: async () => ({
+        status: "incomplete",
+        incomplete_details: { reason: "content_filter" },
+        model: adapter.model,
+        output: [{ type: "message", content: [{ type: "output_text", text: READY }] }],
+      }),
     },
   });
   await assertTerminalRejection(() => adapter.call("fixture", context()));
@@ -333,47 +336,48 @@ async function assertBilledTerminalRejection(
 {
   const adapter = new PerplexityAdapter(config);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([
-            {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: READY },
+          {
+            type: "response.incomplete",
+            response: {
+              status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
               model: adapter.model,
-              choices: [{ finish_reason: "length", delta: { content: READY } }],
             },
-          ]),
-      },
+          },
+        ]),
     },
   });
   await assertTerminalRejection(() => adapter.generate("fixture", context(true)));
 }
 
-// Perplexity's documented `chat.completion.done` event may carry the complete
-// assistant payload in `message.content` while its terminal delta is empty.
-// The adapter must not mistake that terminal representation for a blank model
-// response and trigger a second paid decision-retry call.
+// The Agent API `response.completed` event carries the aggregate output
+// items. When no usable delta text was streamed, the adapter must read the
+// terminal message instead of mistaking the empty delta buffer for a blank
+// model response and triggering a second paid decision-retry call.
 {
   const adapter = new PerplexityAdapter(config);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([
-            {
-              id: "fixture-perplexity-terminal-message",
-              object: "chat.completion.done",
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: "" },
+          {
+            type: "response.completed",
+            response: {
+              status: "completed",
               model: adapter.model,
-              choices: [
-                {
-                  finish_reason: "stop",
-                  delta: { content: "" },
-                  message: { role: "assistant", content: READY },
-                },
+              output: [
+                { type: "search_results", queries: ["fixture"], results: [] },
+                { type: "message", content: [{ type: "output_text", text: READY }] },
               ],
-              usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
             },
-          ]),
-      },
+          },
+        ]),
     },
   });
   const result = await adapter.call("fixture", context(true));
@@ -382,8 +386,8 @@ async function assertBilledTerminalRejection(
   const rawTelemetry = result.raw as Record<string, unknown>;
   assert.deepEqual(
     {
-      request_id: rawTelemetry.request_id,
-      finish_reasons: rawTelemetry.finish_reasons,
+      streamed: rawTelemetry.streamed,
+      events: rawTelemetry.events,
       raw_delta_chars: rawTelemetry.raw_delta_chars,
       terminal_message_chars: rawTelemetry.terminal_message_chars,
       visible_chars: rawTelemetry.visible_chars,
@@ -391,8 +395,8 @@ async function assertBilledTerminalRejection(
       empty_usable_output: rawTelemetry.empty_usable_output,
     },
     {
-      request_id: "fixture-perplexity-terminal-message",
-      finish_reasons: ["stop"],
+      streamed: true,
+      events: 2,
       raw_delta_chars: 0,
       terminal_message_chars: READY.length,
       visible_chars: READY.length,
@@ -400,6 +404,8 @@ async function assertBilledTerminalRejection(
       empty_usable_output: false,
     },
   );
+  assert.equal(result.usage?.input_tokens, 10);
+  assert.equal(result.usage?.output_tokens, 5);
   const generated = await adapter.generate("fixture", context(true));
   assert.equal(generated.text, READY);
 }
@@ -803,14 +809,14 @@ for (const requestedEffort of ["low", "medium"] as const) {
 {
   const adapter = new PerplexityAdapter(billingConfig);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () => ({
-          model: adapter.model,
-          choices: [{ finish_reason: "content_filter", message: { content: READY } }],
-          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-        }),
-      },
+    responses: {
+      create: async () => ({
+        status: "incomplete",
+        incomplete_details: { reason: "content_filter" },
+        output_text: READY,
+        model: adapter.model,
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      }),
     },
   });
   await assertBilledTerminalRejection(() => adapter.call("fixture", context()), {
@@ -824,17 +830,20 @@ for (const requestedEffort of ["low", "medium"] as const) {
 {
   const adapter = new PerplexityAdapter(billingConfig);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([
-            {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: READY },
+          {
+            type: "response.incomplete",
+            response: {
+              status: "incomplete",
+              incomplete_details: { reason: "content_filter" },
               model: adapter.model,
-              choices: [{ finish_reason: "content_filter", delta: { content: READY } }],
-              usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
             },
-          ]),
-      },
+          },
+        ]),
     },
   });
   await assertBilledTerminalRejection(() => adapter.generate("fixture", context(true)), {

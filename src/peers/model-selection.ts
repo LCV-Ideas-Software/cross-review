@@ -16,12 +16,10 @@ const DOCS = {
   gemini: "https://ai.google.dev/gemini-api/docs/models",
   deepseek: "https://api-docs.deepseek.com/updates",
   grok: "https://docs.x.ai/developers/model-capabilities/text/reasoning",
-  // v3.0.0: Perplexity Sonar API documents 4 models. Reference page
-  // lists `sonar`, `sonar-pro`, `sonar-reasoning-pro`, and
-  // `sonar-deep-research`. The Sonar API does NOT publish a
-  // `models.list` endpoint via the OpenAI-SDK base path, so model
-  // selection here is documented-priority only (no live API probe).
-  perplexity: "https://docs.perplexity.ai/getting-started/models",
+  // v4.6.0: Perplexity Agent API model catalog (`provider/model` ids with
+  // pricing). Sonar Chat Completions retires on 27/09/2026; the runtime
+  // keeps the documented pin without a live `models.list` probe.
+  perplexity: "https://docs.perplexity.ai/docs/agent-api/models",
 } satisfies Record<PeerId, string>;
 
 // v3.7.2 (AUDIT-3, Codex 3rd super-audit + operator directive 2026-05-14):
@@ -41,10 +39,15 @@ const PRIORITY: Record<PeerId, string[]> = {
   claude: ["claude-fable-5"],
   gemini: ["gemini-3.1-pro-preview"],
   deepseek: ["deepseek-v4-pro"],
-  // grok-4.5: concrete canonical pin for cross-review. xAI positions
-  // it as the frontier model for coding, agentic tasks and knowledge work.
-  grok: ["grok-4.5"],
-  perplexity: ["sonar-reasoning-pro"],
+  // grok-4.6 (xAI, August 2026): the recommended frontier reasoning model
+  // for code and chat; accepts reasoning.effort through `xhigh`.
+  grok: ["grok-4.6"],
+  // perplexity/kimi-k3 (Moonshot AI via the Perplexity Agent API): the
+  // most capable reasoning model on that catalog whose family is not
+  // already a peer (Claude/GPT/Gemini/Grok/DeepSeek are excluded so the
+  // sexteto keeps six distinct model families). Operator directive
+  // 23/08/2026.
+  perplexity: ["perplexity/kimi-k3"],
 };
 
 const SUPPORTED_MODEL_OVERRIDES: Partial<Record<PeerId, string[]>> = {
@@ -245,15 +248,16 @@ async function grokModels(config: AppConfig): Promise<ModelCandidate[]> {
   }));
 }
 
-// v3.0.0: Perplexity does NOT expose a public `models.list` endpoint
-// via the OpenAI-SDK base path (the Sonar API is the only documented
-// surface). Operators choose among the 4 documented Sonar models via
-// CROSS_REVIEW_PERPLEXITY_MODEL; this resolver returns an empty live-
-// candidate set so `selectFromCandidates` falls through to the
-// documented PRIORITY list with confidence "inferred". The Perplexity
+// v3.0.0 / v4.6.0: Perplexity model selection stays documentation-driven.
+// The Agent API publishes a models listing, but it is not exposed through
+// the OpenAI-SDK `models.list` path this resolver shares with the other
+// peers, so the resolver returns an empty live-candidate set and
+// `selectFromCandidates` keeps the documented PRIORITY pin with
+// confidence "inferred". Operators override via
+// CROSS_REVIEW_PERPLEXITY_MODEL using documented `provider/model` ids. The
 // runtime probe defaults to auth_only to avoid tokenized health checks;
 // operators can set CROSS_REVIEW_PERPLEXITY_PROBE_MODE=live when they
-// explicitly want a paid minimal `disable_search` round-trip.
+// explicitly want a paid minimal round-trip without tools.
 async function perplexityModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.perplexity;
   if (!apiKey) return [];

@@ -406,8 +406,8 @@ import type { PeerResult } from "../src/core/types.js";
     claude: "claude-fable-5",
     gemini: "gemini-3.1-pro",
     deepseek: "deepseek-v4-pro",
-    grok: "grok-4.5",
-    perplexity: "sonar-reasoning-pro",
+    grok: "grok-4.6",
+    perplexity: "perplexity/kimi-k3",
   } as const;
   const wrongModels = {
     codex: "gpt-5.5",

@@ -13,6 +13,7 @@ import {
   RELEASE_DATE,
   VERSION,
 } from "../core/config.js";
+import { isPerplexityAgentModel } from "../core/cost.js";
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
 import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { sessionReportMarkdown } from "../core/reports.js";
@@ -109,16 +110,15 @@ const ReasoningEffortOverridesSchema = z
     gemini: ReasoningEffortSchema.optional(),
     deepseek: ReasoningEffortSchema.optional(),
     grok: ReasoningEffortSchema.optional(),
-    // v3.0.0: Perplexity 6th peer. Sonar API accepts only
-    // `minimal|low|medium|high` on-the-wire (clamped at the adapter
-    // boundary); the schema still accepts the full internal scale so
-    // operators can mirror their global config style — the adapter
-    // narrows to Perplexity's accepted set at call time.
+    // v3.0.0 / v4.6.0: Perplexity 6th peer. The Agent API accepts
+    // `minimal|low|medium|high|xhigh|max` on the wire; the adapter
+    // normalizes the shared internal scale (`none` → minimal, `ultra` →
+    // max) at call time.
     perplexity: ReasoningEffortSchema.optional(),
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-5.6 and high on Grok 4.5; older GPT-5 families use their own ceilings).",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-5.6, Kimi K3 via Perplexity and DeepSeek, and xhigh on Grok 4.6; older GPT-5 families use their own ceilings).",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -3520,24 +3520,20 @@ export async function main(): Promise<void> {
     if (!reasoningSetExplicitly) return;
     if (GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(grokModel)) return;
     console.error(
-      `[cross-review] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs. CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Use grok-4.5 (default), grok-4.20-multi-agent, or grok-4.3 for explicit control.`,
+      `[cross-review] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs. CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Use grok-4.6 (default), grok-4.5, grok-4.20-multi-agent, or grok-4.3 for explicit control.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
-  // v3.0.0: Perplexity sixth peer — boot notice for reasoning_effort
-  // capability. Only `sonar-reasoning-pro` and `sonar-deep-research`
-  // accept `reasoning_effort` per Perplexity docs (sonar / sonar-pro
-  // ignore the field — no chain-of-thought stage). When the operator
-  // configures CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT but the chosen
-  // model lacks the capability, surface a stderr notice so the operator
-  // sees the dead-letter case during real runs.
+  // v4.6.0: Perplexity sixth peer — boot notice for a retired model id.
+  // The Agent API adapter only dispatches `provider/model` ids; a legacy
+  // Sonar Chat Completions id (the pre-v4.6.0 default) would fail every
+  // paid call with `perplexity_model_unsupported`, so surface the
+  // migration cause at boot instead of at the first review round.
   setTimeout(() => {
     if (!runtime.config.peer_enabled.perplexity) return;
     const perplexityModel = runtime.config.models.perplexity;
-    const reasoningSetExplicitly = Boolean(process.env.CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT);
-    if (!reasoningSetExplicitly) return;
-    if (PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(perplexityModel)) return;
+    if (isPerplexityAgentModel(perplexityModel)) return;
     console.error(
-      `[cross-review] notice: PerplexityAdapter — model="${perplexityModel}" does NOT accept reasoning_effort per Perplexity docs (only sonar-reasoning-pro and sonar-deep-research do). CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT="${process.env.CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Set CROSS_REVIEW_PERPLEXITY_MODEL=sonar-reasoning-pro (default) to enable explicit reasoning_effort control.`,
+      `[cross-review] notice: PerplexityAdapter — model="${perplexityModel}" is a Sonar Chat Completions id. Perplexity retires that API on 27/09/2026 and cross-review >= 4.6.0 speaks only the Agent API, so paid Perplexity calls will fail with perplexity_model_unsupported until CROSS_REVIEW_PERPLEXITY_MODEL (or central config models.perplexity) is set to a documented provider/model id such as perplexity/kimi-k3.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
 }
@@ -3547,6 +3543,8 @@ export async function main(): Promise<void> {
 // the server boot path into a peer adapter module. If xAI adds models
 // to the reasoning-capable set, both lists must update together.
 const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
+  // v4.6.0: grok-4.6 canonical pin (reasoning.effort through xhigh).
+  "grok-4.6",
   "grok-4.5",
   "grok-4.20-multi-agent",
   // v3.7.3 (Codex v3.7.2 parecer, AUDIT-2): this shadow set had drifted
@@ -3554,16 +3552,6 @@ const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
   // grok-4.3 since v2.18.4 (xAI docs WebFetch-verified 2026-05-07). Kept
   // in sync per the "both lists must update together" contract above.
   "grok-4.3",
-]);
-
-// v3.0.0: shadow copy of `peers/perplexity.ts:PERPLEXITY_REASONING_EFFORT_MODELS`
-// for the boot notice (same rationale as the GROK_* shadow above — no
-// hard import dependency from server boot path into the adapter).
-// When Perplexity adds new reasoning-capable models, both lists must
-// update together.
-const PERPLEXITY_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
-  "sonar-reasoning-pro",
-  "sonar-deep-research",
 ]);
 
 // v2.4.0 / cross-review R6 follow-up (CI failure 25199679588): guard

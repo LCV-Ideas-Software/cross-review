@@ -28,6 +28,17 @@ function normalizeModelId(model: string): string {
   return model.trim().replace(/^models\//i, "");
 }
 
+// v4.6.0: Perplexity Agent API ids use the documented `provider/model` form
+// (e.g. `perplexity/kimi-k3`). Legacy unprefixed Sonar ids belong to the
+// Chat Completions surface that retires on 27/09/2026. Shared by the cost
+// layer, the financial preflight and the adapter so all three agree on
+// which pricing dimensions apply to a model.
+const PERPLEXITY_AGENT_MODEL_ID = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
+
+export function isPerplexityAgentModel(model: string): boolean {
+  return PERPLEXITY_AGENT_MODEL_ID.test(normalizeModelId(model));
+}
+
 function completeRate(card: ModelCostRateConfig | undefined): CostRateConfig | undefined {
   if (
     !card ||
@@ -259,16 +270,18 @@ export function estimateCost(
   const cacheWriteCost = cacheWriteSel
     ? (cacheWriteTokens / 1_000_000) * cacheWriteSel.rate_per_million
     : 0;
-  // v3.0.0 (Perplexity 6th peer): three additional cost dimensions —
-  // (1) per-1000-requests fee scaled by search_context_size,
+  // v3.0.0 (Perplexity 6th peer): additional cost dimensions —
+  // (1) per-1000-requests fee scaled by search_context_size (legacy Sonar
+  //     ids only),
   // (2) citation_tokens (sonar-deep-research only),
   // (3) deep_research_reasoning_tokens (sonar-deep-research only),
-  // (4) search_queries per-1000 fee (sonar-deep-research only).
-  // All four are zero for non-perplexity peers (their cost_rates entry
-  // never defines these fields) AND zero for non-deep-research
-  // perplexity models (operator leaves citation/reasoning/queries
-  // rates unset; usage.citation_tokens / usage.num_search_queries are
-  // absent). Sonar's request fee is charged regardless of whether
+  // (4) search_queries per-1000 fee: sonar-deep-research search queries
+  //     AND, since v4.6.0, Agent API web_search tool invocations reported
+  //     in `usage.tool_calls_details` (surfaced as num_search_queries).
+  // All are zero for non-perplexity peers (their cost_rates entry never
+  // defines these fields) and each is gated on the effective model
+  // identity so a stale card can never bill a dimension the model does
+  // not have. Sonar's request fee is charged regardless of whether
   // `disable_search` prevents a web lookup; that flag changes latency,
   // not the per-request price.
   let requestCost = 0;
@@ -308,6 +321,15 @@ export function estimateCost(
       deepResearchReasoningTokensCost =
         (reasoningTokens / 1_000_000) * rate.deep_research_reasoning_tokens_per_million;
     }
+    const numSearchQueries = usage.num_search_queries ?? 0;
+    if (numSearchQueries > 0 && typeof rate.search_queries_per_1000 === "number") {
+      searchQueriesCost = (numSearchQueries / 1000) * rate.search_queries_per_1000;
+    }
+  }
+  // v4.6.0: Agent API models pay the web_search tool per invocation. The
+  // adapter reports the invocation count as num_search_queries; the
+  // preflight supplies the declared estimate. No request fee applies.
+  if (peer === "perplexity" && isPerplexityAgentModel(normalizedEffectiveModel)) {
     const numSearchQueries = usage.num_search_queries ?? 0;
     if (numSearchQueries > 0 && typeof rate.search_queries_per_1000 === "number") {
       searchQueriesCost = (numSearchQueries / 1000) * rate.search_queries_per_1000;

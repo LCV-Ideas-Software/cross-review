@@ -182,6 +182,10 @@ const PerplexitySubSchema = z
     search_context_size: z.enum(["low", "medium", "high"]).optional(),
     disable_search: z.boolean().optional(),
     probe_mode: z.enum(["auth_only", "live"]).optional(),
+    // v4.6.0 (Agent API): wire-enforced agent-loop bound and the declared
+    // preflight estimate of web_search invocations per reviewer request.
+    max_steps: z.number().int().positive().optional(),
+    web_search_invocations_estimate: z.number().int().nonnegative().optional(),
   })
   .strict()
   .optional();
@@ -501,6 +505,11 @@ export function flattenFileConfigToEnvMap(
         config.perplexity.disable_search ? "true" : "false",
       );
     }
+    set("CROSS_REVIEW_PERPLEXITY_MAX_STEPS", config.perplexity.max_steps);
+    set(
+      "CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE",
+      config.perplexity.web_search_invocations_estimate,
+    );
   }
   if (config.token_streaming) {
     set("CROSS_REVIEW_TOKEN_DELTA_CHARS_THRESHOLD", config.token_streaming.chars_threshold);

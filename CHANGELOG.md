@@ -7,12 +7,57 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.06.00] — 23/08/2026
+
 ### Changed
 
+- The Perplexity peer now speaks the Perplexity Agent API (`POST /v1/agent`,
+  OpenAI-Responses-compatible alias `/v1/responses`) instead of the Sonar Chat
+  Completions API, which Perplexity retires on 27/09/2026. The canonical pin
+  moves from `sonar-reasoning-pro` to `perplexity/kimi-k3` (Moonshot AI Kimi
+  K3, the most capable reasoning model of that catalog whose family is not
+  already a peer), with `reasoning.effort=max` by default, `instructions` as
+  the system prompt, the documented top-level `response_format` wrapper, and
+  the `web_search` tool declared only in the reviewer role together with the
+  wire-enforced `max_steps` bound (`CROSS_REVIEW_PERPLEXITY_MAX_STEPS`,
+  default `1`). Legacy unprefixed Sonar ids fail closed before any network
+  call with `perplexity_model_unsupported`, and the financial preflight reports
+  `CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID`
+  (CROSREV-18, issue #231).
+- Perplexity accounting follows the Agent API usage contract: cached input is
+  split out of `input_tokens` (cache mode `auto`), web-search invocations
+  reported in `usage.tool_calls_details` are billed at
+  `search_queries_per_1000`
+  (`CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS`, required
+  while search is enabled), and the round preflight prices the declared
+  `CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE` (default `3`, the
+  count observed with `max_steps=1`) because the API does not cap invocations
+  per step. Legacy Sonar request-fee and Deep Research dimensions remain in
+  the rate-card schema for existing central configurations until the Sonar
+  sunset (removal tracked in issue #233).
+- The Grok canonical pin moves from `grok-4.5` to `grok-4.6` (xAI, August
+  2026), whose documented `reasoning.effort` enum reaches `xhigh`; the default
+  Grok effort is now `xhigh` and the per-model clamp, allowlist and boot notice
+  cover the new model.
+- Provider documentation refresh of 23/08/2026: GPT-5.6 Sol, Claude Fable 5,
+  Gemini 3.1 Pro Preview and DeepSeek V4 Pro remain the canonical pins;
+  `docs/costs.md` records the current official rates (GPT-5.6 Sol promotional
+  pricing through 21/11/2026, DeepSeek V4 Pro peak rates effective 16/08/2026,
+  Grok 4.6 and Kimi K3 cards).
 - CI now uses Linear's official `linear-release-action` at the verified
   `v0.16.0` commit while preserving the existing full-history, least-privilege,
   protected-environment, and best-effort release synchronization contract
   (CROSREV-17, issue #230).
+
+### Fixed
+
+- The relator lottery smoke no longer fails at random: `assignRelator` accepts
+  an injectable `rng` (reported as `entropy_source="injected"`), the
+  index→peer mapping and the out-of-bounds guard are tested deterministically,
+  and the uniformity check of the real `crypto.randomInt` draw is a chi-square
+  test (N=50 000, df=4, threshold 48 → false-positive ≈ 9.4e-10 per run) in
+  place of the ±15% tolerance over 2 000 draws that fired in CI at ≈0.4% per
+  run (CROSREV-18, issue #231).
 
 ## [v04.05.45] — 21/08/2026
 
