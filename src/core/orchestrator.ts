@@ -3349,6 +3349,12 @@ function budgetExceeded(session: SessionMeta, limit?: number): boolean {
 // per-recovery gates themselves and therefore cover only that adapter's retry
 // envelope. Prompt blocking can occur after earlier retryable failures, so all
 // three moderation-path envelopes use max_attempts.
+//
+// v4.6.0 (Codex review of PR #234): `request_role` mirrors the Perplexity
+// adapter's role-aware tool declaration. Only the reviewer role (`call`)
+// declares the web_search tool; relator generation and evidence judges route
+// through `generate()` and never incur the per-invocation search fee, so
+// their preflights must not price it.
 export function estimatedPeerRoundCost(
   config: AppConfig,
   peers: PeerId[],
@@ -3356,8 +3362,10 @@ export function estimatedPeerRoundCost(
   effectiveModels: Partial<Record<PeerId, string>> = {},
   options: {
     max_output_tokens_by_peer?: Partial<Record<PeerId, number>> | undefined;
+    request_role?: "review" | "generation" | undefined;
   } = {},
 ): number | undefined {
+  const requestRole = options.request_role ?? "review";
   let total = 0;
   for (const peer of peers) {
     const explicitEffectiveModel = effectiveModels[peer];
@@ -3387,6 +3395,7 @@ export function estimatedPeerRoundCost(
       // invocations per step, so the envelope prices the declared
       // estimate; post-call accounting uses the reported count.
       const searchEstimate =
+        requestRole === "review" &&
         peer === "perplexity" &&
         isPerplexityAgentModel(pricedModel) &&
         !config.perplexity.disable_search
@@ -4107,6 +4116,8 @@ export class CrossReviewOrchestrator {
               max_output_tokens_by_peer: {
                 [peer]: evidenceJudgeOutputTokens(this.config, peer),
               },
+              // Judges route through generate(): no web_search tool, no fee.
+              request_role: "generation",
             },
           );
           if (estimate == null) return null;
@@ -4624,6 +4635,8 @@ export class CrossReviewOrchestrator {
           max_output_tokens_by_peer: {
             [params.judge_peer]: evidenceJudgeOutputTokens(this.config, params.judge_peer),
           },
+          // Judges route through generate(): no web_search tool, no fee.
+          request_role: "generation",
         },
       );
       return estimate == null ? null : total + estimate;
@@ -5536,9 +5549,14 @@ export class CrossReviewOrchestrator {
   ): Promise<GenerationResult> {
     const session = this.store.read(context.session_id);
     const limit = sessionBudgetLimit(this.config, session);
-    const estimate = estimatedPeerRoundCost(this.config, [adapter.id], prompt, {
-      [adapter.id]: adapter.model,
-    });
+    const estimate = estimatedPeerRoundCost(
+      this.config,
+      [adapter.id],
+      prompt,
+      { [adapter.id]: adapter.model },
+      // Relator generation never declares the Perplexity web_search tool.
+      { request_role: "generation" },
+    );
     const currentCost = session.totals.cost.total_cost ?? 0;
     const unknownProviderSpend = sessionHasUnknownProviderSpend(session);
     if (

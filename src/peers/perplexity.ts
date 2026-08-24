@@ -479,6 +479,9 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     // A live probe is a billable Agent API request. No tools are sent (no
     // search fee) and the output budget is the provider minimum; an
     // `incomplete` status on that budget still proves auth + model reach.
+    // v4.6.0 (Codex review of PR #234): the Responses protocol can resolve
+    // normally with a `failed` or `cancelled` terminal, so the status is
+    // inspected instead of treating every non-throwing response as healthy.
     try {
       const probeClient = await this.client();
       const probePayload = {
@@ -488,10 +491,26 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         reasoning: { effort: "minimal" as const },
         store: false as const,
       };
-      await probeClient.responses.create(
+      const probeResponse = (await probeClient.responses.create(
         probePayload as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
         { timeout: this.config.retry.timeout_ms },
-      );
+      )) as unknown as AgentResponse & { error?: { message?: unknown } | null };
+      const probeStatus =
+        typeof probeResponse?.status === "string" ? probeResponse.status.toLowerCase() : undefined;
+      if (probeStatus !== "completed" && probeStatus !== "incomplete") {
+        const providerMessage =
+          typeof probeResponse?.error?.message === "string" ? probeResponse.error.message : "";
+        return {
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          available: false,
+          auth_present: true,
+          latency_ms: Date.now() - started,
+          model_selection: this.config.model_selection.perplexity,
+          message: `perplexity_probe_terminal_rejected: Agent API returned status=${probeStatus ?? "missing"} for ${this.model}${providerMessage ? ` (${providerMessage})` : ""}; only completed or incomplete prove model reachability.`,
+        };
+      }
       return {
         peer: this.id,
         provider: this.provider,

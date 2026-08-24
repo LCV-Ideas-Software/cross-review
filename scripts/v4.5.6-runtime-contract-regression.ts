@@ -1763,8 +1763,12 @@ const regressions: Regression[] = [
           searchCost: 2.5,
         },
       );
+      // Scope to the Perplexity dimensions: the fixture inherits the host's
+      // budget ceilings from loadConfig(), which a CI runner does not set.
       assert.deepEqual(
-        missingFinancialControlVars(agentConfig, ["perplexity"]),
+        missingFinancialControlVars(agentConfig, ["perplexity"]).filter((item) =>
+          item.includes("PERPLEXITY"),
+        ),
         [],
         "a complete Agent API card (input/output/search fee) is a complete financial control",
       );
@@ -1802,6 +1806,45 @@ const regressions: Regression[] = [
       assert.ok(
         Math.abs(agentPreflight - 3 * agentEnvelope) < 1e-9,
         `Agent API preflight must price the declared web_search estimate per attempt: ${agentPreflight} vs ${3 * agentEnvelope}`,
+      );
+      // Codex review of PR #234: relator generation and evidence judges route
+      // through generate() without the web_search tool, so their explicit
+      // effective-model estimates must not carry the search fee, while the
+      // reviewer role keeps it.
+      const generationEnvelope = estimateCost(
+        agentConfig,
+        "perplexity",
+        { input_tokens: 1, output_tokens: maxOutputTokensForPeer(agentConfig, "perplexity") },
+        "perplexity/kimi-k3",
+      ).total_cost;
+      const generationPreflight = estimatedPeerRoundCost(
+        agentConfig,
+        ["perplexity"],
+        "four",
+        { perplexity: "perplexity/kimi-k3" },
+        { request_role: "generation" },
+      );
+      const reviewPreflight = estimatedPeerRoundCost(
+        agentConfig,
+        ["perplexity"],
+        "four",
+        { perplexity: "perplexity/kimi-k3" },
+        { request_role: "review" },
+      );
+      assert.ok(
+        generationEnvelope != null && generationPreflight != null && reviewPreflight != null,
+      );
+      assert.ok(
+        Math.abs(generationPreflight - generationEnvelope) < 1e-9,
+        `generation preflight must exclude the web_search fee: ${generationPreflight} vs ${generationEnvelope}`,
+      );
+      assert.ok(
+        Math.abs(reviewPreflight - agentEnvelope) < 1e-9,
+        `review preflight with an explicit model must include the web_search fee: ${reviewPreflight} vs ${agentEnvelope}`,
+      );
+      assert.ok(
+        reviewPreflight - generationPreflight > 0,
+        "the reviewer envelope must exceed the generation envelope by the declared search fee",
       );
 
       const retryConfig: AppConfig = {

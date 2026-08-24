@@ -526,18 +526,25 @@ type PerplexityProbePayload = {
 
 function capturePerplexityProbe(
   adapter: PerplexityAdapter,
+  response: Record<string, unknown> = {
+    status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" },
+  },
 ): () => PerplexityProbePayload | undefined {
   let capturedPayload: PerplexityProbePayload | undefined;
   (
     adapter as unknown as {
       client: () => Promise<{
-        responses: { create: (payload: PerplexityProbePayload) => Promise<void> };
+        responses: {
+          create: (payload: PerplexityProbePayload) => Promise<Record<string, unknown>>;
+        };
       }>;
     }
   ).client = async () => ({
     responses: {
       create: async (payload) => {
         capturedPayload = payload;
+        return response;
       },
     },
   });
@@ -587,6 +594,33 @@ function capturePerplexityProbe(
     "Perplexity probe should use the smallest non-empty prompt body.",
   );
   assert.deepEqual(captured()?.reasoning, { effort: "minimal" });
+}
+
+{
+  // v4.6.0 (Codex review of PR #234): a live probe must not report a
+  // failed or cancelled Responses terminal as a healthy model.
+  for (const terminal of [
+    { status: "failed", error: { message: "model overloaded" } },
+    { status: "cancelled" },
+    { status: "queued" },
+    {},
+  ] as Array<Record<string, unknown>>) {
+    const adapter = new PerplexityAdapter({
+      ...config,
+      perplexity: { ...config.perplexity, probe_mode: "live" },
+    });
+    capturePerplexityProbe(adapter, terminal);
+    const probe = await adapter.probe();
+    assert.equal(probe.available, false, `status=${String(terminal.status)} must be rejected`);
+    assert.match(probe.message ?? "", /perplexity_probe_terminal_rejected/);
+    if ("error" in terminal) assert.match(probe.message ?? "", /model overloaded/);
+  }
+  const completedAdapter = new PerplexityAdapter({
+    ...config,
+    perplexity: { ...config.perplexity, probe_mode: "live" },
+  });
+  capturePerplexityProbe(completedAdapter, { status: "completed" });
+  assert.equal((await completedAdapter.probe()).available, true);
 }
 
 {
