@@ -693,6 +693,7 @@ function capturePerplexityProbe(
   const prompt = `${stableHead}dynamic tail of round 1`;
   const makeClient = (behavior?: {
     countTokensError?: boolean;
+    countTokensResult?: number;
     createWithoutUsage?: boolean;
     createDelayMs?: number;
     createError?: Error;
@@ -725,7 +726,7 @@ function capturePerplexityProbe(
           countTokens: async (p: Record<string, unknown>) => {
             countCalls.push(p);
             if (behavior?.countTokensError) throw new Error("countTokens unavailable");
-            return { totalTokens: 5_000 };
+            return { totalTokens: behavior?.countTokensResult ?? 5_000 };
           },
           generateContent: async (p: { contents?: string; config?: Record<string, unknown> }) => {
             genCalls.push(p);
@@ -766,17 +767,36 @@ function capturePerplexityProbe(
     contents?: Array<{ parts?: Array<{ text?: string }> }>;
     ttl?: string;
   };
-  assert.equal(createdConfig?.contents?.[0]?.parts?.[0]?.text, stableHead);
+  // Round 2 of the Codex review: the cached prefix carries the
+  // session-stable system parts followed by the stable head; the per-round
+  // Round line travels after the body in BOTH modes.
+  const cachedText = String(createdConfig?.contents?.[0]?.parts?.[0]?.text ?? "");
+  assert.ok(
+    cachedText.startsWith("You are a peer reviewer"),
+    "the cached prefix opens with the session-stable system parts",
+  );
+  assert.ok(cachedText.endsWith(`\n\n${stableHead}`), "the cached prefix ends with the head");
+  assert.equal(cachedText.includes("Round:"), false, "the per-round line never enters the cache");
   assert.equal(createdConfig?.ttl, "3600s");
   assert.equal(armedMock.genCalls[0]?.config?.cachedContent, "cachedContents/fixture-1");
+  const armedLiveText = String(armedMock.genCalls[0]?.contents ?? "");
   assert.ok(
-    String(armedMock.genCalls[0]?.contents ?? "").includes("dynamic tail of round 1"),
+    armedLiveText.includes("dynamic tail of round 1"),
     "live contents carry the dynamic remainder",
   );
   assert.equal(
-    String(armedMock.genCalls[0]?.contents ?? "").includes(stableHead),
+    armedLiveText.includes(stableHead),
     false,
     "the cached head must not be resent live",
+  );
+  assert.equal(
+    armedLiveText.includes("You are a peer reviewer"),
+    false,
+    "the stable system parts live in the cache, not in the live contents",
+  );
+  assert.ok(
+    armedLiveText.indexOf("Round: 1") > armedLiveText.indexOf("dynamic tail of round 1"),
+    "the Round line follows the body",
   );
   assert.equal(
     armedMock.genCalls[0]?.config?.systemInstruction,
@@ -823,11 +843,21 @@ function capturePerplexityProbe(
   const plain = await disarmed.call(prompt, context(stableHead.length));
   assert.equal(disarmedMock.createCalls.length, 0);
   assert.equal(disarmedMock.genCalls[0]?.config?.cachedContent, undefined);
-  assert.ok(String(disarmedMock.genCalls[0]?.contents ?? "").includes("dynamic tail of round 1"));
+  const disarmedText = String(disarmedMock.genCalls[0]?.contents ?? "");
+  assert.ok(disarmedText.includes("dynamic tail of round 1"));
   assert.equal(plain.usage?.cache_provider_mode, "implicit");
   assert.equal(plain.usage?.cache_storage_token_hours, undefined);
+  // The transport invariant, proven byte-for-byte: the cached prefix plus
+  // the live remainder reproduce EXACTLY the uncached composition, so
+  // arming the cache can never change review behavior.
+  assert.equal(
+    cachedText + armedLiveText,
+    disarmedText,
+    "cached prefix + live remainder must equal the uncached composition byte-for-byte",
+  );
 
-  // Head below the documented 4,096-token minimum => uncached.
+  // Head below the character floor (BPE: tokens each consume at least one
+  // character) => uncached without even the free countTokens call.
   __resetGeminiExplicitCacheIndexForTests();
   const shortMock = makeClient();
   const shortAdapter = new GeminiAdapter(geminiCacheConfig);
@@ -835,6 +865,42 @@ function capturePerplexityProbe(
     shortMock.client;
   await shortAdapter.call("small head\nsmall tail", context(11));
   assert.equal(shortMock.createCalls.length, 0, "short heads never create caches");
+  assert.equal(shortMock.countCalls.length, 0, "the character floor filters before countTokens");
+
+  // Round 2 of the Codex review: a token-DENSE head can reach the 4,096
+  // minimum well below 16,384 characters — the authoritative count decides,
+  // not chars/4.
+  __resetGeminiExplicitCacheIndexForTests();
+  const denseMock = makeClient();
+  const denseAdapter = new GeminiAdapter(geminiCacheConfig);
+  (denseAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    denseMock.client;
+  const denseHead = `${"D".repeat(8_000)}\n`;
+  await denseAdapter.call(`${denseHead}dense tail`, context(denseHead.length));
+  assert.equal(
+    denseMock.createCalls.length,
+    1,
+    "a dense head above the floor is decided by countTokens, not by chars/4",
+  );
+
+  // A token-SPARSE head that passes the character floor but counts below
+  // the minimum: no creation call, and the negative sentinel prevents
+  // re-counting on the next call.
+  __resetGeminiExplicitCacheIndexForTests();
+  const sparseMock = makeClient({ countTokensResult: 1_000 });
+  const sparseAdapter = new GeminiAdapter(geminiCacheConfig);
+  (sparseAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    sparseMock.client;
+  const sparse = await sparseAdapter.call(prompt, context(stableHead.length));
+  assert.equal(sparseMock.createCalls.length, 0, "a below-minimum count never reaches creation");
+  assert.equal(sparseMock.countCalls.length, 1);
+  assert.equal(sparse.usage?.cache_storage_token_hours, undefined);
+  await sparseAdapter.call(prompt, context(stableHead.length));
+  assert.equal(
+    sparseMock.countCalls.length,
+    1,
+    "the negative sentinel keeps later calls uncached without re-counting",
+  );
 
   // No boundary from the orchestrator (generation/moderation) => uncached.
   __resetGeminiExplicitCacheIndexForTests();

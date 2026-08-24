@@ -521,16 +521,35 @@ export abstract class BasePeerAdapter {
     };
   }
 
-  protected systemPrompt(context: PeerCallContext): string {
+  // v4.7.0 (CROSREV-6, Codex review of PR #240 round 2): the system prompt
+  // decomposes into session-stable parts and the one per-round line, so an
+  // adapter with an explicit prompt cache can keep the stable parts in the
+  // cached prefix and move only the Round line after the body — preserving
+  // one logical prompt order across cached and uncached requests. The
+  // composed systemPrompt() is unchanged for every other adapter.
+  protected systemPromptRoleAndSession(context: PeerCallContext): string {
     return [
       "You are a peer reviewer in cross-review.",
       "Your job is to review the caller's work rigorously and independently.",
       "Do not rubber-stamp. Do not invent evidence.",
       "Unanimity is required: READY only when no blocking issue remains.",
       `Session: ${context.session_id}`,
-      `Round: ${context.round}`,
-      "Original task:",
-      context.task,
+    ].join("\n\n");
+  }
+
+  protected systemPromptRoundLine(context: PeerCallContext): string {
+    return `Round: ${context.round}`;
+  }
+
+  protected systemPromptTaskBlock(context: PeerCallContext): string {
+    return ["Original task:", context.task].join("\n\n");
+  }
+
+  protected systemPrompt(context: PeerCallContext): string {
+    return [
+      this.systemPromptRoleAndSession(context),
+      this.systemPromptRoundLine(context),
+      this.systemPromptTaskBlock(context),
     ].join("\n\n");
   }
 

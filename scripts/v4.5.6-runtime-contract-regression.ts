@@ -1976,9 +1976,14 @@ const regressions: Regression[] = [
       const armedEnvelope = estimatedPeerRoundCost(geminiPreflightPriced, ["gemini"], "four");
       const disarmedEnvelope = estimatedPeerRoundCost(geminiPreflightDisarmed, ["gemini"], "four");
       assert.ok(armedEnvelope != null && disarmedEnvelope != null);
+      // Codex review of PR #240 round 2: the stale-cache retry path can
+      // re-create (and re-bill) the resource on every attempt, so the
+      // envelope prices one creation PER attempt.
+      const geminiEnvelopeAttempts = Math.max(1, geminiPreflightPriced.retry.max_attempts);
       assert.ok(
-        Math.abs(armedEnvelope - disarmedEnvelope - (1 * 1 * 4.5) / 1_000_000) < 1e-15,
-        `the armed envelope adds one creation's storage (prompt tokens x TTL hours x rate): ${armedEnvelope} vs ${disarmedEnvelope}`,
+        Math.abs(armedEnvelope - disarmedEnvelope - (geminiEnvelopeAttempts * 4.5) / 1_000_000) <
+          1e-15,
+        `the armed envelope prices one creation per attempt (prompt tokens x TTL hours x rate x attempts): ${armedEnvelope} vs ${disarmedEnvelope}`,
       );
       const generationEnvelopeWithCache = estimatedPeerRoundCost(
         geminiPreflightPriced,

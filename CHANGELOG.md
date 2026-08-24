@@ -19,11 +19,16 @@ standard `v00.00.00`; npm package versions remain SemVer.
   never carry the boundary). With
   `CROSS_REVIEW_GEMINI_EXPLICIT_CACHE=true`, the Gemini adapter creates one
   `cachedContents` entry per distinct (schema, model, TTL, head) once the
-  head reaches the documented 4,096-token minimum, sends only the dynamic
-  remainder live with `cachedContent` (the per-round system prompt leads
-  the live contents: the provider contract rejects `cachedContent`
-  combined with `systemInstruction`/`tools` with 400 INVALID_ARGUMENT),
-  and reports reads as `cache_provider_mode="explicit"`. Storage is billed
+  head reaches the documented 4,096-token minimum (character floor first,
+  then the free `countTokens` call decides authoritatively — chars/4 never
+  judges eligibility), sends only the dynamic remainder live with
+  `cachedContent`, and reports reads as `cache_provider_mode="explicit"`.
+  Both modes keep ONE logical prompt order — session-stable system parts
+  (role + Session + task) -> head -> tail -> Round line -> status — because
+  the stable system parts live inside the cached prefix and only the
+  per-round Round line travels after the body; the request never sets
+  `systemInstruction` (the provider rejects it combined with
+  `cachedContent`: 400 INVALID_ARGUMENT). Storage is billed
   deterministically at creation (cached tokens x TTL hours) through the new
   `cache_storage_per_million_hour` rate-card field
   (`CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR`, official
@@ -40,8 +45,9 @@ standard `v00.00.00`; npm package versions remain SemVer.
   is recorded in the attempt billing ledger at creation, so failed and
   recovered attempts keep it, `mergeCost` carries the itemized
   `cache_storage_cost` through aggregation, and the hard-budget preflight
-  prices one conservative creation per Gemini model (fail-closed without
-  the storage rate, which the financial gate requires for the primary AND
+  prices one conservative creation per Gemini model PER attempt (the
+  stale-cache retry can re-create and re-bill; fail-closed without the
+  storage rate, which the financial gate requires for the primary AND
   every fallback). Concurrent creations of the same tuple share one
   in-flight promise; insertion evicts expired index entries; the stable
   `cache_key_hash` is published in usage telemetry. Creation failures fall

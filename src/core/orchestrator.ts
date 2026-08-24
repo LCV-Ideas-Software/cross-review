@@ -3732,7 +3732,11 @@ export function estimatedPeerRoundCost(
         )?.cache_storage_per_million_hour;
         if (typeof storageRate !== "number") return undefined;
         const ttlHours = config.cache.ttl.gemini === "5m" ? 300 / 3_600 : 1;
-        storageEnvelope += ((inputTokens * ttlHours) / 1_000_000) * storageRate;
+        // Codex review of PR #240 round 2: the stale-cache retry path
+        // legitimately re-creates (and re-bills) the resource on a later
+        // attempt, so the envelope prices up to one creation PER attempt —
+        // the same per-attempt multiplication the token envelope uses.
+        storageEnvelope += ((inputTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
       }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {
         primaryEnvelope = estimate.total_cost;

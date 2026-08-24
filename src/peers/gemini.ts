@@ -173,16 +173,20 @@ export function loadGenaiModule(): Promise<typeof import("@google/genai")> {
 // evidence) through context.prompt_stable_prefix_chars; when the gate is
 // armed (cache.enabled && cache.gemini_explicit && !disable_per_peer.gemini)
 // and the head reaches the documented 4,096-token cachedContents minimum for
-// the 3.x/2.5 Pro models (approximated at 4 chars/token, the same
-// convention anthropic.ts uses), the adapter creates ONE cachedContents
-// entry per distinct (schema, model, ttl, head) — concurrent creations of
-// the same tuple share one in-flight promise — and calls generateContent
-// with `cachedContent` plus only the dynamic remainder. The per-round
-// system prompt travels at the head of the LIVE contents: the provider
-// contract rejects a request that combines cachedContent with
-// systemInstruction/tools (400 INVALID_ARGUMENT, "CachedContent can not be
-// used with GenerateContent request setting system_instruction, tools or
-// tool_config").
+// the 3.x/2.5 Pro models (character floor first — BPE tokens each consume
+// at least one character — then the FREE countTokens call decides
+// authoritatively before creation), the adapter creates ONE cachedContents
+// entry per distinct (schema, model, ttl, stable system, head) — concurrent
+// creations of the same tuple share one in-flight promise — and calls
+// generateContent with `cachedContent` plus only the dynamic remainder.
+// Both modes keep ONE logical prompt order — session-stable system parts
+// (role + Session + task) → head → tail → Round line → status — because the
+// stable system parts live INSIDE the cached prefix and only the per-round
+// Round line travels after the body. The request itself never sets
+// systemInstruction: the provider contract rejects cachedContent combined
+// with systemInstruction/tools (400 INVALID_ARGUMENT, "CachedContent can
+// not be used with GenerateContent request setting system_instruction,
+// tools or tool_config").
 // Storage is billed deterministically at creation (cached tokens x TTL
 // hours) using the provider-reported token count (countTokens, which is
 // free, runs BEFORE creation so an unpriceable cache is never created);
@@ -194,8 +198,18 @@ export function loadGenaiModule(): Promise<typeof import("@google/genai")> {
 // created and billed the entry) surface as an unpriced attempt; a
 // lost/expired cache drops the index entry and retries, re-creating it.
 export const GEMINI_EXPLICIT_CACHE_MIN_TOKENS = 4_096;
-const GEMINI_EXPLICIT_CACHE_MIN_CHARS = GEMINI_EXPLICIT_CACHE_MIN_TOKENS * 4;
 
+// Codex review of PR #240 round 2: eligibility is decided by the
+// AUTHORITATIVE token count (countTokens runs before creation anyway), not
+// by a chars/4 approximation — token-dense heads (non-Latin, minified
+// code) can reach the minimum well below 4 chars/token. The only character
+// gate left is a floor with no false negatives: BPE tokens consume at
+// least one character each, so a head shorter than MIN_TOKENS characters
+// can never reach MIN_TOKENS tokens.
+//
+// `name: ""` is the negative sentinel: the authoritative count showed this
+// (stable system + head) below the provider minimum, so calls stay
+// uncached without re-counting until the entry expires.
 type GeminiExplicitCacheEntry = { name: string; token_count: number; expires_at_ms: number };
 const geminiExplicitCacheIndex = new Map<string, GeminiExplicitCacheEntry>();
 // Codex review of PR #240: two concurrent calls with the same eligible head
@@ -466,9 +480,13 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
   // cannot be stated is never created, and the deterministic storage charge
   // is recorded in the attempt billing ledger the moment the resource
   // exists — failures and recovery paths inherit it from there.
+  // `cacheContents` is the EXACT text the cache will hold (session-stable
+  // system parts + stable head), so counting and the provider minimum are
+  // decided on the real payload; a below-minimum count records a negative
+  // sentinel entry so later calls stay uncached without re-counting.
   private async createExplicitCacheEntry(params: {
     reviewClient: { ai: GoogleGenAI };
-    stableHead: string;
+    cacheContents: string;
     ttl: "5m" | "1h";
     cacheKeyHash: string;
     context: PeerCallContext;
@@ -476,7 +494,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     ledgerCosts: CostEstimate[];
     onIndeterminateCreate: () => void;
   }): Promise<GeminiExplicitCacheEntry | undefined> {
-    const { reviewClient, stableHead, ttl, cacheKeyHash, context } = params;
+    const { reviewClient, cacheContents, ttl, cacheKeyHash, context } = params;
     const ttlSeconds = geminiTtlSeconds(ttl);
     const notice = (message: string, data: Record<string, unknown>) => {
       context.emit({
@@ -492,7 +510,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     try {
       const counted = (await reviewClient.ai.models.countTokens({
         model: this.model,
-        contents: [{ role: "user", parts: [{ text: stableHead }] }],
+        contents: [{ role: "user", parts: [{ text: cacheContents }] }],
       })) as { totalTokens?: number };
       countedTokens = counted?.totalTokens;
     } catch {
@@ -511,11 +529,31 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       );
       return undefined;
     }
+    if (countedTokens < GEMINI_EXPLICIT_CACHE_MIN_TOKENS) {
+      // Codex review of PR #240 round 2: the authoritative count decides
+      // eligibility — a token-sparse head below the provider minimum would
+      // only produce a rejected creation call. The negative sentinel keeps
+      // later calls uncached without re-counting until it expires.
+      const now = Date.now();
+      for (const [key, indexed] of geminiExplicitCacheIndex) {
+        if (indexed.expires_at_ms <= now) geminiExplicitCacheIndex.delete(key);
+      }
+      geminiExplicitCacheIndex.set(cacheKeyHash, {
+        name: "",
+        token_count: countedTokens,
+        expires_at_ms: now + ttlSeconds * 1_000,
+      });
+      notice(
+        `Gemini explicit cache skipped: the stable prefix counts ${countedTokens} tokens, below the ${GEMINI_EXPLICIT_CACHE_MIN_TOKENS}-token cachedContents minimum; continuing uncached.`,
+        { model: this.model, key_hash: cacheKeyHash, token_count: countedTokens },
+      );
+      return undefined;
+    }
     try {
       const created = (await reviewClient.ai.caches.create({
         model: this.model,
         config: {
-          contents: [{ role: "user", parts: [{ text: stableHead }] }],
+          contents: [{ role: "user", parts: [{ text: cacheContents }] }],
           ttl: `${ttlSeconds}s`,
           displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
         },
@@ -625,23 +663,42 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // unknown unless final provider usage arrives.
         const reviewClient = await this.client();
         const stablePrefixChars = context.prompt_stable_prefix_chars ?? 0;
+        // Session-stable system parts (role + Session + task) lead BOTH
+        // compositions; only the Round line varies per round, so it travels
+        // after the body in both. This keeps one logical prompt order —
+        // stable system → head → tail → Round → status — whether or not the
+        // head is served from the explicit cache (Codex review of PR #240
+        // round 2: enabling caching must change transport, never review
+        // behavior).
+        const stableSystem = `${this.systemPromptRoleAndSession(context)}\n\n${this.systemPromptTaskBlock(context)}`;
+        const roundLine = this.systemPromptRoundLine(context);
+        // Character floor only (no false negatives: BPE tokens each consume
+        // at least one character, so fewer chars than MIN_TOKENS can never
+        // reach the minimum). The authoritative eligibility check is the
+        // free countTokens inside createExplicitCacheEntry.
         const explicitCacheEligible =
           geminiExplicitCacheArmed(this.config) &&
-          stablePrefixChars >= GEMINI_EXPLICIT_CACHE_MIN_CHARS &&
+          stablePrefixChars >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS &&
           stablePrefixChars < prompt.length;
         let cacheEntry: GeminiExplicitCacheEntry | undefined;
         let cacheKeyHash: string | undefined;
         if (explicitCacheEligible) {
           const stableHead = prompt.slice(0, stablePrefixChars);
           const ttl = this.config.cache.ttl.gemini;
+          // The cache holds stableSystem + head, so the key must cover both
+          // (length-prefixed to keep the boundary unambiguous). Session id
+          // and task live in stableSystem: reuse spans the rounds of one
+          // session — exactly where the repeated-prefix savings are.
           cacheKeyHash = hashStablePrefix(
-            `${this.config.cache.schema_version}\n${this.model}\n${ttl}\n${stableHead}`,
+            `${this.config.cache.schema_version}\n${this.model}\n${ttl}\n${stableSystem.length}\n${stableSystem}\n${stableHead}`,
           );
           const existing = geminiExplicitCacheIndex.get(cacheKeyHash);
           // A 15s guard band avoids referencing an entry that expires while
           // the request is in flight.
           if (existing && existing.expires_at_ms > Date.now() + 15_000) {
-            cacheEntry = existing;
+            // name === "" is the negative sentinel: counted below the
+            // provider minimum — stay uncached without re-counting.
+            cacheEntry = existing.name === "" ? undefined : existing;
           } else {
             const inFlight = geminiExplicitCacheInFlight.get(cacheKeyHash);
             if (inFlight) {
@@ -651,7 +708,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             } else {
               const creation = this.createExplicitCacheEntry({
                 reviewClient,
-                stableHead,
+                cacheContents: `${stableSystem}\n\n${stableHead}`,
                 ttl,
                 cacheKeyHash,
                 context,
@@ -682,15 +739,15 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           ),
           ...(context.signal ? { abortSignal: context.signal } : {}),
         };
+        // One logical order in both modes: stableSystem → head → tail →
+        // Round → status. Cached: [stableSystem + head] is served from the
+        // cachedContents resource (which the provider always places before
+        // the live contents), and the request carries only cachedContent —
+        // never systemInstruction (400 INVALID_ARGUMENT contract).
         const params = cacheEntry
           ? {
               model: this.model,
-              // The cached head precedes these live contents server-side.
-              // Contract: a request that references cachedContent must NOT
-              // set systemInstruction/tools (400 INVALID_ARGUMENT), so the
-              // per-round system prompt leads the live contents instead —
-              // the same composition order the uncached request uses.
-              contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt.slice(stablePrefixChars))}\n\n${statusInstruction()}`,
+              contents: `${userPrompt(prompt.slice(stablePrefixChars))}\n\n${roundLine}\n\n${statusInstruction()}`,
               config: {
                 ...requestConfig,
                 cachedContent: cacheEntry.name,
@@ -698,7 +755,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             }
           : {
               model: this.model,
-              contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt)}\n\n${statusInstruction()}`,
+              contents: `${stableSystem}\n\n${userPrompt(prompt)}\n\n${roundLine}\n\n${statusInstruction()}`,
               config: requestConfig,
             };
         const decorateUsage = (usage: TokenUsage | undefined): TokenUsage | undefined => {
