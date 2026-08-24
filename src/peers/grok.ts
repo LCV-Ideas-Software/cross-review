@@ -112,7 +112,7 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
   if (!usage) return undefined;
   // xAI's OpenAI-compatible Responses usage surfaces cached tokens under
   // prompt_tokens_details (or input_tokens_details on newer response shapes),
-  // so the same parsing path applies to the current Grok 4.5 pin and legacy
+  // so the same parsing path applies to the current Grok 4.6 pin and legacy
   // supported pins.
   const cached =
     usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;

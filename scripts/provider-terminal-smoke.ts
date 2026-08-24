@@ -333,6 +333,31 @@ async function assertBilledTerminalRejection(
   await assertTerminalRejection(() => adapter.call("fixture", context()));
 }
 
+// A `failed` terminal carries the provider error; the rejection must surface
+// that message instead of a bare status (parity with openai.ts/grok.ts).
+{
+  const adapter = new PerplexityAdapter(config);
+  setClient(adapter, {
+    responses: {
+      create: async () => ({
+        status: "failed",
+        model: adapter.model,
+        output: [],
+        error: { message: "model overloaded upstream", code: "server_error" },
+      }),
+    },
+  });
+  await assert.rejects(
+    () => adapter.generate("fixture", context()),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: Record<string, unknown> }).peerFailure;
+      assert.ok(failure, "failed terminal must preserve structured PeerFailure metadata");
+      assert.match(String(failure?.message), /model overloaded upstream/i);
+      return true;
+    },
+  );
+}
+
 {
   const adapter = new PerplexityAdapter(config);
   setClient(adapter, {
@@ -368,6 +393,7 @@ async function assertBilledTerminalRejection(
           {
             type: "response.completed",
             response: {
+              id: "resp_fixture_terminal_aggregate",
               status: "completed",
               model: adapter.model,
               output: [
@@ -387,6 +413,7 @@ async function assertBilledTerminalRejection(
   assert.deepEqual(
     {
       streamed: rawTelemetry.streamed,
+      request_id: rawTelemetry.request_id,
       events: rawTelemetry.events,
       raw_delta_chars: rawTelemetry.raw_delta_chars,
       terminal_message_chars: rawTelemetry.terminal_message_chars,
@@ -396,6 +423,7 @@ async function assertBilledTerminalRejection(
     },
     {
       streamed: true,
+      request_id: "resp_fixture_terminal_aggregate",
       events: 2,
       raw_delta_chars: 0,
       terminal_message_chars: READY.length,

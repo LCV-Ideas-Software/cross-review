@@ -1,8 +1,8 @@
 # Prompt Caching (v2.21.0+)
 
 `cross-review` integrates with each supported provider's available
-prompt-caching surface. Perplexity exposes no Sonar prompt-cache control or
-telemetry and is represented as `not_supported`. For participating providers,
+prompt-caching surface. A peer call that produces no cache telemetry is
+represented as `not_supported`. For participating providers,
 the runtime emits a uniform `provider.cache.usage` event and persists a
 per-session `cache_manifest.json` so dashboards, FinOps reports and post-mortem
 tooling can read cache telemetry without branching on provider-specific shapes.

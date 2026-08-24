@@ -3507,7 +3507,7 @@ export async function main(): Promise<void> {
   }, STARTUP_SWEEP_DELAY_MS);
   // v2.15.0 (item 4A boot warning): when operator configured a
   // CROSS_REVIEW_GROK_REASONING_EFFORT but the chosen model is NOT in
-  // the allowlist (Grok 4.5, 4.20 multi-agent and 4.3 accept the field
+  // the allowlist (Grok 4.6, 4.5, 4.20 multi-agent and 4.3 accept the field
   // per xAI docs — see GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE below),
   // inform that the value will be ignored at the wire level.
   // Catches misconfigurations early instead of letting the operator

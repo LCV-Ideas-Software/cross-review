@@ -888,7 +888,8 @@ export interface PeerCallContext {
   // for the current call. Operator uses this to dial down expensive
   // peers for routine cross-reviews while retaining deeper settings for
   // ship-critical paths. Each adapter maps the shared scale to its provider
-  // contract; the canonical Grok 4.5 adapter clamps it to low/medium/high.
+  // contract; the canonical Grok 4.6 adapter accepts through xhigh and maps
+  // `max`/`ultra` to it.
   reasoning_effort_override?: ReasoningEffort | undefined;
   // Per-operation output budget. Evidence judges use a compact cap rather
   // than inheriting the much larger full-review budget.

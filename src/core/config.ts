@@ -529,18 +529,28 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
       `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_PROBE_MODE="${probeModeRaw}" not recognized; defaulting to "auth_only". Recognized values: auth_only, live.`,
     );
   }
-  const invocationsEstimateRaw = numberEnv(
-    "CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE",
-  );
+  // Both Agent API knobs are integers; a malformed value is reported and
+  // replaced by the documented default instead of being silently truncated.
+  const invocationsEstimateRaw = (
+    envValue("CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE") ?? ""
+  ).trim();
+  let invocationsEstimate = 3;
+  if (invocationsEstimateRaw !== "") {
+    const parsed = Number(invocationsEstimateRaw);
+    if (Number.isInteger(parsed) && parsed >= 0) {
+      invocationsEstimate = parsed;
+    } else {
+      console.error(
+        `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE="${invocationsEstimateRaw}" must be a non-negative integer; defaulting to 3.`,
+      );
+    }
+  }
   return {
     search_context_size: searchContextSize,
     disable_search: boolEnv("CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH", false),
     probe_mode: probeMode,
-    max_steps: intEnv("CROSS_REVIEW_PERPLEXITY_MAX_STEPS", 1),
-    web_search_invocations_estimate:
-      invocationsEstimateRaw != null && Number.isInteger(invocationsEstimateRaw)
-        ? invocationsEstimateRaw
-        : 3,
+    max_steps: optionalPositiveIntEnv("CROSS_REVIEW_PERPLEXITY_MAX_STEPS") ?? 1,
+    web_search_invocations_estimate: invocationsEstimate,
   };
 }
 

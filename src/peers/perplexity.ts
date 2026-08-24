@@ -53,6 +53,7 @@
 // caller, lead_peer, or reviewer; the workspace HARD GATE
 // (caller != lead_peer != reviewer per session) applies uniformly.
 import type OpenAI from "openai";
+import { isPerplexityAgentModel } from "../core/cost.js";
 import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { portableStatusJsonSchema, statusInstruction } from "../core/status.js";
 import type {
@@ -88,11 +89,10 @@ export const PERPLEXITY_AGENT_MODELS_DOCS = "https://docs.perplexity.ai/docs/age
 // Agent API model ids are `provider/model` (e.g. `perplexity/kimi-k3`,
 // `openai/gpt-5.6-sol`). Anything without the provider segment is a
 // legacy Sonar Chat Completions id, which this adapter no longer speaks.
-const PERPLEXITY_AGENT_MODEL_ID = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
-
-export function isPerplexityAgentModel(model: string): boolean {
-  return PERPLEXITY_AGENT_MODEL_ID.test(model.trim());
-}
+// The single implementation lives in core/cost.ts so the adapter, the cost
+// layer, the financial preflight and the server boot notice can never
+// disagree about the same pin (including the `models/` prefix rule).
+export { isPerplexityAgentModel } from "../core/cost.js";
 
 export class PerplexityModelUnsupportedError extends Error {
   constructor(model: string) {
@@ -328,6 +328,7 @@ type AgentStreamEvent = {
   status?: number | undefined;
   statusCode?: number | undefined;
   response?: {
+    id?: string | undefined;
     status?: string | undefined;
     incomplete_details?: { reason?: string | undefined } | null;
     usage?: AgentUsage | null | undefined;
@@ -339,12 +340,14 @@ type AgentStreamEvent = {
 };
 
 type AgentResponse = {
+  id?: string | undefined;
   status?: unknown;
   incomplete_details?: { reason?: unknown } | null | undefined;
   usage?: AgentUsage | null | undefined;
   model?: string | undefined;
   output?: unknown;
   output_text?: unknown;
+  error?: { message?: string | undefined; code?: string | null | undefined } | null | undefined;
 };
 
 // An `incomplete` Agent API terminal (output budget exhausted) arrives with
@@ -461,15 +464,23 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       (isIncompleteTerminal(response?.status)
         ? estimatedIncompleteUsage(payload, searchPerformed)
         : undefined);
-    withEstimatedTerminalBilling(this.config, this.id, this.model, billingUsage, () =>
+    withEstimatedTerminalBilling(this.config, this.id, this.model, billingUsage, () => {
+      // A `failed` terminal carries the provider error object; surface its
+      // message instead of a bare status (same contract as openai.ts/grok.ts).
+      if (response?.error) {
+        throw streamingFailureErrorFromEvent(
+          { type: "response.failed", response: { error: response.error } },
+          "Perplexity response failed.",
+        );
+      }
       assertResponsesCompletion(response, {
         context,
         peer: this.id,
         provider: this.provider,
         model: this.model,
         phase,
-      }),
-    );
+      });
+    });
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -598,12 +609,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     const perplexityTokenStream = createPerplexityTokenEventBuffer(tokenStream);
     let usage: TokenUsage | undefined;
     let modelReported: string | undefined;
+    let requestId: string | undefined;
     let terminalMessageText: string | undefined;
     let responseCompleted = false;
     let responseRefused = false;
     let events = 0;
     for await (const event of stream as AsyncIterable<AgentStreamEvent>) {
       events += 1;
+      requestId = event.response?.id ?? requestId;
       responseRefused = observeResponsesStreamRefusal(event, responseRefused);
       const eventUsage = usageFromAgentApi(event.response?.usage, searchPerformed);
       // `response.incomplete` may carry `usage: null`; bill the rejected
@@ -691,6 +704,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         provider: this.provider,
         events,
         model: modelReported,
+        request_id: requestId,
         raw_delta_chars: rawDeltaText.length,
         terminal_message_chars: terminalMessageText?.length ?? 0,
         visible_chars: text.length,
