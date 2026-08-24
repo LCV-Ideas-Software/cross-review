@@ -1,8 +1,8 @@
 # Prompt Caching (v2.21.0+)
 
 `cross-review` integrates with each supported provider's available
-prompt-caching surface. Perplexity exposes no Sonar prompt-cache control or
-telemetry and is represented as `not_supported`. For participating providers,
+prompt-caching surface. A peer call that produces no cache telemetry is
+represented as `not_supported`. For participating providers,
 the runtime emits a uniform `provider.cache.usage` event and persists a
 per-session `cache_manifest.json` so dashboards, FinOps reports and post-mortem
 tooling can read cache telemetry without branching on provider-specific shapes.
@@ -18,18 +18,18 @@ This document describes:
 
 ## Per-provider behavior matrix
 
-| Peer (Provider)           | Cache mode      | Default participation | Threshold       | TTL surface                                     | Telemetry source                                                      |
-| ------------------------- | --------------- | --------------------- | --------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
-| `codex` (OpenAI)          | `auto`          | on                    | ~1k tokens      | Sol: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
-| `claude` (Anthropic)      | `explicit`      | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)               | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
-| `gemini` (Google)         | `implicit`      | on                    | service-managed | n/a                                             | `usageMetadata.cachedContentTokenCount`                               |
-| `deepseek` (DeepSeek)     | `auto`          | on                    | service-managed | n/a                                             | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
-| `grok` (xAI)              | `auto`          | on                    | service-managed | `prompt_cache_key`; no client TTL               | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
-| `perplexity` (Perplexity) | `not_supported` | off by capability     | n/a             | n/a                                             | none — Sonar API exposes no prompt-cache surface                      |
+| Peer (Provider)           | Cache mode | Default participation | Threshold       | TTL surface                                     | Telemetry source                                                      |
+| ------------------------- | ---------- | --------------------- | --------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
+| `codex` (OpenAI)          | `auto`     | on                    | ~1k tokens      | Sol: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
+| `claude` (Anthropic)      | `explicit` | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)               | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
+| `gemini` (Google)         | `implicit` | on                    | service-managed | n/a                                             | `usageMetadata.cachedContentTokenCount`                               |
+| `deepseek` (DeepSeek)     | `auto`     | on                    | service-managed | n/a                                             | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
+| `grok` (xAI)              | `auto`     | on                    | service-managed | `prompt_cache_key`; no client TTL               | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
+| `perplexity` (Perplexity) | `auto`     | on                    | service-managed | n/a                                             | Agent API `usage.input_tokens_details.cache_read_input_tokens`        |
 
 `mode` values follow the canonical `TokenUsage.cache_provider_mode` enum:
 
-- `auto` — provider auto-detects cacheable prefix (OpenAI, DeepSeek, Grok)
+- `auto` — provider auto-detects cacheable prefix (OpenAI, DeepSeek, Grok, Perplexity)
 - `explicit` — runtime places cache_control breakpoints in the body (Anthropic only)
 - `implicit` — provider transparently caches and reports tokens read (Gemini)
 - `not_supported` — peer call did not produce cache telemetry
@@ -133,7 +133,7 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
   `prompt_cache_options={mode:"implicit", ttl:"30m"}` surface. The legacy
   `CROSS_REVIEW_CACHE_TTL_OPENAI` mapping applies only to older explicitly
   overridden model families that still use `prompt_cache_retention`.
-- **Grok 4.5** sends only `prompt_cache_key`; xAI manages retention and does not
+- **Grok 4.6** sends only `prompt_cache_key`; xAI manages retention and does not
   receive the OpenAI retention field.
 
 ## Anthropic cache_control placement
@@ -162,7 +162,7 @@ Anthropic supports up to 4 breakpoints per request; we reserve 3 for future addi
 | Anthropic Opus 4.8 | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                       |
 | Gemini             | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                     |
 | DeepSeek           | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                      |
-| Grok               | service-managed                 | Grok 4.5 uses `prompt_cache_key`; xAI manages retention.                                 |
+| Grok               | service-managed                 | Grok 4.6 uses `prompt_cache_key`; xAI manages retention.                                 |
 
 ## Reference URLs
 

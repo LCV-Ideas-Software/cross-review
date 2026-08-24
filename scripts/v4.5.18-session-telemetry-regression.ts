@@ -29,6 +29,8 @@ function fixtureConfig(label: string): AppConfig {
           ? {
               input_per_million: 0,
               output_per_million: 0,
+              // v4.6.0: the canonical Agent API pin bills web_search per invocation.
+              search_queries_per_1000: 0,
               request_fee_low_per_1000: 0,
               request_fee_medium_per_1000: 0,
               request_fee_high_per_1000: 0,

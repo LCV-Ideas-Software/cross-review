@@ -76,11 +76,12 @@ process.env.CROSS_REVIEW_OPENAI_FALLBACK_MODELS = "stub-codex-fallback";
 // v2.14.0 (item 5): GROK joined the quinteto — its rate envs use the
 // canonical `CROSS_REVIEW_GROK_*` prefix (see config.ts COST_RATE_ENV_PREFIX).
 // v3.0.0: Perplexity joined the sexteto — its rate envs use the
-// `CROSS_REVIEW_PERPLEXITY_*` prefix. Perplexity ALSO bills a
-// per-1000-request fee that scales with search_context_size; the
+// `CROSS_REVIEW_PERPLEXITY_*` prefix. v4.6.0 (Agent API): the canonical
+// `perplexity/kimi-k3` pin bills web_search invocations per call; the
 // `missingFinancialControlVars` check rejects paid calls unless the
-// fee for the configured search_context_size (default `low`) is set,
-// so the smoke pre-populates the low-tier fee. The stub adapter never
+// per-1000-searches fee is set while search is enabled, so the smoke
+// pre-populates it (the legacy Sonar low-tier request fee stays seeded
+// for the retained legacy accounting regressions). The stub adapter never
 // actually charges, but the financial-controls preflight runs against
 // the configured rate cards regardless of stub mode.
 for (const provider of ["OPENAI", "ANTHROPIC", "GEMINI", "DEEPSEEK", "GROK", "PERPLEXITY"]) {
@@ -88,6 +89,7 @@ for (const provider of ["OPENAI", "ANTHROPIC", "GEMINI", "DEEPSEEK", "GROK", "PE
   process.env[`CROSS_REVIEW_${provider}_OUTPUT_USD_PER_MILLION`] ??= "1000";
 }
 process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS ??= "1000";
+process.env.CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS ??= "1000";
 process.env.CROSS_REVIEW_MAX_SESSION_COST_USD ??= "1000";
 process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD ??= "1000";
 process.env.CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD ??= "1000";
@@ -357,8 +359,9 @@ const adapterExpectations: Array<{ file: string; field: string | RegExp }> = [
     field: configurableOutputBudgetField("max_output_tokens"),
   },
   {
+    // v4.6.0: Agent API (Responses protocol) uses max_output_tokens.
     file: "src/peers/perplexity.ts",
-    field: configurableOutputBudgetField("max_tokens"),
+    field: configurableOutputBudgetField("max_output_tokens"),
   },
   { file: "src/mcp/server.ts", field: "token_streaming: runtime.config.streaming.tokens" },
 ];
@@ -392,8 +395,8 @@ for (const canonicalPin of [
   "claude-fable-5",
   "gemini-3.1-pro-preview",
   "deepseek-v4-pro",
-  "grok-4.5",
-  "sonar-reasoning-pro",
+  "grok-4.6",
+  "perplexity/kimi-k3",
 ]) {
   assert.ok(
     modelSelectionSource.includes(`"${canonicalPin}"`),
@@ -4567,36 +4570,79 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] relator_lottery_excludes_caller_test: PASS");
 }
 
-// v2.11.0 Relator Lottery — distribuição uniforme.
-// 2000 sorteios com caller=claude → counts de codex/gemini/deepseek/grok/perplexity
-// dentro de ±15% de 400 cada. Guard contra Math.random slipping in
-// (não-uniforme/previsível).
+// v4.6.0 (CROSREV-18) Relator Lottery — mapeamento determinístico.
+// O sorteio aceita um `rng` injetado: cada índice do intervalo meio-aberto
+// [0, pool.length) mapeia exatamente para o peer daquela posição do pool,
+// o rng recebe o tamanho do pool como limite exclusivo, e um índice fora
+// do intervalo (o guard que antes era inatingível) lança o erro nomeado.
 {
-  const { assignRelator } = await import("../src/core/relator-lottery.js");
-  // v3.0.0: 6-peer roster (perplexity adicionado), caller=claude → pool
-  // of 5 (codex/gemini/deepseek/grok/perplexity). Expected count per
-  // peer = N/5 = 400 (was N/4 = 500 in v2.14.x).
-  const counts: Record<string, number> = {
-    codex: 0,
-    gemini: 0,
-    deepseek: 0,
-    grok: 0,
-    perplexity: 0,
-  };
-  const N = 2000;
-  for (let i = 0; i < N; i++) {
-    const a = assignRelator("claude");
-    counts[a.assigned] = (counts[a.assigned] ?? 0) + 1;
+  const { assignRelator, relatorCandidatePool } = await import("../src/core/relator-lottery.js");
+  const pool = relatorCandidatePool("claude");
+  assert.deepEqual(pool, ["codex", "gemini", "deepseek", "grok", "perplexity"]);
+  const seen = new Set<string>();
+  for (let index = 0; index < pool.length; index++) {
+    let receivedMax: number | undefined;
+    const a = assignRelator("claude", undefined, (exclusiveMax) => {
+      receivedMax = exclusiveMax;
+      return index;
+    });
+    assert.equal(receivedMax, pool.length, "rng must receive the pool size as exclusive max");
+    assert.equal(a.assigned, pool[index], `index ${index} must map to pool[${index}]`);
+    assert.equal(a.entropy_source, "injected");
+    seen.add(a.assigned);
   }
-  const expected = N / 5; // 400
-  const tolerance = expected * 0.15; // ±60
-  for (const peer of ["codex", "gemini", "deepseek", "grok", "perplexity"]) {
-    const c = counts[peer];
-    assert.ok(
-      Math.abs((c ?? 0) - expected) <= tolerance,
-      `peer=${peer} count=${c} not within ±15% of ${expected} (range ${expected - tolerance}-${expected + tolerance}). Possible RNG bias.`,
+  assert.equal(seen.size, pool.length, "each index must select a distinct peer");
+  // Subset-aware: the injected index is applied to the session pool.
+  const subset = assignRelator("claude", ["codex", "gemini"], () => 1);
+  assert.equal(subset.assigned, "gemini");
+  assert.deepEqual(subset.candidate_pool, ["codex", "gemini"]);
+  for (const bad of [pool.length, -1, 1.5, Number.NaN]) {
+    assert.throws(
+      () => assignRelator("claude", undefined, () => bad),
+      /relator_assignment_index_out_of_bounds/,
+      `rng=${bad} must be rejected`,
     );
   }
+  // Without an injected rng the production entropy source is reported.
+  assert.equal(assignRelator("claude").entropy_source, "crypto.randomInt");
+  console.log("[smoke] relator_lottery_deterministic_mapping_test: PASS");
+}
+
+// v2.11.0 / v4.6.0 (CROSREV-18) Relator Lottery — distribuição uniforme do
+// RNG real (`crypto.randomInt`). Guard contra Math.random ou um viés no
+// mapeamento. Desenho estatístico explícito: N = 50 000 sorteios com
+// caller=claude sobre o pool de 5; estatística qui-quadrado com 4 graus de
+// liberdade (Σ (obs − 10 000)² / 10 000). Limiar 48.0: para df=4,
+// P(χ² > x) = e^(−x/2)·(1 + x/2), logo P(χ² > 48) ≈ 9,4e-10 por execução —
+// o falso positivo é controlado explicitamente (o desenho anterior, ±15%
+// sobre N=2000, tinha ≈0,4% por execução e disparou na CI). Potência: um
+// viés relativo de 10% em um peer (p = 0,22) eleva a estatística esperada
+// para ≈ 125 ≫ 48, portanto continua detectado com folga.
+{
+  const { assignRelator } = await import("../src/core/relator-lottery.js");
+  const peers = ["codex", "gemini", "deepseek", "grok", "perplexity"] as const;
+  const counts: Record<string, number> = Object.fromEntries(peers.map((peer) => [peer, 0]));
+  const N = 50_000;
+  for (let i = 0; i < N; i++) {
+    const a = assignRelator("claude");
+    assert.equal(a.entropy_source, "crypto.randomInt");
+    counts[a.assigned] = (counts[a.assigned] ?? 0) + 1;
+  }
+  const expected = N / peers.length; // 10 000
+  const chiSquare = peers.reduce(
+    (sum, peer) => sum + ((counts[peer] ?? 0) - expected) ** 2 / expected,
+    0,
+  );
+  const CHI_SQUARE_DF4_THRESHOLD = 48; // P(χ²₄ > 48) ≈ 9.4e-10
+  assert.ok(
+    chiSquare <= CHI_SQUARE_DF4_THRESHOLD,
+    `chi-square=${chiSquare.toFixed(2)} exceeds ${CHI_SQUARE_DF4_THRESHOLD} (df=4, p≈9.4e-10) for counts ${JSON.stringify(counts)}. Possible RNG bias.`,
+  );
+  assert.equal(
+    Object.values(counts).reduce((sum, count) => sum + count, 0),
+    N,
+    "every draw must land on a pool peer",
+  );
   console.log("[smoke] relator_lottery_uniform_distribution_test: PASS");
 }
 
@@ -5901,16 +5947,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "PEERS must have 6 entries (codex/claude/gemini/deepseek/grok/perplexity)",
   );
   const cfg = loadConfig();
-  // v4.5.0 provider-doc refresh: default grok model is the concrete
-  // `grok-4.5` pin. `grok-4-latest` remains a valid xAI alias and
+  // v4.6.0 provider-doc refresh: default grok model is the concrete
+  // `grok-4.6` pin. `grok-4-latest` remains a valid xAI alias and
   // `grok-4.20-multi-agent` remains a valid env-override for explicit
   // multi-agent reasoning behavior; the adapter tests below continue to
   // pin those capabilities.
   assert.equal(
     cfg.models.grok,
-    "grok-4.5",
-    "default grok model must be grok-4.5 (v4.5.0 provider-doc refresh)",
+    "grok-4.6",
+    "default grok model must be grok-4.6 (v4.6.0 provider-doc refresh)",
   );
+  assert.equal(cfg.reasoning_effort.grok, "xhigh", "default grok effort must be xhigh on 4.6");
   assert.ok("grok" in cfg.fallback_models, "fallback_models must have grok entry");
   assert.equal(cfg.peer_enabled.grok, true, "grok must be enabled by default");
   assert.ok(cfg.cost_rates.grok, "grok cost rates must be configured (env-set in smoke setup)");
@@ -5971,15 +6018,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // v2.15.0 (item 6) / v2.18.4 (Codex audit P2.1) — per-model reasoning
 // capability detection. Allowlist `GROK_REASONING_EFFORT_MODELS`
 // controls whether the GrokAdapter includes `reasoning.effort` in the
-// request body. As of v4.5.0 the allowlist holds Grok 4.5 plus
-// `grok-4.20-multi-agent` and `grok-4.3` (xAI docs verified
-// via WebFetch — grok-4.3 supports reasoning_effort with values
-// none/low/medium/high). Other Grok models (per xAI docs) reject the
-// param OR auto-apply reasoning internally, so we omit it.
+// request body. As of v4.6.0 the allowlist holds Grok 4.6 and Grok 4.5
+// plus `grok-4.20-multi-agent` and `grok-4.3` (xAI docs verified via
+// WebFetch — grok-4.3 supports reasoning_effort with values
+// none/low/medium/high; grok-4.6 adds xhigh). Other Grok models (per xAI
+// docs) reject the param OR auto-apply reasoning internally, so we omit it.
 {
   const grokMod = await import("../src/peers/grok.js");
   const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } = grokMod;
-  // Allowlist contract: grok-4.5 + grok-4.20-multi-agent + grok-4.3.
+  // Allowlist contract: grok-4.6 + grok-4.5 + grok-4.20-multi-agent + grok-4.3.
+  assert.equal(modelAcceptsReasoningEffort("grok-4.6"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.5"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.3"), true);
@@ -5991,7 +6039,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-3-fast"), false);
   // Set is exposed as ReadonlySet so future xAI additions are a 1-line
   // change in peers/grok.ts. Test asserts the expected size + content.
-  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 3);
+  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 4);
+  assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.6"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.5"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.20-multi-agent"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.3"));
@@ -6008,11 +6057,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 //     in stub mode;
 // (d) lottery includes 'perplexity' in the 6-peer pool when caller is
 //     one of the other 5;
-// (e) clampEffortForPerplexity narrows internal scale (xhigh/max) to
-//     'high' which is the Perplexity Sonar API's upper bound;
-// (f) PERPLEXITY_REASONING_EFFORT_MODELS allowlist holds exactly
-//     sonar-reasoning-pro + sonar-deep-research (sonar / sonar-pro
-//     ignore the field);
+// (e) clampEffortForPerplexity maps the internal scale onto the Agent
+//     API enum (`none` → minimal, `ultra` → max, `max` is the ceiling);
+// (f) legacy Sonar ids are rejected with a migration diagnostic;
 // (g) PerplexityAdapter exists and uses the shared loadOpenAICtor
 //     helper (cold-start lazy SDK pattern from v2.27.1);
 // (h) source-level invariants for the role-aware search behavior
@@ -6024,9 +6071,54 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const cfg = loadConfig();
   assert.equal(
     cfg.models.perplexity,
-    "sonar-reasoning-pro",
-    "default perplexity model must be sonar-reasoning-pro (operator directive 2026-05-12)",
+    "perplexity/kimi-k3",
+    "default perplexity model must be perplexity/kimi-k3 on the Agent API (operator directive 2026-08-23)",
   );
+  assert.equal(cfg.reasoning_effort.perplexity, "max", "default Perplexity effort must be max");
+  assert.equal(cfg.perplexity.max_steps, 1, "max_steps default must bound the agent loop to 1");
+  assert.equal(
+    cfg.perplexity.web_search_invocations_estimate,
+    3,
+    "web_search_invocations_estimate default must be the count observed on 23/08/2026",
+  );
+  assert.equal(
+    cfg.perplexity.search_preflight_policy,
+    "estimate",
+    "search_preflight_policy default must accept the declared estimate",
+  );
+  // Malformed or zero knobs report a notice and keep the documented defaults;
+  // valid positive integers are honored.
+  for (const [steps, estimate, expectedSteps, expectedEstimate] of [
+    ["0", "0", 1, 3],
+    ["2.5", "2.5", 1, 3],
+    ["abc", "-1", 1, 3],
+    // Agent API documents max_steps in [1, 100]; above-range values fall back.
+    ["101", "7", 1, 7],
+    ["100", "7", 100, 7],
+    ["4", "7", 4, 7],
+  ] as const) {
+    const previous = {
+      steps: process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS,
+      estimate: process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE,
+    };
+    process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS = steps;
+    process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE = estimate;
+    try {
+      const parsed = loadConfig().perplexity;
+      assert.equal(parsed.max_steps, expectedSteps, `max_steps="${steps}"`);
+      assert.equal(
+        parsed.web_search_invocations_estimate,
+        expectedEstimate,
+        `web_search_invocations_estimate="${estimate}"`,
+      );
+    } finally {
+      if (previous.steps === undefined) delete process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS;
+      else process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS = previous.steps;
+      if (previous.estimate === undefined)
+        delete process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE;
+      else process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE = previous.estimate;
+    }
+  }
   assert.ok("perplexity" in cfg.fallback_models, "fallback_models must have perplexity entry");
   assert.equal(cfg.peer_enabled.perplexity, true, "perplexity must be enabled by default");
   assert.ok(
@@ -6045,8 +6137,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "disable_search default must be false (search ATIVO per operator directive 2026-05-12)",
   );
   assert.ok(
-    typeof cfg.cost_rates.perplexity.request_fee_low_per_1000 === "number",
-    "request_fee_low_per_1000 must be parsed from env (smoke seeds 1000)",
+    typeof cfg.cost_rates.perplexity.search_queries_per_1000 === "number",
+    "search_queries_per_1000 must be parsed from env (smoke seeds 1000)",
   );
   // Stub adapter honoring perplexity.
   const cfgWithDir = {
@@ -6079,16 +6171,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.0.0 / perplexity_integration: adapter must consume the shared loadOpenAICtor (cold-start lazy SDK pattern)",
   );
   assert.ok(
-    /PERPLEXITY_BASE_URL\s*=\s*["']https:\/\/api\.perplexity\.ai["']/.test(perplexitySrc),
-    "v3.0.0 / perplexity_integration: baseURL must be https://api.perplexity.ai (OpenAI-SDK compat routes /v1/chat/completions to /v1/sonar)",
+    /PERPLEXITY_BASE_URL\s*=\s*["']https:\/\/api\.perplexity\.ai\/v1["']/.test(perplexitySrc),
+    "v4.6.0 / perplexity_integration: baseURL must be https://api.perplexity.ai/v1 (OpenAI-SDK responses.create lands on the documented /v1/responses Agent API alias)",
   );
   assert.ok(
-    /buildSonarOptions\(\s*this\.config,\s*this\.model,\s*"reviewer"/.test(perplexitySrc),
-    "v3.0.0 / perplexity_integration: call() method must invoke buildSonarOptions with role='reviewer' (search HONORED per config)",
+    /buildAgentOptions\(\s*this\.config,\s*"reviewer"/.test(perplexitySrc),
+    "v3.0.0 / perplexity_integration: call() method must invoke buildAgentOptions with role='reviewer' (web_search tool HONORED per config)",
   );
   assert.ok(
-    /buildSonarOptions\(\s*this\.config,\s*this\.model,\s*"relator"/.test(perplexitySrc),
-    "v3.0.0 / perplexity_integration: generate() method must invoke buildSonarOptions with role='relator' (search FORCED OFF)",
+    /buildAgentOptions\(\s*this\.config,\s*"relator"/.test(perplexitySrc),
+    "v3.0.0 / perplexity_integration: generate() method must invoke buildAgentOptions with role='relator' (web_search tool NEVER sent)",
   );
   assert.ok(
     /role === "relator" \|\| config\.perplexity\.disable_search/.test(perplexitySrc),
@@ -6097,101 +6189,145 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] perplexity_integration_test: PASS");
 }
 
-// v3.0.0 — Perplexity reasoning_effort capability detection.
-// Allowlist `PERPLEXITY_REASONING_EFFORT_MODELS` controls whether
-// the adapter includes `reasoning_effort` in the request body. Only
-// `sonar-reasoning-pro` and `sonar-deep-research` accept the field;
-// `sonar` and `sonar-pro` ignore it (no chain-of-thought stage).
+// v4.6.0 — Perplexity Agent API reasoning effort + model-id contract.
+// `reasoning.effort` is an API-level parameter with the documented enum
+// `minimal|low|medium|high|xhigh|max`; the adapter maps the shared scale
+// onto it. Model ids must use the documented `provider/model` form; the
+// retiring Sonar ids are rejected with a migration diagnostic.
 {
   const {
-    perplexityAcceptsReasoningEffort,
-    PERPLEXITY_REASONING_EFFORT_MODELS,
     clampEffortForPerplexity,
+    isPerplexityAgentModel,
+    assertPerplexityAgentModel,
+    usageFromAgentApi,
+    buildAgentOptions,
   } = await import("../src/peers/perplexity.js");
-  // Allowlist contract: sonar-reasoning-pro + sonar-deep-research.
-  assert.equal(perplexityAcceptsReasoningEffort("sonar-reasoning-pro"), true);
-  assert.equal(perplexityAcceptsReasoningEffort("sonar-deep-research"), true);
-  assert.equal(perplexityAcceptsReasoningEffort("sonar"), false);
-  assert.equal(perplexityAcceptsReasoningEffort("sonar-pro"), false);
-  // Set is exposed as ReadonlySet for future model additions.
-  assert.equal(PERPLEXITY_REASONING_EFFORT_MODELS.size, 2);
-  assert.ok(PERPLEXITY_REASONING_EFFORT_MODELS.has("sonar-reasoning-pro"));
-  assert.ok(PERPLEXITY_REASONING_EFFORT_MODELS.has("sonar-deep-research"));
-  // Clamp contract: internal scale narrows to the 4-value Perplexity
-  // accepted set (minimal / low / medium / high). xhigh/max → high;
-  // none → minimal.
   assert.equal(clampEffortForPerplexity("none"), "minimal");
   assert.equal(clampEffortForPerplexity("minimal"), "minimal");
   assert.equal(clampEffortForPerplexity("low"), "low");
   assert.equal(clampEffortForPerplexity("medium"), "medium");
   assert.equal(clampEffortForPerplexity("high"), "high");
-  assert.equal(clampEffortForPerplexity("xhigh"), "high");
-  assert.equal(clampEffortForPerplexity("max"), "high");
-  assert.equal(clampEffortForPerplexity(undefined), "high");
-  console.log("[smoke] perplexity_reasoning_capability_allowlist_test: PASS");
+  assert.equal(clampEffortForPerplexity("xhigh"), "xhigh");
+  assert.equal(clampEffortForPerplexity("max"), "max");
+  assert.equal(clampEffortForPerplexity("ultra"), "max");
+  assert.equal(clampEffortForPerplexity(undefined), "max");
+  for (const id of ["perplexity/kimi-k3", "openai/gpt-5.6-sol", "perplexity/sonar"]) {
+    assert.equal(isPerplexityAgentModel(id), true, `${id} is an Agent API id`);
+  }
+  for (const id of ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research", ""]) {
+    assert.equal(isPerplexityAgentModel(id), false, `${id || "<empty>"} is not an Agent API id`);
+    assert.throws(() => assertPerplexityAgentModel(id), /perplexity_model_unsupported/);
+  }
+  // Usage contract (live probe 23/08/2026): input_tokens includes cached
+  // reads; web-search invocations arrive under tool_calls_details.
+  const usage = usageFromAgentApi(
+    {
+      input_tokens: 112,
+      output_tokens: 36,
+      total_tokens: 148,
+      input_tokens_details: {
+        cached_tokens: 60,
+        cache_read_input_tokens: 60,
+        cache_creation_input_tokens: 0,
+      },
+      output_tokens_details: { reasoning_tokens: 0 },
+      tool_calls_details: { search_web: { invocation: 3 } },
+      cost: { total_cost: 0.00072 },
+    },
+    true,
+  );
+  assert.deepEqual(
+    {
+      input: usage?.input_tokens,
+      cacheRead: usage?.cache_read_tokens,
+      cacheWrite: usage?.cache_write_tokens,
+      searches: usage?.num_search_queries,
+      searchPerformed: usage?.search_performed,
+      providerTotal: usage?.provider_reported_total_cost_usd,
+      mode: usage?.cache_provider_mode,
+    },
+    {
+      input: 52,
+      cacheRead: 60,
+      cacheWrite: undefined,
+      searches: 3,
+      searchPerformed: true,
+      providerTotal: 0.00072,
+      mode: "auto",
+    },
+  );
+  const relatorUsage = usageFromAgentApi({ input_tokens: 10, output_tokens: 5 }, false);
+  assert.equal(relatorUsage?.num_search_queries, undefined);
+  assert.equal(relatorUsage?.search_performed, false);
+  // Role-aware tool declaration: reviewer sends web_search + max_steps;
+  // relator never does; disable_search removes it from the reviewer too.
+  const cfg = loadConfig();
+  const reviewer = buildAgentOptions(cfg, "reviewer");
+  assert.deepEqual(reviewer.options.tools, [
+    { type: "web_search", search_context_size: cfg.perplexity.search_context_size },
+  ]);
+  assert.equal(reviewer.options.max_steps, cfg.perplexity.max_steps);
+  assert.equal(reviewer.searchPerformed, true);
+  const relator = buildAgentOptions(cfg, "relator", "medium");
+  assert.equal(relator.options.tools, undefined);
+  assert.equal(relator.options.max_steps, undefined);
+  assert.deepEqual(relator.options.reasoning, { effort: "medium" });
+  assert.equal(relator.searchPerformed, false);
+  const disabled = buildAgentOptions(
+    { ...cfg, perplexity: { ...cfg.perplexity, disable_search: true } },
+    "reviewer",
+  );
+  assert.equal(disabled.options.tools, undefined);
+  assert.equal(disabled.searchPerformed, false);
+  console.log("[smoke] perplexity_agent_api_contract_test: PASS");
 }
 
-// v4.5.0 provider-doc refresh — Sonar's request fee is charged for every
-// request at the configured search-context tier even when disable_search=true
-// and no web search is triggered. `disable_search` is a latency control, not a
-// billing exemption. This regression test prevents relator and disabled-search
-// calls from being undercounted by the budget preflight.
+// v4.6.0 provider-doc refresh — Agent API search accounting. The web_search
+// tool is billed per invocation reported by the provider; there is no
+// per-request fee. Post-call accounting therefore follows
+// `num_search_queries` (exact), never the `search_performed` telemetry flag,
+// and the legacy Sonar request fee never leaks onto an Agent API model.
 {
   const { estimateCost } = await import("../src/core/cost.js");
   const cfg = loadConfig();
-  // Scenario A: relator path — search_performed=false still pays request fee.
-  const relatorUsage = {
+  // Scenario A: reviewer call that reported 3 invocations pays 3 × fee/1000
+  // (smoke seeds CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES=1000 → $1 per search).
+  const reviewerCost = estimateCost(cfg, "perplexity", {
+    input_tokens: 100,
+    output_tokens: 50,
+    num_search_queries: 3,
+    search_performed: true,
+  });
+  assert.equal(reviewerCost.search_queries_cost, 3, "3 invocations × $1000/1000 = $3");
+  assert.equal(reviewerCost.request_cost, undefined, "Agent API models have no request fee");
+  // Scenario B: relator call (no tool declared) accrues no search cost.
+  const relatorCost = estimateCost(cfg, "perplexity", {
     input_tokens: 100,
     output_tokens: 50,
     search_performed: false,
-  };
-  const relatorCost = estimateCost(cfg, "perplexity", relatorUsage);
-  assert.ok(
-    typeof relatorCost.request_cost === "number" && relatorCost.request_cost > 0,
-    "Perplexity request fees apply even when disable_search=true/search_performed=false.",
-  );
-  // Scenario B: reviewer path — search_performed=true → YES request_cost
-  // (smoke seeds CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW=1000 so a real
-  // non-zero value lands).
-  const reviewerUsage = {
+  });
+  assert.equal(relatorCost.search_queries_cost, undefined);
+  assert.equal(relatorCost.request_cost, undefined);
+  // Scenario C: the telemetry flag alone never bills — a reviewer whose tool
+  // was declared but never invoked pays only tokens.
+  const idleReviewerCost = estimateCost(cfg, "perplexity", {
     input_tokens: 100,
     output_tokens: 50,
+    num_search_queries: 0,
     search_performed: true,
-  };
-  const reviewerCost = estimateCost(cfg, "perplexity", reviewerUsage);
+  });
+  assert.equal(idleReviewerCost.search_queries_cost, undefined);
   assert.ok(
-    typeof reviewerCost.request_cost === "number" && reviewerCost.request_cost > 0,
-    "reviewer call (search_performed=true) MUST accrue request_cost when fee is configured",
-  );
-  // Scenario C: legacy/stub path — search_performed undefined → fall
-  // back to config.perplexity.disable_search check (default false →
-  // request_cost present).
-  const legacyUsage = { input_tokens: 100, output_tokens: 50 };
-  const legacyCost = estimateCost(cfg, "perplexity", legacyUsage);
-  assert.ok(
-    typeof legacyCost.request_cost === "number" && legacyCost.request_cost > 0,
-    "legacy call (search_performed unset) with config.disable_search=false MUST preserve v3.0.0 baseline (request_cost present)",
-  );
-  // Scenario D: config-wide disable_search also keeps the request fee.
-  const disabledConfigCost = estimateCost(
-    {
-      ...cfg,
-      perplexity: { ...cfg.perplexity, disable_search: true },
-    },
-    "perplexity",
-    { input_tokens: 100, output_tokens: 50, search_performed: false },
-  );
-  assert.ok(
-    typeof disabledConfigCost.request_cost === "number" && disabledConfigCost.request_cost > 0,
-    "Config disable_search=true must not suppress Sonar's per-request fee.",
+    Math.abs((idleReviewerCost.total_cost ?? 0) - (relatorCost.total_cost ?? 0)) < 1e-12,
+    "search_performed must not change the billed amount",
   );
   const costSrc = fs.readFileSync("src/core/cost.ts", "utf8");
   assert.equal(
     /usage\.search_performed \?\? !config\.perplexity\?\.disable_search/.test(costSrc),
     false,
-    "Perplexity request-cost accounting must not be gated on whether web search ran.",
+    "Perplexity search accounting must not be gated on whether web search ran.",
   );
-  console.log("[smoke] perplexity_request_cost_always_billed_test: PASS");
+  console.log("[smoke] perplexity_agent_api_search_fee_test: PASS");
 }
 
 // v4.5.0 runtime resilience — syntactically valid JSON is not necessarily a
@@ -6359,8 +6495,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.2.0: stripPerplexityThinkingBlock must be exported (smoke + anti-drift)",
   );
   assert.ok(
-    /return stripPerplexityThinkingBlock\(raw\)/.test(perplexitySrc),
-    "v3.2.0: sonarText() must strip <think> blocks before returning",
+    /return stripPerplexityThinkingBlock\(messageText \|\| helperText\)/.test(perplexitySrc),
+    "v3.2.0/v4.6.0: agentText() must strip <think> blocks before returning (and must not fall back to serializing the provider envelope)",
   );
   assert.ok(
     /PERPLEXITY_THINKING_BLOCK\s*=\s*\/<think\\b/.test(perplexitySrc),
@@ -6781,7 +6917,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     // (b) file present + valid
     const validConfig = {
       version: "1.0",
-      models: { codex: "gpt-5.5", perplexity: "sonar-reasoning-pro" },
+      models: { codex: "gpt-5.5", perplexity: "perplexity/kimi-k3" },
       budget: { default_max_rounds: 12 },
       peer_enabled: { perplexity: true },
       token_streaming: { chars_threshold: 4096, ms_threshold: 1000 },
@@ -7871,6 +8007,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // so the smoke can verify it directly without a request-shape stub.
 {
   const { clampEffortForModel } = await import("../src/peers/grok.js");
+  // grok-4.6 — API accepts low|medium|high|xhigh (xhigh passes through).
+  assert.equal(clampEffortForModel("none", "grok-4.6"), "low");
+  assert.equal(clampEffortForModel("minimal", "grok-4.6"), "low");
+  assert.equal(clampEffortForModel("low", "grok-4.6"), "low");
+  assert.equal(clampEffortForModel("medium", "grok-4.6"), "medium");
+  assert.equal(clampEffortForModel("high", "grok-4.6"), "high");
+  assert.equal(clampEffortForModel("xhigh", "grok-4.6"), "xhigh");
   // grok-4.5 — API accepts only low|medium|high.
   assert.equal(clampEffortForModel("none", "grok-4.5"), "low");
   assert.equal(clampEffortForModel("minimal", "grok-4.5"), "low");
@@ -9001,12 +9144,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // first names the raw delta buffer for bounded telemetry and then strips it;
 // terminal aggregate content is a fallback only when no usable delta remains.
 //
-// Source-level pins prevent regressions: (a) both streaming branches
-// MUST read and wrap the raw delta buffer with `stripPerplexityThinkingBlock`;
-// (b) the negative form
-// (bare `stream_buffer.text()` flowing to `resultFromText`/
-// `generationFromText` without strip) MUST NOT reappear; (c) dist
-// parity — same invariants in compiled JS.
+// Source-level pins prevent regressions: (a) the shared streaming helper
+// MUST read and wrap the raw delta buffer with `stripPerplexityThinkingBlock`
+// and MUST be the streaming path of BOTH call() and generate() (v4.6.0
+// folded the two Sonar branches into one Agent API helper invoked once per
+// role); (b) the negative form (bare `stream_buffer.text()` flowing to
+// `resultFromText`/`generationFromText` without strip) MUST NOT reappear;
+// (c) dist parity — same invariants in compiled JS.
 {
   const perplexitySrc = fs.readFileSync(
     new URL("../src/peers/perplexity.ts", import.meta.url),
@@ -9016,16 +9160,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const strippedStreamMatches = perplexitySrc.match(
     /stripPerplexityThinkingBlock\(rawDeltaText\)/g,
   );
+  const sharedStreamInvocations = perplexitySrc.match(/await this\.streamAgentResponse\(/g);
   assert.ok(
     rawDeltaReads !== null &&
-      rawDeltaReads.length >= 2 &&
+      rawDeltaReads.length >= 1 &&
       strippedStreamMatches !== null &&
-      strippedStreamMatches.length >= 2,
-    `v4.5.36 / perplexity_streaming_strip_parity: src/peers/perplexity.ts must read and strip the delta buffer at BOTH call() and generate() streaming branches (reads=${rawDeltaReads?.length ?? 0}, strips=${strippedStreamMatches?.length ?? 0})`,
+      strippedStreamMatches.length >= 1 &&
+      sharedStreamInvocations !== null &&
+      sharedStreamInvocations.length >= 2,
+    `v4.5.36 / perplexity_streaming_strip_parity: src/peers/perplexity.ts must read and strip the delta buffer in the shared streaming helper and route BOTH call() and generate() through it (reads=${rawDeltaReads?.length ?? 0}, strips=${strippedStreamMatches?.length ?? 0}, invocations=${sharedStreamInvocations?.length ?? 0})`,
   );
   assert.ok(
-    (perplexitySrc.match(/terminalMessageFallbackUsed/g)?.length ?? 0) >= 2,
-    "v4.5.36 / perplexity_terminal_message_fallback: reviewer and relator paths must retain the documented terminal aggregate fallback",
+    (perplexitySrc.match(/terminalMessageFallbackUsed/g)?.length ?? 0) >= 1,
+    "v4.5.36 / perplexity_terminal_message_fallback: the shared streaming helper must retain the documented terminal aggregate fallback",
   );
   // Negative pin: bare `const text = stream_buffer.text();` must not
   // appear (it would mean a streaming branch is bypassing the strip).
@@ -9051,16 +9198,19 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     const distStrippedMatches = perplexityDist.match(
       /stripPerplexityThinkingBlock\(rawDeltaText\)/g,
     );
+    const distSharedStreamInvocations = perplexityDist.match(/await this\.streamAgentResponse\(/g);
     assert.ok(
       distRawDeltaReads !== null &&
-        distRawDeltaReads.length >= 2 &&
+        distRawDeltaReads.length >= 1 &&
         distStrippedMatches !== null &&
-        distStrippedMatches.length >= 2,
-      `v4.5.36 / perplexity_streaming_strip_parity: dist must mirror source delta reads and strips (reads=${distRawDeltaReads?.length ?? 0}, strips=${distStrippedMatches?.length ?? 0})`,
+        distStrippedMatches.length >= 1 &&
+        distSharedStreamInvocations !== null &&
+        distSharedStreamInvocations.length >= 2,
+      `v4.5.36 / perplexity_streaming_strip_parity: dist must mirror the source delta read/strip and both role invocations (reads=${distRawDeltaReads?.length ?? 0}, strips=${distStrippedMatches?.length ?? 0}, invocations=${distSharedStreamInvocations?.length ?? 0})`,
     );
     assert.ok(
-      (perplexityDist.match(/terminalMessageFallbackUsed/g)?.length ?? 0) >= 2,
-      "v4.5.36 / perplexity_terminal_message_fallback: dist must retain reviewer and relator terminal aggregate fallbacks",
+      (perplexityDist.match(/terminalMessageFallbackUsed/g)?.length ?? 0) >= 1,
+      "v4.5.36 / perplexity_terminal_message_fallback: dist must retain the terminal aggregate fallback",
     );
     assert.ok(
       !/const\s+text\s*=\s*stream_buffer\.text\(\)\s*;/.test(perplexityDist),
@@ -9805,8 +9955,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     ["claude", "claude-fable-5"],
     ["gemini", "gemini-3.1-pro-preview"],
     ["deepseek", "deepseek-v4-pro"],
-    ["grok", "grok-4.5"],
-    ["perplexity", "sonar-reasoning-pro"],
+    ["grok", "grok-4.6"],
+    ["perplexity", "perplexity/kimi-k3"],
   ] as const) {
     assert.ok(
       a3ModelSrc.includes(`${peer}: ["${pin}"]`),

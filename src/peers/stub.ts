@@ -20,7 +20,7 @@ const PROVIDERS: Record<PeerId, string> = {
   // without the real xAI API key.
   grok: "stub-xai",
   // v3.0.0: stub provider id for the Perplexity adapter so smoke runs
-  // without the real Sonar API key.
+  // without the real Perplexity API key.
   perplexity: "stub-perplexity",
 };
 

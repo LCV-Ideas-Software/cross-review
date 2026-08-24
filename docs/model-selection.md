@@ -10,8 +10,10 @@ canonical pin.
 
 1. When the provider exposes a model-list endpoint, query it with the current
    API key to validate that the canonical pin is available. Perplexity is the
-   documented exception: Sonar exposes no public `models.list`, so its pin is
-   validated against official documentation and remains `confidence=inferred`.
+   documented exception: its Agent API catalog is not exposed through the
+   OpenAI-SDK `models.list` path the resolver shares with the other peers, so
+   its pin is validated against official documentation and remains
+   `confidence=inferred`.
 2. Keep only models that can perform text generation for the peer role.
 3. Exclude known non-thinking, low-capacity or deprecated models — they
    never become the canonical pin.
@@ -45,8 +47,8 @@ env-var per host — a deliberate decision, never a silent downgrade.
 | Anthropic/Claude | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | Google/Gemini    | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | DeepSeek         | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| xAI/Grok         | `grok-4.5`               | `CROSS_REVIEW_GROK_MODEL`       |
-| Perplexity       | `sonar-reasoning-pro`    | `CROSS_REVIEW_PERPLEXITY_MODEL` |
+| xAI/Grok         | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
+| Perplexity       | `perplexity/kimi-k3`     | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
@@ -79,24 +81,37 @@ for this peer; no `*-flash` variants and no models below 2.5. Operators can
 still override the pin explicitly, but the default/canonical path follows the
 documented replacement.
 
-`GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.5`
-model accepts exactly `low`, `medium`, and `high` for `reasoning.effort`; the
-adapter maps the shared scale into that range so unsupported values do not
-reach the wire.
+`GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.6`
+model accepts `low`, `medium`, `high`, and `xhigh` for `reasoning.effort`
+("xhigh is available on grok-4.6 and later"); the adapter maps the shared scale
+into that range (`max`/`ultra` → `xhigh`) so unsupported values do not reach
+the wire.
 
-`PERPLEXITY_API_KEY` is the canonical auth variable for Perplexity Sonar.
-Sonar billing has a 3rd dimension: per-1000-requests fee that scales with
-`CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` (low/medium/high). When
-Perplexity is the relator (lottery), the adapter forces `disable_search=true`
-to skip search for the synthesis step. The runtime still accounts for the
-configured Sonar request fee: disabling search does not turn the request into
-a zero-cost probe or synthesis call.
+`PERPLEXITY_API_KEY` is the canonical auth variable for Perplexity. Since
+v4.6.0 the adapter speaks the Perplexity Agent API (`POST /v1/agent`, with the
+OpenAI-Responses-compatible alias `/v1/responses`) because Perplexity retires
+the Sonar Chat Completions API on 27/09/2026. Model ids use the documented
+`provider/model` form; the canonical pin `perplexity/kimi-k3` (Moonshot AI
+Kimi K3) was chosen as the most capable reasoning model of that catalog whose
+family is not already a peer — Claude, GPT, Gemini, Grok and DeepSeek are also
+available there but would duplicate an existing peer. Legacy unprefixed Sonar
+ids are rejected before any network call with `perplexity_model_unsupported`,
+and the financial preflight reports
+`CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID`.
+
+Web search is a declared tool: the reviewer role sends
+`tools: [{ type: "web_search", search_context_size }]` with the wire-enforced
+`max_steps` bound (`CROSS_REVIEW_PERPLEXITY_MAX_STEPS`, default `1`); the
+relator role (lottery) and the evidence judge never declare it. The tool is
+billed per invocation (`usage.tool_calls_details`), so
+`CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH=true` removes that cost dimension
+entirely.
 
 Perplexity does not document a zero-token model/auth endpoint. To avoid
 accidental probe spend, `probe_peers` defaults to
 `CROSS_REVIEW_PERPLEXITY_PROBE_MODE=auth_only`, which reports key presence and
-the configured pin without a Sonar completion. Set the mode to `live` when you
-explicitly want a minimal `disable_search` round-trip.
+the configured pin without a completion. Set the mode to `live` when you
+explicitly want a minimal round-trip without tools.
 
 ## Thinking Configuration
 
@@ -119,22 +134,24 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default;
   shared-scale `xhigh`, `max`, and `ultra` all normalize to `max`.
-- Grok: the pinned `grok-4.5` model accepts explicit `reasoning.effort` at
-  `low`, `medium`, or `high`; unsupported shared-scale values are clamped.
-  For the explicit `grok-4.20-multi-agent` compatibility override, the
-  provider enum is `low`/`medium`/`high`/`xhigh`: shared `none`/`minimal`
-  normalize to `low`, while `max`/`ultra` normalize to `xhigh`.
-- Perplexity: the general `/v1/sonar` request schema accepts an explicit
-  `reasoning_effort` enum (`minimal`/`low`/`medium`/`high`). The specific
-  Sonar Reasoning Pro page does not promise how those levels change model
-  depth, so the field is treated as an endpoint capability rather than a
-  quality guarantee. `clampEffortForPerplexity` narrows the shared scale into
-  that enum (`none`/`minimal` → `minimal`; `xhigh`/`max`/`ultra` → `high`).
+- Grok: the pinned `grok-4.6` model accepts explicit `reasoning.effort` at
+  `low`, `medium`, `high`, or `xhigh` (default `xhigh`); shared `none`/`minimal`
+  normalize to `low` and `max`/`ultra` to `xhigh`. The explicit `grok-4.5`
+  override keeps its `low`/`medium`/`high` ceiling, and for the explicit
+  `grok-4.20-multi-agent` compatibility override the provider enum is
+  `low`/`medium`/`high`/`xhigh`: shared `none`/`minimal` normalize to `low`,
+  while `max`/`ultra` normalize to `xhigh`.
+- Perplexity: the Agent API request schema accepts `reasoning.effort` with the
+  documented enum `minimal`/`low`/`medium`/`high`/`xhigh`/`max` (verified live
+  with `perplexity/kimi-k3` at `max` on 23/08/2026). The default is `max`;
+  `clampEffortForPerplexity` maps the shared scale onto that enum
+  (`none` → `minimal`; `ultra` → `max`).
 
 The alias is accepted consistently by central `config.json`, environment
 variables and per-call overrides. It is never a provider payload value:
-OpenAI GPT-5.6, Anthropic and DeepSeek receive `max`; Grok 4.5 and Perplexity
-receive `high`; Gemini maps the configured setting to its native thinking enum.
+OpenAI GPT-5.6, Anthropic, DeepSeek and Perplexity (Kimi K3) receive `max`;
+Grok 4.6 receives `xhigh`; Gemini maps the configured setting to its native
+thinking enum.
 When an operator explicitly selects an older GPT-5 family, the OpenAI adapter
 uses that family's documented ceiling rather than blindly sending GPT-5.6's
 enum.
@@ -147,7 +164,7 @@ differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
 64,000 for Claude Fable 5 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
 four peers. These
 values follow the official OpenAI allocation guidance and Anthropic task-budget
-minimum without assuming an undocumented Grok 4.5 ceiling. `server_info`
+minimum without assuming an undocumented Grok 4.6 ceiling. `server_info`
 returns the effective six-peer map used by both provider payloads and budget
 preflight.
 
@@ -168,14 +185,16 @@ preflight.
 - DeepSeek: [API updates](https://api-docs.deepseek.com/updates) and
   [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode), plus
   [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
-- xAI: [Grok 4.5](https://docs.x.ai/developers/grok-4-5) and
+- xAI: [models](https://docs.x.ai/developers/models),
   [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning),
-  plus [prompt-cache usage and pricing](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing).
-- Perplexity: [Sonar models](https://docs.perplexity.ai/docs/sonar/models) and
-  [Sonar Reasoning Pro](https://docs.perplexity.ai/docs/sonar/models/sonar-reasoning-pro),
-  [OpenAI compatibility](https://docs.perplexity.ai/docs/sonar/openai-compatibility),
-  the [request schema](https://docs.perplexity.ai/api-reference/sonar-post), and
-  [pricing](https://docs.perplexity.ai/docs/getting-started/pricing).
+  [pricing](https://docs.x.ai/developers/pricing), plus
+  [prompt-cache usage and pricing](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing).
+- Perplexity: [Agent API models](https://docs.perplexity.ai/docs/agent-api/models),
+  [OpenAI compatibility](https://docs.perplexity.ai/docs/agent-api/openai-compatibility),
+  the [Agent API request schema](https://docs.perplexity.ai/api-reference/agent-post),
+  [structured output](https://docs.perplexity.ai/docs/agent-api/building-agents/shape-output),
+  and the [Sonar retirement notice](https://docs.perplexity.ai/docs/sonar/models/sonar-reasoning-pro)
+  (supported until 27/09/2026).
 
 ## Historical Documentation Refresh — 05/05/2026
 
@@ -197,8 +216,11 @@ above and enforced by `src/peers/model-selection.ts`.
   discontinuation on 24/07/2026 and must stay out of current pins and
   downgrade chains.
 - xAI Grok: historical Grok notes covered aliases and the earlier concrete
-  `grok-4.3` pin. Current runtime behavior is defined above by the
-  `grok-4.5` pin and its clamped `low`/`medium`/`high` reasoning effort.
+  `grok-4.3` and `grok-4.5` pins. Current runtime behavior is defined above by
+  the `grok-4.6` pin and its `low`/`medium`/`high`/`xhigh` reasoning effort.
+- Perplexity: `sonar-reasoning-pro` on the Sonar Chat Completions API was the
+  v3.0.0–v4.5.x pin; that API retires on 27/09/2026 and current runtime
+  behavior is defined above by the `perplexity/kimi-k3` pin on the Agent API.
 
 ## Important
 

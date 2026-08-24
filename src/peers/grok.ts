@@ -9,7 +9,9 @@
 //   - `provider = "xai"`
 //   - auth via canonical `GROK_API_KEY`
 //   - operator chooses the model through CROSS_REVIEW_GROK_MODEL:
-//       * grok-4.5 (canonical): explicit reasoning.effort through high
+//       * grok-4.6 (canonical since v4.6.0): explicit reasoning.effort
+//         through xhigh
+//       * grok-4.5: explicit reasoning.effort through high
 //       * grok-4-latest / grok-4.20 / grok-4.20-reasoning:
 //         xAI automatic reasoning; omit reasoning.effort
 //       * grok-4.3: explicit reasoning.effort supported through high
@@ -110,7 +112,7 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
   if (!usage) return undefined;
   // xAI's OpenAI-compatible Responses usage surfaces cached tokens under
   // prompt_tokens_details (or input_tokens_details on newer response shapes),
-  // so the same parsing path applies to the current Grok 4.5 pin and legacy
+  // so the same parsing path applies to the current Grok 4.6 pin and legacy
   // supported pins.
   const cached =
     usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
@@ -136,10 +138,13 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
 // v2.16.0 clarification (operator directive 2026-05-05) / v2.18.4 update
 // (Codex audit 2026-05-07 P2.1): per CURRENT xAI docs at
 // https://docs.x.ai/developers/model-capabilities/text/reasoning,
-// `grok-4.5`, `grok-4.20-multi-agent`, and `grok-4.3` accept the
-// `reasoning.effort` parameter (xAI added grok-4.3 reasoning_effort
-// support after v2.16.0 froze; verified via WebFetch 2026-05-07).
-// Their accepted value sets DIFFER:
+// `grok-4.6`, `grok-4.5`, `grok-4.20-multi-agent`, and `grok-4.3` accept
+// the `reasoning.effort` parameter (xAI added grok-4.3 reasoning_effort
+// support after v2.16.0 froze; verified via WebFetch 2026-05-07; grok-4.6
+// verified via WebFetch 2026-08-23: "xhigh is available on grok-4.6 and
+// later. On models that do not support it, such as grok-4.5, requests
+// with xhigh are treated as high"). Their accepted value sets DIFFER:
+//   - grok-4.6: { "low", "medium", "high" (default), "xhigh" }
 //   - grok-4.5: { "low", "medium", "high" (default) }
 //   - grok-4.3: { "none", "low" (default), "medium", "high" }
 //   - grok-4.20-multi-agent: { "low", "medium", "high", "xhigh" }
@@ -176,6 +181,13 @@ export function clampEffortForModel(
   effort: GrokReasoningEffort,
   model: string,
 ): GrokReasoningEffort {
+  if (model === "grok-4.6") {
+    // grok-4.6 accepts low|medium|high|xhigh; `max`/`ultra` already
+    // collapsed to `xhigh` in grokEffort(). Shared none/minimal mean "the
+    // lowest supported effort" (reasoning cannot be disabled on this model).
+    if (effort === "none" || effort === "minimal" || effort === "low") return "low";
+    return effort;
+  }
   if (model === "grok-4.5") {
     if (effort === "none" || effort === "minimal" || effort === "low") return "low";
     if (effort === "xhigh") return "high";
@@ -203,7 +215,7 @@ export function clampEffortForModel(
 }
 
 // v2.15.0/v2.16.0: per-model reasoning capability detection. Per
-// official xAI docs, `grok-4.5`, `grok-4.3`, and
+// official xAI docs, `grok-4.6`, `grok-4.5`, `grok-4.3`, and
 // `grok-4.20-multi-agent` accept the
 // `reasoning.effort` body field. Other Grok models (including
 // `grok-4-latest`, `grok-4.20`, and `grok-4.20-reasoning`) have automatic
@@ -223,6 +235,8 @@ export function clampEffortForModel(
 // capability discovery endpoint, replace the static set with a
 // runtime probe + cache.
 export const GROK_REASONING_EFFORT_MODELS: ReadonlySet<string> = new Set([
+  // v4.6.0: grok-4.6 (canonical) accepts reasoning.effort through xhigh.
+  "grok-4.6",
   "grok-4.5",
   "grok-4.20-multi-agent",
   // v2.18.4 / Codex audit 2026-05-07 P2.1: xAI docs (WebFetch verified

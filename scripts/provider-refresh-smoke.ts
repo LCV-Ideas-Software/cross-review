@@ -379,13 +379,13 @@ async function captureGrokReasoningEffort(
 }
 
 {
-  const grok = selectFromCandidates("grok", [{ id: "grok-4.5", source: "api" }], "grok-4.5");
-  assert.equal(grok.selected, "grok-4.5");
+  const grok = selectFromCandidates("grok", [{ id: "grok-4.6", source: "api" }], "grok-4.6");
+  assert.equal(grok.selected, "grok-4.6");
   assert.equal(grok.confidence, "verified");
 
   const adapter = new GrokAdapter({
     ...config,
-    models: { ...config.models, grok: "grok-4.5" },
+    models: { ...config.models, grok: "grok-4.6" },
     reasoning_effort: { ...config.reasoning_effort, grok: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -405,7 +405,7 @@ async function captureGrokReasoningEffort(
         return {
           status: "completed",
           output_text: "revised fixture",
-          model: "grok-4.5",
+          model: "grok-4.6",
           usage: {
             input_tokens: 100,
             output_tokens: 20,
@@ -423,13 +423,13 @@ async function captureGrokReasoningEffort(
   });
   assert.deepEqual(
     capturedPayload?.reasoning,
-    { effort: "high" },
-    "Grok 4.5 accepts low|medium|high; the ultra alias must clamp to high.",
+    { effort: "xhigh" },
+    "Grok 4.6 accepts low|medium|high|xhigh; the ultra alias must normalize to xhigh.",
   );
   assert.equal(
     Object.hasOwn(capturedPayload ?? {}, "prompt_cache_retention"),
     false,
-    "Grok 4.5 must not receive OpenAI-only prompt_cache_retention.",
+    "Grok 4.6 must not receive OpenAI-only prompt_cache_retention.",
   );
   assert.equal(capturedPayload?.prompt_cache_key !== undefined, true);
   assert.equal(generated.usage?.input_tokens, 60);
@@ -451,6 +451,19 @@ async function captureGrokReasoningEffort(
     model: string;
     expected: Record<ReasoningEffort, string>;
   }> = [
+    {
+      model: "grok-4.6",
+      expected: {
+        none: "low",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "xhigh",
+        ultra: "xhigh",
+      },
+    },
     {
       model: "grok-4.5",
       expected: {
@@ -504,39 +517,49 @@ async function captureGrokReasoningEffort(
   }
 }
 
-{
-  const adapter = new PerplexityAdapter(config);
-  let capturedPayload:
-    | { max_tokens?: number; disable_search?: boolean; messages?: Array<{ content?: string }> }
-    | undefined;
+type PerplexityProbePayload = {
+  model?: string;
+  max_output_tokens?: number;
+  tools?: unknown;
+  input?: unknown;
+  reasoning?: { effort?: string };
+};
+
+function capturePerplexityProbe(
+  adapter: PerplexityAdapter,
+  response: Record<string, unknown> = {
+    status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" },
+  },
+): () => PerplexityProbePayload | undefined {
+  let capturedPayload: PerplexityProbePayload | undefined;
   (
     adapter as unknown as {
       client: () => Promise<{
-        chat: {
-          completions: {
-            create: (payload: {
-              max_tokens?: number;
-              disable_search?: boolean;
-              messages?: Array<{ content?: string }>;
-            }) => Promise<void>;
-          };
+        responses: {
+          create: (payload: PerplexityProbePayload) => Promise<Record<string, unknown>>;
         };
       }>;
     }
   ).client = async () => ({
-    chat: {
-      completions: {
-        create: async (payload) => {
-          capturedPayload = payload;
-        },
+    responses: {
+      create: async (payload) => {
+        capturedPayload = payload;
+        return response;
       },
     },
   });
+  return () => capturedPayload;
+}
+
+{
+  const adapter = new PerplexityAdapter(config);
+  const captured = capturePerplexityProbe(adapter);
 
   const probe = await adapter.probe();
   assert.equal(probe.available, true);
   assert.equal(
-    capturedPayload,
+    captured(),
     undefined,
     "Perplexity default probe_mode=auth_only must not spend tokens.",
   );
@@ -552,50 +575,81 @@ async function captureGrokReasoningEffort(
     ...config,
     perplexity: { ...config.perplexity, probe_mode: "live" },
   });
-  let capturedPayload:
-    | { max_tokens?: number; disable_search?: boolean; messages?: Array<{ content?: string }> }
-    | undefined;
-  (
-    adapter as unknown as {
-      client: () => Promise<{
-        chat: {
-          completions: {
-            create: (payload: {
-              max_tokens?: number;
-              disable_search?: boolean;
-              messages?: Array<{ content?: string }>;
-            }) => Promise<void>;
-          };
-        };
-      }>;
-    }
-  ).client = async () => ({
-    chat: {
-      completions: {
-        create: async (payload) => {
-          capturedPayload = payload;
-        },
-      },
-    },
-  });
+  const captured = capturePerplexityProbe(adapter);
 
   const probe = await adapter.probe();
   assert.equal(probe.available, true);
-  assert.equal(capturedPayload?.disable_search, true);
-  assert.ok(
-    typeof capturedPayload?.max_tokens === "number" && capturedPayload.max_tokens >= 16,
-    "Perplexity probe must request at least 16 max_tokens for sonar-reasoning-pro.",
+  assert.equal(
+    Object.hasOwn(captured() ?? {}, "tools"),
+    false,
+    "Perplexity live probe must not declare the web_search tool (no search fee).",
   );
   assert.equal(
-    capturedPayload?.max_tokens,
+    captured()?.max_output_tokens,
     16,
     "Perplexity probe should keep token exposure at the provider minimum.",
   );
   assert.equal(
-    capturedPayload?.messages?.[0]?.content,
+    captured()?.input,
     ".",
     "Perplexity probe should use the smallest non-empty prompt body.",
   );
+  assert.deepEqual(captured()?.reasoning, { effort: "minimal" });
+}
+
+{
+  // v4.6.0 (Codex review of PR #234): a live probe must not report a
+  // failed or cancelled Responses terminal as a healthy model.
+  for (const terminal of [
+    { status: "failed", error: { message: "model overloaded" } },
+    { status: "cancelled" },
+    { status: "queued" },
+    {},
+  ] as Array<Record<string, unknown>>) {
+    const adapter = new PerplexityAdapter({
+      ...config,
+      perplexity: { ...config.perplexity, probe_mode: "live" },
+    });
+    capturePerplexityProbe(adapter, terminal);
+    const probe = await adapter.probe();
+    assert.equal(probe.available, false, `status=${String(terminal.status)} must be rejected`);
+    assert.match(probe.message ?? "", /perplexity_probe_terminal_rejected/);
+    if ("error" in terminal) assert.match(probe.message ?? "", /model overloaded/);
+  }
+  const completedAdapter = new PerplexityAdapter({
+    ...config,
+    perplexity: { ...config.perplexity, probe_mode: "live" },
+  });
+  capturePerplexityProbe(completedAdapter, { status: "completed" });
+  assert.equal((await completedAdapter.probe()).available, true);
+}
+
+{
+  // Codex review of PR #234: the core tolerates a `models/` prefix, so the
+  // adapter must strip it before dispatch instead of sending it verbatim.
+  const adapter = new PerplexityAdapter(
+    { ...config, perplexity: { ...config.perplexity, probe_mode: "live" } },
+    "models/perplexity/kimi-k3",
+  );
+  const captured = capturePerplexityProbe(adapter);
+  assert.equal(adapter.model, "perplexity/kimi-k3");
+  assert.equal((await adapter.probe()).available, true);
+  assert.equal(captured()?.model, "perplexity/kimi-k3", "the wire id must not carry models/");
+}
+
+{
+  // v4.6.0: legacy Sonar ids belong to the retiring Chat Completions API.
+  // The probe reports the migration cause instead of dispatching.
+  const adapter = new PerplexityAdapter(
+    { ...config, perplexity: { ...config.perplexity, probe_mode: "live" } },
+    "sonar-reasoning-pro",
+  );
+  const captured = capturePerplexityProbe(adapter);
+  const probe = await adapter.probe();
+  assert.equal(probe.available, false);
+  assert.match(probe.message ?? "", /perplexity_model_unsupported/);
+  assert.match(probe.message ?? "", /perplexity\/kimi-k3/);
+  assert.equal(captured(), undefined, "a retired Sonar id must never reach the wire.");
 }
 
 {
@@ -745,8 +799,8 @@ assert.equal(anthropicCacheMinTokens("claude-unknown"), 4_096);
 
 assert.equal(
   clampEffortForPerplexity("ultra"),
-  "high",
-  "Perplexity must normalize ultra to the strongest value in its four-value API enum.",
+  "max",
+  "Perplexity must normalize ultra to the documented Agent API ceiling `max`.",
 );
 
 {
@@ -1027,7 +1081,12 @@ assert.equal(
       'gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview"',
     ),
   );
-  assert.ok(configSource.includes('grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.5"'));
+  assert.ok(configSource.includes('grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.6"'));
+  assert.ok(
+    configSource.includes(
+      'perplexity: envValue("CROSS_REVIEW_PERPLEXITY_MODEL") || "perplexity/kimi-k3"',
+    ),
+  );
   assert.ok(
     configSource.includes('codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max")'),
   );
@@ -1037,12 +1096,18 @@ assert.equal(
     ),
   );
   assert.ok(
-    configSource.includes('grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "high")'),
+    configSource.includes('grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh")'),
+  );
+  assert.ok(
+    configSource.includes(
+      'perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max")',
+    ),
   );
   assert.ok(modelSelectionSource.includes('codex: ["gpt-5.6-sol"]'));
   assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5"]'));
   assert.ok(modelSelectionSource.includes('gemini: ["gemini-3.1-pro-preview"]'));
-  assert.ok(modelSelectionSource.includes('grok: ["grok-4.5"]'));
+  assert.ok(modelSelectionSource.includes('grok: ["grok-4.6"]'));
+  assert.ok(modelSelectionSource.includes('perplexity: ["perplexity/kimi-k3"]'));
 }
 
 console.log("[provider-refresh-smoke] PASS");

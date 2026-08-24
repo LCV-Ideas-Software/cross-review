@@ -16,8 +16,12 @@
 //      `lead_peer` is supplied but is NOT in the session peers list.
 //
 // RNG: `crypto.randomInt` is used because `Math.random` is non-uniform and
-// predictable; a smoke regression (`relator_lottery_uniform_distribution_test`)
-// locks the uniform draw in.
+// predictable. v4.6.0 (CROSREV-18): the draw is injectable through an
+// optional `rng` parameter so the index→peer mapping is tested
+// deterministically, while a chi-square smoke regression
+// (`relator_lottery_uniform_distribution_test`) keeps the real
+// `crypto.randomInt` draw under an explicitly controlled false-positive
+// bound instead of an ad-hoc ±15% tolerance.
 //
 // v2.11.0 R-fix (deepseek catch session 38c6c076 R1): the lottery is now
 // session-peers-aware. Pre-fix it filtered the global PEERS constant, so
@@ -38,10 +42,17 @@ export interface RelatorAssignment {
   assigned: PeerId;
   // "crypto.randomInt" when the assignment came from the lottery;
   // "explicit" when the caller supplied an explicit lead_peer that
-  // passed validation. Dashboards/audit-trails can distinguish the two
-  // paths without reading the wrapping kind discriminant.
-  entropy_source: "crypto.randomInt" | "explicit";
+  // passed validation; "injected" when a test supplied its own `rng`
+  // (never produced by the orchestrator). Dashboards/audit-trails can
+  // distinguish the paths without reading the wrapping kind discriminant.
+  entropy_source: "crypto.randomInt" | "explicit" | "injected";
 }
+
+// Draw one index in the half-open range [0, exclusiveMax). The default
+// delegates to `crypto.randomInt`; tests inject a deterministic function.
+export type RelatorRng = (exclusiveMax: number) => number;
+
+export const defaultRelatorRng: RelatorRng = (exclusiveMax) => crypto.randomInt(0, exclusiveMax);
 
 export class CallerCannotBeLeadPeerError extends Error {
   constructor(caller: PeerId) {
@@ -87,6 +98,7 @@ export function relatorCandidatePool(
 export function assignRelator(
   caller: PeerId | "operator",
   sessionPeers?: readonly PeerId[],
+  rng?: RelatorRng,
 ): RelatorAssignment {
   const pool = relatorCandidatePool(caller, sessionPeers);
   if (pool.length === 0) {
@@ -95,9 +107,9 @@ export function assignRelator(
         (sessionPeers ? ` with session peers=[${sessionPeers.join(", ")}]` : ""),
     );
   }
-  // crypto.randomInt(0, pool.length) is half-open: returns [0, pool.length).
-  const index = crypto.randomInt(0, pool.length);
-  const assigned = pool[index];
+  // The draw is half-open: a valid rng returns an integer in [0, pool.length).
+  const index = (rng ?? defaultRelatorRng)(pool.length);
+  const assigned = Number.isInteger(index) ? pool[index] : undefined;
   if (!assigned) {
     throw new Error(
       `relator_assignment_index_out_of_bounds: index=${index} pool_size=${pool.length}`,
@@ -107,7 +119,7 @@ export function assignRelator(
     caller,
     candidate_pool: pool,
     assigned,
-    entropy_source: "crypto.randomInt",
+    entropy_source: rng ? "injected" : "crypto.randomInt",
   };
 }
 

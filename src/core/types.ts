@@ -2,7 +2,8 @@
 // quarteto, making it a quinteto. Per `project_cross_review_v2_grok_integration_pending.md`,
 // xAI's Grok uses the OpenAI Responses API surface at base URL
 // `https://api.x.ai/v1`. Auth is via GROK_API_KEY. Operators may choose
-// `grok-4.5` (canonical; explicit reasoning.effort through high),
+// `grok-4.6` (canonical; explicit reasoning.effort through xhigh),
+// `grok-4.5` (explicit reasoning.effort through high),
 // `grok-4.3` (legacy explicit reasoning.effort support), `grok-4-latest`
 // / `grok-4.20` aliases (xAI automatic reasoning in this runtime), or
 // `grok-4.20-multi-agent` (explicit multi-agent reasoning effort).
@@ -11,18 +12,19 @@
 //
 // v3.0.0 (operator directive 2026-05-12): Perplexity joined the
 // quinteto, making it a sexteto. Per
-// `project_cross_review_v2_v300_perplexity_sixth_peer.md`, Perplexity's
-// Sonar API is OpenAI-Chat-Completions-compatible but lives at a
-// distinct endpoint `https://api.perplexity.ai/v1/sonar`. Auth is via
-// PERPLEXITY_API_KEY. Operators may choose `sonar` / `sonar-pro` /
-// `sonar-reasoning-pro` (default; reasoning + grounding) /
-// `sonar-deep-research` (multi-hop research; minutes per call).
-// Distinct architectural traits vs the other 5 peers: (1) EVERY call
-// performs web search by default — peer becomes a real-time fact-check
-// channel; (2) system prompts ONLY shape tone/style of the final
-// answer — the search component does not attend to them; (3) pricing
-// has a third dimension (per-1000-request fee that scales with
-// `search_context_size` low/medium/high) beyond input/output tokens;
+// `project_cross_review_v2_v300_perplexity_sixth_peer.md`, Perplexity
+// joined through its Sonar API. v4.6.0 migrated the peer to the
+// Perplexity Agent API (`https://api.perplexity.ai/v1`, OpenAI-Responses
+// compatible alias `/v1/responses`) because Sonar Chat Completions
+// retires on 27/09/2026. Auth is via PERPLEXITY_API_KEY. Model ids use
+// the documented `provider/model` form; the canonical pin is
+// `perplexity/kimi-k3` (Moonshot AI, reasoning through `max`).
+// Distinct architectural traits vs the other 5 peers: (1) web search is
+// a declared `web_search` tool sent only in the reviewer role — the peer
+// stays a real-time fact-check channel; (2) `instructions` carries the
+// system prompt; (3) pricing has a third dimension (per-invocation
+// web-search tool fee reported in `usage.tool_calls_details`) beyond
+// input/output/cache tokens;
 // (4) usage.cost is reported per-call by the API in USD breakdown
 // (a built-in we read directly for FinOps reconciliation, distinct
 // from the config-driven cost layer); (5) `reasoning_effort` enum is
@@ -132,15 +134,16 @@ export interface TokenUsage {
   cache_write_tokens?: number | undefined;
   cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported" | undefined;
   cache_key_hash?: string | undefined;
-  // v3.0.0 (Perplexity 6th peer): Sonar API reports additional token
+  // v3.0.0 (Perplexity 6th peer): Perplexity reports additional token
   // categories and a search-query count alongside prompt/completion.
   // `citation_tokens` is the number of tokens spent inlining the
   // citation block (sonar-deep-research) — separately billed at
   // citation_tokens_per_million. `num_search_queries` is the count of
   // distinct web-search invocations the model issued during the
   // request — separately billed at search_queries_per_1000 for
-  // sonar-deep-research. Both are absent for non-perplexity peers and
-  // for non-deep-research perplexity models.
+  // sonar-deep-research and, since v4.6.0, for every Agent API model
+  // (`usage.tool_calls_details` web-search counter). Both are absent for
+  // non-perplexity peers.
   citation_tokens?: number | undefined;
   num_search_queries?: number | undefined;
   // v3.0.0: Perplexity API also returns its OWN per-call cost
@@ -151,10 +154,11 @@ export interface TokenUsage {
   // provider-reported costs to keep the no-hardcoded-financials
   // contract intact.
   provider_reported_total_cost_usd?: number | undefined;
-  // Per-call signal that a Perplexity Sonar call actually performed a
-  // web search. This is latency/search telemetry only: Perplexity's
-  // published request pricing is unchanged when disable_search=true,
-  // so estimateCost() charges the configured request fee either way.
+  // Per-call signal that a Perplexity request declared the web_search
+  // tool (Agent API) or, on legacy Sonar ids, performed a web search.
+  // This is latency/search telemetry only: legacy Sonar request pricing
+  // is unchanged when disable_search=true, and Agent API search fees are
+  // priced from the reported invocation count, never from this flag.
   // Set only by PerplexityAdapter; ignored by other peers.
   search_performed?: boolean | undefined;
 }
@@ -189,14 +193,14 @@ export interface CostEstimate {
   // Absent when source is "stub" or "unknown-rate".
   tier_used?: "base" | "extended" | "promo" | "promo_extended" | undefined;
   // v3.0.0 (Perplexity 6th peer): Perplexity-specific cost line items.
-  // request_cost is the per-1000-request fee scaled by
-  // search_context_size (low/medium/high). citation_tokens_cost,
-  // deep_research_reasoning_tokens_cost and search_queries_cost apply
-  // only to the `sonar-deep-research` model — they are absent for
-  // `sonar` / `sonar-pro` / `sonar-reasoning-pro` even when the peer is
-  // perplexity. All four ADD to total_cost (separate from input_cost
-  // which represents fresh non-cached input tokens). Absent for all
-  // non-perplexity peers.
+  // request_cost is the legacy Sonar per-1000-request fee scaled by
+  // search_context_size (low/medium/high). citation_tokens_cost and
+  // deep_research_reasoning_tokens_cost apply only to the
+  // `sonar-deep-research` model. search_queries_cost applies to
+  // `sonar-deep-research` search queries and, since v4.6.0, to Agent API
+  // web_search tool invocations (per-1000 rate on the model card). All
+  // four ADD to total_cost (separate from input_cost which represents
+  // fresh non-cached input tokens). Absent for all non-perplexity peers.
   request_cost?: number | undefined;
   citation_tokens_cost?: number | undefined;
   deep_research_reasoning_tokens_cost?: number | undefined;
@@ -884,7 +888,8 @@ export interface PeerCallContext {
   // for the current call. Operator uses this to dial down expensive
   // peers for routine cross-reviews while retaining deeper settings for
   // ship-critical paths. Each adapter maps the shared scale to its provider
-  // contract; the canonical Grok 4.5 adapter clamps it to low/medium/high.
+  // contract; the canonical Grok 4.6 adapter accepts through xhigh and maps
+  // `max`/`ultra` to it.
   reasoning_effort_override?: ReasoningEffort | undefined;
   // Per-operation output budget. Evidence judges use a compact cap rather
   // than inheriting the much larger full-review budget.
@@ -1300,19 +1305,36 @@ export interface AppConfig {
     disable_per_peer: Record<PeerId, boolean>;
   };
   // v3.0.0 (Perplexity 6th peer): per-call knobs that are specific to
-  // Perplexity Sonar API. `search_context_size` controls the breadth of
-  // the underlying web search (low/medium/high) and drives both quality
-  // AND per-1000-request fee. `disable_search` turns off retrieval but does
-  // not waive Perplexity's documented request fee. Set via
-  // CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE (default "low") and
-  // CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH (default false).
-  // `probe_mode` defaults to auth_only so probe_peers never burns Sonar
+  // the Perplexity adapter. `search_context_size` controls the breadth of
+  // the `web_search` tool (low/medium/high). `disable_search` stops the
+  // reviewer role from declaring the tool at all (the relator role never
+  // does). Set via CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE (default
+  // "low") and CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH (default false).
+  // `probe_mode` defaults to auth_only so probe_peers never burns
   // completion tokens unless the operator explicitly requests a live
   // model round-trip.
+  // v4.6.0 (Agent API): `max_steps` is the wire-enforced agent-loop bound
+  // sent with the tool (CROSS_REVIEW_PERPLEXITY_MAX_STEPS, integer in the
+  // documented [1, 100] range, default 1).
+  // `web_search_invocations_estimate` is the declared number of
+  // web_search invocations the round preflight prices per reviewer
+  // request (CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE,
+  // positive integer, default 3 — the count observed with max_steps=1 on
+  // 23/08/2026; zero is rejected while the tool is still declared). The
+  // API does not cap invocations per step, so post-call accounting is
+  // exact from `usage.tool_calls_details` while this value only shapes
+  // the pre-dispatch estimate. `search_preflight_policy`
+  // (CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY) decides whether that
+  // residual is accepted (`estimate`, default) or whether paid rounds fail
+  // closed while the reviewer role can search (`fail_closed`, mirroring
+  // the Deep Research precedent).
   perplexity: {
     search_context_size: "low" | "medium" | "high";
     disable_search: boolean;
     probe_mode: "auth_only" | "live";
+    max_steps: number;
+    web_search_invocations_estimate: number;
+    search_preflight_policy: "estimate" | "fail_closed";
   };
 }
 

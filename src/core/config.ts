@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveCostRate } from "./cost.js";
+import { isPerplexityAgentModel, resolveCostRate } from "./cost.js";
 import { applyFileConfigToEnv, inspectConfigFileFingerprint } from "./file-config.js";
 import { type AppConfig, PEERS, type PeerId } from "./types.js";
 
@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.5.45";
+export const VERSION = "4.6.0";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -41,12 +41,14 @@ const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   // populates `CROSS_REVIEW_GROK_INPUT_USD_PER_MILLION` +
   // `CROSS_REVIEW_GROK_OUTPUT_USD_PER_MILLION`).
   grok: "CROSS_REVIEW_GROK",
-  // v3.0.0: Perplexity pricing via env. Sonar API bills both per-token
+  // v3.0.0: Perplexity pricing via env. Legacy Sonar ids billed per-token
   // (INPUT/OUTPUT) AND per-1000-requests where the fee scales with
-  // search_context_size (REQUEST_FEE_LOW/MEDIUM/HIGH). Sonar Deep
-  // Research model additionally bills citation_tokens, reasoning_tokens
-  // and search_queries — those fields are optional and left undefined
-  // for the other Perplexity models.
+  // search_context_size (REQUEST_FEE_LOW/MEDIUM/HIGH); Sonar Deep
+  // Research additionally billed citation_tokens, reasoning_tokens and
+  // search_queries. v4.6.0 (Agent API): the canonical `perplexity/kimi-k3`
+  // card needs INPUT/OUTPUT (+ CACHE_READ) plus the per-invocation
+  // web_search fee as SEARCH_QUERIES_USD_PER_1000_REQUESTS; the request
+  // fee fields stay undefined for Agent API models.
   perplexity: "CROSS_REVIEW_PERPLEXITY",
 };
 
@@ -218,7 +220,7 @@ function keyForPeer(peer: PeerId): string | undefined {
     case "grok":
       return envValue("GROK_API_KEY");
     // v3.0.0: Perplexity auth via PERPLEXITY_API_KEY (canonical per
-    // docs.perplexity.ai). The Sonar API accepts the key as a Bearer
+    // docs.perplexity.ai). The Agent API accepts the key as a Bearer
     // token in the Authorization header.
     case "perplexity":
       return envValue("PERPLEXITY_API_KEY");
@@ -401,18 +403,19 @@ export function loadConfig(): AppConfig {
       claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
-      // v4.5.0 (provider-doc refresh 2026-07-10): Grok 4.5 is xAI's
-      // frontier coding/agentic model. Keep the concrete id so model
-      // selection, reasoning clamps and model-aware pricing stay stable.
-      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.5",
-      // v3.0.0 (operator directive 2026-05-12): Perplexity default
-      // `sonar-reasoning-pro` — reasoning + grounding + chain-of-thought,
-      // best fit for cross-review where the peer must reason about the
-      // attached draft (not just fact-lookup). Operator can override via
-      // CROSS_REVIEW_PERPLEXITY_MODEL to switch to `sonar`, `sonar-pro`,
-      // or `sonar-deep-research`. The adapter validates the chosen model
-      // against the documented allowlist at call time.
-      perplexity: envValue("CROSS_REVIEW_PERPLEXITY_MODEL") || "sonar-reasoning-pro",
+      // v4.6.0 (provider-doc refresh 2026-08-23): Grok 4.6 is xAI's
+      // recommended frontier reasoning model (August 2026). Keep the
+      // concrete id so model selection, reasoning clamps and model-aware
+      // pricing stay stable.
+      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.6",
+      // v4.6.0 (operator directive 2026-08-23): Perplexity default
+      // `perplexity/kimi-k3` on the Agent API — the most capable reasoning
+      // model of that catalog whose family is not already a peer. Sonar
+      // Chat Completions retires on 27/09/2026; legacy unprefixed Sonar
+      // ids are rejected by the adapter with a migration diagnostic.
+      // Operator can override via CROSS_REVIEW_PERPLEXITY_MODEL with any
+      // documented `provider/model` id.
+      perplexity: envValue("CROSS_REVIEW_PERPLEXITY_MODEL") || "perplexity/kimi-k3",
     },
     fallback_models: {
       codex: listEnv("CROSS_REVIEW_OPENAI_FALLBACK_MODELS"),
@@ -433,17 +436,16 @@ export function loadConfig(): AppConfig {
       // here is what makes central-config reloads actually reach the adapter.
       gemini: reasoningEffort("CROSS_REVIEW_GEMINI_REASONING_EFFORT", "high"),
       deepseek: reasoningEffort("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max"),
-      // Grok 4.5 accepts only low|medium|high. Keeping the canonical default
-      // directly representable avoids relying on adapter-side clamping.
-      grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "high"),
-      // v3.0.0: Perplexity Sonar API only accepts `minimal|low|medium|high`
-      // for sonar-reasoning-pro / sonar-deep-research (other models
-      // ignore the field entirely). Default `high` matches the
-      // canonical "max reasoning per peer" stance the other peers take
-      // (xhigh/max for OpenAI/Anthropic/Grok/DeepSeek). The adapter
-      // clamps the internal scale (`xhigh`/`max`/`ultra`) to `high` for
-      // Perplexity.
-      perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high"),
+      // Grok 4.6 accepts low|medium|high|xhigh; `xhigh` is its documented
+      // ceiling. Keeping the canonical default directly representable
+      // avoids relying on adapter-side clamping.
+      grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh"),
+      // v4.6.0: the Perplexity Agent API accepts
+      // `minimal|low|medium|high|xhigh|max`. Default `max` matches the
+      // canonical "max reasoning per peer" stance (operator directive
+      // 23/08/2026). The adapter normalizes `none` to `minimal` and the
+      // `ultra` alias to `max`.
+      perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max"),
     },
     model_selection: {},
     api_keys: {
@@ -493,15 +495,34 @@ function normalizeModelCostRates(
 }
 
 // v3.0.0 (Perplexity 6th peer): per-call Perplexity-specific knobs.
-// `search_context_size` controls the breadth of the web search and
-// drives both quality AND per-1000-request fee (low=$5-6 / medium=$8-10
-// / high=$12-14 depending on model). Default `low` minimizes noise
-// and cost for cross-review use (peer reasons about attached draft;
-// search is a fact-check overlay). `disable_search` turns off the
-// web-search component entirely (peer becomes a pure LLM) but does not
-// remove Perplexity's context-tier request fee. Default `false` per operator directive
+// `search_context_size` controls the breadth of the `web_search` tool.
+// Default `low` minimizes noise and cost for cross-review use (peer
+// reasons about attached draft; search is a fact-check overlay).
+// `disable_search` stops the reviewer role from declaring the tool
+// (peer becomes a pure LLM). Default `false` per operator directive
 // 2026-05-12 — search-active is the differentiator versus the other 5
 // peers.
+// v4.6.0 (Agent API): `max_steps` (default 1) is sent with the tool and
+// bounds the agent loop on the wire; `web_search_invocations_estimate`
+// (default 3, observed with max_steps=1 on 23/08/2026) is the declared
+// per-request invocation count the round preflight prices — the API does
+// not cap invocations per step, so exact accounting comes from
+// `usage.tool_calls_details` after the call.
+// The Agent API documents `max_steps` as an integer in [1, 100]; an
+// out-of-range value would make the provider reject every search-enabled
+// reviewer request, so it is reported at load time and replaced by the
+// default instead of being sent on the wire.
+function boundedMaxStepsEnv(): number {
+  const raw = (envValue("CROSS_REVIEW_PERPLEXITY_MAX_STEPS") ?? "").trim();
+  if (raw === "") return 1;
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 100) return parsed;
+  console.error(
+    `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_MAX_STEPS="${raw}" must be an integer between 1 and 100 (Agent API range); defaulting to 1.`,
+  );
+  return 1;
+}
+
 function loadPerplexityConfig(): AppConfig["perplexity"] {
   const sizeRaw = (envValue("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE") ?? "")
     .trim()
@@ -523,10 +544,52 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
       `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_PROBE_MODE="${probeModeRaw}" not recognized; defaulting to "auth_only". Recognized values: auth_only, live.`,
     );
   }
+  // Both Agent API knobs are positive integers; a malformed value is reported
+  // and replaced by the documented default instead of being silently
+  // truncated. A zero estimate is rejected because the reviewer role still
+  // declares the tool: pricing zero invocations while sending web_search
+  // would make the preflight silently optimistic (use
+  // CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH to remove the dimension).
+  const invocationsEstimateRaw = (
+    envValue("CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE") ?? ""
+  ).trim();
+  let invocationsEstimate = 3;
+  if (invocationsEstimateRaw !== "") {
+    const parsed = Number(invocationsEstimateRaw);
+    if (Number.isInteger(parsed) && parsed >= 1) {
+      invocationsEstimate = parsed;
+    } else {
+      console.error(
+        `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE="${invocationsEstimateRaw}" must be a positive integer; defaulting to 3 (set CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH=true to remove the search dimension).`,
+      );
+    }
+  }
+  // The Agent API exposes no provider-enforced cap on web_search invocations
+  // (api-reference/agent-post documents max_steps and per-call max_results
+  // only; max_tool_calls/parallel_tool_calls are absent and a live probe on
+  // 24/08/2026 showed parallel_tool_calls=false accepted but ignored). The
+  // policy decides how a hard-budget session treats that residual:
+  // `estimate` (default) prices the declared estimate and reconciles the
+  // exact count post-call; `fail_closed` blocks paid rounds while the
+  // reviewer role can search, mirroring the Deep Research precedent.
+  const policyRaw = (envValue("CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY") ?? "")
+    .trim()
+    .toLowerCase();
+  let searchPreflightPolicy: AppConfig["perplexity"]["search_preflight_policy"] = "estimate";
+  if (policyRaw === "fail_closed") {
+    searchPreflightPolicy = "fail_closed";
+  } else if (policyRaw !== "" && policyRaw !== "estimate") {
+    console.error(
+      `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY="${policyRaw}" not recognized; defaulting to "estimate". Recognized values: estimate, fail_closed.`,
+    );
+  }
   return {
     search_context_size: searchContextSize,
     disable_search: boolEnv("CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH", false),
     probe_mode: probeMode,
+    max_steps: boundedMaxStepsEnv(),
+    web_search_invocations_estimate: invocationsEstimate,
+    search_preflight_policy: searchPreflightPolicy,
   };
 }
 
@@ -707,8 +770,20 @@ function addMissingPerplexityDimensions(
   config: AppConfig,
   effectiveModel: string,
   missing: Set<string>,
+  // v4.6.0 (Codex review of PR #234): only the reviewer role declares the
+  // web_search tool. A Perplexity lead peer / evidence judge routes through
+  // generate() and can never incur the search fee, so the gate requires the
+  // rate only when the peer can actually review.
+  searchApplies: boolean,
 ): void {
   const normalizedModel = effectiveModel.trim().replace(/^models\//i, "");
+  // v4.6.0: legacy Sonar Chat Completions ids cannot be dispatched by the
+  // Agent API adapter. Flag them here so the paid orchestrator fails
+  // closed with the migration cause before any attempt is priced.
+  const agentApiModel = isPerplexityAgentModel(normalizedModel);
+  if (!agentApiModel) {
+    missing.add("CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID");
+  }
   const rate = resolveCostRate(config, "perplexity", effectiveModel);
   if (!rate) return;
   const rateRecord = rate as unknown as Record<string, unknown>;
@@ -721,6 +796,24 @@ function addMissingPerplexityDimensions(
         : `model_cost_rates.perplexity[${JSON.stringify(effectiveModel)}].${field}`,
     );
   };
+
+  if (agentApiModel) {
+    // Agent API: the web_search tool is billed per invocation. The rate is
+    // required whenever the reviewer role can declare the tool; a config
+    // that disables search never sends it, so no fee dimension applies.
+    if (searchApplies && !config.perplexity.disable_search) {
+      addField("search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS");
+      // The provider exposes no invocation cap, so the preflight envelope is
+      // an operator-declared estimate. Under the fail_closed policy that
+      // residual is not accepted: surface it exactly like Deep Research so
+      // the paid orchestrator refuses to dispatch until search is disabled
+      // or the policy is changed.
+      if (config.perplexity.search_preflight_policy === "fail_closed") {
+        missing.add("CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED");
+      }
+    }
+    return;
+  }
 
   if (["sonar", "sonar-pro", "sonar-reasoning-pro"].includes(normalizedModel)) {
     const size = config.perplexity.search_context_size;
@@ -751,7 +844,12 @@ function addMissingPerplexityDimensions(
 export function missingFinancialControlVars(
   config: AppConfig,
   peers: PeerId[],
-  options: { untilStopped?: boolean | undefined } = {},
+  options: {
+    untilStopped?: boolean | undefined;
+    // Peers that can act as reviewers (declare the Perplexity web_search
+    // tool). Omitted = every listed peer may review (fail-closed default).
+    reviewerPeers?: readonly PeerId[] | undefined;
+  } = {},
 ): string[] {
   const missing = new Set<string>();
   const configLoad = getFileConfigRuntimeStatus();
@@ -796,8 +894,11 @@ export function missingFinancialControlVars(
       config.models.perplexity,
       ...(config.fallback_models.perplexity ?? []),
     ];
+    const perplexityCanReview = options.reviewerPeers
+      ? options.reviewerPeers.includes("perplexity")
+      : true;
     for (const model of new Set(effectiveModels)) {
-      addMissingPerplexityDimensions(config, model, missing);
+      addMissingPerplexityDimensions(config, model, missing, perplexityCanReview);
     }
   }
 

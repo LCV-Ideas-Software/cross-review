@@ -14,7 +14,7 @@ provider API budget.
 `session_init`, `ask_peers` and `run_until_unanimous` may call provider APIs
 when keys are present. `probe_peers` may call provider metadata APIs; Perplexity
 defaults to `CROSS_REVIEW_PERPLEXITY_PROBE_MODE=auth_only` so the probe does
-not spend Sonar completion tokens unless the operator explicitly sets
+not spend Perplexity completion tokens unless the operator explicitly sets
 `CROSS_REVIEW_PERPLEXITY_PROBE_MODE=live`.
 
 The server records token usage returned by providers. Paid review/generation tools are blocked until explicit budget ceilings and rate cards are configured. This avoids stale hard-coded prices because provider pricing changes frequently.
@@ -38,23 +38,25 @@ artifacts when present.
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
 Current reference values verified against official provider documentation on
-24/07/2026 for the maintained model pins and supported Claude Opus 5 override:
+23/08/2026 for the maintained model pins and supported Claude Opus 5 override:
 
-| Provider/model                   | Input   | Output | Cached input / cache hit | Extended tier                                                      |
-| -------------------------------- | ------- | ------ | ------------------------ | ------------------------------------------------------------------ |
-| OpenAI `gpt-5.6-sol`             | `5`     | `30`   | `0.5`                    | `>272000`: input `10`, output `45`, cached input `1`               |
-| Anthropic `claude-fable-5`       | `10`    | `50`   | `1`                      | none                                                               |
-| Anthropic `claude-opus-5`        | `5`     | `25`   | `0.5`                    | none                                                               |
-| Gemini `gemini-3.1-pro-preview`  | `2`     | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4` |
-| DeepSeek `deepseek-v4-pro`       | `0.435` | `0.87` | `0.003625`               | none                                                               |
-| xAI `grok-4.5`                   | `2`     | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                |
-| Perplexity `sonar-reasoning-pro` | `2`     | `8`    | n/a                      | request fee: low `6`, medium `10`, high `14` per 1000 requests     |
+| Provider/model                  | Input  | Output | Cached input / cache hit | Extended tier                                                                                                                                             |
+| ------------------------------- | ------ | ------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI `gpt-5.6-sol`            | `4`    | `20`   | `0.4`                    | `>272000`: input `8`, output `30`, cached input `0.8` (promotional pricing at least through 21/11/2026; list rates `5`/`30`, `10`/`45`, cached `0.5`/`1`) |
+| Anthropic `claude-fable-5`      | `10`   | `50`   | `1`                      | none                                                                                                                                                      |
+| Anthropic `claude-opus-5`       | `5`    | `25`   | `0.5`                    | none                                                                                                                                                      |
+| Gemini `gemini-3.1-pro-preview` | `2`    | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4`                                                                                        |
+| DeepSeek `deepseek-v4-pro`      | `1.32` | `3.96` | `0.044`                  | none (peak rates effective 16/08/2026; the official off-peak window is 50% lower)                                                                         |
+| xAI `grok-4.6`                  | `2`    | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                                                                                                       |
+| Perplexity `perplexity/kimi-k3` | `3`    | `15`   | `0.3`                    | `web_search` tool: `2.5` per 1000 invocations (`search_queries_per_1000`)                                                                                 |
 
 GPT-5.6 Sol reports cache-write tokens separately. Configure OpenAI cache write
-at `6.25` USD/million in the base tier and `12.5` above the 272K threshold;
-these are 1.25 times the corresponding uncached input rates. Grok 4.5 exposes
-cached-input pricing but no distinct cache-write counter, so do not infer a
-write charge from uncached input tokens.
+at 1.25 times the corresponding uncached input rate: `5` USD/million in the
+base tier and `10` above the 272K threshold while the promotional input rates
+apply (`6.25`/`12.5` at the list rates). Model the promotion with the
+`promo_*` fields and `promo_expires_at_utc` so the card falls back to the list
+rates automatically. Grok 4.6 exposes cached-input pricing but no distinct
+cache-write counter, so do not infer a write charge from uncached input tokens.
 
 OpenAI requests explicitly pin `service_tier: "default"`. This prevents a
 project-level Priority processing setting from silently changing the service
@@ -80,20 +82,39 @@ Official pricing sources:
   and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 - Google: [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 - DeepSeek: [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
-- xAI: [Grok 4.5](https://docs.x.ai/developers/models/grok-4.5),
+- xAI: [models](https://docs.x.ai/developers/models),
   [pricing](https://docs.x.ai/developers/pricing) and
   [prompt-cache usage and pricing](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing).
-- Perplexity: [Sonar Reasoning Pro](https://docs.perplexity.ai/docs/sonar/models/sonar-reasoning-pro)
-  and [Sonar API pricing](https://docs.perplexity.ai/docs/getting-started/pricing).
+- Perplexity: [Agent API models and pricing](https://docs.perplexity.ai/docs/agent-api/models)
+  and the [Agent API request schema](https://docs.perplexity.ai/api-reference/agent-post)
+  (usage `cost` and `tool_calls_details`).
 
 Anthropic cache-write rates are separate from cache-hit rates. With the
 workspace's default `1h` TTL, configure cache write as `20` for Fable 5 and
 `10` for Opus 5. If you deliberately switch to `5m`, the corresponding values
 are `12.5` and `6.25`.
 
-The configured Perplexity request fee is charged in cross-review's accounting
-for every Sonar request, including calls with `disable_search=true`. Disabling
-search is not treated as a zero-cost request.
+Perplexity Agent API requests pay the `web_search` tool per invocation
+reported in `usage.tool_calls_details`; the adapter surfaces that count as
+`num_search_queries` and bills it at `search_queries_per_1000`, which is
+required while search is enabled. The relator role never declares the tool and
+`CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH=true` removes the dimension entirely.
+The API exposes no provider-enforced cap on invocations (the request reference
+documents `max_steps` and the per-call `max_results` only; `max_tool_calls`,
+`parallel_tool_calls` and `tool_choice` are absent, and a live probe on
+24/08/2026 returned three searches for a single step regardless of
+`parallel_tool_calls`). The round preflight therefore prices
+`CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE` (positive integer,
+default `3`, the count observed with `max_steps=1`) per reviewer request as a
+declared estimate, not a hard bound, while post-call accounting uses the exact
+reported count. `CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY` selects how a
+hard-budget session treats that residual: `estimate` (default) accepts it;
+`fail_closed` reports `CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED`
+whenever Perplexity can review with search enabled, so paid rounds refuse to
+start until search is disabled — the same mechanism the Deep Research card
+uses. Legacy Sonar cards (that API retires on 27/09/2026) keep the per-request
+fee semantics for offline accounting only; the runtime no longer dispatches
+those ids.
 
 Central `config.json` supports model-aware rate cards through
 `model_cost_rates`. This is the preferred shape when explicit operator
@@ -104,7 +125,8 @@ overrides can select models with different prices:
   "models": {
     "codex": "gpt-5.6-sol",
     "claude": "claude-fable-5",
-    "grok": "grok-4.5"
+    "grok": "grok-4.6",
+    "perplexity": "perplexity/kimi-k3"
   },
   "model_cost_rates": {
     "claude": {
@@ -135,7 +157,7 @@ overrides can select models with different prices:
       }
     },
     "grok": {
-      "grok-4.5": {
+      "grok-4.6": {
         "input_per_million": 2,
         "output_per_million": 6,
         "cache_read_per_million": 0.5,
@@ -143,6 +165,14 @@ overrides can select models with different prices:
         "input_extended_per_million": 4,
         "output_extended_per_million": 12,
         "cache_read_extended_per_million": 1
+      }
+    },
+    "perplexity": {
+      "perplexity/kimi-k3": {
+        "input_per_million": 3,
+        "output_per_million": 15,
+        "cache_read_per_million": 0.3,
+        "search_queries_per_1000": 2.5
       }
     }
   }
@@ -155,10 +185,11 @@ and Windows registry rate variables still have higher precedence than the file.
 
 Accounting always resolves the model actually sent by the adapter, including
 explicit overrides and fallbacks. A non-primary effective model must match a
-retained model card (exact Sonar product IDs; documented family matching for
-other providers, selecting the longest matching prefix). If no applicable card
-exists, preflight and fallback fail closed with `unknown-rate`; the runtime
-never borrows the primary model's price. Regular Sonar cards must include the
+retained model card (exact Perplexity model ids; documented family matching
+for other providers, selecting the longest matching prefix). If no applicable
+card exists, preflight and fallback fail closed with `unknown-rate`; the
+runtime never borrows the primary model's price. Agent API cards must include
+the web-search fee while search is enabled; legacy Sonar cards must include the
 active context-tier request fee, and Deep Research cards must include citation,
 reasoning and search-query dimensions, whether primary or fallback. Aggregated
 usage preserves those dimensions and provider totals across every billed
@@ -183,10 +214,10 @@ uses `max_attempts`, because prompt blocking may follow earlier transient
 failures. Recovery-local gates price only the adapter call they are about to
 dispatch.
 
-Perplexity citation-token, separate reasoning-token and search-query rates are
-exclusive to `sonar-deep-research`. Keep them only in that model's rate card;
-the cost engine also checks the active model identity so stale keys cannot
-overcharge `sonar-reasoning-pro`.
+Perplexity citation-token and separate reasoning-token rates are exclusive to
+`sonar-deep-research`; `search_queries_per_1000` applies to Deep Research
+search queries and to Agent API web-search invocations. The cost engine checks
+the active model identity so stale keys cannot overcharge another model.
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_MAX_SESSION_COST_USD", "20", "User")
@@ -204,9 +235,8 @@ overcharge `sonar-reasoning-pro`.
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_OUTPUT_USD_PER_MILLION", "<current Grok output rate>", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION", "<current Perplexity input rate>", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION", "<current Perplexity output rate>", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS", "<Perplexity per-1000-requests low-context fee>", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS", "<Perplexity per-1000-requests medium-context fee>", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS", "<Perplexity per-1000-requests high-context fee>", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_CACHE_READ_USD_PER_MILLION", "<current Perplexity cached-input rate>", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS", "<Perplexity web_search fee per 1000 invocations>", "User")
 ```
 
 `CROSS_REVIEW_MAX_SESSION_COST_USD` sets the default per-session budget guard. `CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD` blocks a round before calls begin when the estimated cost exceeds the configured value. `CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD` is required for `until_stopped=true`.

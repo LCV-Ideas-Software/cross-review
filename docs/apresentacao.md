@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 21/08/2026: `4.5.45`. O registro pode ficar
+> Estado do source/release target em 23/08/2026: `4.6.0`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -61,14 +61,14 @@ revisão como um conjunto de ferramentas. Ele é distribuído como o pacote npm
 
 Os seis pares revisores (a "sexteto") são:
 
-| Par revisor  | Provedor   | Acesso                           |
-| ------------ | ---------- | -------------------------------- |
-| `codex`      | OpenAI     | biblioteca cliente OpenAI        |
-| `claude`     | Anthropic  | biblioteca cliente Anthropic     |
-| `gemini`     | Google     | biblioteca cliente Google Gen AI |
-| `deepseek`   | DeepSeek   | API compatível com OpenAI        |
-| `grok`       | xAI        | API compatível com OpenAI        |
-| `perplexity` | Perplexity | API Sonar, compatível com OpenAI |
+| Par revisor  | Provedor   | Acesso                                     |
+| ------------ | ---------- | ------------------------------------------ |
+| `codex`      | OpenAI     | biblioteca cliente OpenAI                  |
+| `claude`     | Anthropic  | biblioteca cliente Anthropic               |
+| `gemini`     | Google     | biblioteca cliente Google Gen AI           |
+| `deepseek`   | DeepSeek   | API compatível com OpenAI                  |
+| `grok`       | xAI        | API compatível com OpenAI                  |
+| `perplexity` | Perplexity | Agent API, compatível com OpenAI Responses |
 
 As chamadas são **reais** por padrão — o servidor conversa com as APIs de
 verdade. Versões simuladas ("stubs") existem apenas para testes de fumaça e
@@ -291,15 +291,17 @@ Cada par tem um adaptador que normaliza a conversa com seu provedor:
 - **Google/Gemini** — biblioteca cliente Google Gen AI.
 - **DeepSeek** — API compatível com OpenAI, pela biblioteca cliente OpenAI.
 - **xAI/Grok** — API compatível com OpenAI, pela biblioteca cliente OpenAI.
-- **Perplexity** — API Sonar (`https://api.perplexity.ai`), compatível com o
-  formato Chat Completions da OpenAI.
+- **Perplexity** — Agent API (`https://api.perplexity.ai/v1`), compatível com
+  o formato Responses da OpenAI (alias `/v1/responses`). A API Sonar (Chat
+  Completions) é descontinuada pela Perplexity em 27/09/2026; ids Sonar sem
+  prefixo são rejeitados com um diagnóstico de migração.
 
-O Perplexity tem particularidades relevantes: por padrão, **toda chamada faz
-uma busca web em tempo real**, o que o torna um revisor com perfil de
-"verificação de fatos"; quando atua como relator (síntese), a busca é
-desativada. Seu preço tem uma dimensão extra: além de tokens de entrada e
-saída, há uma taxa por mil requisições que varia com o tamanho do contexto
-de busca.
+O Perplexity tem particularidades relevantes: no papel de revisor, a chamada
+declara a ferramenta `web_search` (**busca web em tempo real**), o que o torna
+um revisor com perfil de "verificação de fatos"; quando atua como relator
+(síntese), a ferramenta não é enviada. Seu preço tem uma dimensão extra: além
+de tokens de entrada, saída e cache, há uma taxa por invocação da busca,
+reportada pela API em `usage.tool_calls_details` e cobrada por mil invocações.
 
 ### 4.4. Seleção de modelo: política de não-rebaixamento
 
@@ -320,15 +322,16 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 | Anthropic    | `claude-fable-5`         |
 | Google       | `gemini-3.1-pro-preview` |
 | DeepSeek     | `deepseek-v4-pro`        |
-| xAI/Grok     | `grok-4.5`               |
-| Perplexity   | `sonar-reasoning-pro`    |
+| xAI/Grok     | `grok-4.6`               |
+| Perplexity   | `perplexity/kimi-k3`     |
 
 No Fable 5, o adaptador omite o campo explícito `thinking`, pois o raciocínio
 adaptativo é automático, e usa `output_config.effort` para a profundidade. A
 retenção documentada é de 30 dias, sem opção ZDR. No GPT-5.6 Sol, `ultra` é um
 modo do produto Codex, não um `reasoning.effort` literal da Responses API; o
-cross-review aceita esse alias na configuração e envia `max` à API. O Grok 4.5
-aceita apenas `low`/`medium`/`high` e recebe `high` quando o alias é usado.
+cross-review aceita esse alias na configuração e envia `max` à API. O Grok 4.6
+aceita `low`/`medium`/`high`/`xhigh` e recebe `xhigh` quando o alias é usado; o
+Perplexity (`perplexity/kimi-k3`) recebe `max`.
 Overrides explícitos para famílias OpenAI anteriores são normalizados ao enum
 da família: teto `xhigh` em GPT-5.5/5.4/5.2 e `high` em GPT-5.1/GPT-5.
 
@@ -371,16 +374,16 @@ compacto e sanitizado — sem burlar a política do provedor.
 
 O runtime integra-se ao cache de prompt de cada provedor compatível, emite um
 evento uniforme `provider.cache.usage` e grava um `cache_manifest.json` por
-sessão. Os modos de cache observados são: `auto` (OpenAI, DeepSeek, Grok),
-`explicit` (Anthropic), `implicit` (Gemini) e `not_supported` (Perplexity,
-cuja API Sonar não expõe superfície de cache).
+sessão. Os modos de cache observados são: `auto` (OpenAI, DeepSeek, Grok e
+Perplexity, cuja Agent API reporta `cache_read_input_tokens`), `explicit`
+(Anthropic) e `implicit` (Gemini).
 
 `CROSS_REVIEW_DISABLE_CACHE=true` remove globalmente os controles de cache que
 o cliente consegue influenciar. Ele não pode obrigar Gemini ou DeepSeek a
 desativar o cache implícito/automático administrado pelo serviço.
 
 GPT-5.6 Sol usa `prompt_cache_options` em modo implícito com TTL de 30 minutos
-e contabiliza leitura e escrita de cache separadamente. Grok 4.5 usa
+e contabiliza leitura e escrita de cache separadamente. Grok 4.6 usa
 `prompt_cache_key`, com retenção administrada pela xAI e sem inferir tokens de
 escrita.
 
@@ -628,6 +631,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.06.00`      | Peer Perplexity migra para a Agent API com o pin `perplexity/kimi-k3` antes do sunset da Sonar (27/09/2026); Grok passa a `grok-4.6` com effort `xhigh`; preços atualizados pelas docs oficiais; smoke da loteria do relator determinístico com limiar qui-quadrado explícito (CROSREV-18, #231).                     |
 | `v04.05.45`      | O contrato de sessão e a instrução dos peers reconhecem o canal de evidência persistido (200K, custódia SHA-256) como o artefato único não-filtrado: pedido de re-colagem no corpo do draft passa a ser defeito da revisão, destravando a convergência de PRs médios (issue #216).                                    |
 | `v04.05.44`      | O scrubber ganha padrão dedicado para o formato stateless (JWT) dos tokens de instalação de GitHub Apps (`ghs_` com segmentos base64url): o token inteiro é redigido numa única correspondência, sem depender do comprimento do primeiro segmento no padrão genérico de JWT (issue #215).                             |
 | `v04.05.43`      | O evidence preflight corrobora contagens de teste por registro: a prova RED de um TDD (`N failed` com o próprio run) passa como material do caller e um registro RED deliberado não veta contagens verdes de outros registros; o veto de sinal de falha segue valendo dentro do registro correspondente (issue #217). |

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
 import { loadConfig } from "../src/core/config.js";
+import { maxOutputTokensForPeer } from "../src/core/output-budget.js";
 import type { PeerCallContext, PeerFailure, RuntimeEvent } from "../src/core/types.js";
 import { AnthropicAdapter } from "../src/peers/anthropic.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
@@ -33,6 +33,7 @@ const READY = JSON.stringify({
 });
 
 type BillingUsage = {
+  num_search_queries?: number;
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
@@ -57,7 +58,9 @@ const billingConfig = {
     gemini: terminalBillingRate,
     deepseek: terminalBillingRate,
     grok: terminalBillingRate,
-    perplexity: terminalBillingRate,
+    // v4.6.0: the Perplexity Agent API pin also bills web_search per
+    // invocation; price it at 1 USD each so search accounting is visible.
+    perplexity: { ...terminalBillingRate, search_queries_per_1000: 1000 },
   },
 };
 
@@ -315,65 +318,145 @@ async function assertBilledTerminalRejection(
   assert.ok(ctx.events.some((event) => event.type === "peer.token.discarded"));
 }
 
+// v4.6.0: Perplexity speaks the Agent API (Responses protocol). A
+// non-completed terminal — content filtering or output exhaustion — must be
+// rejected even when a plausible READY payload is present.
 {
   const adapter = new PerplexityAdapter(config);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () => ({
-          model: adapter.model,
-          choices: [{ finish_reason: "content_filter", message: { content: READY } }],
-        }),
-      },
+    responses: {
+      create: async () => ({
+        status: "incomplete",
+        incomplete_details: { reason: "content_filter" },
+        model: adapter.model,
+        output: [{ type: "message", content: [{ type: "output_text", text: READY }] }],
+      }),
     },
   });
   await assertTerminalRejection(() => adapter.call("fixture", context()));
 }
 
+// Codex review round 5: a completed Agent API response without assistant
+// message text must surface as EMPTY text (handled by the status parser and
+// the orchestrator's empty-generation guards), never as a JSON serialization
+// of the provider envelope that could be promoted as a relator draft.
 {
   const adapter = new PerplexityAdapter(config);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([
-            {
+    responses: {
+      create: async () => ({
+        status: "completed",
+        model: adapter.model,
+        output: [{ type: "search_results", queries: ["fixture"], results: [] }],
+        usage: { input_tokens: 5, output_tokens: 0, total_tokens: 5 },
+      }),
+    },
+  });
+  const degenerate = await adapter.generate("fixture", context());
+  assert.equal(degenerate.text, "", "tool-only terminals must yield empty text, not raw JSON");
+}
+
+// A `failed` terminal carries the provider error; the rejection must surface
+// that message instead of a bare status (parity with openai.ts/grok.ts).
+{
+  const adapter = new PerplexityAdapter(config);
+  setClient(adapter, {
+    responses: {
+      create: async () => ({
+        status: "failed",
+        model: adapter.model,
+        output: [],
+        error: { message: "model overloaded upstream", code: "server_error" },
+      }),
+    },
+  });
+  await assert.rejects(
+    () => adapter.generate("fixture", context()),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: Record<string, unknown> }).peerFailure;
+      assert.ok(failure, "failed terminal must preserve structured PeerFailure metadata");
+      assert.match(String(failure?.message), /model overloaded upstream/i);
+      return true;
+    },
+  );
+}
+
+{
+  const adapter = new PerplexityAdapter(config);
+  setClient(adapter, {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: READY },
+          {
+            type: "response.incomplete",
+            response: {
+              status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
               model: adapter.model,
-              choices: [{ finish_reason: "length", delta: { content: READY } }],
             },
-          ]),
-      },
+          },
+        ]),
     },
   });
   await assertTerminalRejection(() => adapter.generate("fixture", context(true)));
 }
 
-// Perplexity's documented `chat.completion.done` event may carry the complete
-// assistant payload in `message.content` while its terminal delta is empty.
-// The adapter must not mistake that terminal representation for a blank model
-// response and trigger a second paid decision-retry call.
+// Codex review round 9: a cancelled stream terminal can still carry final
+// usage; the rejected attempt must retain that accounting instead of being
+// settled as an unpriced missing-completion.
+{
+  const adapter = new PerplexityAdapter(billingConfig);
+  setClient(adapter, {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: "partial " },
+          {
+            type: "response.cancelled",
+            response: {
+              id: "resp_fixture_cancelled_usage",
+              status: "cancelled",
+              model: adapter.model,
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+            },
+          },
+        ]),
+    },
+  });
+  await assertBilledTerminalRejection(() => adapter.call("fixture", context(true)), {
+    input_tokens: 10,
+    output_tokens: 5,
+    total_tokens: 15,
+    total_cost: 0.00002,
+  });
+}
+
+// The Agent API `response.completed` event carries the aggregate output
+// items. When no usable delta text was streamed, the adapter must read the
+// terminal message instead of mistaking the empty delta buffer for a blank
+// model response and triggering a second paid decision-retry call.
 {
   const adapter = new PerplexityAdapter(config);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([
-            {
-              id: "fixture-perplexity-terminal-message",
-              object: "chat.completion.done",
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: "" },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_fixture_terminal_aggregate",
+              status: "completed",
               model: adapter.model,
-              choices: [
-                {
-                  finish_reason: "stop",
-                  delta: { content: "" },
-                  message: { role: "assistant", content: READY },
-                },
+              output: [
+                { type: "search_results", queries: ["fixture"], results: [] },
+                { type: "message", content: [{ type: "output_text", text: READY }] },
               ],
-              usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
             },
-          ]),
-      },
+          },
+        ]),
     },
   });
   const result = await adapter.call("fixture", context(true));
@@ -382,8 +465,9 @@ async function assertBilledTerminalRejection(
   const rawTelemetry = result.raw as Record<string, unknown>;
   assert.deepEqual(
     {
+      streamed: rawTelemetry.streamed,
       request_id: rawTelemetry.request_id,
-      finish_reasons: rawTelemetry.finish_reasons,
+      events: rawTelemetry.events,
       raw_delta_chars: rawTelemetry.raw_delta_chars,
       terminal_message_chars: rawTelemetry.terminal_message_chars,
       visible_chars: rawTelemetry.visible_chars,
@@ -391,8 +475,9 @@ async function assertBilledTerminalRejection(
       empty_usable_output: rawTelemetry.empty_usable_output,
     },
     {
-      request_id: "fixture-perplexity-terminal-message",
-      finish_reasons: ["stop"],
+      streamed: true,
+      request_id: "resp_fixture_terminal_aggregate",
+      events: 2,
       raw_delta_chars: 0,
       terminal_message_chars: READY.length,
       visible_chars: READY.length,
@@ -400,6 +485,8 @@ async function assertBilledTerminalRejection(
       empty_usable_output: false,
     },
   );
+  assert.equal(result.usage?.input_tokens, 10);
+  assert.equal(result.usage?.output_tokens, 5);
   const generated = await adapter.generate("fixture", context(true));
   assert.equal(generated.text, READY);
 }
@@ -803,14 +890,14 @@ for (const requestedEffort of ["low", "medium"] as const) {
 {
   const adapter = new PerplexityAdapter(billingConfig);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () => ({
-          model: adapter.model,
-          choices: [{ finish_reason: "content_filter", message: { content: READY } }],
-          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-        }),
-      },
+    responses: {
+      create: async () => ({
+        status: "incomplete",
+        incomplete_details: { reason: "content_filter" },
+        output_text: READY,
+        model: adapter.model,
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      }),
     },
   });
   await assertBilledTerminalRejection(() => adapter.call("fixture", context()), {
@@ -821,20 +908,111 @@ for (const requestedEffort of ["low", "medium"] as const) {
   });
 }
 
+// v4.6.0: an Agent API `incomplete` terminal can arrive with `usage: null`
+// (output budget exhausted). The provider still billed the prompt and the
+// output budget, so the rejected attempt must be priced with the request
+// envelope (prompt chars / 4 + max_output_tokens) rather than settle as zero.
+async function assertEstimatedIncompleteBilling(
+  run: () => Promise<unknown>,
+  expectedSearches: number | undefined,
+): Promise<void> {
+  const expectedOutput = maxOutputTokensForPeer(billingConfig, "perplexity");
+  await assert.rejects(run, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    const failure = (
+      error as Error & {
+        peerFailure?: {
+          billing_status?: string;
+          unpriced_attempts?: number;
+          usage?: BillingUsage;
+          cost?: { total_cost?: number };
+        };
+      }
+    ).peerFailure;
+    assert.ok(failure, "incomplete terminal must preserve structured PeerFailure metadata");
+    assert.equal(failure?.billing_status, "reported");
+    assert.equal(failure?.unpriced_attempts ?? 0, 0);
+    const inputTokens = failure?.usage?.input_tokens ?? 0;
+    assert.ok(inputTokens > 0, "estimated input tokens must come from the prompt size");
+    assert.equal(failure?.usage?.output_tokens, expectedOutput);
+    assert.equal(failure?.usage?.total_tokens, inputTokens + expectedOutput);
+    assert.equal(
+      failure?.usage?.num_search_queries,
+      expectedSearches,
+      "reviewer requests declare web_search and must carry the declared search estimate; relator requests never do",
+    );
+    // billingConfig prices searches at 1000 USD per 1000 invocations (1 USD each).
+    const expectedCost =
+      inputTokens * 0.000001 + expectedOutput * 0.000002 + (expectedSearches ?? 0) * 1;
+    assert.ok(
+      Math.abs((failure?.cost?.total_cost ?? Number.NaN) - expectedCost) < 1e-12,
+      `estimated incomplete billing mismatch: ${JSON.stringify(failure?.cost)}`,
+    );
+    return true;
+  });
+}
+
 {
   const adapter = new PerplexityAdapter(billingConfig);
   setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([
-            {
+    responses: {
+      create: async () => ({
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        model: adapter.model,
+        output: [],
+        usage: null,
+      }),
+    },
+  });
+  await assertEstimatedIncompleteBilling(
+    () => adapter.call("fixture", context()),
+    billingConfig.perplexity.web_search_invocations_estimate,
+  );
+}
+
+{
+  const adapter = new PerplexityAdapter(billingConfig);
+  setClient(adapter, {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: "partial" },
+          {
+            type: "response.incomplete",
+            response: {
+              status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
               model: adapter.model,
-              choices: [{ finish_reason: "content_filter", delta: { content: READY } }],
-              usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+              usage: null,
             },
-          ]),
-      },
+          },
+        ]),
+    },
+  });
+  await assertEstimatedIncompleteBilling(
+    () => adapter.generate("fixture", context(true)),
+    undefined,
+  );
+}
+
+{
+  const adapter = new PerplexityAdapter(billingConfig);
+  setClient(adapter, {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: READY },
+          {
+            type: "response.incomplete",
+            response: {
+              status: "incomplete",
+              incomplete_details: { reason: "content_filter" },
+              model: adapter.model,
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+            },
+          },
+        ]),
     },
   });
   await assertBilledTerminalRejection(() => adapter.generate("fixture", context(true)), {

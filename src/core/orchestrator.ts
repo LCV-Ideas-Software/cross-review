@@ -12,6 +12,7 @@ import {
 import {
   estimateCacheSavings,
   estimateCost,
+  isPerplexityAgentModel,
   mergeCost,
   mergeUsage,
   resolveCostRate,
@@ -2369,22 +2370,21 @@ const MODEL_CLAIM_ALIASES: Record<PeerId, RegExp> = {
   gemini: /\b(?:gemini|google)\b/i,
   deepseek: /\bdeepseek\b/i,
   grok: /\b(?:grok|xai|x\.ai)\b/i,
-  perplexity: /\b(?:perplexity|sonar)\b/i,
+  perplexity: /\b(?:perplexity|sonar|kimi|moonshot)\b/i,
 };
 const MODEL_TOKEN_SOURCE =
-  "(?:gpt|chatgpt|codex|claude|gemini|deepseek|grok|sonar|perplexity)(?:[-._][a-z0-9]+)+";
+  "(?:gpt|chatgpt|codex|claude|gemini|deepseek|grok|sonar|perplexity|kimi)(?:[-._][a-z0-9]+)+";
 const MODEL_TOKEN_PATTERN = new RegExp(`\\b${MODEL_TOKEN_SOURCE}\\b`, "gi");
-const NON_CURRENT_MODEL_TOKEN_PATTERN = new RegExp(
-  `\\b(?:not|rather\\s+than|instead\\s+of|no\\s+longer|formerly|previously|from|nao|não|em\\s+vez\\s+de|anteriormente)\\s+(?:the\\s+|o\\s+|a\\s+)?(${MODEL_TOKEN_SOURCE})\\b`,
-  "gi",
-);
 const MODEL_TOKEN_PREFIXES: Record<PeerId, readonly string[]> = {
   codex: ["gpt-", "gpt.", "chatgpt-", "codex-"],
   claude: ["claude-"],
   gemini: ["gemini-"],
   deepseek: ["deepseek-"],
   grok: ["grok-"],
-  perplexity: ["sonar-", "perplexity-"],
+  // v4.6.0: Agent API ids are `provider/model`; the provider segment is
+  // stripped before comparison (see normalizeModelPin), so the canonical
+  // `perplexity/kimi-k3` pin is matched by the `kimi-` token prefix.
+  perplexity: ["sonar-", "perplexity-", "kimi-"],
 };
 const OPERATIONAL_VALUE_PATTERN =
   /https?:\/\/[^\s)\]}>'"]+|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b[0-9a-f]{12,64}\b|\b(?:run|task|workflow|deployment|session)[_-]?id\s*[:=#]\s*[a-z0-9_-]+/gi;
@@ -2548,20 +2548,19 @@ function normalizeVersionToken(value: string): string {
   return value.trim().replace(/^v/i, "").toLowerCase();
 }
 
+// Model pins may carry a `provider/` routing prefix (Perplexity Agent API
+// ids such as `perplexity/kimi-k3`). Drafts name the model itself, so the
+// comparison runs on the model segment.
+function normalizeModelPin(value: string): string {
+  // Accept both supported pin forms: `provider/model` and the Gemini-style
+  // `models/provider/model` (Codex review of PR #234, head 4be7e8b) — strip
+  // the optional `models/` wrapper first, then the routing provider segment.
+  return normalizeVersionToken(value.replace(/^models\//i, "").replace(/^[a-z0-9._-]+\//i, ""));
+}
+
 function uniqueMatches(pattern: RegExp, text: string): string[] {
   const matches = text.match(pattern) ?? [];
   return [...new Set(matches.map((match) => match.trim()).filter(Boolean))];
-}
-
-function uniqueCapturedMatches(pattern: RegExp, text: string): string[] {
-  const stablePattern = new RegExp(pattern.source, pattern.flags);
-  return [
-    ...new Set(
-      [...text.matchAll(stablePattern)]
-        .map((match) => match[1]?.trim())
-        .filter((match): match is string => Boolean(match)),
-    ),
-  ];
 }
 
 function attributionSegment(line: string, valueIndex: number): { local: string; prior: string } {
@@ -2605,22 +2604,6 @@ function partitionCurrentRuntimeVersionClaims(line: string): {
   return {
     asserted: [...new Set(asserted)],
     non_current: [...new Set(nonCurrent)],
-  };
-}
-
-function partitionCurrentModelClaims(
-  candidates: string[],
-  line: string,
-): {
-  asserted: string[];
-  non_current: string[];
-} {
-  const nonCurrent = new Set(
-    uniqueCapturedMatches(NON_CURRENT_MODEL_TOKEN_PATTERN, line).map(normalizeVersionToken),
-  );
-  return {
-    asserted: candidates.filter((candidate) => !nonCurrent.has(candidate)),
-    non_current: candidates.filter((candidate) => nonCurrent.has(candidate)),
   };
 }
 
@@ -2702,29 +2685,348 @@ export function truthfulnessPreflight(params: {
       !historicalOnlyModelClaim &&
       !isNonAssertiveTruthfulnessLine(line)
     ) {
+      // v4.6.0 rounds 3-7 (Codex review of PR #234) + red-team hardening:
+      // model-claim truthfulness is judged per OCCURRENCE. Each occurrence
+      // carries its span, optional provider route, negation (a bounded
+      // marker window right before it) and the peer claim that OWNS it.
+      // Ownership is positional and clause-scoped: nearest alias BEFORE the
+      // occurrence inside its clause, then nearest alias AFTER it inside
+      // the clause, then nearest alias before it anywhere on the line.
+      // Alias detection runs on a masked copy of the line: URLs, quoted
+      // strings, path-like segments and the model occurrences themselves
+      // are blanked so an alias embedded in a token ("claude-fable-5"), a
+      // path ("src/gemini/...") or a quoted log line never steals a clause.
+      // Tokens and pins are canonicalized (underscores to hyphens, embedded
+      // version "v" dropped) so cosmetic variants of the pinned id do not
+      // contradict. Generic provider/model routes require a letter-leading
+      // provider and a real model-looking segment (letters then a digit),
+      // which keeps src/v2-parser, api hosts and date fragments out.
+      //
+      // STRUCTURAL INVERSION (round 8, operator directive - end the
+      // fix-loop at its root): the gate is FAIL-CLOSED BY CONSTRUCTION.
+      // The lexicon only LOCATES model claims; it no longer has to
+      // understand every phrasing to be safe, because the defaults
+      // changed: (S1) any asserted model value that matches no configured
+      // pin contradicts, owner or not - a lie does not need an attributable
+      // clause to be a lie; (S2) a model-scoped claim whose parse yields no
+      // affirmatively validated view is reported as an unsupported
+      // current-state claim instead of silently passing - idiomatic
+      // phrasings are asked to be restated plainly or evidenced, never
+      // waved through; (S3) future/planning statements are exempt from S1.
+      // A phrasing the lexicon cannot reach now lands in S1/S2 (at worst a
+      // clarity request), never in a silent pass.
+      const contradictionCountBefore = contradictions.length;
+      type ModelOccurrence = {
+        matchStart: number;
+        index: number;
+        rawLength: number;
+        token: string;
+        route: string | undefined;
+        negated: boolean;
+        future: boolean;
+        owner: PeerId | undefined;
+      };
+      const canonicalModelText = (value: string): string =>
+        value.replace(/_/g, "-").replace(/(^|[-.])v(?=[0-9])/g, "$1");
+      const base = line.replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length));
+      const negationTailPattern =
+        /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
+      const negatedBefore = (matchStart: number): boolean =>
+        // Markdown code-span and quote delimiters are formatting, not
+        // words: "not `pin`" must still end the window in whitespace.
+        negationTailPattern.test(
+          base.slice(Math.max(0, matchStart - 64), matchStart).replace(/[`*_~"'’“”]/g, " "),
+        );
+      // S3 (round 9): future/planning phrasing exempts only its own
+      // CLAUSE - a false current claim beside an unrelated future clause
+      // is still judged. Stamped per occurrence via clauseBounds.
+      const futureClausePattern =
+        /\b(?:will|would|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|planejad[oa]|futur[oa])\b/i;
+      const occurrences: ModelOccurrence[] = [];
+      const seenTokenStarts = new Set<number>();
+      const recordOccurrence = (
+        matchStart: number,
+        tokenStart: number,
+        provider: string | undefined,
+        tokenRaw: string,
+      ): void => {
+        if (seenTokenStarts.has(tokenStart)) return;
+        seenTokenStarts.add(tokenStart);
+        const token = canonicalModelText(normalizeVersionToken(tokenRaw));
+        occurrences.push({
+          matchStart,
+          index: tokenStart,
+          rawLength: tokenRaw.length,
+          token,
+          route: provider
+            ? `${canonicalModelText(normalizeVersionToken(provider))}/${token}`
+            : undefined,
+          negated: negatedBefore(matchStart),
+          future: false,
+          owner: undefined,
+        });
+      };
+      const familyRoutePattern = new RegExp(
+        `\\b(?:([a-z][a-z0-9._-]*)\\s*/\\s*)?(${MODEL_TOKEN_SOURCE})\\b`,
+        "gi",
+      );
+      for (const match of base.matchAll(familyRoutePattern)) {
+        if (match.index === undefined || !match[2]) continue;
+        recordOccurrence(
+          match.index,
+          match.index + match[0].length - match[2].length,
+          match[1],
+          match[2],
+        );
+      }
+      const genericRoutePattern =
+        /\b([a-z][a-z0-9._-]*)\s*\/\s*([a-z]{2,}[a-z0-9]*(?:[._-][a-z0-9]+)*)\b/gi;
+      for (const match of base.matchAll(genericRoutePattern)) {
+        if (match.index === undefined || !match[2] || !/[0-9]/.test(match[2])) continue;
+        recordOccurrence(
+          match.index,
+          match.index + match[0].length - match[2].length,
+          match[1],
+          match[2],
+        );
+      }
+      // Bare tokens of a routed pin's model family (e.g. "llama-…" when the
+      // pin is zeta/llama-4.1) stay visible even without a slash or digit.
+      const routedPinFamilyByPeer = new Map<PeerId, string>();
+      for (const pinPeer of PEERS) {
+        const pin = modelPins[pinPeer];
+        if (!pin || !pin.replace(/^models\//i, "").includes("/")) continue;
+        const segment = canonicalModelText(normalizeModelPin(pin));
+        const family = segment.match(/^[a-z]{2,}[a-z0-9]*[-._]/)?.[0];
+        if (family) routedPinFamilyByPeer.set(pinPeer, family);
+      }
+      for (const family of new Set(routedPinFamilyByPeer.values())) {
+        const familyPattern = new RegExp(
+          `\\b(${family.split(".").join("\\.")}[a-z0-9._-]+)\\b`,
+          "gi",
+        );
+        for (const match of base.matchAll(familyPattern)) {
+          if (match.index !== undefined && match[1]) {
+            recordOccurrence(match.index, match.index, undefined, match[1]);
+          }
+        }
+      }
+      // Round 8 (Codex review of PR #234): the configured pins themselves
+      // are ALWAYS visible. Any literal mention of a configured route or of
+      // its model segment becomes an occurrence regardless of the generic
+      // patterns' digit/family heuristics - an accepted Agent API id like
+      // perplexity/sonar has no digit, and a denial of the pin must never
+      // be invisible to the gate.
+      const escapePinText = (value: string): string => value.split(".").join("\\.");
+      for (const pinPeer of PEERS) {
+        const pin = modelPins[pinPeer];
+        if (!pin) continue;
+        const unwrapped = pin.replace(/^models\//i, "");
+        const slash = unwrapped.indexOf("/");
+        if (slash > 0) {
+          const provider = unwrapped.slice(0, slash);
+          const segment = unwrapped.slice(slash + 1);
+          const pinRoutePattern = new RegExp(
+            `\\b(${escapePinText(provider)})\\s*/\\s*(${escapePinText(segment)})\\b`,
+            "gi",
+          );
+          for (const match of base.matchAll(pinRoutePattern)) {
+            if (match.index !== undefined && match[1] && match[2]) {
+              recordOccurrence(
+                match.index,
+                match.index + match[0].length - match[2].length,
+                match[1],
+                match[2],
+              );
+            }
+          }
+        }
+        const segmentText = slash > 0 ? unwrapped.slice(slash + 1) : unwrapped;
+        const pinSegmentPattern = new RegExp(`(?<!/)\\b(${escapePinText(segmentText)})\\b`, "gi");
+        for (const match of base.matchAll(pinSegmentPattern)) {
+          if (match.index !== undefined && match[1]) {
+            recordOccurrence(match.index, match.index, undefined, match[1]);
+          }
+        }
+      }
+      let aliasBase = base;
+      const maskAliasRange = (start: number, end: number): void => {
+        aliasBase = aliasBase.slice(0, start) + "#".repeat(end - start) + aliasBase.slice(end);
+      };
+      for (const occurrence of occurrences) {
+        maskAliasRange(occurrence.matchStart, occurrence.index + occurrence.rawLength);
+      }
+      aliasBase = aliasBase
+        .replace(/"[^"]*"|'[^']*'/g, (m) => "#".repeat(m.length))
+        .replace(/[a-z0-9._-]+\s*\//gi, (m) => "#".repeat(m.length));
+      const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
+      for (const aliasPeer of PEERS) {
+        const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
+        for (const match of aliasBase.matchAll(aliasPattern)) {
+          if (match.index !== undefined) {
+            aliasPositions.push({ index: match.index, peer: aliasPeer });
+          }
+        }
+      }
+      const clauseBounds: Array<{ start: number; end: number }> = [];
+      for (const match of aliasBase.matchAll(/[;,.]|\b(?:and|e)\b/gi)) {
+        if (match.index !== undefined) {
+          clauseBounds.push({ start: match.index, end: match.index + match[0].length });
+        }
+      }
+      const clauseStartFor = (index: number): number => {
+        let start = 0;
+        for (const bound of clauseBounds) {
+          if (bound.end <= index && bound.end > start) start = bound.end;
+        }
+        return start;
+      };
+      const clauseEndFor = (index: number): number => {
+        let end = aliasBase.length;
+        for (const bound of clauseBounds) {
+          if (bound.start >= index && bound.start < end) end = bound.start;
+        }
+        return end;
+      };
+      for (const occurrence of occurrences) {
+        const clauseStart = clauseStartFor(occurrence.matchStart);
+        const clauseEnd = clauseEndFor(occurrence.index + occurrence.rawLength);
+        let best: { index: number; peer: PeerId } | undefined;
+        for (const alias of aliasPositions) {
+          if (
+            alias.index >= clauseStart &&
+            alias.index < occurrence.matchStart &&
+            (!best || alias.index > best.index)
+          ) {
+            best = alias;
+          }
+        }
+        if (!best) {
+          for (const alias of aliasPositions) {
+            if (
+              alias.index >= occurrence.index + occurrence.rawLength &&
+              alias.index < clauseEnd &&
+              (!best || alias.index < best.index)
+            ) {
+              best = alias;
+            }
+          }
+        }
+        if (!best) {
+          for (const alias of aliasPositions) {
+            if (alias.index < occurrence.matchStart && (!best || alias.index > best.index)) {
+              best = alias;
+            }
+          }
+        }
+        occurrence.owner = best?.peer;
+      }
+      for (const occurrence of occurrences) {
+        occurrence.future = futureClausePattern.test(
+          base.slice(
+            clauseStartFor(occurrence.matchStart),
+            clauseEndFor(occurrence.index + occurrence.rawLength),
+          ),
+        );
+      }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
-        if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(line)) continue;
-        const candidates = uniqueMatches(MODEL_TOKEN_PATTERN, line)
-          .map(normalizeVersionToken)
-          .filter((candidate) =>
-            MODEL_TOKEN_PREFIXES[peer].some((prefix) => candidate.startsWith(prefix)),
-          );
-        if (!candidates.length) continue;
+        if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(aliasBase)) continue;
+        const expected = canonicalModelText(normalizeModelPin(expectedModel));
+        const pinUnwrapped = expectedModel.replace(/^models\//i, "");
+        const routedPin = pinUnwrapped.includes("/")
+          ? canonicalModelText(normalizeVersionToken(pinUnwrapped))
+          : undefined;
+        const expectedSet = new Set([expected, ...(routedPin ? [routedPin] : [])]);
+        const pinFamily = routedPinFamilyByPeer.get(peer);
+        const owned = occurrences.filter((occurrence) => {
+          if (occurrence.future) return false;
+          if (occurrence.owner) return occurrence.owner === peer;
+          // Ownerless occurrences keep family attribution only.
+          if (peer === "perplexity") {
+            return (
+              occurrence.token === expected ||
+              MODEL_TOKEN_PREFIXES.perplexity.some((prefix) =>
+                occurrence.token.startsWith(prefix),
+              ) ||
+              (pinFamily !== undefined && occurrence.token.startsWith(pinFamily))
+            );
+          }
+          return MODEL_TOKEN_PREFIXES[peer].some((prefix) => occurrence.token.startsWith(prefix));
+        });
+        if (!owned.length) continue;
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
-        const expected = normalizeVersionToken(expectedModel);
-        const claims = partitionCurrentModelClaims(candidates, line);
-        const assertedContradictions = claims.asserted.filter(
-          (candidate) => candidate !== expected,
-        );
-        const expectedExplicitlyDenied = claims.non_current.includes(expected);
+        // A routed occurrence owned by the routable Perplexity claim asserts
+        // its full route; a native claim asserts the model segment (the
+        // provider qualifier on a truthful native claim is decoration,
+        // while a wrong segment still contradicts).
+        const viewOf = (occurrence: ModelOccurrence): string =>
+          peer === "perplexity" && occurrence.route !== undefined
+            ? occurrence.route
+            : occurrence.token;
+        const assertedViews: string[] = [];
+        const nonCurrentViews: string[] = [];
+        for (const occurrence of owned) {
+          (occurrence.negated ? nonCurrentViews : assertedViews).push(viewOf(occurrence));
+        }
+        const assertedContradictions = assertedViews.filter((view) => !expectedSet.has(view));
+        const expectedExplicitlyDenied = nonCurrentViews.some((view) => expectedSet.has(view));
         if (assertedContradictions.length > 0 || expectedExplicitlyDenied) {
           addIssueClass(issueClasses, "runtime_contradiction");
           contradictions.push(
-            `current-state model claim asserted=${claims.asserted.join(", ") || "none"}; non_current=${claims.non_current.join(", ") || "none"} for ${peer} contradicts model_pin ${expectedModel}`,
+            `current-state model claim asserted=${assertedViews.join(", ") || "none"}; non_current=${nonCurrentViews.join(", ") || "none"} for ${peer} contradicts model_pin ${expectedModel}`,
           );
         }
+      }
+
+      // S1 (fail-closed): an asserted, non-negated model value that matches
+      // no configured pin is a runtime contradiction even when no clause
+      // owner or peer alias claims it - the six pins are the complete truth
+      // of this runtime, so a foreign "current model" value cannot be true.
+      // S3: future/planning phrasing is not a current-state assertion.
+      const allPinViews = new Set<string>();
+      for (const pinPeer of PEERS) {
+        const pin = modelPins[pinPeer];
+        if (!pin) continue;
+        allPinViews.add(canonicalModelText(normalizeModelPin(pin)));
+        const unwrapped = pin.replace(/^models\//i, "");
+        if (unwrapped.includes("/")) {
+          allPinViews.add(canonicalModelText(normalizeVersionToken(unwrapped)));
+        }
+      }
+      let affirmativelyValidated = false;
+      let currentOccurrenceCount = 0;
+      let anyModelDenialOrContradiction = contradictions.length > contradictionCountBefore;
+      for (const occurrence of occurrences) {
+        if (occurrence.future) continue;
+        currentOccurrenceCount += 1;
+        if (occurrence.negated) continue;
+        const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
+        if (views.some((view) => allPinViews.has(view))) {
+          affirmativelyValidated = true;
+          continue;
+        }
+        lineCurrentModelClaimMatched = true;
+        currentStateClaimMatched = true;
+        anyModelDenialOrContradiction = true;
+        addIssueClass(issueClasses, "runtime_contradiction");
+        contradictions.push(
+          `asserted current model value ${occurrence.route ?? occurrence.token} matches no configured model_pin`,
+        );
+      }
+      // S2 (fail-closed): a model-scoped line whose occurrences were ALL
+      // classified as negations of non-pin values asserts something the
+      // parser could not validate affirmatively (idiomatic phrasing,
+      // inverted negation). It is reported as unsupported instead of
+      // silently passing: restate plainly or attach structured evidence.
+      if (currentOccurrenceCount > 0 && !affirmativelyValidated && !anyModelDenialOrContradiction) {
+        lineCurrentModelClaimMatched = true;
+        currentStateClaimMatched = true;
+        addIssueClass(issueClasses, "unsupported_current_state_claim");
+        unsupportedClaims.push(
+          `model claim could not be affirmatively validated against the configured pins (restate plainly or attach structured evidence): ${line.slice(0, 240)}`,
+        );
       }
     }
 
@@ -3338,6 +3640,12 @@ function budgetExceeded(session: SessionMeta, limit?: number): boolean {
 // per-recovery gates themselves and therefore cover only that adapter's retry
 // envelope. Prompt blocking can occur after earlier retryable failures, so all
 // three moderation-path envelopes use max_attempts.
+//
+// v4.6.0 (Codex review of PR #234): `request_role` mirrors the Perplexity
+// adapter's role-aware tool declaration. Only the reviewer role (`call`)
+// declares the web_search tool; relator generation and evidence judges route
+// through `generate()` and never incur the per-invocation search fee, so
+// their preflights must not price it.
 export function estimatedPeerRoundCost(
   config: AppConfig,
   peers: PeerId[],
@@ -3345,8 +3653,10 @@ export function estimatedPeerRoundCost(
   effectiveModels: Partial<Record<PeerId, string>> = {},
   options: {
     max_output_tokens_by_peer?: Partial<Record<PeerId, number>> | undefined;
+    request_role?: "review" | "generation" | undefined;
   } = {},
 ): number | undefined {
+  const requestRole = options.request_role ?? "review";
   let total = 0;
   for (const peer of peers) {
     const explicitEffectiveModel = effectiveModels[peer];
@@ -3371,10 +3681,21 @@ export function estimatedPeerRoundCost(
       ) {
         return undefined;
       }
+      // v4.6.0: Perplexity Agent API reviewer requests declare the
+      // web_search tool, billed per invocation. The API does not cap
+      // invocations per step, so the envelope prices the declared
+      // estimate; post-call accounting uses the reported count.
+      const searchEstimate =
+        requestRole === "review" &&
+        peer === "perplexity" &&
+        isPerplexityAgentModel(pricedModel) &&
+        !config.perplexity.disable_search
+          ? { num_search_queries: config.perplexity.web_search_invocations_estimate }
+          : {};
       const estimate = estimateCost(
         config,
         peer,
-        { input_tokens: inputTokens, output_tokens: outputTokens },
+        { input_tokens: inputTokens, output_tokens: outputTokens, ...searchEstimate },
         pricedModel,
       );
       if (estimate.total_cost == null) return undefined;
@@ -4086,6 +4407,8 @@ export class CrossReviewOrchestrator {
               max_output_tokens_by_peer: {
                 [peer]: evidenceJudgeOutputTokens(this.config, peer),
               },
+              // Judges route through generate(): no web_search tool, no fee.
+              request_role: "generation",
             },
           );
           if (estimate == null) return null;
@@ -4603,6 +4926,8 @@ export class CrossReviewOrchestrator {
           max_output_tokens_by_peer: {
             [params.judge_peer]: evidenceJudgeOutputTokens(this.config, params.judge_peer),
           },
+          // Judges route through generate(): no web_search tool, no fee.
+          request_role: "generation",
         },
       );
       return estimate == null ? null : total + estimate;
@@ -5515,9 +5840,14 @@ export class CrossReviewOrchestrator {
   ): Promise<GenerationResult> {
     const session = this.store.read(context.session_id);
     const limit = sessionBudgetLimit(this.config, session);
-    const estimate = estimatedPeerRoundCost(this.config, [adapter.id], prompt, {
-      [adapter.id]: adapter.model,
-    });
+    const estimate = estimatedPeerRoundCost(
+      this.config,
+      [adapter.id],
+      prompt,
+      { [adapter.id]: adapter.model },
+      // Relator generation never declares the Perplexity web_search tool.
+      { request_role: "generation" },
+    );
     const currentCost = session.totals.cost.total_cost ?? 0;
     const unknownProviderSpend = sessionHasUnknownProviderSpend(session);
     if (
@@ -7935,6 +8265,10 @@ export class CrossReviewOrchestrator {
     // existingSession read — see the callerForLottery derivation block above.
     const missingFinancialVars = missingFinancialControlVars(this.config, chargeablePeers, {
       untilStopped: input.until_stopped,
+      // The relator only generates; a Perplexity lead never declares the
+      // web_search tool, so the search-rate dimension is gated on the
+      // reviewer pool (same derivation as reviewerPeers below).
+      reviewerPeers: selectedPeers.filter((peer) => peer !== leadPeer),
     });
     if (missingFinancialVars.length) {
       const blockedSession =

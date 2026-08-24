@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.05.45`                        |
-| Data do source/release target | `21/08/2026`                       |
+| Versão preparada pelo source  | `v04.06.00`                        |
+| Data do source/release target | `23/08/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -185,7 +185,7 @@ O runtime atual tem seis peers habilitados:
 | `gemini`     | Google     | pacote `@google/genai`           |
 | `deepseek`   | DeepSeek   | API compatível com OpenAI        |
 | `grok`       | xAI        | superfície compatível com OpenAI |
-| `perplexity` | Perplexity | Sonar API                        |
+| `perplexity` | Perplexity | Agent API (Responses-compatível) |
 
 Os nomes dos peers são estáveis dentro do protocolo. A configuração de modelos
 usa variáveis específicas por provedor, mas as sessões e respostas se referem
@@ -202,8 +202,8 @@ documentados no repositório atual são:
 | `claude`     | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | `gemini`     | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | `deepseek`   | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| `grok`       | `grok-4.5`               | `CROSS_REVIEW_GROK_MODEL`       |
-| `perplexity` | `sonar-reasoning-pro`    | `CROSS_REVIEW_PERPLEXITY_MODEL` |
+| `grok`       | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
+| `perplexity` | `perplexity/kimi-k3`     | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Overrides devem ser decisão explícita do operador. A proposta do sistema é
 priorizar correção, rastreabilidade e profundidade de raciocínio, não custo ou
@@ -228,8 +228,9 @@ gasto; nenhum blocker é truncado ou declarado satisfeito por conveniência.
 Para `gpt-5.6-sol`, `ultra` designa um modo de execução do produto Codex, não
 um `reasoning.effort` literal da Responses API. O cross-review o aceita como
 alias de compatibilidade na configuração e o adaptador envia o valor oficial
-`max`. O `grok-4.5` aceita somente `low`, `medium` e `high`, portanto o alias é
-limitado a `high` antes do envio. Nenhuma API recebe a string `ultra`.
+`max`. O `grok-4.6` aceita `low`, `medium`, `high` e `xhigh`, portanto o alias
+é normalizado para `xhigh` antes do envio; o Perplexity (`perplexity/kimi-k3`,
+Agent API) recebe `max`. Nenhuma API recebe a string `ultra`.
 Overrides explícitos de GPT-5.5/5.4/5.2 são limitados a `xhigh`; GPT-5.1 e o
 GPT-5 original são limitados a `high`, com tradução dos valores inferiores que
 não existam no enum da família escolhida.
@@ -417,9 +418,11 @@ usando a precificação oficial vigente no momento da configuração:
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION", "<rate>", "User")
 ```
 
-Perplexity também pode exigir taxas por requisição conforme tamanho de contexto
-de busca; nesses casos, configure os campos
-`CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_*_USD_PER_1000_REQUESTS`.
+O Perplexity (Agent API) cobra a ferramenta `web_search` por invocação; com a
+busca ativa, configure também
+`CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS` (o preflight
+usa a estimativa `CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE`,
+padrão `3`, e a contabilidade pós-chamada usa a contagem reportada pela API).
 
 O runtime consultado nesta sessão indicou `paid_calls_ready: true`, sem variáveis
 financeiras faltantes, para a configuração local carregada.
@@ -609,14 +612,14 @@ e cadeia de custódia:
 
 O `cross-review` usa prompt caching quando o provedor oferece suporte:
 
-| Provider   | Modo          |
-| ---------- | ------------- |
-| OpenAI     | automático    |
-| Anthropic  | explícito     |
-| Gemini     | implícito     |
-| DeepSeek   | automático    |
-| Grok       | automático    |
-| Perplexity | não suportado |
+| Provider   | Modo       |
+| ---------- | ---------- |
+| OpenAI     | automático |
+| Anthropic  | explícito  |
+| Gemini     | implícito  |
+| DeepSeek   | automático |
+| Grok       | automático |
+| Perplexity | automático |
 
 A telemetria é normalizada em eventos `provider.cache.usage` e manifestos por
 sessão. Operadores podem desligar globalmente os controles de cache que o
@@ -635,7 +638,7 @@ Também há controles de TTL e versionamento de schema de cache, incluindo
 `CROSS_REVIEW_CACHE_TTL_ANTHROPIC` e `CROSS_REVIEW_CACHE_TTL_OPENAI`.
 
 No pin atual, GPT-5.6 Sol usa `prompt_cache_options` implícito com TTL de 30
-minutos e reporta tokens de leitura/escrita. Grok 4.5 usa
+minutos e reporta tokens de leitura/escrita. Grok 4.6 usa
 `prompt_cache_key`, tem retenção administrada pela xAI e não fornece contador
 separado de escrita; o runtime não inventa esse consumo.
 
@@ -827,6 +830,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                                                                              |
 | ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.06.00`      | 23/08/2026    | Peer Perplexity migra para a Agent API com o pin `perplexity/kimi-k3` antes do sunset da Sonar (27/09/2026); Grok passa a `grok-4.6` com effort `xhigh`; preços atualizados pelas docs oficiais; smoke da loteria do relator determinístico com limiar qui-quadrado explícito (CROSREV-18, #231).                     |
 | `v04.05.45`      | 21/08/2026    | O contrato de sessão e a instrução dos peers reconhecem o canal de evidência persistido (200K, custódia SHA-256) como o artefato único não-filtrado: pedido de re-colagem no corpo do draft passa a ser defeito da revisão, destravando a convergência de PRs médios (issue #216).                                    |
 | `v04.05.44`      | 21/08/2026    | O scrubber ganha padrão dedicado para o formato stateless (JWT) dos tokens de instalação de GitHub Apps (`ghs_` com segmentos base64url): o token inteiro é redigido numa única correspondência, sem depender do comprimento do primeiro segmento no padrão genérico de JWT (issue #215).                             |
 | `v04.05.43`      | 21/08/2026    | O evidence preflight corrobora contagens de teste por registro: a prova RED de um TDD (`N failed` com o próprio run) passa como material do caller e um registro RED deliberado não veta contagens verdes de outros registros; o veto de sinal de falha segue valendo dentro do registro correspondente (issue #217). |
