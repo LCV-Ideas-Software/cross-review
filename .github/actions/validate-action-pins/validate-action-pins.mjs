@@ -12,7 +12,7 @@
 //   - local composite actions:      ./path/to/action  (manifest revalidated)
 //   - immutable same-repo actions:  $/path/to/action  (manifest revalidated)
 //   - third-party actions pinned to a full 40-hex commit: owner/repo[/path]@<sha>
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { parse } from "yaml";
 
@@ -88,29 +88,58 @@ export function validateTree(root) {
   // Codex review of PR #244: manifests under .github/actions are validated
   // even when nothing references them yet - the Scorecard allowance covers
   // that prefix, so an orphaned unpinned manifest must not slip through.
+  const seededReal = new Set();
   const seedActions = (dir) => {
+    let realDir;
+    try {
+      realDir = realpathSync(dir);
+    } catch (error) {
+      problems.push(
+        `${relative(root, dir).replace(/\\/g, "/")}: unreadable action subtree: ${error.message ?? error}`,
+      );
+      return;
+    }
+    if (seededReal.has(realDir)) return;
+    seededReal.add(realDir);
     let entries;
     try {
       entries = readdirSync(dir);
-    } catch {
+    } catch (error) {
+      problems.push(
+        `${relative(root, dir).replace(/\\/g, "/")}: unreadable action subtree: ${error.message ?? error}`,
+      );
       return;
     }
     for (const entry of entries) {
       const child = join(dir, entry);
       let childStat;
       try {
-        childStat = statSync(child);
-      } catch {
+        // lstat: never descend through symlinks (a cyclic link below the
+        // checked-out tag must not stall the release gate).
+        childStat = lstatSync(child);
+      } catch (error) {
+        problems.push(
+          `${relative(root, child).replace(/\\/g, "/")}: unreadable action entry: ${error.message ?? error}`,
+        );
         continue;
       }
       if (childStat.isDirectory()) {
         seedActions(child);
-      } else if (entry === "action.yml" || entry === "action.yaml") {
+      } else if (childStat.isFile() && (entry === "action.yml" || entry === "action.yaml")) {
         enqueue(child);
       }
     }
   };
-  seedActions(join(root, ".github", "actions"));
+  {
+    const actionsDir = join(root, ".github", "actions");
+    let hasActionsDir;
+    try {
+      hasActionsDir = statSync(actionsDir).isDirectory();
+    } catch {
+      hasActionsDir = false; // absent is fine; unreadable inner trees fail above
+    }
+    if (hasActionsDir) seedActions(actionsDir);
+  }
   while (queue.length > 0) {
     const absPath = queue.shift();
     const relPath = relative(root, absPath).replace(/\\/g, "/");
@@ -143,7 +172,13 @@ export function validateTree(root) {
           problems.push(`${relPath}: local reference target not found for ${value}`);
         }
         if (targetStat?.isFile()) {
-          enqueue(target);
+          if (/\.(yml|yaml)$/i.test(relTarget)) {
+            enqueue(target);
+          } else {
+            // A plain file that is not a workflow (e.g. ./build/script.js)
+            // is neither an action directory nor a reusable workflow.
+            problems.push(`${relPath}: local file reference is not a reusable workflow: ${value}`);
+          }
         } else if (targetStat?.isDirectory()) {
           const manifest = manifestPathFor(root, value);
           if (manifest === null) {
