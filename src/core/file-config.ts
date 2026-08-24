@@ -104,6 +104,7 @@ const CostRateEntrySchema = z
     output_extended_per_million: z.number().nonnegative().optional(),
     cache_read_extended_per_million: z.number().nonnegative().optional(),
     cache_write_extended_per_million: z.number().nonnegative().optional(),
+    cache_storage_per_million_hour: z.number().nonnegative().optional(),
     threshold_tokens: z.number().int().nonnegative().optional(),
     promo_input_per_million: z.number().nonnegative().optional(),
     promo_output_per_million: z.number().nonnegative().optional(),
@@ -162,6 +163,9 @@ const CacheSchema = z
     schema_version: z.string().optional(),
     ttl_anthropic: z.enum(["5m", "1h"]).optional(),
     ttl_openai: z.enum(["5m", "1h"]).optional(),
+    // v4.7.0 (CROSREV-6): Gemini explicit-cache knobs.
+    ttl_gemini: z.enum(["5m", "1h"]).optional(),
+    gemini_explicit: z.boolean().optional(),
     // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
     // disable. Keys mirror the PROVIDER identifiers used by env vars
     // (anthropic for the claude peer, openai for the codex peer).
@@ -273,6 +277,7 @@ const COST_RATE_FIELD_TO_ENV_SUFFIX: Record<string, string> = {
   output_extended_per_million: "OUTPUT_EXTENDED_USD_PER_MILLION",
   cache_read_extended_per_million: "CACHE_READ_EXTENDED_USD_PER_MILLION",
   cache_write_extended_per_million: "CACHE_WRITE_EXTENDED_USD_PER_MILLION",
+  cache_storage_per_million_hour: "CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR",
   threshold_tokens: "THRESHOLD_TOKENS",
   promo_input_per_million: "PROMO_INPUT_USD_PER_MILLION",
   promo_output_per_million: "PROMO_OUTPUT_USD_PER_MILLION",
@@ -471,6 +476,10 @@ export function flattenFileConfigToEnvMap(
     set("CROSS_REVIEW_CACHE_SCHEMA_VERSION", config.cache.schema_version);
     set("CROSS_REVIEW_CACHE_TTL_ANTHROPIC", config.cache.ttl_anthropic);
     set("CROSS_REVIEW_CACHE_TTL_OPENAI", config.cache.ttl_openai);
+    set("CROSS_REVIEW_CACHE_TTL_GEMINI", config.cache.ttl_gemini);
+    if (config.cache.gemini_explicit != null) {
+      set("CROSS_REVIEW_GEMINI_EXPLICIT_CACHE", config.cache.gemini_explicit ? "true" : "false");
+    }
     // v3.7.5 (A3): per-provider disable flags mapped to env vars.
     if (config.cache.disable_anthropic != null) {
       set(

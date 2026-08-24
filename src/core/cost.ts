@@ -196,6 +196,7 @@ export function selectRate(
 export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
   const total: TokenUsage = {};
   let citationTokensSeen = false;
+  let cacheStorageSeen = false;
   let searchQueriesSeen = false;
   let searchPerformedSeen = false;
   let providerTotalSeen = false;
@@ -211,6 +212,11 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
     // cache scopes or modes).
     total.cache_read_tokens = (total.cache_read_tokens ?? 0) + (item.cache_read_tokens ?? 0);
     total.cache_write_tokens = (total.cache_write_tokens ?? 0) + (item.cache_write_tokens ?? 0);
+    if (item.cache_storage_token_hours !== undefined) {
+      total.cache_storage_token_hours =
+        (total.cache_storage_token_hours ?? 0) + item.cache_storage_token_hours;
+      cacheStorageSeen = true;
+    }
     if (item.citation_tokens !== undefined) {
       total.citation_tokens = (total.citation_tokens ?? 0) + item.citation_tokens;
       citationTokensSeen = true;
@@ -230,6 +236,7 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
     }
   }
   if (!citationTokensSeen) delete total.citation_tokens;
+  if (!cacheStorageSeen) delete total.cache_storage_token_hours;
   if (!searchQueriesSeen) delete total.num_search_queries;
   if (!searchPerformedSeen) delete total.search_performed;
   if (!providerTotalSeen) delete total.provider_reported_total_cost_usd;
@@ -270,6 +277,13 @@ export function estimateCost(
   const cacheWriteCost = cacheWriteSel
     ? (cacheWriteTokens / 1_000_000) * cacheWriteSel.rate_per_million
     : 0;
+  // v4.7.0 (CROSREV-6): Gemini explicit-cache storage — deterministic at
+  // creation (token-hours reported by the adapter x flat storage rate).
+  const cacheStorageTokenHours = usage.cache_storage_token_hours ?? 0;
+  const cacheStorageCost =
+    cacheStorageTokenHours > 0 && typeof rate.cache_storage_per_million_hour === "number"
+      ? (cacheStorageTokenHours / 1_000_000) * rate.cache_storage_per_million_hour
+      : 0;
   // v3.0.0 (Perplexity 6th peer): additional cost dimensions —
   // (1) per-1000-requests fee scaled by search_context_size (legacy Sonar
   //     ids only),
@@ -340,6 +354,7 @@ export function estimateCost(
     outputCost +
     cacheReadCost +
     cacheWriteCost +
+    cacheStorageCost +
     requestCost +
     citationTokensCost +
     deepResearchReasoningTokensCost +
@@ -354,6 +369,7 @@ export function estimateCost(
   };
   if (cacheReadCost > 0) base.cache_read_cost = cacheReadCost;
   if (cacheWriteCost > 0) base.cache_write_cost = cacheWriteCost;
+  if (cacheStorageCost > 0) base.cache_storage_cost = cacheStorageCost;
   if (requestCost > 0) base.request_cost = requestCost;
   if (citationTokensCost > 0) base.citation_tokens_cost = citationTokensCost;
   if (deepResearchReasoningTokensCost > 0) {

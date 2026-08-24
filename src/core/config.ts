@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.6.2";
+export const VERSION = "4.7.0";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -606,6 +606,9 @@ function loadCacheConfig(): AppConfig["cache"] {
   const schemaVersion = (envValue("CROSS_REVIEW_CACHE_SCHEMA_VERSION") ?? "v1").trim() || "v1";
   const anthropicTtl = parseTtlEnv("CROSS_REVIEW_CACHE_TTL_ANTHROPIC", "1h");
   const openaiTtl = parseTtlEnv("CROSS_REVIEW_CACHE_TTL_OPENAI", "1h");
+  // v4.7.0 (CROSREV-6): Gemini explicit-cache TTL; 1h mirrors the API's
+  // documented default for cachedContents.
+  const geminiTtl = parseTtlEnv("CROSS_REVIEW_CACHE_TTL_GEMINI", "1h");
   // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
   // disable. Default for Anthropic (claude) is `true` (cache off) based
   // on empirical $1.18 wasted to save $0.0035 over 244 sessions
@@ -633,7 +636,12 @@ function loadCacheConfig(): AppConfig["cache"] {
     ttl: {
       anthropic: anthropicTtl,
       openai: openaiTtl,
+      gemini: geminiTtl,
     },
+    // v4.7.0 (CROSREV-6): opt-in explicit Gemini cache; default OFF (the
+    // implicit cache already discounts repeated prefixes at no storage
+    // cost — arming this is a deliberate FinOps decision).
+    gemini_explicit: boolEnv("CROSS_REVIEW_GEMINI_EXPLICIT_CACHE", false),
     disable_per_peer: disablePerPeer,
   };
 }
@@ -889,6 +897,22 @@ export function missingFinancialControlVars(
   // products require the active context-tier request fee, while Deep Research
   // requires citation, reasoning and search-query rates. A complete
   // input/output card alone is not a complete financial control for either.
+  // v4.7.0 (CROSREV-6): the armed Gemini explicit cache bills storage
+  // deterministically at creation (cached tokens x TTL hours); the storage
+  // rate is then part of the financial controls, fail-closed like every
+  // other price dimension.
+  if (
+    peers.includes("gemini") &&
+    config.cache.enabled &&
+    config.cache.gemini_explicit &&
+    !config.cache.disable_per_peer.gemini
+  ) {
+    const geminiRate = resolveCostRate(config, "gemini", config.models.gemini);
+    if (geminiRate?.cache_storage_per_million_hour == null) {
+      missing.add(`${COST_RATE_ENV_PREFIX.gemini}_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR`);
+    }
+  }
+
   if (peers.includes("perplexity")) {
     const effectiveModels = [
       config.models.perplexity,
@@ -941,6 +965,9 @@ function costRate(
     ["cache_write_per_million", "CACHE_WRITE_USD_PER_MILLION"],
     ["cache_read_extended_per_million", "CACHE_READ_EXTENDED_USD_PER_MILLION"],
     ["cache_write_extended_per_million", "CACHE_WRITE_EXTENDED_USD_PER_MILLION"],
+    // v4.7.0 (CROSREV-6): Gemini explicit-cache storage (USD per 1M
+    // tokens per hour of TTL).
+    ["cache_storage_per_million_hour", "CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"],
     ["promo_input_per_million", "PROMO_INPUT_USD_PER_MILLION"],
     ["promo_output_per_million", "PROMO_OUTPUT_USD_PER_MILLION"],
     ["promo_input_extended_per_million", "PROMO_INPUT_EXTENDED_USD_PER_MILLION"],

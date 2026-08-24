@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 24/08/2026: `4.6.2`. O registro pode ficar
+> Estado do source/release target em 24/08/2026: `4.7.0`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -631,6 +631,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.07.00`      | Cache explícito opcional do Gemini (CROSREV-6, issue #185): a cabeça estável do prompt de review vira `cachedContents` com custo de armazenamento determinístico por token-hora; opt-in por `CROSS_REVIEW_GEMINI_EXPLICIT_CACHE` e exigido pelo gate financeiro quando armado.                                        |
 | `v04.06.02`      | Republish da v04.06.01 com a action do validador de pins autocontida (parser embutido, prova de runner limpo), manifests locais resolvidos por referência e allowance do Scorecard restrita por localização.                                                                                                          |
 | `v04.06.01`      | Republish da v04.06.00 com o fix do gate de supply-chain: permissions mínimas por job em todos os workflows, `TokenPermissionsID` de volta à vigilância do Scorecard e revalidação real de pinning no gate do Publish cobrindo as referências imutáveis `$/` same-repo.                                               |
 | `v04.06.00`      | Peer Perplexity migra para a Agent API com o pin `perplexity/kimi-k3` antes do sunset da Sonar (27/09/2026); Grok passa a `grok-4.6` com effort `xhigh`; preços atualizados pelas docs oficiais; smoke da loteria do relator determinístico com limiar qui-quadrado explícito (CROSREV-18, #231).                     |

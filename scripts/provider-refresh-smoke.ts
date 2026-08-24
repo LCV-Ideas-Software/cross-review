@@ -9,7 +9,11 @@ import type { PeerFailure, ReasoningEffort, RuntimeEvent } from "../src/core/typ
 import { AnthropicAdapter, anthropicCacheMinTokens } from "../src/peers/anthropic.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { classifyProviderError } from "../src/peers/errors.js";
-import { GeminiAdapter } from "../src/peers/gemini.js";
+import {
+  __resetGeminiExplicitCacheIndexForTests,
+  GEMINI_EXPLICIT_CACHE_MIN_TOKENS,
+  GeminiAdapter,
+} from "../src/peers/gemini.js";
 import { GrokAdapter } from "../src/peers/grok.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { OpenAIAdapter } from "../src/peers/openai.js";
@@ -650,6 +654,138 @@ function capturePerplexityProbe(
   assert.match(probe.message ?? "", /perplexity_model_unsupported/);
   assert.match(probe.message ?? "", /perplexity\/kimi-k3/);
   assert.equal(captured(), undefined, "a retired Sonar id must never reach the wire.");
+}
+
+// v4.7.0 (CROSREV-6): Gemini explicit context cache — opt-in, review-only.
+{
+  const READY_JSON = JSON.stringify({
+    status: "READY",
+    summary: "fixture",
+    blocking_issues: [],
+    evidence_sources: [],
+  });
+  const geminiCacheConfig = {
+    ...config,
+    streaming: { ...config.streaming, tokens: false },
+    cache: {
+      ...config.cache,
+      enabled: true,
+      gemini_explicit: true,
+      ttl: { ...config.cache.ttl, gemini: "1h" as const },
+      disable_per_peer: { ...config.cache.disable_per_peer, gemini: false },
+    },
+  };
+  const stableHead = `${"S".repeat(GEMINI_EXPLICIT_CACHE_MIN_TOKENS * 4)}\n`;
+  const prompt = `${stableHead}dynamic tail of round 1`;
+  const makeClient = () => {
+    const createCalls: Array<Record<string, unknown>> = [];
+    const genCalls: Array<{ contents?: string; config?: Record<string, unknown> }> = [];
+    const client = {
+      ThinkingLevel: { LOW: "LOW", MEDIUM: "MEDIUM", HIGH: "HIGH" },
+      ai: {
+        caches: {
+          create: async (p: Record<string, unknown>) => {
+            createCalls.push(p);
+            return { name: "cachedContents/fixture-1", usageMetadata: { totalTokenCount: 5_000 } };
+          },
+        },
+        models: {
+          generateContent: async (p: { contents?: string; config?: Record<string, unknown> }) => {
+            genCalls.push(p);
+            return {
+              text: READY_JSON,
+              modelVersion: geminiCacheConfig.models.gemini,
+              candidates: [{ finishReason: "STOP" }],
+              usageMetadata: {
+                promptTokenCount: 5_200,
+                candidatesTokenCount: 20,
+                totalTokenCount: 5_220,
+                cachedContentTokenCount: 5_000,
+              },
+            };
+          },
+        },
+      },
+    };
+    return { client, createCalls, genCalls };
+  };
+  const context = (prefixChars?: number) => ({
+    session_id: "550e8400-e29b-41d4-a716-446655440077",
+    round: 1,
+    task: "gemini explicit cache smoke",
+    emit: () => undefined,
+    ...(prefixChars !== undefined ? { prompt_stable_prefix_chars: prefixChars } : {}),
+  });
+
+  __resetGeminiExplicitCacheIndexForTests();
+  const armed = new GeminiAdapter(geminiCacheConfig);
+  const armedMock = makeClient();
+  (armed as unknown as { client: () => Promise<unknown> }).client = async () => armedMock.client;
+  const first = await armed.call(prompt, context(stableHead.length));
+  assert.equal(armedMock.createCalls.length, 1, "first armed call creates the cache");
+  const createdConfig = armedMock.createCalls[0]?.config as {
+    contents?: Array<{ parts?: Array<{ text?: string }> }>;
+    ttl?: string;
+  };
+  assert.equal(createdConfig?.contents?.[0]?.parts?.[0]?.text, stableHead);
+  assert.equal(createdConfig?.ttl, "3600s");
+  assert.equal(armedMock.genCalls[0]?.config?.cachedContent, "cachedContents/fixture-1");
+  assert.ok(
+    String(armedMock.genCalls[0]?.contents ?? "").includes("dynamic tail of round 1"),
+    "live contents carry the dynamic remainder",
+  );
+  assert.equal(
+    String(armedMock.genCalls[0]?.contents ?? "").includes(stableHead),
+    false,
+    "the cached head must not be resent live",
+  );
+  assert.equal(typeof armedMock.genCalls[0]?.config?.systemInstruction, "string");
+  assert.equal(first.usage?.cache_read_tokens, 5_000);
+  assert.equal(first.usage?.cache_provider_mode, "explicit");
+  assert.equal(first.usage?.input_tokens, 200);
+  assert.equal(
+    first.usage?.cache_storage_token_hours,
+    5_000,
+    "storage token-hours = cached tokens x 1h TTL, billed once at creation",
+  );
+  const second = await armed.call(prompt, context(stableHead.length));
+  assert.equal(armedMock.createCalls.length, 1, "the second call reuses the cache entry");
+  assert.equal(second.usage?.cache_storage_token_hours, undefined, "storage billed only once");
+
+  // Gate off => untouched legacy composition.
+  __resetGeminiExplicitCacheIndexForTests();
+  const disarmed = new GeminiAdapter({
+    ...geminiCacheConfig,
+    cache: { ...geminiCacheConfig.cache, gemini_explicit: false },
+  });
+  const disarmedMock = makeClient();
+  (disarmed as unknown as { client: () => Promise<unknown> }).client = async () =>
+    disarmedMock.client;
+  const plain = await disarmed.call(prompt, context(stableHead.length));
+  assert.equal(disarmedMock.createCalls.length, 0);
+  assert.equal(disarmedMock.genCalls[0]?.config?.cachedContent, undefined);
+  assert.ok(String(disarmedMock.genCalls[0]?.contents ?? "").includes("dynamic tail of round 1"));
+  assert.equal(plain.usage?.cache_provider_mode, "implicit");
+  assert.equal(plain.usage?.cache_storage_token_hours, undefined);
+
+  // Head below the documented 4,096-token minimum => uncached.
+  __resetGeminiExplicitCacheIndexForTests();
+  const shortMock = makeClient();
+  const shortAdapter = new GeminiAdapter(geminiCacheConfig);
+  (shortAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    shortMock.client;
+  await shortAdapter.call("small head\nsmall tail", context(11));
+  assert.equal(shortMock.createCalls.length, 0, "short heads never create caches");
+
+  // No boundary from the orchestrator (generation/moderation) => uncached.
+  __resetGeminiExplicitCacheIndexForTests();
+  const noPrefixMock = makeClient();
+  const noPrefixAdapter = new GeminiAdapter(geminiCacheConfig);
+  (noPrefixAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    noPrefixMock.client;
+  await noPrefixAdapter.call(prompt, context(undefined));
+  assert.equal(noPrefixMock.createCalls.length, 0);
+  console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 
 {

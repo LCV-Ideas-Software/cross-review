@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.06.02** (package `4.6.2`).
+**Status.** Stable. The current source/release target is **v04.07.00** (package `4.7.0`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.07.00`**      | Adds the opt-in Gemini explicit context cache: the review prompt's stable head (contract + focus + attached evidence) is cached via `caches.create` with deterministic per-token-hour storage accounting, gated by `CROSS_REVIEW_GEMINI_EXPLICIT_CACHE` and the financial controls.   |
 | **`v04.06.02`**      | Republish of v04.06.01 with a self-contained pin-validator action (bundled parser, clean-runner proven), reference-resolved local action manifests and a location-scoped Scorecard allowance.                                                                                         |
 | **`v04.06.01`**      | Republish of v04.06.00 with the supply-chain gate fix: minimal per-job GITHUB_TOKEN permissions across all workflows, `TokenPermissionsID` back under Scorecard watch, and a real pinning revalidation in the Publish gate covering the immutable `$/` same-repo references.          |
 | **`v04.06.00`**      | Migrates the Perplexity peer to the Agent API (`perplexity/kimi-k3`) before the Sonar sunset of 27/09/2026, moves Grok to `grok-4.6` with `xhigh` effort, refreshes provider rate documentation, and makes the relator lottery smoke deterministic with an explicit chi-square bound. |

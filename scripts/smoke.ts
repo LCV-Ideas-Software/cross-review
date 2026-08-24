@@ -6086,6 +6086,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "estimate",
     "search_preflight_policy default must accept the declared estimate",
   );
+  // v4.7.0 (CROSREV-6): Gemini explicit cache is a deliberate opt-in.
+  assert.equal(cfg.cache.gemini_explicit, false, "gemini_explicit must default off");
+  assert.equal(cfg.cache.ttl.gemini, "1h", "gemini cache TTL must default to the API's 1h");
   // Malformed or zero knobs report a notice and keep the documented defaults;
   // valid positive integers are honored.
   for (const [steps, estimate, expectedSteps, expectedEstimate] of [

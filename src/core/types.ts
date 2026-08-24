@@ -132,6 +132,10 @@ export interface TokenUsage {
   // cost layer + dashboard + manifest never branch on provider.
   cache_read_tokens?: number | undefined;
   cache_write_tokens?: number | undefined;
+  // v4.7.0 (CROSREV-6): Gemini explicit-cache storage, in token-hours
+  // (cached tokens x TTL hours), reported once on the call that created
+  // the cachedContents entry. Priced at cache_storage_per_million_hour.
+  cache_storage_token_hours?: number | undefined;
   cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported" | undefined;
   cache_key_hash?: string | undefined;
   // v3.0.0 (Perplexity 6th peer): Perplexity reports additional token
@@ -187,6 +191,9 @@ export interface CostEstimate {
   // session reports + dashboards.
   cache_read_cost?: number | undefined;
   cache_write_cost?: number | undefined;
+  // v4.7.0 (CROSREV-6): deterministic Gemini explicit-cache storage cost
+  // (cache_storage_token_hours x cache_storage_per_million_hour / 1M).
+  cache_storage_cost?: number | undefined;
   // v2.26.0: pricing-tier breadcrumbs for FinOps audit. `tier_used` indicates
   // which rate variant was picked by selectRate() at estimation time.
   // Possible values: "base" | "extended" | "promo" | "promo_extended".
@@ -899,6 +906,13 @@ export interface PeerCallContext {
   // (peer:caller:vN). Defaults to "operator" when omitted by the
   // orchestrator (preserves pre-v2.21.0 caller-less calls).
   caller?: PeerId | "operator" | undefined;
+  // v4.7.0 (CROSREV-6): byte length of the review prompt's stable head
+  // (title + session contract directives + review focus + attached
+  // evidence), set only by the orchestrator's review dispatch. Adapters
+  // with a provider-side explicit cache (Gemini) may cache
+  // `prompt.slice(0, n)` and send the remainder live. Always absent for
+  // moderation-safe retries, generations and judge calls.
+  prompt_stable_prefix_chars?: number | undefined;
 }
 
 export interface PeerProbeResult {
@@ -1164,6 +1178,10 @@ export interface CostRateConfig {
   cache_write_per_million?: number | undefined;
   cache_read_extended_per_million?: number | undefined;
   cache_write_extended_per_million?: number | undefined;
+  // v4.7.0 (CROSREV-6): Gemini explicit-cache storage rate in USD per
+  // 1,000,000 tokens per hour (official: $4.50/1M token-hour for the
+  // Pro models as of 24/08/2026).
+  cache_storage_per_million_hour?: number | undefined;
   promo_input_per_million?: number | undefined;
   promo_output_per_million?: number | undefined;
   promo_input_extended_per_million?: number | undefined;
@@ -1290,7 +1308,20 @@ export interface AppConfig {
     ttl: {
       anthropic: "5m" | "1h";
       openai: "5m" | "1h";
+      // v4.7.0 (CROSREV-6): TTL of Gemini explicit cachedContents
+      // (CROSS_REVIEW_CACHE_TTL_GEMINI; the API default is 1h). Storage
+      // is billed for the full TTL at creation time.
+      gemini: "5m" | "1h";
     };
+    // v4.7.0 (CROSREV-6): opt-in Gemini explicit context cache
+    // (`caches.create` of the review prompt's stable head). Default OFF —
+    // implicit caching already discounts repeated prefixes for free, and
+    // the v3.7.5 Anthropic study showed explicit write-side overhead can
+    // exceed read savings; the operator arms
+    // CROSS_REVIEW_GEMINI_EXPLICIT_CACHE deliberately and the financial
+    // gate then requires the storage rate
+    // (CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR).
+    gemini_explicit: boolean;
     // v3.7.5 (A3, logs+sessions study 2026-05-15): per-provider cache
     // disable. Empirical baseline over 244 sessions / 429 rounds:
     // Anthropic explicit cache writes cost $1.18 to save $0.0035 in

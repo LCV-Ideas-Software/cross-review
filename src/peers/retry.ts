@@ -53,7 +53,18 @@ function mergeRetryBillingIntoResult<T>(
     indeterminate_spend_attempts?: number | undefined;
   };
   const usageItems = [...prior.map((item) => item.usage), record.usage];
-  if (usageItems.some(Boolean)) record.usage = mergeUsage(usageItems);
+  if (usageItems.some(Boolean)) {
+    // v4.7.0 (CROSREV-6): mergeUsage deliberately drops per-call cache
+    // attributes (mode/key_hash are not additive). Failed prior tries only
+    // contribute BILLING here; the successful attempt's own per-call cache
+    // attributes remain authoritative for the call result, so re-stamp
+    // them after the additive merge instead of losing them.
+    const cacheProviderMode = record.usage?.cache_provider_mode;
+    const cacheKeyHash = record.usage?.cache_key_hash;
+    record.usage = mergeUsage(usageItems);
+    if (cacheProviderMode !== undefined) record.usage.cache_provider_mode = cacheProviderMode;
+    if (cacheKeyHash !== undefined) record.usage.cache_key_hash = cacheKeyHash;
+  }
   const costItems = [...prior.map((item) => item.cost), record.cost];
   if (costItems.some(Boolean)) record.cost = mergeCost(costItems);
   const priorAccounted = prior.reduce((sum, item) => sum + item.accountedAttempts, 0);

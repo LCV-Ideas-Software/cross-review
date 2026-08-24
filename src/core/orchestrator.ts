@@ -424,19 +424,30 @@ function buildModerationSafeReviewPrompt(
   ].join("\n");
 }
 
+// v4.7.0 (CROSREV-6): the review prompt is composed as a STABLE HEAD
+// (title + session contract directives + review focus + attached evidence —
+// identical across the rounds of a session while the attachment set holds)
+// followed by the per-round sections. `stable_prefix_chars` is the byte
+// length of that head inside `text` (including its trailing newline), so
+// `text.slice(0, stable_prefix_chars) + text.slice(stable_prefix_chars)`
+// reproduces the prompt byte-for-byte. Adapters with a provider-side
+// explicit cache (Gemini) receive it via
+// PeerCallContext.prompt_stable_prefix_chars.
 function buildReviewPrompt(
   meta: SessionMeta,
   draft: string,
   config: AppConfig,
   reviewFocus?: string,
   attachments?: ResolvedEvidenceAttachment[],
-): string {
-  return [
+): { text: string; stable_prefix_chars: number } {
+  const stableHead = [
     "# Cross Review - Review Round",
     "",
     ...sessionContractDirectives(),
     ...reviewFocusBlock(meta, config, reviewFocus),
     ...(attachments ? attachedEvidenceBlock(attachments) : []),
+  ];
+  const dynamicTail = [
     ...evidenceChecklistBlock(meta),
     "## Original Task",
     safePromptText(meta.task, config.prompt.max_task_chars),
@@ -448,7 +459,10 @@ function buildReviewPrompt(
     safePromptText(draft, config.prompt.max_draft_chars),
     "",
     "Review rigorously whether the draft or solution satisfies the task. Identify concrete blocking issues.",
-  ].join("\n");
+  ];
+  const text = [...stableHead, ...dynamicTail].join("\n");
+  const stable_prefix_chars = stableHead.join("\n").length + 1;
+  return { text, stable_prefix_chars };
 }
 
 // v2.7.0 Evidence Broker: render the per-session evidence checklist
@@ -5795,7 +5809,12 @@ export class CrossReviewOrchestrator {
       }
 
       try {
-        const recovered = await adapter.call(moderationSafePrompt, context);
+        // The moderation-safe prompt has a different shape; the stable-head
+        // boundary from the primary prompt must not be applied to it.
+        const recovered = await adapter.call(moderationSafePrompt, {
+          ...context,
+          prompt_stable_prefix_chars: undefined,
+        });
         const parserWarnings = [...recovered.parser_warnings, "moderation_safe_retry_succeeded"];
         return {
           adapter,
@@ -6372,7 +6391,7 @@ export class CrossReviewOrchestrator {
         return { session: updated, round, converged: false };
       }
     }
-    const prompt = buildReviewPrompt(
+    const { text: prompt, stable_prefix_chars: promptStablePrefixChars } = buildReviewPrompt(
       session,
       input.draft,
       this.config,
@@ -6528,6 +6547,9 @@ export class CrossReviewOrchestrator {
           // identity. Pass petitioner so cache hits bucket per
           // caller+peer pair.
           caller: requestedPetitioner,
+          // v4.7.0 (CROSREV-6): stable-head boundary for provider-side
+          // explicit caching (Gemini).
+          prompt_stable_prefix_chars: promptStablePrefixChars,
         });
         if (outcome.result) {
           await this.store.saveInFlightPeerResult(

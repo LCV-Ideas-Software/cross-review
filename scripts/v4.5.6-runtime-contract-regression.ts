@@ -992,6 +992,9 @@ const regressions: Regression[] = [
             reasoning_tokens: 120,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            // v4.7.0 (CROSREV-6): the aggregate decorator re-derives the
+            // per-call cache mode dropped by mergeUsage (nothing cached here).
+            cache_provider_mode: "not_supported",
           },
           unpricedAttempts: undefined,
         },
@@ -1833,6 +1836,62 @@ const regressions: Regression[] = [
           "CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID",
         ),
         "a retired Sonar pin must be reported as a missing financial control",
+      );
+      // v4.7.0 (CROSREV-6): Gemini explicit-cache storage accounting.
+      const geminiStorageRate = {
+        input_per_million: 2,
+        output_per_million: 12,
+        cache_read_per_million: 0.2,
+        cache_storage_per_million_hour: 4.5,
+      };
+      const geminiStorageCost = estimateCost(
+        {
+          ...base,
+          models: { ...base.models, gemini: "gemini-3.1-pro-preview" },
+          cost_rates: { ...base.cost_rates, gemini: geminiStorageRate },
+        },
+        "gemini",
+        {
+          input_tokens: 200,
+          output_tokens: 20,
+          cache_read_tokens: 5_000,
+          cache_storage_token_hours: 5_000,
+        },
+      );
+      assert.ok(
+        Math.abs((geminiStorageCost.cache_storage_cost ?? 0) - 0.0225) < 1e-15,
+        `explicit-cache storage must bill token-hours at the flat rate: ${geminiStorageCost.cache_storage_cost}`,
+      );
+      const geminiArmedConfig = {
+        ...base,
+        models: { ...base.models, gemini: "gemini-3.1-pro-preview" },
+        cost_rates: {
+          ...base.cost_rates,
+          gemini: { input_per_million: 2, output_per_million: 12 },
+        },
+        cache: {
+          ...base.cache,
+          enabled: true,
+          gemini_explicit: true,
+          disable_per_peer: { ...base.cache.disable_per_peer, gemini: false },
+        },
+      } as AppConfig;
+      assert.ok(
+        missingFinancialControlVars(geminiArmedConfig, ["gemini"]).includes(
+          "CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR",
+        ),
+        "the armed explicit cache requires the storage rate (fail closed)",
+      );
+      assert.equal(
+        missingFinancialControlVars(
+          {
+            ...geminiArmedConfig,
+            cache: { ...geminiArmedConfig.cache, gemini_explicit: false },
+          } as AppConfig,
+          ["gemini"],
+        ).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+        false,
+        "the disarmed gate does not demand the storage rate",
       );
       const agentPreflight = estimatedPeerRoundCost(agentConfig, ["perplexity"], "four");
       const agentEnvelope = estimateCost(

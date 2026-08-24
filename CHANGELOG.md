@@ -7,6 +7,34 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.07.00] — 24/08/2026
+
+### Added
+
+- Opt-in Gemini explicit context cache (CROSREV-6, issue #185). The review
+  prompt is now composed as a stable head (session contract directives +
+  review focus + attached evidence) whose byte boundary the orchestrator
+  hands to adapters through `PeerCallContext.prompt_stable_prefix_chars`
+  (byte-for-byte identical prompt; moderation-safe retries and generations
+  never carry the boundary). With
+  `CROSS_REVIEW_GEMINI_EXPLICIT_CACHE=true`, the Gemini adapter creates one
+  `cachedContents` entry per distinct (schema, model, TTL, head) once the
+  head reaches the documented 4,096-token minimum, sends only the dynamic
+  remainder live with `cachedContent` plus a live `systemInstruction`, and
+  reports reads as `cache_provider_mode="explicit"`. Storage is billed
+  deterministically at creation (cached tokens x TTL hours) through the new
+  `cache_storage_per_million_hour` rate-card field
+  (`CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR`, official
+  `4.50` USD per 1M token-hours), surfaced as `cache_storage_cost` and
+  required by the financial gate while the feature is armed.
+  `CROSS_REVIEW_CACHE_TTL_GEMINI` (`5m`/`1h`, default the API's `1h`)
+  bounds retention. Default OFF: implicit caching already discounts
+  repeated prefixes at no storage cost (the v3.7.5 Anthropic study showed
+  explicit write-side overhead can exceed read savings), so arming it is a
+  deliberate FinOps decision. Creation failures fall back to the uncached
+  request with a `provider.cache.notice`; a lost cache is dropped from the
+  index so the standard retry envelope re-creates it.
+
 ## [v04.06.02] — 24/08/2026
 
 ### Fixed
