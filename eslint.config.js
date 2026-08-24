@@ -6,7 +6,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ["dist/**", "node_modules/**", "data/**", "coverage/**"],
+    ignores: ["dist/**", ".github/actions/**/dist/**", "node_modules/**", "data/**", "coverage/**"],
   },
   {
     files: ["**/*.ts"],

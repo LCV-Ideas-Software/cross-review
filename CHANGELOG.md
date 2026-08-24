@@ -7,6 +7,22 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.06.02] — 24/08/2026
+
+### Fixed
+
+- Republish of v04.06.01: its Publish run failed exactly as the Codex
+  review predicted — the pin-validator composite action ran before any
+  dependency installation and could not import the `yaml` parser on a
+  clean runner. The action is now self-contained (esbuild bundle with the
+  pinned parser, inline MIT attribution and a `createRequire` banner),
+  proven by a clean-runner regression; `validateTree` resolves every
+  accepted local `./`/`$/` reference to its manifest breadth-first
+  wherever it lives in the checkout; and the `PinnedDependenciesID`
+  allowance is scoped to the locations the validator actually
+  revalidates, so findings for other dependency classes fail the release
+  again.
+
 ## [v04.06.01] — 24/08/2026
 
 ### Fixed

@@ -520,7 +520,14 @@ jobs:
                   .ruleId != "CIIBestPracticesID" and
                   .ruleId != "FuzzingID" and
                   .ruleId != "BranchProtectionID" and
-                  .ruleId != "PinnedDependenciesID"
+                  (
+                    .ruleId != "PinnedDependenciesID"
+                    or (
+                      ((.locations[0].physicalLocation.artifactLocation.uri // "")
+                        | (startswith(".github/workflows/") or startswith(".github/actions/")))
+                      | not
+                    )
+                  )
                 )
             ] | length' "$sarif_file")"
             if [ "$unexpected_results" -ne 0 ]; then
