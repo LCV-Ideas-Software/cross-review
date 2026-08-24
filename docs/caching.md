@@ -133,7 +133,7 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
   `prompt_cache_options={mode:"implicit", ttl:"30m"}` surface. The legacy
   `CROSS_REVIEW_CACHE_TTL_OPENAI` mapping applies only to older explicitly
   overridden model families that still use `prompt_cache_retention`.
-- **Grok 4.5** sends only `prompt_cache_key`; xAI manages retention and does not
+- **Grok 4.6** sends only `prompt_cache_key`; xAI manages retention and does not
   receive the OpenAI retention field.
 
 ## Anthropic cache_control placement
@@ -162,7 +162,7 @@ Anthropic supports up to 4 breakpoints per request; we reserve 3 for future addi
 | Anthropic Opus 4.8 | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                       |
 | Gemini             | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                     |
 | DeepSeek           | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                      |
-| Grok               | service-managed                 | Grok 4.5 uses `prompt_cache_key`; xAI manages retention.                                 |
+| Grok               | service-managed                 | Grok 4.6 uses `prompt_cache_key`; xAI manages retention.                                 |
 
 ## Reference URLs
 

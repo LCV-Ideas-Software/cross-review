@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
 import { loadConfig } from "../src/core/config.js";
+import { maxOutputTokensForPeer } from "../src/core/output-budget.js";
 import type { PeerCallContext, PeerFailure, RuntimeEvent } from "../src/core/types.js";
 import { AnthropicAdapter } from "../src/peers/anthropic.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
@@ -825,6 +825,78 @@ for (const requestedEffort of ["low", "medium"] as const) {
     total_tokens: 15,
     total_cost: 0.00002,
   });
+}
+
+// v4.6.0: an Agent API `incomplete` terminal can arrive with `usage: null`
+// (output budget exhausted). The provider still billed the prompt and the
+// output budget, so the rejected attempt must be priced with the request
+// envelope (prompt chars / 4 + max_output_tokens) rather than settle as zero.
+async function assertEstimatedIncompleteBilling(run: () => Promise<unknown>): Promise<void> {
+  const expectedOutput = maxOutputTokensForPeer(billingConfig, "perplexity");
+  await assert.rejects(run, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    const failure = (
+      error as Error & {
+        peerFailure?: {
+          billing_status?: string;
+          unpriced_attempts?: number;
+          usage?: BillingUsage;
+          cost?: { total_cost?: number };
+        };
+      }
+    ).peerFailure;
+    assert.ok(failure, "incomplete terminal must preserve structured PeerFailure metadata");
+    assert.equal(failure?.billing_status, "reported");
+    assert.equal(failure?.unpriced_attempts ?? 0, 0);
+    const inputTokens = failure?.usage?.input_tokens ?? 0;
+    assert.ok(inputTokens > 0, "estimated input tokens must come from the prompt size");
+    assert.equal(failure?.usage?.output_tokens, expectedOutput);
+    assert.equal(failure?.usage?.total_tokens, inputTokens + expectedOutput);
+    const expectedCost = inputTokens * 0.000001 + expectedOutput * 0.000002;
+    assert.ok(
+      Math.abs((failure?.cost?.total_cost ?? Number.NaN) - expectedCost) < 1e-12,
+      `estimated incomplete billing mismatch: ${JSON.stringify(failure?.cost)}`,
+    );
+    return true;
+  });
+}
+
+{
+  const adapter = new PerplexityAdapter(billingConfig);
+  setClient(adapter, {
+    responses: {
+      create: async () => ({
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        model: adapter.model,
+        output: [],
+        usage: null,
+      }),
+    },
+  });
+  await assertEstimatedIncompleteBilling(() => adapter.call("fixture", context()));
+}
+
+{
+  const adapter = new PerplexityAdapter(billingConfig);
+  setClient(adapter, {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: "partial" },
+          {
+            type: "response.incomplete",
+            response: {
+              status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
+              model: adapter.model,
+              usage: null,
+            },
+          },
+        ]),
+    },
+  });
+  await assertEstimatedIncompleteBilling(() => adapter.generate("fixture", context(true)));
 }
 
 {

@@ -347,6 +347,35 @@ type AgentResponse = {
   output_text?: unknown;
 };
 
+// An `incomplete` Agent API terminal (output budget exhausted) arrives with
+// `usage: null` (observed live on 23/08/2026), yet the provider billed the
+// prompt and the whole output budget. A rejected attempt without usage would
+// settle as zero spend in the session ledger, so the adapter prices such
+// terminals with the same conservative envelope the round preflight uses:
+// prompt characters / 4 for input and the requested max_output_tokens for
+// output. Failed or cancelled terminals keep provider-reported usage only —
+// the provider does not document billing for them.
+export function estimatedIncompleteUsage(
+  payload: { instructions: string; input: Array<{ content: string }>; max_output_tokens: number },
+  searchPerformed: boolean,
+): TokenUsage {
+  const promptChars =
+    payload.instructions.length + payload.input.reduce((sum, item) => sum + item.content.length, 0);
+  const inputTokens = Math.ceil(promptChars / 4);
+  const outputTokens = payload.max_output_tokens;
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: inputTokens + outputTokens,
+    cache_provider_mode: "auto",
+    search_performed: searchPerformed,
+  };
+}
+
+function isIncompleteTerminal(status: unknown): boolean {
+  return typeof status === "string" && status.trim().toLowerCase() === "incomplete";
+}
+
 // v3.0.0 (operator directive 2026-05-12): role-aware search behavior.
 // Perplexity's web-search differentiator is most valuable in the
 // REVIEWER role (fact-check overlay on the draft under review). In the
@@ -421,11 +450,18 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     context: PeerCallContext,
     phase: "review" | "generation",
     usage: TokenUsage | undefined,
+    payload: PerplexityAgentPayload,
+    searchPerformed: boolean,
   ): void {
     // An `incomplete` Agent API response arrives with `usage: null`
-    // (observed on max_output_tokens exhaustion), so the estimated billing
-    // wrapper is what keeps the rejected attempt priced.
-    withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+    // (observed on max_output_tokens exhaustion); price the rejected attempt
+    // with the conservative request envelope so it never settles as zero.
+    const billingUsage =
+      usage ??
+      (isIncompleteTerminal(response?.status)
+        ? estimatedIncompleteUsage(payload, searchPerformed)
+        : undefined);
+    withEstimatedTerminalBilling(this.config, this.id, this.model, billingUsage, () =>
       assertResponsesCompletion(response, {
         context,
         peer: this.id,
@@ -570,11 +606,18 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       events += 1;
       responseRefused = observeResponsesStreamRefusal(event, responseRefused);
       const eventUsage = usageFromAgentApi(event.response?.usage, searchPerformed);
+      // `response.incomplete` may carry `usage: null`; bill the rejected
+      // attempt with the request envelope instead of settling it as zero.
+      const terminalBillingUsage =
+        eventUsage ??
+        (event.type === "response.incomplete" || isIncompleteTerminal(event.response?.status)
+          ? estimatedIncompleteUsage(payload, searchPerformed)
+          : undefined);
       responseCompleted = withEstimatedTerminalBilling(
         this.config,
         this.id,
         this.model,
-        eventUsage,
+        terminalBillingUsage,
         () =>
           observeResponsesStreamTerminal(event, responseCompleted, {
             context,
@@ -715,7 +758,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           { signal: context.signal, timeout: this.config.retry.timeout_ms },
         )) as unknown as AgentResponse;
         const responseUsage = usageFromAgentApi(response.usage, searchPerformed);
-        this.assertResponseTerminal(response, context, "review", responseUsage);
+        this.assertResponseTerminal(
+          response,
+          context,
+          "review",
+          responseUsage,
+          payload,
+          searchPerformed,
+        );
         return this.resultFromText({
           text: agentText(response),
           raw: response,
@@ -782,7 +832,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           { signal: context.signal, timeout: this.config.retry.timeout_ms },
         )) as unknown as AgentResponse;
         const responseUsage = usageFromAgentApi(response.usage, searchPerformed);
-        this.assertResponseTerminal(response, context, "generation", responseUsage);
+        this.assertResponseTerminal(
+          response,
+          context,
+          "generation",
+          responseUsage,
+          payload,
+          searchPerformed,
+        );
         return this.generationFromText({
           text: agentText(response),
           raw: response,

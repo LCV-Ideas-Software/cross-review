@@ -638,7 +638,7 @@ Também há controles de TTL e versionamento de schema de cache, incluindo
 `CROSS_REVIEW_CACHE_TTL_ANTHROPIC` e `CROSS_REVIEW_CACHE_TTL_OPENAI`.
 
 No pin atual, GPT-5.6 Sol usa `prompt_cache_options` implícito com TTL de 30
-minutos e reporta tokens de leitura/escrita. Grok 4.5 usa
+minutos e reporta tokens de leitura/escrita. Grok 4.6 usa
 `prompt_cache_key`, tem retenção administrada pela xAI e não fornece contador
 separado de escrita; o runtime não inventa esse consumo.
 

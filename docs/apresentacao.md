@@ -329,8 +329,9 @@ No Fable 5, o adaptador omite o campo explícito `thinking`, pois o raciocínio
 adaptativo é automático, e usa `output_config.effort` para a profundidade. A
 retenção documentada é de 30 dias, sem opção ZDR. No GPT-5.6 Sol, `ultra` é um
 modo do produto Codex, não um `reasoning.effort` literal da Responses API; o
-cross-review aceita esse alias na configuração e envia `max` à API. O Grok 4.5
-aceita apenas `low`/`medium`/`high` e recebe `high` quando o alias é usado.
+cross-review aceita esse alias na configuração e envia `max` à API. O Grok 4.6
+aceita `low`/`medium`/`high`/`xhigh` e recebe `xhigh` quando o alias é usado; o
+Perplexity (`perplexity/kimi-k3`) recebe `max`.
 Overrides explícitos para famílias OpenAI anteriores são normalizados ao enum
 da família: teto `xhigh` em GPT-5.5/5.4/5.2 e `high` em GPT-5.1/GPT-5.
 
@@ -382,7 +383,7 @@ o cliente consegue influenciar. Ele não pode obrigar Gemini ou DeepSeek a
 desativar o cache implícito/automático administrado pelo serviço.
 
 GPT-5.6 Sol usa `prompt_cache_options` em modo implícito com TTL de 30 minutos
-e contabiliza leitura e escrita de cache separadamente. Grok 4.5 usa
+e contabiliza leitura e escrita de cache separadamente. Grok 4.6 usa
 `prompt_cache_key`, com retenção administrada pela xAI e sem inferir tokens de
 escrita.
 

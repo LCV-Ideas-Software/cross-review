@@ -164,7 +164,7 @@ differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
 64,000 for Claude Fable 5 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
 four peers. These
 values follow the official OpenAI allocation guidance and Anthropic task-budget
-minimum without assuming an undocumented Grok 4.5 ceiling. `server_info`
+minimum without assuming an undocumented Grok 4.6 ceiling. `server_info`
 returns the effective six-peer map used by both provider payloads and budget
 preflight.
 
