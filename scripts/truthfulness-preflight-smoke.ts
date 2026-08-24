@@ -762,6 +762,32 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "denying a non-pin while asserting the pinned route must still pass",
   );
+  // Codex review round 9: markdown code-span delimiters must not break the
+  // negation window, and the future exemption is clause-scoped.
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime perplexity model is not `perplexity/kimi-k3`.",
+      plainPins,
+    ),
+    false,
+    "denying the pin wrapped in markdown backticks must still contradict",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime perplexity model is `perplexity/kimi-k3`.",
+      plainPins,
+    ),
+    true,
+    "asserting the pin wrapped in markdown backticks must pass",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime codex model is gpt-5.5, and the perplexity peer will change next release.",
+      plainPins,
+    ),
+    false,
+    "a future clause elsewhere must not exempt a false current claim in its own clause",
+  );
   // And the wrapped `models/provider/model` pin form is normalized before
   // comparison, so a truthful claim of the routed model still passes.
   const wrappedPins = { ...modelPins, perplexity: "models/perplexity/kimi-k3" } as const;

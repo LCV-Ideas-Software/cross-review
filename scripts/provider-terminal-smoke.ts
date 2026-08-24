@@ -402,6 +402,36 @@ async function assertBilledTerminalRejection(
   await assertTerminalRejection(() => adapter.generate("fixture", context(true)));
 }
 
+// Codex review round 9: a cancelled stream terminal can still carry final
+// usage; the rejected attempt must retain that accounting instead of being
+// settled as an unpriced missing-completion.
+{
+  const adapter = new PerplexityAdapter(billingConfig);
+  setClient(adapter, {
+    responses: {
+      create: async () =>
+        events([
+          { type: "response.output_text.delta", delta: "partial " },
+          {
+            type: "response.cancelled",
+            response: {
+              id: "resp_fixture_cancelled_usage",
+              status: "cancelled",
+              model: adapter.model,
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+            },
+          },
+        ]),
+    },
+  });
+  await assertBilledTerminalRejection(() => adapter.call("fixture", context(true)), {
+    input_tokens: 10,
+    output_tokens: 5,
+    total_tokens: 15,
+    total_cost: 0.00002,
+  });
+}
+
 // The Agent API `response.completed` event carries the aggregate output
 // items. When no usable delta text was streamed, the adapter must read the
 // terminal message instead of mistaking the empty delta buffer for a blank

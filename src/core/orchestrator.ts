@@ -2723,6 +2723,7 @@ export function truthfulnessPreflight(params: {
         token: string;
         route: string | undefined;
         negated: boolean;
+        future: boolean;
         owner: PeerId | undefined;
       };
       const canonicalModelText = (value: string): string =>
@@ -2731,7 +2732,16 @@ export function truthfulnessPreflight(params: {
       const negationTailPattern =
         /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
       const negatedBefore = (matchStart: number): boolean =>
-        negationTailPattern.test(base.slice(Math.max(0, matchStart - 64), matchStart));
+        // Markdown code-span and quote delimiters are formatting, not
+        // words: "not `pin`" must still end the window in whitespace.
+        negationTailPattern.test(
+          base.slice(Math.max(0, matchStart - 64), matchStart).replace(/[`*_~"'’“”]/g, " "),
+        );
+      // S3 (round 9): future/planning phrasing exempts only its own
+      // CLAUSE - a false current claim beside an unrelated future clause
+      // is still judged. Stamped per occurrence via clauseBounds.
+      const futureClausePattern =
+        /\b(?:will|would|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|planejad[oa]|futur[oa])\b/i;
       const occurrences: ModelOccurrence[] = [];
       const seenTokenStarts = new Set<number>();
       const recordOccurrence = (
@@ -2752,6 +2762,7 @@ export function truthfulnessPreflight(params: {
             ? `${canonicalModelText(normalizeVersionToken(provider))}/${token}`
             : undefined,
           negated: negatedBefore(matchStart),
+          future: false,
           owner: undefined,
         });
       };
@@ -2910,12 +2921,14 @@ export function truthfulnessPreflight(params: {
         }
         occurrence.owner = best?.peer;
       }
-      // S3: future/planning phrasing is not a current-state assertion;
-      // it exempts both the per-owner judgment and the S1 no-pin rule.
-      const futureStatement =
-        /\b(?:will|would|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|planejad[oa]|futur[oa])\b/i.test(
-          line,
+      for (const occurrence of occurrences) {
+        occurrence.future = futureClausePattern.test(
+          base.slice(
+            clauseStartFor(occurrence.matchStart),
+            clauseEndFor(occurrence.index + occurrence.rawLength),
+          ),
         );
+      }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(aliasBase)) continue;
@@ -2927,6 +2940,7 @@ export function truthfulnessPreflight(params: {
         const expectedSet = new Set([expected, ...(routedPin ? [routedPin] : [])]);
         const pinFamily = routedPinFamilyByPeer.get(peer);
         const owned = occurrences.filter((occurrence) => {
+          if (occurrence.future) return false;
           if (occurrence.owner) return occurrence.owner === peer;
           // Ownerless occurrences keep family attribution only.
           if (peer === "perplexity") {
@@ -2958,7 +2972,7 @@ export function truthfulnessPreflight(params: {
         }
         const assertedContradictions = assertedViews.filter((view) => !expectedSet.has(view));
         const expectedExplicitlyDenied = nonCurrentViews.some((view) => expectedSet.has(view));
-        if (!futureStatement && (assertedContradictions.length > 0 || expectedExplicitlyDenied)) {
+        if (assertedContradictions.length > 0 || expectedExplicitlyDenied) {
           addIssueClass(issueClasses, "runtime_contradiction");
           contradictions.push(
             `current-state model claim asserted=${assertedViews.join(", ") || "none"}; non_current=${nonCurrentViews.join(", ") || "none"} for ${peer} contradicts model_pin ${expectedModel}`,
@@ -2982,41 +2996,31 @@ export function truthfulnessPreflight(params: {
         }
       }
       let affirmativelyValidated = false;
+      let currentOccurrenceCount = 0;
       let anyModelDenialOrContradiction = contradictions.length > contradictionCountBefore;
-      if (!futureStatement) {
-        for (const occurrence of occurrences) {
-          if (occurrence.negated) continue;
-          const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
-          if (views.some((view) => allPinViews.has(view))) {
-            affirmativelyValidated = true;
-            continue;
-          }
-          lineCurrentModelClaimMatched = true;
-          currentStateClaimMatched = true;
-          anyModelDenialOrContradiction = true;
-          addIssueClass(issueClasses, "runtime_contradiction");
-          contradictions.push(
-            `asserted current model value ${occurrence.route ?? occurrence.token} matches no configured model_pin`,
-          );
+      for (const occurrence of occurrences) {
+        if (occurrence.future) continue;
+        currentOccurrenceCount += 1;
+        if (occurrence.negated) continue;
+        const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
+        if (views.some((view) => allPinViews.has(view))) {
+          affirmativelyValidated = true;
+          continue;
         }
-      } else {
-        for (const occurrence of occurrences) {
-          if (occurrence.negated) continue;
-          const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
-          if (views.some((view) => allPinViews.has(view))) affirmativelyValidated = true;
-        }
+        lineCurrentModelClaimMatched = true;
+        currentStateClaimMatched = true;
+        anyModelDenialOrContradiction = true;
+        addIssueClass(issueClasses, "runtime_contradiction");
+        contradictions.push(
+          `asserted current model value ${occurrence.route ?? occurrence.token} matches no configured model_pin`,
+        );
       }
       // S2 (fail-closed): a model-scoped line whose occurrences were ALL
       // classified as negations of non-pin values asserts something the
       // parser could not validate affirmatively (idiomatic phrasing,
       // inverted negation). It is reported as unsupported instead of
       // silently passing: restate plainly or attach structured evidence.
-      if (
-        occurrences.length > 0 &&
-        !affirmativelyValidated &&
-        !anyModelDenialOrContradiction &&
-        !futureStatement
-      ) {
+      if (currentOccurrenceCount > 0 && !affirmativelyValidated && !anyModelDenialOrContradiction) {
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
         addIssueClass(issueClasses, "unsupported_current_state_claim");

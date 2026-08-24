@@ -675,6 +675,16 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         // documented fallback when no usable delta text was streamed.
         const aggregate = agentOutputText(event.response?.output);
         if (aggregate.length > 0) terminalMessageText = aggregate;
+      } else if (event.type === "response.cancelled") {
+        // Codex review round 9: a cancelled terminal can still carry final
+        // usage; bill the rejected attempt with it instead of settling the
+        // stream as an unpriced missing-completion.
+        withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+          throw streamingFailureErrorFromEvent(
+            event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+            "Perplexity streaming response cancelled.",
+          );
+        });
       } else if (
         event.type === "response.failed" ||
         event.type === "error" ||
