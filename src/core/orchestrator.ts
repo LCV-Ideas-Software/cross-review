@@ -2598,7 +2598,17 @@ function modelPinClaimCorroborated(
     if (unwrapped.includes("/")) {
       views.push(canonicalModelText(normalizeVersionToken(unwrapped)));
     }
-    return views.some((view) => normalizedEvidence.includes(view));
+    // Codex review of PR #247 round 1: the pin must appear as a COMPLETE,
+    // delimited model id — a longer id sharing the pin as a prefix
+    // ("gpt-5.6-solar" for pin "gpt-5.6-sol") is a different model, not
+    // corroboration. A sentence-final period stays legal (only ".alnum"
+    // continues an id).
+    return views.some((view) => {
+      const escaped = view.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?<![a-z0-9._-])${escaped}(?![a-z0-9_-])(?!\\.[a-z0-9])`, "i").test(
+        normalizedEvidence,
+      );
+    });
   });
 }
 
@@ -3098,10 +3108,34 @@ export function truthfulnessPreflight(params: {
       // anyModelDenialOrContradiction), and the alias test runs on the
       // MASKED aliasBase so aliases inside paths, URLs or quoted strings
       // never trigger it.
-      if (occurrences.length === 0 && !historicalClaim) {
-        const aliasedPeers = PEERS.filter((aliasPeer) =>
-          MODEL_CLAIM_ALIASES[aliasPeer].test(aliasBase),
-        );
+      // Codex review of PR #247 round 1: (a) the guard keys on the absence
+      // of CURRENT (non-future) occurrences — a capturable future token in
+      // another clause must not shield an unparseable current claim — and
+      // future clauses are masked before the alias test so a line that is
+      // ONLY a future/planning statement keeps its S3 exemption; (b) a
+      // provider alias in assertive runtime prose is a model claim only
+      // when the line carries model/pin language or the alias names its
+      // peer ("codex peer") — "uses OpenAI authentication" never trips.
+      if (currentOccurrenceCount === 0 && !historicalClaim) {
+        let guardAliasBase = aliasBase;
+        const maskGuardRange = (start: number, end: number): void => {
+          guardAliasBase =
+            guardAliasBase.slice(0, start) + "#".repeat(end - start) + guardAliasBase.slice(end);
+        };
+        let segmentStart = 0;
+        for (const bound of [...clauseBounds, { start: aliasBase.length, end: aliasBase.length }]) {
+          const segment = aliasBase.slice(segmentStart, bound.start);
+          if (futureClausePattern.test(segment)) maskGuardRange(segmentStart, bound.start);
+          segmentStart = bound.end;
+        }
+        const modelLanguage = /\b(?:models?|pins?|modelos?)\b|model[_ -]?pins?/i.test(line);
+        const aliasedPeers = PEERS.filter((aliasPeer) => {
+          if (!MODEL_CLAIM_ALIASES[aliasPeer].test(guardAliasBase)) return false;
+          if (modelLanguage) return true;
+          return new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
+            guardAliasBase,
+          );
+        });
         if (aliasedPeers.length > 0) {
           lineCurrentModelClaimMatched = true;
           currentStateClaimMatched = true;

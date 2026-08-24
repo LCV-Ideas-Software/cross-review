@@ -910,6 +910,40 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "captured truthful tokens keep judging against config with no evidence requirement",
   );
+  // Codex review of PR #247, round 1.
+  const futureShield = anchored(
+    "The cross-review runtime codex peer currently runs gpt five six sol, and will use gpt-6 next quarter.",
+  );
+  assert.equal(
+    futureShield.pass,
+    false,
+    "a capturable FUTURE occurrence must not shield an unparseable current claim in another clause",
+  );
+  const onlyFutureStillExempt = anchored(
+    "The cross-review runtime roadmap says the codex peer will move to gpt-7 next quarter.",
+  );
+  assert.equal(
+    onlyFutureStillExempt.pass,
+    true,
+    "a line that is ONLY a future/planning statement keeps its S3 exemption",
+  );
+  const prefixEvidence = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    'server_info models: {"codex":"gpt-5.6-solar"}',
+  );
+  assert.equal(
+    prefixEvidence.pass,
+    false,
+    "a longer model id sharing the pin as a prefix is not corroboration (delimited match required)",
+  );
+  const aliasNoModel = anchored(
+    "The cross-review runtime uses OpenAI authentication in production.",
+  );
+  assert.equal(
+    aliasNoModel.pass,
+    true,
+    "assertive runtime prose naming a provider for a non-model purpose is not a model-pin claim",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",

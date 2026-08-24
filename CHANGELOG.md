@@ -27,7 +27,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
   truthful tokens keep judging against the configured pins with no new
   evidence requirement, so the committed truthful-claim fixture matrix is
   intact. `canonicalModelText` moved to module scope so the correlation
-  compares the same canonical views the occurrence engine builds.
+  compares the same canonical views the occurrence engine builds. Round 1
+  of the Codex review: the guard keys on the absence of CURRENT
+  (non-future) occurrences with future clauses masked before the alias
+  test (a capturable future token cannot shield an unparseable current
+  claim, while pure planning statements keep the S3 exemption); the
+  corroboration match is delimited (a longer id sharing the pin as a
+  prefix is a different model); and a provider alias in runtime prose is
+  a model claim only with model/pin language or an explicit "<alias>
+  peer" relation ("uses OpenAI authentication" never trips).
 
 ### Fixed
 
