@@ -2741,11 +2741,18 @@ export function truthfulnessPreflight(params: {
             ? normalizeVersionToken(perplexityUnwrapped)
             : undefined;
         const perplexityNamed = MODEL_CLAIM_ALIASES.perplexity.test(line);
-        const routedTextFor = (candidate: string): string | undefined => {
-          const match = line.match(
-            new RegExp(`\\b([a-z0-9._-]+/${escapeRegExp(candidate)})\\b`, "i"),
-          );
-          return match?.[1] ? normalizeVersionToken(match[1]) : undefined;
+        // Codex review round 6: one claim can repeat the same model token
+        // under several routes ("openai/gpt-5.5 and xai/gpt-5.5") while
+        // uniqueMatches collapses them into a single candidate, so EVERY
+        // routed occurrence must be collected and checked - matching only
+        // the first route would let a contradictory second route pass.
+        const routedTextsFor = (candidate: string): string[] => {
+          const pattern = new RegExp(`\\b([a-z0-9._-]+/${escapeRegExp(candidate)})\\b`, "gi");
+          const routes = new Set<string>();
+          for (const match of line.matchAll(pattern)) {
+            if (match[1]) routes.add(normalizeVersionToken(match[1]));
+          }
+          return [...routes];
         };
         const expectedSet =
           peer === "perplexity"
@@ -2754,28 +2761,29 @@ export function truthfulnessPreflight(params: {
         const candidates = uniqueMatches(MODEL_TOKEN_PATTERN, line)
           .map(normalizeVersionToken)
           .filter((candidate) => {
-            const routedText = routedTextFor(candidate);
+            const routedTexts = routedTextsFor(candidate);
             if (peer === "perplexity") {
               return (
                 candidate === expected ||
-                routedText !== undefined ||
+                routedTexts.length > 0 ||
                 MODEL_TOKEN_PREFIXES.perplexity.some((prefix) => candidate.startsWith(prefix))
               );
             }
             // Attribution is per occurrence, not per line: a token written
-            // only in routed form belongs to the routed claim IFF that route
-            // is the Perplexity pin's route and the line names Perplexity;
-            // any standalone occurrence still belongs to the native peer.
+            // only in routed form belongs to the routed claim IFF EVERY one
+            // of its routed occurrences is the Perplexity pin's route and
+            // the line names Perplexity; any standalone occurrence - or any
+            // divergent route - keeps the candidate on the native peer.
             const nativeOccurrence = new RegExp(`(?<!/)\\b${escapeRegExp(candidate)}\\b`, "i").test(
               line,
             );
             if (
-              routedText !== undefined &&
+              routedTexts.length > 0 &&
               !nativeOccurrence &&
               candidate !== expected &&
               perplexityNamed &&
               perplexityRoutedPin !== undefined &&
-              routedText === perplexityRoutedPin
+              routedTexts.every((route) => route === perplexityRoutedPin)
             ) {
               return false;
             }
@@ -2786,10 +2794,16 @@ export function truthfulnessPreflight(params: {
         currentStateClaimMatched = true;
         const claims = partitionCurrentModelClaims(candidates, line);
         const assertedContradictions = claims.asserted.filter((candidate) => {
-          // A routed occurrence asserts the full route; a bare occurrence
-          // asserts the model segment. Either must match the pin.
-          const routedText = peer === "perplexity" ? routedTextFor(candidate) : undefined;
-          return !expectedSet.has(routedText ?? candidate);
+          // Every routed occurrence asserts its full route; a standalone
+          // occurrence asserts the bare model segment. Each asserted view
+          // must match the pin - one divergent route suffices to contradict.
+          if (peer !== "perplexity") return !expectedSet.has(candidate);
+          const bareOccurrence = new RegExp(`(?<!/)\\b${escapeRegExp(candidate)}\\b`, "i").test(
+            line,
+          );
+          const views = routedTextsFor(candidate);
+          if (bareOccurrence || views.length === 0) views.push(candidate);
+          return views.some((view) => !expectedSet.has(view));
         });
         const expectedExplicitlyDenied = claims.non_current.some((candidate) =>
           expectedSet.has(candidate),

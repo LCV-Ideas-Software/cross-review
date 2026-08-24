@@ -501,6 +501,17 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "provider-qualified native claims must still contradict the native pin",
   );
+  // Codex review round 6: a claim repeating the same model under several
+  // routes must have EVERY routed occurrence checked - the divergent second
+  // route contradicts even when the first one matches the pin.
+  const dualRouteLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft:
+      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5 and xai/gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(dualRouteLie.pass, false, "a second divergent route must contradict the pin");
   // And the wrapped `models/provider/model` pin form is normalized before
   // comparison, so a truthful claim of the routed model still passes.
   const wrappedPins = { ...modelPins, perplexity: "models/perplexity/kimi-k3" } as const;
