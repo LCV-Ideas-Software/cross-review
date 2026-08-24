@@ -15,7 +15,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
   review predicted — the pin-validator composite action ran before any
   dependency installation and could not import the `yaml` parser on a
   clean runner. The action is now self-contained (esbuild bundle with the
-  pinned parser, inline MIT attribution and a `createRequire` banner),
+  pinned parser, its full ISC notice prepended and a `createRequire` banner),
   proven by a clean-runner regression; `validateTree` resolves every
   accepted local `./`/`$/` reference to its manifest breadth-first
   wherever it lives in the checkout; and the `PinnedDependenciesID`

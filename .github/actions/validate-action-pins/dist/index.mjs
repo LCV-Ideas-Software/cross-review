@@ -1,4 +1,20 @@
 #!/usr/bin/env node
+/*!
+ * yaml (ISC):
+ * Copyright Eemeli Aro <eemeli@gmail.com>
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any purpose
+ * with or without fee is hereby granted, provided that the above copyright notice
+ * and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+ * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+ * OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+ * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+ * THIS SOFTWARE.
+ */
 import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -7428,6 +7444,29 @@ function validateTree(root) {
   for (const name of readdirSync(workflows)) {
     if (name.endsWith(".yml") || name.endsWith(".yaml")) enqueue(join(workflows, name));
   }
+  const seedActions = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const child = join(dir, entry);
+      let childStat;
+      try {
+        childStat = statSync(child);
+      } catch {
+        continue;
+      }
+      if (childStat.isDirectory()) {
+        seedActions(child);
+      } else if (entry === "action.yml" || entry === "action.yaml") {
+        enqueue(child);
+      }
+    }
+  };
+  seedActions(join(root, ".github", "actions"));
   while (queue.length > 0) {
     const absPath = queue.shift();
     const relPath = relative(root, absPath).replace(/\\/g, "/");
@@ -7448,9 +7487,16 @@ function validateTree(root) {
       }
       if (value.startsWith("./") || value.startsWith("$/")) {
         const relTarget = value.replace(/^(\.\/|\$\/)/, "");
-        if (/\.(yml|yaml)$/.test(relTarget)) {
-          enqueue(join(root, relTarget));
-        } else {
+        const target = join(root, relTarget);
+        let targetStat;
+        try {
+          targetStat = statSync(target);
+        } catch {
+          problems.push(`${relPath}: local reference target not found for ${value}`);
+        }
+        if (targetStat?.isFile()) {
+          enqueue(target);
+        } else if (targetStat?.isDirectory()) {
           const manifest = manifestPathFor(root, value);
           if (manifest === null) {
             problems.push(`${relPath}: local action manifest not found for ${value}`);
