@@ -7381,7 +7381,7 @@ var require_dist = __commonJS({
 
 // .github/actions/validate-action-pins/validate-action-pins.mjs
 var import_yaml = __toESM(require_dist(), 1);
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 function collectUsesFromYaml(path, content) {
   let doc;
@@ -7444,29 +7444,56 @@ function validateTree(root) {
   for (const name of readdirSync(workflows)) {
     if (name.endsWith(".yml") || name.endsWith(".yaml")) enqueue(join(workflows, name));
   }
+  const seededReal = /* @__PURE__ */ new Set();
   const seedActions = (dir) => {
+    let realDir;
+    try {
+      realDir = realpathSync(dir);
+    } catch (error) {
+      problems.push(
+        `${relative(root, dir).replace(/\\/g, "/")}: unreadable action subtree: ${error.message ?? error}`
+      );
+      return;
+    }
+    if (seededReal.has(realDir)) return;
+    seededReal.add(realDir);
     let entries;
     try {
       entries = readdirSync(dir);
-    } catch {
+    } catch (error) {
+      problems.push(
+        `${relative(root, dir).replace(/\\/g, "/")}: unreadable action subtree: ${error.message ?? error}`
+      );
       return;
     }
     for (const entry of entries) {
       const child = join(dir, entry);
       let childStat;
       try {
-        childStat = statSync(child);
-      } catch {
+        childStat = lstatSync(child);
+      } catch (error) {
+        problems.push(
+          `${relative(root, child).replace(/\\/g, "/")}: unreadable action entry: ${error.message ?? error}`
+        );
         continue;
       }
       if (childStat.isDirectory()) {
         seedActions(child);
-      } else if (entry === "action.yml" || entry === "action.yaml") {
+      } else if (childStat.isFile() && (entry === "action.yml" || entry === "action.yaml")) {
         enqueue(child);
       }
     }
   };
-  seedActions(join(root, ".github", "actions"));
+  {
+    const actionsDir = join(root, ".github", "actions");
+    let hasActionsDir;
+    try {
+      hasActionsDir = statSync(actionsDir).isDirectory();
+    } catch {
+      hasActionsDir = false;
+    }
+    if (hasActionsDir) seedActions(actionsDir);
+  }
   while (queue.length > 0) {
     const absPath = queue.shift();
     const relPath = relative(root, absPath).replace(/\\/g, "/");
@@ -7495,7 +7522,11 @@ function validateTree(root) {
           problems.push(`${relPath}: local reference target not found for ${value}`);
         }
         if (targetStat?.isFile()) {
-          enqueue(target);
+          if (/\.(yml|yaml)$/i.test(relTarget)) {
+            enqueue(target);
+          } else {
+            problems.push(`${relPath}: local file reference is not a reusable workflow: ${value}`);
+          }
         } else if (targetStat?.isDirectory()) {
           const manifest = manifestPathFor(root, value);
           if (manifest === null) {
