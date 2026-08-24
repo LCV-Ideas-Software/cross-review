@@ -754,11 +754,14 @@ assert.match(
   /uses: \$\/\.github\/actions\/validate-action-pins/,
   "the release gate must revalidate action pinning through the immutable $/ composite action, not code from the tag checkout",
 );
+assert.match(
+  publishWorkflow,
+  /startswith\("\.github\/workflows\/"\) or startswith\("\.github\/actions\/"\)/,
+  "the PinnedDependenciesID allowance must stay scoped to the locations the validator actually revalidates",
+);
 {
   const validatorPath = "../.github/actions/validate-action-pins/validate-action-pins.mjs";
-  const { collectUsesFromYaml, validateRef, validateFile, collectTargets } = await import(
-    validatorPath
-  );
+  const { collectUsesFromYaml, validateRef, validateFile } = await import(validatorPath);
   const flowStyle = "jobs:\n  x:\n    steps:\n      - { uses: third/party@main }\n";
   assert.equal(
     validateFile("fixture.yml", flowStyle).length,
@@ -799,18 +802,17 @@ assert.match(
       await mkdir(path.join(nestedRoot, ".github", "actions", "group", "inner"), {
         recursive: true,
       });
-      await writeFile(path.join(nestedRoot, ".github", "workflows", "w.yml"), "jobs: {}\n");
+      await writeFile(
+        path.join(nestedRoot, ".github", "workflows", "w.yml"),
+        "jobs:\n  x:\n    steps:\n      - uses: $/.github/actions/group/inner\n",
+      );
       await writeFile(
         path.join(nestedRoot, ".github", "actions", "group", "inner", "action.yml"),
         "runs:\n  using: composite\n  steps:\n    - uses: third/party@main\n",
       );
-      const targets = collectTargets(nestedRoot).map((t) => t.replace(/\\/g, "/"));
-      assert.equal(
-        targets.filter((t) => t.endsWith("action.yml")).length,
-        1,
-        "nested local action manifests must be discovered recursively",
-      );
-      const { validateTree } = await import(validatorPath);
+      const nestedValidatorPath =
+        "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+      const { validateTree } = await import(nestedValidatorPath);
       assert.equal(
         validateTree(nestedRoot).length,
         1,
@@ -819,6 +821,62 @@ assert.match(
     } finally {
       await rm(nestedRoot, { recursive: true, force: true });
     }
+  }
+}
+{
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-outside-"));
+  try {
+    await mkdir(path.join(outsideRoot, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(outsideRoot, "build", "release-action"), { recursive: true });
+    await writeFile(
+      path.join(outsideRoot, ".github", "workflows", "w.yml"),
+      "jobs:\n  x:\n    steps:\n      - uses: ./build/release-action\n",
+    );
+    await writeFile(
+      path.join(outsideRoot, "build", "release-action", "action.yml"),
+      "runs:\n  using: composite\n  steps:\n    - uses: third/party@main\n",
+    );
+    const outsideValidatorPath = "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+    const { validateTree } = await import(outsideValidatorPath);
+    assert.equal(
+      validateTree(outsideRoot).length,
+      1,
+      "a local action outside .github/actions must have its manifest revalidated",
+    );
+  } finally {
+    await rm(outsideRoot, { recursive: true, force: true });
+  }
+}
+{
+  // Clean-runner proof: the bundled dist must run with NO node_modules in
+  // reach (the gate invokes the action before npm ci).
+  const cleanRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-clean-"));
+  try {
+    await mkdir(path.join(cleanRoot, ".github", "workflows"), { recursive: true });
+    await writeFile(
+      path.join(cleanRoot, ".github", "workflows", "w.yml"),
+      "jobs:\n  x:\n    steps:\n      - uses: third/party@main\n",
+    );
+    const distSource = await readFile(
+      path.join(root, ".github", "actions", "validate-action-pins", "dist", "index.mjs"),
+      "utf8",
+    );
+    const distCopy = path.join(cleanRoot, "validator.mjs");
+    await writeFile(distCopy, distSource);
+    let failed = false;
+    try {
+      execFileSync(process.execPath, [distCopy, cleanRoot], { encoding: "utf8", stdio: "pipe" });
+    } catch (error) {
+      failed = true;
+      assert.match(
+        String(error.stderr ?? ""),
+        /not pinned to a 40-hex commit/,
+        "the self-contained dist must reach the pin check on a clean runner",
+      );
+    }
+    assert.ok(failed, "the unpinned fixture must fail the self-contained dist validator");
+  } finally {
+    await rm(cleanRoot, { recursive: true, force: true });
   }
 }
 const publicationGateBlock = publishWorkflow.match(
