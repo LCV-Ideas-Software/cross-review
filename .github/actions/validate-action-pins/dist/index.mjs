@@ -7447,11 +7447,16 @@ function validateTree(root) {
         continue;
       }
       if (value.startsWith("./") || value.startsWith("$/")) {
-        const manifest = manifestPathFor(root, value);
-        if (manifest === null) {
-          problems.push(`${relPath}: local action manifest not found for ${value}`);
+        const relTarget = value.replace(/^(\.\/|\$\/)/, "");
+        if (/\.(yml|yaml)$/.test(relTarget)) {
+          enqueue(join(root, relTarget));
         } else {
-          enqueue(manifest);
+          const manifest = manifestPathFor(root, value);
+          if (manifest === null) {
+            problems.push(`${relPath}: local action manifest not found for ${value}`);
+          } else {
+            enqueue(manifest);
+          }
         }
       }
     }

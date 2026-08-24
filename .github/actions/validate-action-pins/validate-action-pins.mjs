@@ -104,11 +104,19 @@ export function validateTree(root) {
         continue;
       }
       if (value.startsWith("./") || value.startsWith("$/")) {
-        const manifest = manifestPathFor(root, value);
-        if (manifest === null) {
-          problems.push(`${relPath}: local action manifest not found for ${value}`);
+        const relTarget = value.replace(/^(\.\/|\$\/)/, "");
+        if (/\.(yml|yaml)$/.test(relTarget)) {
+          // Local reusable workflow: the reference points at the workflow
+          // file itself (Codex review of PR #244) - validate that file;
+          // an unreadable path is reported by the queue loop, fail-closed.
+          enqueue(join(root, relTarget));
         } else {
-          enqueue(manifest);
+          const manifest = manifestPathFor(root, value);
+          if (manifest === null) {
+            problems.push(`${relPath}: local action manifest not found for ${value}`);
+          } else {
+            enqueue(manifest);
+          }
         }
       }
     }

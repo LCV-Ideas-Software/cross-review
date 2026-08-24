@@ -848,6 +848,39 @@ assert.match(
   }
 }
 {
+  const reusableRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-reusable-"));
+  try {
+    await mkdir(path.join(reusableRoot, ".github", "workflows"), { recursive: true });
+    await writeFile(
+      path.join(reusableRoot, ".github", "workflows", "w.yml"),
+      "jobs:\n  x:\n    uses: ./.github/workflows/reusable.yml\n",
+    );
+    await writeFile(
+      path.join(reusableRoot, ".github", "workflows", "reusable.yml"),
+      "jobs:\n  y:\n    steps:\n      - uses: third/party@main\n",
+    );
+    const reusableValidatorPath =
+      "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+    const { validateTree } = await import(reusableValidatorPath);
+    assert.equal(
+      validateTree(reusableRoot).length,
+      1,
+      "a local reusable workflow must be validated as a workflow file, and its unpinned uses must fail",
+    );
+    await writeFile(
+      path.join(reusableRoot, ".github", "workflows", "reusable.yml"),
+      "jobs:\n  y:\n    steps:\n      - uses: third/party@" + "a".repeat(40) + "\n",
+    );
+    assert.equal(
+      validateTree(reusableRoot).length,
+      0,
+      "a valid local reusable-workflow reference must not be mistaken for a missing action manifest",
+    );
+  } finally {
+    await rm(reusableRoot, { recursive: true, force: true });
+  }
+}
+{
   // Clean-runner proof: the bundled dist must run with NO node_modules in
   // reach (the gate invokes the action before npm ci).
   const cleanRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-clean-"));
