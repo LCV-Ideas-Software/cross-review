@@ -75,7 +75,7 @@
     "check": "npm run format:check && npm run lint && npm run biome && npm run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@google/genai": "^2.13.0",
     "openai": "^7.0.0",
     "pino": "^10.3.1",
