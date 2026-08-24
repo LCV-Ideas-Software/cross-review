@@ -876,12 +876,14 @@ jobs:
     permissions:
       contents: read # checkout of the immutable release commit
     steps:
-      - name: Checkout immutable release commit
+      - name: Checkout main-side verification tooling
+        # The verifier only talks to the npm registry and compares it with
+        # the gate's outputs (pure data); it never needs the tag's own tree.
+        # Checking out the workflow-side commit keeps the verification
+        # scripts independent of the artifact under verification.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ needs.gate.outputs.sha }}
-          fetch-depth: 0
       - name: Setup Node.js 24 for npmjs verification
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

@@ -756,33 +756,70 @@ assert.match(
 );
 {
   const validatorPath = "../.github/actions/validate-action-pins/validate-action-pins.mjs";
-  const { extractUses, validateRef, validateFile } = await import(validatorPath);
-  assert.equal(extractUses('  "uses": owner/action@main').value, "owner/action@main");
-  assert.equal(extractUses("  uses : owner/action@main").value, "owner/action@main");
-  assert.equal(extractUses("  - uses: 'owner/action@main'").value, "owner/action@main");
-  assert.equal(
-    extractUses("  uses: >-").error,
-    "unsupported uses value form",
-    "block scalars must fail closed instead of hiding the reference",
+  const { collectUsesFromYaml, validateRef, validateFile, collectTargets } = await import(
+    validatorPath
   );
+  const flowStyle = "jobs:\n  x:\n    steps:\n      - { uses: third/party@main }\n";
+  assert.equal(
+    validateFile("fixture.yml", flowStyle).length,
+    1,
+    "flow-style mappings must be parsed and their unpinned refs rejected",
+  );
+  const spellings = [
+    'jobs:\n  x:\n    steps:\n      - "uses": third/party@main\n',
+    "jobs:\n  x:\n    steps:\n      - uses : third/party@main\n",
+    "jobs:\n  x:\n    steps:\n      - uses: >-\n          third/party@main\n",
+  ];
+  for (const doc of spellings) {
+    assert.equal(
+      validateFile("fixture.yml", doc).length,
+      1,
+      "every YAML spelling of the uses key must reach the pin check",
+    );
+  }
   assert.equal(validateRef("./.github/actions/setup-npm-toolchain"), null);
   assert.equal(validateRef("$/.github/actions/setup-npm-toolchain"), null);
   assert.equal(validateRef("owner/action@" + "a".repeat(40)), null);
   assert.ok(validateRef("owner/action@v4"), "tag references must be rejected");
   assert.ok(validateRef("owner/action@abcdef1"), "short SHAs must be rejected");
-  const adversarial = [
-    "jobs:",
-    "  x:",
-    "    steps:",
-    '      - "uses": third/party@main',
-    "      - uses : other/thing@v2",
-    "      - uses: $/.github/actions/setup-npm-toolchain",
-  ].join("\n");
   assert.equal(
-    validateFile("fixture.yml", adversarial).length,
-    2,
-    "quoted keys and spaced colons must be parsed and their unpinned refs rejected",
+    collectUsesFromYaml("fixture.yml", "uses: [not, a, string]").problems.length,
+    1,
+    "non-string uses values must fail closed",
   );
+  assert.equal(
+    collectUsesFromYaml("fixture.yml", "jobs: {").problems.length,
+    1,
+    "unparseable YAML must fail closed",
+  );
+  {
+    const nestedRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-nested-"));
+    try {
+      await mkdir(path.join(nestedRoot, ".github", "workflows"), { recursive: true });
+      await mkdir(path.join(nestedRoot, ".github", "actions", "group", "inner"), {
+        recursive: true,
+      });
+      await writeFile(path.join(nestedRoot, ".github", "workflows", "w.yml"), "jobs: {}\n");
+      await writeFile(
+        path.join(nestedRoot, ".github", "actions", "group", "inner", "action.yml"),
+        "runs:\n  using: composite\n  steps:\n    - uses: third/party@main\n",
+      );
+      const targets = collectTargets(nestedRoot).map((t) => t.replace(/\\/g, "/"));
+      assert.equal(
+        targets.filter((t) => t.endsWith("action.yml")).length,
+        1,
+        "nested local action manifests must be discovered recursively",
+      );
+      const { validateTree } = await import(validatorPath);
+      assert.equal(
+        validateTree(nestedRoot).length,
+        1,
+        "an unpinned third-party uses inside a nested local action must fail the gate",
+      );
+    } finally {
+      await rm(nestedRoot, { recursive: true, force: true });
+    }
+  }
 }
 const publicationGateBlock = publishWorkflow.match(
   /\n {2}gate:[\s\S]*?(?=\n {2}publish-npmjs:)/,
