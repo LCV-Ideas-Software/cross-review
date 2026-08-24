@@ -881,6 +881,60 @@ assert.match(
   }
 }
 {
+  const orphanRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-orphan-"));
+  try {
+    await mkdir(path.join(orphanRoot, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(orphanRoot, ".github", "actions", "orphan"), { recursive: true });
+    await writeFile(path.join(orphanRoot, ".github", "workflows", "w.yml"), "jobs: {}\n");
+    await writeFile(
+      path.join(orphanRoot, ".github", "actions", "orphan", "action.yml"),
+      "runs:\n  using: composite\n  steps:\n    - uses: third/party@main\n",
+    );
+    const orphanValidatorPath = "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+    const { validateTree } = await import(orphanValidatorPath);
+    assert.equal(
+      validateTree(orphanRoot).length,
+      1,
+      "an orphaned manifest under .github/actions must still be validated (the allowance covers that prefix)",
+    );
+  } finally {
+    await rm(orphanRoot, { recursive: true, force: true });
+  }
+}
+{
+  const dirSuffixRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-dirsuffix-"));
+  try {
+    await mkdir(path.join(dirSuffixRoot, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(dirSuffixRoot, "build", "release-action.yml"), { recursive: true });
+    await writeFile(
+      path.join(dirSuffixRoot, ".github", "workflows", "w.yml"),
+      "jobs:\n  x:\n    steps:\n      - uses: ./build/release-action.yml\n",
+    );
+    await writeFile(
+      path.join(dirSuffixRoot, "build", "release-action.yml", "action.yml"),
+      "runs:\n  using: composite\n  steps:\n    - uses: third/party@" + "a".repeat(40) + "\n",
+    );
+    const dirSuffixValidatorPath =
+      "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+    const { validateTree } = await import(dirSuffixValidatorPath);
+    assert.equal(
+      validateTree(dirSuffixRoot).length,
+      0,
+      "an action DIRECTORY whose name ends in .yml must be classified by filesystem type, not suffix",
+    );
+  } finally {
+    await rm(dirSuffixRoot, { recursive: true, force: true });
+  }
+}
+{
+  const distText = await read(".github/actions/validate-action-pins/dist/index.mjs");
+  assert.match(
+    distText,
+    /Permission to use, copy, modify, and\/or distribute/,
+    "the committed bundle must embed the yaml package's full ISC notice",
+  );
+}
+{
   // Clean-runner proof: the bundled dist must run with NO node_modules in
   // reach (the gate invokes the action before npm ci).
   const cleanRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-clean-"));

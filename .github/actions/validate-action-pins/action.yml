@@ -13,7 +13,7 @@ runs:
   steps:
     - name: Validate every uses reference in the workspace
       shell: bash
-      # dist/index.mjs bundles the pinned yaml parser (MIT attribution
+      # dist/index.mjs bundles the pinned yaml parser (ISC notice
       # inline): the gate invokes this action before any dependency
       # installation, so the artifact must be self-contained.
       run: node "$GITHUB_ACTION_PATH/dist/index.mjs" "$GITHUB_WORKSPACE"

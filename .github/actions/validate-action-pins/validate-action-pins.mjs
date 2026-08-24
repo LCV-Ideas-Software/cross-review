@@ -85,6 +85,32 @@ export function validateTree(root) {
   for (const name of readdirSync(workflows)) {
     if (name.endsWith(".yml") || name.endsWith(".yaml")) enqueue(join(workflows, name));
   }
+  // Codex review of PR #244: manifests under .github/actions are validated
+  // even when nothing references them yet - the Scorecard allowance covers
+  // that prefix, so an orphaned unpinned manifest must not slip through.
+  const seedActions = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const child = join(dir, entry);
+      let childStat;
+      try {
+        childStat = statSync(child);
+      } catch {
+        continue;
+      }
+      if (childStat.isDirectory()) {
+        seedActions(child);
+      } else if (entry === "action.yml" || entry === "action.yaml") {
+        enqueue(child);
+      }
+    }
+  };
+  seedActions(join(root, ".github", "actions"));
   while (queue.length > 0) {
     const absPath = queue.shift();
     const relPath = relative(root, absPath).replace(/\\/g, "/");
@@ -104,13 +130,21 @@ export function validateTree(root) {
         continue;
       }
       if (value.startsWith("./") || value.startsWith("$/")) {
+        // Codex review of PR #244: classify the local target by its
+        // FILESYSTEM type, never by suffix - a directory named
+        // release-action.yml is an action directory, and a reusable
+        // workflow is a plain file.
         const relTarget = value.replace(/^(\.\/|\$\/)/, "");
-        if (/\.(yml|yaml)$/.test(relTarget)) {
-          // Local reusable workflow: the reference points at the workflow
-          // file itself (Codex review of PR #244) - validate that file;
-          // an unreadable path is reported by the queue loop, fail-closed.
-          enqueue(join(root, relTarget));
-        } else {
+        const target = join(root, relTarget);
+        let targetStat;
+        try {
+          targetStat = statSync(target);
+        } catch {
+          problems.push(`${relPath}: local reference target not found for ${value}`);
+        }
+        if (targetStat?.isFile()) {
+          enqueue(target);
+        } else if (targetStat?.isDirectory()) {
           const manifest = manifestPathFor(root, value);
           if (manifest === null) {
             problems.push(`${relPath}: local action manifest not found for ${value}`);
