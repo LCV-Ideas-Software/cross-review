@@ -10,7 +10,8 @@ on:
         required: true
         type: string
 
-permissions: write-all
+# No workflow-level grant: the single job declares its own minimal scope.
+permissions: {}
 
 # Share the publication FIFO. A recovery must never race a newer tag's npm or
 # GitHub latest transition.
@@ -24,7 +25,12 @@ jobs:
     name: Recover exact v04.05.26 release without overwrite
     runs-on: ubuntu-latest
     environment: github-release-recovery
-    permissions: write-all
+    # contents:write recreates the exact historical Release; actions:read
+    # verifies the source run; packages:read checks the published artifact.
+    permissions:
+      actions: read # verifies the exact source workflow run
+      contents: write # recreates the exact historical GitHub Release
+      packages: read # checks the published GitHub Packages artifact
     steps:
       - name: Checkout trusted main recovery implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

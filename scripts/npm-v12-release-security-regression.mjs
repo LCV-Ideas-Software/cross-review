@@ -622,8 +622,8 @@ assert.match(
 
 assert.match(
   publishWorkflow,
-  /publish-npmjs:[\s\S]*?permissions:\s*write-all[\s\S]*?publish-gh-packages:/,
-  "npmjs publishing must retain the organization-wide write-all policy, including OIDC",
+  /publish-npmjs:[\s\S]*?permissions:\s*\n\s+contents: read[^\n]*\n\s+id-token: write[^\n]*[\s\S]*?publish-gh-packages:/,
+  "npmjs publishing must run with the minimal OIDC grant (contents:read + id-token:write) and nothing more",
 );
 assert.doesNotMatch(
   publishWorkflow,
@@ -741,9 +741,86 @@ assert.match(
 );
 assert.match(
   publishWorkflow,
-  /gate:[\s\S]*?permissions:\s*write-all/,
-  "the publish gate must retain organization-wide authorization to verify Actions and CodeQL state",
+  /gate:[\s\S]*?permissions:\s*\n\s+actions: read[^\n]*\n\s+contents: read[^\n]*\n\s+security-events: read/,
+  "the publish gate must hold read-only Actions, contents and code-scanning authorization - nothing more",
 );
+assert.doesNotMatch(
+  zizmorConfig,
+  /excessive-permissions:[\s\S]{0,60}?disable/,
+  "the stale write-all-era exemption must stay deleted so zizmor guards permission regressions",
+);
+assert.match(
+  publishWorkflow,
+  /uses: \$\/\.github\/actions\/validate-action-pins/,
+  "the release gate must revalidate action pinning through the immutable $/ composite action, not code from the tag checkout",
+);
+{
+  const validatorPath = "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+  const { collectUsesFromYaml, validateRef, validateFile, collectTargets } = await import(
+    validatorPath
+  );
+  const flowStyle = "jobs:\n  x:\n    steps:\n      - { uses: third/party@main }\n";
+  assert.equal(
+    validateFile("fixture.yml", flowStyle).length,
+    1,
+    "flow-style mappings must be parsed and their unpinned refs rejected",
+  );
+  const spellings = [
+    'jobs:\n  x:\n    steps:\n      - "uses": third/party@main\n',
+    "jobs:\n  x:\n    steps:\n      - uses : third/party@main\n",
+    "jobs:\n  x:\n    steps:\n      - uses: >-\n          third/party@main\n",
+  ];
+  for (const doc of spellings) {
+    assert.equal(
+      validateFile("fixture.yml", doc).length,
+      1,
+      "every YAML spelling of the uses key must reach the pin check",
+    );
+  }
+  assert.equal(validateRef("./.github/actions/setup-npm-toolchain"), null);
+  assert.equal(validateRef("$/.github/actions/setup-npm-toolchain"), null);
+  assert.equal(validateRef("owner/action@" + "a".repeat(40)), null);
+  assert.ok(validateRef("owner/action@v4"), "tag references must be rejected");
+  assert.ok(validateRef("owner/action@abcdef1"), "short SHAs must be rejected");
+  assert.equal(
+    collectUsesFromYaml("fixture.yml", "uses: [not, a, string]").problems.length,
+    1,
+    "non-string uses values must fail closed",
+  );
+  assert.equal(
+    collectUsesFromYaml("fixture.yml", "jobs: {").problems.length,
+    1,
+    "unparseable YAML must fail closed",
+  );
+  {
+    const nestedRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-nested-"));
+    try {
+      await mkdir(path.join(nestedRoot, ".github", "workflows"), { recursive: true });
+      await mkdir(path.join(nestedRoot, ".github", "actions", "group", "inner"), {
+        recursive: true,
+      });
+      await writeFile(path.join(nestedRoot, ".github", "workflows", "w.yml"), "jobs: {}\n");
+      await writeFile(
+        path.join(nestedRoot, ".github", "actions", "group", "inner", "action.yml"),
+        "runs:\n  using: composite\n  steps:\n    - uses: third/party@main\n",
+      );
+      const targets = collectTargets(nestedRoot).map((t) => t.replace(/\\/g, "/"));
+      assert.equal(
+        targets.filter((t) => t.endsWith("action.yml")).length,
+        1,
+        "nested local action manifests must be discovered recursively",
+      );
+      const { validateTree } = await import(validatorPath);
+      assert.equal(
+        validateTree(nestedRoot).length,
+        1,
+        "an unpinned third-party uses inside a nested local action must fail the gate",
+      );
+    } finally {
+      await rm(nestedRoot, { recursive: true, force: true });
+    }
+  }
+}
 const publicationGateBlock = publishWorkflow.match(
   /\n {2}gate:[\s\S]*?(?=\n {2}publish-npmjs:)/,
 )?.[0];
@@ -879,7 +956,7 @@ const exportedGithubTokenSteps = [
 assert.equal(
   exportedGithubTokenSteps.length,
   12,
-  "the secret-scope regression must audit every write-all GITHUB_TOKEN shell step",
+  "the secret-scope regression must audit every minimal-permission GITHUB_TOKEN shell step",
 );
 for (const step of exportedGithubTokenSteps) {
   const stepName = step.match(/- name:\s*([^\r\n]+)/)?.[1] ?? "unnamed GITHUB_TOKEN step";
@@ -1589,8 +1666,13 @@ assert.match(
 );
 assert.equal(
   (releaseRecoveryWorkflow.match(/permissions:\s*write-all/g) ?? []).length,
-  2,
-  "the recovery workflow and its only job must retain the organization-wide write-all policy",
+  0,
+  "the abolished write-all grant must never return to the recovery workflow",
+);
+assert.match(
+  releaseRecoveryWorkflow,
+  /permissions:\s*\n\s+actions: read[^\n]*\n\s+contents: write[^\n]*\n\s+packages: read/,
+  "the recovery job must hold the minimal grant: contents:write for the Release, read-only Actions and Packages",
 );
 assert.match(
   releaseRecoveryWorkflow,
@@ -3484,7 +3566,7 @@ printf '%s\n' "$*" >>"$MOCK_SLEEP_LOG"
 }
 
 for (const codeScanningGate of [
-  "permissions: write-all",
+  "security-events: read",
   "Wait for exact CodeQL analyses and require zero results",
   'github_run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA"',
   "code-scanning/analyses?per_page=100",

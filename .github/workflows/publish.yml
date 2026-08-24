@@ -5,7 +5,7 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-permissions: write-all
+permissions: {}
 concurrency:
   # One repository-wide release transaction at a time. Per-tag groups would
   # allow two versions to race the monotonic npm/GitHub `latest` decisions.
@@ -20,7 +20,10 @@ jobs:
   assert-npm-environment-boundary:
     name: Assert npm Trusted Publisher environment boundary
     runs-on: ubuntu-latest
-    permissions: write-all
+    # OIDC-only proof job: id-token:write mints the attestation that pins
+    # the npm Trusted Publisher environment boundary; no repo access.
+    permissions:
+      id-token: write # OIDC credential for the npm Trusted Publisher proof
     env:
       PACKAGE_NAME: "@lcv-ideas-software/cross-review"
     steps:
@@ -118,7 +121,10 @@ jobs:
     needs: assert-npm-environment-boundary
     runs-on: ubuntu-latest
     environment: npm-production
-    permissions: write-all
+    # OIDC-only proof job: id-token:write mints the attestation that pins
+    # the npm Trusted Publisher environment boundary; no repo access.
+    permissions:
+      id-token: write # OIDC credential for the npm Trusted Publisher proof
     env:
       PACKAGE_NAME: "@lcv-ideas-software/cross-review"
     steps:
@@ -218,7 +224,13 @@ jobs:
     environment:
       name: github-administration
       deployment: false
-    permissions: write-all
+    # Read-only release gate: verifies workflows (actions:read), the tag
+    # target (contents:read) and CodeQL/Scorecard SARIF
+    # (security-events:read). It must never hold a write scope.
+    permissions:
+      actions: read # verifies required workflow runs for the tag
+      contents: read # checkout of the immutable release commit
+      security-events: read # reads exact CodeQL/Scorecard SARIF results
     outputs:
       name: ${{ steps.meta.outputs.name }}
       version: ${{ steps.meta.outputs.version }}
@@ -315,6 +327,14 @@ jobs:
             exit 1
           fi
           echo "Verified tag $PUBLISH_REF at $TAG_SHA."
+      - name: Revalidate action pinning from the trusted workflow side
+        # The versioned validator executes from the MAIN-side commit of
+        # this workflow (immutable $/ reference) - the tag checkout is
+        # DATA to validate, never code to run inside the release gate.
+        # It parses every YAML-permitted spelling of the uses key and
+        # fails closed on unparseable forms; adversarial cases live in
+        # the npm-v12 release-security regression.
+        uses: $/.github/actions/validate-action-pins
       - name: Revalidate immutable tag target against live main history and all required workflows
         id: prerequisite_gate
         env:
@@ -451,6 +471,14 @@ jobs:
 
           # Scorecard's intentionally accepted solo-maintainer findings are
           # narrow and explicit. Every other exact-SHA result fails closed.
+          #
+          # v04.06.01: PinnedDependenciesID joined the accepted list ONLY
+          # because Scorecard misreads the immutable same-repository
+          # `uses: $/...` references (#224/#225) as unpinned third-party
+          # actions. The real property is revalidated independently right
+          # here, against the checked-out tag content, before the SARIF
+          # allowlist is applied: any non-local, non-`$/` uses reference
+          # without a full 40-hex commit pin fails the release closed.
           target_scorecard="[]"
           for attempt in {1..12}; do
             assert_target_on_live_main
@@ -492,7 +520,7 @@ jobs:
                   .ruleId != "CIIBestPracticesID" and
                   .ruleId != "FuzzingID" and
                   .ruleId != "BranchProtectionID" and
-                  .ruleId != "TokenPermissionsID"
+                  .ruleId != "PinnedDependenciesID"
                 )
             ] | length' "$sarif_file")"
             if [ "$unexpected_results" -ne 0 ]; then
@@ -667,7 +695,11 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     environment: npm-production
-    permissions: write-all
+    # contents:read checks out the tag; id-token:write is the npm Trusted
+    # Publishing OIDC credential. No other scope is exercised.
+    permissions:
+      contents: read # checkout of the immutable release commit
+      id-token: write # OIDC credential for the npm Trusted Publisher proof
     outputs:
       prior_latest: ${{ steps.npmjs-tag.outputs.prior_latest }}
       publish_tag: ${{ steps.npmjs-tag.outputs.publish_tag }}
@@ -840,14 +872,18 @@ jobs:
     name: Verify npmjs.com publication
     needs: [gate, publish-npmjs]
     runs-on: ubuntu-latest
-    permissions: write-all
+    # Verification-only job: the token only fetches the repository.
+    permissions:
+      contents: read # checkout of the immutable release commit
     steps:
-      - name: Checkout immutable release commit
+      - name: Checkout main-side verification tooling
+        # The verifier only talks to the npm registry and compares it with
+        # the gate's outputs (pure data); it never needs the tag's own tree.
+        # Checking out the workflow-side commit keeps the verification
+        # scripts independent of the artifact under verification.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ needs.gate.outputs.sha }}
-          fetch-depth: 0
       - name: Setup Node.js 24 for npmjs verification
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -961,7 +997,12 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     environment: github-packages-production
-    permissions: write-all
+    # contents:read checks out the tag; packages:write publishes to GitHub
+    # Packages; id-token:write provides the provenance attestation.
+    permissions:
+      contents: read # checkout of the immutable release commit
+      id-token: write # OIDC credential for the npm Trusted Publisher proof
+      packages: write # publishes the tarball to GitHub Packages
     steps:
       - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1191,7 +1232,10 @@ jobs:
     needs: [gate, verify-npmjs, publish-gh-packages]
     runs-on: ubuntu-latest
     environment: github-release-production
-    permissions: write-all
+    # contents:write creates the immutable GitHub Release from the gated
+    # artifact; nothing else is written.
+    permissions:
+      contents: write # creates the immutable GitHub Release
     steps:
       - name: Checkout immutable release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1555,7 +1599,7 @@ jobs:
           }
 
           # This administrative read uses a step-scoped token because
-          # GITHUB_TOKEN write-all does not grant Administration: read.
+          # The GITHUB_TOKEN grant (minimal since v04.06.01) does not include Administration: read.
           # Nothing is created or uploaded unless owner enforcement is proven.
           assert_immutable_release_policy "release-reconciliation"
 

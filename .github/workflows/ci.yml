@@ -9,13 +9,16 @@ on:
   merge_group:
     types:
       - checks_requested
-permissions: write-all
+# No workflow-level grant: each job declares its own minimal token scope.
+permissions: {}
 env:
   NPM_CLI_VERSION: "12.0.2"
   NPM_CLI_SHA512: "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
 jobs:
   verify:
-    permissions: write-all
+    # checkout-only job: the token is used solely to fetch the repository.
+    permissions:
+      contents: read
     name: Build, lint and smoke
     environment: ci-automation
     runs-on: ubuntu-latest
@@ -76,6 +79,7 @@ jobs:
           CROSS_REVIEW_STUB_CONFIRMED: "1"
     timeout-minutes: 45
   caller-token-acl-windows:
+    # checkout-only job: the token is used solely to fetch the repository.
     permissions:
       contents: read
     name: Windows caller-token ACL regression
