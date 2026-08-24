@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+# contents:read fetches the site sources; pages:write + id-token:write are
+# the documented pair for the official Pages deployment action.
 permissions:
   contents: read
   id-token: write

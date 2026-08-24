@@ -20,6 +20,8 @@ jobs:
   assert-npm-environment-boundary:
     name: Assert npm Trusted Publisher environment boundary
     runs-on: ubuntu-latest
+    # OIDC-only proof job: id-token:write mints the attestation that pins
+    # the npm Trusted Publisher environment boundary; no repo access.
     permissions:
       id-token: write
     env:
@@ -119,6 +121,8 @@ jobs:
     needs: assert-npm-environment-boundary
     runs-on: ubuntu-latest
     environment: npm-production
+    # OIDC-only proof job: id-token:write mints the attestation that pins
+    # the npm Trusted Publisher environment boundary; no repo access.
     permissions:
       id-token: write
     env:
@@ -220,6 +224,9 @@ jobs:
     environment:
       name: github-administration
       deployment: false
+    # Read-only release gate: verifies workflows (actions:read), the tag
+    # target (contents:read) and CodeQL/Scorecard SARIF
+    # (security-events:read). It must never hold a write scope.
     permissions:
       actions: read
       contents: read
@@ -687,6 +694,8 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     environment: npm-production
+    # contents:read checks out the tag; id-token:write is the npm Trusted
+    # Publishing OIDC credential. No other scope is exercised.
     permissions:
       contents: read
       id-token: write
@@ -862,6 +871,7 @@ jobs:
     name: Verify npmjs.com publication
     needs: [gate, publish-npmjs]
     runs-on: ubuntu-latest
+    # Verification-only job: the token only fetches the repository.
     permissions:
       contents: read
     steps:
@@ -984,6 +994,8 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     environment: github-packages-production
+    # contents:read checks out the tag; packages:write publishes to GitHub
+    # Packages; id-token:write provides the provenance attestation.
     permissions:
       contents: read
       id-token: write
@@ -1217,6 +1229,8 @@ jobs:
     needs: [gate, verify-npmjs, publish-gh-packages]
     runs-on: ubuntu-latest
     environment: github-release-production
+    # contents:write creates the immutable GitHub Release from the gated
+    # artifact; nothing else is written.
     permissions:
       contents: write
     steps:

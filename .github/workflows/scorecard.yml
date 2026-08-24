@@ -11,6 +11,8 @@ concurrency:
   group: scorecard-${{ github.ref }}
   queue: max
   cancel-in-progress: false
+# contents:read fetches the repository; security-events:write uploads the
+# Scorecard SARIF analyses. No other scope is exercised.
 permissions:
   contents: read
   security-events: write

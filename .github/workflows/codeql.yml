@@ -17,6 +17,8 @@ on:
       - checks_requested
   schedule:
     - cron: "35 6 * * 2"
+# contents:read fetches the repository; security-events:write uploads the
+# CodeQL SARIF analyses. No other scope is exercised.
 permissions:
   contents: read
   security-events: write

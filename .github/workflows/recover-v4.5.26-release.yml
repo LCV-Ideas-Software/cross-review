@@ -10,6 +10,7 @@ on:
         required: true
         type: string
 
+# No workflow-level grant: the single job declares its own minimal scope.
 permissions: {}
 
 # Share the publication FIFO. A recovery must never race a newer tag's npm or
@@ -24,6 +25,8 @@ jobs:
     name: Recover exact v04.05.26 release without overwrite
     runs-on: ubuntu-latest
     environment: github-release-recovery
+    # contents:write recreates the exact historical Release; actions:read
+    # verifies the source run; packages:read checks the published artifact.
     permissions:
       actions: read
       contents: write

@@ -16,6 +16,9 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
+# contents:write creates the release tag ref; actions:write dispatches
+# publish.yml; security-events:read feeds the exact CodeQL SARIF gate.
+# Everything else is unneeded and intentionally absent.
 permissions:
   actions: write
   contents: write
