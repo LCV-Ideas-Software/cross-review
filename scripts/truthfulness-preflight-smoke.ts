@@ -800,6 +800,117 @@ import type { PeerResult } from "../src/core/types.js";
   });
   assert.equal(wrappedTruth.pass, true, "a models/-wrapped Perplexity pin must normalize");
 
+  // CROSREV-21 (#237 phase 2, extending #239 item 3): the zero-occurrence
+  // guard with structured-evidence anchoring. A model-scoped assertive
+  // line with a peer alias and ZERO capturable model tokens (fragmented
+  // ids — the single residual false negative of the PR #234 38-case
+  // red-team sweep) is LOCATED by the lexicon but cannot be judged by it:
+  // the claim must anchor in structured evidence BY VALUE (the configured
+  // pin, canonically normalized, next to a model-pin record marker) or it
+  // is an unsupported current-state claim — never a silent pass.
+  const anchored = (draft: string, evidence?: string, caller?: "claude") =>
+    truthfulnessPreflight({
+      task: "Check the currently loaded cross-review runtime models.",
+      initialDraft: draft,
+      ...(evidence !== undefined ? { structuredEvidence: evidence } : {}),
+      ...(caller !== undefined ? { caller } : {}),
+      runtimeFacts: { model_pins: plainPins },
+      attachmentsPresent: false,
+    });
+  const fragMissing = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+  );
+  assert.equal(
+    fragMissing.pass,
+    false,
+    "a fragmented model id (no capturable token) must not pass silently",
+  );
+  assert.ok(
+    fragMissing.issue_classes.includes("unsupported_current_state_claim"),
+    "the fragmented claim is unsupported, not a contradiction",
+  );
+  assert.ok(
+    fragMissing.reason.includes("no capturable model token"),
+    `the reason names the zero-occurrence anchor requirement: ${fragMissing.reason}`,
+  );
+  const denialNoToken = anchored("The cross-review runtime Codex model is not the configured pin.");
+  assert.equal(
+    denialNoToken.pass,
+    false,
+    "denying the pin without naming any token must not pass silently (#239 item 3)",
+  );
+  const fragCorroborated = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    'server_info models: {"codex":"gpt-5.6-sol","claude":"claude-fable-5"}',
+  );
+  assert.equal(
+    fragCorroborated.pass,
+    true,
+    "a fragmented claim anchored in value-corresponding server_info output passes",
+  );
+  assert.equal(
+    fragCorroborated.independent_review_required,
+    false,
+    "operator-supplied structured evidence grounds the claim at operator tier",
+  );
+  const fragPeerEvidence = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    'server_info models: {"codex":"gpt-5.6-sol"}',
+    "claude",
+  );
+  assert.equal(fragPeerEvidence.pass, true, "peer-supplied structured evidence still anchors");
+  assert.equal(
+    fragPeerEvidence.independent_review_required,
+    true,
+    "peer-tier evidence requires the independent panel (two-tier authority)",
+  );
+  const rcCannotCorroborate = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    "runtime_capabilities: version 4.6.2, api_only true. Also mentions gpt-5.6-sol in passing.",
+  );
+  assert.equal(
+    rcCannotCorroborate.pass,
+    false,
+    "runtime_capabilities exposes no model ids and prose mentions carry no model-pin record marker — they cannot corroborate a model-pin claim",
+  );
+  const wrongPinEvidence = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    'server_info models: {"codex":"gpt-5.5"}',
+  );
+  assert.equal(
+    wrongPinEvidence.pass,
+    false,
+    "structured evidence naming a DIFFERENT value than the configured pin does not anchor the claim",
+  );
+  const pathAliasNoTrigger = anchored(
+    "The cross-review model_pin table is documented in src/gemini/routing.md for reference.",
+  );
+  assert.equal(
+    pathAliasNoTrigger.pass,
+    true,
+    "an alias inside a masked path must not trigger the zero-occurrence guard",
+  );
+  const historicalFragment = anchored(
+    "When the audit began, the cross-review runtime codex model was gpt five six sol.",
+  );
+  assert.equal(
+    historicalFragment.pass,
+    false,
+    "a historical fragmented claim routes to the historical-provenance branch, not a silent pass",
+  );
+  assert.ok(
+    historicalFragment.issue_classes.includes("unsupported_historical_claim"),
+    "historical fragmented claims keep the historical issue class",
+  );
+  const capturedTokenUnchanged = anchored(
+    "The currently loaded cross-review runtime codex model is gpt-5.6-sol.",
+  );
+  assert.equal(
+    capturedTokenUnchanged.pass,
+    true,
+    "captured truthful tokens keep judging against config with no evidence requirement",
+  );
+
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
     { provenanceCorpus: "", priorDraftCorpus: "", narrativeCorpus: "" },

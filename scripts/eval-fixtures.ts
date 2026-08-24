@@ -45,24 +45,30 @@ export const truthfulnessCases = [
 ] as const;
 
 export const parserCases = [
+  // Both fixtures had drifted on pre-v4.4.9/v4.5.0 expectations (READY
+  // kept with a warning; a noncanonical "ok" summary) and went unnoticed
+  // because eval:fixtures was not in the npm test chain — fixed and
+  // chained in CROSREV-21. Current contract: the canonical summary is
+  // required for READY, and verified with empty evidence_sources
+  // DOWNGRADES to NEEDS_EVIDENCE.
   {
-    name: "verified with empty evidence gets empty-evidence warning",
+    name: "verified with empty evidence downgrades and gets the warning",
     text: JSON.stringify({
       status: "READY",
-      summary: "ok",
+      summary: "No blocking objections remain.",
       confidence: "verified",
       evidence_sources: [],
       caller_requests: [],
       follow_ups: [],
     }),
-    expectStatus: "READY",
+    expectStatus: "NEEDS_EVIDENCE",
     expectWarning: "verified_without_evidence_sources",
   },
   {
     name: "verified with attached evidence path is concrete",
     text: JSON.stringify({
       status: "READY",
-      summary: "ok",
+      summary: "No blocking objections remain.",
       confidence: "verified",
       evidence_sources: ["evidence/2026-06-05T00-00-00Z-raw-smoke.txt: npm test 42 passed"],
       caller_requests: [],

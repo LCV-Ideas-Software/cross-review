@@ -2558,6 +2558,50 @@ function normalizeModelPin(value: string): string {
   return normalizeVersionToken(value.replace(/^models\//i, "").replace(/^[a-z0-9._-]+\//i, ""));
 }
 
+// Cosmetic canonicalization for model-id comparison: underscores to
+// hyphens, embedded version "v" before a digit dropped. Module-scoped
+// (CROSREV-21/#237) so the structured-evidence correlation compares the
+// same views the occurrence engine builds.
+function canonicalModelText(value: string): string {
+  return value.replace(/_/g, "-").replace(/(^|[-.])v(?=[0-9])/g, "$1");
+}
+
+// CROSREV-21 (#237 phase 2): a model-pin claim the lexicon can LOCATE but
+// not judge (no capturable token) anchors in structured evidence BY VALUE.
+// The evidence must carry a model-pin RECORD marker — server_info /
+// session_read / capability_snapshot / probe_peers / effective config /
+// model_pin / a models: mapping — near which the configured pin value can
+// live. runtime_capabilities is deliberately absent: its payload exposes
+// no model ids, so it can never corroborate a model-pin claim (it remains
+// valid provenance for version/release_date claims elsewhere).
+const MODEL_PIN_EVIDENCE_RECORD_PATTERN =
+  /\b(?:server_info|session_read|capability_snapshot|probe_peers|effective_config(?:_snapshot)?|model[_ -]?pins?|models?\s*[:=])/i;
+
+// Every aliased peer's configured pin must appear, canonically normalized,
+// in the evidence (pin-side anchoring: the claim's own token is
+// unparseable by definition, so the correlation searches the evidence for
+// the TRUTH value instead). Fail-closed: no pin configured for an aliased
+// peer, no record marker, or a missing value all refuse corroboration.
+function modelPinClaimCorroborated(
+  peers: readonly PeerId[],
+  modelPins: Partial<Record<PeerId, string | undefined>>,
+  evidenceText: string,
+): boolean {
+  if (peers.length === 0 || evidenceText.trim().length === 0) return false;
+  if (!MODEL_PIN_EVIDENCE_RECORD_PATTERN.test(evidenceText)) return false;
+  const normalizedEvidence = canonicalModelText(normalizeGroundingText(evidenceText));
+  return peers.every((peer) => {
+    const pin = modelPins[peer];
+    if (!pin) return false;
+    const views = [canonicalModelText(normalizeModelPin(pin))];
+    const unwrapped = pin.replace(/^models\//i, "");
+    if (unwrapped.includes("/")) {
+      views.push(canonicalModelText(normalizeVersionToken(unwrapped)));
+    }
+    return views.some((view) => normalizedEvidence.includes(view));
+  });
+}
+
 function uniqueMatches(pattern: RegExp, text: string): string[] {
   const matches = text.match(pattern) ?? [];
   return [...new Set(matches.map((match) => match.trim()).filter(Boolean))];
@@ -2713,8 +2757,19 @@ export function truthfulnessPreflight(params: {
       // current-state claim instead of silently passing - idiomatic
       // phrasings are asked to be restated plainly or evidenced, never
       // waved through; (S3) future/planning statements are exempt from S1.
-      // A phrasing the lexicon cannot reach now lands in S1/S2 (at worst a
-      // clarity request), never in a silent pass.
+      //
+      // STRUCTURED ANCHORING (CROSREV-21/#237 phase 2, extending #239
+      // item 3): S1/S2 need at least one CAPTURABLE occurrence. A
+      // model-scoped assertive line with a peer alias and ZERO capturable
+      // tokens (fragmented ids — the residual false negative of the
+      // 38-case red-team sweep — or a denial naming no token) is LOCATED
+      // by the lexicon and judged by structured evidence instead: the
+      // aliased peers' configured pins must be corroborated BY VALUE in
+      // supplied evidence next to a model-pin record marker
+      // (modelPinClaimCorroborated), or the line is an unsupported
+      // current-state claim. With the guard, a phrasing the lexicon
+      // cannot reach lands in S1/S2 or the anchoring guard (at worst a
+      // clarity/evidence request), never in a silent pass.
       const contradictionCountBefore = contradictions.length;
       type ModelOccurrence = {
         matchStart: number;
@@ -2726,8 +2781,6 @@ export function truthfulnessPreflight(params: {
         future: boolean;
         owner: PeerId | undefined;
       };
-      const canonicalModelText = (value: string): string =>
-        value.replace(/_/g, "-").replace(/(^|[-.])v(?=[0-9])/g, "$1");
       const base = line.replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length));
       const negationTailPattern =
         /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
@@ -3027,6 +3080,40 @@ export function truthfulnessPreflight(params: {
         unsupportedClaims.push(
           `model claim could not be affirmatively validated against the configured pins (restate plainly or attach structured evidence): ${line.slice(0, 240)}`,
         );
+      }
+      // CROSREV-21 (#237 phase 2, extending #239 item 3) — the
+      // zero-occurrence guard. Scope plus an assertive peer alias LOCATE a
+      // model claim, but zero capturable occurrences mean the lexicon
+      // cannot judge it: fragmented ids ("gpt five six sol") were the
+      // single residual false negative of the PR #234 38-case red-team
+      // sweep, and a denial that names no token ("is not the configured
+      // pin") slipped the same gap. Such a line must anchor in structured
+      // evidence BY VALUE — the aliased peers' configured pins, canonically
+      // normalized, next to a model-pin record marker (server_info /
+      // session_read; runtime_capabilities exposes no model ids and never
+      // corroborates) — or it is an unsupported current-state claim.
+      // Historical phrasings route to the historical-provenance branch
+      // below instead. The guard reports through unsupportedClaims (never
+      // contradictions[], which would suppress S2 for later lines via
+      // anyModelDenialOrContradiction), and the alias test runs on the
+      // MASKED aliasBase so aliases inside paths, URLs or quoted strings
+      // never trigger it.
+      if (occurrences.length === 0 && !historicalClaim) {
+        const aliasedPeers = PEERS.filter((aliasPeer) =>
+          MODEL_CLAIM_ALIASES[aliasPeer].test(aliasBase),
+        );
+        if (aliasedPeers.length > 0) {
+          lineCurrentModelClaimMatched = true;
+          currentStateClaimMatched = true;
+          if (!modelPinClaimCorroborated(aliasedPeers, modelPins, suppliedEvidence)) {
+            addIssueClass(issueClasses, "unsupported_current_state_claim");
+            unsupportedClaims.push(
+              `model-scoped claim has no capturable model token and no value-corresponding structured evidence for the configured pin (attach raw server_info or session_read output naming the pin): ${line.slice(0, 240)}`,
+            );
+          } else if (!modelPinClaimCorroborated(aliasedPeers, modelPins, operatorEvidence)) {
+            independentReviewRequired = true;
+          }
+        }
       }
     }
 

@@ -255,7 +255,15 @@ calls.
 The gate also checks value correspondence for fabrication-prone claims. A
 workflow/deploy claim needs matching workflow/run identity and outcome evidence;
 a model/runtime assertion is compared with live runtime facts; hashes and test
-counts must occur in the provenance corpus. Negated or instructional examples
+counts must occur in the provenance corpus. A model-scoped assertive line with
+a peer alias but no capturable model token (a fragmented id such as "gpt five
+six sol", or a denial that names no token) cannot be judged lexically: it must
+anchor in structured evidence by value — the configured pin, canonically
+normalized, next to a model-pin record marker (raw `server_info` or
+`session_read` output; `runtime_capabilities` exposes no model ids and cannot
+corroborate a model claim) — or it is reported as
+`unsupported_current_state_claim`. Peer-supplied anchoring evidence passes with
+the independent-panel requirement; operator-custody evidence grounds it fully. Negated or instructional examples
 are not misclassified as completed work. Every `READY` decision must cite a
 source traceable to the reviewed artifact, authenticated caller evidence, or
 optional operator evidence. Workflow/deploy/authorization self-attestation may

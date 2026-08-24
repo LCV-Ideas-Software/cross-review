@@ -7,6 +7,38 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- Truthfulness preflight, phase 2 (CROSREV-21, issue #237; extends #239
+  item 3): structured-evidence anchoring for model-pin claims the lexicon
+  can locate but not judge. A model-scoped assertive line with a peer
+  alias and ZERO capturable model tokens — fragmented ids ("gpt five six
+  sol"), the single residual false negative of the PR #234 38-case
+  red-team sweep, or a denial naming no token ("is not the configured
+  pin") — used to pass silently because S1/S2 need a captured occurrence.
+  It now requires the aliased peers' configured pins to be corroborated
+  BY VALUE in supplied evidence next to a model-pin record marker (raw
+  `server_info`/`session_read` output; `runtime_capabilities` exposes no
+  model ids and never corroborates a model claim), with the existing
+  two-tier authority model: peer-supplied anchoring passes with
+  `independent_review_required`, operator custody grounds fully. Without
+  the anchor the line is an `unsupported_current_state_claim`
+  (fail-closed; the closed four-class union is unchanged). Captured
+  truthful tokens keep judging against the configured pins with no new
+  evidence requirement, so the committed truthful-claim fixture matrix is
+  intact. `canonicalModelText` moved to module scope so the correlation
+  compares the same canonical views the occurrence engine builds.
+
+### Fixed
+
+- `eval:fixtures` had drifted on pre-v4.4.9/v4.5.0 parser expectations
+  (READY kept with a warning on empty `evidence_sources`; a noncanonical
+  "ok" summary) and went unnoticed because the script was not in the npm
+  test chain. The fixtures now assert the current contract (canonical
+  summary required; verified-without-evidence downgrades to
+  NEEDS_EVIDENCE) and `npm test` runs `eval:fixtures` right after the
+  truthfulness smoke so the drift cannot recur.
+
 ## [v04.06.02] — 24/08/2026
 
 ### Fixed

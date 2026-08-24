@@ -376,7 +376,15 @@ Truthfulness attribution is syntactic, not line-wide. “Cross-review runtime”
 “cross-review server”, `server_info`, `runtime_capabilities`, `model_pin` and
 MCP runtime/server subjects belong to the local runtime namespace. A phrase
 such as “cross-review submission/session” does not transfer an application's
-model, version or date into that namespace. Separately, a generic assurance
+model, version or date into that namespace. Model-pin claims are judged per
+capturable occurrence against the configured pins; a model-scoped assertive
+line with a peer alias but NO capturable model token (a fragmented id, or a
+denial naming no token) cannot be judged lexically and must instead anchor in
+structured evidence by value — the configured pin next to a model-pin record
+marker such as raw `server_info` or `session_read` output
+(`runtime_capabilities` exposes no model ids and never corroborates a model
+claim) — or it is reported as an unsupported current-state claim. Separately,
+a generic assurance
 copied from the artifact cannot prove its own READY verdict; concrete document
 or code literals remain reviewable, while correctness/test claims require
 independent value-corresponding evidence.
