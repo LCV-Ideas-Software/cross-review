@@ -6495,8 +6495,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.2.0: stripPerplexityThinkingBlock must be exported (smoke + anti-drift)",
   );
   assert.ok(
-    /return stripPerplexityThinkingBlock\(raw\)/.test(perplexitySrc),
-    "v3.2.0: sonarText() must strip <think> blocks before returning",
+    /return stripPerplexityThinkingBlock\(messageText \|\| helperText\)/.test(perplexitySrc),
+    "v3.2.0/v4.6.0: agentText() must strip <think> blocks before returning (and must not fall back to serializing the provider envelope)",
   );
   assert.ok(
     /PERPLEXITY_THINKING_BLOCK\s*=\s*\/<think\\b/.test(perplexitySrc),
