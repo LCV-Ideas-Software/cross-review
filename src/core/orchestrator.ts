@@ -2701,6 +2701,21 @@ export function truthfulnessPreflight(params: {
       // contradict. Generic provider/model routes require a letter-leading
       // provider and a real model-looking segment (letters then a digit),
       // which keeps src/v2-parser, api hosts and date fragments out.
+      //
+      // STRUCTURAL INVERSION (round 8, operator directive - end the
+      // fix-loop at its root): the gate is FAIL-CLOSED BY CONSTRUCTION.
+      // The lexicon only LOCATES model claims; it no longer has to
+      // understand every phrasing to be safe, because the defaults
+      // changed: (S1) any asserted model value that matches no configured
+      // pin contradicts, owner or not - a lie does not need an attributable
+      // clause to be a lie; (S2) a model-scoped claim whose parse yields no
+      // affirmatively validated view is reported as an unsupported
+      // current-state claim instead of silently passing - idiomatic
+      // phrasings are asked to be restated plainly or evidenced, never
+      // waved through; (S3) future/planning statements are exempt from S1.
+      // A phrasing the lexicon cannot reach now lands in S1/S2 (at worst a
+      // clarity request), never in a silent pass.
+      const contradictionCountBefore = contradictions.length;
       type ModelOccurrence = {
         matchStart: number;
         index: number;
@@ -2785,6 +2800,44 @@ export function truthfulnessPreflight(params: {
           }
         }
       }
+      // Round 8 (Codex review of PR #234): the configured pins themselves
+      // are ALWAYS visible. Any literal mention of a configured route or of
+      // its model segment becomes an occurrence regardless of the generic
+      // patterns' digit/family heuristics - an accepted Agent API id like
+      // perplexity/sonar has no digit, and a denial of the pin must never
+      // be invisible to the gate.
+      const escapePinText = (value: string): string => value.split(".").join("\\.");
+      for (const pinPeer of PEERS) {
+        const pin = modelPins[pinPeer];
+        if (!pin) continue;
+        const unwrapped = pin.replace(/^models\//i, "");
+        const slash = unwrapped.indexOf("/");
+        if (slash > 0) {
+          const provider = unwrapped.slice(0, slash);
+          const segment = unwrapped.slice(slash + 1);
+          const pinRoutePattern = new RegExp(
+            `\\b(${escapePinText(provider)})\\s*/\\s*(${escapePinText(segment)})\\b`,
+            "gi",
+          );
+          for (const match of base.matchAll(pinRoutePattern)) {
+            if (match.index !== undefined && match[1] && match[2]) {
+              recordOccurrence(
+                match.index,
+                match.index + match[0].length - match[2].length,
+                match[1],
+                match[2],
+              );
+            }
+          }
+        }
+        const segmentText = slash > 0 ? unwrapped.slice(slash + 1) : unwrapped;
+        const pinSegmentPattern = new RegExp(`(?<!/)\\b(${escapePinText(segmentText)})\\b`, "gi");
+        for (const match of base.matchAll(pinSegmentPattern)) {
+          if (match.index !== undefined && match[1]) {
+            recordOccurrence(match.index, match.index, undefined, match[1]);
+          }
+        }
+      }
       let aliasBase = base;
       const maskAliasRange = (start: number, end: number): void => {
         aliasBase = aliasBase.slice(0, start) + "#".repeat(end - start) + aliasBase.slice(end);
@@ -2857,6 +2910,12 @@ export function truthfulnessPreflight(params: {
         }
         occurrence.owner = best?.peer;
       }
+      // S3: future/planning phrasing is not a current-state assertion;
+      // it exempts both the per-owner judgment and the S1 no-pin rule.
+      const futureStatement =
+        /\b(?:will|would|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|planejad[oa]|futur[oa])\b/i.test(
+          line,
+        );
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(aliasBase)) continue;
@@ -2899,12 +2958,71 @@ export function truthfulnessPreflight(params: {
         }
         const assertedContradictions = assertedViews.filter((view) => !expectedSet.has(view));
         const expectedExplicitlyDenied = nonCurrentViews.some((view) => expectedSet.has(view));
-        if (assertedContradictions.length > 0 || expectedExplicitlyDenied) {
+        if (!futureStatement && (assertedContradictions.length > 0 || expectedExplicitlyDenied)) {
           addIssueClass(issueClasses, "runtime_contradiction");
           contradictions.push(
             `current-state model claim asserted=${assertedViews.join(", ") || "none"}; non_current=${nonCurrentViews.join(", ") || "none"} for ${peer} contradicts model_pin ${expectedModel}`,
           );
         }
+      }
+
+      // S1 (fail-closed): an asserted, non-negated model value that matches
+      // no configured pin is a runtime contradiction even when no clause
+      // owner or peer alias claims it - the six pins are the complete truth
+      // of this runtime, so a foreign "current model" value cannot be true.
+      // S3: future/planning phrasing is not a current-state assertion.
+      const allPinViews = new Set<string>();
+      for (const pinPeer of PEERS) {
+        const pin = modelPins[pinPeer];
+        if (!pin) continue;
+        allPinViews.add(canonicalModelText(normalizeModelPin(pin)));
+        const unwrapped = pin.replace(/^models\//i, "");
+        if (unwrapped.includes("/")) {
+          allPinViews.add(canonicalModelText(normalizeVersionToken(unwrapped)));
+        }
+      }
+      let affirmativelyValidated = false;
+      let anyModelDenialOrContradiction = contradictions.length > contradictionCountBefore;
+      if (!futureStatement) {
+        for (const occurrence of occurrences) {
+          if (occurrence.negated) continue;
+          const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
+          if (views.some((view) => allPinViews.has(view))) {
+            affirmativelyValidated = true;
+            continue;
+          }
+          lineCurrentModelClaimMatched = true;
+          currentStateClaimMatched = true;
+          anyModelDenialOrContradiction = true;
+          addIssueClass(issueClasses, "runtime_contradiction");
+          contradictions.push(
+            `asserted current model value ${occurrence.route ?? occurrence.token} matches no configured model_pin`,
+          );
+        }
+      } else {
+        for (const occurrence of occurrences) {
+          if (occurrence.negated) continue;
+          const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
+          if (views.some((view) => allPinViews.has(view))) affirmativelyValidated = true;
+        }
+      }
+      // S2 (fail-closed): a model-scoped line whose occurrences were ALL
+      // classified as negations of non-pin values asserts something the
+      // parser could not validate affirmatively (idiomatic phrasing,
+      // inverted negation). It is reported as unsupported instead of
+      // silently passing: restate plainly or attach structured evidence.
+      if (
+        occurrences.length > 0 &&
+        !affirmativelyValidated &&
+        !anyModelDenialOrContradiction &&
+        !futureStatement
+      ) {
+        lineCurrentModelClaimMatched = true;
+        currentStateClaimMatched = true;
+        addIssueClass(issueClasses, "unsupported_current_state_claim");
+        unsupportedClaims.push(
+          `model claim could not be affirmatively validated against the configured pins (restate plainly or attach structured evidence): ${line.slice(0, 240)}`,
+        );
       }
     }
 

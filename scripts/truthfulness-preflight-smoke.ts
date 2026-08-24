@@ -696,6 +696,72 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a slashless token of the routed pin's family must stay visible and contradict",
   );
+  // Codex review round 8: configured pins are ALWAYS visible - a routed id
+  // whose model segment has no digit (perplexity/sonar is an accepted Agent
+  // API id) must still be parsed, so denying or asserting it is judged.
+  const sonarPins = { ...modelPins, perplexity: "perplexity/sonar" };
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime perplexity model is not perplexity/sonar.",
+      sonarPins,
+    ),
+    false,
+    "denying a configured no-digit routed pin must contradict",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime perplexity model is perplexity/sonar.",
+      sonarPins,
+    ),
+    true,
+    "asserting the configured no-digit routed pin must pass",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime perplexity model is not sonar.", sonarPins),
+    false,
+    "denying the configured pin's bare model segment must contradict",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime perplexity model is sonar.", sonarPins),
+    true,
+    "asserting the configured pin's bare model segment must pass",
+  );
+  // Round 8 structural inversion (operator directive): the gate defaults
+  // to FAIL-CLOSED - an asserted model value that is no configured pin
+  // contradicts even without an identifiable owner, and a model claim the
+  // parser cannot validate affirmatively is unsupported instead of passing.
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime drives its heavy-reasoning slot with gpt-9.9-sol.",
+      plainPins,
+    ),
+    false,
+    "an asserted model value that matches no configured pin must contradict (ownerless periphrasis)",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime is running the claude peer on nothing if not claude-fable-6.",
+      plainPins,
+    ),
+    false,
+    "a model claim with no affirmatively validated view must be fail-closed, not silently passed",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime roadmap says the codex peer will move to gpt-7 next quarter.",
+      plainPins,
+    ),
+    true,
+    "future/planning statements are not current-state assertions for the no-pin rule",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5, not xai/gpt-5.5.",
+      routedPins,
+    ),
+    true,
+    "denying a non-pin while asserting the pinned route must still pass",
+  );
   // And the wrapped `models/provider/model` pin form is normalized before
   // comparison, so a truthful claim of the routed model still passes.
   const wrappedPins = { ...modelPins, perplexity: "models/perplexity/kimi-k3" } as const;
