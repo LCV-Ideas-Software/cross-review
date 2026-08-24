@@ -2577,6 +2577,30 @@ function canonicalModelText(value: string): string {
 const MODEL_PIN_EVIDENCE_RECORD_PATTERN =
   /\b(?:server_info|session_read|capability_snapshot|probe_peers|effective_config(?:_snapshot)?|model[_ -]?pins?|models?\s*[:=])/i;
 
+// Codex review of PR #247 round 2: the marker and the pin value must
+// correlate within ONE evidence record — otherwise unrelated text
+// ("server_info request failed" on one line, "planned pin: X" on another)
+// masquerades as corroboration. A record is the marker line plus its
+// STRUCTURAL continuation (indented / JSON-shaped lines), so a
+// pretty-printed server_info block stays one record while an unrelated
+// prose line never inherits the marker.
+function modelPinEvidenceRecords(evidenceText: string): string[] {
+  const lines = evidenceText.split(/\r?\n/);
+  const records: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (!MODEL_PIN_EVIDENCE_RECORD_PATTERN.test(line)) continue;
+    const record = [line];
+    for (let next = index + 1; next < lines.length; next += 1) {
+      const continuation = lines[next] ?? "";
+      if (continuation.trim().length === 0 || !/^[\s{}[\]"']/.test(continuation)) break;
+      record.push(continuation);
+    }
+    records.push(record.join("\n"));
+  }
+  return records;
+}
+
 // Every aliased peer's configured pin must appear, canonically normalized,
 // in the evidence (pin-side anchoring: the claim's own token is
 // unparseable by definition, so the correlation searches the evidence for
@@ -2588,8 +2612,8 @@ function modelPinClaimCorroborated(
   evidenceText: string,
 ): boolean {
   if (peers.length === 0 || evidenceText.trim().length === 0) return false;
-  if (!MODEL_PIN_EVIDENCE_RECORD_PATTERN.test(evidenceText)) return false;
-  const normalizedEvidence = canonicalModelText(normalizeGroundingText(evidenceText));
+  const records = modelPinEvidenceRecords(evidenceText);
+  if (records.length === 0) return false;
   return peers.every((peer) => {
     const pin = modelPins[peer];
     if (!pin) return false;
@@ -2603,11 +2627,14 @@ function modelPinClaimCorroborated(
     // ("gpt-5.6-solar" for pin "gpt-5.6-sol") is a different model, not
     // corroboration. A sentence-final period stays legal (only ".alnum"
     // continues an id).
-    return views.some((view) => {
-      const escaped = view.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`(?<![a-z0-9._-])${escaped}(?![a-z0-9_-])(?!\\.[a-z0-9])`, "i").test(
-        normalizedEvidence,
-      );
+    return records.some((record) => {
+      const normalizedRecord = canonicalModelText(normalizeGroundingText(record));
+      return views.some((view) => {
+        const escaped = view.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`(?<![a-z0-9._-])${escaped}(?![a-z0-9_-])(?!\\.[a-z0-9])`, "i").test(
+          normalizedRecord,
+        );
+      });
     });
   });
 }
@@ -3108,28 +3135,64 @@ export function truthfulnessPreflight(params: {
       // anyModelDenialOrContradiction), and the alias test runs on the
       // MASKED aliasBase so aliases inside paths, URLs or quoted strings
       // never trigger it.
-      // Codex review of PR #247 round 1: (a) the guard keys on the absence
-      // of CURRENT (non-future) occurrences — a capturable future token in
-      // another clause must not shield an unparseable current claim — and
-      // future clauses are masked before the alias test so a line that is
-      // ONLY a future/planning statement keeps its S3 exemption; (b) a
-      // provider alias in assertive runtime prose is a model claim only
-      // when the line carries model/pin language or the alias names its
-      // peer ("codex peer") — "uses OpenAI authentication" never trips.
-      if (currentOccurrenceCount === 0 && !historicalClaim) {
+      // Codex review of PR #247 rounds 1-2: the guard runs PER PEER — an
+      // aliased peer is unjudgeable when NO current occurrence is
+      // attributed to it (another peer's capturable token never shields a
+      // fragmented claim). Future language is masked from the marker
+      // onward when an assertive current marker precedes it in the same
+      // segment (an assertive current subclause stays visible), and the
+      // whole segment is masked otherwise (pure planning keeps its S3
+      // exemption). Model/pin language is read from the MASKED base so a
+      // masked future clause cannot convert a non-model alias into a
+      // claim; and a NEGATED unjudgeable claim is never anchorable by
+      // pin-affirming evidence (the evidence proves its opposite).
+      if (!historicalClaim) {
+        const peersWithCurrentOccurrence = new Set<PeerId>();
+        for (const occurrence of occurrences) {
+          if (occurrence.future) continue;
+          if (occurrence.owner) {
+            peersWithCurrentOccurrence.add(occurrence.owner);
+            continue;
+          }
+          for (const ownerlessPeer of PEERS) {
+            const family = routedPinFamilyByPeer.get(ownerlessPeer);
+            const matches =
+              ownerlessPeer === "perplexity"
+                ? MODEL_TOKEN_PREFIXES.perplexity.some((prefix) =>
+                    occurrence.token.startsWith(prefix),
+                  ) ||
+                  (family !== undefined && occurrence.token.startsWith(family))
+                : MODEL_TOKEN_PREFIXES[ownerlessPeer].some((prefix) =>
+                    occurrence.token.startsWith(prefix),
+                  );
+            if (matches) peersWithCurrentOccurrence.add(ownerlessPeer);
+          }
+        }
         let guardAliasBase = aliasBase;
         const maskGuardRange = (start: number, end: number): void => {
           guardAliasBase =
             guardAliasBase.slice(0, start) + "#".repeat(end - start) + guardAliasBase.slice(end);
         };
+        const currentAssertionPattern =
+          /\b(?:is|are|runs?|uses?|currently|atualmente|roda|usa|est[aá])\b/i;
         let segmentStart = 0;
         for (const bound of [...clauseBounds, { start: aliasBase.length, end: aliasBase.length }]) {
           const segment = aliasBase.slice(segmentStart, bound.start);
-          if (futureClausePattern.test(segment)) maskGuardRange(segmentStart, bound.start);
+          const futureMatch = futureClausePattern.exec(segment);
+          if (futureMatch) {
+            if (currentAssertionPattern.test(segment.slice(0, futureMatch.index))) {
+              maskGuardRange(segmentStart + futureMatch.index, bound.start);
+            } else {
+              maskGuardRange(segmentStart, bound.start);
+            }
+          }
           segmentStart = bound.end;
         }
-        const modelLanguage = /\b(?:models?|pins?|modelos?)\b|model[_ -]?pins?/i.test(line);
+        const modelLanguage = /\b(?:models?|pins?|modelos?)\b|model[_ -]?pins?/i.test(
+          guardAliasBase,
+        );
         const aliasedPeers = PEERS.filter((aliasPeer) => {
+          if (peersWithCurrentOccurrence.has(aliasPeer)) return false;
           if (!MODEL_CLAIM_ALIASES[aliasPeer].test(guardAliasBase)) return false;
           if (modelLanguage) return true;
           return new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
@@ -3139,7 +3202,13 @@ export function truthfulnessPreflight(params: {
         if (aliasedPeers.length > 0) {
           lineCurrentModelClaimMatched = true;
           currentStateClaimMatched = true;
-          if (!modelPinClaimCorroborated(aliasedPeers, modelPins, suppliedEvidence)) {
+          const negatedGuardClaim = /\b(?:not|never|n[aã]o|nem|nunca)\b/i.test(guardAliasBase);
+          if (negatedGuardClaim) {
+            addIssueClass(issueClasses, "unsupported_current_state_claim");
+            unsupportedClaims.push(
+              `negated model claim cannot be anchored by pin-affirming structured evidence (restate plainly): ${line.slice(0, 240)}`,
+            );
+          } else if (!modelPinClaimCorroborated(aliasedPeers, modelPins, suppliedEvidence)) {
             addIssueClass(issueClasses, "unsupported_current_state_claim");
             unsupportedClaims.push(
               `model-scoped claim has no capturable model token and no value-corresponding structured evidence for the configured pin (attach raw server_info or session_read output naming the pin): ${line.slice(0, 240)}`,

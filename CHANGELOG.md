@@ -35,7 +35,18 @@ standard `v00.00.00`; npm package versions remain SemVer.
   corroboration match is delimited (a longer id sharing the pin as a
   prefix is a different model); and a provider alias in runtime prose is
   a model claim only with model/pin language or an explicit "<alias>
-  peer" relation ("uses OpenAI authentication" never trips).
+  peer" relation ("uses OpenAI authentication" never trips). Round 2: the
+  guard runs PER PEER (another peer's capturable token never shields a
+  fragmented claim); future language is masked from the marker onward
+  when an assertive current marker precedes it (an assertive current
+  subclause beside planning language stays visible, pure planning keeps
+  the S3 exemption); model/pin language is read from the masked base;
+  the marker and the pin value must correlate within ONE evidence record
+  (a marker line plus its structural continuation — pretty-printed
+  server_info blocks stay one record, unrelated prose lines never
+  inherit the marker); and a NEGATED unjudgeable claim is never
+  anchorable by pin-affirming evidence (polarity check — the evidence
+  proves its opposite).
 
 ### Fixed
 

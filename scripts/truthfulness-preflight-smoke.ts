@@ -944,6 +944,58 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "assertive runtime prose naming a provider for a non-model purpose is not a model-pin claim",
   );
+  // Codex review of PR #247, round 2.
+  const perPeerMix = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol, and the claude peer is claude-fable-5.",
+  );
+  assert.equal(
+    perPeerMix.pass,
+    false,
+    "another peer's capturable occurrence must not shield a fragmented claim (per-peer guard)",
+  );
+  const currentBesidePlanned = anchored(
+    "The cross-review runtime Codex model is currently gpt five six sol before a planned upgrade.",
+  );
+  assert.equal(
+    currentBesidePlanned.pass,
+    false,
+    "planning language in the same segment must not hide an assertive current subclause",
+  );
+  const markerPinSeparate = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    "server_info request failed\nplanned pin: gpt-5.6-sol",
+  );
+  assert.equal(
+    markerPinSeparate.pass,
+    false,
+    "the marker and the pin value must correlate within ONE evidence record",
+  );
+  const jsonPrettyRecord = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    'server_info models:\n  {\n    "codex": "gpt-5.6-sol"\n  }',
+  );
+  assert.equal(
+    jsonPrettyRecord.pass,
+    true,
+    "a pretty-printed structural block under the marker line is one record",
+  );
+  const crossClauseModelLanguage = anchored(
+    "The cross-review runtime uses OpenAI authentication currently, and the Gemini model will change next quarter.",
+  );
+  assert.equal(
+    crossClauseModelLanguage.pass,
+    true,
+    "model language inside a masked future clause must not convert a non-model alias into a claim",
+  );
+  const denialWithEvidence = anchored(
+    "The cross-review runtime Codex model is not the configured pin.",
+    'server_info models: {"codex":"gpt-5.6-sol"}',
+  );
+  assert.equal(
+    denialWithEvidence.pass,
+    false,
+    "pin-affirming evidence cannot anchor a claim that DENIES the pin (polarity check)",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
