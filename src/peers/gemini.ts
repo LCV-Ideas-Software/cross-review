@@ -682,28 +682,32 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // behavior).
         const stableSystem = `${this.systemPromptRoleAndSession(context)}\n\n${this.systemPromptTaskBlock(context)}`;
         const roundLine = this.systemPromptRoundLine(context);
-        // Character floor only (no false negatives: BPE tokens each consume
-        // at least one character, so fewer chars than MIN_TOKENS can never
-        // reach the minimum). The authoritative eligibility check is the
-        // free countTokens inside createExplicitCacheEntry.
+        // Codex review of PR #240 round 3: hashStablePrefix normalizes
+        // CRLF to LF defensively, so the STORED payload must be the same
+        // LF-normalized bytes — otherwise two resubmissions differing
+        // only in line endings share a key while the cached bytes match
+        // just one of them (stale-evidence reuse). Normalize the payload
+        // once and use those exact bytes for the key, countTokens and
+        // caches.create.
+        const lfNormalize = (value: string): string => value.replace(/\r\n?/g, "\n");
+        const normalizedStableSystem = lfNormalize(stableSystem);
+        const stableHead = lfNormalize(prompt.slice(0, stablePrefixChars));
+        const cachePayload = `${normalizedStableSystem}\n\n${stableHead}`;
+        // Character floor only, applied to the COMPLETE cache payload
+        // (round 4: a long task with a short head can clear the provider
+        // minimum through the stable system parts alone). No false
+        // negatives: BPE tokens each consume at least one character, so
+        // fewer chars than MIN_TOKENS can never reach the minimum. The
+        // authoritative eligibility check is the free countTokens inside
+        // createExplicitCacheEntry.
         const explicitCacheEligible =
           geminiExplicitCacheArmed(this.config) &&
-          stablePrefixChars >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS &&
+          stablePrefixChars > 0 &&
+          cachePayload.length >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS &&
           stablePrefixChars < prompt.length;
         let cacheEntry: GeminiExplicitCacheEntry | undefined;
         let cacheKeyHash: string | undefined;
         if (explicitCacheEligible) {
-          // Codex review of PR #240 round 3: hashStablePrefix normalizes
-          // CRLF to LF defensively, so the STORED payload must be the same
-          // LF-normalized bytes — otherwise two resubmissions differing
-          // only in line endings share a key while the cached bytes match
-          // just one of them (stale-evidence reuse). Normalize the payload
-          // once and use those exact bytes for the key, countTokens and
-          // caches.create.
-          const lfNormalize = (value: string): string => value.replace(/\r\n?/g, "\n");
-          const normalizedStableSystem = lfNormalize(stableSystem);
-          const stableHead = lfNormalize(prompt.slice(0, stablePrefixChars));
-          const cachePayload = `${normalizedStableSystem}\n\n${stableHead}`;
           const ttl = this.config.cache.ttl.gemini;
           // The cache holds stableSystem + head, so the key must cover both
           // (length-prefixed to keep the boundary unambiguous). Session id
@@ -947,7 +951,10 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         let staleCacheDropped = false;
         if (error instanceof Error && /cached\s*content|cachedContents\//i.test(error.message)) {
           for (const [key, entry] of geminiExplicitCacheIndex) {
-            if (error.message.includes(entry.name)) {
+            // Round 4: negative sentinels carry name === "" and
+            // String.includes("") is always true — only a REAL resource
+            // name appearing in the message is evidence of staleness.
+            if (entry.name !== "" && error.message.includes(entry.name)) {
               geminiExplicitCacheIndex.delete(key);
               staleCacheDropped = true;
             }

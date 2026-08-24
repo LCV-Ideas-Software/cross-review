@@ -3675,6 +3675,12 @@ export function estimatedPeerRoundCost(
   options: {
     max_output_tokens_by_peer?: Partial<Record<PeerId, number>> | undefined;
     request_role?: "review" | "generation" | undefined;
+    // Codex round 4: recovery calls (moderation-safe, format/decision
+    // retry) rebuild their context WITHOUT the stable-head boundary, so
+    // cache creation is impossible there — the storage envelope must not
+    // inflate (and potentially reject) those calls. Defaults true
+    // (fail-closed) for ordinary review preflights.
+    gemini_cache_eligible?: boolean | undefined;
   } = {},
 ): number | undefined {
   const requestRole = options.request_role ?? "review";
@@ -3704,7 +3710,10 @@ export function estimatedPeerRoundCost(
     // fail-closed on a missing storage rate like every price dimension.
     let storageEnvelope = 0;
     const geminiStorageApplies =
-      peer === "gemini" && requestRole === "review" && geminiExplicitCacheArmed(config);
+      peer === "gemini" &&
+      requestRole === "review" &&
+      (options.gemini_cache_eligible ?? true) &&
+      geminiExplicitCacheArmed(config);
     for (const pricedModel of pricedModels) {
       if (
         peer === "perplexity" &&
@@ -3746,9 +3755,12 @@ export function estimatedPeerRoundCost(
         // stableSystem carries the FULL session task while the prompt
         // embeds a truncated copy (prompt.max_task_chars). The envelope
         // cannot see the adapter-side system text, so it prices a ceiling
-        // on top of the whole prompt: the 32K-char MCP task bound plus
-        // role/session framing, at the same 4 chars/token convention.
-        const storageTokens = inputTokens + Math.ceil(GEMINI_CACHED_SYSTEM_CHARS_CEILING / 4);
+        // on top of the whole prompt. Round 4: the STORAGE bound is in
+        // characters, not chars/4 — settlement bills the authoritative
+        // countTokens result, which exceeds chars/4 for token-dense
+        // payloads (CJK, minified code); BPE tokens each consume at least
+        // one character, so chars is a true token upper bound.
+        const storageTokens = prompt.length + GEMINI_CACHED_SYSTEM_CHARS_CEILING;
         storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
       }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {
@@ -5792,6 +5804,9 @@ export class CrossReviewOrchestrator {
         [adapter.id],
         moderationSafePrompt,
         { [adapter.id]: adapter.model },
+        // The moderation-safe retry clears the stable-head boundary below,
+        // so no cache can be created — the envelope must not price storage.
+        { gemini_cache_eligible: false },
       );
       this.emit({
         type: "peer.moderation_recovery.cost_alert",
@@ -6764,6 +6779,9 @@ export class CrossReviewOrchestrator {
               [adapter.id],
               recoveryPrompt,
               { [adapter.id]: adapter.model },
+              // Format/decision recovery rebuilds its context without the
+              // stable-head boundary — no cache, no storage in the envelope.
+              { gemini_cache_eligible: false },
             );
             this.emit({
               type: "peer.format_recovery.cost_alert",

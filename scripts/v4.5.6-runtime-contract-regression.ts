@@ -1983,7 +1983,11 @@ const regressions: Regression[] = [
       // to the 32K MCP bound plus role/session framing), so the envelope
       // prices prompt tokens PLUS that ceiling.
       const geminiEnvelopeAttempts = Math.max(1, geminiPreflightPriced.retry.max_attempts);
-      const geminiStorageTokens = 1 + Math.ceil(33_000 / 4);
+      // Round 4: the storage bound is in CHARACTERS (a true token upper
+      // bound — BPE tokens each consume at least one character), because
+      // settlement bills the authoritative countTokens result, which can
+      // exceed chars/4 for token-dense payloads.
+      const geminiStorageTokens = "four".length + 33_000;
       assert.ok(
         Math.abs(
           armedEnvelope -
@@ -1991,6 +1995,23 @@ const regressions: Regression[] = [
             (geminiEnvelopeAttempts * geminiStorageTokens * 4.5) / 1_000_000,
         ) < 1e-12,
         `the armed envelope prices one creation per attempt over the full cached payload: ${armedEnvelope} vs ${disarmedEnvelope}`,
+      );
+      // Round 4: recovery calls rebuild their context without the
+      // stable-head boundary — no cache is possible, so the envelope must
+      // not price storage for them.
+      const recoveryEnvelope = estimatedPeerRoundCost(
+        geminiPreflightPriced,
+        ["gemini"],
+        "four",
+        {},
+        {
+          gemini_cache_eligible: false,
+        },
+      );
+      assert.ok(recoveryEnvelope != null);
+      assert.ok(
+        Math.abs(recoveryEnvelope - disarmedEnvelope) < 1e-15,
+        `a cache-ineligible review envelope carries no storage: ${recoveryEnvelope} vs ${disarmedEnvelope}`,
       );
       // Codex round 3: the storage rate is a REVIEWER-role dimension — a
       // Gemini lead/relator (generate()) never creates a cache, so a

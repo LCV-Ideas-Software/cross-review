@@ -1094,6 +1094,51 @@ function capturePerplexityProbe(
     0,
     "a cancellation observed after countTokens must prevent the billable creation",
   );
+
+  // Round 4: the character floor applies to the COMPLETE cache payload —
+  // a head below 4,096 chars still clears the floor when the stable
+  // system parts (long task) push the payload over it.
+  __resetGeminiExplicitCacheIndexForTests();
+  const shortHeadMock = makeClient();
+  const shortHeadAdapter = new GeminiAdapter(geminiCacheConfig);
+  (shortHeadAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    shortHeadMock.client;
+  const shortHead = `${"H".repeat(3_900)}\n`;
+  await shortHeadAdapter.call(`${shortHead}short-head tail`, context(shortHead.length));
+  assert.equal(
+    shortHeadMock.createCalls.length,
+    1,
+    "the floor is measured on stableSystem + head, so a sub-4096-char head can still be eligible",
+  );
+
+  // Round 4: negative sentinels (name === "") must never match a stale
+  // error message — String.includes("") is always true.
+  __resetGeminiExplicitCacheIndexForTests();
+  __seedGeminiExplicitCacheIndexForTests("negative-sentinel-key", {
+    name: "",
+    token_count: 1_000,
+    expires_at_ms: Date.now() + 3_600_000,
+  });
+  const sentinelMock = makeClient({
+    generateErrors: [
+      Object.assign(new Error("400 INVALID_ARGUMENT: cachedContents/unrelated is not found"), {
+        status: 400,
+      }),
+    ],
+  });
+  const sentinelAdapter = new GeminiAdapter(geminiCacheConfig);
+  (sentinelAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    sentinelMock.client;
+  await assert.rejects(
+    sentinelAdapter.call(prompt, context(stableHead.length)),
+    () => true,
+    "an error naming an UNRELATED cached resource is terminal, not a forced retry",
+  );
+  assert.equal(
+    __geminiExplicitCacheIndexForTests().has("negative-sentinel-key"),
+    true,
+    "the negative sentinel survives an unrelated cached-content error",
+  );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 

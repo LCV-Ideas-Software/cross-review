@@ -63,7 +63,14 @@ standard `v00.00.00`; npm package versions remain SemVer.
   stored payload is LF-normalized to the exact bytes the key hash covers
   (line-ending resubmissions can no longer reuse stale cached bytes); and
   a cancellation observed after the free countTokens call stops before the
-  billable creation.
+  billable creation. Round 4: the storage envelope bound is in CHARACTERS
+  (a true token upper bound — settlement bills the authoritative
+  countTokens result, which can exceed chars/4 for token-dense payloads);
+  cache-ineligible recovery calls (moderation-safe, format/decision
+  retry) are excluded from the storage envelope; the character floor is
+  measured on the COMPLETE cache payload (stable system + head); and
+  negative sentinels never match stale-error messages (empty-name
+  includes() is vacuously true).
 
 ## [v04.06.02] — 24/08/2026
 
