@@ -529,19 +529,23 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
       `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_PROBE_MODE="${probeModeRaw}" not recognized; defaulting to "auth_only". Recognized values: auth_only, live.`,
     );
   }
-  // Both Agent API knobs are integers; a malformed value is reported and
-  // replaced by the documented default instead of being silently truncated.
+  // Both Agent API knobs are positive integers; a malformed value is reported
+  // and replaced by the documented default instead of being silently
+  // truncated. A zero estimate is rejected because the reviewer role still
+  // declares the tool: pricing zero invocations while sending web_search
+  // would make the preflight silently optimistic (use
+  // CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH to remove the dimension).
   const invocationsEstimateRaw = (
     envValue("CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE") ?? ""
   ).trim();
   let invocationsEstimate = 3;
   if (invocationsEstimateRaw !== "") {
     const parsed = Number(invocationsEstimateRaw);
-    if (Number.isInteger(parsed) && parsed >= 0) {
+    if (Number.isInteger(parsed) && parsed >= 1) {
       invocationsEstimate = parsed;
     } else {
       console.error(
-        `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE="${invocationsEstimateRaw}" must be a non-negative integer; defaulting to 3.`,
+        `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE="${invocationsEstimateRaw}" must be a positive integer; defaulting to 3 (set CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH=true to remove the search dimension).`,
       );
     }
   }

@@ -6081,6 +6081,36 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     3,
     "web_search_invocations_estimate default must be the count observed on 23/08/2026",
   );
+  // Malformed or zero knobs report a notice and keep the documented defaults;
+  // valid positive integers are honored.
+  for (const [steps, estimate, expectedSteps, expectedEstimate] of [
+    ["0", "0", 1, 3],
+    ["2.5", "2.5", 1, 3],
+    ["abc", "-1", 1, 3],
+    ["4", "7", 4, 7],
+  ] as const) {
+    const previous = {
+      steps: process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS,
+      estimate: process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE,
+    };
+    process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS = steps;
+    process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE = estimate;
+    try {
+      const parsed = loadConfig().perplexity;
+      assert.equal(parsed.max_steps, expectedSteps, `max_steps="${steps}"`);
+      assert.equal(
+        parsed.web_search_invocations_estimate,
+        expectedEstimate,
+        `web_search_invocations_estimate="${estimate}"`,
+      );
+    } finally {
+      if (previous.steps === undefined) delete process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS;
+      else process.env.CROSS_REVIEW_PERPLEXITY_MAX_STEPS = previous.steps;
+      if (previous.estimate === undefined)
+        delete process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE;
+      else process.env.CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE = previous.estimate;
+    }
+  }
   assert.ok("perplexity" in cfg.fallback_models, "fallback_models must have perplexity entry");
   assert.equal(cfg.peer_enabled.perplexity, true, "perplexity must be enabled by default");
   assert.ok(

@@ -185,7 +185,7 @@ const PerplexitySubSchema = z
     // v4.6.0 (Agent API): wire-enforced agent-loop bound and the declared
     // preflight estimate of web_search invocations per reviewer request.
     max_steps: z.number().int().positive().optional(),
-    web_search_invocations_estimate: z.number().int().nonnegative().optional(),
+    web_search_invocations_estimate: z.number().int().positive().optional(),
   })
   .strict()
   .optional();

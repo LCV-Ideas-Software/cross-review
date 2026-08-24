@@ -1318,7 +1318,8 @@ export interface AppConfig {
   // `web_search_invocations_estimate` is the declared number of
   // web_search invocations the round preflight prices per reviewer
   // request (CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE,
-  // default 3 — the count observed with max_steps=1 on 23/08/2026). The
+  // positive integer, default 3 — the count observed with max_steps=1 on
+  // 23/08/2026; zero is rejected while the tool is still declared). The
   // API does not cap invocations per step, so post-call accounting is
   // exact from `usage.tool_calls_details` while this value only shapes
   // the pre-dispatch estimate.
