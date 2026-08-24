@@ -244,6 +244,42 @@ function geminiTtlSeconds(ttl: "5m" | "1h"): number {
   return ttl === "5m" ? 300 : 3_600;
 }
 
+// Codex review of PR #240 round 5: the preliminary cache calls
+// (countTokens, caches.create) must be interruptible — withRetry cannot
+// observe cancellation until an awaited call settles. The race rejects
+// with an AbortError-shaped error the moment the signal fires;
+// classifyProviderError maps it to the timeout class, whose spend is
+// already indeterminate (a raced-away caches.create may still have
+// created and billed the resource server-side).
+async function raceWithAbort<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  const abortError = (): Error =>
+    Object.assign(new Error("aborted while a cache-preparation request was in flight"), {
+      name: "AbortError",
+    });
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    throw abortError();
+  }
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      void work.catch(() => undefined);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
 // Exported: estimatedPeerRoundCost (orchestrator preflight) shares this gate
 // so the budget envelope and the adapter can never disagree on armed state.
 export function geminiExplicitCacheArmed(config: AppConfig): boolean {
@@ -508,10 +544,16 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     };
     let countedTokens: number | undefined;
     try {
-      const counted = (await reviewClient.ai.models.countTokens({
-        model: this.model,
-        contents: [{ role: "user", parts: [{ text: cacheContents }] }],
-      })) as { totalTokens?: number };
+      // Round 5: raced against the abort signal — countTokens is free, so
+      // a raced-away call has no spend and the cancellation recheck below
+      // reports it.
+      const counted = (await raceWithAbort(
+        reviewClient.ai.models.countTokens({
+          model: this.model,
+          contents: [{ role: "user", parts: [{ text: cacheContents }] }],
+        }) as Promise<{ totalTokens?: number }>,
+        context.signal,
+      )) as { totalTokens?: number };
       countedTokens = counted?.totalTokens;
     } catch {
       countedTokens = undefined;
@@ -560,14 +602,20 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       return undefined;
     }
     try {
-      const created = (await reviewClient.ai.caches.create({
-        model: this.model,
-        config: {
-          contents: [{ role: "user", parts: [{ text: cacheContents }] }],
-          ttl: `${ttlSeconds}s`,
-          displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
-        },
-      })) as { name?: string; usageMetadata?: { totalTokenCount?: number } };
+      // Round 5: raced against the abort signal — a raced-away creation
+      // may still have been created and billed server-side, so the abort
+      // error routes through the ambiguous-transport path below.
+      const created = (await raceWithAbort(
+        reviewClient.ai.caches.create({
+          model: this.model,
+          config: {
+            contents: [{ role: "user", parts: [{ text: cacheContents }] }],
+            ttl: `${ttlSeconds}s`,
+            displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
+          },
+        }) as Promise<{ name?: string; usageMetadata?: { totalTokenCount?: number } }>,
+        context.signal,
+      )) as { name?: string; usageMetadata?: { totalTokenCount?: number } };
       if (!created?.name) {
         notice("Gemini explicit cache creation returned no resource name; continuing uncached.", {
           model: this.model,
@@ -693,17 +741,15 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         const normalizedStableSystem = lfNormalize(stableSystem);
         const stableHead = lfNormalize(prompt.slice(0, stablePrefixChars));
         const cachePayload = `${normalizedStableSystem}\n\n${stableHead}`;
-        // Character floor only, applied to the COMPLETE cache payload
-        // (round 4: a long task with a short head can clear the provider
-        // minimum through the stable system parts alone). No false
-        // negatives: BPE tokens each consume at least one character, so
-        // fewer chars than MIN_TOKENS can never reach the minimum. The
-        // authoritative eligibility check is the free countTokens inside
-        // createExplicitCacheEntry.
+        // Round 5: NO character gate — one UTF-16 character can encode
+        // into multiple Gemini tokens (CJK, emoji), so a payload shorter
+        // than 4,096 characters can still clear the 4,096-token minimum.
+        // The free countTokens inside createExplicitCacheEntry is the sole
+        // eligibility authority, and its below-minimum negative sentinel
+        // bounds the re-counting cost to one call per payload per TTL.
         const explicitCacheEligible =
           geminiExplicitCacheArmed(this.config) &&
           stablePrefixChars > 0 &&
-          cachePayload.length >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS &&
           stablePrefixChars < prompt.length;
         let cacheEntry: GeminiExplicitCacheEntry | undefined;
         let cacheKeyHash: string | undefined;

@@ -70,7 +70,13 @@ standard `v00.00.00`; npm package versions remain SemVer.
   retry) are excluded from the storage envelope; the character floor is
   measured on the COMPLETE cache payload (stable system + head); and
   negative sentinels never match stale-error messages (empty-name
-  includes() is vacuously true).
+  includes() is vacuously true). Round 5: NO character gate remains —
+  one UTF-16 character can encode into multiple tokens (CJK/emoji), so
+  the free countTokens is the sole eligibility authority with the
+  negative sentinel bounding re-counting; and the preliminary cache
+  calls (countTokens, caches.create) race the abort signal, so a
+  cancellation releases a stalled attempt promptly and a raced-away
+  creation routes through the ambiguous-spend path.
 
 ## [v04.06.02] — 24/08/2026
 

@@ -856,16 +856,43 @@ function capturePerplexityProbe(
     "cached prefix + live remainder must equal the uncached composition byte-for-byte",
   );
 
-  // Head below the character floor (BPE: tokens each consume at least one
-  // character) => uncached without even the free countTokens call.
+  // Round 5: no character gate — one UTF-16 char can encode into multiple
+  // tokens, so countTokens is the sole eligibility authority. A head that
+  // counts below the minimum records the negative sentinel (no creation,
+  // no re-counting until it expires).
   __resetGeminiExplicitCacheIndexForTests();
-  const shortMock = makeClient();
+  const shortMock = makeClient({ countTokensResult: 8 });
   const shortAdapter = new GeminiAdapter(geminiCacheConfig);
   (shortAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
     shortMock.client;
   await shortAdapter.call("small head\nsmall tail", context(11));
   assert.equal(shortMock.createCalls.length, 0, "short heads never create caches");
-  assert.equal(shortMock.countCalls.length, 0, "the character floor filters before countTokens");
+  assert.equal(
+    shortMock.countCalls.length,
+    1,
+    "eligibility is decided by the authoritative count, not by a character gate",
+  );
+  assert.equal(
+    [...__geminiExplicitCacheIndexForTests().values()].filter((entry) => entry.name === "").length,
+    1,
+    "the below-minimum count records a negative sentinel",
+  );
+
+  // Round 5: a token-dense payload SHORTER than 4,096 chars can clear the
+  // 4,096-token minimum (CJK/emoji) — the old character floor silently
+  // disabled it.
+  __resetGeminiExplicitCacheIndexForTests();
+  const denseShortMock = makeClient();
+  const denseShortAdapter = new GeminiAdapter(geminiCacheConfig);
+  (denseShortAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    denseShortMock.client;
+  const denseShortHead = `${"D".repeat(2_000)}\n`;
+  await denseShortAdapter.call(`${denseShortHead}dense tail`, context(denseShortHead.length));
+  assert.equal(
+    denseShortMock.createCalls.length,
+    1,
+    "a sub-4096-char payload whose authoritative count clears the minimum is eligible",
+  );
 
   // Round 2 of the Codex review: a token-DENSE head can reach the 4,096
   // minimum well below 16,384 characters — the authoritative count decides,
@@ -1138,6 +1165,33 @@ function capturePerplexityProbe(
     __geminiExplicitCacheIndexForTests().has("negative-sentinel-key"),
     true,
     "the negative sentinel survives an unrelated cached-content error",
+  );
+
+  // Round 5: a cancellation landing while caches.create is STALLED must
+  // release the attempt promptly (raced abort) instead of waiting the
+  // call out and indexing the entry.
+  __resetGeminiExplicitCacheIndexForTests();
+  const stallController = new AbortController();
+  // The pending mock timer keeps the process alive for its duration, so
+  // keep it short — the race must release the attempt far earlier anyway.
+  const stallMock = makeClient({ createDelayMs: 3_000 });
+  const stallAdapter = new GeminiAdapter(geminiCacheConfig);
+  (stallAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    stallMock.client;
+  setTimeout(() => stallController.abort(), 25);
+  const stallStarted = Date.now();
+  await stallAdapter
+    .call(prompt, { ...context(stableHead.length), signal: stallController.signal })
+    .catch(() => undefined);
+  assert.ok(
+    Date.now() - stallStarted < 2_000,
+    "a stalled creation must not hold the cancelled attempt hostage",
+  );
+  assert.equal(stallMock.createCalls.length, 1, "the creation was dispatched before the abort");
+  assert.equal(
+    __geminiExplicitCacheIndexForTests().size,
+    0,
+    "a raced-away creation never indexes an entry",
   );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
