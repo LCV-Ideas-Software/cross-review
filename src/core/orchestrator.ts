@@ -2556,7 +2556,10 @@ function normalizeVersionToken(value: string): string {
 // ids such as `perplexity/kimi-k3`). Drafts name the model itself, so the
 // comparison runs on the model segment.
 function normalizeModelPin(value: string): string {
-  return normalizeVersionToken(value.replace(/^[a-z0-9._-]+\//i, ""));
+  // Accept both supported pin forms: `provider/model` and the Gemini-style
+  // `models/provider/model` (Codex review of PR #234, head 4be7e8b) — strip
+  // the optional `models/` wrapper first, then the routing provider segment.
+  return normalizeVersionToken(value.replace(/^models\//i, "").replace(/^[a-z0-9._-]+\//i, ""));
 }
 
 function escapeRegExp(value: string): string {
@@ -2738,7 +2741,14 @@ export function truthfulnessPreflight(params: {
                 MODEL_TOKEN_PREFIXES.perplexity.some((prefix) => candidate.startsWith(prefix))
               );
             }
-            if (routedForm.test(line) && candidate !== expected) return false;
+            // Attribution is per occurrence, not per line: a token written
+            // only in routed `provider/model` form belongs to the routed
+            // claim, but any standalone occurrence of the same token still
+            // belongs to the native peer (mixed sentences keep both claims).
+            const nativeOccurrence = new RegExp(`(?<!/)\\b${escapeRegExp(candidate)}\\b`, "i").test(
+              line,
+            );
+            if (routedForm.test(line) && !nativeOccurrence && candidate !== expected) return false;
             return MODEL_TOKEN_PREFIXES[peer].some((prefix) => candidate.startsWith(prefix));
           });
         if (!candidates.length) continue;

@@ -465,6 +465,32 @@ import type { PeerResult } from "../src/core/types.js";
     attachmentsPresent: false,
   });
   assert.equal(nativeLie.pass, false, "the native codex claim must still contradict its pin");
+  // Codex review of PR #234 (head 4be7e8b): attribution is per occurrence —
+  // a mixed sentence with a routed Perplexity claim AND a standalone native
+  // claim of the same token must still contradict the native pin.
+  const mixedLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime model pins.",
+    initialDraft:
+      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5 and the cross-review runtime codex model is gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    mixedLie.pass,
+    false,
+    "a standalone native occurrence next to a routed claim must still contradict",
+  );
+  // And the wrapped `models/provider/model` pin form is normalized before
+  // comparison, so a truthful claim of the routed model still passes.
+  const wrappedPins = { ...modelPins, perplexity: "models/perplexity/kimi-k3" } as const;
+  const wrappedTruth = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft:
+      "The currently loaded cross-review runtime perplexity model is perplexity/kimi-k3.",
+    runtimeFacts: { model_pins: wrappedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(wrappedTruth.pass, true, "a models/-wrapped Perplexity pin must normalize");
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",

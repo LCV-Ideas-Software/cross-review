@@ -508,6 +508,21 @@ function normalizeModelCostRates(
 // per-request invocation count the round preflight prices — the API does
 // not cap invocations per step, so exact accounting comes from
 // `usage.tool_calls_details` after the call.
+// The Agent API documents `max_steps` as an integer in [1, 100]; an
+// out-of-range value would make the provider reject every search-enabled
+// reviewer request, so it is reported at load time and replaced by the
+// default instead of being sent on the wire.
+function boundedMaxStepsEnv(): number {
+  const raw = (envValue("CROSS_REVIEW_PERPLEXITY_MAX_STEPS") ?? "").trim();
+  if (raw === "") return 1;
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 100) return parsed;
+  console.error(
+    `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_MAX_STEPS="${raw}" must be an integer between 1 and 100 (Agent API range); defaulting to 1.`,
+  );
+  return 1;
+}
+
 function loadPerplexityConfig(): AppConfig["perplexity"] {
   const sizeRaw = (envValue("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE") ?? "")
     .trim()
@@ -572,7 +587,7 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
     search_context_size: searchContextSize,
     disable_search: boolEnv("CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH", false),
     probe_mode: probeMode,
-    max_steps: optionalPositiveIntEnv("CROSS_REVIEW_PERPLEXITY_MAX_STEPS") ?? 1,
+    max_steps: boundedMaxStepsEnv(),
     web_search_invocations_estimate: invocationsEstimate,
     search_preflight_policy: searchPreflightPolicy,
   };

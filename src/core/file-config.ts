@@ -184,7 +184,7 @@ const PerplexitySubSchema = z
     probe_mode: z.enum(["auth_only", "live"]).optional(),
     // v4.6.0 (Agent API): wire-enforced agent-loop bound and the declared
     // preflight estimate of web_search invocations per reviewer request.
-    max_steps: z.number().int().positive().optional(),
+    max_steps: z.number().int().min(1).max(100).optional(),
     web_search_invocations_estimate: z.number().int().positive().optional(),
     search_preflight_policy: z.enum(["estimate", "fail_closed"]).optional(),
   })

@@ -6092,6 +6092,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     ["0", "0", 1, 3],
     ["2.5", "2.5", 1, 3],
     ["abc", "-1", 1, 3],
+    // Agent API documents max_steps in [1, 100]; above-range values fall back.
+    ["101", "7", 1, 7],
+    ["100", "7", 100, 7],
     ["4", "7", 4, 7],
   ] as const) {
     const previous = {

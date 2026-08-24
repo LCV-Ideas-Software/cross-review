@@ -1314,7 +1314,8 @@ export interface AppConfig {
   // completion tokens unless the operator explicitly requests a live
   // model round-trip.
   // v4.6.0 (Agent API): `max_steps` is the wire-enforced agent-loop bound
-  // sent with the tool (CROSS_REVIEW_PERPLEXITY_MAX_STEPS, default 1).
+  // sent with the tool (CROSS_REVIEW_PERPLEXITY_MAX_STEPS, integer in the
+  // documented [1, 100] range, default 1).
   // `web_search_invocations_estimate` is the declared number of
   // web_search invocations the round preflight prices per reviewer
   // request (CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE,
