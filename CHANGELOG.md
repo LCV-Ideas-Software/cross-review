@@ -31,8 +31,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   (`CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS`, required
   while search is enabled), and the round preflight prices the declared
   `CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE` (default `3`, the
-  count observed with `max_steps=1`) because the API does not cap invocations
-  per step. Legacy Sonar request-fee and Deep Research dimensions remain in
+  count observed with `max_steps=1`) because the API exposes no invocation
+  cap; `CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY=fail_closed` makes
+  hard-budget sessions refuse that residual (Deep Research precedent) instead
+  of pricing the estimate. Legacy Sonar request-fee and Deep Research dimensions remain in
   the rate-card schema for existing central configurations until the Sonar
   sunset (removal tracked in issue #233).
 - The Grok canonical pin moves from `grok-4.5` to `grok-4.6` (xAI, August

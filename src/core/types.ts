@@ -1322,13 +1322,18 @@ export interface AppConfig {
   // 23/08/2026; zero is rejected while the tool is still declared). The
   // API does not cap invocations per step, so post-call accounting is
   // exact from `usage.tool_calls_details` while this value only shapes
-  // the pre-dispatch estimate.
+  // the pre-dispatch estimate. `search_preflight_policy`
+  // (CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY) decides whether that
+  // residual is accepted (`estimate`, default) or whether paid rounds fail
+  // closed while the reviewer role can search (`fail_closed`, mirroring
+  // the Deep Research precedent).
   perplexity: {
     search_context_size: "low" | "medium" | "high";
     disable_search: boolean;
     probe_mode: "auth_only" | "live";
     max_steps: number;
     web_search_invocations_estimate: number;
+    search_preflight_policy: "estimate" | "fail_closed";
   };
 }
 

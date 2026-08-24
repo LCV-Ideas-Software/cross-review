@@ -99,12 +99,22 @@ reported in `usage.tool_calls_details`; the adapter surfaces that count as
 `num_search_queries` and bills it at `search_queries_per_1000`, which is
 required while search is enabled. The relator role never declares the tool and
 `CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH=true` removes the dimension entirely.
-The API does not cap invocations per agent step, so the round preflight prices
-`CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE` (default `3`, the
-count observed with `max_steps=1`) per reviewer request, while post-call
-accounting uses the exact reported count. Legacy Sonar cards (that API retires
-on 27/09/2026) keep the per-request fee semantics for offline accounting only;
-the runtime no longer dispatches those ids.
+The API exposes no provider-enforced cap on invocations (the request reference
+documents `max_steps` and the per-call `max_results` only; `max_tool_calls`,
+`parallel_tool_calls` and `tool_choice` are absent, and a live probe on
+24/08/2026 returned three searches for a single step regardless of
+`parallel_tool_calls`). The round preflight therefore prices
+`CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE` (positive integer,
+default `3`, the count observed with `max_steps=1`) per reviewer request as a
+declared estimate, not a hard bound, while post-call accounting uses the exact
+reported count. `CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY` selects how a
+hard-budget session treats that residual: `estimate` (default) accepts it;
+`fail_closed` reports `CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED`
+whenever Perplexity can review with search enabled, so paid rounds refuse to
+start until search is disabled — the same mechanism the Deep Research card
+uses. Legacy Sonar cards (that API retires on 27/09/2026) keep the per-request
+fee semantics for offline accounting only; the runtime no longer dispatches
+those ids.
 
 Central `config.json` supports model-aware rate cards through
 `model_cost_rates`. This is the preferred shape when explicit operator

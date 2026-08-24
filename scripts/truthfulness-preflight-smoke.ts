@@ -440,6 +440,32 @@ import type { PeerResult } from "../src/core/types.js";
     assert.equal(matching.pass, true, `matching ${peer} model pin must pass`);
   }
 
+  // Codex review of PR #234 (head b0b681d): a Perplexity pin routed to another
+  // family through the Agent API is attributed to the Perplexity claim, never to
+  // the native peer of that family; native claims keep contradicting.
+  const routedPins = { ...modelPins, perplexity: "openai/gpt-5.5" } as const;
+  const routedTruth = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft: "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(routedTruth.pass, true, "a truthful routed Perplexity pin must pass");
+  const routedLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft: "The currently loaded cross-review runtime perplexity model is openai/gpt-5.4.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(routedLie.pass, false, "a wrong routed Perplexity pin must still contradict");
+  const nativeLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime codex model.",
+    initialDraft: "The currently loaded cross-review runtime codex model is gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(nativeLie.pass, false, "the native codex claim must still contradict its pin");
+
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
     { provenanceCorpus: "", priorDraftCorpus: "", narrativeCorpus: "" },

@@ -6081,6 +6081,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     3,
     "web_search_invocations_estimate default must be the count observed on 23/08/2026",
   );
+  assert.equal(
+    cfg.perplexity.search_preflight_policy,
+    "estimate",
+    "search_preflight_policy default must accept the declared estimate",
+  );
   // Malformed or zero knobs report a notice and keep the documented defaults;
   // valid positive integers are honored.
   for (const [steps, estimate, expectedSteps, expectedEstimate] of [

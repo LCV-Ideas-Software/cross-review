@@ -60,6 +60,7 @@ no-fallback pins.
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE", "low", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MAX_STEPS", "1", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY", "estimate", "User")
 ```
 
 Provider-specific output ceilings can coexist with the legacy global fallback:

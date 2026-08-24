@@ -1800,6 +1800,34 @@ const regressions: Regression[] = [
         }).includes("CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS"),
         "a Perplexity reviewer must still require the web_search rate",
       );
+      // Codex review of PR #234 (head b0b681d): the Agent API exposes no
+      // invocation cap, so the fail_closed policy must refuse the estimate
+      // residual exactly like Deep Research, while the default policy and a
+      // non-reviewing Perplexity accept it.
+      const failClosedConfig = {
+        ...agentConfig,
+        perplexity: { ...agentConfig.perplexity, search_preflight_policy: "fail_closed" as const },
+      } as AppConfig;
+      assert.ok(
+        missingFinancialControlVars(failClosedConfig, ["perplexity"]).includes(
+          "CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED",
+        ),
+        "fail_closed policy must disclose the unbounded search residual for a reviewer",
+      );
+      assert.equal(
+        missingFinancialControlVars(failClosedConfig, ["perplexity"], {
+          reviewerPeers: ["codex"],
+        }).filter((item) => item.includes("PERPLEXITY")).length,
+        0,
+        "fail_closed policy does not apply to a Perplexity lead that never searches",
+      );
+      assert.equal(
+        missingFinancialControlVars(agentConfig, ["perplexity"]).includes(
+          "CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED",
+        ),
+        false,
+        "estimate policy (default) prices the declared estimate instead of failing closed",
+      );
       assert.ok(
         missingFinancialControlVars(modelAwareConfig, ["perplexity"]).includes(
           "CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID",

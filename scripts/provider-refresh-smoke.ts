@@ -518,6 +518,7 @@ async function captureGrokReasoningEffort(
 }
 
 type PerplexityProbePayload = {
+  model?: string;
   max_output_tokens?: number;
   tools?: unknown;
   input?: unknown;
@@ -621,6 +622,19 @@ function capturePerplexityProbe(
   });
   capturePerplexityProbe(completedAdapter, { status: "completed" });
   assert.equal((await completedAdapter.probe()).available, true);
+}
+
+{
+  // Codex review of PR #234: the core tolerates a `models/` prefix, so the
+  // adapter must strip it before dispatch instead of sending it verbatim.
+  const adapter = new PerplexityAdapter(
+    { ...config, perplexity: { ...config.perplexity, probe_mode: "live" } },
+    "models/perplexity/kimi-k3",
+  );
+  const captured = capturePerplexityProbe(adapter);
+  assert.equal(adapter.model, "perplexity/kimi-k3");
+  assert.equal((await adapter.probe()).available, true);
+  assert.equal(captured()?.model, "perplexity/kimi-k3", "the wire id must not carry models/");
 }
 
 {

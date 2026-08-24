@@ -549,12 +549,32 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
       );
     }
   }
+  // The Agent API exposes no provider-enforced cap on web_search invocations
+  // (api-reference/agent-post documents max_steps and per-call max_results
+  // only; max_tool_calls/parallel_tool_calls are absent and a live probe on
+  // 24/08/2026 showed parallel_tool_calls=false accepted but ignored). The
+  // policy decides how a hard-budget session treats that residual:
+  // `estimate` (default) prices the declared estimate and reconciles the
+  // exact count post-call; `fail_closed` blocks paid rounds while the
+  // reviewer role can search, mirroring the Deep Research precedent.
+  const policyRaw = (envValue("CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY") ?? "")
+    .trim()
+    .toLowerCase();
+  let searchPreflightPolicy: AppConfig["perplexity"]["search_preflight_policy"] = "estimate";
+  if (policyRaw === "fail_closed") {
+    searchPreflightPolicy = "fail_closed";
+  } else if (policyRaw !== "" && policyRaw !== "estimate") {
+    console.error(
+      `[cross-review] notice: CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY="${policyRaw}" not recognized; defaulting to "estimate". Recognized values: estimate, fail_closed.`,
+    );
+  }
   return {
     search_context_size: searchContextSize,
     disable_search: boolEnv("CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH", false),
     probe_mode: probeMode,
     max_steps: optionalPositiveIntEnv("CROSS_REVIEW_PERPLEXITY_MAX_STEPS") ?? 1,
     web_search_invocations_estimate: invocationsEstimate,
+    search_preflight_policy: searchPreflightPolicy,
   };
 }
 
@@ -768,6 +788,14 @@ function addMissingPerplexityDimensions(
     // that disables search never sends it, so no fee dimension applies.
     if (searchApplies && !config.perplexity.disable_search) {
       addField("search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS");
+      // The provider exposes no invocation cap, so the preflight envelope is
+      // an operator-declared estimate. Under the fail_closed policy that
+      // residual is not accepted: surface it exactly like Deep Research so
+      // the paid orchestrator refuses to dispatch until search is disabled
+      // or the policy is changed.
+      if (config.perplexity.search_preflight_policy === "fail_closed") {
+        missing.add("CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED");
+      }
     }
     return;
   }

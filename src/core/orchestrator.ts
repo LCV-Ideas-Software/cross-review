@@ -2559,6 +2559,10 @@ function normalizeModelPin(value: string): string {
   return normalizeVersionToken(value.replace(/^[a-z0-9._-]+\//i, ""));
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function uniqueMatches(pattern: RegExp, text: string): string[] {
   const matches = text.match(pattern) ?? [];
   return [...new Set(matches.map((match) => match.trim()).filter(Boolean))];
@@ -2716,15 +2720,30 @@ export function truthfulnessPreflight(params: {
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(line)) continue;
+        const expected = normalizeModelPin(expectedModel);
         const candidates = uniqueMatches(MODEL_TOKEN_PATTERN, line)
           .map(normalizeVersionToken)
-          .filter((candidate) =>
-            MODEL_TOKEN_PREFIXES[peer].some((prefix) => candidate.startsWith(prefix)),
-          );
+          .filter((candidate) => {
+            // v4.6.0 (Codex review of PR #234): the Perplexity peer may be
+            // routed to a documented Agent API model of another family
+            // (e.g. `openai/gpt-5.5`). A token written in that routed
+            // `provider/model` form belongs to the Perplexity claim, so it
+            // is accepted for Perplexity whatever its family and never
+            // attributed to the native peer of that family.
+            const routedForm = new RegExp(`\\b[a-z0-9._-]+/${escapeRegExp(candidate)}\\b`, "i");
+            if (peer === "perplexity") {
+              return (
+                candidate === expected ||
+                routedForm.test(line) ||
+                MODEL_TOKEN_PREFIXES.perplexity.some((prefix) => candidate.startsWith(prefix))
+              );
+            }
+            if (routedForm.test(line) && candidate !== expected) return false;
+            return MODEL_TOKEN_PREFIXES[peer].some((prefix) => candidate.startsWith(prefix));
+          });
         if (!candidates.length) continue;
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
-        const expected = normalizeModelPin(expectedModel);
         const claims = partitionCurrentModelClaims(candidates, line);
         const assertedContradictions = claims.asserted.filter(
           (candidate) => candidate !== expected,

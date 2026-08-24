@@ -272,6 +272,7 @@ const regressions: Regression[] = [
           probe_mode: "auth_only",
           max_steps: 1,
           web_search_invocations_estimate: 3,
+          search_preflight_policy: "estimate",
         },
       });
       const adapter = new PerplexityAdapter(config);

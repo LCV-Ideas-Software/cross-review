@@ -597,6 +597,7 @@ const regressions: Regression[] = [
         perplexity: {
           max_steps: 1,
           web_search_invocations_estimate: 3,
+          search_preflight_policy: "estimate",
           search_context_size: "high",
           disable_search: true,
           probe_mode: "live",

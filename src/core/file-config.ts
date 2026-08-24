@@ -186,6 +186,7 @@ const PerplexitySubSchema = z
     // preflight estimate of web_search invocations per reviewer request.
     max_steps: z.number().int().positive().optional(),
     web_search_invocations_estimate: z.number().int().positive().optional(),
+    search_preflight_policy: z.enum(["estimate", "fail_closed"]).optional(),
   })
   .strict()
   .optional();
@@ -509,6 +510,10 @@ export function flattenFileConfigToEnvMap(
     set(
       "CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE",
       config.perplexity.web_search_invocations_estimate,
+    );
+    set(
+      "CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY",
+      config.perplexity.search_preflight_policy,
     );
   }
   if (config.token_streaming) {

@@ -438,7 +438,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
 
   constructor(config: AppConfig, modelOverride?: string) {
     super(config);
-    this.model = modelOverride ?? config.models.perplexity;
+    // The core accepts the Gemini-style `models/` prefix for every peer
+    // (cost cards, financial gate, boot notice all normalize it). Strip it
+    // once here so the wire always carries the documented `provider/model`
+    // id and `response.model` matches the configured pin.
+    this.model = (modelOverride ?? config.models.perplexity).trim().replace(/^models\//i, "");
   }
 
   // Per v2.27.1 cold-start hardening: reuse the lazy OpenAI SDK ctor
