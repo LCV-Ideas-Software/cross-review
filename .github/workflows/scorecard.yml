@@ -11,15 +11,19 @@ concurrency:
   group: scorecard-${{ github.ref }}
   queue: max
   cancel-in-progress: false
-# contents:read fetches the repository; security-events:write uploads the
-# Scorecard SARIF analyses. No other scope is exercised.
+# Read-only top level (Scorecard Token-Permissions): the scorecard job
+# declares the SARIF upload write scope itself.
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   scorecard:
     name: OpenSSF Scorecard
+    # contents:read fetches the repository; security-events:write
+    # uploads the Scorecard SARIF analyses.
+    permissions:
+      contents: read
+      security-events: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

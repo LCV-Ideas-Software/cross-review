@@ -471,13 +471,11 @@ jobs:
           # here, against the checked-out tag content, before the SARIF
           # allowlist is applied: any non-local, non-`$/` uses reference
           # without a full 40-hex commit pin fails the release closed.
-          unpinned_uses="$(grep -RhoE 'uses:[[:space:]]*[^[:space:]]+' .github/workflows .github/actions 2>/dev/null | grep -vE 'uses:[[:space:]]*(\\.?/|\\$/)' | grep -vE '@[0-9a-f]{40}$' || true)"
-          if [ -n "$unpinned_uses" ]; then
-            echo "::error::Unpinned non-local action references found in the tagged tree:"
-            echo "$unpinned_uses"
-            exit 1
-          fi
-          echo "All non-local action references are pinned to 40-hex commits in the tagged tree."
+          # The versioned validator parses every YAML-permitted spelling of
+          # the uses key (quoted keys, spaced colons, quoted values) and
+          # fails closed on any form it cannot read; its adversarial cases
+          # live in the npm-v12 release-security regression.
+          node scripts/validate-action-pins.mjs .
           target_scorecard="[]"
           for attempt in {1..12}; do
             assert_target_on_live_main

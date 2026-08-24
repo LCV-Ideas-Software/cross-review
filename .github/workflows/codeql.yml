@@ -17,11 +17,10 @@ on:
       - checks_requested
   schedule:
     - cron: "35 6 * * 2"
-# contents:read fetches the repository; security-events:write uploads the
-# CodeQL SARIF analyses. No other scope is exercised.
+# Read-only top level (Scorecard Token-Permissions): the analyze job
+# declares the SARIF upload write scope itself.
 permissions:
   contents: read
-  security-events: write
 concurrency:
   group: codeql-${{ github.ref }}
   queue: max
@@ -29,6 +28,11 @@ concurrency:
 jobs:
   analyze:
     name: Analyze ${{ matrix.language }}
+    # contents:read fetches the repository; security-events:write
+    # uploads the CodeQL SARIF analyses.
+    permissions:
+      contents: read
+      security-events: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

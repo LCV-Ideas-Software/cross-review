@@ -16,13 +16,9 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
-# contents:write creates the release tag ref; actions:write dispatches
-# publish.yml; security-events:read feeds the exact CodeQL SARIF gate.
-# Everything else is unneeded and intentionally absent.
-permissions:
-  actions: write
-  contents: write
-  security-events: read
+# No workflow-level grant (Scorecard Token-Permissions requires a
+# read-only top level): the single job declares its own minimal scope.
+permissions: {}
 concurrency:
   group: auto-tag-main
   queue: max
@@ -30,6 +26,13 @@ concurrency:
 jobs:
   auto-tag:
     name: Create org-standard tag from package.json version
+    # contents:write creates the release tag ref; actions:write
+    # dispatches publish.yml; security-events:read feeds the exact
+    # CodeQL SARIF gate. Everything else is intentionally absent.
+    permissions:
+      actions: write
+      contents: write
+      security-events: read
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&

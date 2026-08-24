@@ -5,12 +5,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-# contents:read fetches the site sources; pages:write + id-token:write are
-# the documented pair for the official Pages deployment action.
+# Read-only top level (Scorecard Token-Permissions): the deploy job
+# declares the Pages deployment write scopes itself.
 permissions:
   contents: read
-  id-token: write
-  pages: write
 concurrency:
   group: pages
   queue: max
@@ -18,6 +16,13 @@ concurrency:
 jobs:
   deploy:
     name: Deploy GitHub Pages
+    # contents:read fetches the site sources; pages:write +
+    # id-token:write are the documented pair for the official
+    # Pages deployment action.
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
     runs-on: ubuntu-latest
     environment:
       name: github-pages

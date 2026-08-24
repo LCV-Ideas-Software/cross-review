@@ -744,6 +744,45 @@ assert.match(
   /gate:[\s\S]*?permissions:\s*\n\s+actions: read\s*\n\s+contents: read\s*\n\s+security-events: read/,
   "the publish gate must hold read-only Actions, contents and code-scanning authorization - nothing more",
 );
+assert.doesNotMatch(
+  zizmorConfig,
+  /excessive-permissions:[\s\S]{0,60}?disable/,
+  "the stale write-all-era exemption must stay deleted so zizmor guards permission regressions",
+);
+assert.match(
+  publishWorkflow,
+  /node scripts\/validate-action-pins\.mjs/,
+  "the release gate must revalidate action pinning through the versioned parser, not a text grep",
+);
+{
+  const { extractUses, validateRef, validateFile } = await import("./validate-action-pins.mjs");
+  assert.equal(extractUses('  "uses": owner/action@main').value, "owner/action@main");
+  assert.equal(extractUses("  uses : owner/action@main").value, "owner/action@main");
+  assert.equal(extractUses("  - uses: 'owner/action@main'").value, "owner/action@main");
+  assert.equal(
+    extractUses("  uses: >-").error,
+    "unsupported uses value form",
+    "block scalars must fail closed instead of hiding the reference",
+  );
+  assert.equal(validateRef("./.github/actions/setup-npm-toolchain"), null);
+  assert.equal(validateRef("$/.github/actions/setup-npm-toolchain"), null);
+  assert.equal(validateRef("owner/action@" + "a".repeat(40)), null);
+  assert.ok(validateRef("owner/action@v4"), "tag references must be rejected");
+  assert.ok(validateRef("owner/action@abcdef1"), "short SHAs must be rejected");
+  const adversarial = [
+    "jobs:",
+    "  x:",
+    "    steps:",
+    '      - "uses": third/party@main',
+    "      - uses : other/thing@v2",
+    "      - uses: $/.github/actions/setup-npm-toolchain",
+  ].join("\n");
+  assert.equal(
+    validateFile("fixture.yml", adversarial).length,
+    2,
+    "quoted keys and spaced colons must be parsed and their unpinned refs rejected",
+  );
+}
 const publicationGateBlock = publishWorkflow.match(
   /\n {2}gate:[\s\S]*?(?=\n {2}publish-npmjs:)/,
 )?.[0];
