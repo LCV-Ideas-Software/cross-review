@@ -33,6 +33,7 @@ const READY = JSON.stringify({
 });
 
 type BillingUsage = {
+  num_search_queries?: number;
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
@@ -57,7 +58,9 @@ const billingConfig = {
     gemini: terminalBillingRate,
     deepseek: terminalBillingRate,
     grok: terminalBillingRate,
-    perplexity: terminalBillingRate,
+    // v4.6.0: the Perplexity Agent API pin also bills web_search per
+    // invocation; price it at 1 USD each so search accounting is visible.
+    perplexity: { ...terminalBillingRate, search_queries_per_1000: 1000 },
   },
 };
 
@@ -859,7 +862,10 @@ for (const requestedEffort of ["low", "medium"] as const) {
 // (output budget exhausted). The provider still billed the prompt and the
 // output budget, so the rejected attempt must be priced with the request
 // envelope (prompt chars / 4 + max_output_tokens) rather than settle as zero.
-async function assertEstimatedIncompleteBilling(run: () => Promise<unknown>): Promise<void> {
+async function assertEstimatedIncompleteBilling(
+  run: () => Promise<unknown>,
+  expectedSearches: number | undefined,
+): Promise<void> {
   const expectedOutput = maxOutputTokensForPeer(billingConfig, "perplexity");
   await assert.rejects(run, (error: unknown) => {
     assert.ok(error instanceof Error);
@@ -880,7 +886,14 @@ async function assertEstimatedIncompleteBilling(run: () => Promise<unknown>): Pr
     assert.ok(inputTokens > 0, "estimated input tokens must come from the prompt size");
     assert.equal(failure?.usage?.output_tokens, expectedOutput);
     assert.equal(failure?.usage?.total_tokens, inputTokens + expectedOutput);
-    const expectedCost = inputTokens * 0.000001 + expectedOutput * 0.000002;
+    assert.equal(
+      failure?.usage?.num_search_queries,
+      expectedSearches,
+      "reviewer requests declare web_search and must carry the declared search estimate; relator requests never do",
+    );
+    // billingConfig prices searches at 1000 USD per 1000 invocations (1 USD each).
+    const expectedCost =
+      inputTokens * 0.000001 + expectedOutput * 0.000002 + (expectedSearches ?? 0) * 1;
     assert.ok(
       Math.abs((failure?.cost?.total_cost ?? Number.NaN) - expectedCost) < 1e-12,
       `estimated incomplete billing mismatch: ${JSON.stringify(failure?.cost)}`,
@@ -902,7 +915,10 @@ async function assertEstimatedIncompleteBilling(run: () => Promise<unknown>): Pr
       }),
     },
   });
-  await assertEstimatedIncompleteBilling(() => adapter.call("fixture", context()));
+  await assertEstimatedIncompleteBilling(
+    () => adapter.call("fixture", context()),
+    billingConfig.perplexity.web_search_invocations_estimate,
+  );
 }
 
 {
@@ -924,7 +940,10 @@ async function assertEstimatedIncompleteBilling(run: () => Promise<unknown>): Pr
         ]),
     },
   });
-  await assertEstimatedIncompleteBilling(() => adapter.generate("fixture", context(true)));
+  await assertEstimatedIncompleteBilling(
+    () => adapter.generate("fixture", context(true)),
+    undefined,
+  );
 }
 
 {

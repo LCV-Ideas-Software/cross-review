@@ -7974,6 +7974,10 @@ export class CrossReviewOrchestrator {
     // existingSession read — see the callerForLottery derivation block above.
     const missingFinancialVars = missingFinancialControlVars(this.config, chargeablePeers, {
       untilStopped: input.until_stopped,
+      // The relator only generates; a Perplexity lead never declares the
+      // web_search tool, so the search-rate dimension is gated on the
+      // reviewer pool (same derivation as reviewerPeers below).
+      reviewerPeers: selectedPeers.filter((peer) => peer !== leadPeer),
     });
     if (missingFinancialVars.length) {
       const blockedSession =

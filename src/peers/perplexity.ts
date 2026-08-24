@@ -361,18 +361,25 @@ type AgentResponse = {
 export function estimatedIncompleteUsage(
   payload: { instructions: string; input: Array<{ content: string }>; max_output_tokens: number },
   searchPerformed: boolean,
+  webSearchInvocationsEstimate: number,
 ): TokenUsage {
   const promptChars =
     payload.instructions.length + payload.input.reduce((sum, item) => sum + item.content.length, 0);
   const inputTokens = Math.ceil(promptChars / 4);
   const outputTokens = payload.max_output_tokens;
-  return {
+  const usage: TokenUsage = {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     total_tokens: inputTokens + outputTokens,
     cache_provider_mode: "auto",
     search_performed: searchPerformed,
   };
+  // A reviewer request declared the web_search tool, so searches may have
+  // been billed before the output budget ran out. Price the declared
+  // preflight estimate (the same envelope estimatedPeerRoundCost uses) so
+  // the search dimension is never silently dropped from the ledger.
+  if (searchPerformed) usage.num_search_queries = webSearchInvocationsEstimate;
+  return usage;
 }
 
 function isIncompleteTerminal(status: unknown): boolean {
@@ -462,7 +469,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     const billingUsage =
       usage ??
       (isIncompleteTerminal(response?.status)
-        ? estimatedIncompleteUsage(payload, searchPerformed)
+        ? estimatedIncompleteUsage(
+            payload,
+            searchPerformed,
+            this.config.perplexity.web_search_invocations_estimate,
+          )
         : undefined);
     withEstimatedTerminalBilling(this.config, this.id, this.model, billingUsage, () => {
       // A `failed` terminal carries the provider error object; surface its
@@ -624,7 +635,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       const terminalBillingUsage =
         eventUsage ??
         (event.type === "response.incomplete" || isIncompleteTerminal(event.response?.status)
-          ? estimatedIncompleteUsage(payload, searchPerformed)
+          ? estimatedIncompleteUsage(
+              payload,
+              searchPerformed,
+              this.config.perplexity.web_search_invocations_estimate,
+            )
           : undefined);
       responseCompleted = withEstimatedTerminalBilling(
         this.config,

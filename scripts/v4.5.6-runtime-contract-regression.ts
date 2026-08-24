@@ -1772,18 +1772,33 @@ const regressions: Regression[] = [
         [],
         "a complete Agent API card (input/output/search fee) is a complete financial control",
       );
+      const cardWithoutSearchFee = {
+        ...agentConfig,
+        cost_rates: {
+          ...agentConfig.cost_rates,
+          perplexity: { input_per_million: 3, output_per_million: 15 },
+        },
+      } as AppConfig;
       assert.ok(
-        missingFinancialControlVars(
-          {
-            ...agentConfig,
-            cost_rates: {
-              ...agentConfig.cost_rates,
-              perplexity: { input_per_million: 3, output_per_million: 15 },
-            },
-          } as AppConfig,
-          ["perplexity"],
-        ).includes("CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS"),
+        missingFinancialControlVars(cardWithoutSearchFee, ["perplexity"]).includes(
+          "CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS",
+        ),
         "an Agent API card without the web_search fee must fail closed while search is enabled",
+      );
+      // Codex review of PR #234: a Perplexity lead peer only generates, so the
+      // gate must not demand the search rate when Perplexity is not a reviewer.
+      assert.equal(
+        missingFinancialControlVars(cardWithoutSearchFee, ["perplexity"], {
+          reviewerPeers: ["codex", "claude"],
+        }).filter((item) => item.includes("PERPLEXITY")).length,
+        0,
+        "a Perplexity lead (never a reviewer) must not require the web_search rate",
+      );
+      assert.ok(
+        missingFinancialControlVars(cardWithoutSearchFee, ["perplexity"], {
+          reviewerPeers: ["codex", "perplexity"],
+        }).includes("CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS"),
+        "a Perplexity reviewer must still require the web_search rate",
       );
       assert.ok(
         missingFinancialControlVars(modelAwareConfig, ["perplexity"]).includes(

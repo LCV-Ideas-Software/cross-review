@@ -735,6 +735,11 @@ function addMissingPerplexityDimensions(
   config: AppConfig,
   effectiveModel: string,
   missing: Set<string>,
+  // v4.6.0 (Codex review of PR #234): only the reviewer role declares the
+  // web_search tool. A Perplexity lead peer / evidence judge routes through
+  // generate() and can never incur the search fee, so the gate requires the
+  // rate only when the peer can actually review.
+  searchApplies: boolean,
 ): void {
   const normalizedModel = effectiveModel.trim().replace(/^models\//i, "");
   // v4.6.0: legacy Sonar Chat Completions ids cannot be dispatched by the
@@ -761,7 +766,7 @@ function addMissingPerplexityDimensions(
     // Agent API: the web_search tool is billed per invocation. The rate is
     // required whenever the reviewer role can declare the tool; a config
     // that disables search never sends it, so no fee dimension applies.
-    if (!config.perplexity.disable_search) {
+    if (searchApplies && !config.perplexity.disable_search) {
       addField("search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS");
     }
     return;
@@ -796,7 +801,12 @@ function addMissingPerplexityDimensions(
 export function missingFinancialControlVars(
   config: AppConfig,
   peers: PeerId[],
-  options: { untilStopped?: boolean | undefined } = {},
+  options: {
+    untilStopped?: boolean | undefined;
+    // Peers that can act as reviewers (declare the Perplexity web_search
+    // tool). Omitted = every listed peer may review (fail-closed default).
+    reviewerPeers?: readonly PeerId[] | undefined;
+  } = {},
 ): string[] {
   const missing = new Set<string>();
   const configLoad = getFileConfigRuntimeStatus();
@@ -841,8 +851,11 @@ export function missingFinancialControlVars(
       config.models.perplexity,
       ...(config.fallback_models.perplexity ?? []),
     ];
+    const perplexityCanReview = options.reviewerPeers
+      ? options.reviewerPeers.includes("perplexity")
+      : true;
     for (const model of new Set(effectiveModels)) {
-      addMissingPerplexityDimensions(config, model, missing);
+      addMissingPerplexityDimensions(config, model, missing, perplexityCanReview);
     }
   }
 
