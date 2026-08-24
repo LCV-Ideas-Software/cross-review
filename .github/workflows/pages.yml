@@ -20,9 +20,9 @@ jobs:
     # id-token:write are the documented pair for the official
     # Pages deployment action.
     permissions:
-      contents: read
-      id-token: write
-      pages: write
+      contents: read # checkout of the site sources
+      id-token: write # OIDC token consumed by deploy-pages
+      pages: write # publishes the Pages deployment
     runs-on: ubuntu-latest
     environment:
       name: github-pages

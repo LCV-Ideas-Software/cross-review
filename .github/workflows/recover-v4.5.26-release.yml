@@ -28,9 +28,9 @@ jobs:
     # contents:write recreates the exact historical Release; actions:read
     # verifies the source run; packages:read checks the published artifact.
     permissions:
-      actions: read
-      contents: write
-      packages: read
+      actions: read # verifies the exact source workflow run
+      contents: write # recreates the exact historical GitHub Release
+      packages: read # checks the published GitHub Packages artifact
     steps:
       - name: Checkout trusted main recovery implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

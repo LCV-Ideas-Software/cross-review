@@ -22,8 +22,8 @@ jobs:
     # contents:read fetches the repository; security-events:write
     # uploads the Scorecard SARIF analyses.
     permissions:
-      contents: read
-      security-events: write
+      contents: read # checkout of the analyzed repository
+      security-events: write # uploads the Scorecard SARIF analyses
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

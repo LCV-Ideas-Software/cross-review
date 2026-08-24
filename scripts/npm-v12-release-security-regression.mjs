@@ -622,7 +622,7 @@ assert.match(
 
 assert.match(
   publishWorkflow,
-  /publish-npmjs:[\s\S]*?permissions:\s*\n\s+contents: read\s*\n\s+id-token: write[\s\S]*?publish-gh-packages:/,
+  /publish-npmjs:[\s\S]*?permissions:\s*\n\s+contents: read[^\n]*\n\s+id-token: write[^\n]*[\s\S]*?publish-gh-packages:/,
   "npmjs publishing must run with the minimal OIDC grant (contents:read + id-token:write) and nothing more",
 );
 assert.doesNotMatch(
@@ -741,7 +741,7 @@ assert.match(
 );
 assert.match(
   publishWorkflow,
-  /gate:[\s\S]*?permissions:\s*\n\s+actions: read\s*\n\s+contents: read\s*\n\s+security-events: read/,
+  /gate:[\s\S]*?permissions:\s*\n\s+actions: read[^\n]*\n\s+contents: read[^\n]*\n\s+security-events: read/,
   "the publish gate must hold read-only Actions, contents and code-scanning authorization - nothing more",
 );
 assert.doesNotMatch(
@@ -751,11 +751,12 @@ assert.doesNotMatch(
 );
 assert.match(
   publishWorkflow,
-  /node scripts\/validate-action-pins\.mjs/,
-  "the release gate must revalidate action pinning through the versioned parser, not a text grep",
+  /uses: \$\/\.github\/actions\/validate-action-pins/,
+  "the release gate must revalidate action pinning through the immutable $/ composite action, not code from the tag checkout",
 );
 {
-  const { extractUses, validateRef, validateFile } = await import("./validate-action-pins.mjs");
+  const validatorPath = "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+  const { extractUses, validateRef, validateFile } = await import(validatorPath);
   assert.equal(extractUses('  "uses": owner/action@main').value, "owner/action@main");
   assert.equal(extractUses("  uses : owner/action@main").value, "owner/action@main");
   assert.equal(extractUses("  - uses: 'owner/action@main'").value, "owner/action@main");
@@ -1633,7 +1634,7 @@ assert.equal(
 );
 assert.match(
   releaseRecoveryWorkflow,
-  /permissions:\s*\n\s+actions: read\s*\n\s+contents: write\s*\n\s+packages: read/,
+  /permissions:\s*\n\s+actions: read[^\n]*\n\s+contents: write[^\n]*\n\s+packages: read/,
   "the recovery job must hold the minimal grant: contents:write for the Release, read-only Actions and Packages",
 );
 assert.match(

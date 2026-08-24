@@ -30,9 +30,9 @@ jobs:
     # dispatches publish.yml; security-events:read feeds the exact
     # CodeQL SARIF gate. Everything else is intentionally absent.
     permissions:
-      actions: write
-      contents: write
-      security-events: read
+      actions: write # dispatches publish.yml for the fresh tag
+      contents: write # creates the release tag ref via the Git data API
+      security-events: read # reads the exact CodeQL SARIF gate results
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
