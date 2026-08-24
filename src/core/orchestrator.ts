@@ -1,4 +1,5 @@
 import { classifyProviderError } from "../peers/errors.js";
+import { geminiExplicitCacheArmed } from "../peers/gemini.js";
 import { resolveBestModels } from "../peers/model-selection.js";
 import { createAdapters, selectAdapters } from "../peers/registry.js";
 import { redact, safeErrorMessage } from "../security/redact.js";
@@ -3688,6 +3689,16 @@ export function estimatedPeerRoundCost(
     let chainCost = 0;
     let highestEnvelope = 0;
     let primaryEnvelope = 0;
+    // v4.7.0 (CROSREV-6): an armed Gemini explicit cache bills storage
+    // deterministically at creation. The envelope cannot see the stable-head
+    // boundary the orchestrator will mark later, so it conservatively prices
+    // one creation per priced model with the WHOLE prompt as the head
+    // (token-hours = prompt tokens x TTL hours). Kept outside the
+    // fallback/moderation max() so the charge is never optimized away, and
+    // fail-closed on a missing storage rate like every price dimension.
+    let storageEnvelope = 0;
+    const geminiStorageApplies =
+      peer === "gemini" && requestRole === "review" && geminiExplicitCacheArmed(config);
     for (const pricedModel of pricedModels) {
       if (
         peer === "perplexity" &&
@@ -3713,6 +3724,16 @@ export function estimatedPeerRoundCost(
         pricedModel,
       );
       if (estimate.total_cost == null) return undefined;
+      if (geminiStorageApplies) {
+        const storageRate = resolveCostRate(
+          config,
+          "gemini",
+          pricedModel,
+        )?.cache_storage_per_million_hour;
+        if (typeof storageRate !== "number") return undefined;
+        const ttlHours = config.cache.ttl.gemini === "5m" ? 300 / 3_600 : 1;
+        storageEnvelope += ((inputTokens * ttlHours) / 1_000_000) * storageRate;
+      }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {
         primaryEnvelope = estimate.total_cost;
       }
@@ -3720,12 +3741,12 @@ export function estimatedPeerRoundCost(
       chainCost += estimate.total_cost * maxAttempts;
     }
     if (explicitEffectiveModel != null) {
-      total += chainCost;
+      total += chainCost + storageEnvelope;
       continue;
     }
     const fallbackThenFormatCost = chainCost + highestEnvelope * maxAttempts;
     const moderationThenFormatCost = primaryEnvelope * (3 * maxAttempts);
-    total += Math.max(fallbackThenFormatCost, moderationThenFormatCost);
+    total += Math.max(fallbackThenFormatCost, moderationThenFormatCost) + storageEnvelope;
   }
   return total;
 }

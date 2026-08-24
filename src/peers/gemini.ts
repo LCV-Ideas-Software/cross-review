@@ -122,9 +122,19 @@ function combinedGeminiUsage(items: Array<TokenUsage | undefined>): TokenUsage |
   return items.some(Boolean) ? mergeUsage(items) : undefined;
 }
 
+// v4.7.0 (CROSREV-6): a storage-only entry is a ledger item recorded at
+// cache creation, not a generateContent attempt — it must sum into merged
+// usage/cost but never into the accounted-attempt arithmetic.
+function isStorageOnlyLedgerItem(cost: CostEstimate | undefined): boolean {
+  return cost?.cache_storage_cost != null && cost.input_cost == null && cost.output_cost == null;
+}
+
 function pricedGeminiAttemptCount(items: Array<CostEstimate | undefined>): number {
   return items.filter(
-    (cost) => typeof cost?.total_cost === "number" && Number.isFinite(cost.total_cost),
+    (cost) =>
+      typeof cost?.total_cost === "number" &&
+      Number.isFinite(cost.total_cost) &&
+      !isStorageOnlyLedgerItem(cost),
   ).length;
 }
 
@@ -165,31 +175,64 @@ export function loadGenaiModule(): Promise<typeof import("@google/genai")> {
 // and the head reaches the documented 4,096-token cachedContents minimum for
 // the 3.x/2.5 Pro models (approximated at 4 chars/token, the same
 // convention anthropic.ts uses), the adapter creates ONE cachedContents
-// entry per distinct (schema, model, ttl, head) and calls generateContent
-// with `cachedContent` plus only the dynamic remainder; the system prompt
-// travels as a live `systemInstruction` because it changes per round.
+// entry per distinct (schema, model, ttl, head) — concurrent creations of
+// the same tuple share one in-flight promise — and calls generateContent
+// with `cachedContent` plus only the dynamic remainder. The per-round
+// system prompt travels at the head of the LIVE contents: the provider
+// contract rejects a request that combines cachedContent with
+// systemInstruction/tools (400 INVALID_ARGUMENT, "CachedContent can not be
+// used with GenerateContent request setting system_instruction, tools or
+// tool_config").
 // Storage is billed deterministically at creation (cached tokens x TTL
-// hours) and surfaced once as usage.cache_storage_token_hours; reads keep
-// the provider-reported cachedContentTokenCount discount with
-// cache_provider_mode="explicit". Creation failures fall back to the
-// uncached request with a provider.cache.notice; a lost/expired cache
-// surfaces as a retryable provider error after the index entry is dropped,
-// so the standard retry envelope re-creates it.
+// hours) using the provider-reported token count (countTokens, which is
+// free, runs BEFORE creation so an unpriceable cache is never created);
+// the charge is pushed into the attempt billing ledger IMMEDIATELY so
+// failed and recovered attempts keep it. Reads keep the provider-reported
+// cachedContentTokenCount discount with cache_provider_mode="explicit".
+// Creation failures fall back to the uncached request with a
+// provider.cache.notice — transport-ambiguous ones (the server may have
+// created and billed the entry) surface as an unpriced attempt; a
+// lost/expired cache drops the index entry and retries, re-creating it.
 export const GEMINI_EXPLICIT_CACHE_MIN_TOKENS = 4_096;
 const GEMINI_EXPLICIT_CACHE_MIN_CHARS = GEMINI_EXPLICIT_CACHE_MIN_TOKENS * 4;
 
 type GeminiExplicitCacheEntry = { name: string; token_count: number; expires_at_ms: number };
 const geminiExplicitCacheIndex = new Map<string, GeminiExplicitCacheEntry>();
+// Codex review of PR #240: two concurrent calls with the same eligible head
+// must not both create separately billed cachedContents resources. The
+// creator registers its promise here; racers await it (the creator alone
+// records the storage ledger item).
+const geminiExplicitCacheInFlight = new Map<
+  string,
+  Promise<GeminiExplicitCacheEntry | undefined>
+>();
 
 export function __resetGeminiExplicitCacheIndexForTests(): void {
   geminiExplicitCacheIndex.clear();
+  geminiExplicitCacheInFlight.clear();
+}
+
+export function __geminiExplicitCacheIndexForTests(): ReadonlyMap<
+  string,
+  GeminiExplicitCacheEntry
+> {
+  return geminiExplicitCacheIndex;
+}
+
+export function __seedGeminiExplicitCacheIndexForTests(
+  key: string,
+  entry: GeminiExplicitCacheEntry,
+): void {
+  geminiExplicitCacheIndex.set(key, entry);
 }
 
 function geminiTtlSeconds(ttl: "5m" | "1h"): number {
   return ttl === "5m" ? 300 : 3_600;
 }
 
-function geminiExplicitCacheArmed(config: AppConfig): boolean {
+// Exported: estimatedPeerRoundCost (orchestrator preflight) shares this gate
+// so the budget envelope and the adapter can never disagree on armed state.
+export function geminiExplicitCacheArmed(config: AppConfig): boolean {
   return (
     config.cache.enabled && config.cache.gemini_explicit && !config.cache.disable_per_peer.gemini
   );
@@ -282,6 +325,11 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     started: number,
     accumulatedUsage: TokenUsage[],
     accumulatedCosts: CostEstimate[],
+    // v4.7.0 (CROSREV-6): minimum indeterminate share — ambiguous cache
+    // creations counted into `attempt` may have billed server-side spend,
+    // so they must stay indeterminate even when the terminal error's own
+    // class settles as zero-spend.
+    indeterminateFloor = 0,
   ) {
     const failure = classifyProviderError(
       this.id,
@@ -291,12 +339,28 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       attempt,
       started,
     );
-    if (accumulatedUsage.length === 0 || error instanceof GeminiMaxTokensError) return failure;
+    const applyIndeterminateFloor = <F extends { unpriced_attempts?: number | undefined }>(
+      base: F,
+    ): F => {
+      if (indeterminateFloor <= 0) return base;
+      const unpriced = base.unpriced_attempts ?? 0;
+      if (unpriced <= 0) return base;
+      const existing =
+        (base as { indeterminate_spend_attempts?: number | undefined })
+          .indeterminate_spend_attempts ?? 0;
+      return {
+        ...base,
+        indeterminate_spend_attempts: Math.max(existing, Math.min(indeterminateFloor, unpriced)),
+      };
+    };
+    if (accumulatedUsage.length === 0 || error instanceof GeminiMaxTokensError) {
+      return applyIndeterminateFloor(failure);
+    }
     const providerResultSettled =
       error !== null &&
       typeof error === "object" &&
       (error as Record<string, unknown>).provider_result_settled === true;
-    if (providerResultSettled) return failure;
+    if (providerResultSettled) return applyIndeterminateFloor(failure);
     const priorUsage = combinedGeminiUsage(accumulatedUsage);
     const priorCost = accumulatedCosts.length > 0 ? mergeCost(accumulatedCosts) : undefined;
     const accountedPrior = pricedGeminiAttemptCount(accumulatedCosts);
@@ -315,10 +379,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       ...(unpricedAttempts > 0
         ? {
             unpriced_attempts: unpricedAttempts,
-            indeterminate_spend_attempts: indeterminateSpendMarkerFor(
-              failure.failure_class,
-              failure.message,
-              unpricedAttempts,
+            indeterminate_spend_attempts: Math.max(
+              indeterminateSpendMarkerFor(failure.failure_class, failure.message, unpricedAttempts),
+              Math.min(indeterminateFloor, unpricedAttempts),
             ),
           }
         : {}),
@@ -396,15 +459,154 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     }
   }
 
+  // v4.7.0 (CROSREV-6): create one cachedContents entry for an eligible
+  // stable head. Fail-open toward the uncached request (always correct),
+  // fail-CLOSED toward billing: the authoritative token count is fetched
+  // BEFORE creation (countTokens is free) so a resource whose storage price
+  // cannot be stated is never created, and the deterministic storage charge
+  // is recorded in the attempt billing ledger the moment the resource
+  // exists — failures and recovery paths inherit it from there.
+  private async createExplicitCacheEntry(params: {
+    reviewClient: { ai: GoogleGenAI };
+    stableHead: string;
+    ttl: "5m" | "1h";
+    cacheKeyHash: string;
+    context: PeerCallContext;
+    ledgerUsage: TokenUsage[];
+    ledgerCosts: CostEstimate[];
+    onIndeterminateCreate: () => void;
+  }): Promise<GeminiExplicitCacheEntry | undefined> {
+    const { reviewClient, stableHead, ttl, cacheKeyHash, context } = params;
+    const ttlSeconds = geminiTtlSeconds(ttl);
+    const notice = (message: string, data: Record<string, unknown>) => {
+      context.emit({
+        type: "provider.cache.notice",
+        session_id: context.session_id,
+        round: context.round,
+        peer: this.id,
+        message,
+        data,
+      });
+    };
+    let countedTokens: number | undefined;
+    try {
+      const counted = (await reviewClient.ai.models.countTokens({
+        model: this.model,
+        contents: [{ role: "user", parts: [{ text: stableHead }] }],
+      })) as { totalTokens?: number };
+      countedTokens = counted?.totalTokens;
+    } catch {
+      countedTokens = undefined;
+    }
+    if (
+      typeof countedTokens !== "number" ||
+      !Number.isFinite(countedTokens) ||
+      countedTokens <= 0
+    ) {
+      // No authoritative count => the storage charge would be a guess.
+      // countTokens itself is free, so skipping creation costs nothing.
+      notice(
+        "Gemini explicit cache skipped: countTokens returned no authoritative token count, so the storage charge could not be stated; continuing uncached.",
+        { model: this.model, key_hash: cacheKeyHash },
+      );
+      return undefined;
+    }
+    try {
+      const created = (await reviewClient.ai.caches.create({
+        model: this.model,
+        config: {
+          contents: [{ role: "user", parts: [{ text: stableHead }] }],
+          ttl: `${ttlSeconds}s`,
+          displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
+        },
+      })) as { name?: string; usageMetadata?: { totalTokenCount?: number } };
+      if (!created?.name) {
+        notice("Gemini explicit cache creation returned no resource name; continuing uncached.", {
+          model: this.model,
+          key_hash: cacheKeyHash,
+        });
+        return undefined;
+      }
+      const tokenCount = created.usageMetadata?.totalTokenCount ?? countedTokens;
+      const entry: GeminiExplicitCacheEntry = {
+        name: created.name,
+        token_count: tokenCount,
+        expires_at_ms: Date.now() + ttlSeconds * 1_000,
+      };
+      // Evict expired entries at insertion so the process-wide index stays
+      // bounded by the set of LIVE heads, not the lifetime set.
+      const now = Date.now();
+      for (const [key, indexed] of geminiExplicitCacheIndex) {
+        if (indexed.expires_at_ms <= now) geminiExplicitCacheIndex.delete(key);
+      }
+      geminiExplicitCacheIndex.set(cacheKeyHash, entry);
+      // Record the deterministic storage charge in the attempt billing
+      // ledger IMMEDIATELY (a storage-only item, not an attempt).
+      const tokenHours = (tokenCount * ttlSeconds) / 3_600;
+      const ledgerUsage: TokenUsage = { cache_storage_token_hours: tokenHours };
+      const ledgerCost = estimateCost(this.config, this.id, ledgerUsage, this.model);
+      delete ledgerCost.input_cost;
+      delete ledgerCost.output_cost;
+      params.ledgerUsage.push(ledgerUsage);
+      if ((ledgerCost.cache_storage_cost ?? 0) > 0) {
+        params.ledgerCosts.push(ledgerCost);
+      } else {
+        // The financial-control gate requires the storage rate whenever the
+        // cache is armed, so this branch is defense in depth only.
+        notice(
+          "Gemini explicit cache storage could not be priced (storage rate missing); token-hours recorded without a cost line.",
+          { model: this.model, key_hash: cacheKeyHash, token_hours: tokenHours },
+        );
+      }
+      notice(`Gemini explicit cache created (${tokenCount} tokens, ttl ${ttl}).`, {
+        model: this.model,
+        cache_name: created.name,
+        token_count: tokenCount,
+        ttl,
+        key_hash: cacheKeyHash,
+      });
+      return entry;
+    } catch (error) {
+      // An uncached call is always correct — but a transport-ambiguous
+      // failure (timeout/reset/unknown) may have created and billed the
+      // entry server-side, so its spend must stay indeterminate.
+      const createFailure = classifyProviderError(
+        this.id,
+        this.provider,
+        this.model,
+        error,
+        1,
+        Date.now(),
+      );
+      const ambiguous =
+        indeterminateSpendMarkerFor(createFailure.failure_class, createFailure.message, 1) > 0;
+      if (ambiguous) params.onIndeterminateCreate();
+      notice(
+        ambiguous
+          ? `Gemini explicit cache creation did not settle (the server may have created and billed it); spend recorded as indeterminate, continuing uncached: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          : `Gemini explicit cache creation failed; continuing uncached: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        { model: this.model, key_hash: cacheKeyHash },
+      );
+      return undefined;
+    }
+  }
+
   async call(prompt: string, context: PeerCallContext): Promise<PeerResult> {
     const started = Date.now();
+    // These arrays are the attempt billing ledger: MAX_TOKENS recovery
+    // usage/costs AND (v4.7.0, CROSREV-6) storage-only items recorded the
+    // moment a cachedContents entry is created, so failures, recoveries and
+    // successes all inherit the deterministic storage charge.
     const outputLimitUsage: TokenUsage[] = [];
     const outputLimitCosts: CostEstimate[] = [];
     let outputLimitRecoveryTriggered = false;
-    // v4.7.0 (CROSREV-6): storage token-hours of a cache created by this
-    // call, attached to the first usage that materializes (surviving
-    // retries so the deterministic storage bill is never dropped).
-    let cacheStorageTokenHoursPending = 0;
+    // Ambiguous cache creations (transport failures where the server may
+    // have created and billed the entry) count as unpriced attempts.
+    let indeterminateCacheCreateAttempts = 0;
     const requestedEffort =
       context.reasoning_effort_override ?? this.config.reasoning_effort.gemini;
     return withRetry(
@@ -428,10 +630,11 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           stablePrefixChars >= GEMINI_EXPLICIT_CACHE_MIN_CHARS &&
           stablePrefixChars < prompt.length;
         let cacheEntry: GeminiExplicitCacheEntry | undefined;
+        let cacheKeyHash: string | undefined;
         if (explicitCacheEligible) {
           const stableHead = prompt.slice(0, stablePrefixChars);
           const ttl = this.config.cache.ttl.gemini;
-          const cacheKeyHash = hashStablePrefix(
+          cacheKeyHash = hashStablePrefix(
             `${this.config.cache.schema_version}\n${this.model}\n${ttl}\n${stableHead}`,
           );
           const existing = geminiExplicitCacheIndex.get(cacheKeyHash);
@@ -440,53 +643,30 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           if (existing && existing.expires_at_ms > Date.now() + 15_000) {
             cacheEntry = existing;
           } else {
-            try {
-              const created = (await reviewClient.ai.caches.create({
-                model: this.model,
-                config: {
-                  contents: [{ role: "user", parts: [{ text: stableHead }] }],
-                  ttl: `${geminiTtlSeconds(ttl)}s`,
-                  displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
+            const inFlight = geminiExplicitCacheInFlight.get(cacheKeyHash);
+            if (inFlight) {
+              // A concurrent call is creating this exact tuple; share its
+              // resource. The creator alone records the storage ledger item.
+              cacheEntry = await inFlight;
+            } else {
+              const creation = this.createExplicitCacheEntry({
+                reviewClient,
+                stableHead,
+                ttl,
+                cacheKeyHash,
+                context,
+                ledgerUsage: outputLimitUsage,
+                ledgerCosts: outputLimitCosts,
+                onIndeterminateCreate: () => {
+                  indeterminateCacheCreateAttempts += 1;
                 },
-              })) as { name?: string; usageMetadata?: { totalTokenCount?: number } };
-              if (created?.name) {
-                const tokenCount =
-                  created.usageMetadata?.totalTokenCount ?? Math.ceil(stablePrefixChars / 4);
-                cacheEntry = {
-                  name: created.name,
-                  token_count: tokenCount,
-                  expires_at_ms: Date.now() + geminiTtlSeconds(ttl) * 1_000,
-                };
-                geminiExplicitCacheIndex.set(cacheKeyHash, cacheEntry);
-                cacheStorageTokenHoursPending = (tokenCount * geminiTtlSeconds(ttl)) / 3_600;
-                context.emit({
-                  type: "provider.cache.notice",
-                  session_id: context.session_id,
-                  round: context.round,
-                  peer: this.id,
-                  message: `Gemini explicit cache created (${tokenCount} tokens, ttl ${ttl}).`,
-                  data: {
-                    model: this.model,
-                    cache_name: created.name,
-                    token_count: tokenCount,
-                    ttl,
-                    key_hash: cacheKeyHash,
-                  },
-                });
-              }
-            } catch (error) {
-              // Best-effort: an uncached call is always correct; the failed
-              // creation is surfaced, never fatal.
-              context.emit({
-                type: "provider.cache.notice",
-                session_id: context.session_id,
-                round: context.round,
-                peer: this.id,
-                message: `Gemini explicit cache creation failed; continuing uncached: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-                data: { model: this.model },
               });
+              geminiExplicitCacheInFlight.set(cacheKeyHash, creation);
+              try {
+                cacheEntry = await creation;
+              } finally {
+                geminiExplicitCacheInFlight.delete(cacheKeyHash);
+              }
             }
           }
         }
@@ -505,13 +685,15 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         const params = cacheEntry
           ? {
               model: this.model,
-              // The cached head precedes these live contents server-side; the
-              // per-round system prompt travels as a live systemInstruction.
-              contents: `${userPrompt(prompt.slice(stablePrefixChars))}\n\n${statusInstruction()}`,
+              // The cached head precedes these live contents server-side.
+              // Contract: a request that references cachedContent must NOT
+              // set systemInstruction/tools (400 INVALID_ARGUMENT), so the
+              // per-round system prompt leads the live contents instead —
+              // the same composition order the uncached request uses.
+              contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt.slice(stablePrefixChars))}\n\n${statusInstruction()}`,
               config: {
                 ...requestConfig,
                 cachedContent: cacheEntry.name,
-                systemInstruction: this.systemPrompt(context),
               },
             }
           : {
@@ -521,20 +703,23 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             };
         const decorateUsage = (usage: TokenUsage | undefined): TokenUsage | undefined => {
           if (!usage) return usage;
-          // The aggregate merge deliberately drops per-call cache attributes;
-          // re-derive the mode with usageFromGemini's per-attempt semantics:
-          // explicit when this call reads through the explicit cache entry,
-          // implicit for provider-side prefix caching, not_supported when
-          // nothing was cached. Costs are unaffected (they are computed from
-          // the per-attempt usage before the merge).
+          // The aggregate merge deliberately drops per-call QUALITATIVE cache
+          // attributes (mode/key hash — storage token-hours are additive and
+          // arrive through the ledger merge); re-derive the mode with
+          // usageFromGemini's per-attempt semantics: explicit when this call
+          // reads through the explicit cache entry, implicit for
+          // provider-side prefix caching, not_supported when nothing was
+          // cached. Costs are unaffected (they are computed from the
+          // per-attempt usage before the merge).
           if ((usage.cache_read_tokens ?? 0) > 0) {
             usage.cache_provider_mode = cacheEntry ? "explicit" : "implicit";
           } else {
             usage.cache_provider_mode = "not_supported";
           }
-          if (cacheStorageTokenHoursPending > 0) {
-            usage.cache_storage_token_hours = cacheStorageTokenHoursPending;
-            cacheStorageTokenHoursPending = 0;
+          // This client created (or reused) the entry and knows the stable
+          // key — publish it so cache telemetry can correlate rounds.
+          if (cacheEntry && cacheKeyHash) {
+            usage.cache_key_hash = cacheKeyHash;
           }
           return usage;
         };
@@ -596,9 +781,10 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           tokenStream.complete(text.length);
           const normalized = text ? { text, parser_warnings: [] } : geminiTextWithWarning(last);
           const currentUsage = usageFromGemini(last?.usageMetadata);
-          // Decorate the AGGREGATE: combinedGeminiUsage (mergeUsage) does not
-          // propagate per-call cache attributes, so decorating per-attempt
-          // usage before the merge would lose mode/storage.
+          // Decorate the AGGREGATE: combinedGeminiUsage (mergeUsage) sums
+          // additive fields (storage token-hours included) but drops
+          // qualitative per-call cache attributes, so mode/key hash are
+          // stamped after the merge.
           const allUsage = decorateUsage(combinedGeminiUsage([...outputLimitUsage, currentUsage]));
           const currentCost = currentUsage
             ? estimateCost(this.config, this.id, currentUsage, this.model)
@@ -615,7 +801,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
                 }
               : {}),
             started,
-            attempts: attempt,
+            // Ambiguous cache creations are provider calls whose spend never
+            // became durable; they surface as unpriced attempts.
+            attempts: attempt + indeterminateCacheCreateAttempts,
             modelReported: last?.modelVersion,
             extraParserWarnings: normalized.parser_warnings,
           });
@@ -667,7 +855,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               }
             : {}),
           started,
-          attempts: attempt,
+          attempts: attempt + indeterminateCacheCreateAttempts,
           modelReported: response.modelVersion,
           extraParserWarnings: normalized.parser_warnings,
         });
@@ -676,19 +864,36 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // A generateContent failure that names the cached content means the
         // entry was lost or expired server-side: drop it so the retry (or
         // the next round) re-creates instead of failing repeatedly.
+        let staleCacheDropped = false;
         if (error instanceof Error && /cached\s*content|cachedContents\//i.test(error.message)) {
           for (const [key, entry] of geminiExplicitCacheIndex) {
-            if (error.message.includes(entry.name)) geminiExplicitCacheIndex.delete(key);
+            if (error.message.includes(entry.name)) {
+              geminiExplicitCacheIndex.delete(key);
+              staleCacheDropped = true;
+            }
           }
         }
         this.discardTokenEventBuffer(context, "review", attempt);
-        return this.classifyWithAccumulatedBilling(
+        const classified = this.classifyWithAccumulatedBilling(
           error,
-          attempt,
+          attempt + indeterminateCacheCreateAttempts,
           started,
           outputLimitUsage,
           outputLimitCosts,
+          indeterminateCacheCreateAttempts,
         );
+        // Codex review of PR #240: the provider's stale-cache 400/404 is
+        // classified as a terminal provider_error, but losing the entry is
+        // recoverable — the index entry was just dropped, so the retry
+        // re-creates the cache instead of failing the review.
+        if (staleCacheDropped && !classified.retryable) {
+          return {
+            ...classified,
+            retryable: true,
+            message: `${classified.message} (stale cached content dropped; the retry re-creates it)`,
+          };
+        }
+        return classified;
       },
       { signal: context.signal },
     );

@@ -20,8 +20,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   `CROSS_REVIEW_GEMINI_EXPLICIT_CACHE=true`, the Gemini adapter creates one
   `cachedContents` entry per distinct (schema, model, TTL, head) once the
   head reaches the documented 4,096-token minimum, sends only the dynamic
-  remainder live with `cachedContent` plus a live `systemInstruction`, and
-  reports reads as `cache_provider_mode="explicit"`. Storage is billed
+  remainder live with `cachedContent` (the per-round system prompt leads
+  the live contents: the provider contract rejects `cachedContent`
+  combined with `systemInstruction`/`tools` with 400 INVALID_ARGUMENT),
+  and reports reads as `cache_provider_mode="explicit"`. Storage is billed
   deterministically at creation (cached tokens x TTL hours) through the new
   `cache_storage_per_million_hour` rate-card field
   (`CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR`, official
@@ -31,9 +33,22 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounds retention. Default OFF: implicit caching already discounts
   repeated prefixes at no storage cost (the v3.7.5 Anthropic study showed
   explicit write-side overhead can exceed read savings), so arming it is a
-  deliberate FinOps decision. Creation failures fall back to the uncached
-  request with a `provider.cache.notice`; a lost cache is dropped from the
-  index so the standard retry envelope re-creates it.
+  deliberate FinOps decision. Billing discipline (Codex review of PR
+  #240): the authoritative token count is fetched with the free
+  `countTokens` BEFORE creation (no count => no billable cache; chars/4
+  never masquerades as an exact charge); the deterministic storage charge
+  is recorded in the attempt billing ledger at creation, so failed and
+  recovered attempts keep it, `mergeCost` carries the itemized
+  `cache_storage_cost` through aggregation, and the hard-budget preflight
+  prices one conservative creation per Gemini model (fail-closed without
+  the storage rate, which the financial gate requires for the primary AND
+  every fallback). Concurrent creations of the same tuple share one
+  in-flight promise; insertion evicts expired index entries; the stable
+  `cache_key_hash` is published in usage telemetry. Creation failures fall
+  back to the uncached request with a `provider.cache.notice` —
+  transport-ambiguous ones surface as an unpriced attempt (the server may
+  have created and billed the entry); a lost cache is dropped from the
+  index and the failure is marked retryable so the retry re-creates it.
 
 ## [v04.06.02] — 24/08/2026
 

@@ -907,9 +907,22 @@ export function missingFinancialControlVars(
     config.cache.gemini_explicit &&
     !config.cache.disable_per_peer.gemini
   ) {
-    const geminiRate = resolveCostRate(config, "gemini", config.models.gemini);
-    if (geminiRate?.cache_storage_per_million_hour == null) {
-      missing.add(`${COST_RATE_ENV_PREFIX.gemini}_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR`);
+    // Codex review of PR #240: a fallback adapter can create a billed cache
+    // too, so the storage rate is required for the primary AND every
+    // configured Gemini fallback (the same per-model contract the
+    // Perplexity dimensions apply). A fallback whose complete card is
+    // absent is already reported by the generic loop above.
+    const primaryModel = config.models.gemini;
+    for (const model of new Set([primaryModel, ...(config.fallback_models.gemini ?? [])])) {
+      const geminiRate = resolveCostRate(config, "gemini", model);
+      if (!geminiRate) continue;
+      if (geminiRate.cache_storage_per_million_hour == null) {
+        missing.add(
+          model === primaryModel
+            ? `${COST_RATE_ENV_PREFIX.gemini}_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR`
+            : `model_cost_rates.gemini[${JSON.stringify(model)}].cache_storage_per_million_hour`,
+        );
+      }
     }
   }
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig, missingFinancialControlVars } from "../src/core/config.js";
-import { estimateCost, mergeUsage } from "../src/core/cost.js";
+import { estimateCost, mergeCost, mergeUsage } from "../src/core/cost.js";
 import { FileConfigSchema, flattenFileConfigToEnvMap } from "../src/core/file-config.js";
 import {
   CrossReviewOrchestrator,
@@ -1892,6 +1892,139 @@ const regressions: Regression[] = [
         ).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
         false,
         "the disarmed gate does not demand the storage rate",
+      );
+      // Codex review of PR #240: a Gemini FALLBACK with a complete
+      // input/output card but no storage rate can still create a billed
+      // cache — the armed gate requires the rate per model, like the
+      // Perplexity dimensions.
+      const geminiFallbackConfig = {
+        ...geminiArmedConfig,
+        cost_rates: {
+          ...geminiArmedConfig.cost_rates,
+          gemini: {
+            input_per_million: 2,
+            output_per_million: 12,
+            cache_storage_per_million_hour: 4.5,
+          },
+        },
+        fallback_models: { ...geminiArmedConfig.fallback_models, gemini: ["gemini-2.5-pro"] },
+        model_cost_rates: {
+          ...geminiArmedConfig.model_cost_rates,
+          gemini: {
+            ...geminiArmedConfig.model_cost_rates?.gemini,
+            "gemini-2.5-pro": { input_per_million: 1.25, output_per_million: 10 },
+          },
+        },
+      } as AppConfig;
+      assert.ok(
+        missingFinancialControlVars(geminiFallbackConfig, ["gemini"]).includes(
+          'model_cost_rates.gemini["gemini-2.5-pro"].cache_storage_per_million_hour',
+        ),
+        "the armed cache requires the storage rate for every Gemini fallback model",
+      );
+      assert.equal(
+        missingFinancialControlVars(
+          {
+            ...geminiFallbackConfig,
+            model_cost_rates: {
+              ...geminiFallbackConfig.model_cost_rates,
+              gemini: {
+                "gemini-2.5-pro": {
+                  input_per_million: 1.25,
+                  output_per_million: 10,
+                  cache_storage_per_million_hour: 1,
+                },
+              },
+            },
+          } as AppConfig,
+          ["gemini"],
+        ).some((item) => item.includes("cache_storage")),
+        false,
+        "complete storage rates across primary + fallbacks satisfy the gate",
+      );
+      // Codex review of PR #240: the hard-budget preflight must include the
+      // deterministic storage charge for an armed Gemini review round, and
+      // fail closed (undefined) when the storage rate is absent.
+      const geminiPreflightBase = {
+        ...geminiArmedConfig,
+        cache: {
+          ...geminiArmedConfig.cache,
+          ttl: { ...geminiArmedConfig.cache.ttl, gemini: "1h" as const },
+        },
+        fallback_models: { ...geminiArmedConfig.fallback_models, gemini: [] },
+      } as AppConfig;
+      assert.equal(
+        estimatedPeerRoundCost(geminiPreflightBase, ["gemini"], "four"),
+        undefined,
+        "an armed cache without a storage rate fails the preflight closed",
+      );
+      const geminiPreflightPriced = {
+        ...geminiPreflightBase,
+        cost_rates: {
+          ...geminiPreflightBase.cost_rates,
+          gemini: {
+            input_per_million: 2,
+            output_per_million: 12,
+            cache_storage_per_million_hour: 4.5,
+          },
+        },
+      } as AppConfig;
+      const geminiPreflightDisarmed = {
+        ...geminiPreflightPriced,
+        cache: { ...geminiPreflightPriced.cache, gemini_explicit: false },
+      } as AppConfig;
+      const armedEnvelope = estimatedPeerRoundCost(geminiPreflightPriced, ["gemini"], "four");
+      const disarmedEnvelope = estimatedPeerRoundCost(geminiPreflightDisarmed, ["gemini"], "four");
+      assert.ok(armedEnvelope != null && disarmedEnvelope != null);
+      assert.ok(
+        Math.abs(armedEnvelope - disarmedEnvelope - (1 * 1 * 4.5) / 1_000_000) < 1e-15,
+        `the armed envelope adds one creation's storage (prompt tokens x TTL hours x rate): ${armedEnvelope} vs ${disarmedEnvelope}`,
+      );
+      const generationEnvelopeWithCache = estimatedPeerRoundCost(
+        geminiPreflightPriced,
+        ["gemini"],
+        "four",
+        {},
+        { request_role: "generation" },
+      );
+      assert.ok(
+        generationEnvelopeWithCache != null &&
+          Math.abs(
+            generationEnvelopeWithCache -
+              (estimatedPeerRoundCost(
+                geminiPreflightDisarmed,
+                ["gemini"],
+                "four",
+                {},
+                {
+                  request_role: "generation",
+                },
+              ) ?? Number.NaN),
+          ) < 1e-15,
+        "generation requests never use the explicit cache, so their envelope carries no storage",
+      );
+      // Codex review of PR #240: mergeCost must carry the itemized storage
+      // breakdown through retry/failure aggregation and persistence.
+      const mergedStorage = mergeCost([
+        {
+          currency: "USD",
+          total_cost: 0.01,
+          input_cost: 0.005,
+          output_cost: 0.005,
+          estimated: true,
+          source: "configured-rate",
+        },
+        {
+          currency: "USD",
+          total_cost: 0.0225,
+          cache_storage_cost: 0.0225,
+          estimated: true,
+          source: "configured-rate",
+        },
+      ]);
+      assert.ok(
+        Math.abs((mergedStorage.cache_storage_cost ?? 0) - 0.0225) < 1e-15,
+        `mergeCost accumulates cache_storage_cost: ${mergedStorage.cache_storage_cost}`,
       );
       const agentPreflight = estimatedPeerRoundCost(agentConfig, ["perplexity"], "four");
       const agentEnvelope = estimateCost(

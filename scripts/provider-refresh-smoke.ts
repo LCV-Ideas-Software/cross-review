@@ -10,7 +10,9 @@ import { AnthropicAdapter, anthropicCacheMinTokens } from "../src/peers/anthropi
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { classifyProviderError } from "../src/peers/errors.js";
 import {
+  __geminiExplicitCacheIndexForTests,
   __resetGeminiExplicitCacheIndexForTests,
+  __seedGeminiExplicitCacheIndexForTests,
   GEMINI_EXPLICIT_CACHE_MIN_TOKENS,
   GeminiAdapter,
 } from "../src/peers/gemini.js";
@@ -674,24 +676,61 @@ function capturePerplexityProbe(
       ttl: { ...config.cache.ttl, gemini: "1h" as const },
       disable_per_peer: { ...config.cache.disable_per_peer, gemini: false },
     },
+    // Storage rate so the ledger item is priced; fast retries so the
+    // stale-cache re-creation case does not sleep through real backoff.
+    cost_rates: {
+      ...config.cost_rates,
+      gemini: {
+        input_per_million: 2,
+        output_per_million: 12,
+        cache_read_per_million: 0.2,
+        cache_storage_per_million_hour: 4.5,
+      },
+    },
+    retry: { ...config.retry, max_attempts: 3, base_delay_ms: 1, max_delay_ms: 2 },
   };
   const stableHead = `${"S".repeat(GEMINI_EXPLICIT_CACHE_MIN_TOKENS * 4)}\n`;
   const prompt = `${stableHead}dynamic tail of round 1`;
-  const makeClient = () => {
+  const makeClient = (behavior?: {
+    countTokensError?: boolean;
+    createWithoutUsage?: boolean;
+    createDelayMs?: number;
+    createError?: Error;
+    // Errors thrown by the first N generateContent calls, in order.
+    generateErrors?: Error[];
+  }) => {
     const createCalls: Array<Record<string, unknown>> = [];
+    const countCalls: Array<Record<string, unknown>> = [];
     const genCalls: Array<{ contents?: string; config?: Record<string, unknown> }> = [];
+    const pendingGenerateErrors = [...(behavior?.generateErrors ?? [])];
     const client = {
       ThinkingLevel: { LOW: "LOW", MEDIUM: "MEDIUM", HIGH: "HIGH" },
       ai: {
         caches: {
           create: async (p: Record<string, unknown>) => {
             createCalls.push(p);
-            return { name: "cachedContents/fixture-1", usageMetadata: { totalTokenCount: 5_000 } };
+            if (behavior?.createDelayMs) {
+              await new Promise((resolve) => setTimeout(resolve, behavior.createDelayMs));
+            }
+            if (behavior?.createError) throw behavior.createError;
+            return {
+              name: `cachedContents/fixture-${createCalls.length}`,
+              ...(behavior?.createWithoutUsage
+                ? {}
+                : { usageMetadata: { totalTokenCount: 5_000 } }),
+            };
           },
         },
         models: {
+          countTokens: async (p: Record<string, unknown>) => {
+            countCalls.push(p);
+            if (behavior?.countTokensError) throw new Error("countTokens unavailable");
+            return { totalTokens: 5_000 };
+          },
           generateContent: async (p: { contents?: string; config?: Record<string, unknown> }) => {
             genCalls.push(p);
+            const pendingError = pendingGenerateErrors.shift();
+            if (pendingError) throw pendingError;
             return {
               text: READY_JSON,
               modelVersion: geminiCacheConfig.models.gemini,
@@ -707,7 +746,7 @@ function capturePerplexityProbe(
         },
       },
     };
-    return { client, createCalls, genCalls };
+    return { client, createCalls, countCalls, genCalls };
   };
   const context = (prefixChars?: number) => ({
     session_id: "550e8400-e29b-41d4-a716-446655440077",
@@ -739,18 +778,38 @@ function capturePerplexityProbe(
     false,
     "the cached head must not be resent live",
   );
-  assert.equal(typeof armedMock.genCalls[0]?.config?.systemInstruction, "string");
+  assert.equal(
+    armedMock.genCalls[0]?.config?.systemInstruction,
+    undefined,
+    "a request referencing cachedContent must not set systemInstruction (400 INVALID_ARGUMENT contract); the system prompt leads the live contents instead",
+  );
+  assert.equal(
+    armedMock.countCalls.length,
+    1,
+    "the authoritative token count is fetched (free) before creation",
+  );
   assert.equal(first.usage?.cache_read_tokens, 5_000);
   assert.equal(first.usage?.cache_provider_mode, "explicit");
+  assert.equal(
+    typeof first.usage?.cache_key_hash,
+    "string",
+    "the client created the entry and knows the stable key — telemetry must not record null",
+  );
   assert.equal(first.usage?.input_tokens, 200);
   assert.equal(
     first.usage?.cache_storage_token_hours,
     5_000,
     "storage token-hours = cached tokens x 1h TTL, billed once at creation",
   );
+  assert.ok(
+    Math.abs((first.cost?.cache_storage_cost ?? 0) - 0.0225) < 1e-12,
+    `the priced result itemizes the storage charge: ${first.cost?.cache_storage_cost}`,
+  );
+  assert.equal(first.unpriced_attempts, undefined, "the storage ledger item is not an attempt");
   const second = await armed.call(prompt, context(stableHead.length));
   assert.equal(armedMock.createCalls.length, 1, "the second call reuses the cache entry");
   assert.equal(second.usage?.cache_storage_token_hours, undefined, "storage billed only once");
+  assert.equal(second.cost?.cache_storage_cost, undefined);
 
   // Gate off => untouched legacy composition.
   __resetGeminiExplicitCacheIndexForTests();
@@ -785,6 +844,140 @@ function capturePerplexityProbe(
     noPrefixMock.client;
   await noPrefixAdapter.call(prompt, context(undefined));
   assert.equal(noPrefixMock.createCalls.length, 0);
+
+  // Codex review of PR #240 — no authoritative token count => no billable
+  // cache (chars/4 must never masquerade as an exact storage charge).
+  __resetGeminiExplicitCacheIndexForTests();
+  const noCountMock = makeClient({ countTokensError: true });
+  const noCountAdapter = new GeminiAdapter(geminiCacheConfig);
+  (noCountAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    noCountMock.client;
+  const noCount = await noCountAdapter.call(prompt, context(stableHead.length));
+  assert.equal(
+    noCountMock.createCalls.length,
+    0,
+    "without an authoritative token count no billable cache is created",
+  );
+  assert.equal(noCount.usage?.cache_storage_token_hours, undefined);
+
+  // Creation response without usageMetadata => the free countTokens result
+  // prices storage (never the chars/4 heuristic).
+  __resetGeminiExplicitCacheIndexForTests();
+  const countedMock = makeClient({ createWithoutUsage: true });
+  const countedAdapter = new GeminiAdapter(geminiCacheConfig);
+  (countedAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    countedMock.client;
+  const counted = await countedAdapter.call(prompt, context(stableHead.length));
+  assert.equal(
+    counted.usage?.cache_storage_token_hours,
+    5_000,
+    "the countTokens result prices storage when the creation response omits usageMetadata",
+  );
+
+  // Concurrent eligible calls share ONE in-flight creation; the creator
+  // alone records the storage charge.
+  __resetGeminiExplicitCacheIndexForTests();
+  const raceMock = makeClient({ createDelayMs: 25 });
+  const raceAdapter = new GeminiAdapter(geminiCacheConfig);
+  (raceAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    raceMock.client;
+  const [raceFirst, raceSecond] = await Promise.all([
+    raceAdapter.call(prompt, context(stableHead.length)),
+    raceAdapter.call(prompt, context(stableHead.length)),
+  ]);
+  assert.equal(raceMock.createCalls.length, 1, "concurrent calls share one in-flight creation");
+  assert.equal(
+    [raceFirst, raceSecond].filter((r) => (r.usage?.cache_storage_token_hours ?? 0) > 0).length,
+    1,
+    "exactly one of the racers records the storage charge",
+  );
+
+  // Insertion sweeps expired entries so the process-wide index stays
+  // bounded by live heads.
+  __resetGeminiExplicitCacheIndexForTests();
+  __seedGeminiExplicitCacheIndexForTests("expired-fixture-key", {
+    name: "cachedContents/expired",
+    token_count: 1,
+    expires_at_ms: Date.now() - 1_000,
+  });
+  const evictMock = makeClient();
+  const evictAdapter = new GeminiAdapter(geminiCacheConfig);
+  (evictAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    evictMock.client;
+  await evictAdapter.call(prompt, context(stableHead.length));
+  assert.equal(
+    __geminiExplicitCacheIndexForTests().has("expired-fixture-key"),
+    false,
+    "insertion evicts expired entries",
+  );
+  assert.equal(__geminiExplicitCacheIndexForTests().size, 1);
+
+  // A stale cachedContents rejection drops the entry AND retries: the
+  // review succeeds against a freshly created cache instead of failing.
+  __resetGeminiExplicitCacheIndexForTests();
+  const staleMock = makeClient({
+    generateErrors: [
+      Object.assign(new Error("400 INVALID_ARGUMENT: cachedContents/fixture-1 is not found"), {
+        status: 400,
+      }),
+    ],
+  });
+  const staleAdapter = new GeminiAdapter(geminiCacheConfig);
+  (staleAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    staleMock.client;
+  const staleResult = await staleAdapter.call(prompt, context(stableHead.length));
+  assert.equal(staleMock.createCalls.length, 2, "the dropped stale entry is re-created on retry");
+  assert.equal(staleMock.genCalls[1]?.config?.cachedContent, "cachedContents/fixture-2");
+  assert.equal(
+    staleResult.usage?.cache_storage_token_hours,
+    10_000,
+    "both real creations bill storage",
+  );
+
+  // A terminal review failure AFTER creation keeps the storage charge in
+  // the failure billing (the ledger records it at creation, not at
+  // success).
+  __resetGeminiExplicitCacheIndexForTests();
+  const failMock = makeClient({
+    generateErrors: [
+      Object.assign(new Error("400 INVALID_ARGUMENT: schema mismatch"), { status: 400 }),
+    ],
+  });
+  const failAdapter = new GeminiAdapter(geminiCacheConfig);
+  (failAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    failMock.client;
+  await assert.rejects(failAdapter.call(prompt, context(stableHead.length)), (error: unknown) => {
+    const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+    assert.ok(failure, "the terminal rejection carries the peerFailure record");
+    assert.equal(
+      failure.usage?.cache_storage_token_hours,
+      5_000,
+      "a failed review keeps the deterministic storage charge",
+    );
+    assert.ok(
+      Math.abs((failure.cost?.cache_storage_cost ?? 0) - 0.0225) < 1e-12,
+      `the failure cost itemizes storage: ${failure.cost?.cache_storage_cost}`,
+    );
+    assert.equal(failure.unpriced_attempts, 1);
+    assert.equal(failure.billing_status, "unknown");
+    return true;
+  });
+
+  // A transport-ambiguous creation failure may have billed server-side:
+  // it surfaces as one unpriced attempt instead of settling as known-zero.
+  __resetGeminiExplicitCacheIndexForTests();
+  const ambiguousMock = makeClient({ createError: new Error("fetch failed: ECONNRESET") });
+  const ambiguousAdapter = new GeminiAdapter(geminiCacheConfig);
+  (ambiguousAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    ambiguousMock.client;
+  const ambiguous = await ambiguousAdapter.call(prompt, context(stableHead.length));
+  assert.equal(ambiguousMock.createCalls.length, 1);
+  assert.equal(ambiguous.usage?.cache_storage_token_hours, undefined);
+  assert.equal(
+    ambiguous.unpriced_attempts,
+    1,
+    "an ambiguous creation is an unpriced provider attempt",
+  );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 
