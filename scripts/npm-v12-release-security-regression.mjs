@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -927,6 +927,61 @@ assert.match(
   }
 }
 {
+  {
+    const nonYamlRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-nonyaml-"));
+    try {
+      await mkdir(path.join(nonYamlRoot, ".github", "workflows"), { recursive: true });
+      await mkdir(path.join(nonYamlRoot, "build"), { recursive: true });
+      await writeFile(
+        path.join(nonYamlRoot, ".github", "workflows", "w.yml"),
+        "jobs:\n  x:\n    steps:\n      - uses: ./build/script.js\n",
+      );
+      await writeFile(path.join(nonYamlRoot, "build", "script.js"), "console.log(1);\n");
+      const nonYamlValidatorPath =
+        "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+      const { validateTree } = await import(nonYamlValidatorPath);
+      assert.equal(
+        validateTree(nonYamlRoot).length,
+        1,
+        "a plain-file local reference that is not a reusable workflow must fail closed",
+      );
+    } finally {
+      await rm(nonYamlRoot, { recursive: true, force: true });
+    }
+  }
+  {
+    const cycleRoot = await mkdtemp(path.join(os.tmpdir(), "pin-validator-cycle-"));
+    try {
+      await mkdir(path.join(cycleRoot, ".github", "workflows"), { recursive: true });
+      await mkdir(path.join(cycleRoot, ".github", "actions", "a"), { recursive: true });
+      await writeFile(path.join(cycleRoot, ".github", "workflows", "w.yml"), "jobs: {}\n");
+      let symlinked = false;
+      try {
+        await symlink(
+          path.join(cycleRoot, ".github", "actions"),
+          path.join(cycleRoot, ".github", "actions", "a", "loop"),
+          "dir",
+        );
+        symlinked = true;
+      } catch {
+        console.log(
+          "[npm-v12] symlink fixture skipped (no symlink privilege on this host); CI covers it",
+        );
+      }
+      if (symlinked) {
+        const cycleValidatorPath =
+          "../.github/actions/validate-action-pins/validate-action-pins.mjs";
+        const { validateTree } = await import(cycleValidatorPath);
+        const finished = validateTree(cycleRoot);
+        assert.ok(
+          Array.isArray(finished),
+          "a symlink cycle under .github/actions must terminate instead of stalling the gate",
+        );
+      }
+    } finally {
+      await rm(cycleRoot, { recursive: true, force: true });
+    }
+  }
   const distText = await read(".github/actions/validate-action-pins/dist/index.mjs");
   assert.match(
     distText,
