@@ -512,6 +512,190 @@ import type { PeerResult } from "../src/core/types.js";
     attachmentsPresent: false,
   });
   assert.equal(dualRouteLie.pass, false, "a second divergent route must contradict the pin");
+  // Codex review round 7: occurrence OWNERSHIP is positional. Identical
+  // routed occurrences owned by different named claims must be judged
+  // against their own peer's pin; negation must survive provider-qualified
+  // syntax; and routed model families outside the native allowlist must
+  // still be parsed.
+  const identicalRouteTwoClaimsLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime models.",
+    initialDraft:
+      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5 and the currently loaded codex model is openai/gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    identicalRouteTwoClaimsLie.pass,
+    false,
+    "an occurrence owned by the codex claim must be judged against the codex pin",
+  );
+  const identicalRouteTwoClaimsTruth = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime models.",
+    initialDraft:
+      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5 and the currently loaded codex model is gpt-5.6-sol.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    identicalRouteTwoClaimsTruth.pass,
+    true,
+    "two truthful named claims on one line must pass",
+  );
+  const negatedRoutedPinLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft:
+      "The currently loaded cross-review runtime perplexity model is not openai/gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    negatedRoutedPinLie.pass,
+    false,
+    "denying the routed pin must contradict even with the provider segment after the negation",
+  );
+  const negatedDivergentRouteTruth = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft:
+      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5, not xai/gpt-5.5.",
+    runtimeFacts: { model_pins: routedPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    negatedDivergentRouteTruth.pass,
+    true,
+    "denying a divergent route while asserting the pinned one must pass",
+  );
+  const genericRoutedFamilyLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime perplexity model.",
+    initialDraft: "The currently loaded cross-review runtime perplexity model is zeta/qwen3-max.",
+    runtimeFacts: { model_pins: { ...routedPins, perplexity: "zeta/llama-4.1" } },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    genericRoutedFamilyLie.pass,
+    false,
+    "a routed family outside the native allowlist must still be parsed and contradict",
+  );
+  // Red-team hardening (round 7b): representative regressions from the
+  // 38-case adversarial sweep (see PR #234).
+  const rt = (draft: string, pins: Record<string, string>) =>
+    truthfulnessPreflight({
+      task: "Check the currently loaded cross-review runtime models.",
+      initialDraft: draft,
+      runtimeFacts: { model_pins: pins },
+      attachmentsPresent: false,
+    }).pass;
+  const genericPins = { ...routedPins, perplexity: "zeta/llama-4.1" };
+  const plainPins = { ...modelPins };
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime pins perplexity to perplexity/kimi-k3, with the adapter wired in src/v2-parser of the harness.",
+      plainPins,
+    ),
+    true,
+    "a file path must not become a routed occurrence",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes perplexity through openai/gpt-5.5 at https://api.openai.com/v1/responses.",
+      routedPins,
+    ),
+    true,
+    "URLs must be masked before route collection",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime, revalidated in the 2026/aug23 sweep, still pins perplexity to perplexity/kimi-k3.",
+      plainPins,
+    ),
+    true,
+    "date-like fragments must not become routed occurrences",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime confirms the codex peer is not currently gpt-5.5 and pins it to gpt-5.6-sol.",
+      plainPins,
+    ),
+    true,
+    "negation must survive an intervening adverb",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime pins grok to grok-4.6, neither grok-4.5 nor grok-3.",
+      plainPins,
+    ),
+    true,
+    "neither/nor denials must not count as assertions",
+  );
+  assert.equal(
+    rt(
+      "No currently loaded cross-review runtime, o peer grok não roda mais o antigo grok-4.5 e usa o grok-4.6.",
+      plainPins,
+    ),
+    true,
+    "portuguese não…mais denial must not count as an assertion",
+  );
+  assert.equal(
+    rt(
+      "Perplexity output in the currently loaded cross-review runtime is served from openai/gpt-5.5.",
+      plainPins,
+    ),
+    false,
+    "'served from' is a source preposition, not a negation: the wrong route must contradict",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime pins claude-fable-5 and serves gpt-5.6-sol to the Codex peer.",
+      plainPins,
+    ),
+    true,
+    "an alias embedded in a model token must not steal clause ownership",
+  );
+  assert.equal(
+    rt(
+      "Per the notes in src/gemini/routing.md, the currently loaded cross-review runtime serves gpt-5.6-sol to the Codex peer.",
+      plainPins,
+    ),
+    true,
+    "an alias inside a file path must not steal clause ownership",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime serves grok-4.6 to the Gemini peer.", plainPins),
+    false,
+    "an alias after the token inside the clause owns it: the swapped claim must contradict",
+  );
+  assert.equal(
+    rt(
+      "In the currently loaded cross-review runtime, openai/gpt-5.6-sol serves the Codex peer, and the Perplexity peer is pinned to zeta/llama-4.1.",
+      genericPins,
+    ),
+    true,
+    "an ownerless routed occurrence must not be adopted by the routable peer blanketly",
+  );
+  assert.equal(
+    rt(
+      "The Perplexity peer in the currently loaded cross-review runtime is routed through zeta / gpt-5.5.",
+      routedPins,
+    ),
+    false,
+    "whitespace around the route slash must not hide the wrong provider",
+  );
+  assert.equal(
+    rt(
+      "The Codex peer in the currently loaded cross-review runtime is running gpt_5.6_sol.",
+      plainPins,
+    ),
+    true,
+    "underscore separators are cosmetic: the canonical token must match the pin",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime now has the perplexity peer on zeta llama-4.2.",
+      genericPins,
+    ),
+    false,
+    "a slashless token of the routed pin's family must stay visible and contradict",
+  );
   // And the wrapped `models/provider/model` pin form is normalized before
   // comparison, so a truthful claim of the routed model still passes.
   const wrappedPins = { ...modelPins, perplexity: "models/perplexity/kimi-k3" } as const;

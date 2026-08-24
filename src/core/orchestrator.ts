@@ -2375,10 +2375,6 @@ const MODEL_CLAIM_ALIASES: Record<PeerId, RegExp> = {
 const MODEL_TOKEN_SOURCE =
   "(?:gpt|chatgpt|codex|claude|gemini|deepseek|grok|sonar|perplexity|kimi)(?:[-._][a-z0-9]+)+";
 const MODEL_TOKEN_PATTERN = new RegExp(`\\b${MODEL_TOKEN_SOURCE}\\b`, "gi");
-const NON_CURRENT_MODEL_TOKEN_PATTERN = new RegExp(
-  `\\b(?:not|rather\\s+than|instead\\s+of|no\\s+longer|formerly|previously|from|nao|não|em\\s+vez\\s+de|anteriormente)\\s+(?:the\\s+|o\\s+|a\\s+)?(${MODEL_TOKEN_SOURCE})\\b`,
-  "gi",
-);
 const MODEL_TOKEN_PREFIXES: Record<PeerId, readonly string[]> = {
   codex: ["gpt-", "gpt.", "chatgpt-", "codex-"],
   claude: ["claude-"],
@@ -2562,24 +2558,9 @@ function normalizeModelPin(value: string): string {
   return normalizeVersionToken(value.replace(/^models\//i, "").replace(/^[a-z0-9._-]+\//i, ""));
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function uniqueMatches(pattern: RegExp, text: string): string[] {
   const matches = text.match(pattern) ?? [];
   return [...new Set(matches.map((match) => match.trim()).filter(Boolean))];
-}
-
-function uniqueCapturedMatches(pattern: RegExp, text: string): string[] {
-  const stablePattern = new RegExp(pattern.source, pattern.flags);
-  return [
-    ...new Set(
-      [...text.matchAll(stablePattern)]
-        .map((match) => match[1]?.trim())
-        .filter((match): match is string => Boolean(match)),
-    ),
-  ];
 }
 
 function attributionSegment(line: string, valueIndex: number): { local: string; prior: string } {
@@ -2623,22 +2604,6 @@ function partitionCurrentRuntimeVersionClaims(line: string): {
   return {
     asserted: [...new Set(asserted)],
     non_current: [...new Set(nonCurrent)],
-  };
-}
-
-function partitionCurrentModelClaims(
-  candidates: string[],
-  line: string,
-): {
-  asserted: string[];
-  non_current: string[];
-} {
-  const nonCurrent = new Set(
-    uniqueCapturedMatches(NON_CURRENT_MODEL_TOKEN_PATTERN, line).map(normalizeVersionToken),
-  );
-  return {
-    asserted: candidates.filter((candidate) => !nonCurrent.has(candidate)),
-    non_current: candidates.filter((candidate) => nonCurrent.has(candidate)),
   };
 }
 
@@ -2720,98 +2685,224 @@ export function truthfulnessPreflight(params: {
       !historicalOnlyModelClaim &&
       !isNonAssertiveTruthfulnessLine(line)
     ) {
+      // v4.6.0 rounds 3-7 (Codex review of PR #234) + red-team hardening:
+      // model-claim truthfulness is judged per OCCURRENCE. Each occurrence
+      // carries its span, optional provider route, negation (a bounded
+      // marker window right before it) and the peer claim that OWNS it.
+      // Ownership is positional and clause-scoped: nearest alias BEFORE the
+      // occurrence inside its clause, then nearest alias AFTER it inside
+      // the clause, then nearest alias before it anywhere on the line.
+      // Alias detection runs on a masked copy of the line: URLs, quoted
+      // strings, path-like segments and the model occurrences themselves
+      // are blanked so an alias embedded in a token ("claude-fable-5"), a
+      // path ("src/gemini/...") or a quoted log line never steals a clause.
+      // Tokens and pins are canonicalized (underscores to hyphens, embedded
+      // version "v" dropped) so cosmetic variants of the pinned id do not
+      // contradict. Generic provider/model routes require a letter-leading
+      // provider and a real model-looking segment (letters then a digit),
+      // which keeps src/v2-parser, api hosts and date fragments out.
+      type ModelOccurrence = {
+        matchStart: number;
+        index: number;
+        rawLength: number;
+        token: string;
+        route: string | undefined;
+        negated: boolean;
+        owner: PeerId | undefined;
+      };
+      const canonicalModelText = (value: string): string =>
+        value.replace(/_/g, "-").replace(/(^|[-.])v(?=[0-9])/g, "$1");
+      const base = line.replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length));
+      const negationTailPattern =
+        /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
+      const negatedBefore = (matchStart: number): boolean =>
+        negationTailPattern.test(base.slice(Math.max(0, matchStart - 64), matchStart));
+      const occurrences: ModelOccurrence[] = [];
+      const seenTokenStarts = new Set<number>();
+      const recordOccurrence = (
+        matchStart: number,
+        tokenStart: number,
+        provider: string | undefined,
+        tokenRaw: string,
+      ): void => {
+        if (seenTokenStarts.has(tokenStart)) return;
+        seenTokenStarts.add(tokenStart);
+        const token = canonicalModelText(normalizeVersionToken(tokenRaw));
+        occurrences.push({
+          matchStart,
+          index: tokenStart,
+          rawLength: tokenRaw.length,
+          token,
+          route: provider
+            ? `${canonicalModelText(normalizeVersionToken(provider))}/${token}`
+            : undefined,
+          negated: negatedBefore(matchStart),
+          owner: undefined,
+        });
+      };
+      const familyRoutePattern = new RegExp(
+        `\\b(?:([a-z][a-z0-9._-]*)\\s*/\\s*)?(${MODEL_TOKEN_SOURCE})\\b`,
+        "gi",
+      );
+      for (const match of base.matchAll(familyRoutePattern)) {
+        if (match.index === undefined || !match[2]) continue;
+        recordOccurrence(
+          match.index,
+          match.index + match[0].length - match[2].length,
+          match[1],
+          match[2],
+        );
+      }
+      const genericRoutePattern =
+        /\b([a-z][a-z0-9._-]*)\s*\/\s*([a-z]{2,}[a-z0-9]*(?:[._-][a-z0-9]+)*)\b/gi;
+      for (const match of base.matchAll(genericRoutePattern)) {
+        if (match.index === undefined || !match[2] || !/[0-9]/.test(match[2])) continue;
+        recordOccurrence(
+          match.index,
+          match.index + match[0].length - match[2].length,
+          match[1],
+          match[2],
+        );
+      }
+      // Bare tokens of a routed pin's model family (e.g. "llama-…" when the
+      // pin is zeta/llama-4.1) stay visible even without a slash or digit.
+      const routedPinFamilyByPeer = new Map<PeerId, string>();
+      for (const pinPeer of PEERS) {
+        const pin = modelPins[pinPeer];
+        if (!pin || !pin.replace(/^models\//i, "").includes("/")) continue;
+        const segment = canonicalModelText(normalizeModelPin(pin));
+        const family = segment.match(/^[a-z]{2,}[a-z0-9]*[-._]/)?.[0];
+        if (family) routedPinFamilyByPeer.set(pinPeer, family);
+      }
+      for (const family of new Set(routedPinFamilyByPeer.values())) {
+        const familyPattern = new RegExp(
+          `\\b(${family.split(".").join("\\.")}[a-z0-9._-]+)\\b`,
+          "gi",
+        );
+        for (const match of base.matchAll(familyPattern)) {
+          if (match.index !== undefined && match[1]) {
+            recordOccurrence(match.index, match.index, undefined, match[1]);
+          }
+        }
+      }
+      let aliasBase = base;
+      const maskAliasRange = (start: number, end: number): void => {
+        aliasBase = aliasBase.slice(0, start) + "#".repeat(end - start) + aliasBase.slice(end);
+      };
+      for (const occurrence of occurrences) {
+        maskAliasRange(occurrence.matchStart, occurrence.index + occurrence.rawLength);
+      }
+      aliasBase = aliasBase
+        .replace(/"[^"]*"|'[^']*'/g, (m) => "#".repeat(m.length))
+        .replace(/[a-z0-9._-]+\s*\//gi, (m) => "#".repeat(m.length));
+      const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
+      for (const aliasPeer of PEERS) {
+        const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
+        for (const match of aliasBase.matchAll(aliasPattern)) {
+          if (match.index !== undefined) {
+            aliasPositions.push({ index: match.index, peer: aliasPeer });
+          }
+        }
+      }
+      const clauseBounds: Array<{ start: number; end: number }> = [];
+      for (const match of aliasBase.matchAll(/[;,.]|\b(?:and|e)\b/gi)) {
+        if (match.index !== undefined) {
+          clauseBounds.push({ start: match.index, end: match.index + match[0].length });
+        }
+      }
+      const clauseStartFor = (index: number): number => {
+        let start = 0;
+        for (const bound of clauseBounds) {
+          if (bound.end <= index && bound.end > start) start = bound.end;
+        }
+        return start;
+      };
+      const clauseEndFor = (index: number): number => {
+        let end = aliasBase.length;
+        for (const bound of clauseBounds) {
+          if (bound.start >= index && bound.start < end) end = bound.start;
+        }
+        return end;
+      };
+      for (const occurrence of occurrences) {
+        const clauseStart = clauseStartFor(occurrence.matchStart);
+        const clauseEnd = clauseEndFor(occurrence.index + occurrence.rawLength);
+        let best: { index: number; peer: PeerId } | undefined;
+        for (const alias of aliasPositions) {
+          if (
+            alias.index >= clauseStart &&
+            alias.index < occurrence.matchStart &&
+            (!best || alias.index > best.index)
+          ) {
+            best = alias;
+          }
+        }
+        if (!best) {
+          for (const alias of aliasPositions) {
+            if (
+              alias.index >= occurrence.index + occurrence.rawLength &&
+              alias.index < clauseEnd &&
+              (!best || alias.index < best.index)
+            ) {
+              best = alias;
+            }
+          }
+        }
+        if (!best) {
+          for (const alias of aliasPositions) {
+            if (alias.index < occurrence.matchStart && (!best || alias.index > best.index)) {
+              best = alias;
+            }
+          }
+        }
+        occurrence.owner = best?.peer;
+      }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
-        if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(line)) continue;
-        const expected = normalizeModelPin(expectedModel);
-        // v4.6.0 (Codex review of PR #234, rounds 3-5): the Perplexity peer
-        // may be routed to a documented Agent API model of another family
-        // (`openai/gpt-5.5`). A routed `provider/model` occurrence carries
-        // the provider segment as part of the claim, so (a) it is accepted
-        // for the Perplexity peer whatever its family, (b) claiming a
-        // DIFFERENT route than the pinned one contradicts, and (c) native
-        // attribution is suppressed only for the exact route that belongs
-        // to the Perplexity pin on a line that names the Perplexity claim —
-        // provider-qualified syntax in a native claim ("the codex model is
-        // openai/gpt-5.5") stays attributed to that native peer.
-        const perplexityPinRaw = modelPins.perplexity;
-        const perplexityUnwrapped = perplexityPinRaw?.replace(/^models\//i, "");
-        const perplexityRoutedPin =
-          perplexityUnwrapped && perplexityUnwrapped.includes("/")
-            ? normalizeVersionToken(perplexityUnwrapped)
-            : undefined;
-        const perplexityNamed = MODEL_CLAIM_ALIASES.perplexity.test(line);
-        // Codex review round 6: one claim can repeat the same model token
-        // under several routes ("openai/gpt-5.5 and xai/gpt-5.5") while
-        // uniqueMatches collapses them into a single candidate, so EVERY
-        // routed occurrence must be collected and checked - matching only
-        // the first route would let a contradictory second route pass.
-        const routedTextsFor = (candidate: string): string[] => {
-          const pattern = new RegExp(`\\b([a-z0-9._-]+/${escapeRegExp(candidate)})\\b`, "gi");
-          const routes = new Set<string>();
-          for (const match of line.matchAll(pattern)) {
-            if (match[1]) routes.add(normalizeVersionToken(match[1]));
-          }
-          return [...routes];
-        };
-        const expectedSet =
-          peer === "perplexity"
-            ? new Set([expected, ...(perplexityRoutedPin ? [perplexityRoutedPin] : [])])
-            : new Set([expected]);
-        const candidates = uniqueMatches(MODEL_TOKEN_PATTERN, line)
-          .map(normalizeVersionToken)
-          .filter((candidate) => {
-            const routedTexts = routedTextsFor(candidate);
-            if (peer === "perplexity") {
-              return (
-                candidate === expected ||
-                routedTexts.length > 0 ||
-                MODEL_TOKEN_PREFIXES.perplexity.some((prefix) => candidate.startsWith(prefix))
-              );
-            }
-            // Attribution is per occurrence, not per line: a token written
-            // only in routed form belongs to the routed claim IFF EVERY one
-            // of its routed occurrences is the Perplexity pin's route and
-            // the line names Perplexity; any standalone occurrence - or any
-            // divergent route - keeps the candidate on the native peer.
-            const nativeOccurrence = new RegExp(`(?<!/)\\b${escapeRegExp(candidate)}\\b`, "i").test(
-              line,
+        if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(aliasBase)) continue;
+        const expected = canonicalModelText(normalizeModelPin(expectedModel));
+        const pinUnwrapped = expectedModel.replace(/^models\//i, "");
+        const routedPin = pinUnwrapped.includes("/")
+          ? canonicalModelText(normalizeVersionToken(pinUnwrapped))
+          : undefined;
+        const expectedSet = new Set([expected, ...(routedPin ? [routedPin] : [])]);
+        const pinFamily = routedPinFamilyByPeer.get(peer);
+        const owned = occurrences.filter((occurrence) => {
+          if (occurrence.owner) return occurrence.owner === peer;
+          // Ownerless occurrences keep family attribution only.
+          if (peer === "perplexity") {
+            return (
+              occurrence.token === expected ||
+              MODEL_TOKEN_PREFIXES.perplexity.some((prefix) =>
+                occurrence.token.startsWith(prefix),
+              ) ||
+              (pinFamily !== undefined && occurrence.token.startsWith(pinFamily))
             );
-            if (
-              routedTexts.length > 0 &&
-              !nativeOccurrence &&
-              candidate !== expected &&
-              perplexityNamed &&
-              perplexityRoutedPin !== undefined &&
-              routedTexts.every((route) => route === perplexityRoutedPin)
-            ) {
-              return false;
-            }
-            return MODEL_TOKEN_PREFIXES[peer].some((prefix) => candidate.startsWith(prefix));
-          });
-        if (!candidates.length) continue;
+          }
+          return MODEL_TOKEN_PREFIXES[peer].some((prefix) => occurrence.token.startsWith(prefix));
+        });
+        if (!owned.length) continue;
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
-        const claims = partitionCurrentModelClaims(candidates, line);
-        const assertedContradictions = claims.asserted.filter((candidate) => {
-          // Every routed occurrence asserts its full route; a standalone
-          // occurrence asserts the bare model segment. Each asserted view
-          // must match the pin - one divergent route suffices to contradict.
-          if (peer !== "perplexity") return !expectedSet.has(candidate);
-          const bareOccurrence = new RegExp(`(?<!/)\\b${escapeRegExp(candidate)}\\b`, "i").test(
-            line,
-          );
-          const views = routedTextsFor(candidate);
-          if (bareOccurrence || views.length === 0) views.push(candidate);
-          return views.some((view) => !expectedSet.has(view));
-        });
-        const expectedExplicitlyDenied = claims.non_current.some((candidate) =>
-          expectedSet.has(candidate),
-        );
+        // A routed occurrence owned by the routable Perplexity claim asserts
+        // its full route; a native claim asserts the model segment (the
+        // provider qualifier on a truthful native claim is decoration,
+        // while a wrong segment still contradicts).
+        const viewOf = (occurrence: ModelOccurrence): string =>
+          peer === "perplexity" && occurrence.route !== undefined
+            ? occurrence.route
+            : occurrence.token;
+        const assertedViews: string[] = [];
+        const nonCurrentViews: string[] = [];
+        for (const occurrence of owned) {
+          (occurrence.negated ? nonCurrentViews : assertedViews).push(viewOf(occurrence));
+        }
+        const assertedContradictions = assertedViews.filter((view) => !expectedSet.has(view));
+        const expectedExplicitlyDenied = nonCurrentViews.some((view) => expectedSet.has(view));
         if (assertedContradictions.length > 0 || expectedExplicitlyDenied) {
           addIssueClass(issueClasses, "runtime_contradiction");
           contradictions.push(
-            `current-state model claim asserted=${claims.asserted.join(", ") || "none"}; non_current=${claims.non_current.join(", ") || "none"} for ${peer} contradicts model_pin ${expectedModel}`,
+            `current-state model claim asserted=${assertedViews.join(", ") || "none"}; non_current=${nonCurrentViews.join(", ") || "none"} for ${peer} contradicts model_pin ${expectedModel}`,
           );
         }
       }
