@@ -1995,25 +1995,6 @@ function capturePerplexityProbe(
     "the follower generation reads through the reused cache entry",
   );
 
-  // Codex round 16: the cachedContents minimum is per model - a Flash
-  // payload counting 2,000 tokens (below the Pro 4,096 minimum, above
-  // the Flash 1,024 minimum) still creates the cache.
-  __resetGeminiExplicitCacheIndexForTests();
-  const flashConfig = {
-    ...geminiCacheConfig,
-    models: { ...geminiCacheConfig.models, gemini: "gemini-2.5-flash" },
-  };
-  const flashMock = makeClient({ countTokensResult: 2_000 });
-  const flashAdapter = new GeminiAdapter(flashConfig);
-  (flashAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
-    flashMock.client;
-  await flashAdapter.call(prompt, context(stableHead.length));
-  assert.equal(
-    flashMock.createCalls.length,
-    1,
-    "a 2,000-token Flash payload clears the 1,024-token Flash minimum and creates the cache",
-  );
-
   // Codex round 18: an abort winning the FREE countTokens race must
   // propagate - the call must NOT continue into generateContent with an
   // already-aborted context.

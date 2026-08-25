@@ -2321,38 +2321,14 @@ const regressions: Regression[] = [
           "a zero envelope prices zero worst case",
         );
       }
-      // Codex round 16: the cachedContents minimum is per model - Flash is
-      // 1,024 tokens, Pro is 4,096, unknown models stay conservative.
+      // Operator directive 25/08/2026: cross-review operates ONLY on
+      // top-of-line latest-generation models - no Flash tiers. The
+      // explicit-cache minimum is a single flagship constant (official
+      // caching docs list 4,096 for the whole Gemini 3.x generation).
       {
         const { geminiExplicitCacheMinTokensForModel } = await import("../src/peers/gemini.js");
-        assert.equal(geminiExplicitCacheMinTokensForModel("gemini-2.5-flash"), 1_024);
         assert.equal(geminiExplicitCacheMinTokensForModel("gemini-3.1-pro-preview"), 4_096);
         assert.equal(geminiExplicitCacheMinTokensForModel("gemini-unknown"), 4_096);
-        // Codex round 17: the rate requirement is PER MODEL - a 2,000-byte
-        // bound is eligible only for the Flash fallback (1,024 minimum),
-        // so the Flash rate is required while the ineligible Pro primary
-        // (4,096 minimum) is not.
-        const perModelMissing = missingFinancialControlVars(
-          {
-            ...geminiArmedConfig,
-            fallback_models: {
-              ...geminiArmedConfig.fallback_models,
-              gemini: ["gemini-2.5-flash"],
-            },
-          },
-          ["gemini"],
-          { reviewerPeers: ["gemini"], geminiCacheableBytesBound: 2_000 },
-        );
-        assert.equal(
-          perModelMissing.includes('model_cost_rates.gemini["gemini-2.5-flash"]'),
-          true,
-          "the eligible Flash fallback still requires its (entirely missing) rate card",
-        );
-        assert.equal(
-          perModelMissing.includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
-          false,
-          "the ineligible Pro primary (4,096 minimum vs 2,000-byte bound) does not require its storage rate",
-        );
       }
       // Codex round 22: the reported control matches the SELECTED rate
       // source - when the primary rate resolves from the model card (no

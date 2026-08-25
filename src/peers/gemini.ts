@@ -199,15 +199,16 @@ export function loadGenaiModule(): Promise<typeof import("@google/genai")> {
 // created and billed the entry) surface as an unpriced attempt; a
 // lost/expired cache drops the index entry and retries, re-creating it.
 export const GEMINI_EXPLICIT_CACHE_MIN_TOKENS = 4_096;
-// Codex round 16 (PR #240): the cachedContents minimum is PER MODEL —
-// 1,024 tokens for the Flash family, 4,096 for Pro (and unknown models,
-// conservatively). The adapter gate, the financial-control gate and the
-// storage preflight all derive from this single source.
-export const GEMINI_EXPLICIT_CACHE_MIN_TOKENS_FLASH = 1_024;
 export function geminiExplicitCacheMinTokensForModel(model: string): number {
-  return /flash/i.test(model)
-    ? GEMINI_EXPLICIT_CACHE_MIN_TOKENS_FLASH
-    : GEMINI_EXPLICIT_CACHE_MIN_TOKENS;
+  // Operator directive 25/08/2026: cross-review operates ONLY on
+  // top-of-line, latest-generation models - no Flash tiers. The
+  // official caching page (ai.google.dev/gemini-api/docs/caching, read
+  // 25/08/2026) lists 4,096 tokens for the entire Gemini 3.x
+  // generation, so the minimum is a single flagship constant; unknown
+  // models keep the same conservative floor. The per-family Flash
+  // branches from Codex round 16 are deliberately REMOVED.
+  void model;
+  return GEMINI_EXPLICIT_CACHE_MIN_TOKENS;
 }
 
 // Codex review of PR #240 round 2: eligibility is decided by the
@@ -720,7 +721,8 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       );
       return undefined;
     }
-    // Codex round 16: the minimum is PER MODEL (Flash 1,024 / Pro 4,096).
+    // Operator directive 25/08/2026: flagship-only - the minimum is the
+    // single 4,096-token constant.
     const modelMinTokens = geminiExplicitCacheMinTokensForModel(this.model);
     if (countedTokens < modelMinTokens) {
       // Codex review of PR #240 round 2: the authoritative count decides
