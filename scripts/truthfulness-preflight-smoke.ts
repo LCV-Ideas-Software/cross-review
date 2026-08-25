@@ -1738,6 +1738,44 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "an unterminated fence stays visible and the claim blocks - fail-closed",
   );
+  // Codex review of PR #247, round 23.
+  const portugueseScope = anchored(
+    "O runtime do cross-review usa o modelo Codex alpha beta seven.",
+  );
+  assert.equal(
+    portugueseScope.pass,
+    false,
+    "the Portuguese reversed subject (runtime do cross-review) enters the model-pin scope and the fragmented claim blocks",
+  );
+  const parentheticalComposite = anchored(
+    "The cross-review runtime OpenAI (Codex) model is gpt-5.6-sol.",
+  );
+  assert.equal(
+    parentheticalComposite.pass,
+    true,
+    "a parenthetical same-peer composite (OpenAI (Codex)) consumes together when the exact pin is stated",
+  );
+  const guardOnly = anchored("The cross-review runtime Codex model runs alpha beta seven.");
+  assert.equal(guardOnly.pass, false, "the zero-token guard still blocks the fragmented claim");
+  assert.ok(
+    !guardOnly.reason.includes("supply value-corresponding raw material"),
+    "the zero-token rejection does not advertise the evidence channel it deliberately lacks",
+  );
+  assert.ok(
+    /restat/i.test(guardOnly.reason),
+    "the zero-token rejection names restatement as the recovery path",
+  );
+  {
+    const fenceChain = "``` ".repeat(Math.ceil(200_000 / 4));
+    const fenceStart = Date.now();
+    const fenceResult = anchored(fenceChain);
+    const fenceMs = Date.now() - fenceStart;
+    assert.ok(
+      fenceMs < 3_000,
+      `fence-opener scanning stays linear on a 200,000-character single-line draft (${fenceMs}ms)`,
+    );
+    assert.equal(typeof fenceResult.pass, "boolean", "the fence-chain draft still evaluates");
+  }
   {
     const repeatedClause = "The cross-review runtime Codex model is gpt-5.6-sol and stays loaded. ";
     const hugeDraft = repeatedClause.repeat(Math.ceil(200_000 / repeatedClause.length));

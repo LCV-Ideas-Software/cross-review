@@ -1873,15 +1873,31 @@ function extractEvidenceOperationalAssertions(text: string): EvidenceOperational
 
 export function extractInlineRawEvidence(text: string): string {
   const pieces: string[] = [];
-  const fencePattern = /```[^\n]*\n([\s\S]*?)```/g;
-  for (const match of text.matchAll(fencePattern)) {
-    const body = match[1] ?? "";
-    if (
-      /\bEXIT[_ ]?CODE\s*[:=]\s*\d+\b|\bTest Files\s+\d+\s+(?:passed|failed)\b|\bTests?\s+\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b|@@\s*[-+]|\bdiff --git\b|(?:^|\n)\s*[$>]\s+\S/im.test(
-        body,
-      )
-    ) {
-      pieces.push(body);
+  // Codex round 23 (class sweep): the fence scan is a single LINE-AWARE
+  // pass - the previous /```...```/ regex re-scanned the remaining input
+  // for every failed opener candidate, which is quadratic on
+  // backtick-dense single-line drafts (the same defect class as the
+  // truthfulness fence mask). A closer is a line starting with ``` or a
+  // line ending with ``` (both fence styles appear in captured output).
+  {
+    const textLines = text.replace(/\r\n?/g, "\n").split("\n");
+    const rawEvidencePattern =
+      /\bEXIT[_ ]?CODE\s*[:=]\s*\d+\b|\bTest Files\s+\d+\s+(?:passed|failed)\b|\bTests?\s+\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b|@@\s*[-+]|\bdiff --git\b|(?:^|\n)\s*[$>]\s+\S/im;
+    let openLine = -1;
+    for (let index = 0; index < textLines.length; index += 1) {
+      const lineText = textLines[index] ?? "";
+      if (openLine === -1) {
+        if (/^\s*```/.test(lineText)) openLine = index;
+        continue;
+      }
+      const closerAtStart = /^\s*```/.test(lineText);
+      const closerAtEnd = !closerAtStart && /```\s*$/.test(lineText);
+      if (!closerAtStart && !closerAtEnd) continue;
+      const bodyLines = textLines.slice(openLine + 1, index);
+      if (closerAtEnd) bodyLines.push(lineText.replace(/```\s*$/, ""));
+      const body = bodyLines.join("\n");
+      if (rawEvidencePattern.test(body)) pieces.push(body);
+      openLine = -1;
     }
   }
   // Codex and other tool hosts commonly serialize command captures without a
@@ -2413,8 +2429,11 @@ const HISTORICAL_CROSS_REVIEW_RUNTIME_SCOPE_PATTERN =
 const CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN =
   // Codex round 20: possessive runtime subjects ("cross-review's
   // runtime") are model-scoped too - straight and typographic
-  // apostrophes accepted.
-  /\b(?:cross[- ]review(?:['’]s)?\s+(?:runtime|server|uses?|peers?|models?)|server_info|runtime_capabilities|model[_ -]?pin|mcp\s+(?:runtime|server|host))\b/i;
+  // apostrophes accepted. Round 23: Portuguese subject ordering
+  // ("runtime do cross-review", "servidor do cross-review") and
+  // Portuguese usage verbs directly after the product name
+  // ("cross-review usa/roda/executa") are model-scoped as well.
+  /\b(?:cross[- ]review(?:['’]s)?\s+(?:runtime|server|uses?|peers?|models?|usa|roda|executa)|(?:runtime|servidor|modelos?|peers?)\s+d[oe]\s+cross[- ]review|server_info|runtime_capabilities|model[_ -]?pin|mcp\s+(?:runtime|server|host))\b/i;
 const HYPOTHETICAL_TRUTHFULNESS_PATTERN =
   /^\s*(?:if|whether|suppose|assuming|hypothetically|would|could|should|se|caso|supondo|hipoteticamente)\b/i;
 const NON_CURRENT_RUNTIME_VALUE_PATTERN =
@@ -2684,10 +2703,27 @@ export function truthfulnessPreflight(params: {
   // (the per-line quote/code-span masks cannot see fence context), while
   // inline raw evidence extraction keeps reading the original corpus. An
   // unterminated fence stays visible (fail-closed).
-  const maskFencedBlocks = (text: string): string =>
-    text.replace(/(?:```|~~~)[^\n]*\n[\s\S]*?\n[ \t]*(?:```|~~~)/g, (block) =>
-      block.replace(/[^\n]/g, "#"),
-    );
+  // Codex round 23: the fence scan is a single LINE-AWARE pass - the
+  // previous regex re-scanned the remaining input for every failed
+  // opener candidate (quadratic; ~10s on a 200,000-character
+  // single-line draft). Openers anchor to line starts; an unterminated
+  // fence stays visible (fail-closed).
+  const maskFencedBlocks = (text: string): string => {
+    const textLines = text.split("\n");
+    let openFenceLine = -1;
+    for (let index = 0; index < textLines.length; index += 1) {
+      if (!/^[ \t]*(?:```|~~~)/.test(textLines[index] ?? "")) continue;
+      if (openFenceLine === -1) {
+        openFenceLine = index;
+      } else {
+        for (let masked = openFenceLine; masked <= index; masked += 1) {
+          textLines[masked] = "#".repeat((textLines[masked] ?? "").length);
+        }
+        openFenceLine = -1;
+      }
+    }
+    return textLines.join("\n");
+  };
   const taskLines = splitTruthfulnessLines(maskFencedBlocks(params.task));
   const lines = [
     ...taskLines,
@@ -2708,6 +2744,9 @@ export function truthfulnessPreflight(params: {
   let historicalStateClaimMatched = false;
   let fabricationProneClaimMatched = false;
   let independentReviewRequired = false;
+  // Round 23: zero-token guard rejections have NO evidence channel - the
+  // final remediation must not advertise one for them.
+  let zeroTokenGuardTripCount = 0;
 
   for (const [lineIndex, line] of lines.entries()) {
     const lineFromDraft = lineIndex >= draftLineStart;
@@ -3458,7 +3497,11 @@ export function truthfulnessPreflight(params: {
         // components in one pass; a component with ANY consumed member
         // consumes all members.
         const expandConsumedAliases = (): void => {
-          const connectorGapPattern = /^(?:\s|'s\b|’s\b)*$/;
+          // Round 23: a parenthetical same-peer brand/name form
+          // ("OpenAI (Codex)") is one composite - parentheses join like
+          // whitespace, while clause punctuation (commas, semicolons)
+          // still separates components.
+          const connectorGapPattern = /^(?:[\s()]|'s\b|’s\b)*$/;
           for (const spans of aliasSpansByPeer.values()) {
             let componentStart = 0;
             const flushComponent = (endExclusive: number): void => {
@@ -3666,6 +3709,7 @@ export function truthfulnessPreflight(params: {
         if (guardTripped) {
           lineCurrentModelClaimMatched = true;
           currentStateClaimMatched = true;
+          zeroTokenGuardTripCount += 1;
           addIssueClass(issueClasses, "unsupported_current_state_claim");
           unsupportedClaims.push(
             `model claim has no capturable model token and cannot be judged; state the exact configured pin token adjacent to the peer alias, or move historical, planned, hypothetical or third-party statements into the structured evidence field: ${line.slice(0, 240)}`,
@@ -3759,8 +3803,25 @@ export function truthfulnessPreflight(params: {
     `structured_evidence_supplied=${structuredEvidenceSupplied}; ` +
     `source_marker_found=${sourceMarkerFound}; ` +
     `runtime_facts_available=${runtimeFactsAvailable}`;
-  const remediation =
-    "supply value-corresponding raw material inline or through the evidence field, then retry the combined preflight; no manual operator attachment is required";
+  // Round 23: the zero-token model-claim rejection deliberately has NO
+  // evidence-corroboration channel - advertising the evidence field as
+  // its remediation sends the caller into a guaranteed identical
+  // rejection. Its only recovery is the restatement itself; the common
+  // evidence remediation applies only to the OTHER finding kinds.
+  const otherFindingCount =
+    contradictions.length + unsupportedClaims.length - zeroTokenGuardTripCount;
+  const remediationParts: string[] = [];
+  if (zeroTokenGuardTripCount > 0) {
+    remediationParts.push(
+      "for the zero-token model claim(s), restating with the exact configured pin adjacent to the peer alias (or moving the statement into the structured evidence field as a non-claim) is the ONLY recovery path - that rejection has no evidence-corroboration channel, so supplying evidence and retrying returns the same result",
+    );
+  }
+  if (zeroTokenGuardTripCount === 0 || otherFindingCount > 0) {
+    remediationParts.push(
+      "supply value-corresponding raw material inline or through the evidence field, then retry the combined preflight; no manual operator attachment is required",
+    );
+  }
+  const remediation = remediationParts.join("; ");
   return {
     pass,
     reason: pass

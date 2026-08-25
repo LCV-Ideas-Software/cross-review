@@ -53,6 +53,19 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
 
+  Codex round 23 hardened the remaining edges: Portuguese subject
+  ordering ("runtime do cross-review") and Portuguese usage verbs
+  ("cross-review usa/roda/executa") enter the model-pin scope;
+  parenthetical same-peer composites ("OpenAI (Codex)") consume
+  together while clause punctuation still separates; BOTH fence scans
+  (the truthfulness mask and inline raw-evidence extraction) are
+  single line-aware passes instead of quadratic regex rescans (a
+  200,000-character backtick-dense single-line draft dropped from ~10s
+  to milliseconds, pinned by a benchmark fixture); and the zero-token
+  rejection's remediation names restatement as the ONLY recovery path
+  instead of advertising the evidence channel that branch deliberately
+  lacks.
+
   Codex round 21 scoped the two surviving non-assertive escapes to their
   GOVERNED CLAUSE (split on ;/:): a declarative heading ("Review
   completed:") or a trailing question no longer shields a model claim in
