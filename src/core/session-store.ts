@@ -2523,16 +2523,11 @@ export class SessionStore {
         transitionedAt,
       );
       meta.updated_at = transitionedAt;
-      // Round 18: a late cache settlement retained before this round's
-      // failure records existed applies now.
-      this.applyPendingLateCacheSettlements(meta);
-      meta.totals = this.totalsFor(meta);
       // v2.22.0 (B.P3): append per-round cost. Sum of peer.cost.total_cost
       // across this round's peers. Coerced to 0 when adapters didn't
-      // surface a cost (stub paths, error rounds). Read AFTER totalsFor
-      // so the new round's peer costs are already counted by the merger,
-      // but we recompute the round-local sum independently to avoid
-      // diff-based drift if a peer's cost changed in a retry loop.
+      // surface a cost (stub paths, error rounds). We recompute the
+      // round-local sum independently to avoid diff-based drift if a
+      // peer's cost changed in a retry loop.
       const roundCost =
         params.peers.reduce((sum, peer) => sum + (peer.cost?.total_cost ?? 0), 0) +
         params.rejected.reduce((sum, failure) => sum + (failure.cost?.total_cost ?? 0), 0) +
@@ -2544,6 +2539,14 @@ export class SessionStore {
           .filter((generation) => generation.round === round.round)
           .reduce((sum, generation) => sum + (generation.cost?.total_cost ?? 0), 0);
       meta.costs_per_round = [...(meta.costs_per_round ?? []), roundCost];
+      // Round 18/20: a late cache settlement retained before this round's
+      // failure records existed applies AFTER the round-cost slot exists,
+      // so settleLateCacheCreationInMeta can add the known storage charge
+      // to this round's costs_per_round entry as well as the durable
+      // records. totalsFor runs after the settlement so session totals
+      // include the reconciled charge.
+      this.applyPendingLateCacheSettlements(meta);
+      meta.totals = this.totalsFor(meta);
       await writeJson(this.metaPath(sessionId), meta);
       return round;
     });

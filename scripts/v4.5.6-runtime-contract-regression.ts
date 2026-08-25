@@ -2611,6 +2611,13 @@ const regressions: Regression[] = [
           undefined,
           "the pendency clears after the durable absorption",
         );
+        // Codex round 20: the pending settlement applies AFTER the
+        // round-cost slot exists, so the known storage charge lands in
+        // costs_per_round too.
+        assert.ok(
+          Math.abs((promoMeta.costs_per_round?.[0] ?? 0) - 0.0225) < 1e-12,
+          `the reconciled storage charge lands in the round cost slot: ${promoMeta.costs_per_round?.[0]}`,
+        );
       }
       // Codex round 16: the cachedContents minimum is per model - Flash is
       // 1,024 tokens, Pro is 4,096, unknown models stay conservative.
