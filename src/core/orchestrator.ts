@@ -2767,7 +2767,27 @@ export function truthfulnessPreflight(params: {
         ownerAliasIndex: number | undefined;
         crossClauseOwnerAliasIndex?: number | undefined;
       };
-      const base = line.replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length));
+      // Codex round 17: filesystem paths mask BEFORE occurrence capture -
+      // "docs/gemini.md" must not be captured as a routed model value nor
+      // leave its terminal alias visible. Provider/model ROUTE syntax
+      // (first segment a peer alias, or the "models/" pin prefix) stays
+      // visible for capture.
+      const base = line
+        .replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length))
+        .replace(
+          /[a-z0-9._-]+(?:\s*\/\s*[a-z0-9._-]+)*\/\s*[a-z0-9_-]+\.(?:md|ts|tsx|js|jsx|mjs|cjs|json|jsonc|ndjson|txt|log|yml|yaml|csv|py|rs|go|java|html|css|scss|sh|ps1|lock|toml|xml|svg|png|jpg)\b/gi,
+          (m) => {
+            const firstSegment = m.split(/\s*\//)[0] ?? "";
+            const isRoutePrefix =
+              /^models$/i.test(firstSegment) ||
+              PEERS.some((aliasPeer) =>
+                new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(
+                  firstSegment,
+                ),
+              );
+            return isRoutePrefix ? m : "#".repeat(m.length);
+          },
+        );
       const negationTailPattern =
         /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
       const negatedBefore = (matchStart: number): boolean =>
@@ -2926,28 +2946,37 @@ export function truthfulnessPreflight(params: {
           /"[^"]*"|(?<![A-Za-z0-9à-ÿ])'[^']*'(?![A-Za-z0-9à-ÿ])|“[^”]*”|(?<![A-Za-z0-9à-ÿ])‘[^’]*’(?![A-Za-z0-9à-ÿ])|`[^`]*`/g,
           (m) => {
             const inner = m.slice(1, -1).trim();
-            const singleAlias =
-              inner.length <= 24 &&
-              PEERS.some((aliasPeer) =>
-                new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(inner),
-              );
+            // Codex round 17: a quote holding NOTHING BUT peer aliases
+            // ("OpenAI Codex") is nomenclature exactly like the
+            // single-alias case - it stays visible so the surrounding
+            // clause's claim is still located.
+            const allAliasNomenclature =
+              inner.length > 0 &&
+              inner.length <= 48 &&
+              inner
+                .split(/\s+/)
+                .every((word) =>
+                  PEERS.some((aliasPeer) =>
+                    new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(word),
+                  ),
+                );
             // The DELIMITERS stay visible - the label-colon check skips
             // them as formatting wrappers to find the captured token.
-            return singleAlias ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
+            return allAliasNomenclature ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
           },
         )
-        .replace(/[a-z0-9._-]+\s*\//gi, (m, offset: number, whole: string) => {
-          // Codex round 9: a recognized PEER alias prefixing a route
-          // ("perplexity/alpha beta seven") must stay visible for the
-          // zero-token guard. An alias that is merely a PATH SEGMENT
-          // ("src/gemini/routing.md") is preceded by another segment's
-          // slash and keeps masking.
-          if (offset > 0 && whole[offset - 1] === "/") return "#".repeat(m.length);
-          const prefix = m.replace(/\s*\/$/, "");
-          const isPeerAlias = PEERS.some((aliasPeer) =>
-            new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(prefix),
+        .replace(/[a-z0-9._-]+(?:\s*\/\s*[a-z0-9._-]+)+\/?/gi, (m) => {
+          // Codex rounds 9/17: a recognized PEER alias in the FIRST
+          // segment marks provider/model ROUTE syntax and stays visible
+          // for the zero-token guard ("perplexity/alpha beta seven"). Any
+          // other slash chain is a filesystem path and masks WHOLE,
+          // including its terminal segment ("docs/gemini.md",
+          // "src/gemini/routing.md").
+          const firstSegment = m.split(/\s*\//)[0] ?? "";
+          const isPeerRoute = PEERS.some((aliasPeer) =>
+            new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(firstSegment),
           );
-          return isPeerAlias ? m : "#".repeat(m.length);
+          return isPeerRoute ? m : "#".repeat(m.length);
         });
       const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
       for (const aliasPeer of PEERS) {
@@ -3496,25 +3525,39 @@ export function truthfulnessPreflight(params: {
           }
           aliasSpansByPeer.set(aliasPeer, spans);
         }
+        // Codex round 17: LINEAR expansion - group whitespace-connected
+        // (or possessive-connected, round 17) same-peer alias spans into
+        // components in one pass; a component with ANY consumed member
+        // consumes all members.
         const expandConsumedAliases = (): void => {
-          let grew = true;
-          while (grew) {
-            grew = false;
-            for (const spans of aliasSpansByPeer.values()) {
-              for (let i = 0; i < spans.length - 1; i += 1) {
-                const left = spans[i];
-                const right = spans[i + 1];
-                if (!left || !right) continue;
-                const gap = aliasBase.slice(left.index + left.length, right.index);
-                if (!/^\s*$/.test(gap)) continue;
-                const leftConsumed = consumedAliasIndexes.has(left.index);
-                const rightConsumed = consumedAliasIndexes.has(right.index);
-                if (leftConsumed !== rightConsumed) {
-                  consumedAliasIndexes.add(leftConsumed ? right.index : left.index);
-                  grew = true;
+          const connectorGapPattern = /^(?:\s|'s\b|’s\b)*$/;
+          for (const spans of aliasSpansByPeer.values()) {
+            let componentStart = 0;
+            const flushComponent = (endExclusive: number): void => {
+              let anyConsumed = false;
+              for (let i = componentStart; i < endExclusive; i += 1) {
+                const span = spans[i];
+                if (span && consumedAliasIndexes.has(span.index)) {
+                  anyConsumed = true;
+                  break;
                 }
               }
+              if (anyConsumed) {
+                for (let i = componentStart; i < endExclusive; i += 1) {
+                  const span = spans[i];
+                  if (span) consumedAliasIndexes.add(span.index);
+                }
+              }
+              componentStart = endExclusive;
+            };
+            for (let i = 1; i < spans.length; i += 1) {
+              const left = spans[i - 1];
+              const right = spans[i];
+              if (!left || !right) continue;
+              const gap = aliasBase.slice(left.index + left.length, right.index);
+              if (!connectorGapPattern.test(gap)) flushComponent(i);
             }
+            flushComponent(spans.length);
           }
         };
         expandConsumedAliases();

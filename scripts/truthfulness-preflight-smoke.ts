@@ -1503,6 +1503,44 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "provider API/SDK integration prose is not a model-pin relation",
   );
+  // Codex review of PR #247, round 17 (KEEP-area findings only; the
+  // modal-grammar finding is suspended pending the structural design
+  // decision).
+  const quotedComposite = anchored(
+    'The cross-review runtime "OpenAI Codex" model runs alpha beta seven.',
+  );
+  assert.equal(
+    quotedComposite.pass,
+    false,
+    "an all-alias composite quote (OpenAI Codex) is nomenclature like the single-alias case - the fragmented claim stays located",
+  );
+  const possessiveComposite = anchored(
+    "The cross-review runtime OpenAI's Codex model is gpt-5.6-sol.",
+  );
+  assert.equal(
+    possessiveComposite.pass,
+    true,
+    "a possessive separator inside a same-peer composite name (OpenAI's Codex) does not break consumption",
+  );
+  const terminalPathAlias = anchored(
+    "The cross-review model_pin table is documented in docs/gemini.md for reference.",
+  );
+  assert.equal(
+    terminalPathAlias.pass,
+    true,
+    "an alias in the TERMINAL path segment (docs/gemini.md) is masked with the whole filesystem path",
+  );
+  {
+    const manyAliases = `The cross-review runtime ${"Codex ".repeat(6_000)}model is gpt-5.6-sol.`;
+    const linearStart = Date.now();
+    const linearResult = anchored(manyAliases);
+    const linearMs = Date.now() - linearStart;
+    assert.ok(
+      linearMs < 3_000,
+      `adjacent-alias consumption expands in linear time (${linearMs}ms for six thousand aliases)`,
+    );
+    assert.equal(typeof linearResult.pass, "boolean", "the oversized-alias draft still evaluates");
+  }
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
