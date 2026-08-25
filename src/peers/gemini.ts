@@ -257,6 +257,30 @@ function geminiTtlSeconds(ttl: "5m" | "1h"): number {
 // bill), or "waiter" (shared in-flight creation — this call dispatched
 // nothing and settles as zero provider work).
 type CachePreparationAbortKind = "free" | "billable" | "waiter";
+
+// Round 12 (Codex): a waiter abort settles ONLY its own attempt as zero
+// provider work — the classified failure's counts are cumulative across
+// the call's earlier tries (an ambiguous cache creation, a failed
+// generation), so exactly one unpriced attempt (the current waiter) is
+// removed and the indeterminate marker is preserved, re-capped to the
+// remaining unpriced total. Explicit zeros keep the all-terminal meaning
+// on a first-attempt waiter cancellation.
+function waiterAbortSettlement<
+  F extends {
+    unpriced_attempts?: number | undefined;
+    indeterminate_spend_attempts?: number | undefined;
+  },
+>(classified: F): F {
+  const unpriced = Math.max(0, (classified.unpriced_attempts ?? 0) - 1);
+  return {
+    ...classified,
+    unpriced_attempts: unpriced,
+    indeterminate_spend_attempts: Math.min(classified.indeterminate_spend_attempts ?? 0, unpriced),
+  };
+}
+
+// Exported for the provider-refresh smoke only.
+export const __waiterAbortSettlementForTests = waiterAbortSettlement;
 function cachePreparationAbortKind(error: unknown): CachePreparationAbortKind | undefined {
   const kind =
     error && typeof error === "object"
@@ -1071,15 +1095,14 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           indeterminateCacheCreateAttempts,
         );
         // Round 11: a WAITER abort dispatched neither countTokens nor
-        // caches.create nor generation — it settles as zero provider work
-        // (explicit zeros: an all-terminal record, never indeterminate),
-        // so a cancelled waiter can never trip the unknown-spend gate.
+        // caches.create nor generation — the CURRENT attempt settles as
+        // zero provider work, so a first-attempt waiter cancellation can
+        // never trip the unknown-spend gate. Round 12: on a later retry
+        // the classified failure carries the CUMULATIVE accounting of
+        // earlier operations (an ambiguous creation, a failed generation)
+        // — only the current attempt is removed, never the history.
         if (cachePreparationAbortKind(error) === "waiter") {
-          return {
-            ...classified,
-            unpriced_attempts: 0,
-            indeterminate_spend_attempts: 0,
-          };
+          return waiterAbortSettlement(classified);
         }
         // Codex review of PR #240: the provider's stale-cache 400/404 is
         // classified as a terminal provider_error, but losing the entry is

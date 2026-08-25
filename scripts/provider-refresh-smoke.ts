@@ -13,6 +13,7 @@ import {
   __geminiExplicitCacheIndexForTests,
   __resetGeminiExplicitCacheIndexForTests,
   __seedGeminiExplicitCacheIndexForTests,
+  __waiterAbortSettlementForTests,
   GEMINI_EXPLICIT_CACHE_MIN_TOKENS,
   GeminiAdapter,
 } from "../src/peers/gemini.js";
@@ -1313,6 +1314,50 @@ function capturePerplexityProbe(
     waiterFailure?.indeterminate_spend_attempts ?? 0,
     0,
     "a waiter-only abort carries no indeterminate-spend marker",
+  );
+  // Codex round 12: on a LATER retry the classified failure carries the
+  // cumulative accounting of earlier operations (an ambiguous cache
+  // creation, a failed generation) - the waiter settlement removes ONLY
+  // the current waiter attempt, never the history.
+  const settledPrior = __waiterAbortSettlementForTests({
+    peer: "gemini",
+    provider: "google",
+    model: "gemini-3.1-pro-preview",
+    failure_class: "cancelled",
+    message: "aborted while a cache-preparation request was in flight",
+    retryable: false,
+    attempts: 3,
+    latency_ms: 10,
+    unpriced_attempts: 3,
+    indeterminate_spend_attempts: 1,
+  });
+  assert.equal(
+    settledPrior.unpriced_attempts,
+    2,
+    "the waiter settlement subtracts only the current attempt from the cumulative unpriced count",
+  );
+  assert.equal(
+    settledPrior.indeterminate_spend_attempts,
+    1,
+    "earlier ambiguous-creation indeterminate spend survives the waiter settlement",
+  );
+  const settledSingle = __waiterAbortSettlementForTests({
+    peer: "gemini",
+    provider: "google",
+    model: "gemini-3.1-pro-preview",
+    failure_class: "cancelled",
+    message: "aborted while a cache-preparation request was in flight",
+    retryable: false,
+    attempts: 1,
+    latency_ms: 10,
+    unpriced_attempts: 1,
+    indeterminate_spend_attempts: 0,
+  });
+  assert.equal(settledSingle.unpriced_attempts, 0, "a first-attempt waiter abort settles to zero");
+  assert.equal(
+    settledSingle.indeterminate_spend_attempts,
+    0,
+    "a first-attempt waiter abort keeps the explicit all-terminal zero marker",
   );
   const creatorResult = await creatorPromise;
   assert.equal(sharedMock.createCalls.length, 1, "the creator still completes its creation");
