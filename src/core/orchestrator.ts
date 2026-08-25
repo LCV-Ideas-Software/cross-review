@@ -3693,6 +3693,12 @@ export function estimatedPeerRoundCost(
     // system parts (task + framing). Callers that know the task pass it;
     // the default stays the schema-wide 132K-token ceiling (fail-closed).
     gemini_cached_system_bytes?: number | undefined;
+    // Codex round 9: the real UTF-8 byte length of the CACHEABLE prefix
+    // (the stable head the adapter will actually store). Callers that
+    // know the stable-prefix boundary pass it so a large dynamic tail is
+    // not double-priced as hypothetical storage; the default stays the
+    // whole prompt (fail-closed).
+    gemini_cache_head_bytes?: number | undefined;
   } = {},
 ): number | undefined {
   const requestRole = options.request_role ?? "review";
@@ -3773,7 +3779,7 @@ export function estimatedPeerRoundCost(
         // (CJK, emoji), so neither chars/4 nor the UTF-16 length is a safe
         // bound; BPE tokens each consume at least one BYTE.
         const storageTokens =
-          Buffer.byteLength(prompt, "utf8") +
+          (options.gemini_cache_head_bytes ?? Buffer.byteLength(prompt, "utf8")) +
           (options.gemini_cached_system_bytes ?? GEMINI_CACHED_SYSTEM_TOKEN_BOUND);
         storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
       }
@@ -5735,6 +5741,14 @@ export class CrossReviewOrchestrator {
               {
                 gemini_cached_system_bytes:
                   Buffer.byteLength(context.task, "utf8") + GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
+                ...(context.prompt_stable_prefix_chars != null
+                  ? {
+                      gemini_cache_head_bytes: Buffer.byteLength(
+                        prompt.slice(0, context.prompt_stable_prefix_chars),
+                        "utf8",
+                      ),
+                    }
+                  : {}),
               },
             );
             this.emit({
@@ -6595,11 +6609,17 @@ export class CrossReviewOrchestrator {
       prompt,
       {},
       {
-        // Codex round 7: this call site knows the session task, so the
-        // storage envelope prices its real byte length instead of the
-        // schema-wide ceiling.
+        // Codex rounds 7/9: this call site knows the session task AND the
+        // stable-prefix boundary, so the storage envelope prices the real
+        // cacheable prefix instead of the schema-wide ceiling and never
+        // double-prices the dynamic tail the token envelope already
+        // covers.
         gemini_cached_system_bytes:
           Buffer.byteLength(session.task, "utf8") + GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
+        gemini_cache_head_bytes: Buffer.byteLength(
+          prompt.slice(0, promptStablePrefixChars),
+          "utf8",
+        ),
       },
     );
     const currentSessionCost = session.totals.cost.total_cost ?? 0;

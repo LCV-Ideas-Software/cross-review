@@ -2015,6 +2015,29 @@ const regressions: Regression[] = [
         ) < 1e-12,
         `a sized system-bytes option prices the real payload: ${sizedEnvelope} vs ${disarmedEnvelope}`,
       );
+      // Codex round 9: a caller that knows the stable-prefix boundary
+      // prices only the CACHEABLE head — the dynamic tail is already
+      // covered by the token envelope and must not be double-priced as
+      // hypothetical storage.
+      const headSizedEnvelope = estimatedPeerRoundCost(
+        geminiPreflightPriced,
+        ["gemini"],
+        "four",
+        {},
+        {
+          gemini_cached_system_bytes: 500,
+          gemini_cache_head_bytes: 2,
+        },
+      );
+      assert.ok(headSizedEnvelope != null);
+      assert.ok(
+        Math.abs(
+          headSizedEnvelope -
+            disarmedEnvelope -
+            (geminiEnvelopeAttempts * (2 + 500) * 4.5) / 1_000_000,
+        ) < 1e-12,
+        `a sized head-bytes option prices only the cacheable prefix: ${headSizedEnvelope}`,
+      );
       // Round 7: explicit-cache creation telemetry lands in the FinOps
       // manifest the moment the resource exists, independent of the
       // generation outcome.

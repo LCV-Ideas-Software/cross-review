@@ -96,7 +96,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   failure merge re-stamps the successful result's qualitative cache
   attributes like the retry wrapper does; and a legitimately configured
   ZERO storage rate settles as a KNOWN zero cost with an explicit
-  cache_storage_cost marker, never as unknown spend.
+  cache_storage_cost marker, never as unknown spend. Round 9: callers
+  that know the stable-prefix boundary price only the CACHEABLE head —
+  a large dynamic tail is no longer double-priced as hypothetical
+  storage on top of the token envelope.
 
 ## [v04.06.02] — 24/08/2026
 
