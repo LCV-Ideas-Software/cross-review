@@ -3820,6 +3820,9 @@ export async function appendExplicitCacheCreationManifest(params: {
     token_count?: unknown;
     key_hash?: unknown;
     model?: unknown;
+    ttl_seconds?: unknown;
+    storage_token_hours?: unknown;
+    storage_cost_usd?: unknown;
   };
   if (typeof data.cache_name !== "string" || data.cache_name.length === 0) return false;
   // Codex round 8: a FALLBACK adapter reuses the dispatch emitter whose
@@ -3848,6 +3851,17 @@ export async function appendExplicitCacheCreationManifest(params: {
       latency_ms: 0,
       call_kind: "review",
       call_label: "explicit-cache-created",
+      // Codex round 11: persist the storage-billing dimensions — a 5m and
+      // a 1h creation with the same token count differ 12x in token-hours.
+      ...(typeof data.ttl_seconds === "number" && Number.isFinite(data.ttl_seconds)
+        ? { ttl_seconds: data.ttl_seconds }
+        : {}),
+      ...(typeof data.storage_token_hours === "number" && Number.isFinite(data.storage_token_hours)
+        ? { storage_token_hours: data.storage_token_hours }
+        : {}),
+      ...(typeof data.storage_cost_usd === "number" && Number.isFinite(data.storage_cost_usd)
+        ? { storage_cost_usd: data.storage_cost_usd }
+        : {}),
     },
     params.schemaVersion,
   );

@@ -240,6 +240,14 @@ export interface CacheManifestEntry {
   // omit this field and are interpreted as ordinary peer reviews.
   call_kind?: "review" | "generation" | "evidence_judge" | undefined;
   call_label?: string | undefined;
+  // v4.7.0 (CROSREV-6, Codex round 11 of PR #240): storage bills in
+  // token-hours, so creation rows persist the TTL, the computed
+  // token-hours and the priced storage cost — a FinOps reader can
+  // reconstruct the charge after configuration changes. Absent on
+  // non-creation rows and on manifests written before this version.
+  ttl_seconds?: number | undefined;
+  storage_token_hours?: number | undefined;
+  storage_cost_usd?: number | undefined;
 }
 
 export interface CacheManifest {

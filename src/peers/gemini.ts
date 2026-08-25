@@ -249,14 +249,31 @@ function geminiTtlSeconds(ttl: "5m" | "1h"): number {
 // (countTokens, caches.create) must be interruptible — withRetry cannot
 // observe cancellation until an awaited call settles. The race rejects
 // with an AbortError-shaped error the moment the signal fires;
-// classifyProviderError maps it to the timeout class, whose spend is
-// already indeterminate (a raced-away caches.create may still have
-// created and billed the resource server-side).
-async function raceWithAbort<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+// classifyProviderError maps it to the cancelled class (terminal,
+// zero-spend by default), so the error carries the KIND of work that was
+// in flight (round 11 class sweep): "billable" (caches.create — the
+// server may have created and billed the resource, spend must stay
+// indeterminate via the create catch), "free" (countTokens — nothing to
+// bill), or "waiter" (shared in-flight creation — this call dispatched
+// nothing and settles as zero provider work).
+type CachePreparationAbortKind = "free" | "billable" | "waiter";
+function cachePreparationAbortKind(error: unknown): CachePreparationAbortKind | undefined {
+  const kind =
+    error && typeof error === "object"
+      ? (error as { cache_preparation_abort?: unknown }).cache_preparation_abort
+      : undefined;
+  return kind === "free" || kind === "billable" || kind === "waiter" ? kind : undefined;
+}
+async function raceWithAbort<T>(
+  work: Promise<T>,
+  signal: AbortSignal | undefined,
+  kind: CachePreparationAbortKind,
+): Promise<T> {
   if (!signal) return work;
   const abortError = (): Error =>
     Object.assign(new Error("aborted while a cache-preparation request was in flight"), {
       name: "AbortError",
+      cache_preparation_abort: kind,
     });
   if (signal.aborted) {
     void work.catch(() => undefined);
@@ -554,6 +571,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           contents: [{ role: "user", parts: [{ text: cacheContents }] }],
         }) as Promise<{ totalTokens?: number }>,
         context.signal,
+        "free",
       )) as { totalTokens?: number };
       countedTokens = counted?.totalTokens;
     } catch {
@@ -616,6 +634,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           },
         }) as Promise<{ name?: string; usageMetadata?: { totalTokenCount?: number } }>,
         context.signal,
+        "billable",
       )) as { name?: string; usageMetadata?: { totalTokenCount?: number } };
       if (!created?.name) {
         notice("Gemini explicit cache creation returned no resource name; continuing uncached.", {
@@ -653,8 +672,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         this.id,
         this.model,
       )?.cache_storage_per_million_hour;
-      if (typeof storageRate === "number") {
-        const storageCost = (tokenHours / 1_000_000) * storageRate;
+      const storageCost =
+        typeof storageRate === "number" ? (tokenHours / 1_000_000) * storageRate : undefined;
+      if (storageCost !== undefined) {
         params.ledgerCosts.push({
           currency: "USD",
           total_cost: storageCost,
@@ -668,11 +688,18 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           { model: this.model, key_hash: cacheKeyHash, token_hours: tokenHours },
         );
       }
+      // Round 11: storage bills in token-hours — the creation event
+      // carries the TTL, the computed token-hours and the priced cost so
+      // the FinOps manifest row can reconstruct the charge after any
+      // configuration change.
       notice(`Gemini explicit cache created (${tokenCount} tokens, ttl ${ttl}).`, {
         model: this.model,
         cache_name: created.name,
         token_count: tokenCount,
         ttl,
+        ttl_seconds: ttlSeconds,
+        storage_token_hours: tokenHours,
+        ...(storageCost !== undefined ? { storage_cost_usd: storageCost } : {}),
         key_hash: cacheKeyHash,
       });
       return entry;
@@ -688,7 +715,14 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         1,
         Date.now(),
       );
+      // Round 11 (class sweep): an abort racing the BILLABLE caches.create
+      // is ambiguous by construction — classifyProviderError maps the
+      // AbortError to the terminal "cancelled" class (marker 0), so the
+      // in-flight kind carried by the race error restores the round-5/7
+      // contract (the server may have created and billed the resource).
+      // A raced-away FREE countTokens stays zero-spend.
       const ambiguous =
+        cachePreparationAbortKind(error) === "billable" ||
         indeterminateSpendMarkerFor(createFailure.failure_class, createFailure.message, 1) > 0;
       if (ambiguous) params.onIndeterminateCreate();
       notice(
@@ -790,7 +824,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               // resource. The creator alone records the storage ledger item.
               // Round 7: the waiter races its OWN signal — cancelling one
               // waiter releases it promptly without cancelling the creator.
-              cacheEntry = await raceWithAbort(inFlight, context.signal);
+              // Round 11: the "waiter" kind settles the abort as zero
+              // provider work in the failure classification below.
+              cacheEntry = await raceWithAbort(inFlight, context.signal, "waiter");
             } else {
               const creation = this.createExplicitCacheEntry({
                 reviewClient,
@@ -1034,6 +1070,17 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           outputLimitCosts,
           indeterminateCacheCreateAttempts,
         );
+        // Round 11: a WAITER abort dispatched neither countTokens nor
+        // caches.create nor generation — it settles as zero provider work
+        // (explicit zeros: an all-terminal record, never indeterminate),
+        // so a cancelled waiter can never trip the unknown-spend gate.
+        if (cachePreparationAbortKind(error) === "waiter") {
+          return {
+            ...classified,
+            unpriced_attempts: 0,
+            indeterminate_spend_attempts: 0,
+          };
+        }
         // Codex review of PR #240: the provider's stale-cache 400/404 is
         // classified as a terminal provider_error, but losing the entry is
         // recoverable — the index entry was just dropped, so the retry

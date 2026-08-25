@@ -2056,6 +2056,9 @@ const regressions: Regression[] = [
             cache_name: "cachedContents/fixture-1",
             token_count: 5_000,
             key_hash: "a".repeat(64),
+            ttl_seconds: 300,
+            storage_token_hours: (5_000 * 300) / 3_600,
+            storage_cost_usd: 0.0001875,
           },
           schemaVersion: "v1",
         });
@@ -2070,6 +2073,20 @@ const regressions: Regression[] = [
         assert.equal(manifestRaw.entries[0]?.call_label, "explicit-cache-created");
         assert.equal(manifestRaw.entries[0]?.write_tokens, 5_000);
         assert.equal(manifestRaw.entries[0]?.cache_key_hash, "a".repeat(64));
+        // Codex round 11: storage bills in token-hours, so a FinOps
+        // reader must be able to reconstruct the charge - the creation
+        // row persists the TTL, the computed token-hours and the priced
+        // storage cost.
+        assert.equal(manifestRaw.entries[0]?.ttl_seconds, 300);
+        assert.ok(
+          Math.abs(((manifestRaw.entries[0]?.storage_token_hours as number) ?? 0) - 5_000 / 12) <
+            1e-9,
+          `creation row carries storage token-hours: ${manifestRaw.entries[0]?.storage_token_hours}`,
+        );
+        assert.ok(
+          Math.abs(((manifestRaw.entries[0]?.storage_cost_usd as number) ?? 0) - 0.0001875) < 1e-12,
+          `creation row carries the priced storage cost: ${manifestRaw.entries[0]?.storage_cost_usd}`,
+        );
         const ignored = await appendExplicitCacheCreationManifest({
           dataDir: manifestDir,
           sessionId: manifestSession,

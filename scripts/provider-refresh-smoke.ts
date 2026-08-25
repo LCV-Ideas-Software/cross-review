@@ -1239,12 +1239,27 @@ function capturePerplexityProbe(
     stallMock.client;
   setTimeout(() => stallController.abort(), 25);
   const stallStarted = Date.now();
+  let stallError: unknown;
   await stallAdapter
     .call(prompt, { ...context(stableHead.length), signal: stallController.signal })
-    .catch(() => undefined);
+    .catch((error: unknown) => {
+      stallError = error;
+    });
   assert.ok(
     Date.now() - stallStarted < 2_000,
     "a stalled creation must not hold the cancelled attempt hostage",
+  );
+  // Codex round 11 (class sweep): the abort landed while the BILLABLE
+  // caches.create was in flight - the server may have created and billed
+  // the resource, so the failure must carry an indeterminate-spend marker.
+  const stallFailure = (stallError as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+  assert.ok(
+    (stallFailure?.indeterminate_spend_attempts ?? 0) >= 1,
+    `an abort racing an in-flight caches.create keeps its spend indeterminate: ${JSON.stringify({
+      failure_class: stallFailure?.failure_class,
+      unpriced: stallFailure?.unpriced_attempts,
+      indeterminate: stallFailure?.indeterminate_spend_attempts,
+    })}`,
   );
   assert.equal(stallMock.createCalls.length, 1, "the creation was dispatched before the abort");
   assert.equal(
@@ -1268,14 +1283,37 @@ function capturePerplexityProbe(
   const creatorPromise = creatorAdapter.call(prompt, context(stableHead.length));
   await new Promise((resolve) => setTimeout(resolve, 30));
   const waiterStarted = Date.now();
+  let waiterError: unknown;
   const waiterPromise = waiterAdapter
     .call(prompt, { ...context(stableHead.length), signal: waiterController.signal })
-    .catch(() => "waiter-rejected");
+    .catch((error: unknown) => {
+      waiterError = error;
+      return "waiter-rejected";
+    });
   setTimeout(() => waiterController.abort(), 30);
   const waiterOutcome = await waiterPromise;
   const waiterMs = Date.now() - waiterStarted;
   assert.equal(waiterOutcome, "waiter-rejected", "the cancelled waiter rejects");
   assert.ok(waiterMs < 300, `the waiter releases before the creator settles (${waiterMs}ms)`);
+  // Codex round 11: the waiter dispatched neither countTokens nor
+  // caches.create nor generation - its cancellation settles as ZERO
+  // provider work (no unpriced attempt, no indeterminate marker), so it
+  // can never trip sessionHasUnknownProviderSpend.
+  const waiterFailure = (waiterError as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+  assert.equal(waiterFailure?.failure_class, "cancelled", "the waiter abort is a cancellation");
+  assert.equal(
+    waiterFailure?.unpriced_attempts ?? 0,
+    0,
+    `a waiter-only abort records no unpriced provider attempt: ${JSON.stringify({
+      unpriced: waiterFailure?.unpriced_attempts,
+      indeterminate: waiterFailure?.indeterminate_spend_attempts,
+    })}`,
+  );
+  assert.equal(
+    waiterFailure?.indeterminate_spend_attempts ?? 0,
+    0,
+    "a waiter-only abort carries no indeterminate-spend marker",
+  );
   const creatorResult = await creatorPromise;
   assert.equal(sharedMock.createCalls.length, 1, "the creator still completes its creation");
   assert.equal(creatorResult.usage?.cache_storage_token_hours, 5_000);
