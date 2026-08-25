@@ -53,6 +53,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
 
+  Codex round 27 closed four edges: a masked route whose basename is
+  model-like ("zeta/llama-5", "docs/gemini-2") is explicitly REJECTED
+  with the restate instruction - never judged by value (round 24's
+  false positive) and never a silent pass (round 27's false negative);
+  CRLF normalizes before the fence scan; fence markers accept at most
+  three leading spaces (four is indented code, so an over-indented
+  marker cannot open a bogus fence that hides live claims); and
+  backtick code spans pair by DELIMITER RUNS (a multi-backtick span
+  masks as one unit instead of pairing off into empty spans that
+  exposed its content).
+
   Codex round 26 closed two more edges: the quote scan is a two-pointer
   single pass (the regex alternation rescanned the suffix from every
   unmatched curly opener - seconds on tens of thousands of orphans; the

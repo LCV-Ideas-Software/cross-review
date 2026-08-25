@@ -2713,7 +2713,12 @@ export function truthfulnessPreflight(params: {
   // closer would mask (and so admit) a claim sitting inside the
   // still-unterminated backtick fence.
   const maskFencedBlocks = (text: string): string => {
-    const textLines = text.split("\n");
+    // Round 27: CRLF normalizes BEFORE the scan (a trailing \r broke the
+    // closer's end-of-line check), and fence markers accept at most
+    // THREE leading spaces - four or more is indented code in Markdown,
+    // never a fence delimiter, so an over-indented marker can no longer
+    // open a bogus fence that hides following live claims.
+    const textLines = text.replace(/\r\n?/g, "\n").split("\n");
     let openFenceLine = -1;
     let openFenceMarker = "";
     for (let index = 0; index < textLines.length; index += 1) {
@@ -2724,7 +2729,7 @@ export function truthfulnessPreflight(params: {
       const lineText = textLines[index] ?? "";
       if (openFenceLine === -1) {
         // An opener may carry an info string after the delimiter run.
-        const openerMatch = /^[ \t]*(`{3,}|~{3,})/.exec(lineText);
+        const openerMatch = /^ {0,3}(`{3,}|~{3,})/.exec(lineText);
         if (openerMatch) {
           openFenceLine = index;
           openFenceMarker = openerMatch[1] ?? "";
@@ -2735,7 +2740,7 @@ export function truthfulnessPreflight(params: {
       // whitespace (Markdown semantics) - a run followed by an info
       // string ("```not-a-closer") is fence content, never a closer, so
       // the fence stays open and its content stays visible fail-closed.
-      const closerMatch = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(lineText);
+      const closerMatch = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(lineText);
       if (
         closerMatch &&
         (closerMatch[1] ?? "")[0] === openFenceMarker[0] &&
@@ -2900,6 +2905,18 @@ export function truthfulnessPreflight(params: {
       // decides FILE PATH before any provider-route exemption -
       // "openai/docs/gemini.md" is a file reference, never a routed
       // model token (routes have no terminal extension).
+      // Codex round 27: a masked chain whose basename LOOKS like a model
+      // id is remembered - it is never judged by value (that was round
+      // 24's false positive), but it must never pass silently either
+      // (that was round 27's false negative): the line is explicitly
+      // rejected below with the restate-or-structure instruction.
+      let maskedModelLikeRoute: string | undefined;
+      // Model-like = a name whose FINAL separator-delimited segment is a
+      // version-ish token (digit, v+digit, or letter+digit: "llama-5",
+      // "gemini-2", "gpt-4o", "kimi-k3") - a digit mid-name followed by
+      // words ("v2-parser") is ordinary tooling nomenclature.
+      const modelLikeBasenamePattern =
+        /^[a-z][a-z0-9]*(?:[-._][a-z0-9]+)*[-._](?:v?\d|[a-z]\d)[a-z0-9.]*$/i;
       const base = line
         .replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length))
         .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, (m) => "#".repeat(m.length))
@@ -2946,7 +2963,11 @@ export function truthfulnessPreflight(params: {
                 canonicalModelText(normalizeVersionToken(unwrapped)) === chainCanonical
               );
             });
-            return matchesConfiguredRoutedPin ? m : "#".repeat(m.length);
+            if (matchesConfiguredRoutedPin) return m;
+            if (modelLikeBasenamePattern.test(lastSegment)) {
+              maskedModelLikeRoute = trimmedChain;
+            }
+            return "#".repeat(m.length);
           }
           const wrappedRoutedPin =
             parts.length === 3 &&
@@ -2956,7 +2977,11 @@ export function truthfulnessPreflight(params: {
                 parts[1] ?? "",
               ),
             );
-          return wrappedRoutedPin ? m : "#".repeat(m.length);
+          if (wrappedRoutedPin) return m;
+          if (modelLikeBasenamePattern.test(lastSegment)) {
+            maskedModelLikeRoute = trimmedChain;
+          }
+          return "#".repeat(m.length);
         });
       const negationTailPattern =
         /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
@@ -3101,7 +3126,17 @@ export function truthfulnessPreflight(params: {
       // quote kind, and each opener binds to the next closer via a
       // monotone pointer, preserving the alternation's leftmost-first
       // semantics.
-      const transformQuoteSpan = (m: string): string => {
+      const transformQuoteSpan = (m: string, delimLen = 1): string => {
+        if (delimLen > 1) {
+          // Round 27: multi-backtick code spans mask as one unit with
+          // their full delimiter runs preserved (code spans are never
+          // nomenclature).
+          return (
+            m.slice(0, delimLen) +
+            "#".repeat(Math.max(0, m.length - 2 * delimLen)) +
+            m.slice(m.length - delimLen)
+          );
+        }
         {
           const inner = m.slice(1, -1).trim();
           // Codex round 17: a quote holding NOTHING BUT peer aliases
@@ -3146,8 +3181,27 @@ export function truthfulnessPreflight(params: {
           { open: "'", close: "'", guarded: true },
           { open: "“", close: "”", guarded: false },
           { open: "‘", close: "’", guarded: true },
-          { open: "`", close: "`", guarded: false },
         ];
+        // Round 27: backtick code spans are handled by DELIMITER RUNS
+        // (CommonMark: a span closes only on a run of the SAME length) -
+        // treating each backtick as a single delimiter paired adjacent
+        // backticks into empty spans and left multi-backtick span
+        // content exposed.
+        const backtickRuns: Array<{ start: number; length: number }> = [];
+        for (const runMatch of input.matchAll(/`+/g)) {
+          if (runMatch.index !== undefined) {
+            backtickRuns.push({ start: runMatch.index, length: runMatch[0].length });
+          }
+        }
+        const runStartToLength = new Map<number, number>();
+        const runPositionsByLength = new Map<number, number[]>();
+        for (const run of backtickRuns) {
+          runStartToLength.set(run.start, run.length);
+          const bucket = runPositionsByLength.get(run.length);
+          if (bucket) bucket.push(run.start);
+          else runPositionsByLength.set(run.length, [run.start]);
+        }
+        const runPointerByLength = new Map<number, number>();
         const isQuoteWordChar = (ch: string | undefined): boolean =>
           ch !== undefined && /[A-Za-z0-9à-ÿ]/.test(ch);
         const closersByKind = quoteKinds.map((kind) => {
@@ -3164,6 +3218,31 @@ export function truthfulnessPreflight(params: {
         let cursor = 0;
         while (cursor < input.length) {
           let spanConsumed = false;
+          if (input[cursor] === "`") {
+            const runLength = runStartToLength.get(cursor);
+            if (runLength !== undefined) {
+              const bucket = runPositionsByLength.get(runLength) ?? [];
+              let runPointer = runPointerByLength.get(runLength) ?? 0;
+              while (runPointer < bucket.length && (bucket[runPointer] ?? -1) <= cursor) {
+                runPointer += 1;
+              }
+              runPointerByLength.set(runLength, runPointer);
+              const closerStart = bucket[runPointer];
+              if (closerStart !== undefined) {
+                output.push(
+                  transformQuoteSpan(input.slice(cursor, closerStart + runLength), runLength),
+                );
+                runPointerByLength.set(runLength, runPointer + 1);
+                cursor = closerStart + runLength;
+                continue;
+              }
+            }
+            // No matching closer run: the backtick run is literal text.
+            const literalLength = runLength ?? 1;
+            output.push(input.slice(cursor, cursor + literalLength));
+            cursor += literalLength;
+            continue;
+          }
           for (let kindIndex = 0; kindIndex < quoteKinds.length; kindIndex += 1) {
             const kind = quoteKinds[kindIndex];
             if (!kind || input[cursor] !== kind.open) continue;
@@ -3844,6 +3923,21 @@ export function truthfulnessPreflight(params: {
           addIssueClass(issueClasses, "unsupported_current_state_claim");
           unsupportedClaims.push(
             `model claim has no capturable model token and cannot be judged; state the exact configured pin token adjacent to the peer alias, or move historical, planned, hypothetical or third-party statements into the structured evidence field: ${line.slice(0, 240)}`,
+          );
+        }
+        // Codex round 27: a masked chain with a model-like basename on a
+        // model-scoped line is explicitly REJECTED - it is deliberately
+        // never judged by value (round 24's false positive), and it must
+        // never pass silently either (an unmatched routed lie such as
+        // "zeta/llama-5" would otherwise vanish into the mask with no
+        // visible alias left for the guard).
+        if (maskedModelLikeRoute !== undefined) {
+          lineCurrentModelClaimMatched = true;
+          currentStateClaimMatched = true;
+          zeroTokenGuardTripCount += 1;
+          addIssueClass(issueClasses, "unsupported_current_state_claim");
+          unsupportedClaims.push(
+            `a routed model-like value (${maskedModelLikeRoute.slice(0, 80)}) was masked as a filesystem path and cannot be judged by value; state the exact configured pin, or move the path reference into the structured evidence field: ${line.slice(0, 240)}`,
           );
         }
       }

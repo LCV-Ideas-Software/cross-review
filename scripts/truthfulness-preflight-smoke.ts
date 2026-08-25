@@ -1797,6 +1797,36 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "the imperative escape scopes to its governed clause - a declarative conjunct after a comma still blocks",
   );
+  // Codex review of PR #247, round 27.
+  assert.equal(
+    rt("The currently loaded cross-review runtime model is zeta/llama-5.", genericPins),
+    false,
+    "an unmatched model-like routed value never passes silently - the masked route is explicitly rejected with the restate instruction",
+  );
+  const crlfFence = anchored(
+    "```text\r\nThe cross-review runtime Codex model runs alpha beta seven.\r\n```\r\nplain line.",
+  );
+  assert.equal(
+    crlfFence.pass,
+    true,
+    "CRLF drafts normalize before the fence scan - a legitimate closer still closes and the fenced example masks",
+  );
+  const indentedFence = anchored(
+    "    ```text\nThe cross-review runtime Codex model runs alpha beta seven.\n```",
+  );
+  assert.equal(
+    indentedFence.pass,
+    false,
+    "a four-space-indented marker is indented code, never a fence opener - the live claim stays visible and blocks",
+  );
+  const doubleBacktickSpan = anchored(
+    "The docs give ``The cross-review runtime Codex model runs alpha beta seven.`` as a rejected example.",
+  );
+  assert.equal(
+    doubleBacktickSpan.pass,
+    true,
+    "a multi-backtick code span masks as one unit - delimiter runs must match, never pair off as empty spans",
+  );
   // Codex review of PR #247, round 26.
   const infoStringCloser = anchored(
     "```text\nThe cross-review runtime Codex model runs alpha beta seven.\n```not-a-closer",
@@ -1831,8 +1861,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     twoSegmentDocPath.pass,
-    true,
-    "a non-provider two-segment extensionless path (docs/gemini-2) masks before occurrence capture - never a routed model token",
+    false,
+    "HARDENED CONTRACT (round 27 supersedes round 24): a masked route whose basename is model-like is explicitly rejected with the restate instruction - it is never judged by value AND never passes silently. Was: masks before occurrence capture",
   );
   {
     const fenceChain = "``` ".repeat(Math.ceil(200_000 / 4));
