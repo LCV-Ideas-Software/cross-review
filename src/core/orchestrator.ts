@@ -2729,10 +2729,17 @@ export function truthfulnessPreflight(params: {
       const lineText = textLines[index] ?? "";
       if (openFenceLine === -1) {
         // An opener may carry an info string after the delimiter run.
-        const openerMatch = /^ {0,3}(`{3,}|~{3,})/.exec(lineText);
+        // Official-spec audit (CommonMark 0.31.2): the info string of a
+        // BACKTICK fence may not contain backticks - such a line is not
+        // an opener (tilde-fence info strings have no such restriction).
+        const openerMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(lineText);
         if (openerMatch) {
-          openFenceLine = index;
-          openFenceMarker = openerMatch[1] ?? "";
+          const marker = openerMatch[1] ?? "";
+          const infoString = openerMatch[2] ?? "";
+          if (!(marker[0] === "`" && infoString.includes("`"))) {
+            openFenceLine = index;
+            openFenceMarker = marker;
+          }
         }
         continue;
       }

@@ -1827,6 +1827,18 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "a multi-backtick code span masks as one unit - delimiter runs must match, never pair off as empty spans",
   );
+  // Official-spec audit (CommonMark 0.31.2, fenced code blocks): the
+  // info string of a BACKTICK fence may not contain backticks - such a
+  // line is not an opener, so it must not start a bogus fence that
+  // masks a following live claim.
+  const backtickInfoString = anchored(
+    "``` `note` \nThe cross-review runtime Codex model runs alpha beta seven.\n```",
+  );
+  assert.equal(
+    backtickInfoString.pass,
+    false,
+    "a backtick-fence info string containing backticks is not an opener (CommonMark) - the live claim stays visible and blocks",
+  );
   // Codex review of PR #247, round 26.
   const infoStringCloser = anchored(
     "```text\nThe cross-review runtime Codex model runs alpha beta seven.\n```not-a-closer",
