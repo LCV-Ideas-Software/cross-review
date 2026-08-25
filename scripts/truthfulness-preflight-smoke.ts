@@ -805,9 +805,9 @@ import type { PeerResult } from "../src/core/types.js";
   // line with a peer alias and ZERO capturable model tokens (fragmented
   // ids — the single residual false negative of the PR #234 38-case
   // red-team sweep) is LOCATED by the lexicon but cannot be judged by it:
-  // the claim must anchor in structured evidence BY VALUE (the configured
-  // pin, canonically normalized, next to a model-pin record marker) or it
-  // is an unsupported current-state claim — never a silent pass.
+  // it is rejected outright as an unsupported current-state claim with a
+  // single restatement instruction (no evidence-corroboration channel) —
+  // never a silent pass.
   const anchored = (draft: string, evidence?: string, caller?: "claude") =>
     truthfulnessPreflight({
       task: "Check the currently loaded cross-review runtime models.",
@@ -1146,6 +1146,50 @@ import type { PeerResult } from "../src/core/types.js";
     curlyQuoteExample.pass,
     true,
     "typographic quotes mask multi-word quoted examples like straight quotes do",
+  );
+  // Codex review of PR #247, round 7.
+  const whileConjunction = anchored(
+    "The cross-review runtime Codex model runs alpha beta seven while gpt-5.6-sol is documented elsewhere.",
+  );
+  assert.equal(
+    whileConjunction.pass,
+    false,
+    "a subordinating conjunction (while) is a clause boundary - the truthful token in the other clause cannot consume the alias of the fragmented claim",
+  );
+  assert.ok(
+    whileConjunction.issue_classes.includes("unsupported_current_state_claim"),
+    "the fragmented claim beside a while-clause stays located and blocked",
+  );
+  const upcomingModel = anchored("The upcoming cross-review runtime Codex model is gpt-5.5.");
+  assert.equal(
+    upcomingModel.pass,
+    true,
+    "a nominal planning word modifying the MODEL itself (the upcoming ... model is X) keeps the future exemption - its copular verb is the future phrase's own predication",
+  );
+  const anaphoricAlias = anchored(
+    "The cross-review runtime model is alpha beta seven, and Codex runs it.",
+  );
+  assert.equal(
+    anaphoricAlias.pass,
+    false,
+    "an alias clause that refers back to a preceding model antecedent (runs it) carries the model relation - the fragmented claim stays blocked",
+  );
+  const colonRequest = anchored(
+    "We need to determine which model Claude uses: the cross-review runtime Codex model currently runs alpha beta seven.",
+  );
+  assert.equal(
+    colonRequest.pass,
+    false,
+    "a colon ends the indirect-request scope - the assertive claim after it still reaches the zero-token guard",
+  );
+  const andNowTransition = anchored(
+    "When the audit began, the old settings were recorded, and now the cross-review runtime Codex model remains alpha beta seven.",
+    "Historical runtime snapshot from events.ndjson: workflow_start server_info version=4.2.0; later reload server_info version=4.2.1.",
+  );
+  assert.equal(
+    andNowTransition.pass,
+    false,
+    "a now/remains transition ends the historical carry - the plainly current fragmented claim is blocked even with valid timing evidence",
   );
 
   const singleOperationalLie = detectFabricatedEvidence(

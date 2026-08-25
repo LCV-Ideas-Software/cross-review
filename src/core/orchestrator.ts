@@ -2737,18 +2737,19 @@ export function truthfulnessPreflight(params: {
       // phrasings are asked to be restated plainly or evidenced, never
       // waved through; (S3) future/planning statements are exempt from S1.
       //
-      // STRUCTURED ANCHORING (CROSREV-21/#237 phase 2, extending #239
-      // item 3): S1/S2 need at least one CAPTURABLE occurrence. A
-      // model-scoped assertive line with a peer alias and ZERO capturable
-      // tokens (fragmented ids — the residual false negative of the
-      // 38-case red-team sweep — or a denial naming no token) is LOCATED
-      // by the lexicon and judged by structured evidence instead: the
-      // aliased peers' configured pins must be corroborated BY VALUE in
-      // supplied evidence next to a model-pin record marker
-      // (modelPinClaimCorroborated), or the line is an unsupported
-      // current-state claim. With the guard, a phrasing the lexicon
-      // cannot reach lands in S1/S2 or the anchoring guard (at worst a
-      // clarity/evidence request), never in a silent pass.
+      // ZERO-TOKEN GUARD (CROSREV-21/#237 phase 2, extending #239 item
+      // 3): S1/S2 need at least one CAPTURABLE occurrence. A model-scoped
+      // assertive line with a peer alias and ZERO capturable tokens
+      // (fragmented ids — the residual false negative of the 38-case
+      // red-team sweep — or a denial naming no token) is LOCATED by the
+      // lexicon and REJECTED outright as an unsupported current-state
+      // claim with one instruction: restate with the exact contiguous
+      // model id. There is deliberately NO evidence-corroboration channel
+      // for the unparseable claim (Codex rounds 1-4 of PR #247 proved
+      // judging it or its evidence is an unbounded lexical spiral); the
+      // restated claim is then judged BY VALUE by S1/S2. With the guard,
+      // a phrasing the lexicon cannot reach lands in S1/S2 or the guard
+      // (at worst a one-line restatement), never in a silent pass.
       const contradictionCountBefore = contradictions.length;
       type ModelOccurrence = {
         matchStart: number;
@@ -2924,8 +2925,17 @@ export function truthfulnessPreflight(params: {
           }
         }
       }
+      // Codex round 7 of PR #247: clause boundaries must be FAITHFUL -
+      // subordinating conjunctions (while/although/...) and colon/dash
+      // punctuation open new clauses, or a truthful token in the
+      // subordinate clause consumes the alias of a fragmented claim and
+      // an indirect-request mask swallows the assertion after a colon.
+      // Contrast words (but/yet/however) stay OUT of this list: they are
+      // handled by the marker state machine's contrast rule.
       const clauseBounds: Array<{ start: number; end: number }> = [];
-      for (const match of aliasBase.matchAll(/[;,.]|\b(?:and|e)\b/gi)) {
+      for (const match of aliasBase.matchAll(
+        /[;,.:]|—|–|\s-\s|\b(?:and|e|while|whilst|whereas|although|though|enquanto|embora)\b/gi,
+      )) {
         if (match.index !== undefined) {
           clauseBounds.push({ start: match.index, end: match.index + match[0].length });
         }
@@ -2997,9 +3007,25 @@ export function truthfulnessPreflight(params: {
       // uncontrasted modal scope ("would currently use X if ...") the
       // current marker does not renew. A token with no marker before it
       // in a planning clause keeps the S3 exemption.
+      // Codex round 7: present-tense stative verbs and the "now" adverb
+      // are current markers too - "and now the ... model REMAINS X" ends
+      // the historical carry. Ambiguous adverbs that also ride past-tense
+      // clauses (still/today/ainda) are deliberately excluded.
       const currentAssertionPattern =
-        /\b(?:is|are|runs?|uses?|currently|atualmente|roda|usa|est[aá])\b/i;
+        /\b(?:is|are|runs?|uses?|currently|now|remains?|continues?|stays?|atualmente|agora|roda|usa|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
       const contrastMarkerPattern = /\b(?:but|yet|however|mas|por[eé]m|contudo)\b/i;
+      // Codex round 7: a nominal planning word that modifies the MODEL
+      // NOUN PHRASE itself ("the UPCOMING ... Codex model is X") keeps its
+      // future scope through the phrase's own copular verb - the span
+      // between the nominal marker and the current marker holding the
+      // model noun or a peer alias means the verb predicates the future
+      // entity. A nominal modifying something else ("the PLANNED
+      // deployment currently runs ...") still lets the current marker
+      // renew.
+      const nominalGovernedHeadPattern = new RegExp(
+        `\\b(?:models?|modelos?)\\b|${PEERS.map((aliasPeer) => MODEL_CLAIM_ALIASES[aliasPeer].source).join("|")}`,
+        "i",
+      );
       type MarkerEvent = {
         idx: number;
         kind: "current" | "future" | "contrast";
@@ -3029,14 +3055,21 @@ export function truthfulnessPreflight(params: {
         let state: "none" | "current" | "future" = "none";
         let contrastSinceFuture = false;
         let futureIsModal = false;
+        let lastFutureIdx = -1;
         for (const event of markerEvents(text)) {
           if (event.kind === "future") {
             state = "future";
             futureIsModal = event.modal === true;
+            lastFutureIdx = event.idx;
             contrastSinceFuture = false;
           } else if (event.kind === "contrast") {
             contrastSinceFuture = true;
-          } else if (state !== "future" || contrastSinceFuture || !futureIsModal) {
+          } else if (
+            state !== "future" ||
+            contrastSinceFuture ||
+            (!futureIsModal &&
+              !nominalGovernedHeadPattern.test(text.slice(lastFutureIdx, event.idx)))
+          ) {
             state = "current";
           }
         }
@@ -3218,6 +3251,7 @@ export function truthfulnessPreflight(params: {
             let state: "none" | "current" | "future" = "none";
             let contrastSinceFuture = false;
             let futureIsModal = false;
+            let lastFutureIdx = -1;
             let spanStart = -1;
             const closeSpan = (endIdx: number): void => {
               if (spanStart >= 0) {
@@ -3230,10 +3264,16 @@ export function truthfulnessPreflight(params: {
                 if (state !== "future") spanStart = state === "none" ? 0 : event.idx;
                 state = "future";
                 futureIsModal = event.modal === true;
+                lastFutureIdx = event.idx;
                 contrastSinceFuture = false;
               } else if (event.kind === "contrast") {
                 contrastSinceFuture = true;
-              } else if (state === "future" && (contrastSinceFuture || !futureIsModal)) {
+              } else if (
+                state === "future" &&
+                (contrastSinceFuture ||
+                  (!futureIsModal &&
+                    !nominalGovernedHeadPattern.test(segment.slice(lastFutureIdx, event.idx))))
+              ) {
                 closeSpan(event.idx);
                 state = "current";
               } else if (state !== "future") {
@@ -3261,11 +3301,20 @@ export function truthfulnessPreflight(params: {
               clauseStartFor(match.index),
               clauseEndFor(match.index),
             );
+            // Codex round 7: an alias clause that explicitly refers back
+            // to a model antecedent ("... the model is alpha beta seven,
+            // and Codex runs IT") carries the relation - the pronoun is
+            // required, so unrelated model language in other clauses
+            // still cannot convert a bare mention into a claim.
+            const anaphoricReferencePattern =
+              /\b(?:it|that|this|one|isso|isto|ele|ela|o\s+mesmo|a\s+mesma)\b/i;
             const relation =
               modelRelationPattern.test(clauseText) ||
               new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
                 clauseText,
-              );
+              ) ||
+              (anaphoricReferencePattern.test(clauseText) &&
+                modelRelationPattern.test(aliasBase.slice(0, clauseStartFor(match.index))));
             if (!relation) continue;
             guardTripped = true;
             break;
