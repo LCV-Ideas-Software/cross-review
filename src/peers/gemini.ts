@@ -870,7 +870,48 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               );
             }
           })
-          .catch(() => undefined)
+          .catch((lateError: unknown) => {
+            // Round 19: a DEFINITIVE late rejection (non-retryable,
+            // unambiguous - e.g. a 400) means the cancelled attempt
+            // created no billed resource: record the negative sentinel
+            // (same as the synchronous path) and reconcile the attempt
+            // as KNOWN ZERO. Ambiguous/transient late failures keep the
+            // indeterminate marker.
+            const lateFailure = classifyProviderError(
+              this.id,
+              this.provider,
+              this.model,
+              lateError,
+              1,
+              Date.now(),
+            );
+            const lateAmbiguous =
+              indeterminateSpendMarkerFor(lateFailure.failure_class, lateFailure.message, 1) > 0;
+            if (!lateAmbiguous && !lateFailure.retryable) {
+              const nowMs = Date.now();
+              for (const [key, indexed] of geminiExplicitCacheIndex) {
+                if (indexed.expires_at_ms <= nowMs) geminiExplicitCacheIndex.delete(key);
+              }
+              geminiExplicitCacheIndex.set(cacheKeyHash, {
+                name: "",
+                token_count: countedTokens ?? 0,
+                expires_at_ms: nowMs + ttlSeconds * 1_000,
+              });
+              notice(
+                "Gemini explicit cache creation REJECTED after cancellation; the attempt reconciles as known zero storage spend.",
+                {
+                  model: this.model,
+                  token_count: 0,
+                  ttl,
+                  ttl_seconds: ttlSeconds,
+                  storage_token_hours: 0,
+                  storage_cost_usd: 0,
+                  key_hash: cacheKeyHash,
+                  late_settlement: true,
+                },
+              );
+            }
+          })
           .finally(() => params.releaseInFlight());
       }
       // Round 13: a TERMINAL, unambiguous rejection (the model does not

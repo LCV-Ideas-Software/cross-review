@@ -3758,12 +3758,6 @@ export function estimatedPeerRoundCost(
       );
       if (estimate.total_cost == null) return undefined;
       if (geminiStorageApplies) {
-        const storageRate = resolveCostRate(
-          config,
-          "gemini",
-          pricedModel,
-        )?.cache_storage_per_million_hour;
-        if (typeof storageRate !== "number") return undefined;
         const ttlHours = config.cache.ttl.gemini === "5m" ? 300 / 3_600 : 1;
         // Codex review of PR #240 round 2: the stale-cache retry path
         // legitimately re-creates (and re-bills) the resource on a later
@@ -3785,8 +3779,17 @@ export function estimatedPeerRoundCost(
         // whose ceiling sits below the provider minimum can never create
         // a cache, so charging its storage would reject reviews on a hard
         // budget for spend that cannot exist. Round 16: the minimum is
-        // per effective model (Flash 1,024 / Pro 4,096).
+        // per effective model (Flash 1,024 / Pro 4,096). Round 19: the
+        // rate is required only INSIDE the eligible branch — an
+        // ineligible payload prices no storage and must not fail the
+        // whole estimate over the absent rate.
         if (storageTokens >= geminiExplicitCacheMinTokensForModel(pricedModel)) {
+          const storageRate = resolveCostRate(
+            config,
+            "gemini",
+            pricedModel,
+          )?.cache_storage_per_million_hour;
+          if (typeof storageRate !== "number") return undefined;
           storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
         }
       }

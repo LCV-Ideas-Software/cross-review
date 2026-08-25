@@ -2255,6 +2255,13 @@ export class SessionStore {
   // monotonic (indeterminate -> known) - it runs even on a terminal
   // session, never touching the outcome, so FinOps totals stay faithful
   // to the provider's real charges.
+  // Returns which durable sources were settled ("none" = nothing matched).
+  // Codex round 19: the same failure lives CLONED in up to three places
+  // (round rejected list, failed-attempts ledger, in-flight settlement) —
+  // the markers settle on EVERY clone of the attempt (same peer +
+  // message) so no representation stays indeterminate, while the storage
+  // usage/cost lands exactly once (ledger first, so totals count it
+  // once).
   private settleLateCacheCreationInMeta(
     meta: SessionMeta,
     params: {
@@ -2263,49 +2270,77 @@ export class SessionStore {
       usage: TokenUsage;
       cost?: CostEstimate | undefined;
     },
-  ): boolean {
+  ): "none" | "durable" | "in_flight_only" {
     const matchesRound = (round: number | undefined): boolean =>
       round === undefined || round === params.round;
-    const pool: Array<{
+    type SettleRecord = {
       peer: PeerId;
+      message?: string | undefined;
       indeterminate_spend_attempts?: number | undefined;
       unpriced_attempts?: number | undefined;
       usage?: TokenUsage | undefined;
       cost?: CostEstimate | undefined;
       billing_status?: "reported" | "unknown" | undefined;
-    }> = [
-      ...(meta.rounds[params.round - 1]?.rejected ?? []),
-      ...(meta.failed_attempts ?? []).filter((failure) =>
-        matchesRound((failure as PeerFailure & { round?: number }).round),
-      ),
-      ...(meta.in_flight?.provider_settlements ?? []).filter(
-        () => meta.in_flight?.round === params.round,
-      ),
+    };
+    const pool: Array<{ record: SettleRecord; source: "rejected" | "failed" | "in_flight" }> = [
+      ...(meta.rounds[params.round - 1]?.rejected ?? []).map((record) => ({
+        record: record as SettleRecord,
+        source: "rejected" as const,
+      })),
+      ...(meta.failed_attempts ?? [])
+        .filter((failure) => matchesRound((failure as PeerFailure & { round?: number }).round))
+        .map((record) => ({ record: record as SettleRecord, source: "failed" as const })),
+      ...(meta.in_flight?.provider_settlements ?? [])
+        .filter(() => meta.in_flight?.round === params.round)
+        .map((record) => ({ record: record as SettleRecord, source: "in_flight" as const })),
     ].filter(
-      (record) => record.peer === params.peer && (record.indeterminate_spend_attempts ?? 0) > 0,
+      ({ record }) => record.peer === params.peer && (record.indeterminate_spend_attempts ?? 0) > 0,
     );
     const target = pool.at(-1);
-    if (!target) return false;
-    target.indeterminate_spend_attempts = Math.max(
-      0,
-      (target.indeterminate_spend_attempts ?? 0) - 1,
+    if (!target) return "none";
+    const clones = pool.filter(
+      ({ record }) =>
+        record.message === undefined ||
+        target.record.message === undefined ||
+        record.message === target.record.message,
     );
-    target.unpriced_attempts = Math.max(0, (target.unpriced_attempts ?? 0) - 1);
-    target.usage = target.usage ? mergeUsage([target.usage, params.usage]) : params.usage;
-    if (params.cost) {
-      target.cost = target.cost ? mergeCost([target.cost, params.cost]) : params.cost;
-      if ((target.unpriced_attempts ?? 0) === 0) target.billing_status = "reported";
+    const durable = clones.some(({ source }) => source !== "in_flight");
+    for (const { record } of clones) {
+      record.indeterminate_spend_attempts = Math.max(
+        0,
+        (record.indeterminate_spend_attempts ?? 0) - 1,
+      );
+      record.unpriced_attempts = Math.max(0, (record.unpriced_attempts ?? 0) - 1);
+      if ((record.unpriced_attempts ?? 0) === 0 && params.cost) {
+        record.billing_status = "reported";
+      }
     }
-    if (
-      params.cost?.total_cost != null &&
-      params.round > 0 &&
-      params.round <= (meta.costs_per_round?.length ?? 0)
-    ) {
-      const costs = [...(meta.costs_per_round ?? [])];
-      costs[params.round - 1] = (costs[params.round - 1] ?? 0) + params.cost.total_cost;
-      meta.costs_per_round = costs;
+    // The storage usage/cost lands exactly once, on a DURABLE carrier
+    // (ledger first). An in-flight-only hit settles markers but defers
+    // the cost to the retained pendency - the in-flight copy dies at
+    // promotion, so applying it there would lose (or double-count) the
+    // charge.
+    if (durable) {
+      const costCarrier =
+        clones.find(({ source }) => source === "failed") ??
+        clones.find(({ source }) => source === "rejected") ??
+        target;
+      const carrier = costCarrier.record;
+      carrier.usage = carrier.usage ? mergeUsage([carrier.usage, params.usage]) : params.usage;
+      if (params.cost) {
+        carrier.cost = carrier.cost ? mergeCost([carrier.cost, params.cost]) : params.cost;
+      }
+      if (
+        params.cost?.total_cost != null &&
+        params.round > 0 &&
+        params.round <= (meta.costs_per_round?.length ?? 0)
+      ) {
+        const costs = [...(meta.costs_per_round ?? [])];
+        costs[params.round - 1] = (costs[params.round - 1] ?? 0) + params.cost.total_cost;
+        meta.costs_per_round = costs;
+      }
     }
-    return true;
+    return durable ? "durable" : "in_flight_only";
   }
 
   // Codex round 18 (PR #240): retained settlements are applied the moment
@@ -2315,8 +2350,12 @@ export class SessionStore {
   private applyPendingLateCacheSettlements(meta: SessionMeta): void {
     const pending = meta.pending_late_cache_settlements ?? [];
     if (pending.length === 0) return;
+    // A pending settlement is cleared only once a DURABLE representation
+    // (round rejected / failed-attempts) absorbed it - an in-flight-only
+    // hit is transient (appendRound promotes the stale clone and deletes
+    // in_flight), so the pendency survives until promotion.
     meta.pending_late_cache_settlements = pending.filter(
-      (settlement) => !this.settleLateCacheCreationInMeta(meta, settlement),
+      (settlement) => this.settleLateCacheCreationInMeta(meta, settlement) !== "durable",
     );
     if (meta.pending_late_cache_settlements.length === 0) {
       meta.pending_late_cache_settlements = undefined;
@@ -2335,10 +2374,15 @@ export class SessionStore {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       const settled = this.settleLateCacheCreationInMeta(meta, params);
-      if (!settled) {
+      if (settled !== "durable") {
         // Codex round 18: the creation may have settled BEFORE the
         // indeterminate failure record was persisted - retain the
         // settlement; the failure writers apply it when the record lands.
+        // Round 19: an in-flight-only hit is retained too - appendRound
+        // promotes the STALE clone and deletes in_flight, so the pendency
+        // must survive until a durable representation absorbs it (the
+        // in-flight copy it marked dies with the promotion, so the later
+        // durable application never double-counts).
         meta.pending_late_cache_settlements = [
           ...(meta.pending_late_cache_settlements ?? []),
           params,
@@ -2347,7 +2391,7 @@ export class SessionStore {
       meta.totals = this.totalsFor(meta);
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
-      return settled;
+      return settled !== "none";
     });
   }
 

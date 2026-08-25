@@ -2513,6 +2513,105 @@ const regressions: Regression[] = [
           "the applied settlement leaves no pending entry",
         );
       }
+      // Codex round 19: a settlement that lands on the transient
+      // in-flight record survives appendRound's promotion - the pendency
+      // is retained until a DURABLE representation (failed_attempts /
+      // round.rejected) absorbs the markers and the cost, and every
+      // durable clone of the attempt settles.
+      {
+        const { SessionStore } = await import("../src/core/session-store.js");
+        const promoDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-promo-rec-"));
+        const promoStore = new SessionStore({ ...geminiPreflightPriced, data_dir: promoDir });
+        const promoSession = await promoStore.init(
+          "reconcile across promotion",
+          "operator",
+          [],
+          undefined,
+        );
+        const promoFailure = {
+          peer: "gemini" as const,
+          provider: "google",
+          model: "gemini-3.1-pro-preview",
+          failure_class: "cancelled" as const,
+          message: "cancelled while caches.create was in flight",
+          retryable: false,
+          attempts: 1,
+          latency_ms: 10,
+          unpriced_attempts: 1,
+          indeterminate_spend_attempts: 1,
+        };
+        const promoCost = {
+          currency: "USD" as const,
+          total_cost: 0.0225,
+          cache_storage_cost: 0.0225,
+          estimated: true,
+          source: "configured-rate" as const,
+        };
+        // Settle BEFORE any record exists -> retained as pending.
+        await promoStore.reconcileLateCacheCreation(promoSession.session_id, {
+          round: 1,
+          peer: "gemini",
+          usage: { cache_storage_token_hours: 5_000 },
+          cost: promoCost,
+        });
+        // The round lands with the STALE clone (as appendRound promotes).
+        const promoScope = {
+          petitioner: "operator" as const,
+          caller: "operator" as const,
+          caller_status: "NEEDS_EVIDENCE" as const,
+          expected_peers: ["gemini" as const],
+          reviewer_peers: ["gemini" as const],
+        };
+        await promoStore.markInFlight(promoSession.session_id, {
+          round: 1,
+          peers: ["gemini"],
+          started_at: new Date().toISOString(),
+          scope: promoScope,
+        });
+        await promoStore.appendRound(promoSession.session_id, {
+          caller_status: "NEEDS_EVIDENCE",
+          prompt_file: "round-1-prompt.md",
+          peers: [],
+          rejected: [promoFailure],
+          convergence: {
+            converged: false,
+            reason: "round settled with failures",
+            ready_peers: [],
+            blocking_peers: ["gemini"],
+            skipped_peers: [],
+            decision_quality: { gemini: "failed" },
+            blocking_details: ["gemini failed"],
+          } as never,
+          convergence_scope: promoScope as never,
+          started_at: new Date().toISOString(),
+        });
+        const promoMeta = promoStore.read(promoSession.session_id);
+        const promotedRejected = promoMeta.rounds[0]?.rejected.at(-1);
+        const promotedLedger = (promoMeta.failed_attempts ?? []).at(-1);
+        assert.equal(
+          promotedRejected?.indeterminate_spend_attempts,
+          0,
+          "the promoted rejected clone settles",
+        );
+        assert.equal(
+          promotedLedger?.indeterminate_spend_attempts,
+          0,
+          "the promoted ledger clone settles",
+        );
+        assert.ok(
+          Math.abs(
+            (promotedLedger?.cost?.cache_storage_cost ??
+              promotedRejected?.cost?.cache_storage_cost ??
+              0) - 0.0225,
+          ) < 1e-12,
+          "the storage cost lands exactly once on a durable carrier",
+        );
+        assert.equal(
+          promoMeta.pending_late_cache_settlements,
+          undefined,
+          "the pendency clears after the durable absorption",
+        );
+      }
       // Codex round 16: the cachedContents minimum is per model - Flash is
       // 1,024 tokens, Pro is 4,096, unknown models stay conservative.
       {
