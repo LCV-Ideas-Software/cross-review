@@ -53,6 +53,16 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
 
+  Codex round 25 closed two more escape edges: the fence scanner tracks
+  the FULL delimiter run (Markdown closes a fence only with the same
+  character in a run at least as long as the opener - a three-backtick
+  line never closes a four-backtick fence, so the claim inside stays
+  visible and blocks), and the entry-gate clauses split on commas too,
+  scoping the imperative escape to its governed clause ("Review the
+  logs, and the ... model runs alpha beta seven." blocks) while a
+  genuine interrogative-opening question keeps its escape across
+  internal commas via the line-final question mark.
+
   Codex round 24 closed three edges: a fence only closes on the SAME
   delimiter that opened it (a tilde line never closes a backtick fence -
   the claim inside the still-open fence stays visible and blocks); the

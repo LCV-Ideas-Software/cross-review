@@ -1780,6 +1780,31 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a declarative proposition with a trailing tag question is assertive - the contradictory pin reaches judgment",
   );
+  // Codex review of PR #247, round 25.
+  const longerFenceOpener = anchored(
+    "````text\nThe cross-review runtime Codex model runs alpha beta seven.\n```",
+  );
+  assert.equal(
+    longerFenceOpener.pass,
+    false,
+    "a shorter delimiter run never closes a longer fence opener - the four-backtick fence stays open and the claim blocks",
+  );
+  const commaCoordinatedInstruction = anchored(
+    "Review the logs, and the cross-review runtime Codex model runs alpha beta seven.",
+  );
+  assert.equal(
+    commaCoordinatedInstruction.pass,
+    false,
+    "the imperative escape scopes to its governed clause - a declarative conjunct after a comma still blocks",
+  );
+  const commaQuestion = anchored(
+    "Is the cross-review runtime Codex model gpt-5.6-sol, or something newer?",
+  );
+  assert.equal(
+    commaQuestion.pass,
+    true,
+    "a genuine interrogative-opening question keeps its escape across internal commas",
+  );
   const twoSegmentDocPath = anchored(
     "The cross-review model_pin table is documented in docs/gemini-2 for reference.",
   );

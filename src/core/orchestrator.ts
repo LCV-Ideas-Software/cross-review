@@ -2717,22 +2717,27 @@ export function truthfulnessPreflight(params: {
     let openFenceLine = -1;
     let openFenceMarker = "";
     for (let index = 0; index < textLines.length; index += 1) {
-      const fenceMatch = /^[ \t]*(```|~~~)/.exec(textLines[index] ?? "");
+      // Round 25: the FULL delimiter run is tracked - Markdown only
+      // closes a fence with the same character in a run AT LEAST as
+      // long as the opener, so a three-backtick line never closes a
+      // four-backtick fence.
+      const fenceMatch = /^[ \t]*(`{3,}|~{3,})/.exec(textLines[index] ?? "");
       if (!fenceMatch) continue;
       const marker = fenceMatch[1] ?? "";
       if (openFenceLine === -1) {
         openFenceLine = index;
         openFenceMarker = marker;
-      } else if (marker === openFenceMarker) {
+      } else if (marker[0] === openFenceMarker[0] && marker.length >= openFenceMarker.length) {
         for (let masked = openFenceLine; masked <= index; masked += 1) {
           textLines[masked] = "#".repeat((textLines[masked] ?? "").length);
         }
         openFenceLine = -1;
         openFenceMarker = "";
       }
-      // A different marker inside an open fence is fence CONTENT - it
-      // neither closes nor opens (it will be masked if the open fence
-      // ever closes, and stays visible fail-closed otherwise).
+      // A different or shorter marker inside an open fence is fence
+      // CONTENT - it neither closes nor opens (it will be masked if the
+      // open fence ever closes, and stays visible fail-closed
+      // otherwise).
     }
     return textLines.join("\n");
   };
@@ -2791,7 +2796,11 @@ export function truthfulnessPreflight(params: {
     // consuming its alias.
     if (
       lineFromDraft &&
-      line.split(/[;:]/).some(
+      // Round 25: clauses split on commas too - "Review the logs, and
+      // the ... model runs alpha beta seven." keeps the imperative
+      // escape scoped to its governed clause, never the whole
+      // comma-coordinated sentence.
+      line.split(/[;:,]/).some(
         (clause) =>
           CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN.test(clause) &&
           !OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(clause) &&
@@ -2799,9 +2808,12 @@ export function truthfulnessPreflight(params: {
           // OPENING (closed list of question-word/auxiliary starts) -
           // a declarative proposition with a trailing tag question
           // ("... is gpt-5.5, correct?") stays assertive and reaches
-          // judgment.
+          // judgment. Round 25: with comma splitting, the "?" may sit in
+          // a later clause of the same line - the escape accepts the
+          // line-final question mark as long as THIS clause opens
+          // interrogatively.
           !(
-            /\?\s*$/.test(clause) &&
+            (/\?\s*$/.test(clause) || /\?\s*$/.test(line)) &&
             /^\s*(?:is|are|was|were|do|does|did|can|could|will|would|should|shall|has|have|had|am|which|what|whether|why|how|who|whom|whose|when|where|[eé]|s[aã]o|ser[aá]|est[aá]|estava|qual|quais|por\s+que|como|quando|onde|quem|o\s+que)\b/i.test(
               clause,
             )
