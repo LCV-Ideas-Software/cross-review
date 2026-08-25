@@ -2566,210 +2566,20 @@ function canonicalModelText(value: string): string {
   return value.replace(/_/g, "-").replace(/(^|[-.])v(?=[0-9])/g, "$1");
 }
 
-// CROSREV-21 (#237 phase 2): a model-pin claim the lexicon can LOCATE but
-// not judge (no capturable token) anchors in structured evidence BY VALUE.
-// The evidence must carry a model-pin RECORD marker — server_info /
-// session_read / capability_snapshot / probe_peers / effective config /
-// model_pin / a models: mapping — near which the configured pin value can
-// live. runtime_capabilities is deliberately absent: its payload exposes
-// no model ids, so it can never corroborate a model-pin claim (it remains
-// valid provenance for version/release_date claims elsewhere).
-// Round 3: the raw pasted server_info payload is pretty JSON whose keys
-// are QUOTED ("models": {...}) and carries no literal tool name — quoted
-// model keys and Markdown model headings are records too.
-const MODEL_PIN_EVIDENCE_RECORD_PATTERN =
-  /\b(?:server_info|session_read|capability_snapshot|probe_peers|effective_config(?:_snapshot)?|model[_ -]?pins?|models?\s*[:=])/i;
-const MODEL_PIN_EVIDENCE_QUOTED_RECORD_PATTERN = /["']models?["']\s*[:=]|^#+\s*models?\b/im;
-
-function isModelPinEvidenceRecordLine(lineText: string): boolean {
-  return (
-    MODEL_PIN_EVIDENCE_RECORD_PATTERN.test(lineText) ||
-    MODEL_PIN_EVIDENCE_QUOTED_RECORD_PATTERN.test(lineText)
-  );
-}
-
-// Codex review of PR #247 round 2: the marker and the pin value must
-// correlate within ONE evidence record — otherwise unrelated text
-// ("server_info request failed" on one line, "planned pin: X" on another)
-// masquerades as corroboration. A record is the marker line plus its
-// STRUCTURAL continuation (indented / JSON-shaped lines), so a
-// pretty-printed server_info block stays one record while an unrelated
-// prose line never inherits the marker.
-function modelPinEvidenceRecords(evidenceText: string): string[] {
-  const lines = evidenceText.split(/\r?\n/);
-  const records: string[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (!isModelPinEvidenceRecordLine(line)) continue;
-    const record = [line];
-    for (let next = index + 1; next < lines.length; next += 1) {
-      const continuation = lines[next] ?? "";
-      if (continuation.trim().length === 0 || !/^[\s{}[\]"']/.test(continuation)) break;
-      record.push(continuation);
-    }
-    records.push(record.join("\n"));
-  }
-  return records;
-}
-
-// Canonical comparison views of one configured pin (model segment plus the
-// full route for provider/model pins).
-function modelPinViews(pin: string): string[] {
-  const views = [canonicalModelText(normalizeModelPin(pin))];
-  const unwrapped = pin.replace(/^models\//i, "");
-  if (unwrapped.includes("/")) {
-    views.push(canonicalModelText(normalizeVersionToken(unwrapped)));
-  }
-  return views;
-}
-
-// Codex review of PR #247 round 3: pin-side anchoring alone let a claim
-// naming a DIFFERENT value ("alpha beta seven") be grounded by correct pin
-// evidence. The claim's fragment words — number words folded to digits,
-// provider aliases and framing stopwords dropped — must EACH occur inside
-// a canonical pin view; any non-corresponding fragment refuses the anchor
-// regardless of the evidence supplied. A clause with no fragments (a vague
-// or token-free phrasing) falls back to plain pin-side anchoring.
-const GUARD_NUMBER_WORDS: Record<string, string> = {
-  zero: "0",
-  one: "1",
-  two: "2",
-  three: "3",
-  four: "4",
-  five: "5",
-  six: "6",
-  seven: "7",
-  eight: "8",
-  nine: "9",
-  ten: "10",
-  um: "1",
-  dois: "2",
-  tres: "3",
-  quatro: "4",
-  cinco: "5",
-  seis: "6",
-  sete: "7",
-  oito: "8",
-  nove: "9",
-  dez: "10",
-};
-const GUARD_FRAGMENT_STOPWORDS = new Set([
-  "the",
-  "a",
-  "an",
-  "is",
-  "are",
-  "was",
-  "were",
-  "runs",
-  "run",
-  "running",
-  "uses",
-  "use",
-  "using",
-  "currently",
-  "now",
-  "still",
-  "in",
-  "on",
-  "at",
-  "to",
-  "of",
-  "and",
-  "as",
-  "its",
-  "it",
-  "peer",
-  "peers",
-  "model",
-  "models",
-  "pin",
-  "pins",
-  "configured",
-  "production",
-  "runtime",
-  "server",
-  "cross",
-  "review",
-  "mcp",
-  "loaded",
-  "current",
-  "not",
-  "never",
-  "no",
-  "nao",
-  "não",
-  "nem",
-  "nunca",
-  "codex",
-  "openai",
-  "chatgpt",
-  "claude",
-  "anthropic",
-  "gemini",
-  "google",
-  "deepseek",
-  "grok",
-  "xai",
-  "perplexity",
-  "sonar",
-  "kimi",
-  "moonshot",
-  "atualmente",
-  "roda",
-  "usa",
-  "modelo",
-  "modelos",
-  "em",
-  "de",
-  "o",
-  "e",
-]);
-
-function modelClaimFragments(clause: string): string[] {
-  const words = clause.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  return words
-    .map((word) => GUARD_NUMBER_WORDS[word] ?? word)
-    .filter((word) => !GUARD_FRAGMENT_STOPWORDS.has(word) && word.length <= 24);
-}
-
-function fragmentsCorrespondToPin(fragments: readonly string[], views: readonly string[]): boolean {
-  return fragments.every((fragment) => views.some((view) => view.includes(fragment)));
-}
-
-// Every aliased peer's configured pin must appear, canonically normalized,
-// in the evidence (pin-side anchoring: the claim's own token is
-// unparseable by definition, so the correlation searches the evidence for
-// the TRUTH value instead). Fail-closed: no pin configured for an aliased
-// peer, no record marker, or a missing value all refuse corroboration.
-function modelPinClaimCorroborated(
-  peers: readonly PeerId[],
-  modelPins: Partial<Record<PeerId, string | undefined>>,
-  evidenceText: string,
-): boolean {
-  if (peers.length === 0 || evidenceText.trim().length === 0) return false;
-  const records = modelPinEvidenceRecords(evidenceText);
-  if (records.length === 0) return false;
-  return peers.every((peer) => {
-    const pin = modelPins[peer];
-    if (!pin) return false;
-    const views = modelPinViews(pin);
-    // Codex review of PR #247 round 1: the pin must appear as a COMPLETE,
-    // delimited model id — a longer id sharing the pin as a prefix
-    // ("gpt-5.6-solar" for pin "gpt-5.6-sol") is a different model, not
-    // corroboration. A sentence-final period stays legal (only ".alnum"
-    // continues an id).
-    return records.some((record) => {
-      const normalizedRecord = canonicalModelText(normalizeGroundingText(record));
-      return views.some((view) => {
-        const escaped = view.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        return new RegExp(`(?<![a-z0-9._-])${escaped}(?![a-z0-9_-])(?!\\.[a-z0-9])`, "i").test(
-          normalizedRecord,
-        );
-      });
-    });
-  });
-}
+// CROSREV-21 (#237 phase 2, structural inversion after Codex rounds 1-4 of
+// PR #247): there is NO evidence-corroboration channel for a model claim
+// the lexicon cannot parse. Rounds 1-4 proved that "corroborating" an
+// unparseable claim is itself an unbounded lexical judgment along three
+// infinite families — evidence-format parsing (records, quoted JSON,
+// Markdown, peer↔value binding), claim-fragment matching (ordering,
+// multiplicity, number words, negation polarity) and clause analysis
+// (per-peer, per-claim, contrastive future/current, indirect requests).
+// The gate's job is to LOCATE such a claim and fail closed with one
+// instruction: restate with the exact contiguous model id (splitting mixed
+// sentences); the restated claim is then judged BY VALUE against the
+// configured pins by the mature S1/S2 machinery. For capturable claims the
+// structured truth source remains runtimeTruthFacts(config) — the same
+// object server_info serializes.
 
 function uniqueMatches(pattern: RegExp, text: string): string[] {
   const matches = text.match(pattern) ?? [];
@@ -2949,6 +2759,7 @@ export function truthfulnessPreflight(params: {
         negated: boolean;
         future: boolean;
         owner: PeerId | undefined;
+        ownerAliasIndex: number | undefined;
       };
       const base = line.replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length));
       const negationTailPattern =
@@ -2986,6 +2797,7 @@ export function truthfulnessPreflight(params: {
           negated: negatedBefore(matchStart),
           future: false,
           owner: undefined,
+          ownerAliasIndex: undefined,
         });
       };
       const familyRoutePattern = new RegExp(
@@ -3142,16 +2954,31 @@ export function truthfulnessPreflight(params: {
           }
         }
         occurrence.owner = best?.peer;
+        // CROSREV-21 (Codex round 2/4 of PR #247): remember which alias
+        // POSITION each occurrence resolved through — an alias not
+        // consumed by any current occurrence marks an unjudgeable claim
+        // even when the same peer has a captured claim elsewhere on the
+        // line ("Codex model is gpt-5.6-sol, and Codex model runs alpha
+        // beta seven").
+        if (best) occurrence.ownerAliasIndex = best.index;
       }
-      // Codex review of PR #247 round 3: the future classification is
-      // marker-scoped like the guard's masking — a captured token BEFORE
-      // the planning marker with an assertive current marker ahead of it
-      // ("is currently gpt-5.5 before a planned upgrade") stays a CURRENT
-      // claim; a token after the marker, or one with no current assertion
-      // before it ("the upgrade to gpt-6 is planned"), keeps the S3
-      // exemption.
+      // Codex rounds 3-4 of PR #247: the future classification follows the
+      // NEAREST relevant marker before the occurrence — a current marker
+      // after a future one renews the current assertion ("will change
+      // later but currently uses gpt-5.5" is judged), while a token whose
+      // nearest preceding marker is a future word ("will move to gpt-7"),
+      // or that has no current marker before it in a planning clause ("the
+      // upgrade to gpt-6 is planned"), keeps the S3 exemption.
       const currentAssertionPattern =
         /\b(?:is|are|runs?|uses?|currently|atualmente|roda|usa|est[aá])\b/i;
+      const lastMarkerIndex = (text: string, pattern: RegExp): number => {
+        const global = new RegExp(pattern.source, "gi");
+        let last = -1;
+        for (const match of text.matchAll(global)) {
+          if (match.index !== undefined) last = match.index;
+        }
+        return last;
+      };
       for (const occurrence of occurrences) {
         const clauseStart = clauseStartFor(occurrence.matchStart);
         const beforeText = base.slice(clauseStart, occurrence.matchStart);
@@ -3159,10 +2986,12 @@ export function truthfulnessPreflight(params: {
           clauseStart,
           clauseEndFor(occurrence.index + occurrence.rawLength),
         );
-        const futureBefore = futureClausePattern.test(beforeText);
+        const lastFutureBefore = lastMarkerIndex(beforeText, futureClausePattern);
+        const lastCurrentBefore = lastMarkerIndex(beforeText, currentAssertionPattern);
         occurrence.future =
-          futureBefore ||
-          (futureClausePattern.test(clauseText) && !currentAssertionPattern.test(beforeText));
+          lastFutureBefore >= 0
+            ? lastFutureBefore > lastCurrentBefore
+            : futureClausePattern.test(clauseText) && lastCurrentBefore < 0;
       }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
@@ -3263,58 +3092,27 @@ export function truthfulnessPreflight(params: {
           `model claim could not be affirmatively validated against the configured pins (restate plainly or attach structured evidence): ${line.slice(0, 240)}`,
         );
       }
-      // CROSREV-21 (#237 phase 2, extending #239 item 3) — the
-      // zero-occurrence guard. Scope plus an assertive peer alias LOCATE a
-      // model claim, but zero capturable occurrences mean the lexicon
-      // cannot judge it: fragmented ids ("gpt five six sol") were the
-      // single residual false negative of the PR #234 38-case red-team
-      // sweep, and a denial that names no token ("is not the configured
-      // pin") slipped the same gap. Such a line must anchor in structured
-      // evidence BY VALUE — the aliased peers' configured pins, canonically
-      // normalized, next to a model-pin record marker (server_info /
-      // session_read; runtime_capabilities exposes no model ids and never
-      // corroborates) — or it is an unsupported current-state claim.
-      // Historical phrasings route to the historical-provenance branch
-      // below instead. The guard reports through unsupportedClaims (never
-      // contradictions[], which would suppress S2 for later lines via
-      // anyModelDenialOrContradiction), and the alias test runs on the
-      // MASKED aliasBase so aliases inside paths, URLs or quoted strings
-      // never trigger it.
-      // Codex review of PR #247 rounds 1-3: the guard runs PER PEER — an
-      // aliased peer is unjudgeable when NO current occurrence is
-      // attributed to it (another peer's capturable token never shields a
-      // fragmented claim). Future language is masked marker-onward when an
-      // assertive current marker precedes it (an assertive current
-      // subclause stays visible; pure planning keeps S3), HISTORICAL
-      // segments are masked so the historical exemption is clause-scoped,
-      // and an indirect request ("determine which model ... uses") never
-      // trips the guard. Model/pin language is read from the MASKED base;
-      // negation polarity is judged inside the alias's own clause; and the
-      // claim's fragment words must CORRESPOND to the configured pin —
-      // pin-affirming evidence can never anchor a claim naming a
-      // different value or denying the pin.
-      const indirectRequestPattern =
-        /\b(?:determine|check|verify|confirm|find\s+out|figure\s+out|identify|decide|determinar|verificar|confirmar|descobrir|identificar)\s+(?:which|what|whether|if|qual|quais|se)\b/i;
-      if (!indirectRequestPattern.test(line)) {
-        const peersWithCurrentOccurrence = new Set<PeerId>();
+      // CROSREV-21 (#237 phase 2, extending #239 item 3) — the zero-token
+      // guard, INVERTED after Codex rounds 1-4 of PR #247: there is no
+      // evidence-corroboration channel. The lexicon only LOCATES a model
+      // claim it cannot parse — a peer alias not consumed by any current
+      // captured occurrence, on a model-scoped assertive line, outside
+      // masked historical / planning / indirect-request segments — and the
+      // line fails closed with ONE instruction: restate with the exact
+      // contiguous model id (splitting mixed sentences). The restated
+      // claim is then judged BY VALUE against the configured pins by
+      // S1/S2. Rounds 1-4 proved that judging the unparseable claim (or
+      // its evidence) is an unbounded lexical spiral: evidence-format
+      // parsing, fragment matching and clause analysis each grew a new
+      // edge per round, so the default flipped to always-block — a false
+      // negative is impossible here by construction, and the cost of a
+      // false positive is one plain restatement.
+      {
+        const consumedAliasIndexes = new Set<number>();
         for (const occurrence of occurrences) {
           if (occurrence.future) continue;
-          if (occurrence.owner) {
-            peersWithCurrentOccurrence.add(occurrence.owner);
-            continue;
-          }
-          for (const ownerlessPeer of PEERS) {
-            const family = routedPinFamilyByPeer.get(ownerlessPeer);
-            const matches =
-              ownerlessPeer === "perplexity"
-                ? MODEL_TOKEN_PREFIXES.perplexity.some((prefix) =>
-                    occurrence.token.startsWith(prefix),
-                  ) ||
-                  (family !== undefined && occurrence.token.startsWith(family))
-                : MODEL_TOKEN_PREFIXES[ownerlessPeer].some((prefix) =>
-                    occurrence.token.startsWith(prefix),
-                  );
-            if (matches) peersWithCurrentOccurrence.add(ownerlessPeer);
+          if (occurrence.ownerAliasIndex !== undefined) {
+            consumedAliasIndexes.add(occurrence.ownerAliasIndex);
           }
         }
         let guardAliasBase = aliasBase;
@@ -3322,10 +3120,15 @@ export function truthfulnessPreflight(params: {
           guardAliasBase =
             guardAliasBase.slice(0, start) + "#".repeat(end - start) + guardAliasBase.slice(end);
         };
+        const indirectRequestPattern =
+          /\b(?:determine|check|verify|confirm|find\s+out|figure\s+out|identify|decide|determinar|verificar|confirmar|descobrir|identificar)\s+(?:which|what|whether|if|qual|quais|se)\b/i;
         let segmentStart = 0;
         for (const bound of [...clauseBounds, { start: aliasBase.length, end: aliasBase.length }]) {
           const segment = aliasBase.slice(segmentStart, bound.start);
-          if (HISTORICAL_RUNTIME_TIMING_PATTERN.test(segment)) {
+          if (
+            HISTORICAL_RUNTIME_TIMING_PATTERN.test(segment) ||
+            indirectRequestPattern.test(segment)
+          ) {
             maskGuardRange(segmentStart, bound.start);
             segmentStart = bound.end;
             continue;
@@ -3343,62 +3146,29 @@ export function truthfulnessPreflight(params: {
         const modelLanguage = /\b(?:models?|pins?|modelos?)\b|model[_ -]?pins?/i.test(
           guardAliasBase,
         );
-        const guardClauseFor = (aliasPeer: PeerId): string | undefined => {
-          const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
-          const match = aliasPattern.exec(guardAliasBase);
-          if (match?.index === undefined) return undefined;
-          return guardAliasBase.slice(clauseStartFor(match.index), clauseEndFor(match.index));
-        };
-        const peersNeedingAnchor: PeerId[] = [];
         let guardTripped = false;
         for (const aliasPeer of PEERS) {
-          if (peersWithCurrentOccurrence.has(aliasPeer)) continue;
-          if (!MODEL_CLAIM_ALIASES[aliasPeer].test(guardAliasBase)) continue;
-          if (
-            !modelLanguage &&
-            !new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
+          const peerRelation =
+            modelLanguage ||
+            new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
               guardAliasBase,
-            )
-          ) {
-            continue;
-          }
-          const clause = guardClauseFor(aliasPeer) ?? guardAliasBase;
-          guardTripped = true;
-          if (/\b(?:not|never|n[aã]o|nem|nunca)\b/i.test(clause)) {
-            addIssueClass(issueClasses, "unsupported_current_state_claim");
-            unsupportedClaims.push(
-              `negated model claim cannot be anchored by pin-affirming structured evidence (restate plainly): ${line.slice(0, 240)}`,
             );
-            continue;
+          if (!peerRelation) continue;
+          const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
+          for (const match of guardAliasBase.matchAll(aliasPattern)) {
+            if (match.index === undefined || consumedAliasIndexes.has(match.index)) continue;
+            guardTripped = true;
+            break;
           }
-          const pin = modelPins[aliasPeer];
-          const fragments = modelClaimFragments(clause);
-          if (
-            pin &&
-            fragments.length > 0 &&
-            !fragmentsCorrespondToPin(fragments, modelPinViews(pin))
-          ) {
-            addIssueClass(issueClasses, "unsupported_current_state_claim");
-            unsupportedClaims.push(
-              `model-scoped claim names a value that does not correspond to the configured pin and cannot be anchored by pin-affirming evidence (restate plainly): ${line.slice(0, 240)}`,
-            );
-            continue;
-          }
-          peersNeedingAnchor.push(aliasPeer);
+          if (guardTripped) break;
         }
         if (guardTripped) {
           lineCurrentModelClaimMatched = true;
           currentStateClaimMatched = true;
-        }
-        if (peersNeedingAnchor.length > 0) {
-          if (!modelPinClaimCorroborated(peersNeedingAnchor, modelPins, suppliedEvidence)) {
-            addIssueClass(issueClasses, "unsupported_current_state_claim");
-            unsupportedClaims.push(
-              `model-scoped claim has no capturable model token and no value-corresponding structured evidence for the configured pin (attach raw server_info or session_read output naming the pin): ${line.slice(0, 240)}`,
-            );
-          } else if (!modelPinClaimCorroborated(peersNeedingAnchor, modelPins, operatorEvidence)) {
-            independentReviewRequired = true;
-          }
+          addIssueClass(issueClasses, "unsupported_current_state_claim");
+          unsupportedClaims.push(
+            `model claim has no capturable model token and cannot be judged or evidence-anchored; restate with the exact contiguous model id, splitting mixed current/planning/historical sentences: ${line.slice(0, 240)}`,
+          );
         }
       }
     }

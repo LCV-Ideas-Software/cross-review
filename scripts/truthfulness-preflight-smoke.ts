@@ -845,24 +845,18 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     fragCorroborated.pass,
-    true,
-    "a fragmented claim anchored in value-corresponding server_info output passes",
-  );
-  assert.equal(
-    fragCorroborated.independent_review_required,
     false,
-    "operator-supplied structured evidence grounds the claim at operator tier",
+    "structural inversion: evidence can never anchor an unparseable claim - restate is the only path",
   );
   const fragPeerEvidence = anchored(
     "The cross-review runtime codex peer runs gpt five six sol in production.",
     'server_info models: {"codex":"gpt-5.6-sol"}',
     "claude",
   );
-  assert.equal(fragPeerEvidence.pass, true, "peer-supplied structured evidence still anchors");
   assert.equal(
-    fragPeerEvidence.independent_review_required,
-    true,
-    "peer-tier evidence requires the independent panel (two-tier authority)",
+    fragPeerEvidence.pass,
+    false,
+    "structural inversion: peer-supplied evidence cannot anchor an unparseable claim either",
   );
   const rcCannotCorroborate = anchored(
     "The cross-review runtime codex peer runs gpt five six sol in production.",
@@ -976,8 +970,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     jsonPrettyRecord.pass,
-    true,
-    "a pretty-printed structural block under the marker line is one record",
+    false,
+    "structural inversion: no evidence format anchors an unparseable claim",
   );
   const crossClauseModelLanguage = anchored(
     "The cross-review runtime uses OpenAI authentication currently, and the Gemini model will change next quarter.",
@@ -1024,8 +1018,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     clauseScopedDenial.pass,
-    true,
-    "a denial in an UNRELATED clause must not poison the anchored model claim",
+    false,
+    "structural inversion: the fragmented claim blocks with a restate instruction regardless of other clauses",
   );
   const rawServerInfoJson = anchored(
     "The cross-review runtime codex peer runs gpt five six sol in production.",
@@ -1033,8 +1027,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rawServerInfoJson.pass,
-    true,
-    "the raw pasted server_info JSON (quoted models key) is a model-pin record",
+    false,
+    "structural inversion: even the raw server_info payload cannot anchor an unparseable claim",
   );
   const indirectRequest = anchored(
     "We need to determine which model the cross-review runtime Codex peer uses.",
@@ -1052,6 +1046,35 @@ import type { PeerResult } from "../src/core/types.js";
     historicalPlusCurrent.pass,
     false,
     "the historical exemption is clause-scoped — a current fragmented claim beside it still needs its own anchor",
+  );
+  // Codex review of PR #247, round 4 (structural inversion).
+  const perClaimSamePeer = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol, and the Codex model runs alpha beta seven.",
+  );
+  assert.equal(
+    perClaimSamePeer.pass,
+    false,
+    "a captured claim never shields a second unparseable claim of the SAME peer (per-alias consumption)",
+  );
+  const requestPlusAssertion = anchored(
+    "We need to determine which model Claude uses, and the cross-review runtime Codex model currently runs alpha beta seven.",
+  );
+  assert.equal(
+    requestPlusAssertion.pass,
+    false,
+    "the indirect-request exemption is clause-scoped - the separate assertive claim still blocks",
+  );
+  const contrastRenewal = anchored(
+    "The cross-review runtime Codex model will change later but currently uses gpt-5.5.",
+  );
+  assert.equal(
+    contrastRenewal.pass,
+    false,
+    "a current marker after a future one renews the current assertion (nearest-marker rule)",
+  );
+  assert.ok(
+    contrastRenewal.issue_classes.includes("runtime_contradiction"),
+    "the renewed current token is judged by value and contradicts the pin",
   );
 
   const singleOperationalLie = detectFabricatedEvidence(

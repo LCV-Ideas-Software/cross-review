@@ -377,13 +377,16 @@ Truthfulness attribution is syntactic, not line-wide. “Cross-review runtime”
 MCP runtime/server subjects belong to the local runtime namespace. A phrase
 such as “cross-review submission/session” does not transfer an application's
 model, version or date into that namespace. Model-pin claims are judged per
-capturable occurrence against the configured pins; a model-scoped assertive
-line with a peer alias but NO capturable model token (a fragmented id, or a
-denial naming no token) cannot be judged lexically and must instead anchor in
-structured evidence by value — the configured pin next to a model-pin record
-marker such as raw `server_info` or `session_read` output
-(`runtime_capabilities` exposes no model ids and never corroborates a model
-claim) — or it is reported as an unsupported current-state claim. Separately,
+capturable occurrence against the configured pins. A model-scoped assertive
+line with a peer alias that no captured current occurrence consumed (a
+fragmented id such as "gpt five six sol", or a denial naming no token)
+cannot be judged lexically and is ALWAYS reported as an unsupported
+current-state claim with one instruction: restate with the exact contiguous
+model id, splitting mixed current/planning/historical sentences. There is
+deliberately no evidence-corroboration channel for such claims — judging an
+unparseable claim (or its evidence) is an unbounded lexical problem — so the
+restated claim is what gets judged by value against the configured pins.
+Separately,
 a generic assurance
 copied from the artifact cannot prove its own READY verdict; concrete document
 or code literals remain reviewable, while correctness/test claims require

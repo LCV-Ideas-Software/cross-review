@@ -10,53 +10,30 @@ standard `v00.00.00`; npm package versions remain SemVer.
 ### Added
 
 - Truthfulness preflight, phase 2 (CROSREV-21, issue #237; extends #239
-  item 3): structured-evidence anchoring for model-pin claims the lexicon
-  can locate but not judge. A model-scoped assertive line with a peer
-  alias and ZERO capturable model tokens — fragmented ids ("gpt five six
+  item 3): fail-closed localization of model-pin claims the lexicon
+  cannot parse. A model-scoped assertive line with a peer alias that no
+  captured current occurrence consumed — fragmented ids ("gpt five six
   sol"), the single residual false negative of the PR #234 38-case
   red-team sweep, or a denial naming no token ("is not the configured
-  pin") — used to pass silently because S1/S2 need a captured occurrence.
-  It now requires the aliased peers' configured pins to be corroborated
-  BY VALUE in supplied evidence next to a model-pin record marker (raw
-  `server_info`/`session_read` output; `runtime_capabilities` exposes no
-  model ids and never corroborates a model claim), with the existing
-  two-tier authority model: peer-supplied anchoring passes with
-  `independent_review_required`, operator custody grounds fully. Without
-  the anchor the line is an `unsupported_current_state_claim`
-  (fail-closed; the closed four-class union is unchanged). Captured
-  truthful tokens keep judging against the configured pins with no new
-  evidence requirement, so the committed truthful-claim fixture matrix is
-  intact. `canonicalModelText` moved to module scope so the correlation
-  compares the same canonical views the occurrence engine builds. Round 1
-  of the Codex review: the guard keys on the absence of CURRENT
-  (non-future) occurrences with future clauses masked before the alias
-  test (a capturable future token cannot shield an unparseable current
-  claim, while pure planning statements keep the S3 exemption); the
-  corroboration match is delimited (a longer id sharing the pin as a
-  prefix is a different model); and a provider alias in runtime prose is
-  a model claim only with model/pin language or an explicit "<alias>
-  peer" relation ("uses OpenAI authentication" never trips). Round 2: the
-  guard runs PER PEER (another peer's capturable token never shields a
-  fragmented claim); future language is masked from the marker onward
-  when an assertive current marker precedes it (an assertive current
-  subclause beside planning language stays visible, pure planning keeps
-  the S3 exemption); model/pin language is read from the masked base;
-  the marker and the pin value must correlate within ONE evidence record
-  (a marker line plus its structural continuation — pretty-printed
-  server_info blocks stay one record, unrelated prose lines never
-  inherit the marker); and a NEGATED unjudgeable claim is never
-  anchorable by pin-affirming evidence (polarity check — the evidence
-  proves its opposite). Round 3: the claim's fragment words (number words
-  folded to digits, aliases/framing dropped) must CORRESPOND to the
-  configured pin — pin-affirming evidence can never anchor a claim naming
-  a different value; the future classification of captured tokens is
-  marker-scoped (a current token before "planned" is judged and can
-  contradict); denial polarity is judged inside the alias's own clause;
-  the raw pasted server_info JSON (quoted "models": key) counts as a
-  model-pin record; indirect requests ("determine which model ... uses")
-  never trip the guard; and the historical exemption is clause-scoped —
-  a current fragmented claim beside a historical clause still needs its
-  own anchor.
+  pin") — used to pass silently because S1/S2 need a captured
+  occurrence. It is now ALWAYS an `unsupported_current_state_claim` with
+  one instruction: restate with the exact contiguous model id, splitting
+  mixed current/planning/historical sentences; the restated claim is
+  then judged BY VALUE against the configured pins by the existing
+  S1/S2 machinery. There is deliberately NO evidence-corroboration
+  channel for unparseable claims: four Codex review rounds proved that
+  judging such a claim (or its evidence) is an unbounded lexical spiral
+  along three families — evidence-format parsing, claim-fragment
+  matching and clause analysis — so the default flipped to
+  always-block, where a false negative is impossible by construction
+  and the cost of a false positive is one plain restatement. The
+  locator masks whole historical / planning / indirect-request
+  segments, classifies captured tokens as future by the NEAREST
+  current/future marker before them, and treats an alias as consumed
+  only by the specific occurrence that resolved through it (a captured
+  claim never shields a second unparseable claim, even for the same
+  peer). Captured truthful tokens keep judging against config with no
+  new evidence requirement; `canonicalModelText` moved to module scope.
 
 ### Fixed
 
