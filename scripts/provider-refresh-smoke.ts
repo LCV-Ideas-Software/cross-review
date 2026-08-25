@@ -1214,6 +1214,33 @@ function capturePerplexityProbe(
     0,
     "a raced-away creation never indexes an entry",
   );
+
+  // Round 7: a WAITER sharing the in-flight creation races its own
+  // signal — cancelling it releases promptly without cancelling the
+  // creator.
+  __resetGeminiExplicitCacheIndexForTests();
+  const waiterController = new AbortController();
+  const sharedMock = makeClient({ createDelayMs: 400 });
+  const creatorAdapter = new GeminiAdapter(geminiCacheConfig);
+  (creatorAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    sharedMock.client;
+  const waiterAdapter = new GeminiAdapter(geminiCacheConfig);
+  (waiterAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    sharedMock.client;
+  const creatorPromise = creatorAdapter.call(prompt, context(stableHead.length));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const waiterStarted = Date.now();
+  const waiterPromise = waiterAdapter
+    .call(prompt, { ...context(stableHead.length), signal: waiterController.signal })
+    .catch(() => "waiter-rejected");
+  setTimeout(() => waiterController.abort(), 30);
+  const waiterOutcome = await waiterPromise;
+  const waiterMs = Date.now() - waiterStarted;
+  assert.equal(waiterOutcome, "waiter-rejected", "the cancelled waiter rejects");
+  assert.ok(waiterMs < 300, `the waiter releases before the creator settles (${waiterMs}ms)`);
+  const creatorResult = await creatorPromise;
+  assert.equal(sharedMock.createCalls.length, 1, "the creator still completes its creation");
+  assert.equal(creatorResult.usage?.cache_storage_token_hours, 5_000);
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 

@@ -3669,6 +3669,11 @@ function budgetExceeded(session: SessionMeta, limit?: number): boolean {
 // tokens), so the ceiling is the 32K-char MCP task bound plus framing at
 // up to 4 UTF-8 bytes per character.
 const GEMINI_CACHED_SYSTEM_TOKEN_BOUND = 132_000;
+// Codex round 7: call sites that KNOW the session task pass its real UTF-8
+// byte length plus this framing allowance (role + Session line +
+// separators) instead of the schema-wide ceiling, so a short task does not
+// reserve the 132K-token maximum on every model and attempt.
+export const GEMINI_CACHED_SYSTEM_FRAMING_BYTES = 2_000;
 
 export function estimatedPeerRoundCost(
   config: AppConfig,
@@ -3684,6 +3689,10 @@ export function estimatedPeerRoundCost(
     // inflate (and potentially reject) those calls. Defaults true
     // (fail-closed) for ordinary review preflights.
     gemini_cache_eligible?: boolean | undefined;
+    // Codex round 7: the real UTF-8 byte length of the session-stable
+    // system parts (task + framing). Callers that know the task pass it;
+    // the default stays the schema-wide 132K-token ceiling (fail-closed).
+    gemini_cached_system_bytes?: number | undefined;
   } = {},
 ): number | undefined {
   const requestRole = options.request_role ?? "review";
@@ -3763,7 +3772,9 @@ export function estimatedPeerRoundCost(
         // result, and a UTF-16 character can encode into multiple tokens
         // (CJK, emoji), so neither chars/4 nor the UTF-16 length is a safe
         // bound; BPE tokens each consume at least one BYTE.
-        const storageTokens = Buffer.byteLength(prompt, "utf8") + GEMINI_CACHED_SYSTEM_TOKEN_BOUND;
+        const storageTokens =
+          Buffer.byteLength(prompt, "utf8") +
+          (options.gemini_cached_system_bytes ?? GEMINI_CACHED_SYSTEM_TOKEN_BOUND);
         storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
       }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {
@@ -3781,6 +3792,54 @@ export function estimatedPeerRoundCost(
     total += Math.max(fallbackThenFormatCost, moderationThenFormatCost) + storageEnvelope;
   }
   return total;
+}
+
+// Codex round 7 (CROSREV-6): cache-creation telemetry must not depend on a
+// successful generation — the billed cachedContents resource is recorded
+// in the FinOps manifest the moment the adapter reports it created, so a
+// creation followed by a failed review still reconciles. Exported for the
+// runtime-contract regression; returns whether an entry was appended.
+export async function appendExplicitCacheCreationManifest(params: {
+  dataDir: string;
+  sessionId: string;
+  round: number;
+  peer: PeerId;
+  provider: string;
+  model: string;
+  eventData: unknown;
+  schemaVersion: string;
+}): Promise<boolean> {
+  const data = (params.eventData ?? {}) as {
+    cache_name?: unknown;
+    token_count?: unknown;
+    key_hash?: unknown;
+  };
+  if (typeof data.cache_name !== "string" || data.cache_name.length === 0) return false;
+  const suppliedKeyHash = typeof data.key_hash === "string" ? data.key_hash.trim() : "";
+  const keyHash = /^[0-9a-f]{64}$/i.test(suppliedKeyHash) ? suppliedKeyHash : null;
+  await appendCacheManifestEntry(
+    params.dataDir,
+    params.sessionId,
+    {
+      ts: new Date().toISOString(),
+      round: params.round,
+      peer: params.peer,
+      provider: params.provider,
+      model: params.model,
+      cache_key_hash: keyHash,
+      ...(keyHash === null
+        ? { cache_key_unavailable_reason: "provider_did_not_expose_a_stable_cache_key_hash" }
+        : {}),
+      cache_provider_mode: "explicit",
+      write_tokens: typeof data.token_count === "number" ? data.token_count : 0,
+      hit: false,
+      latency_ms: 0,
+      call_kind: "review",
+      call_label: "explicit-cache-created",
+    },
+    params.schemaVersion,
+  );
+  return true;
 }
 
 function evidenceJudgeOutputTokens(config: AppConfig, peer: PeerId): number {
@@ -5650,9 +5709,16 @@ export class CrossReviewOrchestrator {
             // emitted a cost alert; fallback + moderation-safe retry were
             // silent. Codex measured the gap empirically (only 2 of 11
             // observed paid recoveries surfaced an alert).
-            const fallbackEstimate = estimatedPeerRoundCost(this.config, [fallback.id], prompt, {
-              [fallback.id]: fallback.model,
-            });
+            const fallbackEstimate = estimatedPeerRoundCost(
+              this.config,
+              [fallback.id],
+              prompt,
+              { [fallback.id]: fallback.model },
+              {
+                gemini_cached_system_bytes:
+                  Buffer.byteLength(context.task, "utf8") + GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
+              },
+            );
             this.emit({
               type: "peer.fallback.cost_alert",
               session_id: context.session_id,
@@ -6505,7 +6571,19 @@ export class CrossReviewOrchestrator {
 
     const roundPreflightLimit = this.config.budget.preflight_max_round_cost_usd;
     const sessionPreflightLimit = sessionBudgetLimit(this.config, session);
-    const preflightEstimate = estimatedPeerRoundCost(this.config, selectedPeers, prompt);
+    const preflightEstimate = estimatedPeerRoundCost(
+      this.config,
+      selectedPeers,
+      prompt,
+      {},
+      {
+        // Codex round 7: this call site knows the session task, so the
+        // storage envelope prices its real byte length instead of the
+        // schema-wide ceiling.
+        gemini_cached_system_bytes:
+          Buffer.byteLength(session.task, "utf8") + GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
+      },
+    );
     const currentSessionCost = session.totals.cost.total_cost ?? 0;
     const projectedSessionCost =
       preflightEstimate == null ? undefined : currentSessionCost + preflightEstimate;
@@ -6590,6 +6668,28 @@ export class CrossReviewOrchestrator {
 
     const settled = await Promise.all(
       selectAdapters(adapters, selectedPeers).map(async (adapter) => {
+        // Codex round 7: forward explicit-cache creation notices into the
+        // FinOps manifest the moment the billed resource exists —
+        // independent of whether the following generation succeeds.
+        const emitWithCreationManifest: typeof this.emit = (event) => {
+          if (event.type === "provider.cache.notice") {
+            void appendExplicitCacheCreationManifest({
+              dataDir: this.config.data_dir,
+              sessionId: session.session_id,
+              round: roundNumber,
+              peer: adapter.id,
+              provider: adapter.provider,
+              model: adapter.model,
+              eventData: (event as { data?: unknown }).data,
+              schemaVersion: this.config.cache.schema_version,
+            }).catch((error) => {
+              console.error(
+                `[cross-review] cache manifest append failed: ${safeErrorMessage(error)}; continuing review.`,
+              );
+            });
+          }
+          this.emit(event);
+        };
         const outcome = await this.callPeerForReview(adapter, prompt, moderationSafePrompt, {
           session_id: session.session_id,
           round: roundNumber,
@@ -6597,7 +6697,7 @@ export class CrossReviewOrchestrator {
           signal: input.signal,
           stream: this.config.streaming.events,
           stream_tokens: this.config.streaming.tokens,
-          emit: this.emit,
+          emit: emitWithCreationManifest,
           reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
           // v2.21.0 (caching): pair-scoped cache key needs caller
           // identity. Pass petitioner so cache hits bucket per

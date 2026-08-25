@@ -1996,6 +1996,70 @@ const regressions: Regression[] = [
         ) < 1e-12,
         `the armed envelope prices one creation per attempt over the full cached payload: ${armedEnvelope} vs ${disarmedEnvelope}`,
       );
+      // Round 7: a caller that knows the session task passes its real
+      // byte length; the envelope then prices that instead of the
+      // schema-wide 132K ceiling.
+      const sizedEnvelope = estimatedPeerRoundCost(
+        geminiPreflightPriced,
+        ["gemini"],
+        "four",
+        {},
+        {
+          gemini_cached_system_bytes: 500,
+        },
+      );
+      assert.ok(sizedEnvelope != null);
+      assert.ok(
+        Math.abs(
+          sizedEnvelope - disarmedEnvelope - (geminiEnvelopeAttempts * (4 + 500) * 4.5) / 1_000_000,
+        ) < 1e-12,
+        `a sized system-bytes option prices the real payload: ${sizedEnvelope} vs ${disarmedEnvelope}`,
+      );
+      // Round 7: explicit-cache creation telemetry lands in the FinOps
+      // manifest the moment the resource exists, independent of the
+      // generation outcome.
+      {
+        const { appendExplicitCacheCreationManifest } = await import("../src/core/orchestrator.js");
+        const manifestDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-manifest-"));
+        const manifestSession = "550e8400-e29b-41d4-a716-446655440099";
+        const wrote = await appendExplicitCacheCreationManifest({
+          dataDir: manifestDir,
+          sessionId: manifestSession,
+          round: 1,
+          peer: "gemini",
+          provider: "google",
+          model: "gemini-3.1-pro-preview",
+          eventData: {
+            cache_name: "cachedContents/fixture-1",
+            token_count: 5_000,
+            key_hash: "a".repeat(64),
+          },
+          schemaVersion: "v1",
+        });
+        assert.equal(wrote, true, "a creation notice with a resource name is recorded");
+        const manifestRaw = JSON.parse(
+          fs.readFileSync(
+            path.join(manifestDir, "sessions", manifestSession, "cache_manifest.json"),
+            "utf8",
+          ),
+        ) as { entries: Array<Record<string, unknown>> };
+        assert.equal(manifestRaw.entries.length, 1);
+        assert.equal(manifestRaw.entries[0]?.call_label, "explicit-cache-created");
+        assert.equal(manifestRaw.entries[0]?.write_tokens, 5_000);
+        assert.equal(manifestRaw.entries[0]?.cache_key_hash, "a".repeat(64));
+        const ignored = await appendExplicitCacheCreationManifest({
+          dataDir: manifestDir,
+          sessionId: manifestSession,
+          round: 1,
+          peer: "gemini",
+          provider: "google",
+          model: "gemini-3.1-pro-preview",
+          eventData: { model: "gemini-3.1-pro-preview" },
+          schemaVersion: "v1",
+        });
+        assert.equal(ignored, false, "a notice without a resource name is not a creation record");
+        fs.rmSync(manifestDir, { recursive: true, force: true });
+      }
       // Round 4: recovery calls rebuild their context without the
       // stable-head boundary — no cache is possible, so the envelope must
       // not price storage for them.

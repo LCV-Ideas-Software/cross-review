@@ -172,13 +172,14 @@ export function loadGenaiModule(): Promise<typeof import("@google/genai")> {
 // the review prompt's stable head (contract + review focus + attached
 // evidence) through context.prompt_stable_prefix_chars; when the gate is
 // armed (cache.enabled && cache.gemini_explicit && !disable_per_peer.gemini)
-// and the head reaches the documented 4,096-token cachedContents minimum for
-// the 3.x/2.5 Pro models (character floor first — BPE tokens each consume
-// at least one character — then the FREE countTokens call decides
-// authoritatively before creation), the adapter creates ONE cachedContents
-// entry per distinct (schema, model, ttl, stable system, head) — concurrent
-// creations of the same tuple share one in-flight promise — and calls
-// generateContent with `cachedContent` plus only the dynamic remainder.
+// and the payload reaches the documented 4,096-token cachedContents
+// minimum for the 3.x/2.5 Pro models (the FREE countTokens call is the
+// sole eligibility authority — no character gate: one UTF-16 character can
+// encode into multiple tokens — with a negative sentinel bounding
+// re-counting), the adapter creates ONE cachedContents entry per distinct
+// (schema, model, ttl, stable system, head) — concurrent creations of the
+// same tuple share one in-flight promise — and calls generateContent with
+// `cachedContent` plus only the dynamic remainder.
 // Both modes keep ONE logical prompt order — session-stable system parts
 // (role + Session + task) → head → tail → Round line → status — because the
 // stable system parts live INSIDE the cached prefix and only the per-round
@@ -774,7 +775,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             if (inFlight) {
               // A concurrent call is creating this exact tuple; share its
               // resource. The creator alone records the storage ledger item.
-              cacheEntry = await inFlight;
+              // Round 7: the waiter races its OWN signal — cancelling one
+              // waiter releases it promptly without cancelling the creator.
+              cacheEntry = await raceWithAbort(inFlight, context.signal);
             } else {
               const creation = this.createExplicitCacheEntry({
                 reviewClient,

@@ -81,7 +81,13 @@ standard `v00.00.00`; npm package versions remain SemVer.
   UTF-16 character can encode into multiple tokens, while BPE tokens each
   consume at least one byte), and BOTH prompt compositions are
   LF-normalized so arming the cache never changes the exact prompt bytes
-  under CRLF input.
+  under CRLF input. Round 7: call sites that know the session task pass
+  its real byte length to the storage envelope instead of the schema-wide
+  ceiling; explicit-cache creation telemetry lands in the FinOps manifest
+  the moment the billed resource exists (call_label
+  "explicit-cache-created"), independent of the generation outcome; and a
+  waiter sharing the in-flight creation races its OWN abort signal, so
+  cancelling it releases promptly without cancelling the creator.
 
 ## [v04.06.02] — 24/08/2026
 

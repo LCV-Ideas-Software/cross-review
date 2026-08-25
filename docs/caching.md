@@ -130,10 +130,12 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
 
 - **Anthropic** accepts `5m` and `1h` per the SDK. Values other than `5m`/`1h` are ignored with a stderr notice and the default is used.
 - **Gemini (explicit cache, v4.7.0 / CROSREV-6)** — `CROSS_REVIEW_GEMINI_EXPLICIT_CACHE=true`
-  arms `caches.create` of the review prompt's stable head (contract directives +
-  review focus + attached evidence, marked by the orchestrator) when it reaches
-  the documented 4,096-token cachedContents minimum. One cache per distinct
-  (schema, model, TTL, head); `CROSS_REVIEW_CACHE_TTL_GEMINI` (`5m`/`1h`,
+  arms `caches.create` of the session-stable system parts plus the review
+  prompt's stable head (contract directives + review focus + attached
+  evidence, marked by the orchestrator) when the free `countTokens` call — the
+  sole eligibility authority, no character gate — reports the documented
+  4,096-token cachedContents minimum. One cache per distinct
+  (schema, model, TTL, stable system, head); `CROSS_REVIEW_CACHE_TTL_GEMINI` (`5m`/`1h`,
   default `1h` = the API default) bounds retention, and storage is billed
   deterministically at creation (cached tokens x TTL hours) at
   `CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR` — required by
