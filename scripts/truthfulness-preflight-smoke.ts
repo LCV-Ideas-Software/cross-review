@@ -1687,6 +1687,57 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "a multi-segment extensionless path with a provider prefix (openai/docs/README) is a filesystem path, not a provider route",
   );
+  // Codex review of PR #247, round 21: non-assertive bypasses scope to
+  // their governed clauses; the wrapped pin route and fenced examples
+  // are preserved.
+  const declarativeHeading = anchored(
+    "Review completed: the cross-review runtime Codex model runs alpha beta seven.",
+  );
+  assert.equal(
+    declarativeHeading.pass,
+    false,
+    "a declarative heading starting with an instruction verb (Review completed:) shields only its own clause - the model claim after the colon still blocks",
+  );
+  const trailingQuestion = anchored(
+    "The cross-review runtime Codex model runs alpha beta seven; why is that happening?",
+  );
+  assert.equal(
+    trailingQuestion.pass,
+    false,
+    "a trailing question exempts only the interrogative clause - the asserted model claim before the semicolon still blocks",
+  );
+  const genuineInstruction = anchored(
+    "Verify the cross-review runtime Codex model configuration before shipping.",
+  );
+  assert.equal(
+    genuineInstruction.pass,
+    true,
+    "a genuine single-clause imperative instruction stays non-assertive",
+  );
+  const wrappedRoutedPin = anchored(
+    "The cross-review runtime Perplexity model is models/perplexity/kimi-k3.",
+  );
+  assert.equal(
+    wrappedRoutedPin.pass,
+    true,
+    "the supported models/provider/model wrapped pin form is preserved for occurrence capture, never masked as a filesystem path",
+  );
+  const fencedExample = anchored(
+    "The example below is rejected by policy.\n```text\nThe cross-review runtime Codex model runs alpha beta seven.\n```",
+  );
+  assert.equal(
+    fencedExample.pass,
+    true,
+    "fenced code blocks are example text - their content masks before line splitting",
+  );
+  const unterminatedFence = anchored(
+    "```text\nThe cross-review runtime Codex model runs alpha beta seven.",
+  );
+  assert.equal(
+    unterminatedFence.pass,
+    false,
+    "an unterminated fence stays visible and the claim blocks - fail-closed",
+  );
   {
     const repeatedClause = "The cross-review runtime Codex model is gpt-5.6-sol and stays loaded. ";
     const hugeDraft = repeatedClause.repeat(Math.ceil(200_000 / repeatedClause.length));

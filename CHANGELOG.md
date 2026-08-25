@@ -53,6 +53,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
 
+  Codex round 21 scoped the two surviving non-assertive escapes to their
+  GOVERNED CLAUSE (split on ;/:): a declarative heading ("Review
+  completed:") or a trailing question no longer shields a model claim in
+  a sibling clause, while single-clause instructions and questions stay
+  exempt. Fenced code blocks (``` and ~~~) are example text - their
+  content masks before line splitting, an unterminated fence stays
+  visible (fail-closed), and inline raw evidence extraction keeps
+  reading the original corpus. The supported wrapped pin form
+  "models/<provider>/<model>" is the one recognized three-segment route
+  in both slash-chain scans.
+
   Codex round 20 closed the locator's remaining escape routes and made
   it near-linear: the historical-only exemption is deleted and leading
   hypotheticals plus attributed third-party documentation speech route

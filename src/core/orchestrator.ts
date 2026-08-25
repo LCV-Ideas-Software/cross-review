@@ -2679,9 +2679,20 @@ export function truthfulnessPreflight(params: {
   // Codex round 20: the model-claim locator applies to the DRAFT only -
   // the task is operator input, so an ordinary imperative ("Summarize
   // the ... Codex model configuration.") must never abort the session.
-  // The task lines keep every other check.
-  const taskLines = splitTruthfulnessLines(params.task);
-  const lines = [...taskLines, ...splitTruthfulnessLines(params.initialDraft ?? "")];
+  // The task lines keep every other check. Round 21: fenced code blocks
+  // are example text - their content is masked BEFORE line splitting
+  // (the per-line quote/code-span masks cannot see fence context), while
+  // inline raw evidence extraction keeps reading the original corpus. An
+  // unterminated fence stays visible (fail-closed).
+  const maskFencedBlocks = (text: string): string =>
+    text.replace(/(?:```|~~~)[^\n]*\n[\s\S]*?\n[ \t]*(?:```|~~~)/g, (block) =>
+      block.replace(/[^\n]/g, "#"),
+    );
+  const taskLines = splitTruthfulnessLines(maskFencedBlocks(params.task));
+  const lines = [
+    ...taskLines,
+    ...splitTruthfulnessLines(maskFencedBlocks(params.initialDraft ?? "")),
+  ];
   const draftLineStart = taskLines.length;
   const runtimeVersion = params.runtimeFacts?.runtime_version;
   const releaseDate = params.runtimeFacts?.release_date;
@@ -2721,12 +2732,22 @@ export function truthfulnessPreflight(params: {
     // attributed third-party documentation speech route THROUGH the
     // locator - those families block by design with the restate-or-
     // structure instruction. The locator judges the DRAFT only: the task
-    // is operator input, never a caller claim.
+    // is operator input, never a caller claim. Round 21: the escapes
+    // scope to their GOVERNED CLAUSE (split on ;/:) - a declarative
+    // heading ("Review completed:") or a trailing question never shields
+    // a model claim in a sibling clause; the analysis itself still reads
+    // the whole line, so a captured token after a label colon keeps
+    // consuming its alias.
     if (
       lineFromDraft &&
-      CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN.test(line) &&
-      !OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(line) &&
-      !/\?\s*$/.test(line)
+      line
+        .split(/[;:]/)
+        .some(
+          (clause) =>
+            CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN.test(clause) &&
+            !OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(clause) &&
+            !/\?\s*$/.test(clause),
+        )
     ) {
       // v4.6.0 rounds 3-7 (Codex review of PR #234) + red-team hardening:
       // model-claim truthfulness is judged per OCCURRENCE. Each occurrence
@@ -2808,8 +2829,20 @@ export function truthfulnessPreflight(params: {
           if (pathExtensionPattern.test(lastSegment)) return "#".repeat(m.length);
           // Codex round 20: a provider/model route has EXACTLY two
           // segments - three or more segments is a filesystem path
-          // ("openai/docs/README") and masks whole.
-          return parts.length > 2 ? "#".repeat(m.length) : m;
+          // ("openai/docs/README") and masks whole. Round 21: the
+          // supported wrapped pin form "models/<provider>/<model>"
+          // (normalizeModelPin strips the wrapper) is the one recognized
+          // three-segment route and stays visible for capture.
+          if (parts.length <= 2) return m;
+          const wrappedRoutedPin =
+            parts.length === 3 &&
+            /^models$/i.test(parts[0] ?? "") &&
+            PEERS.some((aliasPeer) =>
+              new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(
+                parts[1] ?? "",
+              ),
+            );
+          return wrappedRoutedPin ? m : "#".repeat(m.length);
         });
       const negationTailPattern =
         /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
@@ -3005,12 +3038,23 @@ export function truthfulnessPreflight(params: {
           if (pathExtensionPattern.test(lastChainSegment)) return "#".repeat(m.length);
           // Codex round 20: a provider/model route has EXACTLY two
           // segments - a longer chain is a filesystem path even with a
-          // provider prefix ("openai/docs/README").
+          // provider prefix ("openai/docs/README"). Round 21: the
+          // supported wrapped pin form "models/<provider>/<model>" is
+          // the one recognized three-segment route.
           const isPeerRoute =
-            chainSegments.length === 2 &&
-            PEERS.some((aliasPeer) =>
-              new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(firstSegment),
-            );
+            (chainSegments.length === 2 &&
+              PEERS.some((aliasPeer) =>
+                new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(
+                  firstSegment,
+                ),
+              )) ||
+            (chainSegments.length === 3 &&
+              /^models$/i.test(firstSegment) &&
+              PEERS.some((aliasPeer) =>
+                new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(
+                  chainSegments[1]?.trim() ?? "",
+                ),
+              ));
           return isPeerRoute ? m : "#".repeat(m.length);
         });
       const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
