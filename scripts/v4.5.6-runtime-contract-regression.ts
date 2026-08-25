@@ -1983,11 +1983,11 @@ const regressions: Regression[] = [
       // to the 32K MCP bound plus role/session framing), so the envelope
       // prices prompt tokens PLUS that ceiling.
       const geminiEnvelopeAttempts = Math.max(1, geminiPreflightPriced.retry.max_attempts);
-      // Round 4: the storage bound is in CHARACTERS (a true token upper
-      // bound — BPE tokens each consume at least one character), because
-      // settlement bills the authoritative countTokens result, which can
-      // exceed chars/4 for token-dense payloads.
-      const geminiStorageTokens = "four".length + 33_000;
+      // Rounds 4-6: the storage bound is in UTF-8 BYTES (the true token
+      // upper bound — a UTF-16 character can encode into multiple tokens,
+      // while BPE tokens each consume at least one byte), because
+      // settlement bills the authoritative countTokens result.
+      const geminiStorageTokens = Buffer.byteLength("four", "utf8") + 132_000;
       assert.ok(
         Math.abs(
           armedEnvelope -

@@ -76,7 +76,12 @@ standard `v00.00.00`; npm package versions remain SemVer.
   negative sentinel bounding re-counting; and the preliminary cache
   calls (countTokens, caches.create) race the abort signal, so a
   cancellation releases a stalled attempt promptly and a raced-away
-  creation routes through the ambiguous-spend path.
+  creation routes through the ambiguous-spend path. Round 6: the storage
+  envelope bound moved to UTF-8 BYTES (the true token upper bound — a
+  UTF-16 character can encode into multiple tokens, while BPE tokens each
+  consume at least one byte), and BOTH prompt compositions are
+  LF-normalized so arming the cache never changes the exact prompt bytes
+  under CRLF input.
 
 ## [v04.06.02] — 24/08/2026
 

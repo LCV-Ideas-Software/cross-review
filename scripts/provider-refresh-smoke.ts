@@ -1096,6 +1096,27 @@ function capturePerplexityProbe(
     false,
     "the stored cache payload is LF-normalized to match the normalized key hash",
   );
+  // Round 6: the UNCACHED composition is LF-normalized too — otherwise
+  // arming the cache would change the exact prompt bytes under CRLF input.
+  const crlfDisarmed = new GeminiAdapter({
+    ...geminiCacheConfig,
+    cache: { ...geminiCacheConfig.cache, gemini_explicit: false },
+  });
+  const crlfDisarmedMock = makeClient();
+  (crlfDisarmed as unknown as { client: () => Promise<unknown> }).client = async () =>
+    crlfDisarmedMock.client;
+  await crlfDisarmed.call(`${crlfHead}dynamic tail of round 1`, context(crlfHead.length));
+  const crlfUncachedText = String(crlfDisarmedMock.genCalls[0]?.contents ?? "");
+  assert.equal(
+    crlfUncachedText.includes("\r"),
+    false,
+    "the uncached composition is LF-normalized too",
+  );
+  assert.equal(
+    crlfPayload + String(crlfMock.genCalls[0]?.contents ?? ""),
+    crlfUncachedText,
+    "the transport invariant holds byte-for-byte under CRLF input",
+  );
 
   // Round 3: a cancellation landing during the free countTokens call must
   // stop before the BILLED caches.create call.

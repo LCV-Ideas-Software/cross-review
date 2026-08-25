@@ -3662,10 +3662,13 @@ function budgetExceeded(session: SessionMeta, limit?: number): boolean {
 // through `generate()` and never incur the per-invocation search fee, so
 // their preflights must not price it.
 //
-// v4.7.0 (CROSREV-6, Codex round 3): ceiling for the session-stable system
-// parts that live inside the Gemini explicit-cache payload — the 32K-char
-// MCP task bound plus role/session framing.
-const GEMINI_CACHED_SYSTEM_CHARS_CEILING = 33_000;
+// v4.7.0 (CROSREV-6, Codex rounds 3-6): token ceiling for the
+// session-stable system parts that live inside the Gemini explicit-cache
+// payload. The true token upper bound is UTF-8 BYTES (BPE tokens each
+// consume at least one byte; a UTF-16 character can encode into multiple
+// tokens), so the ceiling is the 32K-char MCP task bound plus framing at
+// up to 4 UTF-8 bytes per character.
+const GEMINI_CACHED_SYSTEM_TOKEN_BOUND = 132_000;
 
 export function estimatedPeerRoundCost(
   config: AppConfig,
@@ -3755,12 +3758,12 @@ export function estimatedPeerRoundCost(
         // stableSystem carries the FULL session task while the prompt
         // embeds a truncated copy (prompt.max_task_chars). The envelope
         // cannot see the adapter-side system text, so it prices a ceiling
-        // on top of the whole prompt. Round 4: the STORAGE bound is in
-        // characters, not chars/4 — settlement bills the authoritative
-        // countTokens result, which exceeds chars/4 for token-dense
-        // payloads (CJK, minified code); BPE tokens each consume at least
-        // one character, so chars is a true token upper bound.
-        const storageTokens = prompt.length + GEMINI_CACHED_SYSTEM_CHARS_CEILING;
+        // on top of the whole prompt. Rounds 4-6: the STORAGE bound is in
+        // UTF-8 BYTES — settlement bills the authoritative countTokens
+        // result, and a UTF-16 character can encode into multiple tokens
+        // (CJK, emoji), so neither chars/4 nor the UTF-16 length is a safe
+        // bound; BPE tokens each consume at least one BYTE.
+        const storageTokens = Buffer.byteLength(prompt, "utf8") + GEMINI_CACHED_SYSTEM_TOKEN_BOUND;
         storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
       }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {

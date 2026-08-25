@@ -814,10 +814,13 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // cachedContents resource (which the provider always places before
         // the live contents), and the request carries only cachedContent —
         // never systemInstruction (400 INVALID_ARGUMENT contract).
+        // Round 6: BOTH compositions are LF-normalized — the cached branch
+        // stores normalized bytes, so the uncached branch must send the
+        // same bytes or arming the cache would change the exact prompt.
         const params = cacheEntry
           ? {
               model: this.model,
-              contents: `${userPrompt(prompt.slice(stablePrefixChars))}\n\n${roundLine}\n\n${statusInstruction()}`,
+              contents: `${lfNormalize(userPrompt(prompt.slice(stablePrefixChars)))}\n\n${roundLine}\n\n${statusInstruction()}`,
               config: {
                 ...requestConfig,
                 cachedContent: cacheEntry.name,
@@ -825,7 +828,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             }
           : {
               model: this.model,
-              contents: `${stableSystem}\n\n${userPrompt(prompt)}\n\n${roundLine}\n\n${statusInstruction()}`,
+              contents: `${normalizedStableSystem}\n\n${lfNormalize(userPrompt(prompt))}\n\n${roundLine}\n\n${statusInstruction()}`,
               config: requestConfig,
             };
         const decorateUsage = (usage: TokenUsage | undefined): TokenUsage | undefined => {
