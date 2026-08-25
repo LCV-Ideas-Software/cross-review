@@ -2907,19 +2907,25 @@ export function truthfulnessPreflight(params: {
       // runtime claims.
       // Codex round 10: inline Markdown code spans mask like quotations -
       // a code-quoted example ("gives `Codex model runs ...` as a
-      // rejected claim") is not a live assertion.
+      // rejected claim") is not a live assertion. Round 11: an IN-WORD
+      // apostrophe (possessive "runtime's") is not a quote delimiter -
+      // apostrophe pairs (straight and typographic) only open after a
+      // non-word character and only close before one.
       aliasBase = aliasBase
-        .replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|`[^`]*`/g, (m) => {
-          const inner = m.slice(1, -1).trim();
-          const singleAlias =
-            inner.length <= 24 &&
-            PEERS.some((aliasPeer) =>
-              new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(inner),
-            );
-          // The DELIMITERS stay visible - the label-colon check skips
-          // them as formatting wrappers to find the captured token.
-          return singleAlias ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
-        })
+        .replace(
+          /"[^"]*"|(?<![A-Za-z0-9à-ÿ])'[^']*'(?![A-Za-z0-9à-ÿ])|“[^”]*”|(?<![A-Za-z0-9à-ÿ])‘[^’]*’(?![A-Za-z0-9à-ÿ])|`[^`]*`/g,
+          (m) => {
+            const inner = m.slice(1, -1).trim();
+            const singleAlias =
+              inner.length <= 24 &&
+              PEERS.some((aliasPeer) =>
+                new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(inner),
+              );
+            // The DELIMITERS stay visible - the label-colon check skips
+            // them as formatting wrappers to find the captured token.
+            return singleAlias ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
+          },
+        )
         .replace(/[a-z0-9._-]+\s*\//gi, (m, offset: number, whole: string) => {
           // Codex round 9: a recognized PEER alias prefixing a route
           // ("perplexity/alpha beta seven") must stay visible for the
@@ -3121,6 +3127,14 @@ export function truthfulnessPreflight(params: {
         lastCurrentIdx: number,
         futureIdx: number,
       ): boolean => lastCurrentIdx < 0 && nominalGovernedHeadPattern.test(text.slice(0, futureIdx));
+      // Codex round 11: a completive subordinator inside the nominal span
+      // ("The upcoming documentation explains THAT the ... model
+      // currently runs ...") means the current marker sits in a NEW
+      // reported clause - the nominal modifier's scope ends at its
+      // governing predicate and the assertion is judged current.
+      const completiveBreakPattern = /\b(?:that|que)\b/i;
+      const nominalScopeHoldsOverSpan = (span: string): boolean =>
+        nominalGovernedHeadPattern.test(span) && !completiveBreakPattern.test(span);
       const markerStateAtEnd = (text: string): "none" | "current" | "future" => {
         let state: "none" | "current" | "future" = "none";
         let contrastSinceFuture = false;
@@ -3144,7 +3158,7 @@ export function truthfulnessPreflight(params: {
               contrastSinceFuture ||
               (!futureIsModal &&
                 !futureQualifiesPriorHead &&
-                !nominalGovernedHeadPattern.test(text.slice(lastFutureIdx, event.idx)))
+                !nominalScopeHoldsOverSpan(text.slice(lastFutureIdx, event.idx)))
             ) {
               state = "current";
             }
@@ -3350,18 +3364,31 @@ export function truthfulnessPreflight(params: {
                 contrastSinceFuture = false;
               } else if (event.kind === "contrast") {
                 contrastSinceFuture = true;
-              } else if (
-                state === "future" &&
-                (contrastSinceFuture ||
-                  (!futureIsModal &&
-                    !futureQualifiesPriorHead &&
-                    !nominalGovernedHeadPattern.test(segment.slice(lastFutureIdx, event.idx))))
-              ) {
-                closeSpan(event.idx);
-                state = "current";
+              } else if (state === "future") {
+                const span = segment.slice(lastFutureIdx, event.idx);
+                const completiveIdx = span.search(new RegExp(completiveBreakPattern.source, "i"));
+                const nominalRenewal =
+                  !futureIsModal &&
+                  !futureQualifiesPriorHead &&
+                  !nominalGovernedHeadPattern.test(span);
+                // Round 11: a completive break renews too, but the future
+                // span ends AT the subordinator - the reported clause
+                // (and its alias) stays visible to the guard.
+                const completiveRenewal =
+                  !futureIsModal &&
+                  !futureQualifiesPriorHead &&
+                  nominalGovernedHeadPattern.test(span) &&
+                  completiveIdx >= 0;
+                if (contrastSinceFuture || nominalRenewal) {
+                  closeSpan(event.idx);
+                  state = "current";
+                } else if (completiveRenewal) {
+                  closeSpan(lastFutureIdx + completiveIdx);
+                  state = "current";
+                }
                 lastCurrentIdx = event.idx;
               } else {
-                if (state !== "future") state = "current";
+                state = "current";
                 lastCurrentIdx = event.idx;
               }
             }
@@ -3388,11 +3415,27 @@ export function truthfulnessPreflight(params: {
           /\b(?:is|are|runs?|uses?|using|remains?|continues?|stays?|roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
         const orphanPredicateAfterConsumption = (aliasIndex: number): boolean => {
           const clauseEnd = clauseEndFor(aliasIndex);
-          const consumingEnds = occurrences
-            .filter((occurrence) => occurrence.ownerAliasIndex === aliasIndex && !occurrence.future)
-            .map((occurrence) => occurrence.index + occurrence.rawLength);
-          if (consumingEnds.length === 0) return false;
-          const lastConsumingEnd = Math.max(...consumingEnds);
+          const consuming = occurrences.filter(
+            (occurrence) => occurrence.ownerAliasIndex === aliasIndex && !occurrence.future,
+          );
+          if (consuming.length === 0) return false;
+          // Round 11: the LEADING side too - between the alias and its
+          // FIRST consuming token there is room for exactly ONE assertion
+          // verb (the token's own predicate); a second verb means an
+          // uncaptured predicate sits before the token ("runs alpha beta
+          // seven but IS gpt-5.6-sol") and the guard reopens.
+          const firstConsumingStart = Math.min(
+            ...consuming.map((occurrence) => occurrence.matchStart),
+          );
+          if (firstConsumingStart > aliasIndex) {
+            const lead = guardAliasBase.slice(aliasIndex, firstConsumingStart);
+            const leadVerbs =
+              lead.match(new RegExp(orphanPredicateVerbPattern.source, "gi"))?.length ?? 0;
+            if (leadVerbs >= 2) return true;
+          }
+          const lastConsumingEnd = Math.max(
+            ...consuming.map((occurrence) => occurrence.index + occurrence.rawLength),
+          );
           if (lastConsumingEnd >= clauseEnd) return false;
           const tail = guardAliasBase.slice(lastConsumingEnd, clauseEnd);
           const verbMatch = tail.match(orphanPredicateVerbPattern);

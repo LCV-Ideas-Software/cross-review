@@ -1298,6 +1298,31 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "a multi-word inline code span masks like a quotation - a quoted example is not a live assertion",
   );
+  // Codex review of PR #247, round 11.
+  const possessiveApostrophes = anchored(
+    "The cross-review runtime's Codex model's current identity is alpha beta seven.",
+  );
+  assert.equal(
+    possessiveApostrophes.pass,
+    false,
+    "in-word possessive apostrophes are not quote delimiters - the alias stays visible and the fragmented claim is blocked",
+  );
+  const reversedPredicate = anchored(
+    "The cross-review runtime Codex model runs alpha beta seven but is gpt-5.6-sol.",
+  );
+  assert.equal(
+    reversedPredicate.pass,
+    false,
+    "a fragmented predicate BEFORE the consuming token is inspected too - two assertion verbs between alias and token reopen the guard",
+  );
+  const reportingVerb = anchored(
+    "The upcoming documentation explains that the cross-review runtime Codex model currently runs alpha beta seven.",
+  );
+  assert.equal(
+    reportingVerb.pass,
+    false,
+    "a completive (that/que) inside the nominal span ends the planning scope - the reported runtime assertion is judged current",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
