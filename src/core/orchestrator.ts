@@ -2890,8 +2890,21 @@ export function truthfulnessPreflight(params: {
       for (const occurrence of occurrences) {
         maskAliasRange(occurrence.matchStart, occurrence.index + occurrence.rawLength);
       }
+      // Codex round 5 of PR #247: a SHORT quote holding nothing but a peer
+      // alias ('model named "Codex"') is nomenclature, not a quoted log
+      // line — it stays visible so the surrounding clause's claim is still
+      // located; multi-word quotes keep masking (a quoted log line never
+      // steals a clause).
       aliasBase = aliasBase
-        .replace(/"[^"]*"|'[^']*'/g, (m) => "#".repeat(m.length))
+        .replace(/"[^"]*"|'[^']*'/g, (m) => {
+          const inner = m.slice(1, -1).trim();
+          const singleAlias =
+            inner.length <= 24 &&
+            PEERS.some((aliasPeer) =>
+              new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(inner),
+            );
+          return singleAlias ? m : "#".repeat(m.length);
+        })
         .replace(/[a-z0-9._-]+\s*\//gi, (m) => "#".repeat(m.length));
       const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
       for (const aliasPeer of PEERS) {
@@ -2926,6 +2939,7 @@ export function truthfulnessPreflight(params: {
         const clauseStart = clauseStartFor(occurrence.matchStart);
         const clauseEnd = clauseEndFor(occurrence.index + occurrence.rawLength);
         let best: { index: number; peer: PeerId } | undefined;
+        let sameClause = false;
         for (const alias of aliasPositions) {
           if (
             alias.index >= clauseStart &&
@@ -2935,6 +2949,7 @@ export function truthfulnessPreflight(params: {
             best = alias;
           }
         }
+        if (best) sameClause = true;
         if (!best) {
           for (const alias of aliasPositions) {
             if (
@@ -2945,6 +2960,7 @@ export function truthfulnessPreflight(params: {
               best = alias;
             }
           }
+          if (best) sameClause = true;
         }
         if (!best) {
           for (const alias of aliasPositions) {
@@ -2954,30 +2970,55 @@ export function truthfulnessPreflight(params: {
           }
         }
         occurrence.owner = best?.peer;
-        // CROSREV-21 (Codex round 2/4 of PR #247): remember which alias
+        // CROSREV-21 (Codex rounds 2/4/5 of PR #247): remember which alias
         // POSITION each occurrence resolved through — an alias not
         // consumed by any current occurrence marks an unjudgeable claim
         // even when the same peer has a captured claim elsewhere on the
-        // line ("Codex model is gpt-5.6-sol, and Codex model runs alpha
-        // beta seven").
-        if (best) occurrence.ownerAliasIndex = best.index;
+        // line. Only SAME-CLAUSE ownership consumes the alias: the
+        // cross-clause fallback keeps attribution for the per-peer
+        // judgment, but a token in another clause never shields a
+        // fragmented claim next to the alias.
+        if (best && sameClause) occurrence.ownerAliasIndex = best.index;
       }
-      // Codex rounds 3-4 of PR #247: the future classification follows the
-      // NEAREST relevant marker before the occurrence — a current marker
-      // after a future one renews the current assertion ("will change
-      // later but currently uses gpt-5.5" is judged), while a token whose
-      // nearest preceding marker is a future word ("will move to gpt-7"),
-      // or that has no current marker before it in a planning clause ("the
-      // upgrade to gpt-6 is planned"), keeps the S3 exemption.
+      // Codex rounds 3-5 of PR #247: temporal classification is a marker
+      // STATE MACHINE. Scanning current/future/contrast markers in order:
+      // a future or modal marker opens future scope; a current marker
+      // renews the actual-state assertion ONLY after a contrast word
+      // ("will change later BUT currently uses X" is judged) — inside an
+      // uncontrasted modal scope ("would currently use X if ...") the
+      // current marker does not renew. A token with no marker before it
+      // in a planning clause keeps the S3 exemption.
       const currentAssertionPattern =
         /\b(?:is|are|runs?|uses?|currently|atualmente|roda|usa|est[aá])\b/i;
-      const lastMarkerIndex = (text: string, pattern: RegExp): number => {
-        const global = new RegExp(pattern.source, "gi");
-        let last = -1;
-        for (const match of text.matchAll(global)) {
-          if (match.index !== undefined) last = match.index;
+      const contrastMarkerPattern = /\b(?:but|yet|however|mas|por[eé]m|contudo)\b/i;
+      type MarkerEvent = { idx: number; kind: "current" | "future" | "contrast" };
+      const markerEvents = (text: string): MarkerEvent[] => {
+        const events: MarkerEvent[] = [];
+        const collect = (pattern: RegExp, kind: MarkerEvent["kind"]): void => {
+          for (const match of text.matchAll(new RegExp(pattern.source, "gi"))) {
+            if (match.index !== undefined) events.push({ idx: match.index, kind });
+          }
+        };
+        collect(futureClausePattern, "future");
+        collect(currentAssertionPattern, "current");
+        collect(contrastMarkerPattern, "contrast");
+        events.sort((a, b) => a.idx - b.idx);
+        return events;
+      };
+      const markerStateAtEnd = (text: string): "none" | "current" | "future" => {
+        let state: "none" | "current" | "future" = "none";
+        let contrastSinceFuture = false;
+        for (const event of markerEvents(text)) {
+          if (event.kind === "future") {
+            state = "future";
+            contrastSinceFuture = false;
+          } else if (event.kind === "contrast") {
+            contrastSinceFuture = true;
+          } else if (state !== "future" || contrastSinceFuture) {
+            state = "current";
+          }
         }
-        return last;
+        return state;
       };
       for (const occurrence of occurrences) {
         const clauseStart = clauseStartFor(occurrence.matchStart);
@@ -2986,12 +3027,9 @@ export function truthfulnessPreflight(params: {
           clauseStart,
           clauseEndFor(occurrence.index + occurrence.rawLength),
         );
-        const lastFutureBefore = lastMarkerIndex(beforeText, futureClausePattern);
-        const lastCurrentBefore = lastMarkerIndex(beforeText, currentAssertionPattern);
+        const state = markerStateAtEnd(beforeText);
         occurrence.future =
-          lastFutureBefore >= 0
-            ? lastFutureBefore > lastCurrentBefore
-            : futureClausePattern.test(clauseText) && lastCurrentBefore < 0;
+          state === "future" || (state === "none" && futureClausePattern.test(clauseText));
       }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
@@ -3133,30 +3171,62 @@ export function truthfulnessPreflight(params: {
             segmentStart = bound.end;
             continue;
           }
-          const futureMatch = futureClausePattern.exec(segment);
-          if (futureMatch) {
-            if (currentAssertionPattern.test(segment.slice(0, futureMatch.index))) {
-              maskGuardRange(segmentStart + futureMatch.index, bound.start);
-            } else {
-              maskGuardRange(segmentStart, bound.start);
+          // Codex round 5: future masking uses the same marker state
+          // machine as the token stamping — spans whose governing marker
+          // is future (contrast-aware) are masked, so a current assertion
+          // that RESUMES after "but/yet/however" stays visible while pure
+          // planning (prefix included) is hidden.
+          {
+            let state: "none" | "current" | "future" = "none";
+            let contrastSinceFuture = false;
+            let spanStart = -1;
+            const closeSpan = (endIdx: number): void => {
+              if (spanStart >= 0) {
+                maskGuardRange(segmentStart + spanStart, segmentStart + endIdx);
+                spanStart = -1;
+              }
+            };
+            for (const event of markerEvents(segment)) {
+              if (event.kind === "future") {
+                if (state !== "future") spanStart = state === "none" ? 0 : event.idx;
+                state = "future";
+                contrastSinceFuture = false;
+              } else if (event.kind === "contrast") {
+                contrastSinceFuture = true;
+              } else if (state === "future" && contrastSinceFuture) {
+                closeSpan(event.idx);
+                state = "current";
+              } else if (state !== "future") {
+                state = "current";
+              }
             }
+            if (state === "future") closeSpan(segment.length);
           }
           segmentStart = bound.end;
         }
-        const modelLanguage = /\b(?:models?|pins?|modelos?)\b|model[_ -]?pins?/i.test(
-          guardAliasBase,
-        );
+        const modelRelationPattern = /\b(?:models?|pins?|modelos?)\b|model[_ -]?pins?/i;
         let guardTripped = false;
         for (const aliasPeer of PEERS) {
-          const peerRelation =
-            modelLanguage ||
-            new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
-              guardAliasBase,
-            );
-          if (!peerRelation) continue;
           const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
           for (const match of guardAliasBase.matchAll(aliasPattern)) {
             if (match.index === undefined || consumedAliasIndexes.has(match.index)) continue;
+            // Codex round 5: the model relation is read from the alias's
+            // OWN clause — model language in an unrelated clause cannot
+            // convert a non-model mention into a claim. The relation reads
+            // the PRE-mask clause (aliasBase): the alias candidacy already
+            // required surviving the masks, and the clause's model word
+            // may legitimately sit inside a masked planning prefix ("the
+            // model will change later but currently Codex runs ...").
+            const clauseText = aliasBase.slice(
+              clauseStartFor(match.index),
+              clauseEndFor(match.index),
+            );
+            const relation =
+              modelRelationPattern.test(clauseText) ||
+              new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
+                clauseText,
+              );
+            if (!relation) continue;
             guardTripped = true;
             break;
           }

@@ -1076,6 +1076,47 @@ import type { PeerResult } from "../src/core/types.js";
     contrastRenewal.issue_classes.includes("runtime_contradiction"),
     "the renewed current token is judged by value and contradicts the pin",
   );
+  // Codex review of PR #247, round 5 (locator refinements).
+  const crossClauseConsumption = anchored(
+    "The cross-review runtime Codex model runs alpha beta seven, and gpt-5.6-sol is documented elsewhere.",
+  );
+  assert.equal(
+    crossClauseConsumption.pass,
+    false,
+    "a captured token in ANOTHER clause never consumes the fragmented claim's alias (same-clause ownership only)",
+  );
+  const renewedZeroToken = anchored(
+    "The cross-review runtime model will change later but currently Codex runs alpha beta seven.",
+  );
+  assert.equal(
+    renewedZeroToken.pass,
+    false,
+    "a current assertion resuming after a future marker (with a contrast word) stays visible to the guard",
+  );
+  const clauseScopedModelLanguage = anchored(
+    "The cross-review runtime uses OpenAI authentication currently, and the model documentation was updated.",
+  );
+  assert.equal(
+    clauseScopedModelLanguage.pass,
+    true,
+    "model language in an unrelated clause must not convert a non-model alias into a claim",
+  );
+  const modalHypothetical = anchored(
+    "The cross-review runtime Codex model would currently use gpt-5.5 if the legacy override were enabled.",
+  );
+  assert.equal(
+    modalHypothetical.pass,
+    true,
+    "a current marker inside a modal scope (no contrast word) does not renew an actual-state assertion",
+  );
+  const quotedAliasClaim = anchored(
+    'The cross-review runtime model named "Codex" currently runs alpha beta seven.',
+  );
+  assert.equal(
+    quotedAliasClaim.pass,
+    false,
+    "a single-alias quote is nomenclature, not a quoted log line - the claim still blocks",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",

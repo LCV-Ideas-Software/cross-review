@@ -32,7 +32,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
   current/future marker before them, and treats an alias as consumed
   only by the specific occurrence that resolved through it (a captured
   claim never shields a second unparseable claim, even for the same
-  peer). Captured truthful tokens keep judging against config with no
+  peer). Round 5 locator refinements: only SAME-CLAUSE ownership
+  consumes an alias (a captured token in another clause never shields a
+  fragmented claim); temporal classification is a marker state machine
+  shared by token stamping and guard masking — a future or modal marker
+  opens future scope and a current marker renews the actual-state
+  assertion only after a contrast word, so "will change later but
+  currently ..." is judged while "would currently ... if ..." stays a
+  hypothetical; the model relation is read from the alias's own clause
+  (pre-mask); and a short quote holding nothing but a peer alias stays
+  visible as nomenclature while multi-word quoted log lines keep
+  masking. Captured truthful tokens keep judging against config with no
   new evidence requirement; `canonicalModelText` moved to module scope.
 
 ### Fixed
