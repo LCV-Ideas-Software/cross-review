@@ -1077,6 +1077,44 @@ function capturePerplexityProbe(
     "the successful result carries the positive indeterminate marker so settlement keeps the orphaned-cache spend unknown",
   );
 
+  // Round 8: a legitimately configured ZERO storage rate is still a KNOWN
+  // price — a terminal failure after creation settles with a known cost
+  // (total 0, explicit cache_storage_cost 0), never as unknown spend.
+  __resetGeminiExplicitCacheIndexForTests();
+  const zeroRateConfig = {
+    ...geminiCacheConfig,
+    cost_rates: {
+      ...geminiCacheConfig.cost_rates,
+      gemini: {
+        input_per_million: 2,
+        output_per_million: 12,
+        cache_storage_per_million_hour: 0,
+      },
+    },
+  };
+  const zeroRateMock = makeClient({
+    generateErrors: [
+      Object.assign(new Error("400 INVALID_ARGUMENT: schema mismatch"), { status: 400 }),
+    ],
+  });
+  const zeroRateAdapter = new GeminiAdapter(zeroRateConfig);
+  (zeroRateAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    zeroRateMock.client;
+  await assert.rejects(
+    zeroRateAdapter.call(prompt, context(stableHead.length)),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure);
+      assert.equal(
+        failure.cost?.total_cost,
+        0,
+        "a zero storage rate settles the failure with a KNOWN zero cost, not unknown spend",
+      );
+      assert.equal(failure.usage?.cache_storage_token_hours, 5_000);
+      return true;
+    },
+  );
+
   // Round 3: line-ending resubmissions — the key hash normalizes CRLF, so
   // the STORED payload must be the same LF-normalized bytes.
   __resetGeminiExplicitCacheIndexForTests();

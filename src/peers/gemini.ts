@@ -5,7 +5,7 @@
 // signature without re-importing the module per call. Type-only import
 // preserves all annotations.
 import type { GoogleGenAI, ThinkingLevel } from "@google/genai";
-import { estimateCost, mergeCost, mergeUsage } from "../core/cost.js";
+import { estimateCost, mergeCost, mergeUsage, resolveCostRate } from "../core/cost.js";
 import { maxOutputTokensForPeer } from "../core/output-budget.js";
 import { hashStablePrefix } from "../core/prompt-parts.js";
 import { geminiStatusJsonSchema, statusInstruction } from "../core/status.js";
@@ -638,18 +638,31 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       }
       geminiExplicitCacheIndex.set(cacheKeyHash, entry);
       // Record the deterministic storage charge in the attempt billing
-      // ledger IMMEDIATELY (a storage-only item, not an attempt).
+      // ledger IMMEDIATELY (a storage-only item, not an attempt). Codex
+      // round 8: a legitimately configured ZERO rate is still a KNOWN
+      // price — the ledger cost carries an explicit cache_storage_cost
+      // (even 0) so a later terminal failure settles as known spend and
+      // the storage-only marker keeps its category; only a genuinely
+      // missing rate (defense in depth — the financial gate blocks that
+      // state) records token-hours without a cost line.
       const tokenHours = (tokenCount * ttlSeconds) / 3_600;
       const ledgerUsage: TokenUsage = { cache_storage_token_hours: tokenHours };
-      const ledgerCost = estimateCost(this.config, this.id, ledgerUsage, this.model);
-      delete ledgerCost.input_cost;
-      delete ledgerCost.output_cost;
       params.ledgerUsage.push(ledgerUsage);
-      if ((ledgerCost.cache_storage_cost ?? 0) > 0) {
-        params.ledgerCosts.push(ledgerCost);
+      const storageRate = resolveCostRate(
+        this.config,
+        this.id,
+        this.model,
+      )?.cache_storage_per_million_hour;
+      if (typeof storageRate === "number") {
+        const storageCost = (tokenHours / 1_000_000) * storageRate;
+        params.ledgerCosts.push({
+          currency: "USD",
+          total_cost: storageCost,
+          cache_storage_cost: storageCost,
+          estimated: true,
+          source: "configured-rate",
+        });
       } else {
-        // The financial-control gate requires the storage rate whenever the
-        // cache is armed, so this branch is defense in depth only.
         notice(
           "Gemini explicit cache storage could not be priced (storage rate missing); token-hours recorded without a cost line.",
           { model: this.model, key_hash: cacheKeyHash, token_hours: tokenHours },

@@ -97,12 +97,21 @@ export async function writeCacheManifest(
   await writeJsonAtomic(manifestPath(dataDir, sessionId), manifest);
 }
 
+// v4.7.0 (CROSREV-6, Codex round 8 of PR #240): appends are serialized
+// INSIDE this module, per manifest file. The old contract ("concurrent
+// calls in the same process must be awaited in order by the caller") was
+// fragile — a fire-and-forget creation-telemetry append racing the
+// success-path usage append could interleave the read-modify-write cycles
+// and silently drop a row. Every caller now enqueues onto the file's
+// promise chain; a failed append rejects its own caller without
+// poisoning the queue.
+const manifestAppendQueues = new Map<string, Promise<void>>();
+
 /**
  * Append a single entry to the session manifest. Lazily creates the
  * manifest if it does not exist. Each call performs (a) read-current,
- * (b) push entry, (c) atomic-write. This is sequential within a
- * process; concurrent calls in the same process must be awaited in
- * order by the caller.
+ * (b) push entry, (c) atomic-write, serialized per manifest file inside
+ * this module — callers do not need to coordinate ordering.
  */
 export async function appendCacheManifestEntry(
   dataDir: string,
@@ -111,6 +120,25 @@ export async function appendCacheManifestEntry(
   cacheSchemaVersion: string = CACHE_SCHEMA_VERSION_DEFAULT,
 ): Promise<void> {
   const file = manifestPath(dataDir, sessionId);
+  const prior = manifestAppendQueues.get(file) ?? Promise.resolve();
+  const run = prior
+    .catch(() => undefined)
+    .then(() => appendCacheManifestEntryNow(file, sessionId, entry, cacheSchemaVersion));
+  const tail: Promise<void> = run
+    .catch(() => undefined)
+    .then(() => {
+      if (manifestAppendQueues.get(file) === tail) manifestAppendQueues.delete(file);
+    });
+  manifestAppendQueues.set(file, tail);
+  return run;
+}
+
+async function appendCacheManifestEntryNow(
+  file: string,
+  sessionId: string,
+  entry: CacheManifestEntry,
+  cacheSchemaVersion: string,
+): Promise<void> {
   const nowIso = new Date().toISOString();
   let current: CacheManifest;
   if (fs.existsSync(file)) {

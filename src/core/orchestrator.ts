@@ -3813,8 +3813,14 @@ export async function appendExplicitCacheCreationManifest(params: {
     cache_name?: unknown;
     token_count?: unknown;
     key_hash?: unknown;
+    model?: unknown;
   };
   if (typeof data.cache_name !== "string" || data.cache_name.length === 0) return false;
+  // Codex round 8: a FALLBACK adapter reuses the dispatch emitter whose
+  // closure captured the primary adapter — the creation event itself
+  // names the EFFECTIVE model, so it wins over the closure's snapshot.
+  const effectiveModel =
+    typeof data.model === "string" && data.model.length > 0 ? data.model : params.model;
   const suppliedKeyHash = typeof data.key_hash === "string" ? data.key_hash.trim() : "";
   const keyHash = /^[0-9a-f]{64}$/i.test(suppliedKeyHash) ? suppliedKeyHash : null;
   await appendCacheManifestEntry(
@@ -3825,7 +3831,7 @@ export async function appendExplicitCacheCreationManifest(params: {
       round: params.round,
       peer: params.peer,
       provider: params.provider,
-      model: params.model,
+      model: effectiveModel,
       cache_key_hash: keyHash,
       ...(keyHash === null
         ? { cache_key_unavailable_reason: "provider_did_not_expose_a_stable_cache_key_hash" }
@@ -4040,11 +4046,23 @@ export function mergePeerResultWithFailures(
   const indeterminateAttempts =
     indeterminateSpendAttemptsForResult(result) +
     failures.reduce((sum, failure) => sum + indeterminateSpendAttemptsForFailure(failure), 0);
+  // v4.7.0 (CROSREV-6, Codex round 8): mergeUsage deliberately drops
+  // qualitative per-call cache attributes. The SUCCESSFUL result's own
+  // mode/key hash stay authoritative for the merged record — re-stamp
+  // them after the additive merge, as the retry wrapper already does.
+  let mergedUsage = result.usage;
+  if (hasFailureUsage) {
+    const cacheProviderMode = result.usage?.cache_provider_mode;
+    const cacheKeyHash = result.usage?.cache_key_hash;
+    mergedUsage = mergeUsage([...failureUsage, result.usage]);
+    if (cacheProviderMode !== undefined) mergedUsage.cache_provider_mode = cacheProviderMode;
+    if (cacheKeyHash !== undefined) mergedUsage.cache_key_hash = cacheKeyHash;
+  }
   return {
     ...result,
     attempts: result.attempts + failures.reduce((sum, failure) => sum + failure.attempts, 0),
     latency_ms: result.latency_ms + failures.reduce((sum, failure) => sum + failure.latency_ms, 0),
-    usage: hasFailureUsage ? mergeUsage([...failureUsage, result.usage]) : result.usage,
+    usage: mergedUsage,
     cost: hasFailureCost ? mergeCost([...failureCost, result.cost]) : result.cost,
     ...(unpricedAttempts > 0
       ? {

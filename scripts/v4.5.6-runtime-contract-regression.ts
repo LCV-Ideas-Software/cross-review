@@ -2058,7 +2058,119 @@ const regressions: Regression[] = [
           schemaVersion: "v1",
         });
         assert.equal(ignored, false, "a notice without a resource name is not a creation record");
+        // Codex round 8: the creation event names the EFFECTIVE model —
+        // a fallback adapter reusing the dispatch emitter must not be
+        // recorded under the primary model captured by the closure.
+        await appendExplicitCacheCreationManifest({
+          dataDir: manifestDir,
+          sessionId: manifestSession,
+          round: 1,
+          peer: "gemini",
+          provider: "google",
+          model: "gemini-3.1-pro-preview",
+          eventData: {
+            cache_name: "cachedContents/fallback-1",
+            token_count: 4_200,
+            key_hash: "b".repeat(64),
+            model: "gemini-2.5-pro",
+          },
+          schemaVersion: "v1",
+        });
+        // Codex round 8: manifest appends are serialized inside the
+        // module — unawaited concurrent appends must all land.
+        await Promise.all(
+          Array.from({ length: 5 }, (_, i) =>
+            appendExplicitCacheCreationManifest({
+              dataDir: manifestDir,
+              sessionId: manifestSession,
+              round: 2,
+              peer: "gemini",
+              provider: "google",
+              model: "gemini-3.1-pro-preview",
+              eventData: {
+                cache_name: `cachedContents/concurrent-${i}`,
+                token_count: 5_000,
+                key_hash: "c".repeat(64),
+              },
+              schemaVersion: "v1",
+            }),
+          ),
+        );
+        const manifestFinal = JSON.parse(
+          fs.readFileSync(
+            path.join(manifestDir, "sessions", manifestSession, "cache_manifest.json"),
+            "utf8",
+          ),
+        ) as { entries: Array<Record<string, unknown>> };
+        assert.equal(
+          manifestFinal.entries.length,
+          7,
+          `serialized appends must not drop rows: ${manifestFinal.entries.length}`,
+        );
+        assert.equal(
+          manifestFinal.entries[1]?.model,
+          "gemini-2.5-pro",
+          "the creation entry records the effective (fallback) model from the event",
+        );
         fs.rmSync(manifestDir, { recursive: true, force: true });
+      }
+      // Codex round 8: the orchestrator-level failure merge must keep the
+      // successful result's qualitative cache attributes (mode/key hash),
+      // exactly like the retry wrapper does.
+      {
+        const { mergePeerResultWithFailures } = await import("../src/core/orchestrator.js");
+        const merged = mergePeerResultWithFailures(
+          {
+            peer: "gemini",
+            provider: "google",
+            model: "gemini-2.5-pro",
+            raw_status: "READY",
+            parsed_status: "READY",
+            normalized_status: "READY",
+            decision_transformations: [],
+            status_transformations: [],
+            status: "READY",
+            structured: null,
+            text: "{}",
+            raw: {},
+            usage: {
+              input_tokens: 100,
+              output_tokens: 10,
+              cache_read_tokens: 5_000,
+              cache_provider_mode: "explicit",
+              cache_key_hash: "d".repeat(64),
+            },
+            cost: { currency: "USD", total_cost: 0.01, estimated: true, source: "configured-rate" },
+            latency_ms: 10,
+            attempts: 1,
+            parser_warnings: [],
+            decision_quality: "ok",
+          } as never,
+          [
+            {
+              peer: "gemini",
+              provider: "google",
+              model: "gemini-3.1-pro-preview",
+              failure_class: "provider_error",
+              message: "primary failed after cache creation",
+              retryable: false,
+              attempts: 1,
+              latency_ms: 5,
+              usage: { cache_storage_token_hours: 5_000 },
+            } as never,
+          ],
+        );
+        assert.equal(
+          merged.usage?.cache_provider_mode,
+          "explicit",
+          "the failure merge keeps the successful result's cache mode",
+        );
+        assert.equal(
+          merged.usage?.cache_key_hash,
+          "d".repeat(64),
+          "the failure merge keeps the successful result's cache key hash",
+        );
+        assert.equal(merged.usage?.cache_storage_token_hours, 5_000);
       }
       // Round 4: recovery calls rebuild their context without the
       // stable-head boundary — no cache is possible, so the envelope must

@@ -87,7 +87,16 @@ standard `v00.00.00`; npm package versions remain SemVer.
   the moment the billed resource exists (call_label
   "explicit-cache-created"), independent of the generation outcome; and a
   waiter sharing the in-flight creation races its OWN abort signal, so
-  cancelling it releases promptly without cancelling the creator.
+  cancelling it releases promptly without cancelling the creator. Round
+  8: the creation-manifest entry records the EFFECTIVE model from the
+  event (a fallback adapter reusing the dispatch emitter is no longer
+  logged under the primary); cache-manifest appends are serialized
+  inside the module, per file (the old await-in-order caller contract
+  was fragile against fire-and-forget appends); the orchestrator-level
+  failure merge re-stamps the successful result's qualitative cache
+  attributes like the retry wrapper does; and a legitimately configured
+  ZERO storage rate settles as a KNOWN zero cost with an explicit
+  cache_storage_cost marker, never as unknown spend.
 
 ## [v04.06.02] — 24/08/2026
 
