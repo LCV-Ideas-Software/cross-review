@@ -851,11 +851,22 @@ function capturePerplexityProbe(
   assert.equal(plain.usage?.cache_provider_mode, "implicit");
   assert.equal(plain.usage?.cache_storage_token_hours, undefined);
   // The transport invariant, proven byte-for-byte: the cached prefix plus
-  // the live remainder reproduce EXACTLY the uncached composition, so
-  // arming the cache can never change review behavior.
+  // the live remainder reproduce EXACTLY the ARMED uncached composition,
+  // so a cache hit can never change review behavior. Codex round 14: the
+  // DISARMED prompt keeps the legacy composition (asserted below), so the
+  // armed uncached reference comes from an armed adapter whose payload
+  // counts below the cachedContents minimum (stays uncached).
+  __resetGeminiExplicitCacheIndexForTests();
+  const armedUncachedMock = makeClient({ countTokensResult: 100 });
+  const armedUncached = new GeminiAdapter(geminiCacheConfig);
+  (armedUncached as unknown as { client: () => Promise<unknown> }).client = async () =>
+    armedUncachedMock.client;
+  await armedUncached.call(prompt, context(stableHead.length));
+  assert.equal(armedUncachedMock.createCalls.length, 0, "below-minimum stays uncached");
+  const armedUncachedText = String(armedUncachedMock.genCalls[0]?.contents ?? "");
   assert.equal(
     cachedText + armedLiveText,
-    disarmedText,
+    armedUncachedText,
     "cached prefix + live remainder must equal the uncached composition byte-for-byte",
   );
 
@@ -1137,17 +1148,19 @@ function capturePerplexityProbe(
     false,
     "the stored cache payload is LF-normalized to match the normalized key hash",
   );
-  // Round 6: the UNCACHED composition is LF-normalized too — otherwise
-  // arming the cache would change the exact prompt bytes under CRLF input.
-  const crlfDisarmed = new GeminiAdapter({
-    ...geminiCacheConfig,
-    cache: { ...geminiCacheConfig.cache, gemini_explicit: false },
-  });
-  const crlfDisarmedMock = makeClient();
-  (crlfDisarmed as unknown as { client: () => Promise<unknown> }).client = async () =>
-    crlfDisarmedMock.client;
-  await crlfDisarmed.call(`${crlfHead}dynamic tail of round 1`, context(crlfHead.length));
-  const crlfUncachedText = String(crlfDisarmedMock.genCalls[0]?.contents ?? "");
+  // Round 6: the ARMED uncached composition is LF-normalized too —
+  // otherwise a cache hit would change the exact prompt bytes under CRLF
+  // input. Codex round 14: the DISARMED prompt keeps the legacy
+  // composition (CRLF untouched), so the reference is an ARMED adapter
+  // whose payload counts below the cachedContents minimum.
+  __resetGeminiExplicitCacheIndexForTests();
+  const crlfArmedUncachedMock = makeClient({ countTokensResult: 100 });
+  const crlfArmedUncached = new GeminiAdapter(geminiCacheConfig);
+  (crlfArmedUncached as unknown as { client: () => Promise<unknown> }).client = async () =>
+    crlfArmedUncachedMock.client;
+  await crlfArmedUncached.call(`${crlfHead}dynamic tail of round 1`, context(crlfHead.length));
+  assert.equal(crlfArmedUncachedMock.createCalls.length, 0, "below-minimum stays uncached");
+  const crlfUncachedText = String(crlfArmedUncachedMock.genCalls[0]?.contents ?? "");
   assert.equal(
     crlfUncachedText.includes("\r"),
     false,
@@ -1434,6 +1447,65 @@ function capturePerplexityProbe(
     rejectingMock.countCalls.length,
     countCallsAfterFirst,
     "the sentinel prevents repeating countTokens",
+  );
+
+  // Codex round 14: with explicit caching DISARMED (the opt-in default),
+  // the review prompt keeps the LEGACY composition - Round between
+  // Session and Original task, no trailing Round line after the body.
+  const geminiDisarmedPromptConfig = {
+    ...geminiCacheConfig,
+    cache: { ...geminiCacheConfig.cache, gemini_explicit: false },
+  };
+  const disarmedPromptMock = makeClient();
+  const disarmedPromptAdapter = new GeminiAdapter(geminiDisarmedPromptConfig);
+  (disarmedPromptAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    disarmedPromptMock.client;
+  await disarmedPromptAdapter.call(prompt, context(stableHead.length));
+  assert.equal(disarmedPromptMock.createCalls.length, 0, "disarmed never creates a cache");
+  const disarmedContents = String(disarmedPromptMock.genCalls[0]?.contents ?? "");
+  const disarmedRoundIdx = disarmedContents.indexOf("Round:");
+  const disarmedTaskIdx = disarmedContents.indexOf("Original task:");
+  assert.ok(
+    disarmedRoundIdx >= 0 && disarmedTaskIdx > disarmedRoundIdx,
+    "disarmed keeps the legacy order: Round between Session and Original task",
+  );
+  assert.equal(
+    disarmedContents.lastIndexOf("Round:"),
+    disarmedRoundIdx,
+    "disarmed carries no trailing Round line after the review body",
+  );
+
+  // Codex round 14: an aborted creator keeps the in-flight dedup entry
+  // until the underlying SDK request settles - a later review for the
+  // same key must NOT start a duplicate billed creation, and a resource
+  // that materializes after the abort is indexed for reuse.
+  __resetGeminiExplicitCacheIndexForTests();
+  const abortedCreatorMock = makeClient({ createDelayMs: 400 });
+  const abortedCreator = new GeminiAdapter(geminiCacheConfig);
+  (abortedCreator as unknown as { client: () => Promise<unknown> }).client = async () =>
+    abortedCreatorMock.client;
+  const abortedCreatorController = new AbortController();
+  setTimeout(() => abortedCreatorController.abort(), 50);
+  await abortedCreator
+    .call(prompt, { ...context(stableHead.length), signal: abortedCreatorController.signal })
+    .catch(() => undefined);
+  const followerAdapter = new GeminiAdapter(geminiCacheConfig);
+  (followerAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    abortedCreatorMock.client;
+  const followerResult = await followerAdapter.call(prompt, context(stableHead.length));
+  assert.ok(followerResult.text.length > 0, "the follower still reviews (uncached) while pending");
+  assert.equal(
+    abortedCreatorMock.createCalls.length,
+    1,
+    "the follower joins the outstanding creation instead of starting a duplicate",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  const materialized = [...__geminiExplicitCacheIndexForTests().values()].find(
+    (entry) => entry.name !== "",
+  );
+  assert.ok(
+    materialized,
+    "a resource that materializes after the abort is indexed for later reuse",
   );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }

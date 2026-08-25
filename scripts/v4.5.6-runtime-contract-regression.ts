@@ -2271,6 +2271,55 @@ const regressions: Regression[] = [
         }).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
         "the reviewer role keeps requiring the storage rate",
       );
+      // Codex round 14: a session whose complete cacheable payload bound
+      // (task + focus + evidence + framing, in UTF-8 bytes as the token
+      // ceiling) sits below the 4,096-token cachedContents minimum can
+      // never create a cache - the storage rate is not required for it.
+      // An eligible bound (or an unknown one - fail-closed) keeps the
+      // requirement.
+      assert.equal(
+        missingFinancialControlVars(geminiArmedConfig, ["gemini"], {
+          reviewerPeers: ["gemini"],
+          geminiCacheableBytesBound: 500,
+        }).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+        false,
+        "a definitely-ineligible payload bound does not require the storage rate",
+      );
+      assert.ok(
+        missingFinancialControlVars(geminiArmedConfig, ["gemini"], {
+          reviewerPeers: ["gemini"],
+          geminiCacheableBytesBound: 50_000,
+        }).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+        "an eligible payload bound keeps requiring the storage rate",
+      );
+      // Codex round 14: same-round paid recovery (fallback, moderation
+      // retry, format/decision recovery) is refused while the triggering
+      // failure or result carries indeterminate provider spend AND a hard
+      // session budget is configured - a ceiling cannot authorize more
+      // paid work without knowing the cost already incurred.
+      {
+        const { recoveryBlockedByUnsettledSpend } = await import("../src/core/orchestrator.js");
+        assert.equal(
+          recoveryBlockedByUnsettledSpend(10, { indeterminate_spend_attempts: 1 }),
+          true,
+          "unsettled trigger spend under a hard budget blocks recovery",
+        );
+        assert.equal(
+          recoveryBlockedByUnsettledSpend(null, { indeterminate_spend_attempts: 1 }),
+          false,
+          "without a configured ceiling there is no authorization to protect",
+        );
+        assert.equal(
+          recoveryBlockedByUnsettledSpend(10, { indeterminate_spend_attempts: 0 }),
+          false,
+          "settled trigger spend does not block recovery",
+        );
+        assert.equal(
+          recoveryBlockedByUnsettledSpend(10, undefined),
+          false,
+          "a missing trigger record does not block recovery",
+        );
+      }
       const generationEnvelopeWithCache = estimatedPeerRoundCost(
         geminiPreflightPriced,
         ["gemini"],

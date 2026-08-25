@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GEMINI_EXPLICIT_CACHE_MIN_TOKENS } from "../peers/gemini.js";
 import { isPerplexityAgentModel, resolveCostRate } from "./cost.js";
 import { applyFileConfigToEnv, inspectConfigFileFingerprint } from "./file-config.js";
 import { type AppConfig, PEERS, type PeerId } from "./types.js";
@@ -857,6 +858,13 @@ export function missingFinancialControlVars(
     // Peers that can act as reviewers (declare the Perplexity web_search
     // tool). Omitted = every listed peer may review (fail-closed default).
     reviewerPeers?: readonly PeerId[] | undefined;
+    // Codex round 14 (PR #240): conservative UPPER bound, in UTF-8 bytes,
+    // of the session's complete cacheable payload (task + focus +
+    // evidence + framing). Bytes are a token ceiling, so a bound below
+    // the 4,096-token cachedContents minimum proves no cache (and no
+    // storage charge) can ever exist — the storage rate is then not a
+    // required control. Omitted = unknown payload (fail-closed: require).
+    geminiCacheableBytesBound?: number | undefined;
   } = {},
 ): string[] {
   const missing = new Set<string>();
@@ -906,9 +914,13 @@ export function missingFinancialControlVars(
   // requirement is role-aware like the Perplexity search dimension —
   // fail-closed default when the reviewer set is unknown.
   const geminiCanReview = options.reviewerPeers ? options.reviewerPeers.includes("gemini") : true;
+  const geminiPayloadCanBeEligible =
+    options.geminiCacheableBytesBound === undefined ||
+    options.geminiCacheableBytesBound >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS;
   if (
     peers.includes("gemini") &&
     geminiCanReview &&
+    geminiPayloadCanBeEligible &&
     config.cache.enabled &&
     config.cache.gemini_explicit &&
     !config.cache.disable_per_peer.gemini

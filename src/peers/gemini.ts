@@ -571,7 +571,34 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     ledgerUsage: TokenUsage[];
     ledgerCosts: CostEstimate[];
     onIndeterminateCreate: () => void;
+    // Round 14: the in-flight dedup entry is released by THIS function —
+    // normally when it returns, but after a billable abort only when the
+    // underlying SDK request settles, so a later review cannot start a
+    // duplicate billed creation while the first is still outstanding.
+    releaseInFlight: () => void;
   }): Promise<GeminiExplicitCacheEntry | undefined> {
+    const release = { deferred: false };
+    try {
+      return await this.createExplicitCacheEntryInner(params, release);
+    } finally {
+      if (!release.deferred) params.releaseInFlight();
+    }
+  }
+
+  private async createExplicitCacheEntryInner(
+    params: {
+      reviewClient: { ai: GoogleGenAI };
+      cacheContents: string;
+      ttl: "5m" | "1h";
+      cacheKeyHash: string;
+      context: PeerCallContext;
+      ledgerUsage: TokenUsage[];
+      ledgerCosts: CostEstimate[];
+      onIndeterminateCreate: () => void;
+      releaseInFlight: () => void;
+    },
+    release: { deferred: boolean },
+  ): Promise<GeminiExplicitCacheEntry | undefined> {
     const { reviewClient, cacheContents, ttl, cacheKeyHash, context } = params;
     const ttlSeconds = geminiTtlSeconds(ttl);
     const notice = (message: string, data: Record<string, unknown>) => {
@@ -644,32 +671,42 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       );
       return undefined;
     }
+    // Round 13: the provider TTL starts when the resource is created
+    // SERVER-SIDE — the local expiry anchors on the provider-returned
+    // expireTime when present, else conservatively on the pre-dispatch
+    // timestamp, so a slow caches.create cannot extend the local
+    // lifetime past the real one. Round 14: the SDK promise is hoisted so
+    // a billable abort can keep the dedup entry and index a resource that
+    // materializes after the cancellation.
+    const dispatchedAt = Date.now();
+    let createPromise:
+      | Promise<{
+          name?: string;
+          expireTime?: string;
+          usageMetadata?: { totalTokenCount?: number };
+        }>
+      | undefined;
     try {
       // Round 5: raced against the abort signal — a raced-away creation
       // may still have been created and billed server-side, so the abort
       // error routes through the ambiguous-transport path below.
-      // Round 13: the provider TTL starts when the resource is created
-      // SERVER-SIDE — the local expiry anchors on the provider-returned
-      // expireTime when present, else conservatively on the pre-dispatch
-      // timestamp, so a slow caches.create cannot extend the local
-      // lifetime past the real one.
-      const dispatchedAt = Date.now();
-      const created = (await raceWithAbort(
-        reviewClient.ai.caches.create({
-          model: this.model,
-          config: {
-            contents: [{ role: "user", parts: [{ text: cacheContents }] }],
-            ttl: `${ttlSeconds}s`,
-            displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
-          },
-        }) as Promise<{
-          name?: string;
-          expireTime?: string;
-          usageMetadata?: { totalTokenCount?: number };
-        }>,
-        context.signal,
-        "billable",
-      )) as { name?: string; expireTime?: string; usageMetadata?: { totalTokenCount?: number } };
+      createPromise = reviewClient.ai.caches.create({
+        model: this.model,
+        config: {
+          contents: [{ role: "user", parts: [{ text: cacheContents }] }],
+          ttl: `${ttlSeconds}s`,
+          displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
+        },
+      }) as Promise<{
+        name?: string;
+        expireTime?: string;
+        usageMetadata?: { totalTokenCount?: number };
+      }>;
+      const created = (await raceWithAbort(createPromise, context.signal, "billable")) as {
+        name?: string;
+        expireTime?: string;
+        usageMetadata?: { totalTokenCount?: number };
+      };
       if (!created?.name) {
         notice("Gemini explicit cache creation returned no resource name; continuing uncached.", {
           model: this.model,
@@ -759,10 +796,41 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       // in-flight kind carried by the race error restores the round-5/7
       // contract (the server may have created and billed the resource).
       // A raced-away FREE countTokens stays zero-spend.
+      const abortKind = cachePreparationAbortKind(error);
       const ambiguous =
-        cachePreparationAbortKind(error) === "billable" ||
+        abortKind === "billable" ||
         indeterminateSpendMarkerFor(createFailure.failure_class, createFailure.message, 1) > 0;
       if (ambiguous) params.onIndeterminateCreate();
+      // Round 14: a billable abort leaves the SDK request OUTSTANDING —
+      // keep the in-flight dedup entry until it settles (a later review
+      // must not start a duplicate billed creation) and index a resource
+      // that materializes after the cancellation so the already-billed
+      // storage is reused instead of orphaned.
+      if (abortKind === "billable" && createPromise) {
+        release.deferred = true;
+        void createPromise
+          .then((created) => {
+            if (created && typeof created.name === "string" && created.name.length > 0) {
+              const providerExpiryMs =
+                typeof created.expireTime === "string"
+                  ? Date.parse(created.expireTime)
+                  : Number.NaN;
+              geminiExplicitCacheIndex.set(cacheKeyHash, {
+                name: created.name,
+                token_count: created.usageMetadata?.totalTokenCount ?? countedTokens ?? 0,
+                expires_at_ms: Number.isFinite(providerExpiryMs)
+                  ? providerExpiryMs
+                  : dispatchedAt + ttlSeconds * 1_000,
+              });
+              notice(
+                "Gemini explicit cache creation settled AFTER cancellation; the billed resource was indexed for reuse.",
+                { model: this.model, cache_name: created.name, key_hash: cacheKeyHash },
+              );
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => params.releaseInFlight());
+      }
       // Round 13: a TERMINAL, unambiguous rejection (the model does not
       // support cachedContents) is deterministic for this key — record
       // the negative sentinel so later rounds go straight to uncached
@@ -882,6 +950,10 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               // provider work in the failure classification below.
               cacheEntry = await raceWithAbort(inFlight, context.signal, "waiter");
             } else {
+              // Round 14: the dedup release belongs to the creation — it
+              // fires on return, or only when the SDK request settles
+              // after a billable abort (no duplicate billed creations).
+              const inFlightKey = cacheKeyHash;
               const creation = this.createExplicitCacheEntry({
                 reviewClient,
                 cacheContents: cachePayload,
@@ -893,13 +965,14 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
                 onIndeterminateCreate: () => {
                   indeterminateCacheCreateAttempts += 1;
                 },
+                releaseInFlight: () => {
+                  if (geminiExplicitCacheInFlight.get(inFlightKey) === creation) {
+                    geminiExplicitCacheInFlight.delete(inFlightKey);
+                  }
+                },
               });
               geminiExplicitCacheInFlight.set(cacheKeyHash, creation);
-              try {
-                cacheEntry = await creation;
-              } finally {
-                geminiExplicitCacheInFlight.delete(cacheKeyHash);
-              }
+              cacheEntry = await creation;
             }
           }
         }
@@ -915,14 +988,18 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           ),
           ...(context.signal ? { abortSignal: context.signal } : {}),
         };
-        // One logical order in both modes: stableSystem → head → tail →
-        // Round → status. Cached: [stableSystem + head] is served from the
-        // cachedContents resource (which the provider always places before
-        // the live contents), and the request carries only cachedContent —
-        // never systemInstruction (400 INVALID_ARGUMENT contract).
-        // Round 6: BOTH compositions are LF-normalized — the cached branch
-        // stores normalized bytes, so the uncached branch must send the
-        // same bytes or arming the cache would change the exact prompt.
+        // One logical order in both ARMED modes: stableSystem → head →
+        // tail → Round → status. Cached: [stableSystem + head] is served
+        // from the cachedContents resource (which the provider always
+        // places before the live contents), and the request carries only
+        // cachedContent — never systemInstruction (400 INVALID_ARGUMENT
+        // contract). Round 6: both armed compositions are LF-normalized —
+        // the cached branch stores normalized bytes, so the armed uncached
+        // branch must send the same bytes or arming the cache would change
+        // the exact prompt. Round 14: with the cache DISARMED (the opt-in
+        // default) the LEGACY composition is preserved verbatim — Round
+        // between Session and Original task, CRLF untouched — so merely
+        // upgrading never changes a disarmed review prompt.
         const params = cacheEntry
           ? {
               model: this.model,
@@ -932,11 +1009,17 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
                 cachedContent: cacheEntry.name,
               },
             }
-          : {
-              model: this.model,
-              contents: `${normalizedStableSystem}\n\n${lfNormalize(userPrompt(prompt))}\n\n${roundLine}\n\n${statusInstruction()}`,
-              config: requestConfig,
-            };
+          : geminiExplicitCacheArmed(this.config)
+            ? {
+                model: this.model,
+                contents: `${normalizedStableSystem}\n\n${lfNormalize(userPrompt(prompt))}\n\n${roundLine}\n\n${statusInstruction()}`,
+                config: requestConfig,
+              }
+            : {
+                model: this.model,
+                contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt)}\n\n${statusInstruction()}`,
+                config: requestConfig,
+              };
         const decorateUsage = (usage: TokenUsage | undefined): TokenUsage | undefined => {
           if (!usage) return usage;
           // The aggregate merge deliberately drops per-call QUALITATIVE cache
