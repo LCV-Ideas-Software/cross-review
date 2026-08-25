@@ -232,8 +232,9 @@ standard `v00.00.00`; npm package versions remain SemVer.
   Grok 4.6 and Kimi K3 cards).
 - CI now uses Linear's official `linear-release-action` at the verified
   `v0.16.0` commit while preserving the existing full-history, least-privilege,
-  protected-environment, and best-effort release synchronization contract
-  (CROSREV-17, issue #230).
+  and protected-environment controls. Release synchronization is fail-closed:
+  an action or credential failure leaves the workflow visibly red
+  (CROSREV-17, issue #230; CROSREV-28, issue #251).
 
 ### Fixed
 
