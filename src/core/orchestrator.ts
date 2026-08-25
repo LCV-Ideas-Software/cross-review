@@ -2365,7 +2365,11 @@ const FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN =
   /\b(?:triggered|dispatched|started|ran|launched|executei|rodei|disparei)\s+(?:the\s+|o\s+|a\s+)?(?:workflow|dispatch|deployment|deploy|ci|github actions?|pipeline)\b|\boperator authorization\b|\bautorizad[ao]\s+pelo\s+operador\b|\bconfirmed\s+(?:the\s+)?(?:remote\s+)?deployment\s+(?:succeeded|success)\b|\bconfirmei\s+(?:que\s+)?(?:o\s+)?deploy\b/i;
 
 const MODEL_CLAIM_ALIASES: Record<PeerId, RegExp> = {
-  codex: /\b(?:codex|openai|chatgpt)\b/i,
+  // Codex round 14 of PR #247: standalone "GPT" is a common Codex name -
+  // versioned tokens (gpt-5.6-sol) are captured occurrences and masked
+  // before alias scanning, so the bare form only matters where no token
+  // was capturable.
+  codex: /\b(?:codex|openai|chatgpt|gpt)\b/i,
   claude: /\b(?:claude|anthropic)\b/i,
   gemini: /\b(?:gemini|google)\b/i,
   deepseek: /\bdeepseek\b/i,
@@ -3201,6 +3205,11 @@ export function truthfulnessPreflight(params: {
             run = 0;
             continue;
           }
+          // Codex round 14: a single CAPITALIZED opaque word mid-sentence
+          // ("uses Orion") is a proper-noun value candidate on its own -
+          // lowercase properties ("remains available") still need a run
+          // of two.
+          if (/^[A-Z]/.test(word)) return true;
           run += 1;
           if (run >= 2) return true;
         }
@@ -3575,6 +3584,33 @@ export function truthfulnessPreflight(params: {
             break;
           }
           if (guardTripped) break;
+        }
+        // Codex round 14: a coordinated predicate with an ELIDED subject
+        // ("... model is gpt-5.6-sol, and RUNS alpha beta seven") sits in
+        // a clause with no alias to iterate - a clause that opens with an
+        // assertion verb inherits the preceding model subject, so a
+        // fragmented value candidate inside it reopens the guard when the
+        // preceding text carries a model relation and a peer alias.
+        if (!guardTripped) {
+          const elidedSubjectOpenerPattern =
+            /^\s*(?:is|are|runs?|uses?|using|remains?|continues?|stays?|roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
+          for (const bound of clauseBounds) {
+            const segStart = bound.end;
+            const segEnd = clauseEndFor(segStart);
+            if (segStart >= segEnd) continue;
+            const segment = guardAliasBase.slice(segStart, segEnd);
+            if (!elidedSubjectOpenerPattern.test(segment)) continue;
+            if (!hasFragmentedValueCandidate(segment)) continue;
+            const precedingMasked = guardAliasBase.slice(0, bound.start);
+            const precedingUnmasked = aliasBase.slice(0, bound.start);
+            const precedingHasAlias = PEERS.some((aliasPeer) =>
+              new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "i").test(precedingMasked),
+            );
+            if (precedingHasAlias && modelRelationPattern.test(precedingUnmasked)) {
+              guardTripped = true;
+              break;
+            }
+          }
         }
         if (guardTripped) {
           lineCurrentModelClaimMatched = true;

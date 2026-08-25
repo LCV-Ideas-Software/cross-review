@@ -1386,6 +1386,37 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "the 'and' inside a historical range (Between R1 and R3) is not a clause boundary - the historical construction masks whole",
   );
+  // Codex review of PR #247, round 14.
+  const coordinatedPredicate = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol, and runs alpha beta seven.",
+  );
+  assert.equal(
+    coordinatedPredicate.pass,
+    false,
+    "a coordinated predicate with an elided subject inherits the model subject - the fragmented claim is blocked",
+  );
+  const coordinatedBenign = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol, and runs smoothly.",
+  );
+  assert.equal(
+    coordinatedBenign.pass,
+    true,
+    "a coordinated predicate with no fragmented value candidate (runs smoothly) stays valid",
+  );
+  const singleOpaqueValue = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but uses Orion.",
+  );
+  assert.equal(
+    singleOpaqueValue.pass,
+    false,
+    "a single capitalized opaque word (Orion) after a validated pin is a value candidate - the second predicate reopens the guard",
+  );
+  const gptAlias = anchored("The cross-review runtime GPT model runs alpha beta seven.");
+  assert.equal(
+    gptAlias.pass,
+    false,
+    "standalone GPT is a Codex alias - the fragmented claim is located and blocked",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
