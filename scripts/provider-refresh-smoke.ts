@@ -1538,7 +1538,7 @@ function capturePerplexityProbe(
     const lateDeadlines = [...__geminiExplicitCachePoisonedForTests().values()];
     assert.equal(lateDeadlines.length, 1, "the late-abort cap expiry poisons the key");
     assert.ok(
-      (lateDeadlines[0] ?? 0) > Date.now() + 100,
+      (lateDeadlines[0]?.deadline ?? 0) > Date.now() + 100,
       "the poison retention starts at cap expiry, never at request dispatch",
     );
     const lateBypassAdapter = new GeminiAdapter(geminiCacheConfig);
@@ -1568,7 +1568,9 @@ function capturePerplexityProbe(
   __resetGeminiExplicitCacheIndexForTests();
   __setGeminiCancelTimingForTests(100, 300);
   try {
-    __geminiExplicitCachePoisonedForTests().set("stale-poison-key", Date.now() - 1_000);
+    __geminiExplicitCachePoisonedForTests().set("stale-poison-key", {
+      deadline: Date.now() - 1_000,
+    });
     const sweepMock = makeClient({ createDelayMs: 1_500 });
     const sweepAdapter = new GeminiAdapter(geminiCacheConfig);
     (sweepAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
@@ -1643,7 +1645,110 @@ function capturePerplexityProbe(
     "a pre-create cancellation settles as zero provider work",
   );
 
-  // Codex round 13: the local expiry anchors on the PRE-DISPATCH
+  // Codex round 24: the late-settle cleanup releases only ITS OWN poison
+  // generation - when a first hung creation finally rejects after a
+  // second creation has already poisoned the same key, the first
+  // promise's cleanup must not clear the second's marker (that would let
+  // a third review dispatch a duplicate billed creation).
+  __resetGeminiExplicitCacheIndexForTests();
+  __setGeminiCancelTimingForTests(100, 250);
+  try {
+    const generationMock = makeClient({
+      createDelayMs: 1_200,
+      createError: new Error("late rejection after hang"),
+    });
+    const generationAdapter = new GeminiAdapter(geminiCacheConfig);
+    (generationAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      generationMock.client;
+    const firstController = new AbortController();
+    setTimeout(() => firstController.abort(), 30);
+    await generationAdapter
+      .call(prompt, { ...context(stableHead.length), signal: firstController.signal })
+      .catch(() => undefined);
+    // First poison expires while the first SDK promise is still pending.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const secondAdapter = new GeminiAdapter(geminiCacheConfig);
+    (secondAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      generationMock.client;
+    const secondController = new AbortController();
+    setTimeout(() => secondController.abort(), 30);
+    await secondAdapter
+      .call(prompt, { ...context(stableHead.length), signal: secondController.signal })
+      .catch(() => undefined);
+    assert.equal(generationMock.createCalls.length, 2, "the second creation dispatched");
+    // Window: the FIRST promise rejects at ~1205ms from suite start while
+    // the SECOND is still pending until ~1640ms - the assert must land
+    // between the two, after the first's cleanup ran.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().size,
+      1,
+      "the first creation's late cleanup does not clear the second generation's poison",
+    );
+    // Let the second promise settle and release its own marker.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().size,
+      0,
+      "the second creation's own settlement releases its poison",
+    );
+  } finally {
+    __setGeminiCancelTimingForTests(10_000, 120_000);
+  }
+
+  // Codex round 24: a cancellation that lands AFTER the creation settled
+  // (entry indexed, storage ledger recorded) but BEFORE the post-creation
+  // recheck carries the settled-known billable tags - all provider work
+  // is fully priced and generation never dispatched.
+  __resetGeminiExplicitCacheIndexForTests();
+  const postCreateController = new AbortController();
+  const postCreateMock = makeClient();
+  const postCreateBaseCaches = postCreateMock.client.ai.caches;
+  const postCreateClient = {
+    ...postCreateMock.client,
+    ai: {
+      ...postCreateMock.client.ai,
+      caches: {
+        ...postCreateBaseCaches,
+        create: async (p: Record<string, unknown>) => {
+          const created = await postCreateBaseCaches.create(p);
+          // Three microtask hops: the abort lands after the awaited
+          // creation resolves but before the adapter's post-creation
+          // recheck runs.
+          void Promise.resolve().then(() => {
+            void Promise.resolve().then(() => {
+              void Promise.resolve().then(() => postCreateController.abort());
+            });
+          });
+          return created;
+        },
+      },
+    },
+  };
+  const postCreateAdapter = new GeminiAdapter(geminiCacheConfig);
+  (postCreateAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    postCreateClient;
+  let postCreateError: unknown;
+  const postCreateResult = await postCreateAdapter
+    .call(prompt, { ...context(stableHead.length), signal: postCreateController.signal })
+    .catch((error: unknown) => {
+      postCreateError = error;
+      return undefined;
+    });
+  if (postCreateResult === undefined) {
+    const postCreateFailure = (postCreateError as { peerFailure?: PeerFailure } | undefined)
+      ?.peerFailure;
+    assert.equal(postCreateFailure?.failure_class, "cancelled");
+    assert.equal(
+      postCreateFailure?.unpriced_attempts ?? 0,
+      0,
+      "a post-creation cancellation is fully priced (storage ledger recorded, no generation dispatched)",
+    );
+  } else {
+    // The abort landed after the recheck: the call completed normally,
+    // which is also a correct outcome for this race.
+    assert.ok(postCreateResult.text.length > 0, "the un-raced call completes normally");
+  }
   // timestamp (or the provider's returned expireTime) - a slow
   // caches.create must not extend the entry's local lifetime past the
   // server-side TTL.

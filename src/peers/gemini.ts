@@ -238,8 +238,13 @@ export function __setGeminiCancelTimingForTests(capMs: number, retentionMs: numb
   geminiCancelWaitCapMs = capMs;
   geminiPoisonRetentionMs = retentionMs;
 }
-const geminiExplicitCachePoisoned = new Map<string, number>();
-export function __geminiExplicitCachePoisonedForTests(): Map<string, number> {
+// Round 24: each poison entry is an OBJECT marker owned by one creation
+// generation - the late-settle cleanup releases only its own marker (by
+// identity), so a first hung creation's rejection can never clear the
+// poison a second creation installed under the same key.
+type GeminiPoisonMarker = { deadline: number };
+const geminiExplicitCachePoisoned = new Map<string, GeminiPoisonMarker>();
+export function __geminiExplicitCachePoisonedForTests(): Map<string, GeminiPoisonMarker> {
   return geminiExplicitCachePoisoned;
 }
 // Codex review of PR #240: two concurrent calls with the same eligible head
@@ -936,10 +941,13 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // never recur.
         params.onIndeterminateCreate();
         const poisonNowMs = Date.now();
-        for (const [key, deadline] of geminiExplicitCachePoisoned) {
-          if (deadline <= poisonNowMs) geminiExplicitCachePoisoned.delete(key);
+        for (const [key, marker] of geminiExplicitCachePoisoned) {
+          if (marker.deadline <= poisonNowMs) geminiExplicitCachePoisoned.delete(key);
         }
-        geminiExplicitCachePoisoned.set(cacheKeyHash, poisonNowMs + geminiPoisonRetentionMs);
+        const poisonMarker: GeminiPoisonMarker = {
+          deadline: poisonNowMs + geminiPoisonRetentionMs,
+        };
+        geminiExplicitCachePoisoned.set(cacheKeyHash, poisonMarker);
         void createPromise
           .then((created) => {
             if (created && typeof created.name === "string" && created.name.length > 0) {
@@ -959,7 +967,13 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             }
           })
           .catch(() => undefined)
-          .finally(() => geminiExplicitCachePoisoned.delete(cacheKeyHash));
+          .finally(() => {
+            // Round 24: release only THIS creation's marker - a newer
+            // generation's poison under the same key stays in force.
+            if (geminiExplicitCachePoisoned.get(cacheKeyHash) === poisonMarker) {
+              geminiExplicitCachePoisoned.delete(cacheKeyHash);
+            }
+          });
         throw error;
       }
       const ambiguous =
@@ -1069,8 +1083,8 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           const existing = geminiExplicitCacheIndex.get(cacheKeyHash);
           // A 15s guard band avoids referencing an entry that expires while
           // the request is in flight.
-          const poisonedDeadline = geminiExplicitCachePoisoned.get(cacheKeyHash);
-          if (poisonedDeadline !== undefined && poisonedDeadline <= Date.now()) {
+          const poisonedMarker = geminiExplicitCachePoisoned.get(cacheKeyHash);
+          if (poisonedMarker !== undefined && poisonedMarker.deadline <= Date.now()) {
             // Leak-free release: the retention window expired without a
             // settlement notification; a fresh creation becomes possible.
             geminiExplicitCachePoisoned.delete(cacheKeyHash);
@@ -1079,10 +1093,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             // name === "" is the negative sentinel: counted below the
             // provider minimum — stay uncached without re-counting.
             cacheEntry = existing.name === "" ? undefined : existing;
-          } else if (
-            geminiExplicitCachePoisoned.has(cacheKeyHash) &&
-            (geminiExplicitCachePoisoned.get(cacheKeyHash) ?? 0) > Date.now()
-          ) {
+          } else if ((geminiExplicitCachePoisoned.get(cacheKeyHash)?.deadline ?? 0) > Date.now()) {
             // v4.7.0 structural contract: a POISONED key (a cancelled
             // creation whose SDK promise outlived the wait cap) neither
             // waits nor creates — this review proceeds uncached
@@ -1142,11 +1153,20 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               // Round 21: a billable-race abort is swallowed inside the
               // creation (its indeterminate accounting retained) - the
               // call must NOT continue into generateContent with an
-              // already-aborted context.
+              // already-aborted context. Round 24: at this point the
+              // creation SETTLED (its storage ledger item is recorded,
+              // or nothing billable ran at all) and generation never
+              // dispatched - the abort is fully priced, so it carries
+              // the settled-known billable tags and the classifier
+              // reports settled billing instead of an unpriced attempt.
               if (context.signal?.aborted) {
                 throw Object.assign(
                   new Error("aborted while a cache-preparation request was in flight"),
-                  { name: "AbortError" },
+                  {
+                    name: "AbortError",
+                    cache_preparation_abort: "billable",
+                    gemini_cache_create_settled_known: true,
+                  },
                 );
               }
             }

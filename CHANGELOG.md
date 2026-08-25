@@ -19,6 +19,19 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
 
+- Codex round 24 hardened the remaining cancellation and budget edges:
+  each poison entry is an object marker owned by ONE creation generation
+  and the late-settle cleanup releases only its own marker by identity
+  (a first hung creation's rejection can no longer clear the poison a
+  second creation installed under the same key); a cancellation landing
+  after the creation settled but before the post-creation recheck now
+  carries the settled-known billable tags (the storage ledger item is
+  the attempt's full known spend - no phantom unpriced attempt); and the
+  fallback budget gate prices the unsettled reserve with the TRIGGERING
+  primary model's envelope instead of the cheaper fallback's, refusing
+  the fallback (fail-closed) when the primary has no complete rate card
+  to price its indeterminate attempts.
+
 - Codex round 23 hardened resource hygiene and the financial gate:
   poisoning a dedup key now sweeps expired poison entries across ALL
   keys (a hung SDK promise never fires its cleanup, and session-specific
