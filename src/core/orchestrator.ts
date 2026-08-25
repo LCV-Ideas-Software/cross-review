@@ -2765,6 +2765,7 @@ export function truthfulnessPreflight(params: {
         future: boolean;
         owner: PeerId | undefined;
         ownerAliasIndex: number | undefined;
+        crossClauseOwnerAliasIndex?: number | undefined;
       };
       const base = line.replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length));
       const negationTailPattern =
@@ -2783,14 +2784,14 @@ export function truthfulnessPreflight(params: {
       // hypothetical configuration after the subject is not a current
       // claim.
       const futureClausePattern =
-        /\b(?:will|would|could|may|might|should|shall|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|poderia(?:m)?|deveria(?:m)?|planejad[oa]|futur[oa])\b/i;
+        /\b(?:will|would|could|can|may|might|should|shall|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|poderia(?:m)?|pode(?:m)?|deveria(?:m)?|planejad[oa]|futur[oa])\b/i;
       // Codex round 6 of PR #247: only MODAL markers (will/would/plans to)
       // open a scope that governs the following verbs — a nominal planning
       // modifier ("the PLANNED deployment", "the roadmap") does not, so an
       // explicit current marker after it renews the actual-state assertion
       // without requiring a contrast word.
       const modalFutureHeadPattern =
-        /^(?:will|would|could|may|might|should|shall|vai|ser[aá]|poderia(?:m)?|deveria(?:m)?|plans\s+to)$/i;
+        /^(?:will|would|could|can|may|might|should|shall|vai|ser[aá]|poderia(?:m)?|pode(?:m)?|deveria(?:m)?|plans\s+to)$/i;
       const occurrences: ModelOccurrence[] = [];
       const seenTokenStarts = new Set<number>();
       const recordOccurrence = (
@@ -3086,6 +3087,12 @@ export function truthfulnessPreflight(params: {
         // judgment, but a token in another clause never shields a
         // fragmented claim next to the alias.
         if (best && sameClause) occurrence.ownerAliasIndex = best.index;
+        // Round 15: remember the CROSS-CLAUSE owner position too - a
+        // subordinate clause that supplies the subject's own value
+        // ("has remained unchanged since gpt-5.6-sol was deployed") may
+        // consume the alias when the alias clause holds no fragmented
+        // candidate of its own (checked at guard time).
+        if (best && !sameClause) occurrence.crossClauseOwnerAliasIndex = best.index;
       }
       // Codex rounds 3-5 of PR #247: temporal classification is a marker
       // STATE MACHINE. Scanning current/future/contrast markers in order:
@@ -3164,7 +3171,10 @@ export function truthfulnessPreflight(params: {
       // currently runs ...") means the current marker sits in a NEW
       // reported clause - the nominal modifier's scope ends at its
       // governing predicate and the assertion is judged current.
-      const completiveBreakPattern = /\b(?:that|que)\b/i;
+      // Round 15: English commonly omits the complementizer - a REPORTING
+      // verb ends the nominal scope even without "that".
+      const completiveBreakPattern =
+        /\b(?:that|que|explains?|says?|notes?|reports?|shows?|describes?|documents?|indicates?|confirms?|states?|mentions?|argues?|claims?|suggests?|explica(?:m)?|diz(?:em)?|relata(?:m)?|descreve(?:m)?|documenta(?:m)?|indica(?:m)?|confirma(?:m)?|afirma(?:m)?|menciona(?:m)?|sugere(?:m)?)\b/i;
       const nominalScopeHoldsOverSpan = (span: string): boolean =>
         nominalGovernedHeadPattern.test(span) && !completiveBreakPattern.test(span);
       // Codex round 13: verbs are an OPEN class - enumerating them
@@ -3182,14 +3192,15 @@ export function truthfulnessPreflight(params: {
           "while|whilst|whereas|although|though|because|since|unless|until|if|that",
           "through|via|over|under|into|from|during|between|after|before|per|about|against|toward|towards",
           "it|its|their|our|this|these|those",
-          "is|are|was|were|be|been|being|runs?|running|uses?|used|using",
-          "current|currently|now|remains?|continues?|stays?|already|also|still",
+          "is|are|was|were|be|been|being|has|have|had|runs?|running|uses?|used|using",
+          "current|currently|now|remains?|remained|continues?|continued|stays?|stayed|kept|already|also|still",
           "loaded|configured|deployed|enabled|active|cross-review|runtime",
           "carregad[oa]s?|configurad[oa]s?|ativ[oa]s?",
           "will|would|could|may|might|should|shall",
           "models?|modelos?|pins?|version|peer|peers",
           "e|o|os|um|uma|de|do|da|dos|das|em|na|nos|nas|para|com|por|como|ou|n[aã]o",
           "mas|por[eé]m|contudo|enquanto|embora|porque|pois|caso|se|que",
+          "mais|menos|apenas|somente|s[oó]|ainda|tamb[eé]m",
           "seus?|suas?|est[ea]s?|ess[ea]s?|aquel[ea]s?|atrav[eé]s|durante|entre|ap[oó]s|antes|sobre|contra|at[eé]",
           "roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?",
           "atual|atuais|atualmente|agora|j[aá]|vai|ser[aá]|poderia(?:m)?|deveria(?:m)?",
@@ -3197,11 +3208,26 @@ export function truthfulnessPreflight(params: {
         ].join("|")})$`,
         "i",
       );
+      // Round 15: a USAGE verb's direct object is a model value slot - one
+      // opaque word after runs/uses/usando ("uses orion") is a candidate
+      // even lowercase, while stative predicates ("remains available")
+      // still need a run of two. Derivational adverbs (-ly/-mente) are
+      // never value material.
+      const usageVerbWordPattern = /^(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)$/i;
+      const derivationalAdverbPattern = /^(?:[a-zà-ÿ]+ly|[a-zà-ÿ]+mente)$/i;
       const hasFragmentedValueCandidate = (text: string): boolean => {
         let run = 0;
+        let afterUsageVerb = false;
         for (const word of text.split(/[^A-Za-z0-9à-ÿ'_-]+/)) {
           if (!word) continue;
+          if (derivationalAdverbPattern.test(word)) continue;
+          if (usageVerbWordPattern.test(word)) {
+            afterUsageVerb = true;
+            run = 0;
+            continue;
+          }
           if (/^#+$/.test(word) || closedClassOrKnownWordPattern.test(word)) {
+            afterUsageVerb = false;
             run = 0;
             continue;
           }
@@ -3209,6 +3235,7 @@ export function truthfulnessPreflight(params: {
           // ("uses Orion") is a proper-noun value candidate on its own -
           // lowercase properties ("remains available") still need a run
           // of two.
+          if (afterUsageVerb) return true;
           if (/^[A-Z]/.test(word)) return true;
           run += 1;
           if (run >= 2) return true;
@@ -3404,6 +3431,56 @@ export function truthfulnessPreflight(params: {
             consumedAliasIndexes.add(occurrence.ownerAliasIndex);
           }
         }
+        // Round 15: a subordinate clause that supplies the subject's OWN
+        // value ("has remained unchanged since gpt-5.6-sol was deployed")
+        // consumes the alias cross-clause - but ONLY when the alias
+        // clause holds no fragmented candidate of its own, so a lie next
+        // to the alias is never shielded by a truthful token elsewhere.
+        for (const occurrence of occurrences) {
+          if (occurrence.future || occurrence.ownerAliasIndex !== undefined) continue;
+          const crossIdx = occurrence.crossClauseOwnerAliasIndex;
+          if (crossIdx === undefined || consumedAliasIndexes.has(crossIdx)) continue;
+          const aliasClause = aliasBase.slice(crossIdx, clauseEndFor(crossIdx));
+          if (!hasFragmentedValueCandidate(aliasClause)) {
+            consumedAliasIndexes.add(crossIdx);
+          }
+        }
+        // Round 15: adjacent SAME-PEER aliases ("OpenAI Codex model")
+        // belong to one composite name - consumption expands across
+        // whitespace-only gaps between same-peer alias positions.
+        const aliasSpansByPeer = new Map<PeerId, Array<{ index: number; length: number }>>();
+        for (const aliasPeer of PEERS) {
+          const spans: Array<{ index: number; length: number }> = [];
+          const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
+          for (const match of aliasBase.matchAll(aliasPattern)) {
+            if (match.index !== undefined) {
+              spans.push({ index: match.index, length: match[0].length });
+            }
+          }
+          aliasSpansByPeer.set(aliasPeer, spans);
+        }
+        const expandConsumedAliases = (): void => {
+          let grew = true;
+          while (grew) {
+            grew = false;
+            for (const spans of aliasSpansByPeer.values()) {
+              for (let i = 0; i < spans.length - 1; i += 1) {
+                const left = spans[i];
+                const right = spans[i + 1];
+                if (!left || !right) continue;
+                const gap = aliasBase.slice(left.index + left.length, right.index);
+                if (!/^\s*$/.test(gap)) continue;
+                const leftConsumed = consumedAliasIndexes.has(left.index);
+                const rightConsumed = consumedAliasIndexes.has(right.index);
+                if (leftConsumed !== rightConsumed) {
+                  consumedAliasIndexes.add(leftConsumed ? right.index : left.index);
+                  grew = true;
+                }
+              }
+            }
+          }
+        };
+        expandConsumedAliases();
         let guardAliasBase = aliasBase;
         const maskGuardRange = (start: number, end: number): void => {
           guardAliasBase =
@@ -3572,11 +3649,20 @@ export function truthfulnessPreflight(params: {
             // still cannot convert a bare mention into a claim.
             const anaphoricReferencePattern =
               /\b(?:it|that|this|one|isso|isto|ele|ela|o\s+mesmo|a\s+mesma)\b/i;
+            // Round 15: a direct runtime-use predicate ("the runtime
+            // USES Codex <value>") is a model relation even without the
+            // literal model/pin noun - the auth/documentation forms stay
+            // excluded via the lookahead after the alias.
+            const runtimeUsePattern = new RegExp(
+              `\\b(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)\\s+(?:the\\s+)?(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})(?!\\s+(?:authentication|auth|credentials?|documentation|docs?|keys?|tokens?|billing|accounts?|peer))`,
+              "i",
+            );
             const relation =
               modelRelationPattern.test(clauseText) ||
               new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
                 clauseText,
               ) ||
+              runtimeUsePattern.test(clauseText) ||
               (anaphoricReferencePattern.test(clauseText) &&
                 modelRelationPattern.test(aliasBase.slice(0, clauseStartFor(match.index))));
             if (!relation) continue;
@@ -3587,19 +3673,27 @@ export function truthfulnessPreflight(params: {
         }
         // Codex round 14: a coordinated predicate with an ELIDED subject
         // ("... model is gpt-5.6-sol, and RUNS alpha beta seven") sits in
-        // a clause with no alias to iterate - a clause that opens with an
-        // assertion verb inherits the preceding model subject, so a
-        // fragmented value candidate inside it reopens the guard when the
-        // preceding text carries a model relation and a peer alias.
+        // a clause with no alias to iterate - it inherits the preceding
+        // model subject, so a fragmented value candidate inside it
+        // reopens the guard when the preceding text carries a model
+        // relation and a peer alias. Round 15: verbs are an open class -
+        // the elided subject is detected by the MISSING determiner (the
+        // clause does not open with a determiner/pronoun/capitalized
+        // subject), never by a verb allowlist.
         if (!guardTripped) {
-          const elidedSubjectOpenerPattern =
-            /^\s*(?:is|are|runs?|uses?|using|remains?|continues?|stays?|roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
+          // A clause opening with a determiner/pronoun/capitalized word
+          // has its own subject; one opening with a preposition or
+          // connective adverb is a modifier phrase - neither is an elided
+          // coordinated predicate.
+          const subjectOpenerPattern =
+            /^\s*(?:(?:the|a|an|this|that|these|those|its?|theirs?|ours?|my|your|his|hers?|it|they|we|you|he|she|there|here|with|without|in|on|at|for|from|by|to|of|via|per|under|over|through|during|between|after|before|about|as|so|then|also|o|os|as|um|uma|est[ea]s?|ess[ea]s?|aquel[ea]s?|seus?|suas?|noss[oa]s?|eles?|elas?|isso|isto|h[aá]|com|sem|em|no|na|nos|nas|para|de|do|da|dos|das|por|sob|sobre|entre|durante|ap[oó]s|antes|ent[aã]o)\b|[A-Z])/;
           for (const bound of clauseBounds) {
             const segStart = bound.end;
             const segEnd = clauseEndFor(segStart);
             if (segStart >= segEnd) continue;
             const segment = guardAliasBase.slice(segStart, segEnd);
-            if (!elidedSubjectOpenerPattern.test(segment)) continue;
+            if (!/[A-Za-zà-ÿ]/.test(segment)) continue;
+            if (subjectOpenerPattern.test(segment)) continue;
             if (!hasFragmentedValueCandidate(segment)) continue;
             const precedingMasked = guardAliasBase.slice(0, bound.start);
             const precedingUnmasked = aliasBase.slice(0, bound.start);

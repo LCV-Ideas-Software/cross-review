@@ -1417,6 +1417,59 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "standalone GPT is a Codex alias - the fragmented claim is located and blocked",
   );
+  // Codex review of PR #247, round 15.
+  const coordDefaults = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol, and defaults to alpha beta seven.",
+  );
+  assert.equal(
+    coordDefaults.pass,
+    false,
+    "an elided-subject coordinate is detected by its missing determiner, not a verb allowlist - 'and defaults to alpha beta seven' is blocked",
+  );
+  const lowercaseOpaque = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but uses orion.",
+  );
+  assert.equal(
+    lowercaseOpaque.pass,
+    false,
+    "a lone opaque word after a USAGE verb (uses orion) is a value candidate even lowercase",
+  );
+  const canCapability = anchored(
+    "The cross-review runtime Codex model can use gpt-5.5 when configured.",
+  );
+  assert.equal(
+    canCapability.pass,
+    true,
+    "subject-first 'can' opens modal capability scope - a possible configuration is not a contradiction",
+  );
+  const runtimeUses = anchored("The cross-review runtime uses Codex alpha beta seven.");
+  assert.equal(
+    runtimeUses.pass,
+    false,
+    "a direct runtime-use predicate (uses Codex <value>) is a model relation - the fragmented claim is located and blocked",
+  );
+  const compositeAlias = anchored("The cross-review runtime OpenAI Codex model is gpt-5.6-sol.");
+  assert.equal(
+    compositeAlias.pass,
+    true,
+    "adjacent same-peer aliases (OpenAI Codex) are consumed together by the captured predicate",
+  );
+  const sinceRelational = anchored(
+    "The cross-review runtime Codex model has remained unchanged since gpt-5.6-sol was deployed.",
+  );
+  assert.equal(
+    sinceRelational.pass,
+    true,
+    "a subordinate clause supplying the subject's own value consumes the alias when the alias clause holds no fragmented candidate",
+  );
+  const zeroComplementizer = anchored(
+    "The upcoming documentation explains the cross-review runtime Codex model currently runs alpha beta seven.",
+  );
+  assert.equal(
+    zeroComplementizer.pass,
+    false,
+    "a reporting verb ends the nominal planning scope even with a zero complementizer - the reported claim is judged current",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
