@@ -1269,6 +1269,35 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a provider alias prefixing an unparseable route survives the path mask - the fragmented route claim is blocked",
   );
+  // Codex review of PR #247, round 10.
+  const secondPredicate = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but runs alpha beta seven.",
+  );
+  assert.equal(
+    secondPredicate.pass,
+    false,
+    "alias consumption shields only the captured predicate - an orphan verb after the consuming token reopens the zero-token guard",
+  );
+  assert.ok(
+    secondPredicate.issue_classes.includes("unsupported_current_state_claim"),
+    "the fragmented second predicate is located and blocked",
+  );
+  const futureSecondPredicate = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but will adopt a newer build next quarter.",
+  );
+  assert.equal(
+    futureSecondPredicate.pass,
+    true,
+    "a FUTURE second predicate stays masked - contrastive planning after a truthful pin is not an orphan assertion",
+  );
+  const inlineCodeExample = anchored(
+    "The cross-review runtime documentation gives `Codex model runs alpha beta seven` as a rejected claim.",
+  );
+  assert.equal(
+    inlineCodeExample.pass,
+    true,
+    "a multi-word inline code span masks like a quotation - a quoted example is not a live assertion",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",

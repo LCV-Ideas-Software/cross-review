@@ -2905,15 +2905,20 @@ export function truthfulnessPreflight(params: {
       // Codex round 6: typographic (curly) quote pairs mask like straight
       // ASCII quotes - quoted examples in ordinary prose are not asserted
       // runtime claims.
+      // Codex round 10: inline Markdown code spans mask like quotations -
+      // a code-quoted example ("gives `Codex model runs ...` as a
+      // rejected claim") is not a live assertion.
       aliasBase = aliasBase
-        .replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (m) => {
+        .replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|`[^`]*`/g, (m) => {
           const inner = m.slice(1, -1).trim();
           const singleAlias =
             inner.length <= 24 &&
             PEERS.some((aliasPeer) =>
               new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(inner),
             );
-          return singleAlias ? m : "#".repeat(m.length);
+          // The DELIMITERS stay visible - the label-colon check skips
+          // them as formatting wrappers to find the captured token.
+          return singleAlias ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
         })
         .replace(/[a-z0-9._-]+\s*\//gi, (m, offset: number, whole: string) => {
           // Codex round 9: a recognized PEER alias prefixing a route
@@ -3371,11 +3376,44 @@ export function truthfulnessPreflight(params: {
         // value (fail-closed). "pins" is always a value relation.
         const modelRelationPattern =
           /\b(?:models?|modelos?)\b(?!\s+(?:documentation|docs?|guides?|pages?|sections?|tables?|lists?|policy|policies|specs?|schemas?|catalogs?|overviews?|documenta[cç][aã]o|guias?|p[aá]ginas?|se[cç][aã]o|se[cç][oõ]es|tabelas?|listas?|pol[ií]ticas?|cat[aá]logos?)\b)|\bpins?\b|model[_ -]?pins?/i;
+        // Codex round 10: consumption shields the captured PREDICATE, not
+        // the alias position - a second, uncaptured predicate on the same
+        // consumed alias ("is gpt-5.6-sol but RUNS alpha beta seven") is
+        // an orphan assertion and reopens the guard. Verbs only (adverbs
+        // like "now" legitimately trail a validated value); the tail is
+        // read post-mask, so a contrastive FUTURE predicate ("but will
+        // adopt ...") stays exempt; a later captured token means S1
+        // judges that predicate by value instead.
+        const orphanPredicateVerbPattern =
+          /\b(?:is|are|runs?|uses?|using|remains?|continues?|stays?|roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
+        const orphanPredicateAfterConsumption = (aliasIndex: number): boolean => {
+          const clauseEnd = clauseEndFor(aliasIndex);
+          const consumingEnds = occurrences
+            .filter((occurrence) => occurrence.ownerAliasIndex === aliasIndex && !occurrence.future)
+            .map((occurrence) => occurrence.index + occurrence.rawLength);
+          if (consumingEnds.length === 0) return false;
+          const lastConsumingEnd = Math.max(...consumingEnds);
+          if (lastConsumingEnd >= clauseEnd) return false;
+          const tail = guardAliasBase.slice(lastConsumingEnd, clauseEnd);
+          const verbMatch = tail.match(orphanPredicateVerbPattern);
+          if (!verbMatch || verbMatch.index === undefined) return false;
+          const verbIdx = lastConsumingEnd + verbMatch.index;
+          return !occurrences.some(
+            (occurrence) => occurrence.matchStart > verbIdx && occurrence.matchStart < clauseEnd,
+          );
+        };
         let guardTripped = false;
         for (const aliasPeer of PEERS) {
           const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
           for (const match of guardAliasBase.matchAll(aliasPattern)) {
-            if (match.index === undefined || consumedAliasIndexes.has(match.index)) continue;
+            if (match.index === undefined) continue;
+            if (consumedAliasIndexes.has(match.index)) {
+              if (orphanPredicateAfterConsumption(match.index)) {
+                guardTripped = true;
+                break;
+              }
+              continue;
+            }
             // Codex round 5: the model relation is read from the alias's
             // OWN clause — model language in an unrelated clause cannot
             // convert a non-model mention into a claim. The relation reads
