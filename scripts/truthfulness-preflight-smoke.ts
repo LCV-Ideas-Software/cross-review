@@ -1530,6 +1530,34 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "an alias in the TERMINAL path segment (docs/gemini.md) is masked with the whole filesystem path",
   );
+  // Codex review of PR #247, round 18 (KEEP-area findings).
+  const defaultsToOrion = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but defaults to orion.",
+  );
+  assert.equal(
+    defaultsToOrion.pass,
+    false,
+    "a lowercase opaque value after an open-class verb plus 'to' (defaults to orion) is a model-value slot - the second claim reopens the guard",
+  );
+  const committedBenign = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol and remains stable in production.",
+  );
+  assert.equal(
+    committedBenign.pass,
+    true,
+    "a stative description without a value slot stays valid",
+  );
+  {
+    const longChain = `The cross-review runtime Codex model is documented at ${"a/".repeat(20_000)}a for reference.`;
+    const chainStart = Date.now();
+    const chainResult = anchored(longChain);
+    const chainMs = Date.now() - chainStart;
+    assert.ok(
+      chainMs < 3_000,
+      `terminal-path masking stays linear on a forty-thousand-character slash chain (${chainMs}ms)`,
+    );
+    assert.equal(typeof chainResult.pass, "boolean", "the long-chain draft still evaluates");
+  }
   {
     const manyAliases = `The cross-review runtime ${"Codex ".repeat(6_000)}model is gpt-5.6-sol.`;
     const linearStart = Date.now();

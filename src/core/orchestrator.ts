@@ -2772,22 +2772,25 @@ export function truthfulnessPreflight(params: {
       // leave its terminal alias visible. Provider/model ROUTE syntax
       // (first segment a peer alias, or the "models/" pin prefix) stays
       // visible for capture.
+      // Codex round 18: the slash-chain scan is LINEAR - one \S+ token
+      // match per chain (no suffix re-scans), with the route/path
+      // decision made by a split of the matched token.
+      const pathExtensionPattern =
+        /\.(?:md|ts|tsx|js|jsx|mjs|cjs|json|jsonc|ndjson|txt|log|yml|yaml|csv|py|rs|go|java|html|css|scss|sh|ps1|lock|toml|xml|svg|png|jpg)$/i;
       const base = line
         .replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length))
-        .replace(
-          /[a-z0-9._-]+(?:\s*\/\s*[a-z0-9._-]+)*\/\s*[a-z0-9_-]+\.(?:md|ts|tsx|js|jsx|mjs|cjs|json|jsonc|ndjson|txt|log|yml|yaml|csv|py|rs|go|java|html|css|scss|sh|ps1|lock|toml|xml|svg|png|jpg)\b/gi,
-          (m) => {
-            const firstSegment = m.split(/\s*\//)[0] ?? "";
-            const isRoutePrefix =
-              /^models$/i.test(firstSegment) ||
-              PEERS.some((aliasPeer) =>
-                new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(
-                  firstSegment,
-                ),
-              );
-            return isRoutePrefix ? m : "#".repeat(m.length);
-          },
-        );
+        .replace(/\S+\/\S+/g, (m) => {
+          const parts = m.split("/");
+          const firstSegment = parts[0] ?? "";
+          const lastSegment = parts[parts.length - 1] ?? "";
+          const isRoutePrefix =
+            /^models$/i.test(firstSegment) ||
+            PEERS.some((aliasPeer) =>
+              new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(firstSegment),
+            );
+          if (isRoutePrefix) return m;
+          return pathExtensionPattern.test(lastSegment) ? "#".repeat(m.length) : m;
+        });
       const negationTailPattern =
         /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
       const negatedBefore = (matchStart: number): boolean =>
@@ -3265,18 +3268,31 @@ export function truthfulnessPreflight(params: {
       const hasFragmentedValueCandidate = (text: string): boolean => {
         let run = 0;
         let runHasCodeWord = false;
-        let afterUsageVerb = false;
+        let afterValueSlotVerb = false;
+        let lastWasOpenWord = false;
         for (const word of text.split(/[^A-Za-z0-9à-ÿ'_-]+/)) {
           if (!word) continue;
           if (derivationalAdverbPattern.test(word)) continue;
           if (usageVerbWordPattern.test(word)) {
-            afterUsageVerb = true;
+            afterValueSlotVerb = true;
+            lastWasOpenWord = false;
+            run = 0;
+            runHasCodeWord = false;
+            continue;
+          }
+          // Codex round 18: "<open-class verb> to <value>" is a
+          // model-value slot too ("defaults to orion") - the "to" after
+          // an open-class word arms the slot instead of resetting it.
+          if (/^(?:to|para)$/i.test(word)) {
+            if (lastWasOpenWord) afterValueSlotVerb = true;
+            lastWasOpenWord = false;
             run = 0;
             runHasCodeWord = false;
             continue;
           }
           if (/^#+$/.test(word) || closedClassOrKnownWordPattern.test(word)) {
-            afterUsageVerb = false;
+            afterValueSlotVerb = false;
+            lastWasOpenWord = false;
             run = 0;
             runHasCodeWord = false;
             continue;
@@ -3285,8 +3301,9 @@ export function truthfulnessPreflight(params: {
           // ("uses Orion") is a proper-noun value candidate on its own -
           // lowercase properties ("remains available") still need a run
           // of two.
-          if (afterUsageVerb) return true;
+          if (afterValueSlotVerb) return true;
           if (/^[A-Z]/.test(word)) return true;
+          lastWasOpenWord = true;
           run += 1;
           if (codeWordPattern.test(word) || /[0-9]/.test(word)) runHasCodeWord = true;
           if (run >= 2 && runHasCodeWord) return true;
