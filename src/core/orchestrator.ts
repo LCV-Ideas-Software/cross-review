@@ -2774,14 +2774,19 @@ export function truthfulnessPreflight(params: {
       // S3 (round 9): future/planning phrasing exempts only its own
       // CLAUSE - a false current claim beside an unrelated future clause
       // is still judged. Stamped per occurrence via clauseBounds.
+      // Codex round 12: subject-first modals (could/may/might/should/
+      // shall + pt-BR poderia/deveria) are modal future markers too - a
+      // hypothetical configuration after the subject is not a current
+      // claim.
       const futureClausePattern =
-        /\b(?:will|would|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|planejad[oa]|futur[oa])\b/i;
+        /\b(?:will|would|could|may|might|should|shall|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|poderia(?:m)?|deveria(?:m)?|planejad[oa]|futur[oa])\b/i;
       // Codex round 6 of PR #247: only MODAL markers (will/would/plans to)
       // open a scope that governs the following verbs — a nominal planning
       // modifier ("the PLANNED deployment", "the roadmap") does not, so an
       // explicit current marker after it renews the actual-state assertion
       // without requiring a contrast word.
-      const modalFutureHeadPattern = /^(?:will|would|vai|ser[aá]|plans\s+to)$/i;
+      const modalFutureHeadPattern =
+        /^(?:will|would|could|may|might|should|shall|vai|ser[aá]|poderia(?:m)?|deveria(?:m)?|plans\s+to)$/i;
       const occurrences: ModelOccurrence[] = [];
       const seenTokenStarts = new Set<number>();
       const recordOccurrence = (
@@ -3429,9 +3434,24 @@ export function truthfulnessPreflight(params: {
           );
           if (firstConsumingStart > aliasIndex) {
             const lead = guardAliasBase.slice(aliasIndex, firstConsumingStart);
-            const leadVerbs =
-              lead.match(new RegExp(orphanPredicateVerbPattern.source, "gi"))?.length ?? 0;
-            if (leadVerbs >= 2) return true;
+            // Codex round 12: an auxiliary-plus-participle phrase ("is
+            // currently using") is ONE predicate - consecutive verb
+            // matches separated only by whitespace/adverbs collapse into
+            // a single predicate group before counting.
+            const verbMatches = [
+              ...lead.matchAll(new RegExp(orphanPredicateVerbPattern.source, "gi")),
+            ];
+            const connectivePattern =
+              /^\s*(?:currently|now|already|also|still|atualmente|agora|j[aá])?\s*$/i;
+            let predicateGroups = 0;
+            let previousEnd = -1;
+            for (const verbMatch of verbMatches) {
+              if (verbMatch.index === undefined) continue;
+              const gap = previousEnd >= 0 ? lead.slice(previousEnd, verbMatch.index) : null;
+              if (gap === null || !connectivePattern.test(gap)) predicateGroups += 1;
+              previousEnd = verbMatch.index + verbMatch[0].length;
+            }
+            if (predicateGroups >= 2) return true;
           }
           const lastConsumingEnd = Math.max(
             ...consuming.map((occurrence) => occurrence.index + occurrence.rawLength),

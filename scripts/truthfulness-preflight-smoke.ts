@@ -1323,6 +1323,23 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a completive (that/que) inside the nominal span ends the planning scope - the reported runtime assertion is judged current",
   );
+  // Codex review of PR #247, round 12.
+  const subjectModal = anchored(
+    "The cross-review runtime Codex model could use gpt-5.5 if the override were enabled.",
+  );
+  assert.equal(
+    subjectModal.pass,
+    true,
+    "subject-first modals (could/may/might/should) open modal future scope - a hypothetical configuration is not a runtime contradiction",
+  );
+  const auxiliaryParticiple = anchored(
+    "The cross-review runtime Codex model is currently using gpt-5.6-sol.",
+  );
+  assert.equal(
+    auxiliaryParticiple.pass,
+    true,
+    "an auxiliary-plus-participle phrase (is currently using) is ONE predicate - the truthful pin is not an orphan-predicate violation",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
