@@ -6280,18 +6280,16 @@ export class CrossReviewOrchestrator {
         `no_eligible_reviewer_peers: caller=${effectivePetitioner} left no reviewer peers after auto-recusal. Add at least one non-caller peer.`,
       );
     }
-    // Codex round 14: at this point the prompt does not exist yet, but a
-    // conservative UPPER byte bound on the cacheable payload (task + focus
-    // + evidence + double framing) is known — when it sits below the
-    // 4,096-token cachedContents minimum, no storage charge can ever
-    // exist and the storage rate is not a required control.
-    const missingFinancialVars = missingFinancialControlVars(this.config, selectedPeers, {
-      geminiCacheableBytesBound:
-        Buffer.byteLength(input.task, "utf8") +
-        Buffer.byteLength(input.review_focus ?? "", "utf8") +
-        Buffer.byteLength(input.evidence ?? "", "utf8") +
-        2 * GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
-    });
+    // Codex round 23 (superseding the round-14 relief): no payload bound
+    // is passed here because none is computable at session start - the
+    // stable head also carries the static session-contract directives,
+    // every attachment resolved for the session, and attachments later
+    // derived from a draft's inline raw evidence, so a start-time
+    // task+focus+evidence sum is NOT an upper bound. With the cache
+    // armed for a Gemini reviewer the storage rate is therefore always a
+    // required control (fail-closed); the adapter still skips creation
+    // at runtime for payloads under the per-model minimum.
+    const missingFinancialVars = missingFinancialControlVars(this.config, selectedPeers, {});
     let session = existingSession
       ? existingSession
       : missingFinancialVars.length
@@ -8555,15 +8553,11 @@ export class CrossReviewOrchestrator {
       // web_search tool, so the search-rate dimension is gated on the
       // reviewer pool (same derivation as reviewerPeers below).
       reviewerPeers: selectedPeers.filter((peer) => peer !== leadPeer),
-      // Codex round 18: the same conservative payload bound the direct
-      // askPeers preflight supplies — a short payload that cannot reach
-      // any model's cachedContents minimum must not terminalize the run
-      // over an absent storage rate.
-      geminiCacheableBytesBound:
-        Buffer.byteLength(input.task, "utf8") +
-        Buffer.byteLength(input.review_focus ?? "", "utf8") +
-        Buffer.byteLength(input.evidence ?? "", "utf8") +
-        2 * GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
+      // Codex round 23 (superseding the round-18 relief): no payload
+      // bound - a start-time task+focus+evidence sum is not an upper
+      // bound on the stable head (static contract directives, resolved
+      // attachments and draft-derived inline evidence are all missing
+      // from it), so an armed cache always requires the storage rate.
     });
     if (missingFinancialVars.length) {
       const blockedSession =

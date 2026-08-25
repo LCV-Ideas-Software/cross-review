@@ -683,13 +683,20 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     }
     // Codex review of PR #240 round 3: a cancellation that lands while the
     // FREE countTokens call is pending must not be followed by the BILLED
-    // caches.create call — recheck the signal between the two.
+    // caches.create call — recheck the signal between the two. Round 23:
+    // the recheck PROPAGATES a "free"-tagged abort instead of returning -
+    // no billable request occurred, so the failure classification settles
+    // the attempt as zero provider work rather than persisting an
+    // unpriced attempt with unknown billing.
     if (context.signal?.aborted) {
       notice(
         "Gemini explicit cache creation skipped: the session was cancelled before the billable caches.create call.",
         { model: this.model, key_hash: cacheKeyHash },
       );
-      return undefined;
+      throw Object.assign(new Error("aborted while a cache-preparation request was in flight"), {
+        name: "AbortError",
+        cache_preparation_abort: "free",
+      });
     }
     // Codex round 16: the minimum is PER MODEL (Flash 1,024 / Pro 4,096).
     const modelMinTokens = geminiExplicitCacheMinTokensForModel(this.model);
@@ -858,15 +865,22 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         }
       };
       if (abortKind === "billable" && createPromise) {
+        // Round 23: the cap timer is retained, unref'd (it must never
+        // keep a short-lived CLI alive) and cleared once the race
+        // settles, so bursts of cancellations do not accumulate one live
+        // timer per attempt.
+        let capTimer: ReturnType<typeof setTimeout> | undefined;
         const settledOutcome = await Promise.race([
           createPromise.then(
             (created) => ({ kind: "created" as const, created }),
             (createError: unknown) => ({ kind: "rejected" as const, createError }),
           ),
           new Promise<{ kind: "cap" }>((resolve) => {
-            setTimeout(() => resolve({ kind: "cap" }), geminiCancelWaitCapMs);
+            capTimer = setTimeout(() => resolve({ kind: "cap" }), geminiCancelWaitCapMs);
+            capTimer.unref?.();
           }),
         ]);
+        if (capTimer !== undefined) clearTimeout(capTimer);
         if (settledOutcome.kind === "created") {
           const created = settledOutcome.created;
           if (created && typeof created.name === "string" && created.name.length > 0) {
@@ -916,9 +930,16 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // BEGINS (cap expiry) - anchoring at request dispatch could hand
         // the next review an already-expired deadline while the original
         // SDK request is still unresolved, allowing a duplicate billed
-        // creation.
+        // creation. Round 23: poisoning sweeps EXPIRED entries across
+        // ALL keys - a hung SDK promise never fires its .finally, so
+        // per-key cleanup alone would leak session-specific keys that
+        // never recur.
         params.onIndeterminateCreate();
-        geminiExplicitCachePoisoned.set(cacheKeyHash, Date.now() + geminiPoisonRetentionMs);
+        const poisonNowMs = Date.now();
+        for (const [key, deadline] of geminiExplicitCachePoisoned) {
+          if (deadline <= poisonNowMs) geminiExplicitCachePoisoned.delete(key);
+        }
+        geminiExplicitCachePoisoned.set(cacheKeyHash, poisonNowMs + geminiPoisonRetentionMs);
         void createPromise
           .then((created) => {
             if (created && typeof created.name === "string" && created.name.length > 0) {

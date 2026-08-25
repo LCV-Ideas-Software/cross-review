@@ -1561,6 +1561,88 @@ function capturePerplexityProbe(
     __setGeminiCancelTimingForTests(10_000, 120_000);
   }
 
+  // Codex round 23: poisoning a key sweeps EXPIRED poison entries across
+  // ALL keys - a hung SDK promise never fires its .finally, and
+  // session-specific keys commonly never recur, so without the sweep the
+  // process-wide map would grow without bound.
+  __resetGeminiExplicitCacheIndexForTests();
+  __setGeminiCancelTimingForTests(100, 300);
+  try {
+    __geminiExplicitCachePoisonedForTests().set("stale-poison-key", Date.now() - 1_000);
+    const sweepMock = makeClient({ createDelayMs: 1_500 });
+    const sweepAdapter = new GeminiAdapter(geminiCacheConfig);
+    (sweepAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      sweepMock.client;
+    const sweepController = new AbortController();
+    setTimeout(() => sweepController.abort(), 30);
+    await sweepAdapter
+      .call(prompt, { ...context(stableHead.length), signal: sweepController.signal })
+      .catch(() => undefined);
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().has("stale-poison-key"),
+      false,
+      "poisoning a key sweeps expired poison entries for OTHER keys",
+    );
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().size,
+      1,
+      "only the live poison entry remains after the sweep",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+  } finally {
+    __setGeminiCancelTimingForTests(10_000, 120_000);
+  }
+
+  // Codex round 23: a cancellation that lands AFTER the free countTokens
+  // call settles but BEFORE caches.create dispatches (a concurrent
+  // microtask - e.g. another peer's failure aborting the session) is
+  // zero provider work: the propagated abort carries the "free" kind so
+  // the settlement reports no unpriced attempt.
+  __resetGeminiExplicitCacheIndexForTests();
+  const preCreateController = new AbortController();
+  const preCreateMock = makeClient();
+  const preCreateBaseModels = preCreateMock.client.ai.models;
+  const preCreateClient = {
+    ...preCreateMock.client,
+    ai: {
+      ...preCreateMock.client.ai,
+      models: {
+        ...preCreateBaseModels,
+        countTokens: async (p: Record<string, unknown>) => {
+          const counted = await preCreateBaseModels.countTokens(p);
+          // Two microtask hops: the abort lands after the token-count
+          // race resolves but before the adapter's continuation runs.
+          void Promise.resolve().then(() => {
+            void Promise.resolve().then(() => preCreateController.abort());
+          });
+          return counted;
+        },
+      },
+    },
+  };
+  const preCreateAdapter = new GeminiAdapter(geminiCacheConfig);
+  (preCreateAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    preCreateClient;
+  let preCreateError: unknown;
+  await preCreateAdapter
+    .call(prompt, { ...context(stableHead.length), signal: preCreateController.signal })
+    .catch((error: unknown) => {
+      preCreateError = error;
+    });
+  assert.equal(
+    preCreateMock.createCalls.length,
+    0,
+    "no billable create dispatches after the pre-create cancellation",
+  );
+  const preCreateFailure = (preCreateError as { peerFailure?: PeerFailure } | undefined)
+    ?.peerFailure;
+  assert.equal(preCreateFailure?.failure_class, "cancelled");
+  assert.equal(
+    preCreateFailure?.unpriced_attempts ?? 0,
+    0,
+    "a pre-create cancellation settles as zero provider work",
+  );
+
   // Codex round 13: the local expiry anchors on the PRE-DISPATCH
   // timestamp (or the provider's returned expireTime) - a slow
   // caches.create must not extend the entry's local lifetime past the

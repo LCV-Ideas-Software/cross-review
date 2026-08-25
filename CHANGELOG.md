@@ -19,6 +19,22 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
 
+- Codex round 23 hardened resource hygiene and the financial gate:
+  poisoning a dedup key now sweeps expired poison entries across ALL
+  keys (a hung SDK promise never fires its cleanup, and session-specific
+  keys never recur); the ten-second settlement-cap timer is retained,
+  unref'd and cleared once the race settles (a short-lived CLI no longer
+  waits out the cap, and cancellation bursts do not accumulate timers);
+  a cancellation landing between the free `countTokens` settle and the
+  billable dispatch propagates a "free"-tagged abort and settles as zero
+  provider work (no phantom unpriced attempt); and the start-time
+  cacheable-payload bound is REMOVED from the session-start and
+  run-until-unanimous financial gates — it was never a true upper bound
+  (the stable head also carries the static session-contract directives,
+  resolved attachments and draft-derived inline evidence), so an armed
+  explicit cache now always requires the storage rate (fail-closed; the
+  adapter still skips creation below the per-model minimum at runtime).
+
 - Codex round 22 hardened the contract's edges: an in-cap settled
   creation is FULLY PRICED (the abort's durable failure reports settled
   billing — no unpriced attempt, `billing_status: "reported"`); the
