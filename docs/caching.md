@@ -200,15 +200,15 @@ Anthropic supports up to 4 breakpoints per request; we reserve 3 for future addi
 
 ## Empirical guidance
 
-| Provider/model     | Practical minimum cached prefix | Notes                                                                                                              |
-| ------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| OpenAI             | ≥ 1024 tokens                   | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers.                           |
-| Anthropic Fable 5  | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                                              |
-| Anthropic Opus 5   | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                                              |
-| Anthropic Opus 4.8 | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                                                 |
-| Gemini             | 4,096 tokens (explicit)         | Implicit is automatic; the opt-in explicit `caches.create` (v4.7.0, CROSREV-6) requires a 4,096-token stable head. |
-| DeepSeek           | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                                                |
-| Grok               | service-managed                 | Grok 4.6 uses `prompt_cache_key`; xAI manages retention.                                                           |
+| Provider/model     | Practical minimum cached prefix           | Notes                                                                                                                                                                                |
+| ------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| OpenAI             | ≥ 1024 tokens                             | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers.                                                                                             |
+| Anthropic Fable 5  | ≥ 512 tokens                              | The adapter applies a model-aware best-effort notice.                                                                                                                                |
+| Anthropic Opus 5   | ≥ 512 tokens                              | The adapter applies a model-aware best-effort notice.                                                                                                                                |
+| Anthropic Opus 4.8 | ≥ 1024 tokens                             | Retained for the supported compatibility override.                                                                                                                                   |
+| Gemini             | Pro 4,096 / Flash 1,024 tokens (explicit) | Implicit is automatic; the opt-in explicit `caches.create` (v4.7.0, CROSREV-6) requires a stable head at the PER-MODEL minimum — 4,096 tokens on Pro, 1,024 on Flash and Flash-Lite. |
+| DeepSeek           | service-managed                           | Auto-cached; both hit and miss tokens are returned.                                                                                                                                  |
+| Grok               | service-managed                           | Grok 4.6 uses `prompt_cache_key`; xAI manages retention.                                                                                                                             |
 
 ## Reference URLs
 

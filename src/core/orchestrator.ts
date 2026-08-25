@@ -3726,7 +3726,14 @@ export function estimatedPeerRoundCost(
     // (token-hours = prompt tokens x TTL hours). Kept outside the
     // fallback/moderation max() so the charge is never optimized away, and
     // fail-closed on a missing storage rate like every price dimension.
-    let storageEnvelope = 0;
+    // Codex round 29: storage belongs to the BRANCH that can create it -
+    // the primary's storage applies to both branches, but a fallback's
+    // cache can only be created on the fallback branch (moderation
+    // recovery retries the PRIMARY compactly and never dispatches
+    // fallbacks), so fallback storage must not inflate a
+    // moderation-dominant envelope.
+    let primaryStorageEnvelope = 0;
+    let fallbackStorageEnvelope = 0;
     const geminiStorageApplies =
       peer === "gemini" &&
       requestRole === "review" &&
@@ -3790,7 +3797,13 @@ export function estimatedPeerRoundCost(
             pricedModel,
           )?.cache_storage_per_million_hour;
           if (typeof storageRate !== "number") return undefined;
-          storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
+          const storageContribution =
+            ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
+          if (pricedModel === effectiveModel) {
+            primaryStorageEnvelope += storageContribution;
+          } else {
+            fallbackStorageEnvelope += storageContribution;
+          }
         }
       }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {
@@ -3800,12 +3813,13 @@ export function estimatedPeerRoundCost(
       chainCost += estimate.total_cost * maxAttempts;
     }
     if (explicitEffectiveModel != null) {
-      total += chainCost + storageEnvelope;
+      total += chainCost + primaryStorageEnvelope + fallbackStorageEnvelope;
       continue;
     }
-    const fallbackThenFormatCost = chainCost + highestEnvelope * maxAttempts;
-    const moderationThenFormatCost = primaryEnvelope * (3 * maxAttempts);
-    total += Math.max(fallbackThenFormatCost, moderationThenFormatCost) + storageEnvelope;
+    const fallbackThenFormatCost =
+      chainCost + highestEnvelope * maxAttempts + primaryStorageEnvelope + fallbackStorageEnvelope;
+    const moderationThenFormatCost = primaryEnvelope * (3 * maxAttempts) + primaryStorageEnvelope;
+    total += Math.max(fallbackThenFormatCost, moderationThenFormatCost);
   }
   return total;
 }
@@ -7054,24 +7068,45 @@ export class CrossReviewOrchestrator {
               // stable-head boundary — no cache, no storage in the envelope.
               { gemini_cache_eligible: false },
             );
-            // Codex round 25: after a fallback, `adapter` is the (cheaper)
-            // fallback while peerResult's indeterminate attempts may have
-            // originated on the peer's PRIMARY model - the unsettled
-            // reserve prices the WORST envelope among the models that can
-            // have originated them, and the recovery is refused
-            // fail-closed when that primary cannot be priced.
+            // Codex round 25/29: inherited indeterminate attempts may have
+            // originated on ANY model in the peer's configured chain (the
+            // primary, or an intermediate fallback more expensive than
+            // both the primary and the current adapter) - the unsettled
+            // reserve prices the WORST per-round envelope across the
+            // whole configured chain plus the current adapter, and the
+            // recovery is refused fail-closed when any chain model cannot
+            // be priced while such attempts exist.
             const recoveryTriggerIndeterminate = peerResult.indeterminate_spend_attempts ?? 0;
-            const configuredPrimaryModel = this.config.models[peerResult.peer];
-            const primaryRecoveryEnvelope =
-              recoveryTriggerIndeterminate > 0 && configuredPrimaryModel !== adapter.model
-                ? estimatedPeerRoundCost(
-                    this.config,
-                    [adapter.id],
-                    recoveryPrompt,
-                    { [adapter.id]: configuredPrimaryModel },
-                    { gemini_cache_eligible: false },
-                  )
-                : recoveryEstimate;
+            const reserveModelCandidates = [
+              ...new Set(
+                [
+                  adapter.model,
+                  this.config.models[peerResult.peer],
+                  ...(this.config.fallback_models[peerResult.peer] ?? []),
+                ].filter(
+                  (candidate): candidate is string =>
+                    typeof candidate === "string" && candidate.length > 0,
+                ),
+              ),
+            ];
+            let chainReserveEnvelope = 0;
+            let unpricedReserveChainModel: string | undefined;
+            if (recoveryTriggerIndeterminate > 0) {
+              for (const candidateModel of reserveModelCandidates) {
+                const candidateEnvelope = estimatedPeerRoundCost(
+                  this.config,
+                  [adapter.id],
+                  recoveryPrompt,
+                  { [adapter.id]: candidateModel },
+                  { gemini_cache_eligible: false },
+                );
+                if (candidateEnvelope == null) {
+                  unpricedReserveChainModel = candidateModel;
+                  continue;
+                }
+                chainReserveEnvelope = Math.max(chainReserveEnvelope, candidateEnvelope);
+              }
+            }
             this.emit({
               type: "peer.format_recovery.cost_alert",
               session_id: session.session_id,
@@ -7101,12 +7136,12 @@ export class CrossReviewOrchestrator {
             const currentSessionCostNow =
               priorRoundsCost + settledInitialCost + recoveryCostIncurred;
             const recoveryUnsettledWorstCase = unsettledSpendWorstCaseUsd(
-              Math.max(recoveryEstimate ?? 0, primaryRecoveryEnvelope ?? 0),
+              Math.max(recoveryEstimate ?? 0, chainReserveEnvelope),
               peerResult,
             );
             if (
               recoveryEstimate == null ||
-              (recoveryTriggerIndeterminate > 0 && primaryRecoveryEnvelope == null) ||
+              (recoveryTriggerIndeterminate > 0 && unpricedReserveChainModel !== undefined) ||
               (sessionCostLimit != null &&
                 currentSessionCostNow + recoveryEstimate + recoveryUnsettledWorstCase >
                   sessionCostLimit)
@@ -7114,8 +7149,8 @@ export class CrossReviewOrchestrator {
               const message =
                 recoveryEstimate == null
                   ? `Recovery refused: ${adapter.model} has no complete effective-model rate card.`
-                  : recoveryTriggerIndeterminate > 0 && primaryRecoveryEnvelope == null
-                    ? `Recovery refused: ${configuredPrimaryModel} for ${peerResult.peer} has no complete effective-model rate card to price ${recoveryTriggerIndeterminate} inherited indeterminate provider attempt(s).`
+                  : recoveryTriggerIndeterminate > 0 && unpricedReserveChainModel !== undefined
+                    ? `Recovery refused: ${unpricedReserveChainModel} for ${peerResult.peer} has no complete effective-model rate card to price ${recoveryTriggerIndeterminate} inherited indeterminate provider attempt(s) in the configured chain.`
                     : `Recovery refused: ${decisionRetry ? "decision retry" : "format recovery"} would push session cost from $${currentSessionCostNow.toFixed(6)} to $${(currentSessionCostNow + recoveryEstimate + recoveryUnsettledWorstCase).toFixed(6)}${recoveryUnsettledWorstCase > 0 ? ` (includes $${recoveryUnsettledWorstCase.toFixed(6)} worst-case for ${peerResult.indeterminate_spend_attempts} indeterminate provider attempt(s) priced at the worst originating envelope)` : ""}, exceeding configured limit $${sessionCostLimit?.toFixed(6)}.`;
               const failure: PeerFailure = {
                 peer: peerResult.peer,
@@ -7201,8 +7236,20 @@ export class CrossReviewOrchestrator {
                 if (mergedUsage && originalPeerResult.usage?.cache_key_hash !== undefined) {
                   mergedUsage.cache_key_hash = originalPeerResult.usage.cache_key_hash;
                 }
-                if (mergedUsage && originalPeerResult.usage?.cache_provider_mode !== undefined) {
-                  mergedUsage.cache_provider_mode = originalPeerResult.usage.cache_provider_mode;
+                // Codex round 29: the ORIGINAL's mode wins only when it
+                // carries the explicit-cache identity; otherwise the
+                // RECOVERY's own mode (an implicit hit on the retry) is
+                // the truthful one for the aggregate's read tokens - an
+                // uncached original must not overwrite it with
+                // "not_supported".
+                const recoveredMode = (recovered.usage as TokenUsage | undefined)
+                  ?.cache_provider_mode;
+                const stampMode =
+                  originalPeerResult.usage?.cache_key_hash !== undefined
+                    ? originalPeerResult.usage?.cache_provider_mode
+                    : (recoveredMode ?? originalPeerResult.usage?.cache_provider_mode);
+                if (mergedUsage && stampMode !== undefined) {
+                  mergedUsage.cache_provider_mode = stampMode;
                 }
                 return mergedUsage;
               })(),

@@ -19,6 +19,20 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
 
+- Codex round 29 closed four estimation and telemetry edges: the
+  recovery gate's unsettled reserve prices the WORST envelope across the
+  peer's whole configured chain (primary, every configured fallback and
+  the current adapter - an expensive intermediate fallback can no longer
+  be under-reserved), refusing fail-closed when any chain model cannot
+  be priced; the format-recovery merge keeps the RECOVERY's own cache
+  mode when the original carries no explicit-cache identity (an uncached
+  original no longer overwrites an implicit recovery hit with
+  "not_supported"); the budget envelope assigns cache storage to the
+  BRANCH that can create it (fallback storage no longer inflates a
+  moderation-dominant projection); and the empirical-guidance table
+  documents the per-model explicit-cache minimums (Pro 4,096 / Flash
+  1,024).
+
 - Codex round 28 closed three exposure edges: an AMBIGUOUS creation
   failure now poisons its dedup key with the same bounded retention the
   cancellation-cap path uses (the next retry or round proceeds uncached
