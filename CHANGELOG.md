@@ -46,7 +46,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
   server_info blocks stay one record, unrelated prose lines never
   inherit the marker); and a NEGATED unjudgeable claim is never
   anchorable by pin-affirming evidence (polarity check — the evidence
-  proves its opposite).
+  proves its opposite). Round 3: the claim's fragment words (number words
+  folded to digits, aliases/framing dropped) must CORRESPOND to the
+  configured pin — pin-affirming evidence can never anchor a claim naming
+  a different value; the future classification of captured tokens is
+  marker-scoped (a current token before "planned" is judged and can
+  contradict); denial polarity is judged inside the alias's own clause;
+  the raw pasted server_info JSON (quoted "models": key) counts as a
+  model-pin record; indirect requests ("determine which model ... uses")
+  never trip the guard; and the historical exemption is clause-scoped —
+  a current fragmented claim beside a historical clause still needs its
+  own anchor.
 
 ### Fixed
 

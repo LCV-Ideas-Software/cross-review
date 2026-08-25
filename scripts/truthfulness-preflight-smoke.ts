@@ -996,6 +996,63 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "pin-affirming evidence cannot anchor a claim that DENIES the pin (polarity check)",
   );
+  // Codex review of PR #247, round 3.
+  const wrongValueAnchored = anchored(
+    "The cross-review runtime codex peer runs alpha beta seven in production.",
+    'server_info models: {"codex":"gpt-5.6-sol"}',
+  );
+  assert.equal(
+    wrongValueAnchored.pass,
+    false,
+    "pin-affirming evidence cannot anchor a claim whose fragments name a DIFFERENT value",
+  );
+  const currentBeforePlannedToken = anchored(
+    "The cross-review runtime Codex model is currently gpt-5.5 before a planned upgrade.",
+  );
+  assert.equal(
+    currentBeforePlannedToken.pass,
+    false,
+    "a captured current token before a planning marker is judged (and contradicts the pin)",
+  );
+  assert.ok(
+    currentBeforePlannedToken.issue_classes.includes("runtime_contradiction"),
+    "the pre-marker token keeps its current classification",
+  );
+  const clauseScopedDenial = anchored(
+    "The cross-review runtime Codex model is gpt five six sol, and production is not publicly reachable.",
+    'server_info models: {"codex":"gpt-5.6-sol"}',
+  );
+  assert.equal(
+    clauseScopedDenial.pass,
+    true,
+    "a denial in an UNRELATED clause must not poison the anchored model claim",
+  );
+  const rawServerInfoJson = anchored(
+    "The cross-review runtime codex peer runs gpt five six sol in production.",
+    '{\n  "name": "cross-review",\n  "models": {\n    "codex": "gpt-5.6-sol"\n  }\n}',
+  );
+  assert.equal(
+    rawServerInfoJson.pass,
+    true,
+    "the raw pasted server_info JSON (quoted models key) is a model-pin record",
+  );
+  const indirectRequest = anchored(
+    "We need to determine which model the cross-review runtime Codex peer uses.",
+  );
+  assert.equal(
+    indirectRequest.pass,
+    true,
+    "an indirect request (determine which ...) is not an assertion and never trips the guard",
+  );
+  const historicalPlusCurrent = anchored(
+    "When the audit began, the cross-review runtime Claude model was running fine, and the Codex model currently runs alpha beta seven.",
+    "Historical runtime snapshot from events.ndjson: workflow_start server_info version=4.2.0; later reload server_info version=4.2.1.",
+  );
+  assert.equal(
+    historicalPlusCurrent.pass,
+    false,
+    "the historical exemption is clause-scoped — a current fragmented claim beside it still needs its own anchor",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
