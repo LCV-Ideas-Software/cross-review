@@ -2933,12 +2933,24 @@ export function truthfulnessPreflight(params: {
       // Contrast words (but/yet/however) stay OUT of this list: they are
       // handled by the marker state machine's contrast rule.
       const clauseBounds: Array<{ start: number; end: number }> = [];
+      // Codex round 8: a LABEL colon ("Codex model: gpt-5.6-sol") is not a
+      // clause boundary - when the colon is followed by a capturable token
+      // the construction is label/value and alias ownership must survive.
+      // A colon followed by anything else (an indirect request's clause, a
+      // fragmented value) still delimits, so the guard stays fail-closed.
+      const occurrenceStarts = new Set(
+        occurrences.flatMap((occurrence) => [occurrence.matchStart, occurrence.index]),
+      );
       for (const match of aliasBase.matchAll(
         /[;,.:]|—|–|\s-\s|\b(?:and|e|while|whilst|whereas|although|though|enquanto|embora)\b/gi,
       )) {
-        if (match.index !== undefined) {
-          clauseBounds.push({ start: match.index, end: match.index + match[0].length });
+        if (match.index === undefined) continue;
+        if (match[0] === ":") {
+          const rest = aliasBase.slice(match.index + 1);
+          const nextIdx = match.index + 1 + (rest.length - rest.trimStart().length);
+          if (occurrenceStarts.has(nextIdx)) continue;
         }
+        clauseBounds.push({ start: match.index, end: match.index + match[0].length });
       }
       const clauseStartFor = (index: number): number => {
         let start = 0;
@@ -3051,26 +3063,48 @@ export function truthfulnessPreflight(params: {
         events.sort((a, b) => a.idx - b.idx);
         return events;
       };
+      // Codex round 8: a nominal planning modifier can also qualify the
+      // model phrase that PRECEDES it ("the ... Codex model in the PLANNED
+      // deployment is X") - when the span from the last current marker (or
+      // clause start) up to the nominal marker holds the model head with
+      // no verb in between, the nominal governs that head and its copular
+      // verb stays future.
+      const nominalQualifiesPriorHead = (
+        text: string,
+        lastCurrentIdx: number,
+        futureIdx: number,
+      ): boolean =>
+        nominalGovernedHeadPattern.test(
+          text.slice(lastCurrentIdx >= 0 ? lastCurrentIdx : 0, futureIdx),
+        );
       const markerStateAtEnd = (text: string): "none" | "current" | "future" => {
         let state: "none" | "current" | "future" = "none";
         let contrastSinceFuture = false;
         let futureIsModal = false;
+        let futureQualifiesPriorHead = false;
         let lastFutureIdx = -1;
+        let lastCurrentIdx = -1;
         for (const event of markerEvents(text)) {
           if (event.kind === "future") {
             state = "future";
             futureIsModal = event.modal === true;
+            futureQualifiesPriorHead =
+              !futureIsModal && nominalQualifiesPriorHead(text, lastCurrentIdx, event.idx);
             lastFutureIdx = event.idx;
             contrastSinceFuture = false;
           } else if (event.kind === "contrast") {
             contrastSinceFuture = true;
-          } else if (
-            state !== "future" ||
-            contrastSinceFuture ||
-            (!futureIsModal &&
-              !nominalGovernedHeadPattern.test(text.slice(lastFutureIdx, event.idx)))
-          ) {
-            state = "current";
+          } else {
+            if (
+              state !== "future" ||
+              contrastSinceFuture ||
+              (!futureIsModal &&
+                !futureQualifiesPriorHead &&
+                !nominalGovernedHeadPattern.test(text.slice(lastFutureIdx, event.idx)))
+            ) {
+              state = "current";
+            }
+            lastCurrentIdx = event.idx;
           }
         }
         return state;
@@ -3251,7 +3285,9 @@ export function truthfulnessPreflight(params: {
             let state: "none" | "current" | "future" = "none";
             let contrastSinceFuture = false;
             let futureIsModal = false;
+            let futureQualifiesPriorHead = false;
             let lastFutureIdx = -1;
+            let lastCurrentIdx = -1;
             let spanStart = -1;
             const closeSpan = (endIdx: number): void => {
               if (spanStart >= 0) {
@@ -3264,6 +3300,8 @@ export function truthfulnessPreflight(params: {
                 if (state !== "future") spanStart = state === "none" ? 0 : event.idx;
                 state = "future";
                 futureIsModal = event.modal === true;
+                futureQualifiesPriorHead =
+                  !futureIsModal && nominalQualifiesPriorHead(segment, lastCurrentIdx, event.idx);
                 lastFutureIdx = event.idx;
                 contrastSinceFuture = false;
               } else if (event.kind === "contrast") {
@@ -3272,19 +3310,28 @@ export function truthfulnessPreflight(params: {
                 state === "future" &&
                 (contrastSinceFuture ||
                   (!futureIsModal &&
+                    !futureQualifiesPriorHead &&
                     !nominalGovernedHeadPattern.test(segment.slice(lastFutureIdx, event.idx))))
               ) {
                 closeSpan(event.idx);
                 state = "current";
-              } else if (state !== "future") {
-                state = "current";
+                lastCurrentIdx = event.idx;
+              } else {
+                if (state !== "future") state = "current";
+                lastCurrentIdx = event.idx;
               }
             }
             if (state === "future") closeSpan(segment.length);
           }
           segmentStart = bound.end;
         }
-        const modelRelationPattern = /\b(?:models?|pins?|modelos?)\b|model[_ -]?pins?/i;
+        // Codex round 8: a model noun that merely MODIFIES a meta noun
+        // ("the Codex model DOCUMENTATION is available") asserts nothing
+        // about the configured pin - the meta-noun allowlist is narrow and
+        // any unknown following word still counts as a potential fragmented
+        // value (fail-closed). "pins" is always a value relation.
+        const modelRelationPattern =
+          /\b(?:models?|modelos?)\b(?!\s+(?:documentation|docs?|guides?|pages?|sections?|tables?|lists?|policy|policies|specs?|schemas?|catalogs?|overviews?|documenta[cç][aã]o|guias?|p[aá]ginas?|se[cç][aã]o|se[cç][oõ]es|tabelas?|listas?|pol[ií]ticas?|cat[aá]logos?)\b)|\bpins?\b|model[_ -]?pins?/i;
         let guardTripped = false;
         for (const aliasPeer of PEERS) {
           const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");

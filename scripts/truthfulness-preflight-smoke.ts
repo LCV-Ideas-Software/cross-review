@@ -1191,6 +1191,35 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a now/remains transition ends the historical carry - the plainly current fragmented claim is blocked even with valid timing evidence",
   );
+  // Codex review of PR #247, round 8.
+  const labelColon = anchored("The cross-review runtime Codex model: gpt-5.6-sol.");
+  assert.equal(
+    labelColon.pass,
+    true,
+    "a label colon followed by a capturable token is not a clause boundary - the truthful label/value construction keeps alias ownership",
+  );
+  const labelColonLie = anchored("The cross-review runtime Codex model: alpha beta seven.");
+  assert.equal(
+    labelColonLie.pass,
+    false,
+    "a label colon followed by a FRAGMENTED value still separates - the alias stays unconsumed and the claim is blocked",
+  );
+  const postpositivePlanning = anchored(
+    "The cross-review runtime Codex model in the planned deployment is gpt-5.5.",
+  );
+  assert.equal(
+    postpositivePlanning.pass,
+    true,
+    "a postpositive planning modifier qualifying the preceding model phrase keeps the S3 future exemption",
+  );
+  const modelDocumentation = anchored(
+    "The cross-review runtime Codex model documentation is available.",
+  );
+  assert.equal(
+    modelDocumentation.pass,
+    true,
+    "a model noun modifying a meta noun (documentation) asserts nothing about the configured pin - no relation, no block",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
