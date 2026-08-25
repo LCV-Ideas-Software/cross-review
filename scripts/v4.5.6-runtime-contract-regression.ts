@@ -2354,6 +2354,39 @@ const regressions: Regression[] = [
           "the ineligible Pro primary (4,096 minimum vs 2,000-byte bound) does not require its storage rate",
         );
       }
+      // Codex round 22: the reported control matches the SELECTED rate
+      // source - when the primary rate resolves from the model card (no
+      // env-var rate configured), the missing storage dimension names the
+      // model-card field; the storage env var alone cannot fix it because
+      // costRate() only builds an env rate from input+output env rates.
+      {
+        const cardPrimaryConfig = {
+          ...geminiArmedConfig,
+          cost_rates: { ...geminiArmedConfig.cost_rates, gemini: undefined },
+          model_cost_rates: {
+            ...geminiArmedConfig.model_cost_rates,
+            gemini: {
+              "gemini-3.1-pro-preview": { input_per_million: 2, output_per_million: 12 },
+            },
+          },
+        } as AppConfig;
+        const cardPrimaryMissing = missingFinancialControlVars(cardPrimaryConfig, ["gemini"], {
+          reviewerPeers: ["gemini"],
+        });
+        assert.ok(
+          cardPrimaryMissing.includes(
+            'model_cost_rates.gemini["gemini-3.1-pro-preview"].cache_storage_per_million_hour',
+          ),
+          `a card-selected primary reports the model-card storage field: ${JSON.stringify(cardPrimaryMissing)}`,
+        );
+        assert.equal(
+          cardPrimaryMissing.includes(
+            "CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR",
+          ),
+          false,
+          "the env var is not the control when the model card is the selected source",
+        );
+      }
       // Codex round 15: when cancellation finalizes a failure, withRetry
       // must PRESERVE the classifier's larger attempt count - an adapter
       // that accounted internal sub-calls (an ambiguous cache creation)

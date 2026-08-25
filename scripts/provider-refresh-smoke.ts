@@ -1283,6 +1283,20 @@ function capturePerplexityProbe(
     Math.abs((stallFailure?.cost?.cache_storage_cost ?? 0) - 0.0225) < 1e-12,
     `the cancelled attempt carries the final KNOWN storage spend: ${stallFailure?.cost?.cache_storage_cost}`,
   );
+  // Codex round 22: the in-cap settled creation is FULLY PRICED - its
+  // deterministic storage ledger item is the attempt's final known
+  // spend, so the durable failure reports settled billing instead of an
+  // unpriced attempt with unknown status.
+  assert.equal(
+    stallFailure?.unpriced_attempts ?? 0,
+    0,
+    "an in-cap settled creation leaves no unpriced attempt",
+  );
+  assert.equal(
+    stallFailure?.billing_status,
+    "reported",
+    "an in-cap settled creation reports settled billing",
+  );
 
   // Round 7: a WAITER sharing the in-flight creation races its own
   // signal — cancelling it releases promptly without cancelling the
@@ -1407,6 +1421,49 @@ function capturePerplexityProbe(
     0,
     "the in-cap settled creation leaves no indeterminate marker",
   );
+  assert.equal(
+    billableAbortFailure?.unpriced_attempts ?? 0,
+    0,
+    "the in-cap settled creation is fully priced on the billable-abort path",
+  );
+
+  // Codex round 22: a WAITER sharing the in-flight creation is isolated
+  // from the CREATOR's cancellation - when the creator is cancelled and
+  // the creation settles in-cap, the waiter receives the indexed entry
+  // and completes its own review instead of inheriting the AbortError.
+  __resetGeminiExplicitCacheIndexForTests();
+  const isolationMock = makeClient({ createDelayMs: 400 });
+  const isolationCreator = new GeminiAdapter(geminiCacheConfig);
+  (isolationCreator as unknown as { client: () => Promise<unknown> }).client = async () =>
+    isolationMock.client;
+  const isolationWaiter = new GeminiAdapter(geminiCacheConfig);
+  (isolationWaiter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    isolationMock.client;
+  const isolationController = new AbortController();
+  const isolationCreatorPromise = isolationCreator
+    .call(prompt, { ...context(stableHead.length), signal: isolationController.signal })
+    .catch((error: unknown) => error);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const isolationWaiterPromise = isolationWaiter.call(prompt, context(stableHead.length));
+  setTimeout(() => isolationController.abort(), 20);
+  const isolationCreatorOutcome = await isolationCreatorPromise;
+  assert.ok(
+    isolationCreatorOutcome instanceof Error,
+    "the cancelled creator still rejects with its own cancellation",
+  );
+  const isolationWaiterResult = await isolationWaiterPromise;
+  assert.ok(
+    isolationWaiterResult.text.length > 0,
+    "the waiter completes despite the creator's cancellation",
+  );
+  assert.equal(isolationMock.createCalls.length, 1, "no duplicate creation for the waiter");
+  type IsolationGenCall = { config?: { cachedContent?: string } };
+  const isolationGen = isolationMock.genCalls.at(-1) as IsolationGenCall | undefined;
+  assert.equal(
+    isolationGen?.config?.cachedContent,
+    "cachedContents/fixture-1",
+    "the waiter reuses the in-cap settled entry",
+  );
 
   // v4.7.0 structural contract: cap expiry poisons the dedup key for a
   // bounded retention window - later reviews proceed uncached with no
@@ -1457,6 +1514,49 @@ function capturePerplexityProbe(
       (entry) => entry.name !== "",
     );
     assert.ok(reusedEntry, "a resource settling inside the window is indexed for reuse only");
+  } finally {
+    __setGeminiCancelTimingForTests(10_000, 120_000);
+  }
+
+  // Codex round 22: the poison retention window anchors at the moment
+  // the wait cap expires - a creation that already consumed most of the
+  // retention before the cancellation still yields a LIVE deadline, so
+  // the next review cannot immediately clear the poison and start a
+  // duplicate billed creation.
+  __resetGeminiExplicitCacheIndexForTests();
+  __setGeminiCancelTimingForTests(100, 300);
+  try {
+    const lateAbortMock = makeClient({ createDelayMs: 1_500 });
+    const lateAbortAdapter = new GeminiAdapter(geminiCacheConfig);
+    (lateAbortAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      lateAbortMock.client;
+    const lateAbortController = new AbortController();
+    setTimeout(() => lateAbortController.abort(), 250);
+    await lateAbortAdapter
+      .call(prompt, { ...context(stableHead.length), signal: lateAbortController.signal })
+      .catch(() => undefined);
+    const lateDeadlines = [...__geminiExplicitCachePoisonedForTests().values()];
+    assert.equal(lateDeadlines.length, 1, "the late-abort cap expiry poisons the key");
+    assert.ok(
+      (lateDeadlines[0] ?? 0) > Date.now() + 100,
+      "the poison retention starts at cap expiry, never at request dispatch",
+    );
+    const lateBypassAdapter = new GeminiAdapter(geminiCacheConfig);
+    (lateBypassAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      lateAbortMock.client;
+    const lateBypass = await lateBypassAdapter.call(prompt, context(stableHead.length));
+    assert.ok(lateBypass.text.length > 0, "the follow-up review proceeds uncached");
+    assert.equal(
+      lateAbortMock.createCalls.length,
+      1,
+      "a live poison deadline prevents the duplicate billed creation",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_300));
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().size,
+      0,
+      "the settled promise still releases the late-abort poison",
+    );
   } finally {
     __setGeminiCancelTimingForTests(10_000, 120_000);
   }

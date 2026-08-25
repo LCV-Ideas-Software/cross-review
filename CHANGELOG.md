@@ -10,7 +10,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
 ### Changed
 
 - **Gemini explicit-cache cancellation contract (unanimous design
-  review, session 65828902)**: a cancellation racing the billable
+  review 25/08/2026)**: a cancellation racing the billable
   `caches.create` now WAITS (ten-second cap) for the SDK promise to
   settle — in-cap creations report final known storage spend, in-cap
   rejections settle as known zero only under a closed
@@ -18,6 +18,19 @@ standard `v00.00.00`; npm package versions remain SemVer.
   attempt permanently indeterminate with the dedup key poisoned for a
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
+
+- Codex round 22 hardened the contract's edges: an in-cap settled
+  creation is FULLY PRICED (the abort's durable failure reports settled
+  billing — no unpriced attempt, `billing_status: "reported"`); the
+  poison retention window anchors at the moment the wait cap expires,
+  never at request dispatch (a long-pending creation can no longer hand
+  the next review an already-expired deadline); the shared in-flight
+  promise reflects the CREATION OUTCOME, so a concurrent waiter never
+  inherits the creator's cancellation (it reuses the in-cap settled
+  entry or proceeds uncached under its own signal); and the missing
+  storage-rate diagnostic names the SELECTED rate source (the model-card
+  field when the primary resolves from its card, the env var only while
+  an env-var rate exists).
 
 ### Removed
 

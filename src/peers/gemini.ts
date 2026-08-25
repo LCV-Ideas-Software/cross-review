@@ -223,7 +223,7 @@ export function geminiExplicitCacheMinTokensForModel(model: string): number {
 // uncached without re-counting until the entry expires.
 type GeminiExplicitCacheEntry = { name: string; token_count: number; expires_at_ms: number };
 const geminiExplicitCacheIndex = new Map<string, GeminiExplicitCacheEntry>();
-// v4.7.0 STRUCTURAL CONTRACT (unanimous design review, session 65828902):
+// v4.7.0 STRUCTURAL CONTRACT (unanimous design review 25/08/2026):
 // an abort that races the BILLABLE caches.create WAITS, bounded by this
 // cap, for the SDK promise to settle so the billing outcome is
 // synchronously known. Cap expiry keeps the attempt PERMANENTLY
@@ -294,10 +294,17 @@ type CachePreparationAbortKind = "free" | "billable" | "waiter";
 // removed and the indeterminate marker is preserved, re-capped to the
 // remaining unpriced total. Explicit zeros keep the all-terminal meaning
 // on a first-attempt waiter cancellation.
+// Round 22: the settlement also applies to a BILLABLE abort whose
+// creation settled in-cap with a KNOWN outcome (indexed entry carrying
+// its deterministic storage ledger item, or the closed-rule known zero)
+// - the current attempt is fully priced either way, and the billing
+// status is recomputed so a fully settled failure reports "reported"
+// instead of contradicting the final-known-spend contract.
 function waiterAbortSettlement<
   F extends {
     unpriced_attempts?: number | undefined;
     indeterminate_spend_attempts?: number | undefined;
+    billing_status?: "reported" | "unknown" | undefined;
   },
 >(classified: F): F {
   const unpriced = Math.max(0, (classified.unpriced_attempts ?? 0) - 1);
@@ -305,6 +312,9 @@ function waiterAbortSettlement<
     ...classified,
     unpriced_attempts: unpriced,
     indeterminate_spend_attempts: Math.min(classified.indeterminate_spend_attempts ?? 0, unpriced),
+    ...(classified.billing_status !== undefined
+      ? { billing_status: unpriced === 0 ? ("reported" as const) : ("unknown" as const) }
+      : {}),
   };
 }
 
@@ -822,8 +832,8 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         Date.now(),
       );
       const abortKind = cachePreparationAbortKind(error);
-      // v4.7.0 STRUCTURAL CONTRACT (unanimous design review, session
-      // 65828902): an abort that raced the BILLABLE caches.create WAITS,
+      // v4.7.0 STRUCTURAL CONTRACT (unanimous design review
+      // 25/08/2026): an abort that raced the BILLABLE caches.create WAITS,
       // bounded by the cancel-wait cap, for the SDK promise to settle so
       // the billing outcome is synchronously known:
       //  - settled CREATED in-cap: index + deterministic storage ledger
@@ -838,6 +848,15 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       //    later reviews proceed uncached immediately, a resource that
       //    settles inside the window is indexed for REUSE ONLY (no
       //    accounting mutation), and expiry releases the key leak-free.
+      // Round 22: an in-cap settle with a KNOWN outcome marks the abort
+      // so the failure classification settles the attempt as fully
+      // priced (storage ledger item, or known zero) instead of leaving
+      // an unpriced attempt with unknown billing.
+      const markCreateSettledKnown = (err: unknown): void => {
+        if (err && typeof err === "object") {
+          (err as Record<string, unknown>).gemini_cache_create_settled_known = true;
+        }
+      };
       if (abortKind === "billable" && createPromise) {
         const settledOutcome = await Promise.race([
           createPromise.then(
@@ -854,6 +873,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             indexCreatedEntry(created as CreatedShape & { name: string });
           }
           // No resource name = settled no-resource outcome: known zero.
+          markCreateSettledKnown(error);
           throw error;
         }
         if (settledOutcome.kind === "rejected") {
@@ -885,14 +905,20 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               token_count: countedTokens ?? 0,
               expires_at_ms: nowMs + ttlSeconds * 1_000,
             });
+            markCreateSettledKnown(error);
           } else {
             params.onIndeterminateCreate();
           }
           throw error;
         }
         // Cap expiry: permanently indeterminate + bounded poisoned dedup.
+        // Round 22: the retention window anchors at the moment poisoning
+        // BEGINS (cap expiry) - anchoring at request dispatch could hand
+        // the next review an already-expired deadline while the original
+        // SDK request is still unresolved, allowing a duplicate billed
+        // creation.
         params.onIndeterminateCreate();
-        geminiExplicitCachePoisoned.set(cacheKeyHash, dispatchedAt + geminiPoisonRetentionMs);
+        geminiExplicitCachePoisoned.set(cacheKeyHash, Date.now() + geminiPoisonRetentionMs);
         void createPromise
           .then((created) => {
             if (created && typeof created.name === "string" && created.name.length > 0) {
@@ -1057,6 +1083,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               // fires on return, or only when the SDK request settles
               // after a billable abort (no duplicate billed creations).
               const inFlightKey = cacheKeyHash;
+              const sharedHolder: {
+                promise?: Promise<GeminiExplicitCacheEntry | undefined>;
+              } = {};
               const creation = this.createExplicitCacheEntry({
                 reviewClient,
                 cacheContents: cachePayload,
@@ -1069,12 +1098,25 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
                   indeterminateCacheCreateAttempts += 1;
                 },
                 releaseInFlight: () => {
-                  if (geminiExplicitCacheInFlight.get(inFlightKey) === creation) {
+                  if (geminiExplicitCacheInFlight.get(inFlightKey) === sharedHolder.promise) {
                     geminiExplicitCacheInFlight.delete(inFlightKey);
                   }
                 },
               });
-              geminiExplicitCacheInFlight.set(cacheKeyHash, creation);
+              // Round 22: the SHARED in-flight promise reflects the
+              // CREATION OUTCOME, never the creator's own cancellation.
+              // When the creator's call rejects (its abort, or any other
+              // failure), a waiter reads the settled index instead - an
+              // in-cap indexed entry is reused, anything else proceeds
+              // uncached (always correct) - so an unrelated review is
+              // governed only by its own signal.
+              sharedHolder.promise = creation.catch(() => {
+                const settled = geminiExplicitCacheIndex.get(inFlightKey);
+                return settled && settled.name !== "" && settled.expires_at_ms > Date.now() + 15_000
+                  ? settled
+                  : undefined;
+              });
+              geminiExplicitCacheInFlight.set(cacheKeyHash, sharedHolder.promise);
               cacheEntry = await creation;
               // Round 21: a billable-race abort is swallowed inside the
               // creation (its indeterminate accounting retained) - the
@@ -1332,6 +1374,18 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // settles the same way.
         const abortKind = cachePreparationAbortKind(error);
         if (abortKind === "waiter" || abortKind === "free") {
+          return waiterAbortSettlement(classified);
+        }
+        // Round 22: a billable abort whose creation settled in-cap with a
+        // KNOWN outcome is fully priced (deterministic storage ledger
+        // item, or the closed-rule known zero) - the current attempt
+        // settles exactly like a waiter's, so the durable failure reports
+        // settled billing.
+        if (
+          abortKind === "billable" &&
+          (error as { gemini_cache_create_settled_known?: unknown } | null)
+            ?.gemini_cache_create_settled_known === true
+        ) {
           return waiterAbortSettlement(classified);
         }
         // Codex review of PR #240: the provider's stale-cache 400/404 is

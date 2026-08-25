@@ -149,8 +149,7 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
   `provider.cache.notice`; a lost cache is dropped from the index and the
   standard retry envelope re-creates it.
 
-  **Cancellation contract (unanimous design review 25/08/2026, session
-  65828902).** A cancellation that races the billable `caches.create`
+  **Cancellation contract (unanimous design review 25/08/2026).** A cancellation that races the billable `caches.create`
   WAITS, bounded by a ten-second cap, for the SDK promise to settle so
   the billing outcome is synchronously known:
   - settled **created** in-cap: the entry is indexed and the

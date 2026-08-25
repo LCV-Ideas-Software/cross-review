@@ -953,8 +953,16 @@ export function missingFinancialControlVars(
       const geminiRate = resolveCostRate(config, "gemini", model);
       if (!geminiRate) continue;
       if (geminiRate.cache_storage_per_million_hour == null) {
+        // Codex round 22: the reported control matches the SELECTED rate
+        // source. The env var is the primary's control only while an
+        // env-var rate exists (resolveCostRate prefers it); a primary
+        // resolved from its model card needs the storage dimension ON
+        // THE CARD - setting the env var alone cannot fix it, because
+        // costRate() only builds an env rate from input+output env
+        // rates.
+        const primaryEnvRateSelected = model === primaryModel && config.cost_rates?.gemini != null;
         missing.add(
-          model === primaryModel
+          primaryEnvRateSelected
             ? `${COST_RATE_ENV_PREFIX.gemini}_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR`
             : `model_cost_rates.gemini[${JSON.stringify(model)}].cache_storage_per_million_hour`,
         );
