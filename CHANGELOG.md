@@ -7,6 +7,26 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- **Gemini explicit-cache cancellation contract (unanimous design
+  review, session 65828902)**: a cancellation racing the billable
+  `caches.create` now WAITS (ten-second cap) for the SDK promise to
+  settle — in-cap creations report final known storage spend, in-cap
+  rejections settle as known zero only under a closed
+  not-retryable/no-marker/not-abort rule, and cap expiry leaves the
+  attempt permanently indeterminate with the dedup key poisoned for a
+  bounded 120-second window (uncached bypass, reuse-only late index,
+  leak-free release).
+
+### Removed
+
+- The entire late-settlement reconciliation machinery superseded by the
+  contract above: `SessionStore.reconcileLateCacheCreation`, the clone
+  settlement and pending-settlement application routines,
+  `pending_late_cache_settlements`, the orchestrator event-interceptor
+  reconciliation hook and the post-cancellation settlement notices.
+
 ## [v04.07.00] — 24/08/2026
 
 ### Added

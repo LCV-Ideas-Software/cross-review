@@ -223,6 +223,25 @@ export function geminiExplicitCacheMinTokensForModel(model: string): number {
 // uncached without re-counting until the entry expires.
 type GeminiExplicitCacheEntry = { name: string; token_count: number; expires_at_ms: number };
 const geminiExplicitCacheIndex = new Map<string, GeminiExplicitCacheEntry>();
+// v4.7.0 STRUCTURAL CONTRACT (unanimous design review, session 65828902):
+// an abort that races the BILLABLE caches.create WAITS, bounded by this
+// cap, for the SDK promise to settle so the billing outcome is
+// synchronously known. Cap expiry keeps the attempt PERMANENTLY
+// indeterminate and poisons the dedup key for a bounded retention window:
+// later reviews of the same key proceed uncached immediately (no wait, no
+// duplicate billed creation); a resource that settles inside the window
+// is indexed for REUSE ONLY (no accounting mutation); expiry releases the
+// key leak-free.
+let geminiCancelWaitCapMs = 10_000;
+let geminiPoisonRetentionMs = 120_000;
+export function __setGeminiCancelTimingForTests(capMs: number, retentionMs: number): void {
+  geminiCancelWaitCapMs = capMs;
+  geminiPoisonRetentionMs = retentionMs;
+}
+const geminiExplicitCachePoisoned = new Map<string, number>();
+export function __geminiExplicitCachePoisonedForTests(): Map<string, number> {
+  return geminiExplicitCachePoisoned;
+}
 // Codex review of PR #240: two concurrent calls with the same eligible head
 // must not both create separately billed cachedContents resources. The
 // creator registers its promise here; racers await it (the creator alone
@@ -587,28 +606,24 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     // duplicate billed creation while the first is still outstanding.
     releaseInFlight: () => void;
   }): Promise<GeminiExplicitCacheEntry | undefined> {
-    const release = { deferred: false };
     try {
-      return await this.createExplicitCacheEntryInner(params, release);
+      return await this.createExplicitCacheEntryInner(params);
     } finally {
-      if (!release.deferred) params.releaseInFlight();
+      params.releaseInFlight();
     }
   }
 
-  private async createExplicitCacheEntryInner(
-    params: {
-      reviewClient: { ai: GoogleGenAI };
-      cacheContents: string;
-      ttl: "5m" | "1h";
-      cacheKeyHash: string;
-      context: PeerCallContext;
-      ledgerUsage: TokenUsage[];
-      ledgerCosts: CostEstimate[];
-      onIndeterminateCreate: () => void;
-      releaseInFlight: () => void;
-    },
-    release: { deferred: boolean },
-  ): Promise<GeminiExplicitCacheEntry | undefined> {
+  private async createExplicitCacheEntryInner(params: {
+    reviewClient: { ai: GoogleGenAI };
+    cacheContents: string;
+    ttl: "5m" | "1h";
+    cacheKeyHash: string;
+    context: PeerCallContext;
+    ledgerUsage: TokenUsage[];
+    ledgerCosts: CostEstimate[];
+    onIndeterminateCreate: () => void;
+    releaseInFlight: () => void;
+  }): Promise<GeminiExplicitCacheEntry | undefined> {
     const { reviewClient, cacheContents, ttl, cacheKeyHash, context } = params;
     const ttlSeconds = geminiTtlSeconds(ttl);
     const notice = (message: string, data: Record<string, unknown>) => {
@@ -703,34 +718,19 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           usageMetadata?: { totalTokenCount?: number };
         }>
       | undefined;
-    try {
-      // Round 5: raced against the abort signal — a raced-away creation
-      // may still have been created and billed server-side, so the abort
-      // error routes through the ambiguous-transport path below.
-      createPromise = reviewClient.ai.caches.create({
-        model: this.model,
-        config: {
-          contents: [{ role: "user", parts: [{ text: cacheContents }] }],
-          ttl: `${ttlSeconds}s`,
-          displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
-        },
-      }) as Promise<{
-        name?: string;
-        expireTime?: string;
-        usageMetadata?: { totalTokenCount?: number };
-      }>;
-      const created = (await raceWithAbort(createPromise, context.signal, "billable")) as {
-        name?: string;
-        expireTime?: string;
-        usageMetadata?: { totalTokenCount?: number };
-      };
-      if (!created?.name) {
-        notice("Gemini explicit cache creation returned no resource name; continuing uncached.", {
-          model: this.model,
-          key_hash: cacheKeyHash,
-        });
-        return undefined;
-      }
+    type CreatedShape = {
+      name?: string;
+      expireTime?: string;
+      usageMetadata?: { totalTokenCount?: number };
+    };
+    // Shared by the normal success path AND the in-cap post-cancellation
+    // settle: indexes the entry, records the deterministic storage charge
+    // in the attempt billing ledger, and emits the creation event that
+    // feeds the FinOps manifest. Round 8/11 contracts preserved (explicit
+    // zero-rate cost line; full billing dimensions on the event).
+    const indexCreatedEntry = (
+      created: CreatedShape & { name: string },
+    ): GeminiExplicitCacheEntry => {
       const tokenCount = created.usageMetadata?.totalTokenCount ?? countedTokens;
       const providerExpiryMs =
         typeof created.expireTime === "string" ? Date.parse(created.expireTime) : Number.NaN;
@@ -748,14 +748,6 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         if (indexed.expires_at_ms <= now) geminiExplicitCacheIndex.delete(key);
       }
       geminiExplicitCacheIndex.set(cacheKeyHash, entry);
-      // Record the deterministic storage charge in the attempt billing
-      // ledger IMMEDIATELY (a storage-only item, not an attempt). Codex
-      // round 8: a legitimately configured ZERO rate is still a KNOWN
-      // price — the ledger cost carries an explicit cache_storage_cost
-      // (even 0) so a later terminal failure settles as known spend and
-      // the storage-only marker keeps its category; only a genuinely
-      // missing rate (defense in depth — the financial gate blocks that
-      // state) records token-hours without a cost line.
       const tokenHours = (tokenCount * ttlSeconds) / 3_600;
       const ledgerUsage: TokenUsage = { cache_storage_token_hours: tokenHours };
       params.ledgerUsage.push(ledgerUsage);
@@ -780,10 +772,6 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           { model: this.model, key_hash: cacheKeyHash, token_hours: tokenHours },
         );
       }
-      // Round 11: storage bills in token-hours — the creation event
-      // carries the TTL, the computed token-hours and the priced cost so
-      // the FinOps manifest row can reconstruct the charge after any
-      // configuration change.
       notice(`Gemini explicit cache created (${tokenCount} tokens, ttl ${ttl}).`, {
         model: this.model,
         cache_name: created.name,
@@ -795,6 +783,32 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         key_hash: cacheKeyHash,
       });
       return entry;
+    };
+    try {
+      // Round 5: raced against the abort signal — a raced-away creation
+      // may still have been created and billed server-side; the abort now
+      // routes through the capped wait-for-settle contract below.
+      createPromise = reviewClient.ai.caches.create({
+        model: this.model,
+        config: {
+          contents: [{ role: "user", parts: [{ text: cacheContents }] }],
+          ttl: `${ttlSeconds}s`,
+          displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
+        },
+      }) as Promise<CreatedShape>;
+      const created = (await raceWithAbort(
+        createPromise,
+        context.signal,
+        "billable",
+      )) as CreatedShape;
+      if (!created?.name) {
+        notice("Gemini explicit cache creation returned no resource name; continuing uncached.", {
+          model: this.model,
+          key_hash: cacheKeyHash,
+        });
+        return undefined;
+      }
+      return indexCreatedEntry(created as CreatedShape & { name: string });
     } catch (error) {
       // An uncached call is always correct — but a transport-ambiguous
       // failure (timeout/reset/unknown) may have created and billed the
@@ -807,113 +821,103 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         1,
         Date.now(),
       );
-      // Round 11 (class sweep): an abort racing the BILLABLE caches.create
-      // is ambiguous by construction — classifyProviderError maps the
-      // AbortError to the terminal "cancelled" class (marker 0), so the
-      // in-flight kind carried by the race error restores the round-5/7
-      // contract (the server may have created and billed the resource).
-      // A raced-away FREE countTokens stays zero-spend.
       const abortKind = cachePreparationAbortKind(error);
-      const ambiguous =
-        abortKind === "billable" ||
-        indeterminateSpendMarkerFor(createFailure.failure_class, createFailure.message, 1) > 0;
-      if (ambiguous) params.onIndeterminateCreate();
-      // Round 14: a billable abort leaves the SDK request OUTSTANDING —
-      // keep the in-flight dedup entry until it settles (a later review
-      // must not start a duplicate billed creation) and index a resource
-      // that materializes after the cancellation so the already-billed
-      // storage is reused instead of orphaned.
+      // v4.7.0 STRUCTURAL CONTRACT (unanimous design review, session
+      // 65828902): an abort that raced the BILLABLE caches.create WAITS,
+      // bounded by the cancel-wait cap, for the SDK promise to settle so
+      // the billing outcome is synchronously known:
+      //  - settled CREATED in-cap: index + deterministic storage ledger
+      //    (the same accounting as the normal success path), then the
+      //    abort propagates with final KNOWN spend;
+      //  - settled REJECTED in-cap: known zero ONLY under the CLOSED rule
+      //    (not retryable AND no indeterminate marker AND not
+      //    abort/cancelled-shaped) with the negative sentinel; anything
+      //    else keeps the indeterminate marker;
+      //  - cap expiry: the attempt stays PERMANENTLY indeterminate and
+      //    the dedup key is POISONED for a bounded retention window -
+      //    later reviews proceed uncached immediately, a resource that
+      //    settles inside the window is indexed for REUSE ONLY (no
+      //    accounting mutation), and expiry releases the key leak-free.
       if (abortKind === "billable" && createPromise) {
-        release.deferred = true;
+        const settledOutcome = await Promise.race([
+          createPromise.then(
+            (created) => ({ kind: "created" as const, created }),
+            (createError: unknown) => ({ kind: "rejected" as const, createError }),
+          ),
+          new Promise<{ kind: "cap" }>((resolve) => {
+            setTimeout(() => resolve({ kind: "cap" }), geminiCancelWaitCapMs);
+          }),
+        ]);
+        if (settledOutcome.kind === "created") {
+          const created = settledOutcome.created;
+          if (created && typeof created.name === "string" && created.name.length > 0) {
+            indexCreatedEntry(created as CreatedShape & { name: string });
+          }
+          // No resource name = settled no-resource outcome: known zero.
+          throw error;
+        }
+        if (settledOutcome.kind === "rejected") {
+          const lateFailure = classifyProviderError(
+            this.id,
+            this.provider,
+            this.model,
+            settledOutcome.createError,
+            1,
+            Date.now(),
+          );
+          const abortShaped =
+            lateFailure.failure_class === "cancelled" ||
+            cachePreparationAbortKind(settledOutcome.createError) !== undefined ||
+            /abort/i.test(
+              String((settledOutcome.createError as { name?: unknown } | null)?.name ?? ""),
+            );
+          const qualifiesKnownZero =
+            !lateFailure.retryable &&
+            indeterminateSpendMarkerFor(lateFailure.failure_class, lateFailure.message, 1) === 0 &&
+            !abortShaped;
+          if (qualifiesKnownZero) {
+            const nowMs = Date.now();
+            for (const [key, indexed] of geminiExplicitCacheIndex) {
+              if (indexed.expires_at_ms <= nowMs) geminiExplicitCacheIndex.delete(key);
+            }
+            geminiExplicitCacheIndex.set(cacheKeyHash, {
+              name: "",
+              token_count: countedTokens ?? 0,
+              expires_at_ms: nowMs + ttlSeconds * 1_000,
+            });
+          } else {
+            params.onIndeterminateCreate();
+          }
+          throw error;
+        }
+        // Cap expiry: permanently indeterminate + bounded poisoned dedup.
+        params.onIndeterminateCreate();
+        geminiExplicitCachePoisoned.set(cacheKeyHash, dispatchedAt + geminiPoisonRetentionMs);
         void createPromise
           .then((created) => {
             if (created && typeof created.name === "string" && created.name.length > 0) {
+              // REUSE-ONLY index insertion: no ledger, no failure-record
+              // mutation, no totals change.
               const providerExpiryMs =
                 typeof created.expireTime === "string"
                   ? Date.parse(created.expireTime)
                   : Number.NaN;
-              const lateTokenCount = created.usageMetadata?.totalTokenCount ?? countedTokens ?? 0;
               geminiExplicitCacheIndex.set(cacheKeyHash, {
                 name: created.name,
-                token_count: lateTokenCount,
+                token_count: created.usageMetadata?.totalTokenCount ?? countedTokens ?? 0,
                 expires_at_ms: Number.isFinite(providerExpiryMs)
                   ? providerExpiryMs
                   : dispatchedAt + ttlSeconds * 1_000,
               });
-              // Round 15: the late notice feeds the SAME FinOps manifest
-              // row as the normal path — it must carry the full billing
-              // dimensions or the row cannot reconcile the billed storage.
-              const lateTokenHours = (lateTokenCount * ttlSeconds) / 3_600;
-              const lateStorageRate = resolveCostRate(
-                this.config,
-                this.id,
-                this.model,
-              )?.cache_storage_per_million_hour;
-              notice(
-                "Gemini explicit cache creation settled AFTER cancellation; the billed resource was indexed for reuse.",
-                {
-                  model: this.model,
-                  cache_name: created.name,
-                  token_count: lateTokenCount,
-                  ttl,
-                  ttl_seconds: ttlSeconds,
-                  storage_token_hours: lateTokenHours,
-                  ...(typeof lateStorageRate === "number"
-                    ? { storage_cost_usd: (lateTokenHours / 1_000_000) * lateStorageRate }
-                    : {}),
-                  key_hash: cacheKeyHash,
-                  // Round 16: the orchestrator reconciles this late
-                  // settlement into session accounting (one indeterminate
-                  // attempt becomes known storage spend).
-                  late_settlement: true,
-                },
-              );
             }
           })
-          .catch((lateError: unknown) => {
-            // Round 19: a DEFINITIVE late rejection (non-retryable,
-            // unambiguous - e.g. a 400) means the cancelled attempt
-            // created no billed resource: record the negative sentinel
-            // (same as the synchronous path) and reconcile the attempt
-            // as KNOWN ZERO. Ambiguous/transient late failures keep the
-            // indeterminate marker.
-            const lateFailure = classifyProviderError(
-              this.id,
-              this.provider,
-              this.model,
-              lateError,
-              1,
-              Date.now(),
-            );
-            const lateAmbiguous =
-              indeterminateSpendMarkerFor(lateFailure.failure_class, lateFailure.message, 1) > 0;
-            if (!lateAmbiguous && !lateFailure.retryable) {
-              const nowMs = Date.now();
-              for (const [key, indexed] of geminiExplicitCacheIndex) {
-                if (indexed.expires_at_ms <= nowMs) geminiExplicitCacheIndex.delete(key);
-              }
-              geminiExplicitCacheIndex.set(cacheKeyHash, {
-                name: "",
-                token_count: countedTokens ?? 0,
-                expires_at_ms: nowMs + ttlSeconds * 1_000,
-              });
-              notice(
-                "Gemini explicit cache creation REJECTED after cancellation; the attempt reconciles as known zero storage spend.",
-                {
-                  model: this.model,
-                  token_count: 0,
-                  ttl,
-                  ttl_seconds: ttlSeconds,
-                  storage_token_hours: 0,
-                  storage_cost_usd: 0,
-                  key_hash: cacheKeyHash,
-                  late_settlement: true,
-                },
-              );
-            }
-          })
-          .finally(() => params.releaseInFlight());
+          .catch(() => undefined)
+          .finally(() => geminiExplicitCachePoisoned.delete(cacheKeyHash));
+        throw error;
       }
+      const ambiguous =
+        indeterminateSpendMarkerFor(createFailure.failure_class, createFailure.message, 1) > 0;
+      if (ambiguous) params.onIndeterminateCreate();
       // Round 13: a TERMINAL, unambiguous rejection (the model does not
       // support cachedContents) is deterministic for this key — record
       // the negative sentinel so later rounds go straight to uncached
@@ -1018,10 +1022,26 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           const existing = geminiExplicitCacheIndex.get(cacheKeyHash);
           // A 15s guard band avoids referencing an entry that expires while
           // the request is in flight.
+          const poisonedDeadline = geminiExplicitCachePoisoned.get(cacheKeyHash);
+          if (poisonedDeadline !== undefined && poisonedDeadline <= Date.now()) {
+            // Leak-free release: the retention window expired without a
+            // settlement notification; a fresh creation becomes possible.
+            geminiExplicitCachePoisoned.delete(cacheKeyHash);
+          }
           if (existing && existing.expires_at_ms > Date.now() + 15_000) {
             // name === "" is the negative sentinel: counted below the
             // provider minimum — stay uncached without re-counting.
             cacheEntry = existing.name === "" ? undefined : existing;
+          } else if (
+            geminiExplicitCachePoisoned.has(cacheKeyHash) &&
+            (geminiExplicitCachePoisoned.get(cacheKeyHash) ?? 0) > Date.now()
+          ) {
+            // v4.7.0 structural contract: a POISONED key (a cancelled
+            // creation whose SDK promise outlived the wait cap) neither
+            // waits nor creates — this review proceeds uncached
+            // immediately, so no duplicate billed creation is possible
+            // and no caller blocks on the hung promise.
+            cacheEntry = undefined;
           } else {
             const inFlight = geminiExplicitCacheInFlight.get(cacheKeyHash);
             if (inFlight) {

@@ -148,6 +148,34 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
   cache. Creation failures fall back to the uncached request with a
   `provider.cache.notice`; a lost cache is dropped from the index and the
   standard retry envelope re-creates it.
+
+  **Cancellation contract (unanimous design review 25/08/2026, session
+  65828902).** A cancellation that races the billable `caches.create`
+  WAITS, bounded by a ten-second cap, for the SDK promise to settle so
+  the billing outcome is synchronously known:
+  - settled **created** in-cap: the entry is indexed and the
+    deterministic storage charge lands in the attempt ledger — the
+    cancelled attempt reports final KNOWN spend;
+  - settled **rejected** in-cap: the attempt settles as known zero ONLY
+    under a closed rule (not retryable AND no indeterminate marker AND
+    not abort/cancelled-shaped), recording the negative sentinel;
+    anything else keeps the indeterminate-spend marker;
+  - **cap expiry**: the attempt stays PERMANENTLY indeterminate (the
+    unknown-spend gate keeps blocking that session's paid work — spend is
+    overestimated as unknown, never underestimated as known-clean) and
+    the dedup key is _poisoned_ for a bounded 120-second retention
+    window: later reviews of the same key proceed uncached immediately
+    (no wait, no duplicate billed creation); a resource that settles
+    inside the window is indexed for REUSE ONLY (no accounting mutation);
+    window expiry releases the key leak-free. After a release-by-expiry a
+    fresh creation becomes possible again — the theoretical
+    duplicate-creation window exists only after a transport hung for two
+    full minutes and is bounded by one cache creation.
+
+  There is NO late accounting reconciliation: no post-cancellation
+  settlement ever mutates failure records, session totals or per-round
+  costs after they are written.
+
 - **OpenAI GPT-5.6 Sol** uses the current request-wide
   `prompt_cache_options={mode:"implicit", ttl:"30m"}` surface. The legacy
   `CROSS_REVIEW_CACHE_TTL_OPENAI` mapping applies only to older explicitly

@@ -6787,39 +6787,6 @@ export class CrossReviewOrchestrator {
                 `[cross-review] cache manifest append failed: ${safeErrorMessage(error)}; continuing review.`,
               );
             });
-            // Codex round 16: a creation that settled AFTER cancellation
-            // turns one indeterminate attempt into KNOWN storage spend —
-            // reconcile the session's durable accounting, not only the
-            // FinOps manifest.
-            const lateData = (event as { data?: Record<string, unknown> }).data;
-            if (lateData?.late_settlement === true) {
-              void this.store
-                .reconcileLateCacheCreation(session.session_id, {
-                  round: roundNumber,
-                  peer: adapter.id,
-                  usage: {
-                    ...(typeof lateData.storage_token_hours === "number"
-                      ? { cache_storage_token_hours: lateData.storage_token_hours }
-                      : {}),
-                  },
-                  ...(typeof lateData.storage_cost_usd === "number"
-                    ? {
-                        cost: {
-                          currency: "USD" as const,
-                          total_cost: lateData.storage_cost_usd,
-                          cache_storage_cost: lateData.storage_cost_usd,
-                          estimated: true,
-                          source: "configured-rate" as const,
-                        },
-                      }
-                    : {}),
-                })
-                .catch((error) => {
-                  console.error(
-                    `[cross-review] late cache settlement reconciliation failed: ${safeErrorMessage(error)}; continuing review.`,
-                  );
-                });
-            }
           }
           this.emit(event);
         };

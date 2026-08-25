@@ -11,8 +11,10 @@ import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { classifyProviderError } from "../src/peers/errors.js";
 import {
   __geminiExplicitCacheIndexForTests,
+  __geminiExplicitCachePoisonedForTests,
   __resetGeminiExplicitCacheIndexForTests,
   __seedGeminiExplicitCacheIndexForTests,
+  __setGeminiCancelTimingForTests,
   __waiterAbortSettlementForTests,
   GEMINI_EXPLICIT_CACHE_MIN_TOKENS,
   GeminiAdapter,
@@ -1242,14 +1244,12 @@ function capturePerplexityProbe(
     "the negative sentinel survives an unrelated cached-content error",
   );
 
-  // Round 5: a cancellation landing while caches.create is STALLED must
-  // release the attempt promptly (raced abort) instead of waiting the
-  // call out and indexing the entry.
+  // v4.7.0 structural contract: a cancellation that races the BILLABLE
+  // create WAITS (capped) for the SDK promise to settle - a creation that
+  // settles in-cap yields final KNOWN storage spend and an indexed entry.
   __resetGeminiExplicitCacheIndexForTests();
   const stallController = new AbortController();
-  // The pending mock timer keeps the process alive for its duration, so
-  // keep it short — the race must release the attempt far earlier anyway.
-  const stallMock = makeClient({ createDelayMs: 3_000 });
+  const stallMock = makeClient({ createDelayMs: 1_000 });
   const stallAdapter = new GeminiAdapter(geminiCacheConfig);
   (stallAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
     stallMock.client;
@@ -1261,27 +1261,27 @@ function capturePerplexityProbe(
     .catch((error: unknown) => {
       stallError = error;
     });
+  const stallElapsed = Date.now() - stallStarted;
   assert.ok(
-    Date.now() - stallStarted < 2_000,
-    "a stalled creation must not hold the cancelled attempt hostage",
-  );
-  // Codex round 11 (class sweep): the abort landed while the BILLABLE
-  // caches.create was in flight - the server may have created and billed
-  // the resource, so the failure must carry an indeterminate-spend marker.
-  const stallFailure = (stallError as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
-  assert.ok(
-    (stallFailure?.indeterminate_spend_attempts ?? 0) >= 1,
-    `an abort racing an in-flight caches.create keeps its spend indeterminate: ${JSON.stringify({
-      failure_class: stallFailure?.failure_class,
-      unpriced: stallFailure?.unpriced_attempts,
-      indeterminate: stallFailure?.indeterminate_spend_attempts,
-    })}`,
+    stallElapsed >= 900 && stallElapsed < 5_000,
+    `the cancelled attempt waits for the in-cap settle (${stallElapsed}ms)`,
   );
   assert.equal(stallMock.createCalls.length, 1, "the creation was dispatched before the abort");
   assert.equal(
     __geminiExplicitCacheIndexForTests().size,
+    1,
+    "an in-cap settled creation is indexed for reuse",
+  );
+  const stallFailure = (stallError as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+  assert.equal(stallFailure?.failure_class, "cancelled");
+  assert.equal(
+    stallFailure?.indeterminate_spend_attempts ?? 0,
     0,
-    "a raced-away creation never indexes an entry",
+    "an in-cap settled creation carries no indeterminate marker",
+  );
+  assert.ok(
+    Math.abs((stallFailure?.cost?.cache_storage_cost ?? 0) - 0.0225) < 1e-12,
+    `the cancelled attempt carries the final KNOWN storage spend: ${stallFailure?.cost?.cache_storage_cost}`,
   );
 
   // Round 7: a WAITER sharing the in-flight creation races its own
@@ -1378,9 +1378,9 @@ function capturePerplexityProbe(
   assert.equal(sharedMock.createCalls.length, 1, "the creator still completes its creation");
   assert.equal(creatorResult.usage?.cache_storage_token_hours, 5_000);
 
-  // Codex round 21: an abort that won the BILLABLE create race must not
-  // continue into generateContent - the indeterminate creation
-  // accounting is retained and the call stops before generation.
+  // v4.7.0 structural contract: an abort that won the BILLABLE create
+  // race never continues into generateContent, and the in-cap settle
+  // yields final known accounting.
   __resetGeminiExplicitCacheIndexForTests();
   const billableAbortMock = makeClient({ createDelayMs: 400 });
   const billableAbortAdapter = new GeminiAdapter(geminiCacheConfig);
@@ -1402,11 +1402,64 @@ function capturePerplexityProbe(
   const billableAbortFailure = (billableAbortError as { peerFailure?: PeerFailure } | undefined)
     ?.peerFailure;
   assert.equal(billableAbortFailure?.failure_class, "cancelled");
-  assert.ok(
-    (billableAbortFailure?.indeterminate_spend_attempts ?? 0) >= 1,
-    "the billable-race abort keeps its indeterminate creation accounting",
+  assert.equal(
+    billableAbortFailure?.indeterminate_spend_attempts ?? 0,
+    0,
+    "the in-cap settled creation leaves no indeterminate marker",
   );
-  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  // v4.7.0 structural contract: cap expiry poisons the dedup key for a
+  // bounded retention window - later reviews proceed uncached with no
+  // duplicate creation; a resource settling inside the window is indexed
+  // for REUSE ONLY and the key releases leak-free.
+  __resetGeminiExplicitCacheIndexForTests();
+  __setGeminiCancelTimingForTests(100, 2_000);
+  try {
+    const poisonMock = makeClient({ createDelayMs: 600 });
+    const poisonAdapter = new GeminiAdapter(geminiCacheConfig);
+    (poisonAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      poisonMock.client;
+    const poisonController = new AbortController();
+    setTimeout(() => poisonController.abort(), 30);
+    let poisonError: unknown;
+    await poisonAdapter
+      .call(prompt, { ...context(stableHead.length), signal: poisonController.signal })
+      .catch((error: unknown) => {
+        poisonError = error;
+      });
+    const poisonFailure = (poisonError as { peerFailure?: PeerFailure } | undefined)?.peerFailure;
+    assert.ok(
+      (poisonFailure?.indeterminate_spend_attempts ?? 0) >= 1,
+      "cap expiry keeps the attempt permanently indeterminate",
+    );
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().size,
+      1,
+      "cap expiry poisons the dedup key",
+    );
+    const bypassAdapter = new GeminiAdapter(geminiCacheConfig);
+    (bypassAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      poisonMock.client;
+    const bypassResult = await bypassAdapter.call(prompt, context(stableHead.length));
+    assert.ok(bypassResult.text.length > 0, "a poisoned key proceeds uncached immediately");
+    assert.equal(
+      poisonMock.createCalls.length,
+      1,
+      "a poisoned key never starts a duplicate billed creation",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().size,
+      0,
+      "the settled promise releases the poisoned key",
+    );
+    const reusedEntry = [...__geminiExplicitCacheIndexForTests().values()].find(
+      (entry) => entry.name !== "",
+    );
+    assert.ok(reusedEntry, "a resource settling inside the window is indexed for reuse only");
+  } finally {
+    __setGeminiCancelTimingForTests(10_000, 120_000);
+  }
 
   // Codex round 13: the local expiry anchors on the PRE-DISPATCH
   // timestamp (or the provider's returned expireTime) - a slow
@@ -1505,61 +1558,35 @@ function capturePerplexityProbe(
     "disarmed carries no trailing Round line after the review body",
   );
 
-  // Codex round 14: an aborted creator keeps the in-flight dedup entry
-  // until the underlying SDK request settles - a later review for the
-  // same key must NOT start a duplicate billed creation, and a resource
-  // that materializes after the abort is indexed for reuse.
+  // v4.7.0 structural contract: the aborted creator settles in-cap with
+  // final known accounting and the indexed entry; a follower review of
+  // the same key reuses the entry instead of creating a duplicate.
   __resetGeminiExplicitCacheIndexForTests();
   const abortedCreatorMock = makeClient({ createDelayMs: 400 });
   const abortedCreator = new GeminiAdapter(geminiCacheConfig);
   (abortedCreator as unknown as { client: () => Promise<unknown> }).client = async () =>
     abortedCreatorMock.client;
   const abortedCreatorController = new AbortController();
-  const abortedCreatorEvents: RuntimeEvent[] = [];
   setTimeout(() => abortedCreatorController.abort(), 50);
   await abortedCreator
-    .call(prompt, {
-      ...context(stableHead.length),
-      emit: (event: RuntimeEvent) => {
-        abortedCreatorEvents.push(event);
-      },
-      signal: abortedCreatorController.signal,
-    })
+    .call(prompt, { ...context(stableHead.length), signal: abortedCreatorController.signal })
     .catch(() => undefined);
   const followerAdapter = new GeminiAdapter(geminiCacheConfig);
   (followerAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
     abortedCreatorMock.client;
   const followerResult = await followerAdapter.call(prompt, context(stableHead.length));
-  assert.ok(followerResult.text.length > 0, "the follower still reviews (uncached) while pending");
+  assert.ok(followerResult.text.length > 0, "the follower reviews using the settled entry");
   assert.equal(
     abortedCreatorMock.createCalls.length,
     1,
-    "the follower joins the outstanding creation instead of starting a duplicate",
+    "the follower reuses the in-cap settled creation instead of starting a duplicate",
   );
-  await new Promise((resolve) => setTimeout(resolve, 550));
-  const materialized = [...__geminiExplicitCacheIndexForTests().values()].find(
-    (entry) => entry.name !== "",
-  );
-  assert.ok(
-    materialized,
-    "a resource that materializes after the abort is indexed for later reuse",
-  );
-  // Codex round 15: the late-creation notice carries the SAME billing
-  // dimensions as the normal creation path - the manifest row it feeds
-  // must reconcile the billed storage (token_count, ttl_seconds,
-  // storage_token_hours, storage_cost_usd).
-  const lateCreationEvent = abortedCreatorEvents.find((event) =>
-    String(event.message ?? "").includes("settled AFTER cancellation"),
-  );
-  assert.ok(lateCreationEvent, "the post-cancellation creation emits its notice");
-  const lateData =
-    (lateCreationEvent as { data?: Record<string, unknown> } | undefined)?.data ?? {};
-  assert.equal(lateData.token_count, 5_000, "late creation notice carries the token count");
-  assert.equal(lateData.ttl_seconds, 3_600, "late creation notice carries the TTL");
-  assert.equal(lateData.storage_token_hours, 5_000, "late creation notice carries the token-hours");
-  assert.ok(
-    Math.abs(((lateData.storage_cost_usd as number) ?? 0) - 0.0225) < 1e-12,
-    `late creation notice carries the priced storage cost: ${lateData.storage_cost_usd}`,
+  type FollowerGenCall = { config?: { cachedContent?: string } };
+  const followerGen = abortedCreatorMock.genCalls.at(-1) as FollowerGenCall | undefined;
+  assert.equal(
+    followerGen?.config?.cachedContent,
+    "cachedContents/fixture-1",
+    "the follower generation reads through the reused cache entry",
   );
 
   // Codex round 16: the cachedContents minimum is per model - a Flash
