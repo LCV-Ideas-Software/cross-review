@@ -46,7 +46,8 @@ updates:
     cooldown:
       default-days: 3
       exclude:
-        - "*"
+        - "actions/*"
+        - "github/*"
     open-pull-requests-limit: 10
     groups:
       codeql-action:
