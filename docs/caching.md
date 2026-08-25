@@ -134,7 +134,10 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
   prompt's stable head (contract directives + review focus + attached
   evidence, marked by the orchestrator) when the free `countTokens` call — the
   sole eligibility authority, no character gate — reports the documented
-  4,096-token cachedContents minimum. One cache per distinct
+  cachedContents minimum for the effective model: **4,096 tokens for the
+  Pro family (and unknown models, conservatively), 1,024 tokens for the
+  Flash family** (`geminiExplicitCacheMinTokensForModel`). A Flash prefix
+  between 1,024 and 4,095 tokens therefore creates a billed cache. One cache per distinct
   (schema, model, TTL, stable system, head); `CROSS_REVIEW_CACHE_TTL_GEMINI` (`5m`/`1h`,
   default `1h` = the API default) bounds retention, and storage is billed
   deterministically at creation (cached tokens x TTL hours) at

@@ -1056,6 +1056,16 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
               });
               geminiExplicitCacheInFlight.set(cacheKeyHash, creation);
               cacheEntry = await creation;
+              // Round 21: a billable-race abort is swallowed inside the
+              // creation (its indeterminate accounting retained) - the
+              // call must NOT continue into generateContent with an
+              // already-aborted context.
+              if (context.signal?.aborted) {
+                throw Object.assign(
+                  new Error("aborted while a cache-preparation request was in flight"),
+                  { name: "AbortError" },
+                );
+              }
             }
           }
         }

@@ -1378,6 +1378,36 @@ function capturePerplexityProbe(
   assert.equal(sharedMock.createCalls.length, 1, "the creator still completes its creation");
   assert.equal(creatorResult.usage?.cache_storage_token_hours, 5_000);
 
+  // Codex round 21: an abort that won the BILLABLE create race must not
+  // continue into generateContent - the indeterminate creation
+  // accounting is retained and the call stops before generation.
+  __resetGeminiExplicitCacheIndexForTests();
+  const billableAbortMock = makeClient({ createDelayMs: 400 });
+  const billableAbortAdapter = new GeminiAdapter(geminiCacheConfig);
+  (billableAbortAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    billableAbortMock.client;
+  const billableAbortController = new AbortController();
+  setTimeout(() => billableAbortController.abort(), 50);
+  let billableAbortError: unknown;
+  await billableAbortAdapter
+    .call(prompt, { ...context(stableHead.length), signal: billableAbortController.signal })
+    .catch((error: unknown) => {
+      billableAbortError = error;
+    });
+  assert.equal(
+    billableAbortMock.genCalls.length,
+    0,
+    "an abort during the billable create race never reaches generateContent",
+  );
+  const billableAbortFailure = (billableAbortError as { peerFailure?: PeerFailure } | undefined)
+    ?.peerFailure;
+  assert.equal(billableAbortFailure?.failure_class, "cancelled");
+  assert.ok(
+    (billableAbortFailure?.indeterminate_spend_attempts ?? 0) >= 1,
+    "the billable-race abort keeps its indeterminate creation accounting",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
   // Codex round 13: the local expiry anchors on the PRE-DISPATCH
   // timestamp (or the provider's returned expireTime) - a slow
   // caches.create must not extend the entry's local lifetime past the

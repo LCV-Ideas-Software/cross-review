@@ -914,12 +914,14 @@ export interface PeerCallContext {
   // (peer:caller:vN). Defaults to "operator" when omitted by the
   // orchestrator (preserves pre-v2.21.0 caller-less calls).
   caller?: PeerId | "operator" | undefined;
-  // v4.7.0 (CROSREV-6): byte length of the review prompt's stable head
+  // v4.7.0 (CROSREV-6): length of the review prompt's stable head
   // (title + session contract directives + review focus + attached
-  // evidence), set only by the orchestrator's review dispatch. Adapters
-  // with a provider-side explicit cache (Gemini) may cache
-  // `prompt.slice(0, n)` and send the remainder live. Always absent for
-  // moderation-safe retries, generations and judge calls.
+  // evidence) in UTF-16 CODE UNITS - the unit of JavaScript string
+  // `.length`/`.slice` used by both the producer (orchestrator review
+  // dispatch) and the consumer (Gemini `prompt.slice(0, n)`). This is
+  // NOT a byte length: deriving it with Buffer.byteLength would overshoot
+  // the boundary on non-ASCII heads. Always absent for moderation-safe
+  // retries, generations and judge calls.
   prompt_stable_prefix_chars?: number | undefined;
 }
 
