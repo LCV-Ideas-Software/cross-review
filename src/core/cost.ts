@@ -406,6 +406,7 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   let cacheRead = 0;
   let cacheWrite = 0;
   let cacheStorage = 0;
+  let cacheStorageKnown = false;
   let savings = 0;
   let savingsKnown = false;
   let savingsUnknown = false;
@@ -438,7 +439,13 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
     // v4.7.0 (CROSREV-6): storage is deterministic spend recorded at cache
     // creation; retry/failure aggregation and session persistence must keep
     // the itemized breakdown, not just fold it into total_cost.
-    if (cost?.cache_storage_cost != null) cacheStorage += cost.cache_storage_cost;
+    if (cost?.cache_storage_cost != null) {
+      cacheStorage += cost.cache_storage_cost;
+      // Round 10: an explicit zero is a marker (deterministically free
+      // creation), not absence - the merge keeps the line when any input
+      // carried it.
+      cacheStorageKnown = true;
+    }
     if (cost?.cache_savings_usd != null) {
       savings += cost.cache_savings_usd;
       savingsKnown = true;
@@ -467,7 +474,7 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   if (outputKnown) merged.output_cost = output;
   if (cacheRead > 0) merged.cache_read_cost = cacheRead;
   if (cacheWrite > 0) merged.cache_write_cost = cacheWrite;
-  if (cacheStorage > 0) merged.cache_storage_cost = cacheStorage;
+  if (cacheStorageKnown) merged.cache_storage_cost = cacheStorage;
   if (savingsKnown && savings > 0) merged.cache_savings_usd = savings;
   if (savingsUnknown) merged.cache_savings_unknown = true;
   if (request > 0) merged.request_cost = request;

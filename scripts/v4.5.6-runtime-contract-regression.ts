@@ -2274,6 +2274,31 @@ const regressions: Regression[] = [
         Math.abs((mergedStorage.cache_storage_cost ?? 0) - 0.0225) < 1e-15,
         `mergeCost accumulates cache_storage_cost: ${mergedStorage.cache_storage_cost}`,
       );
+      // Codex review of PR #240, round 10: a zero-rate creation stamps
+      // cache_storage_cost: 0 explicitly - the merge must preserve the
+      // marker (deterministically free != no storage line).
+      const mergedZeroStorage = mergeCost([
+        {
+          currency: "USD",
+          total_cost: 0.01,
+          input_cost: 0.005,
+          output_cost: 0.005,
+          estimated: true,
+          source: "configured-rate",
+        },
+        {
+          currency: "USD",
+          total_cost: 0,
+          cache_storage_cost: 0,
+          estimated: true,
+          source: "configured-rate",
+        },
+      ]);
+      assert.equal(
+        mergedZeroStorage.cache_storage_cost,
+        0,
+        `mergeCost preserves an explicit zero cache_storage_cost marker: ${mergedZeroStorage.cache_storage_cost}`,
+      );
       const agentPreflight = estimatedPeerRoundCost(agentConfig, ["perplexity"], "four");
       const agentEnvelope = estimateCost(
         agentConfig,
