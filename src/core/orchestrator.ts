@@ -2775,6 +2775,12 @@ export function truthfulnessPreflight(params: {
       // is still judged. Stamped per occurrence via clauseBounds.
       const futureClausePattern =
         /\b(?:will|would|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|planejad[oa]|futur[oa])\b/i;
+      // Codex round 6 of PR #247: only MODAL markers (will/would/plans to)
+      // open a scope that governs the following verbs — a nominal planning
+      // modifier ("the PLANNED deployment", "the roadmap") does not, so an
+      // explicit current marker after it renews the actual-state assertion
+      // without requiring a contrast word.
+      const modalFutureHeadPattern = /^(?:will|would|vai|ser[aá]|plans\s+to)$/i;
       const occurrences: ModelOccurrence[] = [];
       const seenTokenStarts = new Set<number>();
       const recordOccurrence = (
@@ -2895,8 +2901,11 @@ export function truthfulnessPreflight(params: {
       // line — it stays visible so the surrounding clause's claim is still
       // located; multi-word quotes keep masking (a quoted log line never
       // steals a clause).
+      // Codex round 6: typographic (curly) quote pairs mask like straight
+      // ASCII quotes - quoted examples in ordinary prose are not asserted
+      // runtime claims.
       aliasBase = aliasBase
-        .replace(/"[^"]*"|'[^']*'/g, (m) => {
+        .replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (m) => {
           const inner = m.slice(1, -1).trim();
           const singleAlias =
             inner.length <= 24 &&
@@ -2991,15 +3000,26 @@ export function truthfulnessPreflight(params: {
       const currentAssertionPattern =
         /\b(?:is|are|runs?|uses?|currently|atualmente|roda|usa|est[aá])\b/i;
       const contrastMarkerPattern = /\b(?:but|yet|however|mas|por[eé]m|contudo)\b/i;
-      type MarkerEvent = { idx: number; kind: "current" | "future" | "contrast" };
+      type MarkerEvent = {
+        idx: number;
+        kind: "current" | "future" | "contrast";
+        modal?: boolean;
+      };
       const markerEvents = (text: string): MarkerEvent[] => {
         const events: MarkerEvent[] = [];
+        for (const match of text.matchAll(new RegExp(futureClausePattern.source, "gi"))) {
+          if (match.index === undefined) continue;
+          const modal =
+            modalFutureHeadPattern.test(match[0]) ||
+            (/^planning$/i.test(match[0]) &&
+              /^\s+to\b/i.test(text.slice(match.index + match[0].length)));
+          events.push({ idx: match.index, kind: "future", modal });
+        }
         const collect = (pattern: RegExp, kind: MarkerEvent["kind"]): void => {
           for (const match of text.matchAll(new RegExp(pattern.source, "gi"))) {
             if (match.index !== undefined) events.push({ idx: match.index, kind });
           }
         };
-        collect(futureClausePattern, "future");
         collect(currentAssertionPattern, "current");
         collect(contrastMarkerPattern, "contrast");
         events.sort((a, b) => a.idx - b.idx);
@@ -3008,13 +3028,15 @@ export function truthfulnessPreflight(params: {
       const markerStateAtEnd = (text: string): "none" | "current" | "future" => {
         let state: "none" | "current" | "future" = "none";
         let contrastSinceFuture = false;
+        let futureIsModal = false;
         for (const event of markerEvents(text)) {
           if (event.kind === "future") {
             state = "future";
+            futureIsModal = event.modal === true;
             contrastSinceFuture = false;
           } else if (event.kind === "contrast") {
             contrastSinceFuture = true;
-          } else if (state !== "future" || contrastSinceFuture) {
+          } else if (state !== "future" || contrastSinceFuture || !futureIsModal) {
             state = "current";
           }
         }
@@ -3161,16 +3183,32 @@ export function truthfulnessPreflight(params: {
         const indirectRequestPattern =
           /\b(?:determine|check|verify|confirm|find\s+out|figure\s+out|identify|decide|determinar|verificar|confirmar|descobrir|identificar)\s+(?:which|what|whether|if|qual|quais|se)\b/i;
         let segmentStart = 0;
+        // Codex round 6: a historical construction crosses its introductory
+        // comma — "When the audit began, the ... model was X" masks the
+        // continuation too, until a segment carries an explicit current
+        // marker (the mixed-current case stays visible) or the sentence
+        // ends (. or ;). The historical branch still judges the masked
+        // claim, so it keeps requiring snapshot-timing evidence.
+        let historicalCarry = false;
         for (const bound of [...clauseBounds, { start: aliasBase.length, end: aliasBase.length }]) {
           const segment = aliasBase.slice(segmentStart, bound.start);
+          const terminalDelimiter = /[.;]/.test(aliasBase.slice(bound.start, bound.end));
           if (
             HISTORICAL_RUNTIME_TIMING_PATTERN.test(segment) ||
             indirectRequestPattern.test(segment)
           ) {
             maskGuardRange(segmentStart, bound.start);
+            historicalCarry = HISTORICAL_RUNTIME_TIMING_PATTERN.test(segment) && !terminalDelimiter;
             segmentStart = bound.end;
             continue;
           }
+          if (historicalCarry && markerStateAtEnd(segment) !== "current") {
+            maskGuardRange(segmentStart, bound.start);
+            if (terminalDelimiter) historicalCarry = false;
+            segmentStart = bound.end;
+            continue;
+          }
+          historicalCarry = false;
           // Codex round 5: future masking uses the same marker state
           // machine as the token stamping — spans whose governing marker
           // is future (contrast-aware) are masked, so a current assertion
@@ -3179,6 +3217,7 @@ export function truthfulnessPreflight(params: {
           {
             let state: "none" | "current" | "future" = "none";
             let contrastSinceFuture = false;
+            let futureIsModal = false;
             let spanStart = -1;
             const closeSpan = (endIdx: number): void => {
               if (spanStart >= 0) {
@@ -3190,10 +3229,11 @@ export function truthfulnessPreflight(params: {
               if (event.kind === "future") {
                 if (state !== "future") spanStart = state === "none" ? 0 : event.idx;
                 state = "future";
+                futureIsModal = event.modal === true;
                 contrastSinceFuture = false;
               } else if (event.kind === "contrast") {
                 contrastSinceFuture = true;
-              } else if (state === "future" && contrastSinceFuture) {
+              } else if (state === "future" && (contrastSinceFuture || !futureIsModal)) {
                 closeSpan(event.idx);
                 state = "current";
               } else if (state !== "future") {

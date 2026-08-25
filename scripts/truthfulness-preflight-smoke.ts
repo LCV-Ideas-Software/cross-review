@@ -1117,6 +1117,36 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a single-alias quote is nomenclature, not a quoted log line - the claim still blocks",
   );
+  // Codex review of PR #247, round 6.
+  const plannedAdjective = anchored(
+    "The planned deployment currently runs the cross-review runtime Codex model gpt-5.5.",
+  );
+  assert.equal(
+    plannedAdjective.pass,
+    false,
+    "a nominal planning word (planned deployment) does not open modal scope - the explicit current marker renews and the captured token contradicts",
+  );
+  assert.ok(
+    plannedAdjective.issue_classes.includes("runtime_contradiction"),
+    "the current captured token is judged by value",
+  );
+  const historicalIntroWithEvidence = anchored(
+    "When the audit began, the cross-review runtime Codex model was alpha beta seven.",
+    "Historical runtime snapshot from events.ndjson: workflow_start server_info version=4.2.0; later reload server_info version=4.2.1.",
+  );
+  assert.equal(
+    historicalIntroWithEvidence.pass,
+    true,
+    "the historical scope crosses its introductory comma - a fully historical sentence with valid timing evidence passes",
+  );
+  const curlyQuoteExample = anchored(
+    "The cross-review runtime model documentation quotes “Codex runs alpha beta seven” as a rejected example.",
+  );
+  assert.equal(
+    curlyQuoteExample.pass,
+    true,
+    "typographic quotes mask multi-word quoted examples like straight quotes do",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
