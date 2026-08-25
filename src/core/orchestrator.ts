@@ -6824,6 +6824,11 @@ export class CrossReviewOrchestrator {
       return { session: updated, round, converged: false };
     }
 
+    // Codex round 28: manifest appends are best-effort but must SETTLE
+    // before the round completes - a FinOps read immediately after
+    // askPeers must see every billed creation row, and a process exit
+    // must not lose the only record of a charge.
+    const pendingManifestAppends: Promise<unknown>[] = [];
     const settled = await Promise.all(
       selectAdapters(adapters, selectedPeers).map(async (adapter) => {
         // Codex round 7: forward explicit-cache creation notices into the
@@ -6831,20 +6836,22 @@ export class CrossReviewOrchestrator {
         // independent of whether the following generation succeeds.
         const emitWithCreationManifest: typeof this.emit = (event) => {
           if (event.type === "provider.cache.notice") {
-            void appendExplicitCacheCreationManifest({
-              dataDir: this.config.data_dir,
-              sessionId: session.session_id,
-              round: roundNumber,
-              peer: adapter.id,
-              provider: adapter.provider,
-              model: adapter.model,
-              eventData: (event as { data?: unknown }).data,
-              schemaVersion: this.config.cache.schema_version,
-            }).catch((error) => {
-              console.error(
-                `[cross-review] cache manifest append failed: ${safeErrorMessage(error)}; continuing review.`,
-              );
-            });
+            pendingManifestAppends.push(
+              appendExplicitCacheCreationManifest({
+                dataDir: this.config.data_dir,
+                sessionId: session.session_id,
+                round: roundNumber,
+                peer: adapter.id,
+                provider: adapter.provider,
+                model: adapter.model,
+                eventData: (event as { data?: unknown }).data,
+                schemaVersion: this.config.cache.schema_version,
+              }).catch((error) => {
+                console.error(
+                  `[cross-review] cache manifest append failed: ${safeErrorMessage(error)}; continuing review.`,
+                );
+              }),
+            );
           }
           this.emit(event);
         };
@@ -6897,6 +6904,9 @@ export class CrossReviewOrchestrator {
         return outcome;
       }),
     );
+    // Round 28: settle every manifest append recorded during the peer
+    // calls before the round proceeds to persistence and return.
+    await Promise.allSettled(pendingManifestAppends);
 
     const peers: PeerResult[] = [];
     const rejected: PeerFailure[] = [];

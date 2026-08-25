@@ -19,6 +19,18 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
 
+- Codex round 28 closed three exposure edges: an AMBIGUOUS creation
+  failure now poisons its dedup key with the same bounded retention the
+  cancellation-cap path uses (the next retry or round proceeds uncached
+  instead of dispatching a duplicate billable creation for a resource
+  the server may already have billed); the askPeers round settles every
+  cache-manifest append before completing (a FinOps read immediately
+  after the round sees every billed creation row, and a process exit
+  cannot lose the only record); and the adapter enforces the
+  storage-rate requirement itself before `caches.create` - a route that
+  bypassed the orchestrator's financial preflight can no longer dispatch
+  a billable creation whose storage cost cannot be priced (fail-closed).
+
 - Codex round 27 closed three accounting edges: the fallback reserve
   builds its sources from the failure chain alone (round 26 spread the
   primary in twice, doubling its worst-case reserve and over-blocking

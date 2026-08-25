@@ -259,6 +259,7 @@ const geminiExplicitCacheInFlight = new Map<
 export function __resetGeminiExplicitCacheIndexForTests(): void {
   geminiExplicitCacheIndex.clear();
   geminiExplicitCacheInFlight.clear();
+  geminiExplicitCachePoisoned.clear();
 }
 
 export function __geminiExplicitCacheIndexForTests(): ReadonlyMap<
@@ -703,6 +704,22 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         cache_preparation_abort: "free",
       });
     }
+    // Codex round 28: the adapter enforces the storage-rate requirement
+    // ITSELF - a route that bypassed the orchestrator's financial
+    // preflight must never dispatch a billable creation whose storage
+    // cost cannot be priced (fail-closed).
+    const storageRateForCreate = resolveCostRate(
+      this.config,
+      this.id,
+      this.model,
+    )?.cache_storage_per_million_hour;
+    if (typeof storageRateForCreate !== "number") {
+      notice(
+        "Gemini explicit cache skipped: no cache-storage rate is configured for this model, so the storage charge could not be priced; continuing uncached (fail-closed).",
+        { model: this.model, key_hash: cacheKeyHash },
+      );
+      return undefined;
+    }
     // Codex round 16: the minimum is PER MODEL (Flash 1,024 / Pro 4,096).
     const modelMinTokens = geminiExplicitCacheMinTokensForModel(this.model);
     if (countedTokens < modelMinTokens) {
@@ -991,7 +1008,23 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       }
       const ambiguous =
         indeterminateSpendMarkerFor(createFailure.failure_class, createFailure.message, 1) > 0;
-      if (ambiguous) params.onIndeterminateCreate();
+      if (ambiguous) {
+        params.onIndeterminateCreate();
+        // Round 28: an ambiguous creation failure may have created and
+        // billed the resource server-side - the key gets the same
+        // bounded poison the cancellation-cap path uses, so the next
+        // retry or round proceeds uncached instead of dispatching a
+        // duplicate billable creation. The SDK request has settled, so
+        // release is by retention expiry alone (leak-free via the
+        // expiry check at the call site and the insertion sweep).
+        const ambiguousPoisonNowMs = Date.now();
+        for (const [key, marker] of geminiExplicitCachePoisoned) {
+          if (marker.deadline <= ambiguousPoisonNowMs) geminiExplicitCachePoisoned.delete(key);
+        }
+        geminiExplicitCachePoisoned.set(cacheKeyHash, {
+          deadline: ambiguousPoisonNowMs + geminiPoisonRetentionMs,
+        });
+      }
       // Round 13: a TERMINAL, unambiguous rejection (the model does not
       // support cachedContents) is deterministic for this key — record
       // the negative sentinel so later rounds go straight to uncached

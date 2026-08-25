@@ -1720,6 +1720,59 @@ function capturePerplexityProbe(
     );
   }
 
+  // Codex round 28: an AMBIGUOUS creation failure poisons the key with
+  // the same bounded retention the cancellation-cap path uses - the next
+  // withRetry attempt (after a retryable generation failure) proceeds
+  // uncached instead of dispatching a duplicate billable creation.
+  __resetGeminiExplicitCacheIndexForTests();
+  {
+    const ambiguousCreateMock = makeClient({
+      createError: new Error("network timeout while creating cachedContents"),
+      generateErrors: [Object.assign(new Error("503 service unavailable"), { status: 503 })],
+    });
+    const ambiguousAdapter = new GeminiAdapter(geminiCacheConfig);
+    (ambiguousAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      ambiguousCreateMock.client;
+    const ambiguousResult = await ambiguousAdapter.call(prompt, context(stableHead.length));
+    assert.ok(ambiguousResult.text.length > 0, "the retried generation completes uncached");
+    assert.equal(
+      ambiguousCreateMock.createCalls.length,
+      1,
+      "the ambiguous creation is never re-dispatched for the same key",
+    );
+    assert.equal(
+      __geminiExplicitCachePoisonedForTests().size,
+      1,
+      "the ambiguous creation poisons the key for the bounded retention window",
+    );
+  }
+
+  // Codex round 28: the adapter enforces the storage-rate requirement
+  // itself - with no cache-storage rate configured, no billable creation
+  // is dispatched even when the orchestrator preflight was bypassed.
+  __resetGeminiExplicitCacheIndexForTests();
+  {
+    const rateStripped = JSON.parse(JSON.stringify(geminiCacheConfig)) as typeof geminiCacheConfig;
+    delete (
+      rateStripped.cost_rates?.gemini as { cache_storage_per_million_hour?: number } | undefined
+    )?.cache_storage_per_million_hour;
+    const geminiCards = rateStripped.model_cost_rates?.gemini ?? {};
+    for (const card of Object.values(geminiCards)) {
+      delete (card as { cache_storage_per_million_hour?: number }).cache_storage_per_million_hour;
+    }
+    const unpricedMock = makeClient();
+    const unpricedAdapter = new GeminiAdapter(rateStripped);
+    (unpricedAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      unpricedMock.client;
+    const unpricedResult = await unpricedAdapter.call(prompt, context(stableHead.length));
+    assert.ok(unpricedResult.text.length > 0, "the review completes uncached");
+    assert.equal(
+      unpricedMock.createCalls.length,
+      0,
+      "no billable creation dispatches without a configured storage rate (fail-closed in the adapter)",
+    );
+  }
+
   // Codex round 25: a hung creation that settles AFTER its retention
   // window never replaces the live entry a NEWER generation installed
   // for the same key - replacing it would orphan the live resource and
