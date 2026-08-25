@@ -2246,8 +2246,12 @@ export class SessionStore {
   // failed-attempts ledger, or an in-flight settlement) and settles
   // exactly one attempt: indeterminate and unpriced each drop by one and
   // the storage usage/cost merge in, so the unknown-spend gate stops
-  // blocking on an outcome that is now known. Terminal sessions are
-  // sealed (same rule as every late settlement) and return false.
+  // blocking on an outcome that is now known. Round 17: unlike the other
+  // late-settlement guards (which refuse to let a tardy provider RESULT
+  // rewrite a sealed decision), this settlement is ACCOUNTING-ONLY and
+  // monotonic (indeterminate -> known) - it runs even on a terminal
+  // session, never touching the outcome, so FinOps totals stay faithful
+  // to the provider's real charges.
   async reconcileLateCacheCreation(
     sessionId: string,
     params: {
@@ -2259,7 +2263,6 @@ export class SessionStore {
   ): Promise<boolean> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
-      if (meta.outcome) return false;
       const matchesRound = (round: number | undefined): boolean =>
         round === undefined || round === params.round;
       const pool: Array<{

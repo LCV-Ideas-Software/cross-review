@@ -941,6 +941,15 @@ export function missingFinancialControlVars(
     // absent is already reported by the generic loop above.
     const primaryModel = config.models.gemini;
     for (const model of new Set([primaryModel, ...(config.fallback_models.gemini ?? [])])) {
+      // Codex round 17: each model's rate is gated by ITS OWN minimum -
+      // a bound eligible only for the Flash fallback must not demand the
+      // ineligible Pro primary's storage rate.
+      if (
+        options.geminiCacheableBytesBound !== undefined &&
+        options.geminiCacheableBytesBound < geminiExplicitCacheMinTokensForModel(model)
+      ) {
+        continue;
+      }
       const geminiRate = resolveCostRate(config, "gemini", model);
       if (!geminiRate) continue;
       if (geminiRate.cache_storage_per_million_hour == null) {

@@ -2397,6 +2397,66 @@ const regressions: Regression[] = [
           "with no indeterminate record left the reconciliation is a no-op",
         );
       }
+      // Codex round 17: a creation that settles after the session is
+      // TERMINAL still reconciles - the settlement is accounting-only
+      // and monotonic (indeterminate -> known), it never touches the
+      // outcome, so FinOps totals and the spend classification stay
+      // faithful to the provider's real charges.
+      {
+        const { SessionStore } = await import("../src/core/session-store.js");
+        const terminalDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-terminal-rec-"));
+        const terminalStore = new SessionStore({
+          ...geminiPreflightPriced,
+          data_dir: terminalDir,
+        });
+        const terminalSession = await terminalStore.init(
+          "reconcile after terminal",
+          "operator",
+          [],
+          undefined,
+        );
+        await terminalStore.recordPeerFailureAccounting(terminalSession.session_id, 1, {
+          peer: "gemini",
+          provider: "google",
+          model: "gemini-3.1-pro-preview",
+          failure_class: "cancelled",
+          message: "cancelled while caches.create was in flight",
+          retryable: false,
+          attempts: 1,
+          latency_ms: 10,
+          unpriced_attempts: 1,
+          indeterminate_spend_attempts: 1,
+        });
+        await terminalStore.markCancelled(terminalSession.session_id, "session_cancelled");
+        const reconciledTerminal = await terminalStore.reconcileLateCacheCreation(
+          terminalSession.session_id,
+          {
+            round: 1,
+            peer: "gemini",
+            usage: { cache_storage_token_hours: 5_000 },
+            cost: {
+              currency: "USD",
+              total_cost: 0.0225,
+              cache_storage_cost: 0.0225,
+              estimated: true,
+              source: "configured-rate",
+            },
+          },
+        );
+        assert.equal(
+          reconciledTerminal,
+          true,
+          "an accounting-only settlement is permitted after terminalization",
+        );
+        const terminalMeta = terminalStore.read(terminalSession.session_id);
+        assert.equal(terminalMeta.outcome, "aborted", "the outcome is untouched");
+        const terminalFailure = (terminalMeta.failed_attempts ?? []).at(-1);
+        assert.equal(terminalFailure?.indeterminate_spend_attempts, 0);
+        assert.ok(
+          Math.abs((terminalMeta.totals.cost.total_cost ?? 0) - 0.0225) < 1e-12,
+          `terminal session totals include the reconciled storage: ${terminalMeta.totals.cost.total_cost}`,
+        );
+      }
       // Codex round 16: the cachedContents minimum is per model - Flash is
       // 1,024 tokens, Pro is 4,096, unknown models stay conservative.
       {
@@ -2404,20 +2464,30 @@ const regressions: Regression[] = [
         assert.equal(geminiExplicitCacheMinTokensForModel("gemini-2.5-flash"), 1_024);
         assert.equal(geminiExplicitCacheMinTokensForModel("gemini-3.1-pro-preview"), 4_096);
         assert.equal(geminiExplicitCacheMinTokensForModel("gemini-unknown"), 4_096);
-        assert.equal(
-          missingFinancialControlVars(
-            {
-              ...geminiArmedConfig,
-              fallback_models: {
-                ...geminiArmedConfig.fallback_models,
-                gemini: ["gemini-2.5-flash"],
-              },
+        // Codex round 17: the rate requirement is PER MODEL - a 2,000-byte
+        // bound is eligible only for the Flash fallback (1,024 minimum),
+        // so the Flash rate is required while the ineligible Pro primary
+        // (4,096 minimum) is not.
+        const perModelMissing = missingFinancialControlVars(
+          {
+            ...geminiArmedConfig,
+            fallback_models: {
+              ...geminiArmedConfig.fallback_models,
+              gemini: ["gemini-2.5-flash"],
             },
-            ["gemini"],
-            { reviewerPeers: ["gemini"], geminiCacheableBytesBound: 2_000 },
-          ).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+          },
+          ["gemini"],
+          { reviewerPeers: ["gemini"], geminiCacheableBytesBound: 2_000 },
+        );
+        assert.equal(
+          perModelMissing.includes('model_cost_rates.gemini["gemini-2.5-flash"]'),
           true,
-          "a 2,000-byte bound is eligible for a Flash fallback (1,024 minimum) and keeps requiring the rate",
+          "the eligible Flash fallback still requires its (entirely missing) rate card",
+        );
+        assert.equal(
+          perModelMissing.includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+          false,
+          "the ineligible Pro primary (4,096 minimum vs 2,000-byte bound) does not require its storage rate",
         );
       }
       // Codex round 15: when cancellation finalizes a failure, withRetry
