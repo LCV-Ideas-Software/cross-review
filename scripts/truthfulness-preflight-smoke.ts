@@ -1470,6 +1470,39 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a reporting verb ends the nominal planning scope even with a zero complementizer - the reported claim is judged current",
   );
+  // Codex review of PR #247, round 16.
+  const mayMonth = anchored("The cross-review runtime Codex model as of May is gpt-5.5.");
+  assert.equal(
+    mayMonth.pass,
+    false,
+    "the month name May (after a date preposition) is not a modal - the contradictory pin is judged current",
+  );
+  assert.ok(
+    mayMonth.issue_classes.includes("runtime_contradiction"),
+    "the as-of-May claim is judged by value",
+  );
+  const descriptiveCoordinate = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol, and performs careful reviews.",
+  );
+  assert.equal(
+    descriptiveCoordinate.pass,
+    true,
+    "a descriptive coordinate (performs careful reviews) carries no code word and is not a model-identity candidate",
+  );
+  const denialSubordinate = anchored(
+    "The cross-review runtime Codex model is not the configured model pin at present, although gpt-5.6-sol appears in the documentation.",
+  );
+  assert.equal(
+    denialSubordinate.pass,
+    false,
+    "a NEGATED alias clause is never consumed cross-clause - the denial cannot be validated by a token in an unrelated subordinate",
+  );
+  const apiIntegration = anchored("The cross-review runtime uses OpenAI APIs for embeddings.");
+  assert.equal(
+    apiIntegration.pass,
+    true,
+    "provider API/SDK integration prose is not a model-pin relation",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",

@@ -3134,6 +3134,17 @@ export function truthfulnessPreflight(params: {
         const events: MarkerEvent[] = [];
         for (const match of text.matchAll(new RegExp(futureClausePattern.source, "gi"))) {
           if (match.index === undefined) continue;
+          // Codex round 16: "May" is also a MONTH - after a date
+          // preposition ("as of May", "in May") or capitalized
+          // mid-sentence it is a date, not a modal, and opens no future
+          // scope.
+          if (/^may$/i.test(match[0])) {
+            const before = text.slice(Math.max(0, match.index - 12), match.index);
+            const datePreposition =
+              /(?:of|in|on|since|until|before|after|during|by|early|late|mid)\s+$/i.test(before);
+            const capitalizedMidText = match[0] === "May" && match.index > 0;
+            if (datePreposition || capitalizedMidText) continue;
+          }
           const modal =
             modalFutureHeadPattern.test(match[0]) ||
             (/^planning$/i.test(match[0]) &&
@@ -3215,8 +3226,16 @@ export function truthfulnessPreflight(params: {
       // never value material.
       const usageVerbWordPattern = /^(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)$/i;
       const derivationalAdverbPattern = /^(?:[a-zà-ÿ]+ly|[a-zà-ÿ]+mente)$/i;
+      // Codex round 16: a lowercase multi-word run is a MODEL-IDENTITY
+      // candidate only when it carries a CODE WORD - a written numeral, a
+      // Greek letter or a digit (all closed classes): "alpha beta seven"
+      // and "gpt five six" qualify, a descriptive predicate ("performs
+      // careful reviews") never does.
+      const codeWordPattern =
+        /^(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|um|dois|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez)$/i;
       const hasFragmentedValueCandidate = (text: string): boolean => {
         let run = 0;
+        let runHasCodeWord = false;
         let afterUsageVerb = false;
         for (const word of text.split(/[^A-Za-z0-9à-ÿ'_-]+/)) {
           if (!word) continue;
@@ -3224,11 +3243,13 @@ export function truthfulnessPreflight(params: {
           if (usageVerbWordPattern.test(word)) {
             afterUsageVerb = true;
             run = 0;
+            runHasCodeWord = false;
             continue;
           }
           if (/^#+$/.test(word) || closedClassOrKnownWordPattern.test(word)) {
             afterUsageVerb = false;
             run = 0;
+            runHasCodeWord = false;
             continue;
           }
           // Codex round 14: a single CAPITALIZED opaque word mid-sentence
@@ -3238,7 +3259,8 @@ export function truthfulnessPreflight(params: {
           if (afterUsageVerb) return true;
           if (/^[A-Z]/.test(word)) return true;
           run += 1;
-          if (run >= 2) return true;
+          if (codeWordPattern.test(word) || /[0-9]/.test(word)) runHasCodeWord = true;
+          if (run >= 2 && runHasCodeWord) return true;
         }
         return false;
       };
@@ -3441,6 +3463,21 @@ export function truthfulnessPreflight(params: {
           const crossIdx = occurrence.crossClauseOwnerAliasIndex;
           if (crossIdx === undefined || consumedAliasIndexes.has(crossIdx)) continue;
           const aliasClause = aliasBase.slice(crossIdx, clauseEndFor(crossIdx));
+          // Codex round 16: a NEGATED alias clause is never consumed
+          // cross-clause (a denial cannot be validated by a token in an
+          // unrelated subordinate), and a token sitting in META context
+          // (documentation/examples) is not structurally bound as the
+          // subject's value.
+          if (/\b(?:not|n[aã]o|never|nunca)\b/i.test(aliasClause)) continue;
+          const tokenClause = aliasBase.slice(
+            clauseStartFor(occurrence.matchStart),
+            clauseEndFor(occurrence.index + occurrence.rawLength),
+          );
+          if (
+            /\b(?:documentation|docs?|examples?|documenta[cç][aã]o|exemplos?)\b/i.test(tokenClause)
+          ) {
+            continue;
+          }
           if (!hasFragmentedValueCandidate(aliasClause)) {
             consumedAliasIndexes.add(crossIdx);
           }
@@ -3654,7 +3691,7 @@ export function truthfulnessPreflight(params: {
             // literal model/pin noun - the auth/documentation forms stay
             // excluded via the lookahead after the alias.
             const runtimeUsePattern = new RegExp(
-              `\\b(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)\\s+(?:the\\s+)?(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})(?!\\s+(?:authentication|auth|credentials?|documentation|docs?|keys?|tokens?|billing|accounts?|peer))`,
+              `\\b(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)\\s+(?:the\\s+)?(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})(?!\\s+(?:authentication|auth|credentials?|documentation|docs?|keys?|tokens?|billing|accounts?|peer|APIs?|clients?|SDKs?|integrations?|services?|endpoints?|libraries|library))`,
               "i",
             );
             const relation =
