@@ -1485,9 +1485,16 @@ function capturePerplexityProbe(
   (abortedCreator as unknown as { client: () => Promise<unknown> }).client = async () =>
     abortedCreatorMock.client;
   const abortedCreatorController = new AbortController();
+  const abortedCreatorEvents: RuntimeEvent[] = [];
   setTimeout(() => abortedCreatorController.abort(), 50);
   await abortedCreator
-    .call(prompt, { ...context(stableHead.length), signal: abortedCreatorController.signal })
+    .call(prompt, {
+      ...context(stableHead.length),
+      emit: (event: RuntimeEvent) => {
+        abortedCreatorEvents.push(event);
+      },
+      signal: abortedCreatorController.signal,
+    })
     .catch(() => undefined);
   const followerAdapter = new GeminiAdapter(geminiCacheConfig);
   (followerAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
@@ -1506,6 +1513,23 @@ function capturePerplexityProbe(
   assert.ok(
     materialized,
     "a resource that materializes after the abort is indexed for later reuse",
+  );
+  // Codex round 15: the late-creation notice carries the SAME billing
+  // dimensions as the normal creation path - the manifest row it feeds
+  // must reconcile the billed storage (token_count, ttl_seconds,
+  // storage_token_hours, storage_cost_usd).
+  const lateCreationEvent = abortedCreatorEvents.find((event) =>
+    String(event.message ?? "").includes("settled AFTER cancellation"),
+  );
+  assert.ok(lateCreationEvent, "the post-cancellation creation emits its notice");
+  const lateData =
+    (lateCreationEvent as { data?: Record<string, unknown> } | undefined)?.data ?? {};
+  assert.equal(lateData.token_count, 5_000, "late creation notice carries the token count");
+  assert.equal(lateData.ttl_seconds, 3_600, "late creation notice carries the TTL");
+  assert.equal(lateData.storage_token_hours, 5_000, "late creation notice carries the token-hours");
+  assert.ok(
+    Math.abs(((lateData.storage_cost_usd as number) ?? 0) - 0.0225) < 1e-12,
+    `late creation notice carries the priced storage cost: ${lateData.storage_cost_usd}`,
   );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }

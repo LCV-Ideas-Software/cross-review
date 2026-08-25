@@ -2292,33 +2292,82 @@ const regressions: Regression[] = [
         }).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
         "an eligible payload bound keeps requiring the storage rate",
       );
-      // Codex round 14: same-round paid recovery (fallback, moderation
-      // retry, format/decision recovery) is refused while the triggering
-      // failure or result carries indeterminate provider spend AND a hard
-      // session budget is configured - a ceiling cannot authorize more
-      // paid work without knowing the cost already incurred.
+      // Codex round 14 (revised in round 15): same-round paid recovery
+      // charges the triggering record's indeterminate attempts at their
+      // WORST CASE (one recovery envelope each) against the hard session
+      // ceiling - the budget can never authorize paid work while blind to
+      // possibly-billed spend, and the legitimate network-failure
+      // fallback still proceeds when the ceiling has room.
       {
-        const { recoveryBlockedByUnsettledSpend } = await import("../src/core/orchestrator.js");
+        const { unsettledSpendWorstCaseUsd } = await import("../src/core/orchestrator.js");
         assert.equal(
-          recoveryBlockedByUnsettledSpend(10, { indeterminate_spend_attempts: 1 }),
-          true,
-          "unsettled trigger spend under a hard budget blocks recovery",
+          unsettledSpendWorstCaseUsd(10, { indeterminate_spend_attempts: 2 }),
+          20,
+          "each indeterminate trigger attempt is priced at one recovery envelope",
         );
         assert.equal(
-          recoveryBlockedByUnsettledSpend(null, { indeterminate_spend_attempts: 1 }),
-          false,
-          "without a configured ceiling there is no authorization to protect",
+          unsettledSpendWorstCaseUsd(10, { indeterminate_spend_attempts: 0 }),
+          0,
+          "settled trigger spend adds nothing to the gate",
         );
         assert.equal(
-          recoveryBlockedByUnsettledSpend(10, { indeterminate_spend_attempts: 0 }),
-          false,
-          "settled trigger spend does not block recovery",
+          unsettledSpendWorstCaseUsd(10, undefined),
+          0,
+          "a missing trigger record adds nothing to the gate",
         );
         assert.equal(
-          recoveryBlockedByUnsettledSpend(10, undefined),
-          false,
-          "a missing trigger record does not block recovery",
+          unsettledSpendWorstCaseUsd(0, { indeterminate_spend_attempts: 3 }),
+          0,
+          "a zero envelope prices zero worst case",
         );
+      }
+      // Codex round 15: when cancellation finalizes a failure, withRetry
+      // must PRESERVE the classifier's larger attempt count - an adapter
+      // that accounted internal sub-calls (an ambiguous cache creation)
+      // reports more attempts than the wrapper's loop counter.
+      {
+        const { withRetry } = await import("../src/peers/retry.js");
+        const cancelController = new AbortController();
+        let cancelledFailure: unknown;
+        try {
+          await withRetry(
+            geminiPreflightPriced,
+            async () => {
+              cancelController.abort();
+              throw Object.assign(
+                new Error("aborted while a cache-preparation request was in flight"),
+                {
+                  name: "AbortError",
+                },
+              );
+            },
+            (_error, attempt, started) => ({
+              peer: "gemini" as const,
+              provider: "google",
+              model: "gemini-3.1-pro-preview",
+              failure_class: "cancelled" as const,
+              message: "cancelled with accounted cache sub-attempts",
+              retryable: false,
+              attempts: attempt + 1,
+              latency_ms: Date.now() - started,
+              unpriced_attempts: 2,
+              indeterminate_spend_attempts: 1,
+            }),
+            { signal: cancelController.signal },
+          );
+        } catch (error) {
+          cancelledFailure = (error as { peerFailure?: unknown }).peerFailure;
+        }
+        const cancelledRecord = cancelledFailure as
+          | { attempts?: number; unpriced_attempts?: number; indeterminate_spend_attempts?: number }
+          | undefined;
+        assert.equal(
+          cancelledRecord?.attempts,
+          2,
+          `cancellation preserves the classifier's larger attempt count: ${cancelledRecord?.attempts}`,
+        );
+        assert.equal(cancelledRecord?.unpriced_attempts, 2);
+        assert.equal(cancelledRecord?.indeterminate_spend_attempts, 1);
       }
       const generationEnvelopeWithCache = estimatedPeerRoundCost(
         geminiPreflightPriced,

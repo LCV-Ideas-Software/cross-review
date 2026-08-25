@@ -3965,18 +3965,22 @@ function cancelledConvergence(peers: PeerId[]): ConvergenceResult {
   };
 }
 
-// Codex round 14 (PR #240): same-round paid recovery (fallback,
-// moderation-safe retry, format/decision recovery) must not dispatch
-// while the TRIGGERING failure or result carries indeterminate provider
-// spend AND a hard session budget is configured — the ceiling cannot
-// authorize more paid work without knowing the cost already incurred.
-// Without a configured ceiling there is no authorization to protect.
-// Exported for the runtime-contract regression.
-export function recoveryBlockedByUnsettledSpend(
-  sessionLimitUsd: number | null | undefined,
+// Codex round 14 (PR #240), revised in round 15: same-round paid
+// recovery (fallback, moderation-safe retry, format/decision recovery)
+// must not let a hard session budget authorize more paid work without
+// knowing the cost already incurred. An unconditional block would kill
+// the LEGITIMATE fallback contract (a network failure — indeterminate by
+// class — is the canonical fallback trigger), so the triggering record's
+// indeterminate attempts are priced at their WORST CASE (one recovery
+// envelope each) and charged against the ceiling instead. Exported for
+// the runtime-contract regression.
+export function unsettledSpendWorstCaseUsd(
+  perAttemptEstimateUsd: number,
   trigger: { indeterminate_spend_attempts?: number | undefined } | undefined,
-): boolean {
-  return sessionLimitUsd != null && (trigger?.indeterminate_spend_attempts ?? 0) > 0;
+): number {
+  return (
+    Math.max(0, trigger?.indeterminate_spend_attempts ?? 0) * Math.max(0, perAttemptEstimateUsd)
+  );
 }
 
 function cancellationFailure(
@@ -5815,22 +5819,20 @@ export class CrossReviewOrchestrator {
             const priorRoundsCostForFallback = fallbackSession.totals.cost.total_cost ?? 0;
             const fallbackCostBeforeDispatch =
               priorRoundsCostForFallback + (failure.cost?.total_cost ?? 0);
-            const fallbackUnsettled = recoveryBlockedByUnsettledSpend(
-              fallbackSessionLimit,
+            const fallbackUnsettledWorstCase = unsettledSpendWorstCaseUsd(
+              fallbackEstimate ?? 0,
               failure,
             );
             if (
               fallbackEstimate == null ||
-              fallbackUnsettled ||
               (fallbackSessionLimit != null &&
-                fallbackCostBeforeDispatch + fallbackEstimate > fallbackSessionLimit)
+                fallbackCostBeforeDispatch + fallbackEstimate + fallbackUnsettledWorstCase >
+                  fallbackSessionLimit)
             ) {
               const message =
                 fallbackEstimate == null
                   ? `Fallback refused: ${fallback.model} for ${adapter.id} has no complete effective-model rate card.`
-                  : fallbackUnsettled
-                    ? `Fallback refused: the triggering failure carries ${failure.indeterminate_spend_attempts} indeterminate provider attempt(s) (possibly billed, unreported) — the hard session budget cannot authorize more paid work until that spend settles.`
-                    : `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${fallbackCostBeforeDispatch.toFixed(6)} to $${(fallbackCostBeforeDispatch + fallbackEstimate).toFixed(6)}, exceeding configured limit $${fallbackSessionLimit?.toFixed(6)}.`;
+                  : `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${fallbackCostBeforeDispatch.toFixed(6)} to $${(fallbackCostBeforeDispatch + fallbackEstimate + fallbackUnsettledWorstCase).toFixed(6)}${fallbackUnsettledWorstCase > 0 ? ` (includes $${fallbackUnsettledWorstCase.toFixed(6)} worst-case for ${failure.indeterminate_spend_attempts} indeterminate provider attempt(s) on the triggering failure)` : ""}, exceeding configured limit $${fallbackSessionLimit?.toFixed(6)}.`;
               this.emit({
                 type: "peer.fallback.budget_blocked",
                 session_id: context.session_id,
@@ -5968,23 +5970,20 @@ export class CrossReviewOrchestrator {
       const priorRoundsCostForModeration = moderationSession.totals.cost.total_cost ?? 0;
       const moderationCostBeforeDispatch =
         priorRoundsCostForModeration + (failure.cost?.total_cost ?? 0);
-      const moderationUnsettled = recoveryBlockedByUnsettledSpend(
-        moderationRecoverySessionLimit,
+      const moderationUnsettledWorstCase = unsettledSpendWorstCaseUsd(
+        moderationRecoveryEstimate ?? 0,
         failure,
       );
       if (
         moderationRecoveryEstimate == null ||
-        moderationUnsettled ||
         (moderationRecoverySessionLimit != null &&
-          moderationCostBeforeDispatch + moderationRecoveryEstimate >
+          moderationCostBeforeDispatch + moderationRecoveryEstimate + moderationUnsettledWorstCase >
             moderationRecoverySessionLimit)
       ) {
         const message =
           moderationRecoveryEstimate == null
             ? `Moderation-safe retry refused: ${adapter.model} has no complete effective-model rate card.`
-            : moderationUnsettled
-              ? `Moderation-safe retry refused: the triggering failure carries ${failure.indeterminate_spend_attempts} indeterminate provider attempt(s) (possibly billed, unreported) — the hard session budget cannot authorize more paid work until that spend settles.`
-              : `Moderation-safe retry refused: would push session cost from $${moderationCostBeforeDispatch.toFixed(6)} to $${(moderationCostBeforeDispatch + moderationRecoveryEstimate).toFixed(6)}, exceeding configured limit $${moderationRecoverySessionLimit?.toFixed(6)}.`;
+            : `Moderation-safe retry refused: would push session cost from $${moderationCostBeforeDispatch.toFixed(6)} to $${(moderationCostBeforeDispatch + moderationRecoveryEstimate + moderationUnsettledWorstCase).toFixed(6)}${moderationUnsettledWorstCase > 0 ? ` (includes $${moderationUnsettledWorstCase.toFixed(6)} worst-case for ${failure.indeterminate_spend_attempts} indeterminate provider attempt(s) on the triggering failure)` : ""}, exceeding configured limit $${moderationRecoverySessionLimit?.toFixed(6)}.`;
         this.emit({
           type: "peer.moderation_recovery.budget_blocked",
           session_id: context.session_id,
@@ -7011,19 +7010,20 @@ export class CrossReviewOrchestrator {
             const priorRoundsCost = session.totals.cost.total_cost ?? 0;
             const currentSessionCostNow =
               priorRoundsCost + settledInitialCost + recoveryCostIncurred;
-            const recoveryUnsettled = recoveryBlockedByUnsettledSpend(sessionCostLimit, peerResult);
+            const recoveryUnsettledWorstCase = unsettledSpendWorstCaseUsd(
+              recoveryEstimate ?? 0,
+              peerResult,
+            );
             if (
               recoveryEstimate == null ||
-              recoveryUnsettled ||
               (sessionCostLimit != null &&
-                currentSessionCostNow + recoveryEstimate > sessionCostLimit)
+                currentSessionCostNow + recoveryEstimate + recoveryUnsettledWorstCase >
+                  sessionCostLimit)
             ) {
               const message =
                 recoveryEstimate == null
                   ? `Recovery refused: ${adapter.model} has no complete effective-model rate card.`
-                  : recoveryUnsettled
-                    ? `Recovery refused: the triggering result carries ${peerResult.indeterminate_spend_attempts} indeterminate provider attempt(s) (possibly billed, unreported) — the hard session budget cannot authorize more paid work until that spend settles.`
-                    : `Recovery refused: ${decisionRetry ? "decision retry" : "format recovery"} would push session cost from $${currentSessionCostNow.toFixed(6)} to $${(currentSessionCostNow + recoveryEstimate).toFixed(6)}, exceeding configured limit $${sessionCostLimit?.toFixed(6)}.`;
+                  : `Recovery refused: ${decisionRetry ? "decision retry" : "format recovery"} would push session cost from $${currentSessionCostNow.toFixed(6)} to $${(currentSessionCostNow + recoveryEstimate + recoveryUnsettledWorstCase).toFixed(6)}${recoveryUnsettledWorstCase > 0 ? ` (includes $${recoveryUnsettledWorstCase.toFixed(6)} worst-case for ${peerResult.indeterminate_spend_attempts} indeterminate provider attempt(s) on the triggering result)` : ""}, exceeding configured limit $${sessionCostLimit?.toFixed(6)}.`;
               const failure: PeerFailure = {
                 peer: peerResult.peer,
                 provider: peerResult.provider,

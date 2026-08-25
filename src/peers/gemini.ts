@@ -815,16 +815,37 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
                 typeof created.expireTime === "string"
                   ? Date.parse(created.expireTime)
                   : Number.NaN;
+              const lateTokenCount = created.usageMetadata?.totalTokenCount ?? countedTokens ?? 0;
               geminiExplicitCacheIndex.set(cacheKeyHash, {
                 name: created.name,
-                token_count: created.usageMetadata?.totalTokenCount ?? countedTokens ?? 0,
+                token_count: lateTokenCount,
                 expires_at_ms: Number.isFinite(providerExpiryMs)
                   ? providerExpiryMs
                   : dispatchedAt + ttlSeconds * 1_000,
               });
+              // Round 15: the late notice feeds the SAME FinOps manifest
+              // row as the normal path — it must carry the full billing
+              // dimensions or the row cannot reconcile the billed storage.
+              const lateTokenHours = (lateTokenCount * ttlSeconds) / 3_600;
+              const lateStorageRate = resolveCostRate(
+                this.config,
+                this.id,
+                this.model,
+              )?.cache_storage_per_million_hour;
               notice(
                 "Gemini explicit cache creation settled AFTER cancellation; the billed resource was indexed for reuse.",
-                { model: this.model, cache_name: created.name, key_hash: cacheKeyHash },
+                {
+                  model: this.model,
+                  cache_name: created.name,
+                  token_count: lateTokenCount,
+                  ttl,
+                  ttl_seconds: ttlSeconds,
+                  storage_token_hours: lateTokenHours,
+                  ...(typeof lateStorageRate === "number"
+                    ? { storage_cost_usd: (lateTokenHours / 1_000_000) * lateStorageRate }
+                    : {}),
+                  key_hash: cacheKeyHash,
+                },
               );
             }
           })

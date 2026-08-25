@@ -262,7 +262,10 @@ export async function withRetry<T>(
         ...billedFailure,
         failure_class: "cancelled",
         retryable: false,
-        attempts: attempt - 1,
+        // Codex round 15 (PR #240): the classifier may have accounted
+        // internal sub-calls (an ambiguous cache creation) beyond the
+        // wrapper's loop counter — preserve the larger attempt count.
+        attempts: Math.max(attempt - 1, billedFailure.attempts ?? 0),
       });
     }
     try {
@@ -290,7 +293,9 @@ export async function withRetry<T>(
           ...billedFailure,
           failure_class: "cancelled",
           retryable: false,
-          attempts: attempt,
+          // Round 15: preserve the classifier's larger attempt count (it
+          // may include accounted intra-attempt sub-calls).
+          attempts: Math.max(attempt, billedFailure.attempts ?? 0),
         });
       }
       if (!last.retryable || attempt >= config.retry.max_attempts) {
@@ -328,11 +333,17 @@ export async function withRetry<T>(
         await delay(wait, options.signal);
       } catch (delayError) {
         const failure = onFailure(delayError, attempt, started);
+        const billedDelayFailure = mergeRetryBillingIntoFailure(
+          failure,
+          priorRetryBilling,
+          priorTrySpend,
+        );
         throw attachPeerFailure(delayError, {
-          ...mergeRetryBillingIntoFailure(failure, priorRetryBilling, priorTrySpend),
+          ...billedDelayFailure,
           failure_class: "cancelled",
           retryable: false,
-          attempts: attempt,
+          // Round 15: same preservation on the backoff-delay cancellation.
+          attempts: Math.max(attempt, billedDelayFailure.attempts ?? 0),
         });
       }
     }
