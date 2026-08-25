@@ -9,6 +9,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### Fixed
 
+- Codex round 31: the three recovery gates (fallback dispatch,
+  moderation retry, format/decision recovery) reserve each COMPLETE
+  retry envelope exactly once - multiplying the already-max_attempts
+  envelope by the trigger's indeterminate attempt count reserved
+  attempts-squared (nine primary attempts for three timeouts) and
+  over-blocked recoveries that fit the configured ceiling.
+  `unsettledSpendWorstCaseUsd` remains exported and unit-tested but no
+  production gate multiplies with it any more.
+
 - Codex round 30: the moderation-recovery gate's unsettled reserve
   prices inherited indeterminate attempts at the WORST of the compact
   retry envelope and the ORIGINAL cache-eligible payload envelope - an

@@ -5893,10 +5893,13 @@ export class CrossReviewOrchestrator {
                 unpricedReserveModel = source.model;
                 continue;
               }
-              fallbackUnsettledWorstCase += unsettledSpendWorstCaseUsd(
-                sourceEnvelope,
-                source.record,
-              );
+              // Codex round 31: estimatedPeerRoundCost already prices the
+              // COMPLETE retry envelope (max_attempts calls plus storage),
+              // so it is reserved ONCE per originating source - multiplying
+              // it by the source's indeterminate attempt count reserved
+              // attempts-squared and over-blocked fallbacks that fit the
+              // ceiling.
+              fallbackUnsettledWorstCase += sourceEnvelope;
             }
             if (
               fallbackEstimate == null ||
@@ -6077,10 +6080,13 @@ export class CrossReviewOrchestrator {
               },
             )
           : 0;
-      const moderationUnsettledWorstCase = unsettledSpendWorstCaseUsd(
-        Math.max(moderationRecoveryEstimate ?? 0, originalCacheEligibleEnvelope ?? 0),
-        failure,
-      );
+      // Codex round 31 (class sweep): the envelopes here are COMPLETE
+      // retry envelopes - reserved once, never multiplied by the attempt
+      // count (that squared the reserve).
+      const moderationUnsettledWorstCase =
+        moderationTriggerIndeterminate > 0
+          ? Math.max(moderationRecoveryEstimate ?? 0, originalCacheEligibleEnvelope ?? 0)
+          : 0;
       if (
         moderationRecoveryEstimate == null ||
         (moderationTriggerIndeterminate > 0 && originalCacheEligibleEnvelope == null) ||
@@ -7167,10 +7173,12 @@ export class CrossReviewOrchestrator {
             const priorRoundsCost = session.totals.cost.total_cost ?? 0;
             const currentSessionCostNow =
               priorRoundsCost + settledInitialCost + recoveryCostIncurred;
-            const recoveryUnsettledWorstCase = unsettledSpendWorstCaseUsd(
-              Math.max(recoveryEstimate ?? 0, chainReserveEnvelope),
-              peerResult,
-            );
+            // Codex round 31 (class sweep): complete retry envelopes are
+            // reserved once, never multiplied by the attempt count.
+            const recoveryUnsettledWorstCase =
+              recoveryTriggerIndeterminate > 0
+                ? Math.max(recoveryEstimate ?? 0, chainReserveEnvelope)
+                : 0;
             if (
               recoveryEstimate == null ||
               (recoveryTriggerIndeterminate > 0 && unpricedReserveChainModel !== undefined) ||
