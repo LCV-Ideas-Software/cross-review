@@ -2991,6 +2991,29 @@ export function truthfulnessPreflight(params: {
       )) {
         if (match.index === undefined) continue;
         if (match[0].length === 1 && aliasInteriorIndexes.has(match.index)) continue;
+        // Codex round 13: "if" stays attached to its indirect-request verb
+        // ("confirm IF the ... model runs ...") - splitting there severs
+        // the request pattern and turns the question into an assertion.
+        if (/^if$/i.test(match[0])) {
+          const requestBefore = aliasBase.slice(Math.max(0, match.index - 24), match.index);
+          if (
+            /(?:determine|check|verify|confirm|find\s+out|figure\s+out|identify|decide|determinar|verificar|confirmar|descobrir|identificar)\s+$/i.test(
+              requestBefore,
+            )
+          ) {
+            continue;
+          }
+        }
+        // Codex round 13: the "and" INSIDE a historical range marker
+        // ("Between R1 AND R3") is part of one phrase, not a boundary -
+        // splitting it prevents the timing pattern from ever matching.
+        if (/^and$/i.test(match[0])) {
+          const rangeAround = aliasBase.slice(
+            Math.max(0, match.index - 12),
+            match.index + match[0].length + 12,
+          );
+          if (/\br\d+\s+and\s+r\d+\b/i.test(rangeAround)) continue;
+        }
         if (match[0] === ":") {
           // Round 9: skip whitespace AND formatting wrappers (inline code,
           // emphasis, quotes, brackets) when checking whether the colon
@@ -3140,6 +3163,49 @@ export function truthfulnessPreflight(params: {
       const completiveBreakPattern = /\b(?:that|que)\b/i;
       const nominalScopeHoldsOverSpan = (span: string): boolean =>
         nominalGovernedHeadPattern.test(span) && !completiveBreakPattern.test(span);
+      // Codex round 13: verbs are an OPEN class - enumerating them
+      // (equals/defaults/adopts/...) is an unbounded spiral. The stable
+      // inversion enumerates the CLOSED classes (articles, prepositions,
+      // conjunctions, pronouns) plus the known assertion verbs, adverbs
+      // and model nouns; everything else is open-class material. A
+      // fragmented model value candidate is a run of TWO OR MORE
+      // consecutive open-class words ("alpha beta seven", "equals alpha")
+      // - a lone verb or a described property ("remains available during
+      // migration") never forms one.
+      const closedClassOrKnownWordPattern = new RegExp(
+        `^(?:${[
+          "the|a|an|to|of|in|on|at|for|with|by|as|and|or|nor|not|no|but|yet|however",
+          "while|whilst|whereas|although|though|because|since|unless|until|if|that",
+          "through|via|over|under|into|from|during|between|after|before|per|about|against|toward|towards",
+          "it|its|their|our|this|these|those",
+          "is|are|was|were|be|been|being|runs?|running|uses?|used|using",
+          "current|currently|now|remains?|continues?|stays?|already|also|still",
+          "loaded|configured|deployed|enabled|active|cross-review|runtime",
+          "carregad[oa]s?|configurad[oa]s?|ativ[oa]s?",
+          "will|would|could|may|might|should|shall",
+          "models?|modelos?|pins?|version|peer|peers",
+          "e|o|os|um|uma|de|do|da|dos|das|em|na|nos|nas|para|com|por|como|ou|n[aã]o",
+          "mas|por[eé]m|contudo|enquanto|embora|porque|pois|caso|se|que",
+          "seus?|suas?|est[ea]s?|ess[ea]s?|aquel[ea]s?|atrav[eé]s|durante|entre|ap[oó]s|antes|sobre|contra|at[eé]",
+          "roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?",
+          "atual|atuais|atualmente|agora|j[aá]|vai|ser[aá]|poderia(?:m)?|deveria(?:m)?",
+          ...PEERS.map((aliasPeer) => MODEL_CLAIM_ALIASES[aliasPeer].source),
+        ].join("|")})$`,
+        "i",
+      );
+      const hasFragmentedValueCandidate = (text: string): boolean => {
+        let run = 0;
+        for (const word of text.split(/[^A-Za-z0-9à-ÿ'_-]+/)) {
+          if (!word) continue;
+          if (/^#+$/.test(word) || closedClassOrKnownWordPattern.test(word)) {
+            run = 0;
+            continue;
+          }
+          run += 1;
+          if (run >= 2) return true;
+        }
+        return false;
+      };
       const markerStateAtEnd = (text: string): "none" | "current" | "future" => {
         let state: "none" | "current" | "future" = "none";
         let contrastSinceFuture = false;
@@ -3180,8 +3246,32 @@ export function truthfulnessPreflight(params: {
           clauseEndFor(occurrence.index + occurrence.rawLength),
         );
         const state = markerStateAtEnd(beforeText);
+        // Codex round 13: a planning marker AFTER an already-predicated
+        // value cannot retroactively exempt it ("defaults to gpt-5.5
+        // before a planned upgrade"). The value is predicated when open-
+        // class material sits between the nearest model head (alias or
+        // model noun; else the clause start) and the token - a bare
+        // apposition ("the model gpt-6 next quarter") stays exempt.
+        let predicatedBeforeToken = false;
+        if (state === "none") {
+          const headPattern = new RegExp(
+            `\\b(?:models?|modelos?)\\b|${PEERS.map((p) => MODEL_CLAIM_ALIASES[p].source).join("|")}`,
+            "gi",
+          );
+          let anchorEnd = clauseStart;
+          for (const headMatch of beforeText.matchAll(headPattern)) {
+            if (headMatch.index !== undefined) {
+              anchorEnd = clauseStart + headMatch.index + headMatch[0].length;
+            }
+          }
+          const between = base.slice(anchorEnd, occurrence.matchStart);
+          predicatedBeforeToken = between
+            .split(/[^A-Za-z0-9à-ÿ'_-]+/)
+            .some((word) => word.length > 0 && !closedClassOrKnownWordPattern.test(word));
+        }
         occurrence.future =
-          state === "future" || (state === "none" && futureClausePattern.test(clauseText));
+          state === "future" ||
+          (state === "none" && !predicatedBeforeToken && futureClausePattern.test(clauseText));
       }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
@@ -3409,60 +3499,38 @@ export function truthfulnessPreflight(params: {
         const modelRelationPattern =
           /\b(?:models?|modelos?)\b(?!\s+(?:documentation|docs?|guides?|pages?|sections?|tables?|lists?|policy|policies|specs?|schemas?|catalogs?|overviews?|documenta[cç][aã]o|guias?|p[aá]ginas?|se[cç][aã]o|se[cç][oõ]es|tabelas?|listas?|pol[ií]ticas?|cat[aá]logos?)\b)|\bpins?\b|model[_ -]?pins?/i;
         // Codex round 10: consumption shields the captured PREDICATE, not
-        // the alias position - a second, uncaptured predicate on the same
-        // consumed alias ("is gpt-5.6-sol but RUNS alpha beta seven") is
-        // an orphan assertion and reopens the guard. Verbs only (adverbs
-        // like "now" legitimately trail a validated value); the tail is
-        // read post-mask, so a contrastive FUTURE predicate ("but will
-        // adopt ...") stays exempt; a later captured token means S1
-        // judges that predicate by value instead.
-        const orphanPredicateVerbPattern =
-          /\b(?:is|are|runs?|uses?|using|remains?|continues?|stays?|roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
+        // the alias position. Rounds 11-13: verbs are an open class, so
+        // both sides of the consuming token are inspected STRUCTURALLY
+        // instead - a FRAGMENTED VALUE CANDIDATE (a run of 2+ consecutive
+        // open-class words: "alpha beta seven", "equals alpha") between
+        // the alias and its first consuming token, or after the last one
+        // inside the clause with no later captured token, reopens the
+        // guard. A lone verb ("defaults to"), an auxiliary phrase ("is
+        // currently using") or a described property ("remains available
+        // during migration") never forms a candidate; both sides read
+        // post-mask, so contrastive FUTURE planning stays exempt.
         const orphanPredicateAfterConsumption = (aliasIndex: number): boolean => {
           const clauseEnd = clauseEndFor(aliasIndex);
           const consuming = occurrences.filter(
             (occurrence) => occurrence.ownerAliasIndex === aliasIndex && !occurrence.future,
           );
           if (consuming.length === 0) return false;
-          // Round 11: the LEADING side too - between the alias and its
-          // FIRST consuming token there is room for exactly ONE assertion
-          // verb (the token's own predicate); a second verb means an
-          // uncaptured predicate sits before the token ("runs alpha beta
-          // seven but IS gpt-5.6-sol") and the guard reopens.
           const firstConsumingStart = Math.min(
             ...consuming.map((occurrence) => occurrence.matchStart),
           );
           if (firstConsumingStart > aliasIndex) {
             const lead = guardAliasBase.slice(aliasIndex, firstConsumingStart);
-            // Codex round 12: an auxiliary-plus-participle phrase ("is
-            // currently using") is ONE predicate - consecutive verb
-            // matches separated only by whitespace/adverbs collapse into
-            // a single predicate group before counting.
-            const verbMatches = [
-              ...lead.matchAll(new RegExp(orphanPredicateVerbPattern.source, "gi")),
-            ];
-            const connectivePattern =
-              /^\s*(?:currently|now|already|also|still|atualmente|agora|j[aá])?\s*$/i;
-            let predicateGroups = 0;
-            let previousEnd = -1;
-            for (const verbMatch of verbMatches) {
-              if (verbMatch.index === undefined) continue;
-              const gap = previousEnd >= 0 ? lead.slice(previousEnd, verbMatch.index) : null;
-              if (gap === null || !connectivePattern.test(gap)) predicateGroups += 1;
-              previousEnd = verbMatch.index + verbMatch[0].length;
-            }
-            if (predicateGroups >= 2) return true;
+            if (hasFragmentedValueCandidate(lead)) return true;
           }
           const lastConsumingEnd = Math.max(
             ...consuming.map((occurrence) => occurrence.index + occurrence.rawLength),
           );
           if (lastConsumingEnd >= clauseEnd) return false;
           const tail = guardAliasBase.slice(lastConsumingEnd, clauseEnd);
-          const verbMatch = tail.match(orphanPredicateVerbPattern);
-          if (!verbMatch || verbMatch.index === undefined) return false;
-          const verbIdx = lastConsumingEnd + verbMatch.index;
+          if (!hasFragmentedValueCandidate(tail)) return false;
           return !occurrences.some(
-            (occurrence) => occurrence.matchStart > verbIdx && occurrence.matchStart < clauseEnd,
+            (occurrence) =>
+              occurrence.matchStart > lastConsumingEnd && occurrence.matchStart < clauseEnd,
           );
         };
         let guardTripped = false;

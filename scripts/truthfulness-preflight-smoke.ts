@@ -1340,6 +1340,52 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "an auxiliary-plus-participle phrase (is currently using) is ONE predicate - the truthful pin is not an orphan-predicate violation",
   );
+  // Codex review of PR #247, round 13.
+  const defaultsTo = anchored(
+    "The cross-review runtime Codex model defaults to gpt-5.5 before a planned upgrade.",
+  );
+  assert.equal(
+    defaultsTo.pass,
+    false,
+    "a planning marker AFTER an already-predicated value cannot retroactively exempt it - the contradictory pin is judged current",
+  );
+  assert.ok(
+    defaultsTo.issue_classes.includes("runtime_contradiction"),
+    "the predicated value is judged by value",
+  );
+  const equalsPredicate = anchored(
+    "The cross-review runtime Codex model equals alpha beta seven but is gpt-5.6-sol.",
+  );
+  assert.equal(
+    equalsPredicate.pass,
+    false,
+    "a fragmented value candidate between alias and consuming token reopens the guard regardless of the verb used (equals)",
+  );
+  const descriptiveTail = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but remains available during migration.",
+  );
+  assert.equal(
+    descriptiveTail.pass,
+    true,
+    "a descriptive trailing predicate (remains available) supplies no fragmented model value - the validated pin passes",
+  );
+  const confirmIf = anchored(
+    "We need to confirm if the cross-review runtime Codex model runs alpha beta seven.",
+  );
+  assert.equal(
+    confirmIf.pass,
+    true,
+    "'if' stays attached to its indirect-request verb (confirm if) - the legitimate request is masked, not asserted",
+  );
+  const betweenRange = anchored(
+    "Between R1 and R3, the cross-review runtime Codex model was alpha beta seven.",
+    "Historical runtime snapshot from events.ndjson: workflow_start server_info version=4.2.0; later reload server_info version=4.2.1.",
+  );
+  assert.equal(
+    betweenRange.pass,
+    true,
+    "the 'and' inside a historical range (Between R1 and R3) is not a clause boundary - the historical construction masks whole",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
