@@ -2775,18 +2775,20 @@ export function truthfulnessPreflight(params: {
       // decision made by a split of the matched token.
       const pathExtensionPattern =
         /\.(?:md|ts|tsx|js|jsx|mjs|cjs|json|jsonc|ndjson|txt|log|yml|yaml|csv|py|rs|go|java|html|css|scss|sh|ps1|lock|toml|xml|svg|png|jpg)$/i;
+      // Codex round 19: a complete email address masks like a URL - a
+      // peer name in its local part ("openai@example.com") is contact
+      // metadata, never an alias. And a recognized terminal extension
+      // decides FILE PATH before any provider-route exemption -
+      // "openai/docs/gemini.md" is a file reference, never a routed
+      // model token (routes have no terminal extension).
       const base = line
         .replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length))
+        .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, (m) => "#".repeat(m.length))
         .replace(/\S+\/\S+/g, (m) => {
           const parts = m.split("/");
-          const firstSegment = parts[0] ?? "";
-          const lastSegment = parts[parts.length - 1] ?? "";
-          const isRoutePrefix =
-            /^models$/i.test(firstSegment) ||
-            PEERS.some((aliasPeer) =>
-              new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(firstSegment),
-            );
-          if (isRoutePrefix) return m;
+          // Sentence punctuation glued to the path ("openai/docs/gemini.md.")
+          // is not part of the terminal segment.
+          const lastSegment = (parts[parts.length - 1] ?? "").replace(/[.,;:!?)\]}]+$/, "");
           return pathExtensionPattern.test(lastSegment) ? "#".repeat(m.length) : m;
         });
       const negationTailPattern =
@@ -2933,17 +2935,21 @@ export function truthfulnessPreflight(params: {
             // Codex round 17: a quote holding NOTHING BUT peer aliases
             // ("OpenAI Codex") is nomenclature exactly like the
             // single-alias case - it stays visible so the surrounding
-            // clause's claim is still located.
+            // clause's claim is still located. Round 19: only when every
+            // word resolves to the SAME peer - a heterogeneous pairing
+            // ("OpenAI Gemini") is a quoted example and masks like any
+            // quote.
+            const nomenclatureWords = inner.split(/\s+/);
             const allAliasNomenclature =
               inner.length > 0 &&
               inner.length <= 48 &&
-              inner
-                .split(/\s+/)
-                .every((word) =>
-                  PEERS.some((aliasPeer) =>
-                    new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(word),
-                  ),
+              PEERS.some((aliasPeer) => {
+                const aliasWordPattern = new RegExp(
+                  `^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`,
+                  "i",
                 );
+                return nomenclatureWords.every((word) => aliasWordPattern.test(word));
+              });
             // The DELIMITERS stay visible - the label-colon check skips
             // them as formatting wrappers to find the captured token.
             return allAliasNomenclature ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
@@ -2955,8 +2961,16 @@ export function truthfulnessPreflight(params: {
           // for the zero-token guard ("perplexity/alpha beta seven"). Any
           // other slash chain is a filesystem path and masks WHOLE,
           // including its terminal segment ("docs/gemini.md",
-          // "src/gemini/routing.md").
-          const firstSegment = m.split(/\s*\//)[0] ?? "";
+          // "src/gemini/routing.md"). Round 19: a terminal extension
+          // marks FILE PATH before the route exemption - routes never
+          // end in a file extension.
+          const chainSegments = m.split(/\s*\/\s*/);
+          const firstSegment = chainSegments[0] ?? "";
+          const lastChainSegment = (chainSegments[chainSegments.length - 1]?.trim() ?? "").replace(
+            /[.,;:!?)\]}]+$/,
+            "",
+          );
+          if (pathExtensionPattern.test(lastChainSegment)) return "#".repeat(m.length);
           const isPeerRoute = PEERS.some((aliasPeer) =>
             new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(firstSegment),
           );
@@ -3164,7 +3178,9 @@ export function truthfulnessPreflight(params: {
           // Codex round 18: "<open-class verb> to <value>" is a
           // model-value slot too ("defaults to orion") - the "to" after
           // an open-class word arms the slot instead of resetting it.
-          if (/^(?:to|para)$/i.test(word)) {
+          // Round 19: linking "as" ("identifies as orion") arms the same
+          // slot.
+          if (/^(?:to|para|as|como)$/i.test(word)) {
             if (lastWasOpenWord) afterValueSlotVerb = true;
             lastWasOpenWord = false;
             run = 0;
@@ -3371,11 +3387,17 @@ export function truthfulnessPreflight(params: {
         // interrogative pairs) and stays under the hardened contract; all
         // grammar-derived masks (temporal scope, historical carry) are
         // deleted - their families now BLOCK with the restate instruction.
+        // Codex round 19: masking starts AT the request construction,
+        // never at the segment start - an asserted model claim BEFORE
+        // the request verb ("runs alpha beta seven to determine which
+        // tests pass") stays visible; a genuine indirect question keeps
+        // its content (after the verb) masked.
         let segmentStart = 0;
         for (const bound of [...clauseBounds, { start: aliasBase.length, end: aliasBase.length }]) {
           const segment = aliasBase.slice(segmentStart, bound.start);
-          if (indirectRequestPattern.test(segment)) {
-            maskGuardRange(segmentStart, bound.start);
+          const requestMatch = indirectRequestPattern.exec(segment);
+          if (requestMatch) {
+            maskGuardRange(segmentStart + requestMatch.index, bound.start);
           }
           segmentStart = bound.end;
         }

@@ -29,7 +29,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
   and the cost of a false positive is one plain restatement.
 
   **HARDENED DETERMINISTIC CONTRACT (unanimous multi-model design
-  review 25/08/2026, session 65828902).** The locator's open-grammar
+  review 25/08/2026).** The locator's open-grammar
   inference layer is DELETED: the temporal marker state machine (modal /
   nominal planning words, contrast renewal, completive breaks, month
   disambiguation), the future-clause exemption, historical-scope carry
@@ -52,6 +52,17 @@ standard `v00.00.00`; npm package versions remain SemVer.
   evidence), future plans, capability statements and reported speech
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
+
+  Codex round 19 hardened the KEPT masks and detectors: linking "as"
+  arms the model-value slot like "to" ("identifies as orion" blocks); the
+  indirect-request mask starts at the request construction, never at the
+  segment start (an asserted claim before "determine which" stays
+  visible); a terminal file extension decides FILE PATH before the
+  provider-route exemption ("openai/docs/gemini.md" masks whole, with
+  sentence punctuation trimmed first); a quoted alias pairing is
+  nomenclature only when every word resolves to the SAME peer ("OpenAI
+  Gemini" masks as a quoted example); and complete email addresses mask
+  like URLs ("openai@example.com" never contributes an alias).
 
 ### Fixed
 

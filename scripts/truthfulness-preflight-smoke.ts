@@ -1558,6 +1558,54 @@ import type { PeerResult } from "../src/core/types.js";
     );
     assert.equal(typeof chainResult.pass, "boolean", "the long-chain draft still evaluates");
   }
+  // Codex review of PR #247, round 19 (mask/detector findings verified
+  // against the hardened deterministic contract).
+  const identifiesAsOrion = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but identifies as orion.",
+  );
+  assert.equal(
+    identifiesAsOrion.pass,
+    false,
+    "a lowercase opaque value after an open-class verb plus 'as' (identifies as orion) is a model-value slot - the second claim reopens the guard",
+  );
+  const providerPrefixedPath = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol per openai/docs/gemini.md.",
+  );
+  assert.equal(
+    providerPrefixedPath.pass,
+    true,
+    "a provider-prefixed filesystem path (openai/docs/gemini.md) masks by its terminal extension - never captured as a routed model token",
+  );
+  const historicalThenCurrent = anchored(
+    "When the audit began, the cross-review runtime Codex model was gpt-5.6-sol, and today the Codex model defaults to alpha beta seven.",
+  );
+  assert.equal(
+    historicalThenCurrent.pass,
+    false,
+    "HARDENED CONTRACT: historical narration followed by a contradictory current claim blocks - no historical carry hides the second clause",
+  );
+  const heterogeneousQuote = anchored(
+    'The cross-review model_pin policy rejects "OpenAI Gemini" as an invalid pairing.',
+  );
+  assert.equal(
+    heterogeneousQuote.pass,
+    true,
+    "a quotation whose aliases span DIFFERENT peers (OpenAI Gemini) is a quoted example, not nomenclature - it masks like any quote",
+  );
+  const indirectRequestTail = anchored(
+    "The cross-review runtime Codex model runs alpha beta seven to determine which tests pass.",
+  );
+  assert.equal(
+    indirectRequestTail.pass,
+    false,
+    "the indirect-request mask starts AT the request construction - an asserted model claim before 'determine which' stays visible and blocks",
+  );
+  const emailAlias = anchored("The cross-review model_pin policy owner is openai@example.com.");
+  assert.equal(
+    emailAlias.pass,
+    true,
+    "a peer name embedded in a complete email address masks with the address - an ownership statement is not a model claim",
+  );
   {
     const manyAliases = `The cross-review runtime ${"Codex ".repeat(6_000)}model is gpt-5.6-sol.`;
     const linearStart = Date.now();
