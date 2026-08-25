@@ -19,6 +19,18 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
 
+- Codex round 27 closed three accounting edges: the fallback reserve
+  builds its sources from the failure chain alone (round 26 spread the
+  primary in twice, doubling its worst-case reserve and over-blocking
+  budgets between the correct and doubled projections); a settled
+  cancellation derives accounted attempts from the RESULT's total
+  attempt count, so a cancellation landing after an
+  ambiguous-cache-plus-successful-generation call reports its known
+  generation billing instead of zero accounted attempts; and the
+  format-recovery merge re-stamps the original call's explicit-cache
+  identity (cache_key_hash, cache_provider_mode) on the aggregate so
+  the telemetry row stays correlated with the creation manifest.
+
 - Codex round 26: with multiple fallback models, the fallback budget
   gate's unsettled reserve now sums EVERY accumulated ambiguous failure
   in the chain - the primary and each earlier fallback that failed with

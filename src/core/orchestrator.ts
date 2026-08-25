@@ -5845,16 +5845,17 @@ export class CrossReviewOrchestrator {
                   }
                 : {}),
             };
+            // Codex round 27: fallbackFailures is initialized as
+            // [failure], so the chain ALREADY contains the primary -
+            // building the sources from the chain alone reserves the
+            // primary exactly once (spreading both doubled it).
             const reserveSources: Array<{
               model: string | undefined;
               record: { indeterminate_spend_attempts?: number | undefined };
-            }> = [
-              { model: adapter.model, record: failure },
-              ...fallbackFailures.map((chainFailure) => ({
-                model: chainFailure.model,
-                record: chainFailure,
-              })),
-            ];
+            }> = fallbackFailures.map((chainFailure) => ({
+              model: chainFailure.model ?? adapter.model,
+              record: chainFailure,
+            }));
             let fallbackUnsettledWorstCase = 0;
             let fallbackReserveAttempts = 0;
             let unpricedReserveModel: string | undefined;
@@ -7178,7 +7179,23 @@ export class CrossReviewOrchestrator {
             ];
             peerResult = {
               ...recovered,
-              usage: mergeUsage([originalPeerResult.usage, recovered.usage]),
+              // Codex round 27: mergeUsage deliberately drops the
+              // qualitative per-call cache attributes - the ORIGINAL
+              // call's explicit-cache identity is re-stamped on the
+              // aggregate (the recovery pass is cache-ineligible by
+              // design, so the original is the only possible carrier)
+              // and the telemetry row stays correlated with the
+              // explicit-cache creation manifest.
+              usage: (() => {
+                const mergedUsage = mergeUsage([originalPeerResult.usage, recovered.usage]);
+                if (mergedUsage && originalPeerResult.usage?.cache_key_hash !== undefined) {
+                  mergedUsage.cache_key_hash = originalPeerResult.usage.cache_key_hash;
+                }
+                if (mergedUsage && originalPeerResult.usage?.cache_provider_mode !== undefined) {
+                  mergedUsage.cache_provider_mode = originalPeerResult.usage.cache_provider_mode;
+                }
+                return mergedUsage;
+              })(),
               cost: mergeCost([originalPeerResult.cost, recovered.cost]),
               latency_ms: originalPeerResult.latency_ms + recovered.latency_ms,
               attempts: originalPeerResult.attempts + recovered.attempts,

@@ -1452,6 +1452,19 @@ assert.equal(
   true,
 );
 assert.equal(formatRecovered.round.peers[0]?.decision_quality, "recovered");
+// Codex round 27 (PR #240): the recovery merge must preserve the ORIGINAL
+// call's explicit-cache identity - mergeUsage deliberately drops the
+// qualitative per-call attributes, so the aggregate re-stamps them.
+assert.equal(
+  formatRecovered.round.peers[0]?.usage?.cache_provider_mode,
+  "explicit",
+  "the recovery merge preserves the original call's cache_provider_mode",
+);
+assert.equal(
+  formatRecovered.round.peers[0]?.usage?.cache_key_hash,
+  "stub-cache-key-hash",
+  "the recovery merge preserves the original call's cache_key_hash",
+);
 const formatRecoveryPrompt = fs.readFileSync(
   path.join(
     config.data_dir,

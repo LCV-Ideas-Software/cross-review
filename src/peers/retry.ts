@@ -211,15 +211,25 @@ function attachSettledBilling(error: Error, result: unknown, attempt: number): E
     usage?: unknown;
     cost?: unknown;
     unpriced_attempts?: unknown;
+    attempts?: unknown;
   };
   const unpriced =
     typeof record.unpriced_attempts === "number" && record.unpriced_attempts > 0
       ? Math.floor(record.unpriced_attempts)
       : 0;
+  // Codex round 27 (PR #240): the adapter may have accounted internal
+  // sub-calls (an ambiguous cache creation) beyond the wrapper's loop
+  // counter - accounted attempts derive from the RESULT's total attempt
+  // count, so a settled cancellation after such a call reports its known
+  // generation billing instead of zero accounted attempts.
+  const resultAttempts =
+    typeof record.attempts === "number" && record.attempts > attempt
+      ? Math.floor(record.attempts)
+      : attempt;
   for (const [key, value] of [
     ["usage", record.usage],
     ["cost", record.cost],
-    ["accounted_attempts", Math.max(0, attempt - unpriced)],
+    ["accounted_attempts", Math.max(0, resultAttempts - unpriced)],
     // The provider promise returned a complete result before cancellation.
     // Adapters that aggregate retry usage into their result can use this
     // marker to avoid merging prior-attempt billing a second time.
@@ -234,6 +244,9 @@ function attachSettledBilling(error: Error, result: unknown, attempt: number): E
   }
   return error;
 }
+
+// Exported for the provider-refresh smoke only.
+export const __attachSettledBillingForTests = attachSettledBilling;
 
 function hasSettledProviderResult(error: unknown): boolean {
   return (

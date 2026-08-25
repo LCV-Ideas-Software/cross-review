@@ -193,6 +193,14 @@ export class StubAdapter extends BasePeerAdapter implements PeerAdapter {
           input_tokens: prompt.length,
           output_tokens: text.length,
           total_tokens: prompt.length + text.length,
+          // Round 27 fixture (PR #240): the ORIGINAL call of a
+          // format-recovery pair carries explicit-cache identity; the
+          // recovery pass does not - the orchestrator's recovery merge
+          // must preserve the original identity on the aggregate.
+          ...(prompt.includes("FORCE_BAD_FORMAT") &&
+          !prompt.includes("Cross Review - Format Recovery")
+            ? { cache_key_hash: "stub-cache-key-hash", cache_provider_mode: "explicit" as const }
+            : {}),
         },
         started: Date.now(),
         attempts: 1,

@@ -23,6 +23,7 @@ import { GrokAdapter } from "../src/peers/grok.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { OpenAIAdapter } from "../src/peers/openai.js";
 import { clampEffortForPerplexity, PerplexityAdapter } from "../src/peers/perplexity.js";
+import { __attachSettledBillingForTests } from "../src/peers/retry.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
@@ -1694,6 +1695,29 @@ function capturePerplexityProbe(
     );
   } finally {
     __setGeminiCancelTimingForTests(10_000, 120_000);
+  }
+
+  // Codex round 27: a settled cancellation derives accounted attempts
+  // from the RESULT's total attempt count - an adapter that accounted
+  // internal sub-calls (an ambiguous cache creation) beyond the
+  // wrapper's loop counter must not have its known generation billing
+  // reported as zero accounted attempts.
+  {
+    const settledError = __attachSettledBillingForTests(
+      new Error("cancelled after settle"),
+      {
+        usage: { total_tokens: 10 },
+        cost: { currency: "USD", total_cost: 0.01 },
+        unpriced_attempts: 1,
+        attempts: 2,
+      },
+      1,
+    ) as Error & { accounted_attempts?: number };
+    assert.equal(
+      settledError.accounted_attempts,
+      1,
+      "settled billing derives accounted attempts from the result's total attempt count",
+    );
   }
 
   // Codex round 25: a hung creation that settles AFTER its retention
