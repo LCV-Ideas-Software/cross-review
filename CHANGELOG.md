@@ -19,6 +19,14 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
 
+- Codex round 26: with multiple fallback models, the fallback budget
+  gate's unsettled reserve now sums EVERY accumulated ambiguous failure
+  in the chain - the primary and each earlier fallback that failed with
+  possibly-billed spend - each priced at its own originating model's
+  envelope (per-record attempts, so the sum never double-counts), and
+  refuses the fallback fail-closed when any originating model lacks a
+  complete rate card.
+
 - Codex round 25 closed two inheritance edges: the format/decision
   recovery gate prices inherited indeterminate attempts at the WORST
   originating envelope (after a fallback, `adapter` is the cheaper

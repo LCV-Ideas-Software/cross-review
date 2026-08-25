@@ -5826,39 +5826,66 @@ export class CrossReviewOrchestrator {
             // Codex round 24: the unsettled reserve prices the TRIGGERING
             // adapter/model - the indeterminate attempts belong to the
             // PRIMARY, whose per-round envelope can exceed a cheaper
-            // fallback's. A primary with no complete rate card cannot
-            // price its own possibly-billed attempts, so the fallback is
-            // refused (fail-closed) whenever such attempts exist.
-            const fallbackTriggerIndeterminate = failure.indeterminate_spend_attempts ?? 0;
-            const primaryEstimateForReserve =
-              fallbackTriggerIndeterminate > 0
-                ? estimatedPeerRoundCost(
-                    this.config,
-                    [adapter.id],
-                    prompt,
-                    { [adapter.id]: adapter.model },
-                    {
-                      gemini_cached_system_bytes:
-                        Buffer.byteLength(context.task, "utf8") +
-                        GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
-                      ...(context.prompt_stable_prefix_chars != null
-                        ? {
-                            gemini_cache_head_bytes: Buffer.byteLength(
-                              prompt.slice(0, context.prompt_stable_prefix_chars),
-                              "utf8",
-                            ),
-                          }
-                        : {}),
-                    },
-                  )
-                : 0;
-            const fallbackUnsettledWorstCase = unsettledSpendWorstCaseUsd(
-              primaryEstimateForReserve ?? 0,
-              failure,
-            );
+            // fallback's. Round 26: with MULTIPLE fallback models, every
+            // accumulated ambiguous failure in the chain (the primary AND
+            // each earlier fallback that failed with possibly-billed
+            // spend) is priced at ITS OWN originating model's envelope -
+            // each record carries only its own attempts, so the per-item
+            // sum never double-counts. Any originating model with no
+            // complete rate card refuses the fallback (fail-closed).
+            const reserveGeminiOptions = {
+              gemini_cached_system_bytes:
+                Buffer.byteLength(context.task, "utf8") + GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
+              ...(context.prompt_stable_prefix_chars != null
+                ? {
+                    gemini_cache_head_bytes: Buffer.byteLength(
+                      prompt.slice(0, context.prompt_stable_prefix_chars),
+                      "utf8",
+                    ),
+                  }
+                : {}),
+            };
+            const reserveSources: Array<{
+              model: string | undefined;
+              record: { indeterminate_spend_attempts?: number | undefined };
+            }> = [
+              { model: adapter.model, record: failure },
+              ...fallbackFailures.map((chainFailure) => ({
+                model: chainFailure.model,
+                record: chainFailure,
+              })),
+            ];
+            let fallbackUnsettledWorstCase = 0;
+            let fallbackReserveAttempts = 0;
+            let unpricedReserveModel: string | undefined;
+            for (const source of reserveSources) {
+              const sourceAttempts = source.record.indeterminate_spend_attempts ?? 0;
+              if (sourceAttempts <= 0) continue;
+              fallbackReserveAttempts += sourceAttempts;
+              // A record with no model cannot be priced - fail closed.
+              if (!source.model) {
+                unpricedReserveModel = "unknown-model";
+                continue;
+              }
+              const sourceEnvelope = estimatedPeerRoundCost(
+                this.config,
+                [adapter.id],
+                prompt,
+                { [adapter.id]: source.model },
+                reserveGeminiOptions,
+              );
+              if (sourceEnvelope == null) {
+                unpricedReserveModel = source.model;
+                continue;
+              }
+              fallbackUnsettledWorstCase += unsettledSpendWorstCaseUsd(
+                sourceEnvelope,
+                source.record,
+              );
+            }
             if (
               fallbackEstimate == null ||
-              (fallbackTriggerIndeterminate > 0 && primaryEstimateForReserve == null) ||
+              unpricedReserveModel !== undefined ||
               (fallbackSessionLimit != null &&
                 fallbackCostBeforeDispatch + fallbackEstimate + fallbackUnsettledWorstCase >
                   fallbackSessionLimit)
@@ -5866,9 +5893,9 @@ export class CrossReviewOrchestrator {
               const message =
                 fallbackEstimate == null
                   ? `Fallback refused: ${fallback.model} for ${adapter.id} has no complete effective-model rate card.`
-                  : fallbackTriggerIndeterminate > 0 && primaryEstimateForReserve == null
-                    ? `Fallback refused: ${adapter.model} for ${adapter.id} has no complete effective-model rate card to price ${fallbackTriggerIndeterminate} indeterminate provider attempt(s) on the triggering failure.`
-                    : `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${fallbackCostBeforeDispatch.toFixed(6)} to $${(fallbackCostBeforeDispatch + fallbackEstimate + fallbackUnsettledWorstCase).toFixed(6)}${fallbackUnsettledWorstCase > 0 ? ` (includes $${fallbackUnsettledWorstCase.toFixed(6)} worst-case for ${failure.indeterminate_spend_attempts} indeterminate provider attempt(s) on the triggering PRIMARY ${adapter.model})` : ""}, exceeding configured limit $${fallbackSessionLimit?.toFixed(6)}.`;
+                  : unpricedReserveModel !== undefined
+                    ? `Fallback refused: ${unpricedReserveModel} for ${adapter.id} has no complete effective-model rate card to price its indeterminate provider attempt(s) in the failure chain.`
+                    : `Fallback refused: ${fallback.model} for ${adapter.id} would push session cost from $${fallbackCostBeforeDispatch.toFixed(6)} to $${(fallbackCostBeforeDispatch + fallbackEstimate + fallbackUnsettledWorstCase).toFixed(6)}${fallbackUnsettledWorstCase > 0 ? ` (includes $${fallbackUnsettledWorstCase.toFixed(6)} worst-case for ${fallbackReserveAttempts} indeterminate provider attempt(s) across the failure chain, each priced at its originating model)` : ""}, exceeding configured limit $${fallbackSessionLimit?.toFixed(6)}.`;
               this.emit({
                 type: "peer.fallback.budget_blocked",
                 session_id: context.session_id,
