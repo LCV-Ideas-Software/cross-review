@@ -7,6 +7,22 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex round 30: the moderation-recovery gate's unsettled reserve
+  prices inherited indeterminate attempts at the WORST of the compact
+  retry envelope and the ORIGINAL cache-eligible payload envelope - an
+  ambiguous explicit-cache creation preceding a moderation rejection
+  can no longer be under-reserved by the storage-free retry estimate
+  (refused fail-closed when the original envelope cannot be priced);
+  the cache-controls documentation states that Gemini's per-provider
+  switch disarms the opt-in explicit cache; and the v04.07.00 release
+  notes now contain the full shipped cancellation-contract and
+  round-10-29 record (previously stranded under Unreleased while the
+  package already shipped as 4.7.0).
+
+## [v04.07.00] — 24/08/2026
+
 ### Changed
 
 - **Gemini explicit-cache cancellation contract (unanimous design
@@ -124,8 +140,6 @@ standard `v00.00.00`; npm package versions remain SemVer.
   settlement and pending-settlement application routines,
   `pending_late_cache_settlements`, the orchestrator event-interceptor
   reconciliation hook and the post-cancellation settlement notices.
-
-## [v04.07.00] — 24/08/2026
 
 ### Added
 

@@ -6048,12 +6048,42 @@ export class CrossReviewOrchestrator {
       const priorRoundsCostForModeration = moderationSession.totals.cost.total_cost ?? 0;
       const moderationCostBeforeDispatch =
         priorRoundsCostForModeration + (failure.cost?.total_cost ?? 0);
+      // Codex round 30: the failure's indeterminate attempts may include
+      // an AMBIGUOUS explicit-cache creation whose possible storage
+      // charge the cache-ineligible compact-retry envelope cannot
+      // represent - the unsettled reserve prices the WORST of the retry
+      // envelope and the ORIGINAL cache-eligible payload envelope, and
+      // refuses the retry fail-closed when the original envelope cannot
+      // be priced while such attempts exist.
+      const moderationTriggerIndeterminate = failure.indeterminate_spend_attempts ?? 0;
+      const originalCacheEligibleEnvelope =
+        moderationTriggerIndeterminate > 0
+          ? estimatedPeerRoundCost(
+              this.config,
+              [adapter.id],
+              prompt,
+              { [adapter.id]: adapter.model },
+              {
+                gemini_cached_system_bytes:
+                  Buffer.byteLength(context.task, "utf8") + GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
+                ...(context.prompt_stable_prefix_chars != null
+                  ? {
+                      gemini_cache_head_bytes: Buffer.byteLength(
+                        prompt.slice(0, context.prompt_stable_prefix_chars),
+                        "utf8",
+                      ),
+                    }
+                  : {}),
+              },
+            )
+          : 0;
       const moderationUnsettledWorstCase = unsettledSpendWorstCaseUsd(
-        moderationRecoveryEstimate ?? 0,
+        Math.max(moderationRecoveryEstimate ?? 0, originalCacheEligibleEnvelope ?? 0),
         failure,
       );
       if (
         moderationRecoveryEstimate == null ||
+        (moderationTriggerIndeterminate > 0 && originalCacheEligibleEnvelope == null) ||
         (moderationRecoverySessionLimit != null &&
           moderationCostBeforeDispatch + moderationRecoveryEstimate + moderationUnsettledWorstCase >
             moderationRecoverySessionLimit)
@@ -6061,7 +6091,9 @@ export class CrossReviewOrchestrator {
         const message =
           moderationRecoveryEstimate == null
             ? `Moderation-safe retry refused: ${adapter.model} has no complete effective-model rate card.`
-            : `Moderation-safe retry refused: would push session cost from $${moderationCostBeforeDispatch.toFixed(6)} to $${(moderationCostBeforeDispatch + moderationRecoveryEstimate + moderationUnsettledWorstCase).toFixed(6)}${moderationUnsettledWorstCase > 0 ? ` (includes $${moderationUnsettledWorstCase.toFixed(6)} worst-case for ${failure.indeterminate_spend_attempts} indeterminate provider attempt(s) on the triggering failure)` : ""}, exceeding configured limit $${moderationRecoverySessionLimit?.toFixed(6)}.`;
+            : moderationTriggerIndeterminate > 0 && originalCacheEligibleEnvelope == null
+              ? `Moderation-safe retry refused: ${adapter.model} has no complete rate card to price ${moderationTriggerIndeterminate} indeterminate provider attempt(s) at the original cache-eligible envelope.`
+              : `Moderation-safe retry refused: would push session cost from $${moderationCostBeforeDispatch.toFixed(6)} to $${(moderationCostBeforeDispatch + moderationRecoveryEstimate + moderationUnsettledWorstCase).toFixed(6)}${moderationUnsettledWorstCase > 0 ? ` (includes $${moderationUnsettledWorstCase.toFixed(6)} worst-case for ${failure.indeterminate_spend_attempts} indeterminate provider attempt(s) priced at the worst of the retry and original cache-eligible envelopes)` : ""}, exceeding configured limit $${moderationRecoverySessionLimit?.toFixed(6)}.`;
         this.emit({
           type: "peer.moderation_recovery.budget_blocked",
           session_id: context.session_id,

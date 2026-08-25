@@ -109,10 +109,13 @@ CROSS_REVIEW_DISABLE_CACHE_PERPLEXITY=true
 Anthropic defaults to disabled because the recorded hit rate was not
 cost-effective for the observed session corpus; set
 `CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC=false` to re-enable it deliberately. In
-the current adapters, Anthropic is the provider whose request body honors its
-per-provider switch. Use the global switch for the client-controlled OpenAI and
-Grok request fields. Gemini and DeepSeek remain service-managed, and Perplexity
-has no cache surface.
+the current adapters, Anthropic honors its per-provider switch in the request
+body, and **Gemini's per-provider switch disarms the opt-in explicit cache**
+(`geminiExplicitCacheArmed` checks `disable_per_peer.gemini`, so
+`CROSS_REVIEW_DISABLE_CACHE_GEMINI=true` stops `caches.create` while Gemini's
+implicit caching stays provider-managed). Use the global switch for the
+client-controlled OpenAI and Grok request fields. DeepSeek remains
+service-managed, and Perplexity has no cache surface.
 
 Use cases:
 
