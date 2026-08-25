@@ -2411,7 +2411,10 @@ const CROSS_REVIEW_RUNTIME_SCOPE_PATTERN =
 const HISTORICAL_CROSS_REVIEW_RUNTIME_SCOPE_PATTERN =
   /\b(?:server_info|runtime_capabilities|mcp\s+(?:runtime|server|host|version)|cross[- ]review(?:['’]s)?(?:\s+(?:runtime|server|version|release)|\s+(?:was|estava)\s+(?:running|rodando|na\s+vers[aã]o)|\s+(?:era|was)\s+v?\d|\s+v?\d)|(?:vers[aã]o|release|runtime(?:\s+local)?)\s+(?:do|da)\s+cross[- ]review|loaded\s+(?:cross[- ]review\s+)?runtime|local\s+(?:cross[- ]review\s+)?runtime|runtime\s+local)\b/i;
 const CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN =
-  /\b(?:cross[- ]review\s+(?:runtime|server|uses?|peers?|models?)|server_info|runtime_capabilities|model[_ -]?pin|mcp\s+(?:runtime|server|host))\b/i;
+  // Codex round 20: possessive runtime subjects ("cross-review's
+  // runtime") are model-scoped too - straight and typographic
+  // apostrophes accepted.
+  /\b(?:cross[- ]review(?:['’]s)?\s+(?:runtime|server|uses?|peers?|models?)|server_info|runtime_capabilities|model[_ -]?pin|mcp\s+(?:runtime|server|host))\b/i;
 const HYPOTHETICAL_TRUTHFULNESS_PATTERN =
   /^\s*(?:if|whether|suppose|assuming|hypothetically|would|could|should|se|caso|supondo|hipoteticamente)\b/i;
 const NON_CURRENT_RUNTIME_VALUE_PATTERN =
@@ -2673,7 +2676,13 @@ export function truthfulnessPreflight(params: {
   ]
     .filter((value) => value.trim().length > 0)
     .join("\n");
-  const lines = splitTruthfulnessLines(corpus);
+  // Codex round 20: the model-claim locator applies to the DRAFT only -
+  // the task is operator input, so an ordinary imperative ("Summarize
+  // the ... Codex model configuration.") must never abort the session.
+  // The task lines keep every other check.
+  const taskLines = splitTruthfulnessLines(params.task);
+  const lines = [...taskLines, ...splitTruthfulnessLines(params.initialDraft ?? "")];
+  const draftLineStart = taskLines.length;
   const runtimeVersion = params.runtimeFacts?.runtime_version;
   const releaseDate = params.runtimeFacts?.release_date;
   const modelPins = params.runtimeFacts?.model_pins ?? {};
@@ -2689,7 +2698,8 @@ export function truthfulnessPreflight(params: {
   let fabricationProneClaimMatched = false;
   let independentReviewRequired = false;
 
-  for (const line of lines) {
+  for (const [lineIndex, line] of lines.entries()) {
+    const lineFromDraft = lineIndex >= draftLineStart;
     const historicalClaim = historicalRuntimeClaimDetected(line);
     let lineCurrentModelClaimMatched = false;
     if (FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line)) {
@@ -2704,13 +2714,19 @@ export function truthfulnessPreflight(params: {
       }
     }
 
-    const historicalOnlyModelClaim =
-      /^\s*(?:previously|formerly|historically|before|anteriormente|antes)\b/i.test(line) &&
-      !isAssertiveCurrentStateClaim(line);
+    // Codex round 20 (hardened contract): the locator's entry gate keeps
+    // only the genuinely non-assertive escapes - instructions and
+    // questions. The historical-only exemption is DELETED ("Previously,
+    // ... was alpha beta seven" blocks), and leading hypotheticals and
+    // attributed third-party documentation speech route THROUGH the
+    // locator - those families block by design with the restate-or-
+    // structure instruction. The locator judges the DRAFT only: the task
+    // is operator input, never a caller claim.
     if (
+      lineFromDraft &&
       CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN.test(line) &&
-      !historicalOnlyModelClaim &&
-      !isNonAssertiveTruthfulnessLine(line)
+      !OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(line) &&
+      !/\?\s*$/.test(line)
     ) {
       // v4.6.0 rounds 3-7 (Codex review of PR #234) + red-team hardening:
       // model-claim truthfulness is judged per OCCURRENCE. Each occurrence
@@ -2789,7 +2805,11 @@ export function truthfulnessPreflight(params: {
           // Sentence punctuation glued to the path ("openai/docs/gemini.md.")
           // is not part of the terminal segment.
           const lastSegment = (parts[parts.length - 1] ?? "").replace(/[.,;:!?)\]}]+$/, "");
-          return pathExtensionPattern.test(lastSegment) ? "#".repeat(m.length) : m;
+          if (pathExtensionPattern.test(lastSegment)) return "#".repeat(m.length);
+          // Codex round 20: a provider/model route has EXACTLY two
+          // segments - three or more segments is a filesystem path
+          // ("openai/docs/README") and masks whole.
+          return parts.length > 2 ? "#".repeat(m.length) : m;
         });
       const negationTailPattern =
         /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
@@ -2938,7 +2958,11 @@ export function truthfulnessPreflight(params: {
             // clause's claim is still located. Round 19: only when every
             // word resolves to the SAME peer - a heterogeneous pairing
             // ("OpenAI Gemini") is a quoted example and masks like any
-            // quote.
+            // quote. Round 20: the literal model noun rides along -
+            // '"Codex model" runs ...' is a quoted same-peer label whose
+            // alias must stay visible for the guard, never quoted example
+            // text; a quote with no alias at all still masks.
+            const modelNounWordPattern = /^(?:models?|modelos?)$/i;
             const nomenclatureWords = inner.split(/\s+/);
             const allAliasNomenclature =
               inner.length > 0 &&
@@ -2948,7 +2972,15 @@ export function truthfulnessPreflight(params: {
                   `^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`,
                   "i",
                 );
-                return nomenclatureWords.every((word) => aliasWordPattern.test(word));
+                let aliasSeen = false;
+                for (const word of nomenclatureWords) {
+                  if (aliasWordPattern.test(word)) {
+                    aliasSeen = true;
+                    continue;
+                  }
+                  if (!modelNounWordPattern.test(word)) return false;
+                }
+                return aliasSeen;
               });
             // The DELIMITERS stay visible - the label-colon check skips
             // them as formatting wrappers to find the captured token.
@@ -2971,9 +3003,14 @@ export function truthfulnessPreflight(params: {
             "",
           );
           if (pathExtensionPattern.test(lastChainSegment)) return "#".repeat(m.length);
-          const isPeerRoute = PEERS.some((aliasPeer) =>
-            new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(firstSegment),
-          );
+          // Codex round 20: a provider/model route has EXACTLY two
+          // segments - a longer chain is a filesystem path even with a
+          // provider prefix ("openai/docs/README").
+          const isPeerRoute =
+            chainSegments.length === 2 &&
+            PEERS.some((aliasPeer) =>
+              new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(firstSegment),
+            );
           return isPeerRoute ? m : "#".repeat(m.length);
         });
       const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
@@ -3056,17 +3093,38 @@ export function truthfulnessPreflight(params: {
         }
         clauseBounds.push({ start: match.index, end: match.index + match[0].length });
       }
+      // Codex round 20: clauseBounds is ordered (one matchAll pass), so
+      // both lookups are binary searches - a 200,000-character draft with
+      // thousands of clauses stays near-linear instead of quadratic.
       const clauseStartFor = (index: number): number => {
+        let lo = 0;
+        let hi = clauseBounds.length - 1;
         let start = 0;
-        for (const bound of clauseBounds) {
-          if (bound.end <= index && bound.end > start) start = bound.end;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          const bound = clauseBounds[mid];
+          if (bound && bound.end <= index) {
+            start = bound.end;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
         }
         return start;
       };
       const clauseEndFor = (index: number): number => {
+        let lo = 0;
+        let hi = clauseBounds.length - 1;
         let end = aliasBase.length;
-        for (const bound of clauseBounds) {
-          if (bound.start >= index && bound.start < end) end = bound.start;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          const bound = clauseBounds[mid];
+          if (bound && bound.start >= index) {
+            end = bound.start;
+            hi = mid - 1;
+          } else {
+            lo = mid + 1;
+          }
         }
         return end;
       };
@@ -3153,11 +3211,16 @@ export function truthfulnessPreflight(params: {
       // never value material.
       const usageVerbWordPattern = /^(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)$/i;
       const derivationalAdverbPattern = /^(?:[a-zà-ÿ]+ly|[a-zà-ÿ]+mente)$/i;
-      // Codex round 16: a lowercase multi-word run is a MODEL-IDENTITY
+      // Codex round 16: a MID-WINDOW lowercase run is a MODEL-IDENTITY
       // candidate only when it carries a CODE WORD - a written numeral, a
       // Greek letter or a digit (all closed classes): "alpha beta seven"
-      // and "gpt five six" qualify, a descriptive predicate ("performs
-      // careful reviews") never does.
+      // qualifies, a nominal description followed by more material ("in
+      // the planned deployment dashboard using <pin>") never does.
+      // Round 20: a TERMINAL run of two or more open-class words needs
+      // no code word - a direct transitive identity predicate ending the
+      // window ("... but adopts orion") is indistinguishable from a
+      // description by verb enumeration, so it blocks and the cost of a
+      // descriptive false positive is one plain restatement.
       const codeWordPattern =
         /^(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|um|dois|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez)$/i;
       const hasFragmentedValueCandidate = (text: string): boolean => {
@@ -3205,7 +3268,13 @@ export function truthfulnessPreflight(params: {
           if (codeWordPattern.test(word) || /[0-9]/.test(word)) runHasCodeWord = true;
           if (run >= 2 && runHasCodeWord) return true;
         }
-        return false;
+        // Round 20: a TERMINAL run of EXACTLY two open-class words is a
+        // candidate even without a code word - "<verb> <value>" ending
+        // the window ("... but adopts orion") is the identity-predicate
+        // shape, while a longer code-word-free terminal run ("performs
+        // careful reviews", "a newer build next quarter") stays a
+        // description.
+        return run === 2;
       };
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
@@ -3419,29 +3488,59 @@ export function truthfulnessPreflight(params: {
         // currently using") or a described property ("remains available
         // during migration") never forms a candidate; both sides read
         // post-mask, so contrastive FUTURE planning stays exempt.
+        // Codex round 20: consumption spans and occurrence starts are
+        // indexed in ONE pass - each per-consumed-alias check is then
+        // O(log n) instead of rescanning every occurrence and clause
+        // boundary (quadratic on a 200,000-character draft).
+        const consumingSpanByAlias = new Map<number, { firstStart: number; lastEnd: number }>();
+        for (const occurrence of occurrences) {
+          if (occurrence.ownerAliasIndex === undefined) continue;
+          const occurrenceEnd = occurrence.index + occurrence.rawLength;
+          const span = consumingSpanByAlias.get(occurrence.ownerAliasIndex);
+          if (!span) {
+            consumingSpanByAlias.set(occurrence.ownerAliasIndex, {
+              firstStart: occurrence.matchStart,
+              lastEnd: occurrenceEnd,
+            });
+          } else {
+            span.firstStart = Math.min(span.firstStart, occurrence.matchStart);
+            span.lastEnd = Math.max(span.lastEnd, occurrenceEnd);
+          }
+        }
+        const sortedOccurrenceStarts = occurrences
+          .map((occurrence) => occurrence.matchStart)
+          .sort((left, right) => left - right);
+        const hasOccurrenceStartBetween = (
+          afterExclusive: number,
+          beforeExclusive: number,
+        ): boolean => {
+          let lo = 0;
+          let hi = sortedOccurrenceStarts.length - 1;
+          let firstAfter: number | undefined;
+          while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const value = sortedOccurrenceStarts[mid];
+            if (value !== undefined && value > afterExclusive) {
+              firstAfter = value;
+              hi = mid - 1;
+            } else {
+              lo = mid + 1;
+            }
+          }
+          return firstAfter !== undefined && firstAfter < beforeExclusive;
+        };
         const orphanPredicateAfterConsumption = (aliasIndex: number): boolean => {
+          const span = consumingSpanByAlias.get(aliasIndex);
+          if (!span) return false;
           const clauseEnd = clauseEndFor(aliasIndex);
-          const consuming = occurrences.filter(
-            (occurrence) => occurrence.ownerAliasIndex === aliasIndex,
-          );
-          if (consuming.length === 0) return false;
-          const firstConsumingStart = Math.min(
-            ...consuming.map((occurrence) => occurrence.matchStart),
-          );
-          if (firstConsumingStart > aliasIndex) {
-            const lead = guardAliasBase.slice(aliasIndex, firstConsumingStart);
+          if (span.firstStart > aliasIndex) {
+            const lead = guardAliasBase.slice(aliasIndex, span.firstStart);
             if (hasFragmentedValueCandidate(lead)) return true;
           }
-          const lastConsumingEnd = Math.max(
-            ...consuming.map((occurrence) => occurrence.index + occurrence.rawLength),
-          );
-          if (lastConsumingEnd >= clauseEnd) return false;
-          const tail = guardAliasBase.slice(lastConsumingEnd, clauseEnd);
+          if (span.lastEnd >= clauseEnd) return false;
+          const tail = guardAliasBase.slice(span.lastEnd, clauseEnd);
           if (!hasFragmentedValueCandidate(tail)) return false;
-          return !occurrences.some(
-            (occurrence) =>
-              occurrence.matchStart > lastConsumingEnd && occurrence.matchStart < clauseEnd,
-          );
+          return !hasOccurrenceStartBetween(span.lastEnd, clauseEnd);
         };
         // Hardened contract: the relation is LINE-scoped. Three DETECTOR
         // relations survive (each only ever ADDS blocking): the literal
@@ -3454,8 +3553,10 @@ export function truthfulnessPreflight(params: {
         const lineHasModelRelation =
           modelRelationPattern.test(aliasBase) ||
           new RegExp(`(?:${aliasUnionSource})\\s+peer\\b`, "i").test(aliasBase) ||
+          // Round 20: a possessive separator before the excluded
+          // integration nouns ("uses OpenAI's APIs") keeps the exclusion.
           new RegExp(
-            `\\b(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)\\s+(?:the\\s+)?(?:${aliasUnionSource})(?!\\s+(?:authentication|auth|credentials?|documentation|docs?|keys?|tokens?|billing|accounts?|peer|APIs?|clients?|SDKs?|integrations?|services?|endpoints?|libraries|library))`,
+            `\\b(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)\\s+(?:the\\s+)?(?:${aliasUnionSource})(?!(?:['’]s)?\\s+(?:authentication|auth|credentials?|documentation|docs?|keys?|tokens?|billing|accounts?|peer|APIs?|clients?|SDKs?|integrations?|services?|endpoints?|libraries|library))`,
             "i",
           ).test(aliasBase);
         let guardTripped = false;
@@ -3490,6 +3591,20 @@ export function truthfulnessPreflight(params: {
         if (!guardTripped && lineHasModelRelation) {
           const subjectOpenerPattern =
             /^\s*(?:(?:the|a|an|this|that|these|those|its?|theirs?|ours?|my|your|his|hers?|it|they|we|you|he|she|there|here|with|without|in|on|at|for|from|by|to|of|via|per|under|over|through|during|between|after|before|about|as|so|then|also|o|os|as|um|uma|est[ea]s?|ess[ea]s?|aquel[ea]s?|seus?|suas?|noss[oa]s?|eles?|elas?|isso|isto|h[aá]|com|sem|em|no|na|nos|nas|para|de|do|da|dos|das|por|sob|sobre|entre|durante|ap[oó]s|antes|ent[aã]o)\b|[A-Z])/;
+          // Codex round 20: the first visible alias position is computed
+          // ONCE - re-testing every growing prefix per clause bound was
+          // quadratic on long drafts.
+          let firstGuardAliasIndex: number | undefined;
+          for (const aliasPeer of PEERS) {
+            const aliasSearchPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "i");
+            const aliasMatch = aliasSearchPattern.exec(guardAliasBase);
+            if (
+              aliasMatch &&
+              (firstGuardAliasIndex === undefined || aliasMatch.index < firstGuardAliasIndex)
+            ) {
+              firstGuardAliasIndex = aliasMatch.index;
+            }
+          }
           for (const bound of clauseBounds) {
             const segStart = bound.end;
             const segEnd = clauseEndFor(segStart);
@@ -3498,11 +3613,7 @@ export function truthfulnessPreflight(params: {
             if (!/[A-Za-zà-ÿ]/.test(segment)) continue;
             if (subjectOpenerPattern.test(segment)) continue;
             if (!hasFragmentedValueCandidate(segment)) continue;
-            const precedingMasked = guardAliasBase.slice(0, bound.start);
-            const precedingHasAlias = PEERS.some((aliasPeer) =>
-              new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "i").test(precedingMasked),
-            );
-            if (precedingHasAlias) {
+            if (firstGuardAliasIndex !== undefined && firstGuardAliasIndex < bound.start) {
               guardTripped = true;
               break;
             }

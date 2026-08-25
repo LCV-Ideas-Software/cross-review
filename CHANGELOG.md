@@ -53,6 +53,25 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
 
+  Codex round 20 closed the locator's remaining escape routes and made
+  it near-linear: the historical-only exemption is deleted and leading
+  hypotheticals plus attributed third-party documentation speech route
+  THROUGH the guard (those free-prose families now block as the
+  contract promises; instructions and genuine questions remain
+  non-assertive); the locator judges the DRAFT only (the task is
+  operator input - an ordinary imperative never aborts the session);
+  possessive runtime subjects ("cross-review's runtime") enter the
+  model scope; a short quoted same-peer alias plus the literal model
+  noun ("Codex model") is nomenclature and stays visible; a TERMINAL
+  run of exactly two open-class words ("adopts orion") is a fragmented
+  candidate without a code word while longer code-word-free runs stay
+  descriptions; possessives keep the auth/API exclusions ("uses
+  OpenAI's APIs"); a provider/model route has exactly two segments
+  ("openai/docs/README" masks as a path); and the consumed-alias guard
+  pre-indexes consumption spans, occurrence starts, clause bounds
+  (binary search) and the first visible alias, staying near-linear on
+  200,000-character drafts.
+
   Codex round 19 hardened the KEPT masks and detectors: linking "as"
   arms the model-value slot like "to" ("identifies as orion" blocks); the
   indirect-request mask starts at the request construction, never at the

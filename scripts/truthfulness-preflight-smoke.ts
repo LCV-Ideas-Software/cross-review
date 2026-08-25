@@ -1606,6 +1606,99 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "a peer name embedded in a complete email address masks with the address - an ownership statement is not a model claim",
   );
+  // Codex review of PR #247, round 20: the locator's remaining escape
+  // routes close (historical/hypothetical/attributed free prose BLOCK by
+  // design), the guard applies to the DRAFT only, and the kept masks
+  // harden further.
+  const previouslyHistorical = anchored(
+    "Previously, the cross-review server Codex model was alpha beta seven.",
+  );
+  assert.equal(
+    previouslyHistorical.pass,
+    false,
+    "HARDENED CONTRACT: a 'Previously' historical model claim in free prose blocks - no historical-only exemption skips the locator",
+  );
+  const leadingHypothetical = anchored(
+    "If enabled, the cross-review runtime Codex model runs alpha beta seven.",
+  );
+  assert.equal(
+    leadingHypothetical.pass,
+    false,
+    "HARDENED CONTRACT: a leading-hypothetical model claim in free prose blocks - restate with the pin or use structured evidence",
+  );
+  const attributedDocs = anchored(
+    "OpenAI documentation says: the cross-review runtime Codex model runs alpha beta seven.",
+  );
+  assert.equal(
+    attributedDocs.pass,
+    false,
+    "HARDENED CONTRACT: attributed third-party documentation speech in free prose blocks - move it into structured evidence",
+  );
+  const assertiveQuestion = anchored("Is the cross-review runtime Codex model gpt-5.6-sol?");
+  assert.equal(
+    assertiveQuestion.pass,
+    true,
+    "a genuine question stays non-assertive - only assertive lines enter the locator",
+  );
+  const possessiveScope = anchored("The cross-review's runtime Codex model runs alpha beta seven.");
+  assert.equal(
+    possessiveScope.pass,
+    false,
+    "a possessive cross-review subject (cross-review's runtime) still enters the model-scope detector",
+  );
+  const quotedAliasModelLabel = anchored(
+    'The cross-review runtime "Codex model" runs alpha beta seven.',
+  );
+  assert.equal(
+    quotedAliasModelLabel.pass,
+    false,
+    "a short quoted same-peer alias plus the literal model noun is nomenclature - the quoted subject stays visible and the claim blocks",
+  );
+  const adoptsOrion = anchored(
+    "The cross-review runtime Codex model is gpt-5.6-sol but adopts orion.",
+  );
+  assert.equal(
+    adoptsOrion.pass,
+    false,
+    "a run of two open-class words after the consuming token (adopts orion) is a fragmented candidate - no code word required",
+  );
+  const taskImperative = truthfulnessPreflight({
+    task: "Summarize the cross-review runtime Codex model configuration.",
+    initialDraft: "The draft makes no runtime claims here.",
+    runtimeFacts: { model_pins: plainPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    taskImperative.pass,
+    true,
+    "the model-claim locator judges the DRAFT only - an ordinary task imperative never aborts the session",
+  );
+  const possessiveApis = anchored("The cross-review runtime uses OpenAI's APIs for embeddings.");
+  assert.equal(
+    possessiveApis.pass,
+    true,
+    "a possessive before an excluded integration noun (OpenAI's APIs) keeps the auth/API exclusion",
+  );
+  const extensionlessProviderPath = anchored(
+    "The cross-review model_pin table is documented in openai/docs/README for reference.",
+  );
+  assert.equal(
+    extensionlessProviderPath.pass,
+    true,
+    "a multi-segment extensionless path with a provider prefix (openai/docs/README) is a filesystem path, not a provider route",
+  );
+  {
+    const repeatedClause = "The cross-review runtime Codex model is gpt-5.6-sol and stays loaded. ";
+    const hugeDraft = repeatedClause.repeat(Math.ceil(200_000 / repeatedClause.length));
+    const hugeStart = Date.now();
+    const hugeResult = anchored(hugeDraft);
+    const hugeMs = Date.now() - hugeStart;
+    assert.ok(
+      hugeMs < 3_000,
+      `the consumed-alias guard stays near-linear on a 200,000-character draft (${hugeMs}ms)`,
+    );
+    assert.equal(typeof hugeResult.pass, "boolean", "the huge draft still evaluates");
+  }
   {
     const manyAliases = `The cross-review runtime ${"Codex ".repeat(6_000)}model is gpt-5.6-sol.`;
     const linearStart = Date.now();
