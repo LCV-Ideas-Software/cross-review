@@ -1531,6 +1531,25 @@ function capturePerplexityProbe(
     Math.abs(((lateData.storage_cost_usd as number) ?? 0) - 0.0225) < 1e-12,
     `late creation notice carries the priced storage cost: ${lateData.storage_cost_usd}`,
   );
+
+  // Codex round 16: the cachedContents minimum is per model - a Flash
+  // payload counting 2,000 tokens (below the Pro 4,096 minimum, above
+  // the Flash 1,024 minimum) still creates the cache.
+  __resetGeminiExplicitCacheIndexForTests();
+  const flashConfig = {
+    ...geminiCacheConfig,
+    models: { ...geminiCacheConfig.models, gemini: "gemini-2.5-flash" },
+  };
+  const flashMock = makeClient({ countTokensResult: 2_000 });
+  const flashAdapter = new GeminiAdapter(flashConfig);
+  (flashAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    flashMock.client;
+  await flashAdapter.call(prompt, context(stableHead.length));
+  assert.equal(
+    flashMock.createCalls.length,
+    1,
+    "a 2,000-token Flash payload clears the 1,024-token Flash minimum and creates the cache",
+  );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 

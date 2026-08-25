@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GEMINI_EXPLICIT_CACHE_MIN_TOKENS } from "../peers/gemini.js";
+import { geminiExplicitCacheMinTokensForModel } from "../peers/gemini.js";
 import { isPerplexityAgentModel, resolveCostRate } from "./cost.js";
 import { applyFileConfigToEnv, inspectConfigFileFingerprint } from "./file-config.js";
 import { type AppConfig, PEERS, type PeerId } from "./types.js";
@@ -914,9 +914,18 @@ export function missingFinancialControlVars(
   // requirement is role-aware like the Perplexity search dimension —
   // fail-closed default when the reviewer set is unknown.
   const geminiCanReview = options.reviewerPeers ? options.reviewerPeers.includes("gemini") : true;
+  // Codex round 16: the cachedContents minimum is per model (Flash 1,024
+  // / Pro 4,096) — the gate uses the SMALLEST minimum across the primary
+  // and every configured fallback, so a payload eligible for any of them
+  // keeps requiring the rate.
+  const geminiMinCacheTokens = Math.min(
+    ...[config.models.gemini, ...(config.fallback_models.gemini ?? [])].map((model) =>
+      geminiExplicitCacheMinTokensForModel(model),
+    ),
+  );
   const geminiPayloadCanBeEligible =
     options.geminiCacheableBytesBound === undefined ||
-    options.geminiCacheableBytesBound >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS;
+    options.geminiCacheableBytesBound >= geminiMinCacheTokens;
   if (
     peers.includes("gemini") &&
     geminiCanReview &&

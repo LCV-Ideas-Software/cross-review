@@ -1,5 +1,5 @@
 import { classifyProviderError } from "../peers/errors.js";
-import { GEMINI_EXPLICIT_CACHE_MIN_TOKENS, geminiExplicitCacheArmed } from "../peers/gemini.js";
+import { geminiExplicitCacheArmed, geminiExplicitCacheMinTokensForModel } from "../peers/gemini.js";
 import { resolveBestModels } from "../peers/model-selection.js";
 import { createAdapters, selectAdapters } from "../peers/registry.js";
 import { redact, safeErrorMessage } from "../security/redact.js";
@@ -3782,10 +3782,11 @@ export function estimatedPeerRoundCost(
           (options.gemini_cache_head_bytes ?? Buffer.byteLength(prompt, "utf8")) +
           (options.gemini_cached_system_bytes ?? GEMINI_CACHED_SYSTEM_TOKEN_BOUND);
         // Codex round 13: the byte bound is a token CEILING — a payload
-        // whose ceiling sits below the provider's 4,096-token minimum can
-        // never create a cache, so charging its storage would reject
-        // reviews on a hard budget for spend that cannot exist.
-        if (storageTokens >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS) {
+        // whose ceiling sits below the provider minimum can never create
+        // a cache, so charging its storage would reject reviews on a hard
+        // budget for spend that cannot exist. Round 16: the minimum is
+        // per effective model (Flash 1,024 / Pro 4,096).
+        if (storageTokens >= geminiExplicitCacheMinTokensForModel(pricedModel)) {
           storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
         }
       }
@@ -6783,6 +6784,39 @@ export class CrossReviewOrchestrator {
                 `[cross-review] cache manifest append failed: ${safeErrorMessage(error)}; continuing review.`,
               );
             });
+            // Codex round 16: a creation that settled AFTER cancellation
+            // turns one indeterminate attempt into KNOWN storage spend —
+            // reconcile the session's durable accounting, not only the
+            // FinOps manifest.
+            const lateData = (event as { data?: Record<string, unknown> }).data;
+            if (lateData?.late_settlement === true) {
+              void this.store
+                .reconcileLateCacheCreation(session.session_id, {
+                  round: roundNumber,
+                  peer: adapter.id,
+                  usage: {
+                    ...(typeof lateData.storage_token_hours === "number"
+                      ? { cache_storage_token_hours: lateData.storage_token_hours }
+                      : {}),
+                  },
+                  ...(typeof lateData.storage_cost_usd === "number"
+                    ? {
+                        cost: {
+                          currency: "USD" as const,
+                          total_cost: lateData.storage_cost_usd,
+                          cache_storage_cost: lateData.storage_cost_usd,
+                          estimated: true,
+                          source: "configured-rate" as const,
+                        },
+                      }
+                    : {}),
+                })
+                .catch((error) => {
+                  console.error(
+                    `[cross-review] late cache settlement reconciliation failed: ${safeErrorMessage(error)}; continuing review.`,
+                  );
+                });
+            }
           }
           this.emit(event);
         };

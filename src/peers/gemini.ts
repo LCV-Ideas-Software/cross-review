@@ -199,6 +199,16 @@ export function loadGenaiModule(): Promise<typeof import("@google/genai")> {
 // created and billed the entry) surface as an unpriced attempt; a
 // lost/expired cache drops the index entry and retries, re-creating it.
 export const GEMINI_EXPLICIT_CACHE_MIN_TOKENS = 4_096;
+// Codex round 16 (PR #240): the cachedContents minimum is PER MODEL —
+// 1,024 tokens for the Flash family, 4,096 for Pro (and unknown models,
+// conservatively). The adapter gate, the financial-control gate and the
+// storage preflight all derive from this single source.
+export const GEMINI_EXPLICIT_CACHE_MIN_TOKENS_FLASH = 1_024;
+export function geminiExplicitCacheMinTokensForModel(model: string): number {
+  return /flash/i.test(model)
+    ? GEMINI_EXPLICIT_CACHE_MIN_TOKENS_FLASH
+    : GEMINI_EXPLICIT_CACHE_MIN_TOKENS;
+}
 
 // Codex review of PR #240 round 2: eligibility is decided by the
 // AUTHORITATIVE token count (countTokens runs before creation anyway), not
@@ -651,7 +661,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       );
       return undefined;
     }
-    if (countedTokens < GEMINI_EXPLICIT_CACHE_MIN_TOKENS) {
+    // Codex round 16: the minimum is PER MODEL (Flash 1,024 / Pro 4,096).
+    const modelMinTokens = geminiExplicitCacheMinTokensForModel(this.model);
+    if (countedTokens < modelMinTokens) {
       // Codex review of PR #240 round 2: the authoritative count decides
       // eligibility — a token-sparse head below the provider minimum would
       // only produce a rejected creation call. The negative sentinel keeps
@@ -666,7 +678,7 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         expires_at_ms: now + ttlSeconds * 1_000,
       });
       notice(
-        `Gemini explicit cache skipped: the stable prefix counts ${countedTokens} tokens, below the ${GEMINI_EXPLICIT_CACHE_MIN_TOKENS}-token cachedContents minimum; continuing uncached.`,
+        `Gemini explicit cache skipped: the stable prefix counts ${countedTokens} tokens, below the ${modelMinTokens}-token cachedContents minimum for ${this.model}; continuing uncached.`,
         { model: this.model, key_hash: cacheKeyHash, token_count: countedTokens },
       );
       return undefined;
@@ -845,6 +857,10 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
                     ? { storage_cost_usd: (lateTokenHours / 1_000_000) * lateStorageRate }
                     : {}),
                   key_hash: cacheKeyHash,
+                  // Round 16: the orchestrator reconciles this late
+                  // settlement into session accounting (one indeterminate
+                  // attempt becomes known storage spend).
+                  late_settlement: true,
                 },
               );
             }

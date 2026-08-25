@@ -2321,6 +2321,105 @@ const regressions: Regression[] = [
           "a zero envelope prices zero worst case",
         );
       }
+      // Codex round 16: a cache creation settling AFTER cancellation
+      // reconciles the session's durable accounting - one indeterminate
+      // attempt becomes known storage spend and the unknown-spend gate
+      // stops blocking.
+      {
+        const { SessionStore } = await import("../src/core/session-store.js");
+        const reconcileDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-reconcile-"));
+        const reconcileStore = new SessionStore({
+          ...geminiPreflightPriced,
+          data_dir: reconcileDir,
+        });
+        const reconcileSession = await reconcileStore.init(
+          "reconcile late cache settlement",
+          "operator",
+          [],
+          undefined,
+        );
+        await reconcileStore.recordPeerFailureAccounting(reconcileSession.session_id, 1, {
+          peer: "gemini",
+          provider: "google",
+          model: "gemini-3.1-pro-preview",
+          failure_class: "cancelled",
+          message: "cancelled while caches.create was in flight",
+          retryable: false,
+          attempts: 2,
+          latency_ms: 10,
+          unpriced_attempts: 2,
+          indeterminate_spend_attempts: 1,
+        });
+        const reconciled = await reconcileStore.reconcileLateCacheCreation(
+          reconcileSession.session_id,
+          {
+            round: 1,
+            peer: "gemini",
+            usage: { cache_storage_token_hours: 5_000 },
+            cost: {
+              currency: "USD",
+              total_cost: 0.0225,
+              cache_storage_cost: 0.0225,
+              estimated: true,
+              source: "configured-rate",
+            },
+          },
+        );
+        assert.equal(reconciled, true, "the late settlement finds and settles the failure");
+        const reconciledMeta = reconcileStore.read(reconcileSession.session_id);
+        const settledFailure = (reconciledMeta.failed_attempts ?? []).at(-1);
+        assert.equal(
+          settledFailure?.indeterminate_spend_attempts,
+          0,
+          "one indeterminate attempt settles as known",
+        );
+        assert.equal(settledFailure?.unpriced_attempts, 1, "one unpriced attempt settles");
+        assert.equal(settledFailure?.usage?.cache_storage_token_hours, 5_000);
+        assert.ok(
+          Math.abs((settledFailure?.cost?.cache_storage_cost ?? 0) - 0.0225) < 1e-12,
+          "the storage cost merges into the failure record",
+        );
+        assert.ok(
+          Math.abs((reconciledMeta.totals.cost.total_cost ?? 0) - 0.0225) < 1e-12,
+          `session totals include the reconciled storage charge: ${reconciledMeta.totals.cost.total_cost}`,
+        );
+        const reconcileMissing = await reconcileStore.reconcileLateCacheCreation(
+          reconcileSession.session_id,
+          {
+            round: 1,
+            peer: "gemini",
+            usage: { cache_storage_token_hours: 1 },
+          },
+        );
+        assert.equal(
+          reconcileMissing,
+          false,
+          "with no indeterminate record left the reconciliation is a no-op",
+        );
+      }
+      // Codex round 16: the cachedContents minimum is per model - Flash is
+      // 1,024 tokens, Pro is 4,096, unknown models stay conservative.
+      {
+        const { geminiExplicitCacheMinTokensForModel } = await import("../src/peers/gemini.js");
+        assert.equal(geminiExplicitCacheMinTokensForModel("gemini-2.5-flash"), 1_024);
+        assert.equal(geminiExplicitCacheMinTokensForModel("gemini-3.1-pro-preview"), 4_096);
+        assert.equal(geminiExplicitCacheMinTokensForModel("gemini-unknown"), 4_096);
+        assert.equal(
+          missingFinancialControlVars(
+            {
+              ...geminiArmedConfig,
+              fallback_models: {
+                ...geminiArmedConfig.fallback_models,
+                gemini: ["gemini-2.5-flash"],
+              },
+            },
+            ["gemini"],
+            { reviewerPeers: ["gemini"], geminiCacheableBytesBound: 2_000 },
+          ).includes("CROSS_REVIEW_GEMINI_CACHE_STORAGE_USD_PER_MILLION_TOKEN_HOUR"),
+          true,
+          "a 2,000-byte bound is eligible for a Flash fallback (1,024 minimum) and keeps requiring the rate",
+        );
+      }
       // Codex round 15: when cancellation finalizes a failure, withRetry
       // must PRESERVE the classifier's larger attempt count - an adapter
       // that accounted internal sub-calls (an ambiguous cache creation)

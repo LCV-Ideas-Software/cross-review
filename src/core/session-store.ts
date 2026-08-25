@@ -15,6 +15,7 @@ import type {
   ConvergenceHealth,
   ConvergenceResult,
   ConvergenceScope,
+  CostEstimate,
   EvidenceAttachment,
   EvidenceAttachmentOrigin,
   EvidenceBrokerLimits,
@@ -50,6 +51,7 @@ import type {
   SessionMeta,
   ShadowJudgmentPeerStats,
   ShadowJudgmentRollup,
+  TokenUsage,
 } from "./types.js";
 import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
 
@@ -2235,6 +2237,75 @@ export class SessionStore {
       reservationId,
     );
     return artifactPath;
+  }
+
+  // Codex round 16 (PR #240): a cache creation that settles AFTER the
+  // cancellation turns one indeterminate attempt into KNOWN storage
+  // spend. The reconciliation finds the peer's failure record still
+  // carrying an indeterminate marker (the round's rejected list, the
+  // failed-attempts ledger, or an in-flight settlement) and settles
+  // exactly one attempt: indeterminate and unpriced each drop by one and
+  // the storage usage/cost merge in, so the unknown-spend gate stops
+  // blocking on an outcome that is now known. Terminal sessions are
+  // sealed (same rule as every late settlement) and return false.
+  async reconcileLateCacheCreation(
+    sessionId: string,
+    params: {
+      round: number;
+      peer: PeerId;
+      usage: TokenUsage;
+      cost?: CostEstimate | undefined;
+    },
+  ): Promise<boolean> {
+    return this.withSessionLock(sessionId, async () => {
+      const meta = this.read(sessionId);
+      if (meta.outcome) return false;
+      const matchesRound = (round: number | undefined): boolean =>
+        round === undefined || round === params.round;
+      const pool: Array<{
+        peer: PeerId;
+        indeterminate_spend_attempts?: number | undefined;
+        unpriced_attempts?: number | undefined;
+        usage?: TokenUsage | undefined;
+        cost?: CostEstimate | undefined;
+        billing_status?: "reported" | "unknown" | undefined;
+      }> = [
+        ...(meta.rounds[params.round - 1]?.rejected ?? []),
+        ...(meta.failed_attempts ?? []).filter((failure) =>
+          matchesRound((failure as PeerFailure & { round?: number }).round),
+        ),
+        ...(meta.in_flight?.provider_settlements ?? []).filter(
+          () => meta.in_flight?.round === params.round,
+        ),
+      ].filter(
+        (record) => record.peer === params.peer && (record.indeterminate_spend_attempts ?? 0) > 0,
+      );
+      const target = pool.at(-1);
+      if (!target) return false;
+      target.indeterminate_spend_attempts = Math.max(
+        0,
+        (target.indeterminate_spend_attempts ?? 0) - 1,
+      );
+      target.unpriced_attempts = Math.max(0, (target.unpriced_attempts ?? 0) - 1);
+      target.usage = target.usage ? mergeUsage([target.usage, params.usage]) : params.usage;
+      if (params.cost) {
+        target.cost = target.cost ? mergeCost([target.cost, params.cost]) : params.cost;
+        if ((target.unpriced_attempts ?? 0) === 0) target.billing_status = "reported";
+      }
+      meta.totals = this.totalsFor(meta);
+      if (
+        params.cost?.total_cost != null &&
+        params.round > 0 &&
+        params.round <= (meta.costs_per_round?.length ?? 0)
+      ) {
+        const costs = [...(meta.costs_per_round ?? [])];
+        costs[params.round - 1] = (costs[params.round - 1] ?? 0) + params.cost.total_cost;
+        meta.costs_per_round = costs;
+      }
+      meta.updated_at = now();
+      await writeJson(this.metaPath(sessionId), meta);
+      return true;
+    });
   }
 
   async recordPeerFailureAccounting(
