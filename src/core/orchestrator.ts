@@ -2915,7 +2915,19 @@ export function truthfulnessPreflight(params: {
             );
           return singleAlias ? m : "#".repeat(m.length);
         })
-        .replace(/[a-z0-9._-]+\s*\//gi, (m) => "#".repeat(m.length));
+        .replace(/[a-z0-9._-]+\s*\//gi, (m, offset: number, whole: string) => {
+          // Codex round 9: a recognized PEER alias prefixing a route
+          // ("perplexity/alpha beta seven") must stay visible for the
+          // zero-token guard. An alias that is merely a PATH SEGMENT
+          // ("src/gemini/routing.md") is preceded by another segment's
+          // slash and keeps masking.
+          if (offset > 0 && whole[offset - 1] === "/") return "#".repeat(m.length);
+          const prefix = m.replace(/\s*\/$/, "");
+          const isPeerAlias = PEERS.some((aliasPeer) =>
+            new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(prefix),
+          );
+          return isPeerAlias ? m : "#".repeat(m.length);
+        });
       const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
       for (const aliasPeer of PEERS) {
         const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
@@ -2941,14 +2953,35 @@ export function truthfulnessPreflight(params: {
       const occurrenceStarts = new Set(
         occurrences.flatMap((occurrence) => [occurrence.matchStart, occurrence.index]),
       );
+      // Codex round 9: the dot INSIDE a recognized alias (x.ai) is not a
+      // sentence boundary - splitting it severed the alias from its own
+      // clause's model relation. Model-token dots are already masked.
+      const aliasInteriorIndexes = new Set<number>();
+      for (const aliasPeer of PEERS) {
+        const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
+        for (const match of aliasBase.matchAll(aliasPattern)) {
+          if (match.index === undefined) continue;
+          for (let i = match.index + 1; i < match.index + match[0].length - 1; i += 1) {
+            aliasInteriorIndexes.add(i);
+          }
+        }
+      }
       for (const match of aliasBase.matchAll(
-        /[;,.:]|—|–|\s-\s|\b(?:and|e|while|whilst|whereas|although|though|enquanto|embora)\b/gi,
+        // Round 9: causal/conditional subordinators join the boundary set
+        // (because/since/unless/until/if + pt-BR porque/pois/caso).
+        // "when/quando" stay OUT: the historical construction "When the
+        // audit began" is matched as one phrase by the timing pattern.
+        /[;,.:]|—|–|\s-\s|\b(?:and|e|while|whilst|whereas|although|though|because|since|unless|until|if|enquanto|embora|porque|pois|caso)\b/gi,
       )) {
         if (match.index === undefined) continue;
+        if (match[0].length === 1 && aliasInteriorIndexes.has(match.index)) continue;
         if (match[0] === ":") {
+          // Round 9: skip whitespace AND formatting wrappers (inline code,
+          // emphasis, quotes, brackets) when checking whether the colon
+          // introduces a captured value ("model: `gpt-5.6-sol`").
           const rest = aliasBase.slice(match.index + 1);
-          const nextIdx = match.index + 1 + (rest.length - rest.trimStart().length);
-          if (occurrenceStarts.has(nextIdx)) continue;
+          const wrapperLength = rest.match(/^[\s`*_~"'“”‘’([{]*/)?.[0].length ?? 0;
+          if (occurrenceStarts.has(match.index + 1 + wrapperLength)) continue;
         }
         clauseBounds.push({ start: match.index, end: match.index + match[0].length });
       }
@@ -3022,9 +3055,13 @@ export function truthfulnessPreflight(params: {
       // Codex round 7: present-tense stative verbs and the "now" adverb
       // are current markers too - "and now the ... model REMAINS X" ends
       // the historical carry. Ambiguous adverbs that also ride past-tense
-      // clauses (still/today/ainda) are deliberately excluded.
+      // clauses (still/today/ainda) are deliberately excluded. Round 9:
+      // the explicit "current"/"atual" adjective and the "using/usando"
+      // participle are current markers - "The CURRENT ... model gpt-5.5
+      // will be replaced" is judged, and "runs ... USING gpt-5.6-sol"
+      // renews after a nominal planning phrase.
       const currentAssertionPattern =
-        /\b(?:is|are|runs?|uses?|currently|now|remains?|continues?|stays?|atualmente|agora|roda|usa|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
+        /\b(?:is|are|runs?|uses?|using|current|currently|now|remains?|continues?|stays?|atual|atuais|atualmente|agora|roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
       const contrastMarkerPattern = /\b(?:but|yet|however|mas|por[eé]m|contudo)\b/i;
       // Codex round 7: a nominal planning word that modifies the MODEL
       // NOUN PHRASE itself ("the UPCOMING ... Codex model is X") keeps its
@@ -3069,14 +3106,16 @@ export function truthfulnessPreflight(params: {
       // clause start) up to the nominal marker holds the model head with
       // no verb in between, the nominal governs that head and its copular
       // verb stays future.
+      // Codex round 9: the prior head must be an UNPREDICATED noun phrase
+      // - once a current verb precedes the nominal ("currently RUNS the
+      // ... model in the planned deployment dashboard"), the head is that
+      // verb's object and the nominal governs only its own local phrase,
+      // never the whole assertion.
       const nominalQualifiesPriorHead = (
         text: string,
         lastCurrentIdx: number,
         futureIdx: number,
-      ): boolean =>
-        nominalGovernedHeadPattern.test(
-          text.slice(lastCurrentIdx >= 0 ? lastCurrentIdx : 0, futureIdx),
-        );
+      ): boolean => lastCurrentIdx < 0 && nominalGovernedHeadPattern.test(text.slice(0, futureIdx));
       const markerStateAtEnd = (text: string): "none" | "current" | "future" => {
         let state: "none" | "current" | "future" = "none";
         let contrastSinceFuture = false;

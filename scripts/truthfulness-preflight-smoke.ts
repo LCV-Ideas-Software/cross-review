@@ -1220,6 +1220,55 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "a model noun modifying a meta noun (documentation) asserts nothing about the configured pin - no relation, no block",
   );
+  // Codex review of PR #247, round 9.
+  const currentAdjective = anchored(
+    "The current cross-review runtime Codex model gpt-5.5 will be replaced next quarter.",
+  );
+  assert.equal(
+    currentAdjective.pass,
+    false,
+    "the explicit 'current' adjective marks the assertion current - later planning language cannot exempt the contradictory pin",
+  );
+  assert.ok(
+    currentAdjective.issue_classes.includes("runtime_contradiction"),
+    "the current-adjective claim is judged by value",
+  );
+  const causalConjunction = anchored(
+    "The cross-review runtime Codex model runs alpha beta seven because gpt-5.6-sol is documented elsewhere.",
+  );
+  assert.equal(
+    causalConjunction.pass,
+    false,
+    "a causal conjunction (because) is a clause boundary - the truthful token cannot consume the fragmented claim's alias",
+  );
+  const labelColonCode = anchored("The cross-review runtime Codex model: `gpt-5.6-sol`.");
+  assert.equal(
+    labelColonCode.pass,
+    true,
+    "a label colon followed by a formatting wrapper (inline code) around the token still keeps alias ownership",
+  );
+  const planningDashboard = anchored(
+    "The server currently runs the cross-review runtime Codex model in the planned deployment dashboard using gpt-5.6-sol.",
+  );
+  assert.equal(
+    planningDashboard.pass,
+    true,
+    "a nominal planning word after an existing current verb does not capture the predicated model head - the truthful pin stays current",
+  );
+  const xaiAliasFragment = anchored("The cross-review runtime x.ai model runs alpha beta seven.");
+  assert.equal(
+    xaiAliasFragment.pass,
+    false,
+    "the dot inside a recognized alias (x.ai) is not a clause boundary - the fragmented claim stays located and blocked",
+  );
+  const fragmentedRoute = anchored(
+    "The cross-review runtime model uses perplexity/alpha beta seven.",
+  );
+  assert.equal(
+    fragmentedRoute.pass,
+    false,
+    "a provider alias prefixing an unparseable route survives the path mask - the fragmented route claim is blocked",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",
