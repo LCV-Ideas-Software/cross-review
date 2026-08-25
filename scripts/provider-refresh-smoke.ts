@@ -1696,6 +1696,48 @@ function capturePerplexityProbe(
     __setGeminiCancelTimingForTests(10_000, 120_000);
   }
 
+  // Codex round 25: a hung creation that settles AFTER its retention
+  // window never replaces the live entry a NEWER generation installed
+  // for the same key - replacing it would orphan the live resource and
+  // force a third billed creation when the older one expires.
+  __resetGeminiExplicitCacheIndexForTests();
+  __setGeminiCancelTimingForTests(100, 250);
+  try {
+    const staleWinnerMock = makeClient({ createDelayMs: 1_500 });
+    const staleWinnerAdapter = new GeminiAdapter(geminiCacheConfig);
+    (staleWinnerAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      staleWinnerMock.client;
+    const staleController = new AbortController();
+    setTimeout(() => staleController.abort(), 30);
+    await staleWinnerAdapter
+      .call(prompt, { ...context(stableHead.length), signal: staleController.signal })
+      .catch(() => undefined);
+    // Poison expires while the first SDK promise is still pending.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const freshWinnerMock = makeClient({ countTokensResult: 7_000, createWithoutUsage: true });
+    const freshWinnerAdapter = new GeminiAdapter(geminiCacheConfig);
+    (freshWinnerAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+      freshWinnerMock.client;
+    const freshResult = await freshWinnerAdapter.call(prompt, context(stableHead.length));
+    assert.ok(freshResult.text.length > 0, "the second generation completes and indexes its entry");
+    const freshEntry = [...__geminiExplicitCacheIndexForTests().values()].find(
+      (entry) => entry.name !== "",
+    );
+    assert.equal(freshEntry?.token_count, 7_000, "the second generation's entry is live");
+    // Let the FIRST creation settle late and run its reuse-only insertion.
+    await new Promise((resolve) => setTimeout(resolve, 1_300));
+    const survivingEntry = [...__geminiExplicitCacheIndexForTests().values()].find(
+      (entry) => entry.name !== "",
+    );
+    assert.equal(
+      survivingEntry?.token_count,
+      7_000,
+      "the late-settling first creation never replaces the newer generation's live entry",
+    );
+  } finally {
+    __setGeminiCancelTimingForTests(10_000, 120_000);
+  }
+
   // Codex round 24: a cancellation that lands AFTER the creation settled
   // (entry indexed, storage ledger recorded) but BEFORE the post-creation
   // recheck carries the settled-known billable tags - all provider work

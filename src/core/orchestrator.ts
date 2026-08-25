@@ -7016,6 +7016,24 @@ export class CrossReviewOrchestrator {
               // stable-head boundary — no cache, no storage in the envelope.
               { gemini_cache_eligible: false },
             );
+            // Codex round 25: after a fallback, `adapter` is the (cheaper)
+            // fallback while peerResult's indeterminate attempts may have
+            // originated on the peer's PRIMARY model - the unsettled
+            // reserve prices the WORST envelope among the models that can
+            // have originated them, and the recovery is refused
+            // fail-closed when that primary cannot be priced.
+            const recoveryTriggerIndeterminate = peerResult.indeterminate_spend_attempts ?? 0;
+            const configuredPrimaryModel = this.config.models[peerResult.peer];
+            const primaryRecoveryEnvelope =
+              recoveryTriggerIndeterminate > 0 && configuredPrimaryModel !== adapter.model
+                ? estimatedPeerRoundCost(
+                    this.config,
+                    [adapter.id],
+                    recoveryPrompt,
+                    { [adapter.id]: configuredPrimaryModel },
+                    { gemini_cache_eligible: false },
+                  )
+                : recoveryEstimate;
             this.emit({
               type: "peer.format_recovery.cost_alert",
               session_id: session.session_id,
@@ -7045,11 +7063,12 @@ export class CrossReviewOrchestrator {
             const currentSessionCostNow =
               priorRoundsCost + settledInitialCost + recoveryCostIncurred;
             const recoveryUnsettledWorstCase = unsettledSpendWorstCaseUsd(
-              recoveryEstimate ?? 0,
+              Math.max(recoveryEstimate ?? 0, primaryRecoveryEnvelope ?? 0),
               peerResult,
             );
             if (
               recoveryEstimate == null ||
+              (recoveryTriggerIndeterminate > 0 && primaryRecoveryEnvelope == null) ||
               (sessionCostLimit != null &&
                 currentSessionCostNow + recoveryEstimate + recoveryUnsettledWorstCase >
                   sessionCostLimit)
@@ -7057,7 +7076,9 @@ export class CrossReviewOrchestrator {
               const message =
                 recoveryEstimate == null
                   ? `Recovery refused: ${adapter.model} has no complete effective-model rate card.`
-                  : `Recovery refused: ${decisionRetry ? "decision retry" : "format recovery"} would push session cost from $${currentSessionCostNow.toFixed(6)} to $${(currentSessionCostNow + recoveryEstimate + recoveryUnsettledWorstCase).toFixed(6)}${recoveryUnsettledWorstCase > 0 ? ` (includes $${recoveryUnsettledWorstCase.toFixed(6)} worst-case for ${peerResult.indeterminate_spend_attempts} indeterminate provider attempt(s) on the triggering result)` : ""}, exceeding configured limit $${sessionCostLimit?.toFixed(6)}.`;
+                  : recoveryTriggerIndeterminate > 0 && primaryRecoveryEnvelope == null
+                    ? `Recovery refused: ${configuredPrimaryModel} for ${peerResult.peer} has no complete effective-model rate card to price ${recoveryTriggerIndeterminate} inherited indeterminate provider attempt(s).`
+                    : `Recovery refused: ${decisionRetry ? "decision retry" : "format recovery"} would push session cost from $${currentSessionCostNow.toFixed(6)} to $${(currentSessionCostNow + recoveryEstimate + recoveryUnsettledWorstCase).toFixed(6)}${recoveryUnsettledWorstCase > 0 ? ` (includes $${recoveryUnsettledWorstCase.toFixed(6)} worst-case for ${peerResult.indeterminate_spend_attempts} indeterminate provider attempt(s) priced at the worst originating envelope)` : ""}, exceeding configured limit $${sessionCostLimit?.toFixed(6)}.`;
               const failure: PeerFailure = {
                 peer: peerResult.peer,
                 provider: peerResult.provider,

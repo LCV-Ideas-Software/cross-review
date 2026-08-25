@@ -952,7 +952,20 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
           .then((created) => {
             if (created && typeof created.name === "string" && created.name.length > 0) {
               // REUSE-ONLY index insertion: no ledger, no failure-record
-              // mutation, no totals change.
+              // mutation, no totals change. Round 25: a NEWER generation
+              // may have created and indexed a live entry for this key
+              // while this request was hung past its retention window -
+              // the late insertion never replaces it (replacing would
+              // orphan the live resource and force a third billed
+              // creation when the older one expires).
+              const lateExisting = geminiExplicitCacheIndex.get(cacheKeyHash);
+              if (
+                lateExisting &&
+                lateExisting.name !== "" &&
+                lateExisting.expires_at_ms > Date.now()
+              ) {
+                return;
+              }
               const providerExpiryMs =
                 typeof created.expireTime === "string"
                   ? Date.parse(created.expireTime)

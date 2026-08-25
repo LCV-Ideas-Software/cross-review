@@ -19,6 +19,16 @@ standard `v00.00.00`; npm package versions remain SemVer.
   bounded 120-second window (uncached bypass, reuse-only late index,
   leak-free release).
 
+- Codex round 25 closed two inheritance edges: the format/decision
+  recovery gate prices inherited indeterminate attempts at the WORST
+  originating envelope (after a fallback, `adapter` is the cheaper
+  fallback while the attempts may have originated on the peer's
+  configured primary; recovery is refused fail-closed when that primary
+  cannot be priced), and the reuse-only late index insertion never
+  replaces a live entry installed by a newer generation for the same
+  key (replacing would orphan the live resource and force a third
+  billed creation when the older one expires).
+
 - Codex round 24 hardened the remaining cancellation and budget edges:
   each poison entry is an object marker owned by ONE creation generation
   and the late-settle cleanup releases only its own marker by identity
