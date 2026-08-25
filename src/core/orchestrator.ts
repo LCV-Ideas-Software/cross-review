@@ -2708,19 +2708,31 @@ export function truthfulnessPreflight(params: {
   // opener candidate (quadratic; ~10s on a 200,000-character
   // single-line draft). Openers anchor to line starts; an unterminated
   // fence stays visible (fail-closed).
+  // Round 24: a fence only closes on the SAME delimiter that opened it -
+  // Markdown never lets ~~~ close a ``` fence, and treating it as a
+  // closer would mask (and so admit) a claim sitting inside the
+  // still-unterminated backtick fence.
   const maskFencedBlocks = (text: string): string => {
     const textLines = text.split("\n");
     let openFenceLine = -1;
+    let openFenceMarker = "";
     for (let index = 0; index < textLines.length; index += 1) {
-      if (!/^[ \t]*(?:```|~~~)/.test(textLines[index] ?? "")) continue;
+      const fenceMatch = /^[ \t]*(```|~~~)/.exec(textLines[index] ?? "");
+      if (!fenceMatch) continue;
+      const marker = fenceMatch[1] ?? "";
       if (openFenceLine === -1) {
         openFenceLine = index;
-      } else {
+        openFenceMarker = marker;
+      } else if (marker === openFenceMarker) {
         for (let masked = openFenceLine; masked <= index; masked += 1) {
           textLines[masked] = "#".repeat((textLines[masked] ?? "").length);
         }
         openFenceLine = -1;
+        openFenceMarker = "";
       }
+      // A different marker inside an open fence is fence CONTENT - it
+      // neither closes nor opens (it will be masked if the open fence
+      // ever closes, and stays visible fail-closed otherwise).
     }
     return textLines.join("\n");
   };
@@ -2779,14 +2791,22 @@ export function truthfulnessPreflight(params: {
     // consuming its alias.
     if (
       lineFromDraft &&
-      line
-        .split(/[;:]/)
-        .some(
-          (clause) =>
-            CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN.test(clause) &&
-            !OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(clause) &&
-            !/\?\s*$/.test(clause),
-        )
+      line.split(/[;:]/).some(
+        (clause) =>
+          CROSS_REVIEW_MODEL_PIN_SCOPE_PATTERN.test(clause) &&
+          !OPERATIONAL_STATE_INSTRUCTION_PATTERN.test(clause) &&
+          // Round 24: the question escape requires an INTERROGATIVE
+          // OPENING (closed list of question-word/auxiliary starts) -
+          // a declarative proposition with a trailing tag question
+          // ("... is gpt-5.5, correct?") stays assertive and reaches
+          // judgment.
+          !(
+            /\?\s*$/.test(clause) &&
+            /^\s*(?:is|are|was|were|do|does|did|can|could|will|would|should|shall|has|have|had|am|which|what|whether|why|how|who|whom|whose|when|where|[eé]|s[aã]o|ser[aá]|est[aá]|estava|qual|quais|por\s+que|como|quando|onde|quem|o\s+que)\b/i.test(
+              clause,
+            )
+          ),
+      )
     ) {
       // v4.6.0 rounds 3-7 (Codex review of PR #234) + red-team hardening:
       // model-claim truthfulness is judged per OCCURRENCE. Each occurrence
@@ -2861,18 +2881,50 @@ export function truthfulnessPreflight(params: {
         .replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length))
         .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, (m) => "#".repeat(m.length))
         .replace(/\S+\/\S+/g, (m) => {
-          const parts = m.split("/");
-          // Sentence punctuation glued to the path ("openai/docs/gemini.md.")
-          // is not part of the terminal segment.
-          const lastSegment = (parts[parts.length - 1] ?? "").replace(/[.,;:!?)\]}]+$/, "");
+          // Formatting wrappers (backticks, quotes, brackets) and
+          // sentence punctuation glued to the chain are not part of its
+          // segments ("`perplexity/kimi-k3`.", "openai/docs/gemini.md.").
+          const trimmedChain = m.replace(/^[`"'“”‘’([{]+/, "").replace(/[`"'“”‘’)\]}.,;:!?]+$/, "");
+          const parts = trimmedChain.split("/");
+          const lastSegment = parts[parts.length - 1] ?? "";
           if (pathExtensionPattern.test(lastSegment)) return "#".repeat(m.length);
           // Codex round 20: a provider/model route has EXACTLY two
           // segments - three or more segments is a filesystem path
           // ("openai/docs/README") and masks whole. Round 21: the
           // supported wrapped pin form "models/<provider>/<model>"
           // (normalizeModelPin strips the wrapper) is the one recognized
-          // three-segment route and stays visible for capture.
-          if (parts.length <= 2) return m;
+          // three-segment route and stays visible for capture. Round 24:
+          // a two-segment chain is a ROUTE only when its first segment is
+          // a peer alias or the "models" wrapper - "docs/gemini-2" is a
+          // filesystem path and masks BEFORE occurrence capture can read
+          // its basename as a routed model token.
+          if (parts.length <= 2) {
+            const firstSegment = parts[0] ?? "";
+            const isRoutePrefix =
+              /^models$/i.test(firstSegment) ||
+              PEERS.some((aliasPeer) =>
+                new RegExp(`^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`, "i").test(
+                  firstSegment,
+                ),
+              );
+            if (isRoutePrefix) return m;
+            // A two-segment chain that IS a configured routed pin
+            // (canonicalized, wrapper stripped) also stays visible for
+            // capture ("zeta/llama-4.1" when that is the configured
+            // pin); any other chain masks - a routed lie that matches no
+            // pin then lands in the zero-token guard, never in a silent
+            // pass.
+            const chainCanonical = canonicalModelText(normalizeVersionToken(trimmedChain));
+            const matchesConfiguredRoutedPin = Object.values(modelPins).some((pin) => {
+              if (!pin) return false;
+              const unwrapped = pin.replace(/^models\//i, "");
+              return (
+                unwrapped.includes("/") &&
+                canonicalModelText(normalizeVersionToken(unwrapped)) === chainCanonical
+              );
+            });
+            return matchesConfiguredRoutedPin ? m : "#".repeat(m.length);
+          }
           const wrappedRoutedPin =
             parts.length === 3 &&
             /^models$/i.test(parts[0] ?? "") &&

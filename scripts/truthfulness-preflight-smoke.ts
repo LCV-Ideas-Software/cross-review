@@ -1765,6 +1765,29 @@ import type { PeerResult } from "../src/core/types.js";
     /restat/i.test(guardOnly.reason),
     "the zero-token rejection names restatement as the recovery path",
   );
+  // Codex review of PR #247, round 24.
+  const mismatchedFence = anchored(
+    "```\nThe cross-review runtime Codex model runs alpha beta seven.\n~~~",
+  );
+  assert.equal(
+    mismatchedFence.pass,
+    false,
+    "a tilde line never closes a backtick fence - the unterminated fence stays visible and the claim blocks (fail-closed)",
+  );
+  const tagQuestion = anchored("The cross-review runtime Codex model is gpt-5.5, correct?");
+  assert.equal(
+    tagQuestion.pass,
+    false,
+    "a declarative proposition with a trailing tag question is assertive - the contradictory pin reaches judgment",
+  );
+  const twoSegmentDocPath = anchored(
+    "The cross-review model_pin table is documented in docs/gemini-2 for reference.",
+  );
+  assert.equal(
+    twoSegmentDocPath.pass,
+    true,
+    "a non-provider two-segment extensionless path (docs/gemini-2) masks before occurrence capture - never a routed model token",
+  );
   {
     const fenceChain = "``` ".repeat(Math.ceil(200_000 / 4));
     const fenceStart = Date.now();

@@ -53,6 +53,19 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
 
+  Codex round 24 closed three edges: a fence only closes on the SAME
+  delimiter that opened it (a tilde line never closes a backtick fence -
+  the claim inside the still-open fence stays visible and blocks); the
+  question escape requires an interrogative OPENING from a closed list,
+  so a declarative proposition with a trailing tag question ("... is
+  gpt-5.5, correct?") stays assertive and its contradictory pin reaches
+  judgment; and a two-segment extensionless chain is a route only when
+  its first segment is a peer alias/the models wrapper OR the whole
+  chain equals a configured routed pin (canonicalized, formatting
+  wrappers trimmed) - "docs/gemini-2" masks before occurrence capture
+  while "zeta/llama-4.1" stays capturable when it is the configured pin,
+  and a routed lie matching no pin lands in the zero-token guard.
+
   Codex round 23 hardened the remaining edges: Portuguese subject
   ordering ("runtime do cross-review") and Portuguese usage verbs
   ("cross-review usa/roda/executa") enter the model-pin scope;
