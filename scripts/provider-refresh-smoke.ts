@@ -698,6 +698,7 @@ function capturePerplexityProbe(
     createWithoutUsage?: boolean;
     createDelayMs?: number;
     createError?: Error;
+    createExpireTime?: string;
     // Errors thrown by the first N generateContent calls, in order.
     generateErrors?: Error[];
   }) => {
@@ -717,6 +718,7 @@ function capturePerplexityProbe(
             if (behavior?.createError) throw behavior.createError;
             return {
               name: `cachedContents/fixture-${createCalls.length}`,
+              ...(behavior?.createExpireTime ? { expireTime: behavior.createExpireTime } : {}),
               ...(behavior?.createWithoutUsage
                 ? {}
                 : { usageMetadata: { totalTokenCount: 5_000 } }),
@@ -1362,6 +1364,77 @@ function capturePerplexityProbe(
   const creatorResult = await creatorPromise;
   assert.equal(sharedMock.createCalls.length, 1, "the creator still completes its creation");
   assert.equal(creatorResult.usage?.cache_storage_token_hours, 5_000);
+
+  // Codex round 13: the local expiry anchors on the PRE-DISPATCH
+  // timestamp (or the provider's returned expireTime) - a slow
+  // caches.create must not extend the entry's local lifetime past the
+  // server-side TTL.
+  __resetGeminiExplicitCacheIndexForTests();
+  const slowCreateMock = makeClient({ createDelayMs: 500 });
+  const slowCreateAdapter = new GeminiAdapter(geminiCacheConfig);
+  (slowCreateAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    slowCreateMock.client;
+  const ttlMs = ({ "5m": 300_000, "1h": 3_600_000 } as const)[geminiCacheConfig.cache.ttl.gemini];
+  const beforeSlowCreate = Date.now();
+  await slowCreateAdapter.call(prompt, context(stableHead.length));
+  const slowEntry = [...__geminiExplicitCacheIndexForTests().values()][0];
+  assert.ok(slowEntry, "the slow creation still indexes the entry");
+  assert.ok(
+    (slowEntry?.expires_at_ms ?? Number.POSITIVE_INFINITY) <= beforeSlowCreate + ttlMs + 250,
+    `the local expiry does not include the creation latency: ${(slowEntry?.expires_at_ms ?? 0) - beforeSlowCreate}ms vs ttl ${ttlMs}ms`,
+  );
+
+  // Codex round 13: when the provider returns expireTime, it is the
+  // authority on the entry's lifetime.
+  __resetGeminiExplicitCacheIndexForTests();
+  const expireAtIso = new Date(Date.now() + 120_000).toISOString();
+  const providerExpiryMock = makeClient({ createExpireTime: expireAtIso });
+  const providerExpiryAdapter = new GeminiAdapter(geminiCacheConfig);
+  (providerExpiryAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    providerExpiryMock.client;
+  await providerExpiryAdapter.call(prompt, context(stableHead.length));
+  const providerEntry = [...__geminiExplicitCacheIndexForTests().values()][0];
+  assert.ok(
+    Math.abs((providerEntry?.expires_at_ms ?? 0) - Date.parse(expireAtIso)) < 2_000,
+    "the provider-returned expireTime anchors the local expiry",
+  );
+
+  // Codex round 13: a TERMINAL, unambiguous creation rejection (the model
+  // does not support cachedContents) negative-caches the key - later
+  // rounds go straight to uncached without repeating countTokens and the
+  // doomed caches.create; ambiguous/transient failures keep retrying.
+  __resetGeminiExplicitCacheIndexForTests();
+  const rejectingMock = makeClient({
+    createError: Object.assign(
+      new Error("400 INVALID_ARGUMENT: CachedContent is not supported for this model"),
+      { status: 400 },
+    ),
+  });
+  const rejectingAdapter = new GeminiAdapter(geminiCacheConfig);
+  (rejectingAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    rejectingMock.client;
+  const rejectedFirst = await rejectingAdapter.call(prompt, context(stableHead.length));
+  assert.ok(rejectedFirst.text.length > 0, "the rejected creation still reviews uncached");
+  assert.equal(rejectingMock.createCalls.length, 1, "the doomed creation was attempted once");
+  const rejectionSentinel = [...__geminiExplicitCacheIndexForTests().values()][0];
+  assert.equal(
+    rejectionSentinel?.name,
+    "",
+    "a terminal creation rejection records the negative sentinel",
+  );
+  const countCallsAfterFirst = rejectingMock.countCalls.length;
+  const rejectedSecond = await rejectingAdapter.call(prompt, context(stableHead.length));
+  assert.ok(rejectedSecond.text.length > 0, "the second round reviews uncached via the sentinel");
+  assert.equal(
+    rejectingMock.createCalls.length,
+    1,
+    "the sentinel prevents repeating the doomed caches.create",
+  );
+  assert.equal(
+    rejectingMock.countCalls.length,
+    countCallsAfterFirst,
+    "the sentinel prevents repeating countTokens",
+  );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 

@@ -1,5 +1,5 @@
 import { classifyProviderError } from "../peers/errors.js";
-import { geminiExplicitCacheArmed } from "../peers/gemini.js";
+import { GEMINI_EXPLICIT_CACHE_MIN_TOKENS, geminiExplicitCacheArmed } from "../peers/gemini.js";
 import { resolveBestModels } from "../peers/model-selection.js";
 import { createAdapters, selectAdapters } from "../peers/registry.js";
 import { redact, safeErrorMessage } from "../security/redact.js";
@@ -3781,7 +3781,13 @@ export function estimatedPeerRoundCost(
         const storageTokens =
           (options.gemini_cache_head_bytes ?? Buffer.byteLength(prompt, "utf8")) +
           (options.gemini_cached_system_bytes ?? GEMINI_CACHED_SYSTEM_TOKEN_BOUND);
-        storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
+        // Codex round 13: the byte bound is a token CEILING — a payload
+        // whose ceiling sits below the provider's 4,096-token minimum can
+        // never create a cache, so charging its storage would reject
+        // reviews on a hard budget for spend that cannot exist.
+        if (storageTokens >= GEMINI_EXPLICIT_CACHE_MIN_TOKENS) {
+          storageEnvelope += ((storageTokens * ttlHours) / 1_000_000) * storageRate * maxAttempts;
+        }
       }
       if (pricedModel === effectiveModel && primaryEnvelope === 0) {
         primaryEnvelope = estimate.total_cost;

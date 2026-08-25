@@ -648,6 +648,12 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
       // Round 5: raced against the abort signal — a raced-away creation
       // may still have been created and billed server-side, so the abort
       // error routes through the ambiguous-transport path below.
+      // Round 13: the provider TTL starts when the resource is created
+      // SERVER-SIDE — the local expiry anchors on the provider-returned
+      // expireTime when present, else conservatively on the pre-dispatch
+      // timestamp, so a slow caches.create cannot extend the local
+      // lifetime past the real one.
+      const dispatchedAt = Date.now();
       const created = (await raceWithAbort(
         reviewClient.ai.caches.create({
           model: this.model,
@@ -656,10 +662,14 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
             ttl: `${ttlSeconds}s`,
             displayName: `cross-review:${cacheKeyHash.slice(0, 16)}`,
           },
-        }) as Promise<{ name?: string; usageMetadata?: { totalTokenCount?: number } }>,
+        }) as Promise<{
+          name?: string;
+          expireTime?: string;
+          usageMetadata?: { totalTokenCount?: number };
+        }>,
         context.signal,
         "billable",
-      )) as { name?: string; usageMetadata?: { totalTokenCount?: number } };
+      )) as { name?: string; expireTime?: string; usageMetadata?: { totalTokenCount?: number } };
       if (!created?.name) {
         notice("Gemini explicit cache creation returned no resource name; continuing uncached.", {
           model: this.model,
@@ -668,10 +678,14 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         return undefined;
       }
       const tokenCount = created.usageMetadata?.totalTokenCount ?? countedTokens;
+      const providerExpiryMs =
+        typeof created.expireTime === "string" ? Date.parse(created.expireTime) : Number.NaN;
       const entry: GeminiExplicitCacheEntry = {
         name: created.name,
         token_count: tokenCount,
-        expires_at_ms: Date.now() + ttlSeconds * 1_000,
+        expires_at_ms: Number.isFinite(providerExpiryMs)
+          ? providerExpiryMs
+          : dispatchedAt + ttlSeconds * 1_000,
       };
       // Evict expired entries at insertion so the process-wide index stays
       // bounded by the set of LIVE heads, not the lifetime set.
@@ -749,6 +763,22 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         cachePreparationAbortKind(error) === "billable" ||
         indeterminateSpendMarkerFor(createFailure.failure_class, createFailure.message, 1) > 0;
       if (ambiguous) params.onIndeterminateCreate();
+      // Round 13: a TERMINAL, unambiguous rejection (the model does not
+      // support cachedContents) is deterministic for this key — record
+      // the negative sentinel so later rounds go straight to uncached
+      // instead of repeating countTokens and the doomed caches.create
+      // every round. Ambiguous and transient failures keep retrying.
+      if (!ambiguous && !createFailure.retryable) {
+        const now = Date.now();
+        for (const [key, indexed] of geminiExplicitCacheIndex) {
+          if (indexed.expires_at_ms <= now) geminiExplicitCacheIndex.delete(key);
+        }
+        geminiExplicitCacheIndex.set(cacheKeyHash, {
+          name: "",
+          token_count: countedTokens ?? 0,
+          expires_at_ms: now + ttlSeconds * 1_000,
+        });
+      }
       notice(
         ambiguous
           ? `Gemini explicit cache creation did not settle (the server may have created and billed it); spend recorded as indeterminate, continuing uncached: ${

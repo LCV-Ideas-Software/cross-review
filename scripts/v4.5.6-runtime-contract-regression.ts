@@ -1999,19 +1999,25 @@ const regressions: Regression[] = [
       // Round 7: a caller that knows the session task passes its real
       // byte length; the envelope then prices that instead of the
       // schema-wide 132K ceiling.
+      // Round 13: the byte bound is a token CEILING — payloads whose byte
+      // upper bound sits below the 4,096-token cachedContents minimum can
+      // never create a cache, so the sizing fixtures use above-minimum
+      // payloads and the below-minimum case must price zero storage.
       const sizedEnvelope = estimatedPeerRoundCost(
         geminiPreflightPriced,
         ["gemini"],
         "four",
         {},
         {
-          gemini_cached_system_bytes: 500,
+          gemini_cached_system_bytes: 8_000,
         },
       );
       assert.ok(sizedEnvelope != null);
       assert.ok(
         Math.abs(
-          sizedEnvelope - disarmedEnvelope - (geminiEnvelopeAttempts * (4 + 500) * 4.5) / 1_000_000,
+          sizedEnvelope -
+            disarmedEnvelope -
+            (geminiEnvelopeAttempts * (4 + 8_000) * 4.5) / 1_000_000,
         ) < 1e-12,
         `a sized system-bytes option prices the real payload: ${sizedEnvelope} vs ${disarmedEnvelope}`,
       );
@@ -2026,7 +2032,7 @@ const regressions: Regression[] = [
         {},
         {
           gemini_cached_system_bytes: 500,
-          gemini_cache_head_bytes: 2,
+          gemini_cache_head_bytes: 5_000,
         },
       );
       assert.ok(headSizedEnvelope != null);
@@ -2034,9 +2040,29 @@ const regressions: Regression[] = [
         Math.abs(
           headSizedEnvelope -
             disarmedEnvelope -
-            (geminiEnvelopeAttempts * (2 + 500) * 4.5) / 1_000_000,
+            (geminiEnvelopeAttempts * (5_000 + 500) * 4.5) / 1_000_000,
         ) < 1e-12,
         `a sized head-bytes option prices only the cacheable prefix: ${headSizedEnvelope}`,
+      );
+      // Codex round 13: a payload definitely below the provider minimum
+      // (byte ceiling < 4,096 tokens) can never create a cache — the
+      // envelope must not charge nonexistent storage, or a hard budget
+      // between the real uncached cost and the phantom storage rejects a
+      // review that cannot spend it.
+      const belowMinEnvelope = estimatedPeerRoundCost(
+        geminiPreflightPriced,
+        ["gemini"],
+        "four",
+        {},
+        {
+          gemini_cached_system_bytes: 500,
+          gemini_cache_head_bytes: 2,
+        },
+      );
+      assert.ok(belowMinEnvelope != null);
+      assert.ok(
+        Math.abs(belowMinEnvelope - disarmedEnvelope) < 1e-15,
+        `a definitely-ineligible payload prices no storage: ${belowMinEnvelope} vs ${disarmedEnvelope}`,
       );
       // Round 7: explicit-cache creation telemetry lands in the FinOps
       // manifest the moment the resource exists, independent of the
