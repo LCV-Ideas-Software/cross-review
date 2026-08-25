@@ -635,7 +635,12 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         "free",
       )) as { totalTokens?: number };
       countedTokens = counted?.totalTokens;
-    } catch {
+    } catch (error) {
+      // Round 18: cancellation must PROPAGATE - swallowing the free-race
+      // abort here let call() continue into generateContent with an
+      // already-aborted context. Any other countTokens failure still
+      // degrades to "no authoritative count" (uncached).
+      if (cachePreparationAbortKind(error) === "free") throw error;
       countedTokens = undefined;
     }
     if (
@@ -1251,7 +1256,11 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         // the classified failure carries the CUMULATIVE accounting of
         // earlier operations (an ambiguous creation, a failed generation)
         // — only the current attempt is removed, never the history.
-        if (cachePreparationAbortKind(error) === "waiter") {
+        // Round 18: a FREE-race abort (countTokens, now propagated
+        // instead of swallowed) dispatched nothing billable either and
+        // settles the same way.
+        const abortKind = cachePreparationAbortKind(error);
+        if (abortKind === "waiter" || abortKind === "free") {
           return waiterAbortSettlement(classified);
         }
         // Codex review of PR #240: the provider's stale-cache 400/404 is

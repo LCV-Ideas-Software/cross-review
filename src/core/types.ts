@@ -1050,6 +1050,19 @@ export interface SessionMeta {
    * round. They affect accounting but never masquerade as completed votes.
    */
   interrupted_provider_settlements?: ProviderCallSettlement[] | undefined;
+  // Codex round 18 (PR #240): a cache creation can settle AFTER the
+  // cancellation but BEFORE the indeterminate failure record is
+  // persisted. The settlement is retained here and applied the moment a
+  // matching failure record lands, so the known storage spend is never
+  // lost to that race.
+  pending_late_cache_settlements?:
+    | Array<{
+        round: number;
+        peer: PeerId;
+        usage: TokenUsage;
+        cost?: CostEstimate | undefined;
+      }>
+    | undefined;
   /** Paid non-review calls reserved before dispatch and not yet settled. */
   pending_provider_call_reservations?: PendingProviderCallReservation[] | undefined;
   /** Provider dispatch marker, independent from async background-job control. */

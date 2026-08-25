@@ -2155,6 +2155,9 @@ export class SessionStore {
         ),
         settlement,
       ];
+      // Round 18: a late cache settlement retained before this record
+      // existed applies now.
+      this.applyPendingLateCacheSettlements(meta);
       meta.totals = this.totalsFor(meta);
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
@@ -2252,6 +2255,74 @@ export class SessionStore {
   // monotonic (indeterminate -> known) - it runs even on a terminal
   // session, never touching the outcome, so FinOps totals stay faithful
   // to the provider's real charges.
+  private settleLateCacheCreationInMeta(
+    meta: SessionMeta,
+    params: {
+      round: number;
+      peer: PeerId;
+      usage: TokenUsage;
+      cost?: CostEstimate | undefined;
+    },
+  ): boolean {
+    const matchesRound = (round: number | undefined): boolean =>
+      round === undefined || round === params.round;
+    const pool: Array<{
+      peer: PeerId;
+      indeterminate_spend_attempts?: number | undefined;
+      unpriced_attempts?: number | undefined;
+      usage?: TokenUsage | undefined;
+      cost?: CostEstimate | undefined;
+      billing_status?: "reported" | "unknown" | undefined;
+    }> = [
+      ...(meta.rounds[params.round - 1]?.rejected ?? []),
+      ...(meta.failed_attempts ?? []).filter((failure) =>
+        matchesRound((failure as PeerFailure & { round?: number }).round),
+      ),
+      ...(meta.in_flight?.provider_settlements ?? []).filter(
+        () => meta.in_flight?.round === params.round,
+      ),
+    ].filter(
+      (record) => record.peer === params.peer && (record.indeterminate_spend_attempts ?? 0) > 0,
+    );
+    const target = pool.at(-1);
+    if (!target) return false;
+    target.indeterminate_spend_attempts = Math.max(
+      0,
+      (target.indeterminate_spend_attempts ?? 0) - 1,
+    );
+    target.unpriced_attempts = Math.max(0, (target.unpriced_attempts ?? 0) - 1);
+    target.usage = target.usage ? mergeUsage([target.usage, params.usage]) : params.usage;
+    if (params.cost) {
+      target.cost = target.cost ? mergeCost([target.cost, params.cost]) : params.cost;
+      if ((target.unpriced_attempts ?? 0) === 0) target.billing_status = "reported";
+    }
+    if (
+      params.cost?.total_cost != null &&
+      params.round > 0 &&
+      params.round <= (meta.costs_per_round?.length ?? 0)
+    ) {
+      const costs = [...(meta.costs_per_round ?? [])];
+      costs[params.round - 1] = (costs[params.round - 1] ?? 0) + params.cost.total_cost;
+      meta.costs_per_round = costs;
+    }
+    return true;
+  }
+
+  // Codex round 18 (PR #240): retained settlements are applied the moment
+  // a matching indeterminate failure record lands - the failure writers
+  // call this after every insert, so the pre-persistence race can never
+  // lose the known storage spend.
+  private applyPendingLateCacheSettlements(meta: SessionMeta): void {
+    const pending = meta.pending_late_cache_settlements ?? [];
+    if (pending.length === 0) return;
+    meta.pending_late_cache_settlements = pending.filter(
+      (settlement) => !this.settleLateCacheCreationInMeta(meta, settlement),
+    );
+    if (meta.pending_late_cache_settlements.length === 0) {
+      meta.pending_late_cache_settlements = undefined;
+    }
+  }
+
   async reconcileLateCacheCreation(
     sessionId: string,
     params: {
@@ -2263,51 +2334,20 @@ export class SessionStore {
   ): Promise<boolean> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
-      const matchesRound = (round: number | undefined): boolean =>
-        round === undefined || round === params.round;
-      const pool: Array<{
-        peer: PeerId;
-        indeterminate_spend_attempts?: number | undefined;
-        unpriced_attempts?: number | undefined;
-        usage?: TokenUsage | undefined;
-        cost?: CostEstimate | undefined;
-        billing_status?: "reported" | "unknown" | undefined;
-      }> = [
-        ...(meta.rounds[params.round - 1]?.rejected ?? []),
-        ...(meta.failed_attempts ?? []).filter((failure) =>
-          matchesRound((failure as PeerFailure & { round?: number }).round),
-        ),
-        ...(meta.in_flight?.provider_settlements ?? []).filter(
-          () => meta.in_flight?.round === params.round,
-        ),
-      ].filter(
-        (record) => record.peer === params.peer && (record.indeterminate_spend_attempts ?? 0) > 0,
-      );
-      const target = pool.at(-1);
-      if (!target) return false;
-      target.indeterminate_spend_attempts = Math.max(
-        0,
-        (target.indeterminate_spend_attempts ?? 0) - 1,
-      );
-      target.unpriced_attempts = Math.max(0, (target.unpriced_attempts ?? 0) - 1);
-      target.usage = target.usage ? mergeUsage([target.usage, params.usage]) : params.usage;
-      if (params.cost) {
-        target.cost = target.cost ? mergeCost([target.cost, params.cost]) : params.cost;
-        if ((target.unpriced_attempts ?? 0) === 0) target.billing_status = "reported";
+      const settled = this.settleLateCacheCreationInMeta(meta, params);
+      if (!settled) {
+        // Codex round 18: the creation may have settled BEFORE the
+        // indeterminate failure record was persisted - retain the
+        // settlement; the failure writers apply it when the record lands.
+        meta.pending_late_cache_settlements = [
+          ...(meta.pending_late_cache_settlements ?? []),
+          params,
+        ];
       }
       meta.totals = this.totalsFor(meta);
-      if (
-        params.cost?.total_cost != null &&
-        params.round > 0 &&
-        params.round <= (meta.costs_per_round?.length ?? 0)
-      ) {
-        const costs = [...(meta.costs_per_round ?? [])];
-        costs[params.round - 1] = (costs[params.round - 1] ?? 0) + params.cost.total_cost;
-        meta.costs_per_round = costs;
-      }
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
-      return true;
+      return settled;
     });
   }
 
@@ -2336,6 +2376,9 @@ export class SessionStore {
       // Provider failure accounting and dispatch-marker settlement are one
       // durable transition for the same reason as successful generations.
       this.settleBackgroundGenerationMarker(meta, failure.peer, round);
+      // Round 18: a late cache settlement retained before this record
+      // existed applies now.
+      this.applyPendingLateCacheSettlements(meta);
       meta.totals = this.totalsFor(meta);
       if (round > 0 && round <= (meta.costs_per_round?.length ?? 0)) {
         const costs = [...(meta.costs_per_round ?? [])];
@@ -2436,6 +2479,9 @@ export class SessionStore {
         transitionedAt,
       );
       meta.updated_at = transitionedAt;
+      // Round 18: a late cache settlement retained before this round's
+      // failure records existed applies now.
+      this.applyPendingLateCacheSettlements(meta);
       meta.totals = this.totalsFor(meta);
       // v2.22.0 (B.P3): append per-round cost. Sum of peer.cost.total_cost
       // across this round's peers. Coerced to 0 when adapters didn't

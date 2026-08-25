@@ -8585,6 +8585,15 @@ export class CrossReviewOrchestrator {
       // web_search tool, so the search-rate dimension is gated on the
       // reviewer pool (same derivation as reviewerPeers below).
       reviewerPeers: selectedPeers.filter((peer) => peer !== leadPeer),
+      // Codex round 18: the same conservative payload bound the direct
+      // askPeers preflight supplies — a short payload that cannot reach
+      // any model's cachedContents minimum must not terminalize the run
+      // over an absent storage rate.
+      geminiCacheableBytesBound:
+        Buffer.byteLength(input.task, "utf8") +
+        Buffer.byteLength(input.review_focus ?? "", "utf8") +
+        Buffer.byteLength(input.evidence ?? "", "utf8") +
+        2 * GEMINI_CACHED_SYSTEM_FRAMING_BYTES,
     });
     if (missingFinancialVars.length) {
       const blockedSession =

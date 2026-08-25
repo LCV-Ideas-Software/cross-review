@@ -2457,6 +2457,62 @@ const regressions: Regression[] = [
           `terminal session totals include the reconciled storage: ${terminalMeta.totals.cost.total_cost}`,
         );
       }
+      // Codex round 18: a settlement arriving BEFORE the indeterminate
+      // failure record is persisted is retained and applied the moment
+      // the record lands - the pre-persistence race never loses the
+      // known storage spend.
+      {
+        const { SessionStore } = await import("../src/core/session-store.js");
+        const raceDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-race-rec-"));
+        const raceStore = new SessionStore({ ...geminiPreflightPriced, data_dir: raceDir });
+        const raceSession = await raceStore.init(
+          "reconcile before persistence",
+          "operator",
+          [],
+          undefined,
+        );
+        const earlySettled = await raceStore.reconcileLateCacheCreation(raceSession.session_id, {
+          round: 1,
+          peer: "gemini",
+          usage: { cache_storage_token_hours: 5_000 },
+          cost: {
+            currency: "USD",
+            total_cost: 0.0225,
+            cache_storage_cost: 0.0225,
+            estimated: true,
+            source: "configured-rate",
+          },
+        });
+        assert.equal(earlySettled, false, "nothing to settle yet - the settlement is retained");
+        await raceStore.recordPeerFailureAccounting(raceSession.session_id, 1, {
+          peer: "gemini",
+          provider: "google",
+          model: "gemini-3.1-pro-preview",
+          failure_class: "cancelled",
+          message: "cancelled while caches.create was in flight",
+          retryable: false,
+          attempts: 1,
+          latency_ms: 10,
+          unpriced_attempts: 1,
+          indeterminate_spend_attempts: 1,
+        });
+        const raceMeta = raceStore.read(raceSession.session_id);
+        const raceFailure = (raceMeta.failed_attempts ?? []).at(-1);
+        assert.equal(
+          raceFailure?.indeterminate_spend_attempts,
+          0,
+          "the retained settlement applies when the failure record lands",
+        );
+        assert.ok(
+          Math.abs((raceFailure?.cost?.cache_storage_cost ?? 0) - 0.0225) < 1e-12,
+          "the storage cost merges into the late-persisted record",
+        );
+        assert.equal(
+          raceMeta.pending_late_cache_settlements,
+          undefined,
+          "the applied settlement leaves no pending entry",
+        );
+      }
       // Codex round 16: the cachedContents minimum is per model - Flash is
       // 1,024 tokens, Pro is 4,096, unknown models stay conservative.
       {

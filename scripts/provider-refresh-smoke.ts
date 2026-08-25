@@ -1550,6 +1550,41 @@ function capturePerplexityProbe(
     1,
     "a 2,000-token Flash payload clears the 1,024-token Flash minimum and creates the cache",
   );
+
+  // Codex round 18: an abort winning the FREE countTokens race must
+  // propagate - the call must NOT continue into generateContent with an
+  // already-aborted context.
+  __resetGeminiExplicitCacheIndexForTests();
+  const slowCountController = new AbortController();
+  const slowCountMock = makeClient();
+  const originalSlowCount = slowCountMock.client.ai.models.countTokens;
+  slowCountMock.client.ai.models.countTokens = async (p: Record<string, unknown>) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return originalSlowCount(p);
+  };
+  const slowCountAdapter = new GeminiAdapter(geminiCacheConfig);
+  (slowCountAdapter as unknown as { client: () => Promise<unknown> }).client = async () =>
+    slowCountMock.client;
+  setTimeout(() => slowCountController.abort(), 40);
+  let slowCountError: unknown;
+  await slowCountAdapter
+    .call(prompt, { ...context(stableHead.length), signal: slowCountController.signal })
+    .catch((error: unknown) => {
+      slowCountError = error;
+    });
+  assert.equal(
+    slowCountMock.genCalls.length,
+    0,
+    "an abort during the free countTokens race never reaches generateContent",
+  );
+  const slowCountFailure = (slowCountError as { peerFailure?: PeerFailure } | undefined)
+    ?.peerFailure;
+  assert.equal(slowCountFailure?.failure_class, "cancelled");
+  assert.equal(
+    slowCountFailure?.unpriced_attempts ?? 0,
+    0,
+    "the free-race abort settles as zero provider work",
+  );
   console.log("[provider-refresh-smoke] gemini_explicit_cache_test: PASS");
 }
 
