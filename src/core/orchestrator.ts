@@ -2721,23 +2721,34 @@ export function truthfulnessPreflight(params: {
       // closes a fence with the same character in a run AT LEAST as
       // long as the opener, so a three-backtick line never closes a
       // four-backtick fence.
-      const fenceMatch = /^[ \t]*(`{3,}|~{3,})/.exec(textLines[index] ?? "");
-      if (!fenceMatch) continue;
-      const marker = fenceMatch[1] ?? "";
+      const lineText = textLines[index] ?? "";
       if (openFenceLine === -1) {
-        openFenceLine = index;
-        openFenceMarker = marker;
-      } else if (marker[0] === openFenceMarker[0] && marker.length >= openFenceMarker.length) {
+        // An opener may carry an info string after the delimiter run.
+        const openerMatch = /^[ \t]*(`{3,}|~{3,})/.exec(lineText);
+        if (openerMatch) {
+          openFenceLine = index;
+          openFenceMarker = openerMatch[1] ?? "";
+        }
+        continue;
+      }
+      // Round 26: a CLOSER line may contain only the delimiter run and
+      // whitespace (Markdown semantics) - a run followed by an info
+      // string ("```not-a-closer") is fence content, never a closer, so
+      // the fence stays open and its content stays visible fail-closed.
+      const closerMatch = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(lineText);
+      if (
+        closerMatch &&
+        (closerMatch[1] ?? "")[0] === openFenceMarker[0] &&
+        (closerMatch[1] ?? "").length >= openFenceMarker.length
+      ) {
         for (let masked = openFenceLine; masked <= index; masked += 1) {
           textLines[masked] = "#".repeat((textLines[masked] ?? "").length);
         }
         openFenceLine = -1;
         openFenceMarker = "";
       }
-      // A different or shorter marker inside an open fence is fence
-      // CONTENT - it neither closes nor opens (it will be masked if the
-      // open fence ever closes, and stays visible fail-closed
-      // otherwise).
+      // A different, shorter or info-string-bearing marker inside an
+      // open fence is fence CONTENT - it neither closes nor opens.
     }
     return textLines.join("\n");
   };
@@ -3083,47 +3094,102 @@ export function truthfulnessPreflight(params: {
       // apostrophe (possessive "runtime's") is not a quote delimiter -
       // apostrophe pairs (straight and typographic) only open after a
       // non-word character and only close before one.
-      aliasBase = aliasBase
-        .replace(
-          /"[^"]*"|(?<![A-Za-z0-9à-ÿ])'[^']*'(?![A-Za-z0-9à-ÿ])|“[^”]*”|(?<![A-Za-z0-9à-ÿ])‘[^’]*’(?![A-Za-z0-9à-ÿ])|`[^`]*`/g,
-          (m) => {
-            const inner = m.slice(1, -1).trim();
-            // Codex round 17: a quote holding NOTHING BUT peer aliases
-            // ("OpenAI Codex") is nomenclature exactly like the
-            // single-alias case - it stays visible so the surrounding
-            // clause's claim is still located. Round 19: only when every
-            // word resolves to the SAME peer - a heterogeneous pairing
-            // ("OpenAI Gemini") is a quoted example and masks like any
-            // quote. Round 20: the literal model noun rides along -
-            // '"Codex model" runs ...' is a quoted same-peer label whose
-            // alias must stay visible for the guard, never quoted example
-            // text; a quote with no alias at all still masks.
-            const modelNounWordPattern = /^(?:models?|modelos?)$/i;
-            const nomenclatureWords = inner.split(/\s+/);
-            const allAliasNomenclature =
-              inner.length > 0 &&
-              inner.length <= 48 &&
-              PEERS.some((aliasPeer) => {
-                const aliasWordPattern = new RegExp(
-                  `^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`,
-                  "i",
-                );
-                let aliasSeen = false;
-                for (const word of nomenclatureWords) {
-                  if (aliasWordPattern.test(word)) {
-                    aliasSeen = true;
-                    continue;
-                  }
-                  if (!modelNounWordPattern.test(word)) return false;
+      // Codex round 26: the quote scan is a TWO-POINTER single pass - the
+      // regex alternation rescanned the remaining suffix from every
+      // unmatched curly opener (quadratic; seconds on tens of thousands
+      // of orphan openers). Valid closer positions are collected once per
+      // quote kind, and each opener binds to the next closer via a
+      // monotone pointer, preserving the alternation's leftmost-first
+      // semantics.
+      const transformQuoteSpan = (m: string): string => {
+        {
+          const inner = m.slice(1, -1).trim();
+          // Codex round 17: a quote holding NOTHING BUT peer aliases
+          // ("OpenAI Codex") is nomenclature exactly like the
+          // single-alias case - it stays visible so the surrounding
+          // clause's claim is still located. Round 19: only when every
+          // word resolves to the SAME peer - a heterogeneous pairing
+          // ("OpenAI Gemini") is a quoted example and masks like any
+          // quote. Round 20: the literal model noun rides along -
+          // '"Codex model" runs ...' is a quoted same-peer label whose
+          // alias must stay visible for the guard, never quoted example
+          // text; a quote with no alias at all still masks.
+          const modelNounWordPattern = /^(?:models?|modelos?)$/i;
+          const nomenclatureWords = inner.split(/\s+/);
+          const allAliasNomenclature =
+            inner.length > 0 &&
+            inner.length <= 48 &&
+            PEERS.some((aliasPeer) => {
+              const aliasWordPattern = new RegExp(
+                `^(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})$`,
+                "i",
+              );
+              let aliasSeen = false;
+              for (const word of nomenclatureWords) {
+                if (aliasWordPattern.test(word)) {
+                  aliasSeen = true;
+                  continue;
                 }
-                return aliasSeen;
-              });
-            // The DELIMITERS stay visible - the label-colon check skips
-            // them as formatting wrappers to find the captured token.
-            return allAliasNomenclature ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
-          },
-        )
-        .replace(/[a-z0-9._-]+(?:\s*\/\s*[a-z0-9._-]+)+\/?/gi, (m) => {
+                if (!modelNounWordPattern.test(word)) return false;
+              }
+              return aliasSeen;
+            });
+          // The DELIMITERS stay visible - the label-colon check skips
+          // them as formatting wrappers to find the captured token.
+          return allAliasNomenclature ? m : m[0] + "#".repeat(m.length - 2) + m[m.length - 1];
+        }
+      };
+      const maskQuotedSpansLinear = (input: string): string => {
+        type QuoteKind = { open: string; close: string; guarded: boolean };
+        const quoteKinds: QuoteKind[] = [
+          { open: '"', close: '"', guarded: false },
+          { open: "'", close: "'", guarded: true },
+          { open: "“", close: "”", guarded: false },
+          { open: "‘", close: "’", guarded: true },
+          { open: "`", close: "`", guarded: false },
+        ];
+        const isQuoteWordChar = (ch: string | undefined): boolean =>
+          ch !== undefined && /[A-Za-z0-9à-ÿ]/.test(ch);
+        const closersByKind = quoteKinds.map((kind) => {
+          const positions: number[] = [];
+          for (let scan = 0; scan < input.length; scan += 1) {
+            if (input[scan] !== kind.close) continue;
+            if (kind.guarded && isQuoteWordChar(input[scan + 1])) continue;
+            positions.push(scan);
+          }
+          return positions;
+        });
+        const pointers = quoteKinds.map(() => 0);
+        const output: string[] = [];
+        let cursor = 0;
+        while (cursor < input.length) {
+          let spanConsumed = false;
+          for (let kindIndex = 0; kindIndex < quoteKinds.length; kindIndex += 1) {
+            const kind = quoteKinds[kindIndex];
+            if (!kind || input[cursor] !== kind.open) continue;
+            if (kind.guarded && isQuoteWordChar(input[cursor - 1])) continue;
+            const closers = closersByKind[kindIndex] ?? [];
+            let pointer = pointers[kindIndex] ?? 0;
+            while (pointer < closers.length && (closers[pointer] ?? -1) <= cursor) pointer += 1;
+            pointers[kindIndex] = pointer;
+            const closerIndex = closers[pointer];
+            if (closerIndex === undefined) continue;
+            output.push(transformQuoteSpan(input.slice(cursor, closerIndex + 1)));
+            pointers[kindIndex] = pointer + 1;
+            cursor = closerIndex + 1;
+            spanConsumed = true;
+            break;
+          }
+          if (!spanConsumed) {
+            output.push(input[cursor] ?? "");
+            cursor += 1;
+          }
+        }
+        return output.join("");
+      };
+      aliasBase = maskQuotedSpansLinear(aliasBase).replace(
+        /[a-z0-9._-]+(?:\s*\/\s*[a-z0-9._-]+)+\/?/gi,
+        (m) => {
           // Codex rounds 9/17: a recognized PEER alias in the FIRST
           // segment marks provider/model ROUTE syntax and stays visible
           // for the zero-token guard ("perplexity/alpha beta seven"). Any
@@ -3159,7 +3225,8 @@ export function truthfulnessPreflight(params: {
                 ),
               ));
           return isPeerRoute ? m : "#".repeat(m.length);
-        });
+        },
+      );
       const aliasPositions: Array<{ index: number; peer: PeerId }> = [];
       for (const aliasPeer of PEERS) {
         const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");

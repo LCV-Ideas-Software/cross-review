@@ -1797,6 +1797,27 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "the imperative escape scopes to its governed clause - a declarative conjunct after a comma still blocks",
   );
+  // Codex review of PR #247, round 26.
+  const infoStringCloser = anchored(
+    "```text\nThe cross-review runtime Codex model runs alpha beta seven.\n```not-a-closer",
+  );
+  assert.equal(
+    infoStringCloser.pass,
+    false,
+    "a backtick run followed by an info string is never a closer - the fence stays open and the claim blocks (fail-closed)",
+  );
+  {
+    const curlyChain = "“ ".repeat(40_000);
+    const curlyDraft = `The cross-review runtime Codex model is gpt-5.6-sol. ${curlyChain}`;
+    const curlyStart = Date.now();
+    const curlyResult = anchored(curlyDraft);
+    const curlyMs = Date.now() - curlyStart;
+    assert.ok(
+      curlyMs < 3_000,
+      `quote scanning stays linear on tens of thousands of unmatched curly openers (${curlyMs}ms)`,
+    );
+    assert.equal(typeof curlyResult.pass, "boolean", "the curly-chain draft still evaluates");
+  }
   const commaQuestion = anchored(
     "Is the cross-review runtime Codex model gpt-5.6-sol, or something newer?",
   );

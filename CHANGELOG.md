@@ -53,6 +53,14 @@ standard `v00.00.00`; npm package versions remain SemVer.
   in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
   keep judging against config; `canonicalModelText` at module scope.
 
+  Codex round 26 closed two more edges: the quote scan is a two-pointer
+  single pass (the regex alternation rescanned the suffix from every
+  unmatched curly opener - seconds on tens of thousands of orphans; the
+  benchmark fixture pins the linear scan), and a fence CLOSER line may
+  contain only the delimiter run plus whitespace - a run followed by an
+  info string ("```not-a-closer") is fence content, so the fence stays
+  open and the claim inside blocks fail-closed.
+
   Codex round 25 closed two more escape edges: the fence scanner tracks
   the FULL delimiter run (Markdown closes a fence only with the same
   character in a run at least as long as the opener - a three-backtick
