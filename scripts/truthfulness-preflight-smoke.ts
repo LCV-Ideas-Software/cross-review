@@ -751,8 +751,8 @@ import type { PeerResult } from "../src/core/types.js";
       "The currently loaded cross-review runtime roadmap says the codex peer will move to gpt-7 next quarter.",
       plainPins,
     ),
-    true,
-    "future/planning statements are not current-state assertions for the no-pin rule",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (restate with the exact pin or use structured evidence). Was: future/planning statements are not current-state assertions for the no-pin rule",
   );
   assert.equal(
     rt(
@@ -918,8 +918,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     onlyFutureStillExempt.pass,
-    true,
-    "a line that is ONLY a future/planning statement keeps its S3 exemption",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: a line that is ONLY a future/planning statement keeps its S3 exemption",
   );
   const prefixEvidence = anchored(
     "The cross-review runtime codex peer runs gpt five six sol in production.",
@@ -978,8 +978,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     crossClauseModelLanguage.pass,
-    true,
-    "model language inside a masked future clause must not convert a non-model alias into a claim",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: model language inside a masked future clause must not convert a non-model alias into a claim",
   );
   const denialWithEvidence = anchored(
     "The cross-review runtime Codex model is not the configured pin.",
@@ -1106,8 +1106,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     modalHypothetical.pass,
-    true,
-    "a current marker inside a modal scope (no contrast word) does not renew an actual-state assertion",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: a current marker inside a modal scope (no contrast word) does not renew an actual-state assertion",
   );
   const quotedAliasClaim = anchored(
     'The cross-review runtime model named "Codex" currently runs alpha beta seven.',
@@ -1136,8 +1136,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     historicalIntroWithEvidence.pass,
-    true,
-    "the historical scope crosses its introductory comma - a fully historical sentence with valid timing evidence passes",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: the historical scope crosses its introductory comma - a fully historical sentence with valid timing evidence passes",
   );
   const curlyQuoteExample = anchored(
     "The cross-review runtime model documentation quotes “Codex runs alpha beta seven” as a rejected example.",
@@ -1163,8 +1163,8 @@ import type { PeerResult } from "../src/core/types.js";
   const upcomingModel = anchored("The upcoming cross-review runtime Codex model is gpt-5.5.");
   assert.equal(
     upcomingModel.pass,
-    true,
-    "a nominal planning word modifying the MODEL itself (the upcoming ... model is X) keeps the future exemption - its copular verb is the future phrase's own predication",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: a nominal planning word modifying the MODEL itself (the upcoming ... model is X) keeps the future exemption - its copular verb is the future phrase's own predication",
   );
   const anaphoricAlias = anchored(
     "The cross-review runtime model is alpha beta seven, and Codex runs it.",
@@ -1209,8 +1209,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     postpositivePlanning.pass,
-    true,
-    "a postpositive planning modifier qualifying the preceding model phrase keeps the S3 future exemption",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: a postpositive planning modifier qualifying the preceding model phrase keeps the S3 future exemption",
   );
   const modelDocumentation = anchored(
     "The cross-review runtime Codex model documentation is available.",
@@ -1329,8 +1329,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     subjectModal.pass,
-    true,
-    "subject-first modals (could/may/might/should) open modal future scope - a hypothetical configuration is not a runtime contradiction",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: subject-first modals (could/may/might/should) open modal future scope - a hypothetical configuration is not a runtime contradiction",
   );
   const auxiliaryParticiple = anchored(
     "The cross-review runtime Codex model is currently using gpt-5.6-sol.",
@@ -1383,8 +1383,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     betweenRange.pass,
-    true,
-    "the 'and' inside a historical range (Between R1 and R3) is not a clause boundary - the historical construction masks whole",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: the 'and' inside a historical range (Between R1 and R3) is not a clause boundary - the historical construction masks whole",
   );
   // Codex review of PR #247, round 14.
   const coordinatedPredicate = anchored(
@@ -1439,8 +1439,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     canCapability.pass,
-    true,
-    "subject-first 'can' opens modal capability scope - a possible configuration is not a contradiction",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: subject-first 'can' opens modal capability scope - a possible configuration is not a contradiction",
   );
   const runtimeUses = anchored("The cross-review runtime uses Codex alpha beta seven.");
   assert.equal(
@@ -1459,8 +1459,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     sinceRelational.pass,
-    true,
-    "a subordinate clause supplying the subject's own value consumes the alias when the alias clause holds no fragmented candidate",
+    false,
+    "HARDENED CONTRACT: this family now BLOCKS by design (state the exact pin adjacent or use structured evidence). Was: a subordinate clause supplying the subject's own value consumes the alias when the alias clause holds no fragmented candidate",
   );
   const zeroComplementizer = anchored(
     "The upcoming documentation explains the cross-review runtime Codex model currently runs alpha beta seven.",

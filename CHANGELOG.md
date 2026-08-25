@@ -26,24 +26,32 @@ standard `v00.00.00`; npm package versions remain SemVer.
   along three families — evidence-format parsing, claim-fragment
   matching and clause analysis — so the default flipped to
   always-block, where a false negative is impossible by construction
-  and the cost of a false positive is one plain restatement. The
-  locator masks whole historical / planning / indirect-request
-  segments, classifies captured tokens as future by the NEAREST
-  current/future marker before them, and treats an alias as consumed
-  only by the specific occurrence that resolved through it (a captured
-  claim never shields a second unparseable claim, even for the same
-  peer). Round 5 locator refinements: only SAME-CLAUSE ownership
-  consumes an alias (a captured token in another clause never shields a
-  fragmented claim); temporal classification is a marker state machine
-  shared by token stamping and guard masking — a future or modal marker
-  opens future scope and a current marker renews the actual-state
-  assertion only after a contrast word, so "will change later but
-  currently ..." is judged while "would currently ... if ..." stays a
-  hypothetical; the model relation is read from the alias's own clause
-  (pre-mask); and a short quote holding nothing but a peer alias stays
-  visible as nomenclature while multi-word quoted log lines keep
-  masking. Captured truthful tokens keep judging against config with no
-  new evidence requirement; `canonicalModelText` moved to module scope.
+  and the cost of a false positive is one plain restatement.
+
+  **HARDENED DETERMINISTIC CONTRACT (unanimous multi-model design
+  review 25/08/2026, session 65828902).** The locator's open-grammar
+  inference layer is DELETED: the temporal marker state machine (modal /
+  nominal planning words, contrast renewal, completive breaks, month
+  disambiguation), the future-clause exemption, historical-scope carry
+  and the historical timing masks inside the guard, anaphora
+  resolution and cross-clause value binding. What remains is
+  character-decidable or a closed class: quote/code-span/path/URL
+  masks (with the in-word apostrophe and composite-nomenclature
+  rules), the negation window, alias consumption by an adjacent exact
+  captured token (composite same-peer groups included), the
+  fragmented-value candidate (closed word classes + code words), the
+  indirect-request mask (fixed verb+interrogative pairs), and three
+  DETECTOR relations that only ever add blocking (literal model/pin
+  noun with the meta-noun lookahead; "<alias> peer"; a usage verb
+  directly governing an alias with the auth/API exclusions), plus the
+  elided-coordination detector. Any remaining visible peer alias on a
+  model-scoped assertive line BLOCKS with one instruction: state the
+  exact configured pin token adjacent to the alias, or move
+  historical, planned, hypothetical or third-party statements into the
+  structured evidence field. Historical narration (even with timing
+  evidence), future plans, capability statements and reported speech
+  in free prose therefore BLOCK BY DESIGN. Captured truthful tokens
+  keep judging against config; `canonicalModelText` at module scope.
 
 ### Fixed
 

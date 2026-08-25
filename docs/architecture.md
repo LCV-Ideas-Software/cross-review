@@ -158,7 +158,13 @@ enough: at least two independent reviewers must return `READY/verified` with the
 persisted path, SHA-256 and value-corresponding raw quote.
 Runtime facts may validate a matching runtime claim in the separate
 truthfulness preflight, but cannot by themselves prove that a peer reviewed the
-artifact. Missing, generic, invented, or untraceable
+artifact. The truthfulness model-claim locator follows a HARDENED
+DETERMINISTIC CONTRACT (unanimous design review 25/08/2026): it performs
+no open-grammar inference — a visible peer alias on a model-scoped
+assertive line blocks unless an exact configured-pin token is adjacent,
+and historical, planned, hypothetical or third-party model statements in
+free prose block by design with a single instruction to restate with the
+exact pin or move the statement into the structured evidence field. Missing, generic, invented, or untraceable
 citations are downgraded to `NEEDS_EVIDENCE`; incomplete structured status does
 not converge, and the same checks are re-applied in the convergence layer so a
 parser or adapter path cannot bypass them.

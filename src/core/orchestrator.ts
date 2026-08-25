@@ -2762,10 +2762,8 @@ export function truthfulnessPreflight(params: {
         token: string;
         route: string | undefined;
         negated: boolean;
-        future: boolean;
         owner: PeerId | undefined;
         ownerAliasIndex: number | undefined;
-        crossClauseOwnerAliasIndex?: number | undefined;
       };
       // Codex round 17: filesystem paths mask BEFORE occurrence capture -
       // "docs/gemini.md" must not be captured as a routed model value nor
@@ -2799,22 +2797,6 @@ export function truthfulnessPreflight(params: {
         negationTailPattern.test(
           base.slice(Math.max(0, matchStart - 64), matchStart).replace(/[`*_~"'’“”]/g, " "),
         );
-      // S3 (round 9): future/planning phrasing exempts only its own
-      // CLAUSE - a false current claim beside an unrelated future clause
-      // is still judged. Stamped per occurrence via clauseBounds.
-      // Codex round 12: subject-first modals (could/may/might/should/
-      // shall + pt-BR poderia/deveria) are modal future markers too - a
-      // hypothetical configuration after the subject is not a current
-      // claim.
-      const futureClausePattern =
-        /\b(?:will|would|could|can|may|might|should|shall|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|poderia(?:m)?|pode(?:m)?|deveria(?:m)?|planejad[oa]|futur[oa])\b/i;
-      // Codex round 6 of PR #247: only MODAL markers (will/would/plans to)
-      // open a scope that governs the following verbs — a nominal planning
-      // modifier ("the PLANNED deployment", "the roadmap") does not, so an
-      // explicit current marker after it renews the actual-state assertion
-      // without requiring a contrast word.
-      const modalFutureHeadPattern =
-        /^(?:will|would|could|can|may|might|should|shall|vai|ser[aá]|poderia(?:m)?|pode(?:m)?|deveria(?:m)?|plans\s+to)$/i;
       const occurrences: ModelOccurrence[] = [];
       const seenTokenStarts = new Set<number>();
       const recordOccurrence = (
@@ -2835,7 +2817,6 @@ export function truthfulnessPreflight(params: {
             ? `${canonicalModelText(normalizeVersionToken(provider))}/${token}`
             : undefined,
           negated: negatedBefore(matchStart),
-          future: false,
           owner: undefined,
           ownerAliasIndex: undefined,
         });
@@ -3119,107 +3100,7 @@ export function truthfulnessPreflight(params: {
         // judgment, but a token in another clause never shields a
         // fragmented claim next to the alias.
         if (best && sameClause) occurrence.ownerAliasIndex = best.index;
-        // Round 15: remember the CROSS-CLAUSE owner position too - a
-        // subordinate clause that supplies the subject's own value
-        // ("has remained unchanged since gpt-5.6-sol was deployed") may
-        // consume the alias when the alias clause holds no fragmented
-        // candidate of its own (checked at guard time).
-        if (best && !sameClause) occurrence.crossClauseOwnerAliasIndex = best.index;
       }
-      // Codex rounds 3-5 of PR #247: temporal classification is a marker
-      // STATE MACHINE. Scanning current/future/contrast markers in order:
-      // a future or modal marker opens future scope; a current marker
-      // renews the actual-state assertion ONLY after a contrast word
-      // ("will change later BUT currently uses X" is judged) — inside an
-      // uncontrasted modal scope ("would currently use X if ...") the
-      // current marker does not renew. A token with no marker before it
-      // in a planning clause keeps the S3 exemption.
-      // Codex round 7: present-tense stative verbs and the "now" adverb
-      // are current markers too - "and now the ... model REMAINS X" ends
-      // the historical carry. Ambiguous adverbs that also ride past-tense
-      // clauses (still/today/ainda) are deliberately excluded. Round 9:
-      // the explicit "current"/"atual" adjective and the "using/usando"
-      // participle are current markers - "The CURRENT ... model gpt-5.5
-      // will be replaced" is judged, and "runs ... USING gpt-5.6-sol"
-      // renews after a nominal planning phrase.
-      const currentAssertionPattern =
-        /\b(?:is|are|runs?|uses?|using|current|currently|now|remains?|continues?|stays?|atual|atuais|atualmente|agora|roda|usa|usando|est[aá]|permanece(?:m)?|continua(?:m)?|segue(?:m)?)\b/i;
-      const contrastMarkerPattern = /\b(?:but|yet|however|mas|por[eé]m|contudo)\b/i;
-      // Codex round 7: a nominal planning word that modifies the MODEL
-      // NOUN PHRASE itself ("the UPCOMING ... Codex model is X") keeps its
-      // future scope through the phrase's own copular verb - the span
-      // between the nominal marker and the current marker holding the
-      // model noun or a peer alias means the verb predicates the future
-      // entity. A nominal modifying something else ("the PLANNED
-      // deployment currently runs ...") still lets the current marker
-      // renew.
-      const nominalGovernedHeadPattern = new RegExp(
-        `\\b(?:models?|modelos?)\\b|${PEERS.map((aliasPeer) => MODEL_CLAIM_ALIASES[aliasPeer].source).join("|")}`,
-        "i",
-      );
-      type MarkerEvent = {
-        idx: number;
-        kind: "current" | "future" | "contrast";
-        modal?: boolean;
-      };
-      const markerEvents = (text: string): MarkerEvent[] => {
-        const events: MarkerEvent[] = [];
-        for (const match of text.matchAll(new RegExp(futureClausePattern.source, "gi"))) {
-          if (match.index === undefined) continue;
-          // Codex round 16: "May" is also a MONTH - after a date
-          // preposition ("as of May", "in May") or capitalized
-          // mid-sentence it is a date, not a modal, and opens no future
-          // scope.
-          if (/^may$/i.test(match[0])) {
-            const before = text.slice(Math.max(0, match.index - 12), match.index);
-            const datePreposition =
-              /(?:of|in|on|since|until|before|after|during|by|early|late|mid)\s+$/i.test(before);
-            const capitalizedMidText = match[0] === "May" && match.index > 0;
-            if (datePreposition || capitalizedMidText) continue;
-          }
-          const modal =
-            modalFutureHeadPattern.test(match[0]) ||
-            (/^planning$/i.test(match[0]) &&
-              /^\s+to\b/i.test(text.slice(match.index + match[0].length)));
-          events.push({ idx: match.index, kind: "future", modal });
-        }
-        const collect = (pattern: RegExp, kind: MarkerEvent["kind"]): void => {
-          for (const match of text.matchAll(new RegExp(pattern.source, "gi"))) {
-            if (match.index !== undefined) events.push({ idx: match.index, kind });
-          }
-        };
-        collect(currentAssertionPattern, "current");
-        collect(contrastMarkerPattern, "contrast");
-        events.sort((a, b) => a.idx - b.idx);
-        return events;
-      };
-      // Codex round 8: a nominal planning modifier can also qualify the
-      // model phrase that PRECEDES it ("the ... Codex model in the PLANNED
-      // deployment is X") - when the span from the last current marker (or
-      // clause start) up to the nominal marker holds the model head with
-      // no verb in between, the nominal governs that head and its copular
-      // verb stays future.
-      // Codex round 9: the prior head must be an UNPREDICATED noun phrase
-      // - once a current verb precedes the nominal ("currently RUNS the
-      // ... model in the planned deployment dashboard"), the head is that
-      // verb's object and the nominal governs only its own local phrase,
-      // never the whole assertion.
-      const nominalQualifiesPriorHead = (
-        text: string,
-        lastCurrentIdx: number,
-        futureIdx: number,
-      ): boolean => lastCurrentIdx < 0 && nominalGovernedHeadPattern.test(text.slice(0, futureIdx));
-      // Codex round 11: a completive subordinator inside the nominal span
-      // ("The upcoming documentation explains THAT the ... model
-      // currently runs ...") means the current marker sits in a NEW
-      // reported clause - the nominal modifier's scope ends at its
-      // governing predicate and the assertion is judged current.
-      // Round 15: English commonly omits the complementizer - a REPORTING
-      // verb ends the nominal scope even without "that".
-      const completiveBreakPattern =
-        /\b(?:that|que|explains?|says?|notes?|reports?|shows?|describes?|documents?|indicates?|confirms?|states?|mentions?|argues?|claims?|suggests?|explica(?:m)?|diz(?:em)?|relata(?:m)?|descreve(?:m)?|documenta(?:m)?|indica(?:m)?|confirma(?:m)?|afirma(?:m)?|menciona(?:m)?|sugere(?:m)?)\b/i;
-      const nominalScopeHoldsOverSpan = (span: string): boolean =>
-        nominalGovernedHeadPattern.test(span) && !completiveBreakPattern.test(span);
       // Codex round 13: verbs are an OPEN class - enumerating them
       // (equals/defaults/adopts/...) is an unbounded spiral. The stable
       // inversion enumerates the CLOSED classes (articles, prepositions,
@@ -3310,73 +3191,6 @@ export function truthfulnessPreflight(params: {
         }
         return false;
       };
-      const markerStateAtEnd = (text: string): "none" | "current" | "future" => {
-        let state: "none" | "current" | "future" = "none";
-        let contrastSinceFuture = false;
-        let futureIsModal = false;
-        let futureQualifiesPriorHead = false;
-        let lastFutureIdx = -1;
-        let lastCurrentIdx = -1;
-        for (const event of markerEvents(text)) {
-          if (event.kind === "future") {
-            state = "future";
-            futureIsModal = event.modal === true;
-            futureQualifiesPriorHead =
-              !futureIsModal && nominalQualifiesPriorHead(text, lastCurrentIdx, event.idx);
-            lastFutureIdx = event.idx;
-            contrastSinceFuture = false;
-          } else if (event.kind === "contrast") {
-            contrastSinceFuture = true;
-          } else {
-            if (
-              state !== "future" ||
-              contrastSinceFuture ||
-              (!futureIsModal &&
-                !futureQualifiesPriorHead &&
-                !nominalScopeHoldsOverSpan(text.slice(lastFutureIdx, event.idx)))
-            ) {
-              state = "current";
-            }
-            lastCurrentIdx = event.idx;
-          }
-        }
-        return state;
-      };
-      for (const occurrence of occurrences) {
-        const clauseStart = clauseStartFor(occurrence.matchStart);
-        const beforeText = base.slice(clauseStart, occurrence.matchStart);
-        const clauseText = base.slice(
-          clauseStart,
-          clauseEndFor(occurrence.index + occurrence.rawLength),
-        );
-        const state = markerStateAtEnd(beforeText);
-        // Codex round 13: a planning marker AFTER an already-predicated
-        // value cannot retroactively exempt it ("defaults to gpt-5.5
-        // before a planned upgrade"). The value is predicated when open-
-        // class material sits between the nearest model head (alias or
-        // model noun; else the clause start) and the token - a bare
-        // apposition ("the model gpt-6 next quarter") stays exempt.
-        let predicatedBeforeToken = false;
-        if (state === "none") {
-          const headPattern = new RegExp(
-            `\\b(?:models?|modelos?)\\b|${PEERS.map((p) => MODEL_CLAIM_ALIASES[p].source).join("|")}`,
-            "gi",
-          );
-          let anchorEnd = clauseStart;
-          for (const headMatch of beforeText.matchAll(headPattern)) {
-            if (headMatch.index !== undefined) {
-              anchorEnd = clauseStart + headMatch.index + headMatch[0].length;
-            }
-          }
-          const between = base.slice(anchorEnd, occurrence.matchStart);
-          predicatedBeforeToken = between
-            .split(/[^A-Za-z0-9à-ÿ'_-]+/)
-            .some((word) => word.length > 0 && !closedClassOrKnownWordPattern.test(word));
-        }
-        occurrence.future =
-          state === "future" ||
-          (state === "none" && !predicatedBeforeToken && futureClausePattern.test(clauseText));
-      }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(aliasBase)) continue;
@@ -3388,7 +3202,6 @@ export function truthfulnessPreflight(params: {
         const expectedSet = new Set([expected, ...(routedPin ? [routedPin] : [])]);
         const pinFamily = routedPinFamilyByPeer.get(peer);
         const owned = occurrences.filter((occurrence) => {
-          if (occurrence.future) return false;
           if (occurrence.owner) return occurrence.owner === peer;
           // Ownerless occurrences keep family attribution only.
           if (peer === "perplexity") {
@@ -3447,7 +3260,6 @@ export function truthfulnessPreflight(params: {
       let currentOccurrenceCount = 0;
       let anyModelDenialOrContradiction = contradictions.length > contradictionCountBefore;
       for (const occurrence of occurrences) {
-        if (occurrence.future) continue;
         currentOccurrenceCount += 1;
         if (occurrence.negated) continue;
         const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
@@ -3494,38 +3306,8 @@ export function truthfulnessPreflight(params: {
       {
         const consumedAliasIndexes = new Set<number>();
         for (const occurrence of occurrences) {
-          if (occurrence.future) continue;
           if (occurrence.ownerAliasIndex !== undefined) {
             consumedAliasIndexes.add(occurrence.ownerAliasIndex);
-          }
-        }
-        // Round 15: a subordinate clause that supplies the subject's OWN
-        // value ("has remained unchanged since gpt-5.6-sol was deployed")
-        // consumes the alias cross-clause - but ONLY when the alias
-        // clause holds no fragmented candidate of its own, so a lie next
-        // to the alias is never shielded by a truthful token elsewhere.
-        for (const occurrence of occurrences) {
-          if (occurrence.future || occurrence.ownerAliasIndex !== undefined) continue;
-          const crossIdx = occurrence.crossClauseOwnerAliasIndex;
-          if (crossIdx === undefined || consumedAliasIndexes.has(crossIdx)) continue;
-          const aliasClause = aliasBase.slice(crossIdx, clauseEndFor(crossIdx));
-          // Codex round 16: a NEGATED alias clause is never consumed
-          // cross-clause (a denial cannot be validated by a token in an
-          // unrelated subordinate), and a token sitting in META context
-          // (documentation/examples) is not structurally bound as the
-          // subject's value.
-          if (/\b(?:not|n[aã]o|never|nunca)\b/i.test(aliasClause)) continue;
-          const tokenClause = aliasBase.slice(
-            clauseStartFor(occurrence.matchStart),
-            clauseEndFor(occurrence.index + occurrence.rawLength),
-          );
-          if (
-            /\b(?:documentation|docs?|examples?|documenta[cç][aã]o|exemplos?)\b/i.test(tokenClause)
-          ) {
-            continue;
-          }
-          if (!hasFragmentedValueCandidate(aliasClause)) {
-            consumedAliasIndexes.add(crossIdx);
           }
         }
         // Round 15: adjacent SAME-PEER aliases ("OpenAI Codex model")
@@ -3585,92 +3367,15 @@ export function truthfulnessPreflight(params: {
         };
         const indirectRequestPattern =
           /\b(?:determine|check|verify|confirm|find\s+out|figure\s+out|identify|decide|determinar|verificar|confirmar|descobrir|identificar)\s+(?:which|what|whether|if|qual|quais|se)\b/i;
+        // The indirect-request mask is CHARACTER-DECIDABLE (fixed verb +
+        // interrogative pairs) and stays under the hardened contract; all
+        // grammar-derived masks (temporal scope, historical carry) are
+        // deleted - their families now BLOCK with the restate instruction.
         let segmentStart = 0;
-        // Codex round 6: a historical construction crosses its introductory
-        // comma — "When the audit began, the ... model was X" masks the
-        // continuation too, until a segment carries an explicit current
-        // marker (the mixed-current case stays visible) or the sentence
-        // ends (. or ;). The historical branch still judges the masked
-        // claim, so it keeps requiring snapshot-timing evidence.
-        let historicalCarry = false;
         for (const bound of [...clauseBounds, { start: aliasBase.length, end: aliasBase.length }]) {
           const segment = aliasBase.slice(segmentStart, bound.start);
-          const terminalDelimiter = /[.;]/.test(aliasBase.slice(bound.start, bound.end));
-          if (
-            HISTORICAL_RUNTIME_TIMING_PATTERN.test(segment) ||
-            indirectRequestPattern.test(segment)
-          ) {
+          if (indirectRequestPattern.test(segment)) {
             maskGuardRange(segmentStart, bound.start);
-            historicalCarry = HISTORICAL_RUNTIME_TIMING_PATTERN.test(segment) && !terminalDelimiter;
-            segmentStart = bound.end;
-            continue;
-          }
-          if (historicalCarry && markerStateAtEnd(segment) !== "current") {
-            maskGuardRange(segmentStart, bound.start);
-            if (terminalDelimiter) historicalCarry = false;
-            segmentStart = bound.end;
-            continue;
-          }
-          historicalCarry = false;
-          // Codex round 5: future masking uses the same marker state
-          // machine as the token stamping — spans whose governing marker
-          // is future (contrast-aware) are masked, so a current assertion
-          // that RESUMES after "but/yet/however" stays visible while pure
-          // planning (prefix included) is hidden.
-          {
-            let state: "none" | "current" | "future" = "none";
-            let contrastSinceFuture = false;
-            let futureIsModal = false;
-            let futureQualifiesPriorHead = false;
-            let lastFutureIdx = -1;
-            let lastCurrentIdx = -1;
-            let spanStart = -1;
-            const closeSpan = (endIdx: number): void => {
-              if (spanStart >= 0) {
-                maskGuardRange(segmentStart + spanStart, segmentStart + endIdx);
-                spanStart = -1;
-              }
-            };
-            for (const event of markerEvents(segment)) {
-              if (event.kind === "future") {
-                if (state !== "future") spanStart = state === "none" ? 0 : event.idx;
-                state = "future";
-                futureIsModal = event.modal === true;
-                futureQualifiesPriorHead =
-                  !futureIsModal && nominalQualifiesPriorHead(segment, lastCurrentIdx, event.idx);
-                lastFutureIdx = event.idx;
-                contrastSinceFuture = false;
-              } else if (event.kind === "contrast") {
-                contrastSinceFuture = true;
-              } else if (state === "future") {
-                const span = segment.slice(lastFutureIdx, event.idx);
-                const completiveIdx = span.search(new RegExp(completiveBreakPattern.source, "i"));
-                const nominalRenewal =
-                  !futureIsModal &&
-                  !futureQualifiesPriorHead &&
-                  !nominalGovernedHeadPattern.test(span);
-                // Round 11: a completive break renews too, but the future
-                // span ends AT the subordinator - the reported clause
-                // (and its alias) stays visible to the guard.
-                const completiveRenewal =
-                  !futureIsModal &&
-                  !futureQualifiesPriorHead &&
-                  nominalGovernedHeadPattern.test(span) &&
-                  completiveIdx >= 0;
-                if (contrastSinceFuture || nominalRenewal) {
-                  closeSpan(event.idx);
-                  state = "current";
-                } else if (completiveRenewal) {
-                  closeSpan(lastFutureIdx + completiveIdx);
-                  state = "current";
-                }
-                lastCurrentIdx = event.idx;
-              } else {
-                state = "current";
-                lastCurrentIdx = event.idx;
-              }
-            }
-            if (state === "future") closeSpan(segment.length);
           }
           segmentStart = bound.end;
         }
@@ -3695,7 +3400,7 @@ export function truthfulnessPreflight(params: {
         const orphanPredicateAfterConsumption = (aliasIndex: number): boolean => {
           const clauseEnd = clauseEndFor(aliasIndex);
           const consuming = occurrences.filter(
-            (occurrence) => occurrence.ownerAliasIndex === aliasIndex && !occurrence.future,
+            (occurrence) => occurrence.ownerAliasIndex === aliasIndex,
           );
           if (consuming.length === 0) return false;
           const firstConsumingStart = Math.min(
@@ -3716,6 +3421,21 @@ export function truthfulnessPreflight(params: {
               occurrence.matchStart > lastConsumingEnd && occurrence.matchStart < clauseEnd,
           );
         };
+        // Hardened contract: the relation is LINE-scoped. Three DETECTOR
+        // relations survive (each only ever ADDS blocking): the literal
+        // model/pin noun (meta-noun lookahead kept), the "<alias> peer"
+        // noun, and a usage verb directly governing an alias (with the
+        // auth/API-integration exclusions).
+        const aliasUnionSource = PEERS.map(
+          (aliasPeer) => MODEL_CLAIM_ALIASES[aliasPeer].source,
+        ).join("|");
+        const lineHasModelRelation =
+          modelRelationPattern.test(aliasBase) ||
+          new RegExp(`(?:${aliasUnionSource})\\s+peer\\b`, "i").test(aliasBase) ||
+          new RegExp(
+            `\\b(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)\\s+(?:the\\s+)?(?:${aliasUnionSource})(?!\\s+(?:authentication|auth|credentials?|documentation|docs?|keys?|tokens?|billing|accounts?|peer|APIs?|clients?|SDKs?|integrations?|services?|endpoints?|libraries|library))`,
+            "i",
+          ).test(aliasBase);
         let guardTripped = false;
         for (const aliasPeer of PEERS) {
           const aliasPattern = new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "gi");
@@ -3728,60 +3448,24 @@ export function truthfulnessPreflight(params: {
               }
               continue;
             }
-            // Codex round 5: the model relation is read from the alias's
-            // OWN clause — model language in an unrelated clause cannot
-            // convert a non-model mention into a claim. The relation reads
-            // the PRE-mask clause (aliasBase): the alias candidacy already
-            // required surviving the masks, and the clause's model word
-            // may legitimately sit inside a masked planning prefix ("the
-            // model will change later but currently Codex runs ...").
-            const clauseText = aliasBase.slice(
-              clauseStartFor(match.index),
-              clauseEndFor(match.index),
-            );
-            // Codex round 7: an alias clause that explicitly refers back
-            // to a model antecedent ("... the model is alpha beta seven,
-            // and Codex runs IT") carries the relation - the pronoun is
-            // required, so unrelated model language in other clauses
-            // still cannot convert a bare mention into a claim.
-            const anaphoricReferencePattern =
-              /\b(?:it|that|this|one|isso|isto|ele|ela|o\s+mesmo|a\s+mesma)\b/i;
-            // Round 15: a direct runtime-use predicate ("the runtime
-            // USES Codex <value>") is a model relation even without the
-            // literal model/pin noun - the auth/documentation forms stay
-            // excluded via the lookahead after the alias.
-            const runtimeUsePattern = new RegExp(
-              `\\b(?:runs?|uses?|using|roda|usa|usando|executa(?:m)?)\\s+(?:the\\s+)?(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})(?!\\s+(?:authentication|auth|credentials?|documentation|docs?|keys?|tokens?|billing|accounts?|peer|APIs?|clients?|SDKs?|integrations?|services?|endpoints?|libraries|library))`,
-              "i",
-            );
-            const relation =
-              modelRelationPattern.test(clauseText) ||
-              new RegExp(`(?:${MODEL_CLAIM_ALIASES[aliasPeer].source})\\s+peer\\b`, "i").test(
-                clauseText,
-              ) ||
-              runtimeUsePattern.test(clauseText) ||
-              (anaphoricReferencePattern.test(clauseText) &&
-                modelRelationPattern.test(aliasBase.slice(0, clauseStartFor(match.index))));
-            if (!relation) continue;
+            // Hardened contract: the relation is LINE-scoped - any
+            // remaining visible peer alias on a model-scoped assertive
+            // line blocks. The meta-noun lookahead still keeps "model
+            // documentation" prose out of scope.
+            if (!lineHasModelRelation) continue;
             guardTripped = true;
             break;
           }
           if (guardTripped) break;
         }
-        // Codex round 14: a coordinated predicate with an ELIDED subject
-        // ("... model is gpt-5.6-sol, and RUNS alpha beta seven") sits in
-        // a clause with no alias to iterate - it inherits the preceding
-        // model subject, so a fragmented value candidate inside it
-        // reopens the guard when the preceding text carries a model
-        // relation and a peer alias. Round 15: verbs are an open class -
-        // the elided subject is detected by the MISSING determiner (the
-        // clause does not open with a determiner/pronoun/capitalized
-        // subject), never by a verb allowlist.
-        if (!guardTripped) {
-          // A clause opening with a determiner/pronoun/capitalized word
-          // has its own subject; one opening with a preposition or
-          // connective adverb is a modifier phrase - neither is an elided
-          // coordinated predicate.
+        // KEPT under the hardened contract: the elided-coordination check
+        // is a DETECTOR, not an exemption - deleting it would ADMIT the
+        // lie "is gpt-5.6-sol, and runs alpha beta seven" (no visible
+        // alias in the coordinate), violating the approved premise that
+        // the inversion only ever ADDS blocking. It is decided by closed
+        // classes (determiners/prepositions) plus the fragmented-value
+        // candidate, both of which the contract keeps.
+        if (!guardTripped && lineHasModelRelation) {
           const subjectOpenerPattern =
             /^\s*(?:(?:the|a|an|this|that|these|those|its?|theirs?|ours?|my|your|his|hers?|it|they|we|you|he|she|there|here|with|without|in|on|at|for|from|by|to|of|via|per|under|over|through|during|between|after|before|about|as|so|then|also|o|os|as|um|uma|est[ea]s?|ess[ea]s?|aquel[ea]s?|seus?|suas?|noss[oa]s?|eles?|elas?|isso|isto|h[aá]|com|sem|em|no|na|nos|nas|para|de|do|da|dos|das|por|sob|sobre|entre|durante|ap[oó]s|antes|ent[aã]o)\b|[A-Z])/;
           for (const bound of clauseBounds) {
@@ -3793,11 +3477,10 @@ export function truthfulnessPreflight(params: {
             if (subjectOpenerPattern.test(segment)) continue;
             if (!hasFragmentedValueCandidate(segment)) continue;
             const precedingMasked = guardAliasBase.slice(0, bound.start);
-            const precedingUnmasked = aliasBase.slice(0, bound.start);
             const precedingHasAlias = PEERS.some((aliasPeer) =>
               new RegExp(MODEL_CLAIM_ALIASES[aliasPeer].source, "i").test(precedingMasked),
             );
-            if (precedingHasAlias && modelRelationPattern.test(precedingUnmasked)) {
+            if (precedingHasAlias) {
               guardTripped = true;
               break;
             }
@@ -3808,7 +3491,7 @@ export function truthfulnessPreflight(params: {
           currentStateClaimMatched = true;
           addIssueClass(issueClasses, "unsupported_current_state_claim");
           unsupportedClaims.push(
-            `model claim has no capturable model token and cannot be judged or evidence-anchored; restate with the exact contiguous model id, splitting mixed current/planning/historical sentences: ${line.slice(0, 240)}`,
+            `model claim has no capturable model token and cannot be judged; state the exact configured pin token adjacent to the peer alias, or move historical, planned, hypothetical or third-party statements into the structured evidence field: ${line.slice(0, 240)}`,
           );
         }
       }
