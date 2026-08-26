@@ -4,6 +4,8 @@ dist
 build
 target
 coverage
+scripts/verify-actions-lock.mjs
+scripts/verify-actions-lock.node-test.mjs
 .wrangler
 .next
 .cache
