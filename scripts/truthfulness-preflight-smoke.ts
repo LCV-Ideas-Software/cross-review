@@ -788,6 +788,213 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "a future clause elsewhere must not exempt a false current claim in its own clause",
   );
+  // v4.6.3: additive "not only" constructions assert both model values;
+  // `not` must not misclassify the first value as a denial.
+  assert.equal(
+    rt(
+      "The current cross-review runtime Claude model is not only claude-mythos-5 but also claude-fable-5.",
+      plainPins,
+    ),
+    false,
+    "not only A but also B asserts A and must reject a false current model",
+  );
+  assert.equal(
+    rt(
+      "The current cross-review runtime Claude model não é só claude-mythos-5, mas também claude-fable-5.",
+      plainPins,
+    ),
+    false,
+    "não só A mas também B asserts A and must reject a false current model",
+  );
+  assert.equal(
+    rt(
+      "The current cross-review runtime Claude model is not only claude-fable-5 but also claude-mythos-5.",
+      plainPins,
+    ),
+    false,
+    "not only A but also B must reject a false second assertion too",
+  );
+  assert.equal(
+    rt(
+      "The current cross-review runtime Claude model is not only claude-fable-5 but also claude-fable-5.",
+      plainPins,
+    ),
+    true,
+    "an additive construction containing only the configured model must not fabricate a contradiction",
+  );
+  for (const additiveLie of [
+    "The current cross-review runtime Claude model is not just claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not merely claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not exclusively claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not simply claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 in config.ts but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 as of v1.2 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not restricted to claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not confined to claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not purely claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 in this one specific runtime but also claude-fable-5.",
+    "The current cross-review runtime Claude model is not claude-mythos-5 alone but also claude-fable-5.",
+    "The current cross-review runtime Claude model não é apenas claude-mythos-5, mas também claude-fable-5.",
+    "The current cross-review runtime Claude model não é somente claude-mythos-5, mas também claude-fable-5.",
+    "The current cross-review runtime Claude model não é exclusivamente claude-mythos-5, mas também claude-fable-5.",
+    "The current cross-review runtime Claude model não é unicamente claude-mythos-5, mas também claude-fable-5.",
+    "The current cross-review runtime Claude model não está restrito a claude-mythos-5, mas também claude-fable-5.",
+    "The current cross-review runtime Claude model não está limitado a claude-mythos-5 neste runtime específico e documentado, mas também claude-fable-5.",
+  ]) {
+    assert.equal(
+      rt(additiveLie, plainPins),
+      false,
+      `an additive construction must not turn its first assertion into a denial: ${additiveLie}`,
+    );
+  }
+  assert.equal(
+    rt(
+      "The current cross-review runtime Claude model does not run claude-mythos-5 but is not only claude-fable-5 but also documented.",
+      plainPins,
+    ),
+    true,
+    "a later real negation must remain effective after an additive not-only construction",
+  );
+  assert.equal(
+    rt(
+      "The current cross-review runtime Claude model does not run claude-mythos-5 but also does not run claude-mythos-6; it runs claude-fable-5.",
+      plainPins,
+    ),
+    true,
+    "explicit negation on both sides of a contrast must not fabricate an affirmative model claim",
+  );
+  for (const genuineNegation of [
+    "The current cross-review runtime Claude model is not claude-mythos-5 and also is claude-fable-5.",
+    "The current cross-review runtime Claude model is not only not claude-mythos-5 but also claude-fable-5.",
+    "The current cross-review runtime Claude model não é claude-mythos-5 e também é claude-fable-5.",
+  ]) {
+    assert.equal(
+      rt(genuineNegation, plainPins),
+      true,
+      `an explicit genuine negation must remain non-current: ${genuineNegation}`,
+    );
+  }
+  for (const unrelatedAdditiveClause of [
+    "The current cross-review runtime Claude model is not claude-mythos-5, and the documentation not only describes the override but also mentions claude-fable-5.",
+    "The current cross-review runtime Claude model is not claude-mythos-5, because the docs are stale but also mention claude-fable-5.",
+  ]) {
+    assert.equal(
+      rt(unrelatedAdditiveClause, plainPins),
+      true,
+      `but also in an unrelated clause must not turn a real model denial into an assertion: ${unrelatedAdditiveClause}`,
+    );
+  }
+  // A future marker exempts only a genuinely future transition. Persistence,
+  // a future cutoff, or a present-state verb in the same clause still asserts
+  // the model that is loaded now.
+  assert.equal(
+    rt(
+      "The cross-review runtime will migrate the Claude model to claude-mythos-5 next quarter.",
+      plainPins,
+    ),
+    true,
+    "a genuine future migration must remain outside current-state judgment",
+  );
+  for (const futureTarget of [
+    "The cross-review runtime plans to adopt claude-mythos-5 next quarter.",
+    "The cross-review runtime is scheduled to switch the Claude model to claude-mythos-5.",
+    "O runtime do cross-review vai migrar o modelo Claude para claude-mythos-5.",
+    "O runtime do cross-review pretende adotar claude-mythos-5.",
+    "The cross-review runtime plans to adopt the new Claude model claude-mythos-5, which will be enabled next quarter.",
+    "The cross-review runtime plans to adopt claude-mythos-5 after the current Claude model is retired.",
+    "The cross-review runtime will migrate Claude to claude-mythos-5 when the current model is deprecated.",
+    "The cross-review runtime plans to adopt claude-mythos-5 while the current Claude model remains claude-fable-5.",
+    "The cross-review runtime plans to adopt claude-mythos-5 while the current runtime remains stable.",
+    "The cross-review runtime plans to adopt claude-mythos-5 after the current peer review is complete.",
+    "The cross-review runtime plans to adopt claude-mythos-5; the current model-selection documentation is complete.",
+    "The cross-review runtime plans to adopt claude-mythos-5 while the active model registry is audited.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is already selected for the next release but is not loaded now.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is already selected as the future target.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is currently configured only in the migration proposal.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is selected for the next release, and active development continues.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is configured only in the migration proposal, but active review is ongoing.",
+  ]) {
+    assert.equal(
+      rt(futureTarget, plainPins),
+      true,
+      `an explicit future target may remain outside current-state judgment: ${futureTarget}`,
+    );
+  }
+  assert.equal(
+    rt(
+      "The cross-review runtime will switch Claude from claude-fable-5 to claude-mythos-5.",
+      plainPins,
+    ),
+    true,
+    "the truthful current source remains judged while only the future target is exempt",
+  );
+  assert.equal(
+    rt(
+      "The cross-review runtime will switch Claude from claude-mythos-5 to claude-fable-5.",
+      plainPins,
+    ),
+    false,
+    "a false transition source must remain a current-state claim",
+  );
+  for (const currentLie of [
+    "The current cross-review runtime Claude model is claude-mythos-5 until next quarter.",
+    "The current cross-review runtime will continue running Claude on claude-mythos-5.",
+    "The current cross-review runtime will keep running Claude on claude-mythos-5.",
+    "The current cross-review runtime will remain on claude-mythos-5.",
+    "The current cross-review runtime will stay on claude-mythos-5.",
+    "The planned report says the current cross-review runtime runs Claude on claude-mythos-5.",
+    "The roadmap documents that the current cross-review runtime uses claude-mythos-5.",
+    "The cross-review runtime will use a report that says Claude currently runs claude-mythos-5.",
+    "The cross-review runtime plans to adopt claude-mythos-5 although it currently runs claude-mythos-5.",
+    "The cross-review runtime plans to adopt claude-mythos-5 while currently running claude-mythos-5.",
+    "The cross-review runtime plans to adopt claude-mythos-5 despite currently using claude-mythos-5.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is already its current Claude model.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which it currently uses.",
+    "The cross-review runtime plans to adopt claude-mythos-5 although it currently runs it.",
+    "The cross-review runtime will use claude-mythos-5 next release, even though it runs it now.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is already selected.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is selected as the future target but is already loaded now.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is configured only in the migration proposal but is currently loaded.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is selected for the next release but currently in use.",
+    "The cross-review runtime plans to adopt claude-mythos-5, per config.ts it is already the current Claude model.",
+    "The cross-review runtime plans to adopt claude-mythos-5, as of v1.2 it is already the current Claude model.",
+    "The cross-review runtime plans to adopt claude-mythos-5 because it is already the current Claude model.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which the Claude peer currently runs.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which currently powers the Claude peer.",
+    "The cross-review runtime plans to adopt claude-mythos-5 because Claude currently runs it.",
+    "The cross-review runtime plans to adopt claude-mythos-5 (the current Claude model).",
+    "The cross-review runtime plans to adopt claude-mythos-5; that is the current model.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is currently configured for Claude.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is the model currently configured for Claude.",
+    "The cross-review runtime plans to adopt claude-mythos-5, Claude's active model.",
+    "The cross-review runtime plans to adopt claude-mythos-5, the live Claude model.",
+    "The cross-review runtime plans to adopt claude-mythos-5, the model in use by Claude.",
+    "The cross-review runtime plans to adopt claude-mythos-5, which is presently loaded for Claude.",
+    `The cross-review runtime plans to adopt claude-mythos-5 ${"context ".repeat(30)}, which is its current Claude model.`,
+    `The cross-review runtime plans to adopt claude-mythos-5 ${"context ".repeat(30)}, Claude's active model.`,
+    "The cross-review runtime will migrate Claude to claude-mythos-5, its current model.",
+    "The cross-review runtime will migrate Claude to claude-mythos-5 although it is currently set to claude-mythos-5.",
+    "The cross-review runtime plans to adopt gpt-5.5, its current Codex model.",
+    "The cross-review runtime plans to adopt gemini-2.5-pro (the current Gemini model).",
+    "The cross-review runtime Claude model roadmap target is claude-mythos-5.",
+    "The current cross-review runtime runs Claude on claude-mythos-5 for the planned migration.",
+    "The current cross-review runtime is claude-mythos-5, but migration is planned.",
+  ]) {
+    assert.equal(
+      rt(currentLie, plainPins),
+      false,
+      `a future/planning marker must not exempt the present-state lie: ${currentLie}`,
+    );
+  }
+  assert.equal(
+    rt(
+      `The current cross-review runtime Claude model ${"planned ".repeat(2_000)}is claude-mythos-5.`,
+      plainPins,
+    ),
+    false,
+    "a long adversarial planning prefix must not create a future exemption",
+  );
   // And the wrapped `models/provider/model` pin form is normalized before
   // comparison, so a truthful claim of the routed model still passes.
   const wrappedPins = { ...modelPins, perplexity: "models/perplexity/kimi-k3" } as const;

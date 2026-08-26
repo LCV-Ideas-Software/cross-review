@@ -289,6 +289,186 @@ assert.equal(
   "a matching passed count cannot corroborate suite success when the same record reports failures",
 );
 
+// v4.6.3: count corroboration must preserve the same-command conflict rule.
+// v4.5.43 correctly stopped an unrelated deliberate RED from poisoning a
+// clean GREEN record, but its per-record `some()` also let a stale success for
+// the SAME command hide a conflicting failure record.
+for (const [label, records] of [
+  [
+    "failure after success",
+    "COMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed\n\nCOMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed",
+  ],
+  [
+    "failure before success",
+    "COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed",
+  ],
+] as const) {
+  const conflictingCountRuns = evidencePreflight({
+    task: "Review completed work: npm test completed with 88 passed.",
+    structuredEvidence: records,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    conflictingCountRuns.pass,
+    false,
+    `v4.6.3 / evidence_preflight: ${label} for the same command must not prove a passed count`,
+  );
+}
+
+const normalizedSameCommandCountConflict = evidencePreflight({
+  task: "Review completed work: npm test completed with 88 passed.",
+  structuredEvidence:
+    "COMMAND: NPM   TEST\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed\n\n$ npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  normalizedSameCommandCountConflict.pass,
+  false,
+  "v4.6.3 / evidence_preflight: prompt form, case, and whitespace must not hide the same command conflict",
+);
+
+for (const disguisedGreenCommand of [
+  "npm.exe test",
+  "npm.cmd test",
+  "npm.ps1 test",
+  "C:\\Tools\\npm.ps1 test",
+  "npm run test",
+  "npm t",
+  "npm --prefix . test",
+  "npm -C . test",
+  "cmd /c npm test",
+  "C:\\Windows\\System32\\cmd.exe /c npm test",
+  '"C:\\Windows\\System32\\cmd.exe" /d /c npm test',
+  "cmd /c call npm test",
+  "cmd /c cmd /c npm test",
+  'pwsh -Command "npm test"',
+  'powershell.exe -NoProfile -Command "npm test"',
+  "npx npm test",
+  "node node_modules/npm/bin/npm-cli.js test",
+  "npm test # after",
+  "npm test --",
+]) {
+  const disguisedSameCommandConflict = evidencePreflight({
+    task: "Review completed work: npm test completed with 88 passed.",
+    structuredEvidence: `COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${disguisedGreenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    disguisedSameCommandConflict.pass,
+    false,
+    `v4.6.3 / evidence_preflight: a cosmetic/wrapped npm spelling must not hide the same failed command: ${disguisedGreenCommand}`,
+  );
+}
+
+for (const [redCommand, greenCommand] of [
+  ["npm test -- tests/red.test.ts", "npm test -- tests/green.test.ts"],
+  ["npm --prefix C:foo test", "npm --prefix C:\\foo test"],
+  ["npm test -- --grep Foo", "npm test -- --grep foo"],
+  ['npm test -- --grep "Foo Bar"', "npm test -- --grep Foo Bar"],
+  ["npm run Foo", "npm run foo"],
+  ["npm --workspace package-red test", "npm --workspace package-green test"],
+  ["npm --prefix packages/red test", "npm --prefix packages/green test"],
+] as const) {
+  const explicitlyDifferentCommands = evidencePreflight({
+    task: "Review completed work: the selected green suite completed with 88 passed.",
+    structuredEvidence: `COMMAND: ${redCommand}\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${greenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    explicitlyDifferentCommands.pass,
+    true,
+    `v4.6.3 / evidence_preflight: semantic npm arguments must preserve deliberately different RED/GREEN commands: ${redCommand} != ${greenCommand}`,
+  );
+}
+
+const wrappedSameCommandArgumentsConflict = evidencePreflight({
+  task: "Review completed work: the selected suite completed with 88 passed.",
+  structuredEvidence:
+    "COMMAND: npm test -- tests/foo.test.ts\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: npm.exe run test -- tests/foo.test.ts\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  wrappedSameCommandArgumentsConflict.pass,
+  false,
+  "v4.6.3 / evidence_preflight: npm aliases must remain the same identity when semantic arguments match",
+);
+
+for (const cosmeticNpmCommand of [
+  "npm test --silent",
+  "npm --silent test",
+  "npm test --loglevel=silent",
+  "npm --loglevel silent test",
+  "npm test --no-color",
+]) {
+  const cosmeticOptionConflict = evidencePreflight({
+    task: "Review completed work: npm test completed with 88 passed.",
+    structuredEvidence: `COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${cosmeticNpmCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    cosmeticOptionConflict.pass,
+    false,
+    `v4.6.3 / evidence_preflight: cosmetic npm options must not manufacture command independence: ${cosmeticNpmCommand}`,
+  );
+}
+
+for (const ambiguousNpmOptionCommand of [
+  "npm --timing test",
+  "npm --no-progress test",
+  "npm --fund=false test",
+]) {
+  const unknownOptionConflict = evidencePreflight({
+    task: "Review completed work: npm test completed with 88 passed.",
+    structuredEvidence: `COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${ambiguousNpmOptionCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    unknownOptionConflict.pass,
+    false,
+    `v4.6.3 / evidence_preflight: an unknown npm option must fail closed, not manufacture command independence: ${ambiguousNpmOptionCommand}`,
+  );
+}
+
+for (const [redCommand, greenCommand] of [
+  ["npm --workspace foo test", "npm --workspace foo --workspace foo test"],
+  ["npm --prefix packages/a test", "npm --prefix packages/a/../a test"],
+  // A record does not identify the originating platform. Relative paths that
+  // differ only by case therefore cannot safely prove command independence.
+  ["npm --prefix packages/Foo test", "npm --prefix packages/foo test"],
+] as const) {
+  const equivalentContextConflict = evidencePreflight({
+    task: "Review completed work: the selected suite completed with 88 passed.",
+    structuredEvidence: `COMMAND: ${redCommand}\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${greenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    equivalentContextConflict.pass,
+    false,
+    `v4.6.3 / evidence_preflight: duplicate/equivalent npm context must keep one command identity: ${redCommand} == ${greenCommand}`,
+  );
+}
+
+const unframedFailureCannotProveIndependence = evidencePreflight({
+  task: "Review completed work: npm test completed with 88 passed.",
+  structuredEvidence:
+    "Tests 1 failed\nEXIT_CODE: 1\n\nCOMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  unframedFailureCannotProveIndependence.pass,
+  false,
+  "v4.6.3 / evidence_preflight: an unframed failure cannot be assumed independent of the green command",
+);
+
 const mismatchedStructuredValue = evidencePreflight({
   task: "Review my patch - 99 passed.",
   structuredEvidence: "Tests 199 passed, 0 failed\nEXIT_CODE: 0",

@@ -57,10 +57,28 @@ That precedence is scoped to the record carrying the matching count, never to
 the whole corpus (v4.5.43, issue #217). An honest failure count — the RED half
 of a TDD proof — is corroborated by its own failing record: `1 failed` claimed
 in the draft and backed by a dedicated `COMMAND:`/`EXIT_CODE: 1` record with
-the same count passes as caller-submitted material. A deliberate RED record
-likewise does not veto `passed` counts that carry their own clean records.
-Unframed evidence (no `COMMAND:`/prompt blocks) remains a single record and
-keeps the strict corpus-wide behavior.
+the same count passes as caller-submitted material. A deliberate RED record for
+a different, explicitly identified command likewise does not veto `passed`
+counts that carry their own clean records. If a failing record identifies the
+same normalized command as the clean record, the conflict cannot prove success
+regardless of record order, cosmetic executable/subcommand case, whitespace,
+supported wrappers or `COMMAND:`/prompt syntax. Semantic script arguments keep
+their case and argv boundaries, and Windows drive-relative (`C:foo`) and
+absolute (`C:/foo`) prefixes remain distinct. If either side lacks an explicit
+command identity, their independence is unprovable and the check fails closed.
+Unframed evidence (no
+`COMMAND:`/prompt blocks) remains a single record and keeps the strict
+corpus-wide behavior.
+
+Current-runtime model claims are also interpreted conservatively. Contrastive
+additions such as `not only A but also B` and `não só A mas também B` affirm
+both `A` and `B`; they are not denials of the first value. A model occurrence is
+excluded as prospective only when an explicit future transition or selection
+targets that occurrence (`will migrate … to X`, `plans to adopt X`, `vai
+migrar … para X`). Generic planning words, future cutoffs and continuatives
+such as `will continue`, `remain`, `stay` or `keep` do not exempt a simultaneous
+current-state claim. In `will switch from A to B`, source `A` is still checked
+as the current state and only target `B` is prospective.
 
 Mere keyword presence does **not** trip it. "I plan to write a patch"
 or "here is the test plan" is a design review with legitimately no diff

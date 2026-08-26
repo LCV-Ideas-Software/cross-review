@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.06.02`                        |
-| Data do source/release target | `24/08/2026`                       |
+| Versão preparada pelo source  | `v04.06.03`                        |
+| Data do source/release target | `25/08/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -830,6 +830,7 @@ publica com provenance quando aplicável.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                                                                              |
 | ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.06.03`      | 25/08/2026    | Restaura o fail-closed contra execuções conflitantes do mesmo comando, construções aditivas `not only`/`não só` e alegações atuais próximas de linguagem de planejamento, preservando RED/GREEN independentes e alvos futuros explícitos.                                                                             |
 | `v04.06.02`      | 24/08/2026    | Republish da v04.06.01 com a action do validador autocontida (parser embutido, prova de runner limpo), manifests locais resolvidos por referência e allowance restrita por localização.                                                                                                                               |
 | `v04.06.01`      | 24/08/2026    | Republish da v04.06.00 com o fix do gate de supply-chain: permissions mínimas por job, `TokenPermissionsID` vigiado de novo e revalidação real de pinning no gate do Publish (referências `$/` same-repo).                                                                                                            |
 | `v04.06.00`      | 23/08/2026    | Peer Perplexity migra para a Agent API com o pin `perplexity/kimi-k3` antes do sunset da Sonar (27/09/2026); Grok passa a `grok-4.6` com effort `xhigh`; preços atualizados pelas docs oficiais; smoke da loteria do relator determinístico com limiar qui-quadrado explícito (CROSREV-18, #231).                     |
