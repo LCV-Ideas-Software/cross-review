@@ -1731,6 +1731,221 @@ function commandLineFromEvidenceBlock(block: string): string {
   return firstLine.replace(/^\s*(?:COMMAND\s*:|[$>]\s*)/i, "").trim();
 }
 
+function stripUnquotedShellComment(value: string): string {
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "#" && (index === 0 || /\s/.test(value[index - 1] ?? ""))) {
+      return value.slice(0, index).trimEnd();
+    }
+  }
+  return value;
+}
+
+function canonicalEvidenceCommandIdentity(value: string): string | undefined {
+  const executableBasename = (token: string): string =>
+    (token.split(/[\\/]/).at(-1) ?? token).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/i, "");
+  const canonicalNpmIdentity = (tokens: string[]): string | undefined => {
+    const context: string[] = [];
+    const normalizeContextPath = (raw: string): string => {
+      const slashPath = raw.replace(/\\/g, "/").toLowerCase();
+      // `C:foo` is relative to the current directory on drive C:, whereas
+      // `C:/foo` is absolute. Do not manufacture a slash that merges them.
+      if (/^[a-z]:(?!\/)/i.test(slashPath)) return slashPath;
+      const drive = /^[a-z]:(?=\/)/i.exec(slashPath)?.[0] ?? "";
+      const root =
+        drive || (slashPath.startsWith("//") ? "//" : slashPath.startsWith("/") ? "/" : "");
+      const rest = slashPath.slice(drive.length).replace(/^\/+/, "");
+      const segments: string[] = [];
+      for (const segment of rest.split("/")) {
+        if (!segment || segment === ".") continue;
+        if (segment === "..") {
+          if (segments.length > 0 && segments.at(-1) !== "..") segments.pop();
+          else if (!root) segments.push(segment);
+          continue;
+        }
+        segments.push(segment);
+      }
+      if (root === "//") return `//${segments.join("/")}`;
+      if (drive) return segments.length > 0 ? `${drive}/${segments.join("/")}` : `${drive}/`;
+      if (root === "/") return `/${segments.join("/")}`;
+      return segments.join("/") || ".";
+    };
+    const consumeContextOption = (input: string[], index: number): number | undefined => {
+      const token = input[index] ?? "";
+      const lower = token.toLowerCase();
+      const prefixEquals = /^--prefix=(.+)$/i.exec(token);
+      if (prefixEquals?.[1]) {
+        const prefix = normalizeContextPath(prefixEquals[1]);
+        if (prefix !== ".") context.push(`prefix=${prefix}`);
+        return index + 1;
+      }
+      if (lower === "--prefix" || token === "-C") {
+        const rawPrefix = input[index + 1];
+        if (!rawPrefix) return undefined;
+        const prefix = normalizeContextPath(rawPrefix);
+        if (prefix !== ".") context.push(`prefix=${prefix}`);
+        return index + 2;
+      }
+      const workspaceEquals = /^--workspace=(.+)$/i.exec(token);
+      if (workspaceEquals?.[1]) {
+        context.push(`workspace=${workspaceEquals[1].toLowerCase()}`);
+        return index + 1;
+      }
+      if (lower === "--workspace" || lower === "-w") {
+        const workspace = input[index + 1];
+        if (!workspace) return undefined;
+        context.push(`workspace=${workspace.toLowerCase()}`);
+        return index + 2;
+      }
+      if (
+        lower === "--workspaces" ||
+        lower === "--no-workspaces" ||
+        lower === "--include-workspace-root" ||
+        lower === "--no-include-workspace-root"
+      ) {
+        context.push(lower);
+        return index + 1;
+      }
+      if (
+        lower === "--silent" ||
+        lower === "-s" ||
+        lower === "--color" ||
+        lower === "--no-color" ||
+        lower === "--if-present"
+      ) {
+        return index + 1;
+      }
+      if (/^--(?:loglevel|color)=.+$/i.test(token)) return index + 1;
+      if (lower === "--loglevel") {
+        return input[index + 1] ? index + 2 : undefined;
+      }
+      return index;
+    };
+
+    while (tokens.at(-1) === "--") tokens.pop();
+    const delimiter = tokens.indexOf("--", 1);
+    const npmTokens = tokens.slice(1, delimiter >= 0 ? delimiter : undefined);
+    const explicitScriptArguments = delimiter >= 0 ? tokens.slice(delimiter + 1) : [];
+    const runAliases = new Set(["run", "run-script", "rum", "urn"]);
+    const testAliases = new Set(["test", "t", "tst"]);
+    let cursor = 0;
+    let commandIndex = -1;
+    let directTest = false;
+    while (cursor < npmTokens.length) {
+      const lower = (npmTokens[cursor] ?? "").toLowerCase();
+      if (runAliases.has(lower) || testAliases.has(lower)) {
+        commandIndex = cursor;
+        directTest = testAliases.has(lower);
+        break;
+      }
+      const next = consumeContextOption(npmTokens, cursor);
+      if (next === undefined) return undefined;
+      if (next === cursor) {
+        // A different npm subcommand (for example `npm install test`) or an
+        // unknown leading option is not a test alias. Preserve it literally;
+        // never collapse a coincidental later `test` token into npm:test.
+        if ((npmTokens[cursor] ?? "").startsWith("-")) return undefined;
+        return normalizeOperationalCommand(tokens.join(" "));
+      }
+      cursor = next;
+    }
+    if (commandIndex < 0) return normalizeOperationalCommand(tokens.join(" "));
+
+    let script = "test";
+    let argumentStart = commandIndex + 1;
+    if (!directTest) {
+      // npm subcommands are case-insensitive, but package.json script keys are
+      // JSON keys and therefore case-sensitive. Only the exact conventional
+      // `test` key aliases the direct `npm test` command.
+      script = npmTokens[argumentStart] ?? "";
+      if (!script) return undefined;
+      argumentStart += 1;
+    }
+    cursor = argumentStart;
+    while (cursor < npmTokens.length) {
+      const next = consumeContextOption(npmTokens, cursor);
+      if (next === undefined) return undefined;
+      if (next === cursor) {
+        // npm-level material before `--` is either an option we explicitly
+        // classified above or ambiguous. It is never evidence that two runs
+        // selected different test inputs.
+        return undefined;
+      }
+      cursor = next;
+    }
+    const baseIdentity = script === "test" ? "npm:test" : `npm:run:${script}`;
+    const canonicalContext = [...new Set(context)].sort();
+    const contextIdentity =
+      canonicalContext.length > 0 ? ` context=${canonicalContext.join(",")}` : "";
+    const argumentIdentity =
+      explicitScriptArguments.length > 0 ? ` args=${JSON.stringify(explicitScriptArguments)}` : "";
+    return `${baseIdentity}${contextIdentity}${argumentIdentity}`;
+  };
+  const canonicalize = (raw: string, depth: number): string | undefined => {
+    if (depth > 4) return undefined;
+    const command = stripUnquotedShellComment(raw).trim().replace(/^&\s+/, "");
+    // A composed shell line is not a single provable command identity. Leaving
+    // it unknown makes any conflicting failure fail closed instead of allowing
+    // wrappers such as `npm test; exit 0` to manufacture independence.
+    if (!command || hasUnquotedCommandComposition(command)) return undefined;
+    const tokens = shellLikeTokens(command);
+    while (tokens.at(-1) === "--") tokens.pop();
+    if (tokens.length === 0) return undefined;
+    const executable = executableBasename(tokens[0] ?? "");
+
+    if (executable === "call") return canonicalize(tokens.slice(1).join(" "), depth + 1);
+    if (executable === "cmd") {
+      const commandFlag = tokens.findIndex((token, index) =>
+        index > 0 ? /^\/[ck]$/i.test(token) : false,
+      );
+      return commandFlag >= 0
+        ? canonicalize(tokens.slice(commandFlag + 1).join(" "), depth + 1)
+        : undefined;
+    }
+    if (executable === "pwsh" || executable === "powershell") {
+      const commandFlag = tokens.findIndex((token, index) =>
+        index > 0 ? /^(?:-c|-command)$/i.test(token) : false,
+      );
+      return commandFlag >= 0
+        ? canonicalize(tokens.slice(commandFlag + 1).join(" "), depth + 1)
+        : undefined;
+    }
+    if (executable === "npx" && /^npm(?:@[^\s]+)?$/i.test(tokens[1] ?? "")) {
+      return canonicalize(["npm", ...tokens.slice(2)].join(" "), depth + 1);
+    }
+    if (
+      executable === "node" &&
+      /(?:^|[\\/])npm-cli\.js$/i.test((tokens[1] ?? "").replace(/^['"]|['"]$/g, ""))
+    ) {
+      return canonicalize(["npm", ...tokens.slice(2)].join(" "), depth + 1);
+    }
+    if (executable === "npm") {
+      return canonicalNpmIdentity(tokens);
+    }
+    // An unrecognized wrapper around npm is ambiguous, not proof of a
+    // different command. Fail closed rather than assigning it a distinct key.
+    if (
+      tokens.slice(1).some((token) => {
+        const basename = executableBasename(token);
+        return basename === "npm" || basename === "npm-cli.js";
+      })
+    ) {
+      return undefined;
+    }
+    return normalizeOperationalCommand([executable, ...tokens.slice(1)].join(" "));
+  };
+  return canonicalize(value, 0);
+}
+
 function shellLikeTokens(value: string): string[] {
   return (value.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((token) =>
     token.replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2"),
@@ -1997,17 +2212,23 @@ function evidenceHasStructuredSuccessRecord(evidenceText: string, subject: RegEx
 
 // Records are the framed COMMAND:/prompt blocks when the evidence carries
 // them; unframed evidence stays a single record so its strictness is
-// unchanged. Scoping matters for count corroboration (#217): the veto for
-// failure signals applies within the record that carries the matching count
-// (docs/evidence-preflight.md, "within command records"), never across
-// records — otherwise a deliberate RED record poisons every other claim and
-// an honest "N failed" claim is unfalsifiable by construction.
+// unchanged. Scoping matters for count corroboration (#217): a failure signal
+// always vetoes success inside its own record, and across records only when the
+// two records normalize to the same command identity (or independence cannot
+// be proved). A deliberate RED for a different explicit command therefore
+// remains valid without poisoning every other claim.
 function splitEvidenceRecords(evidenceText: string): string[] {
   const normalized = evidenceText.replace(/\r\n?/g, "\n");
   const framed = normalized
     .split(/(?=^\s*(?:COMMAND\s*:|[$>]\s+\S))/gim)
     .filter((block) => block.trim().length > 0);
   return framed.length > 0 ? framed : [normalized];
+}
+
+function evidenceRecordCommandIdentity(record: string): string | undefined {
+  const firstLine = record.replace(/\r\n?/g, "\n").split("\n", 1)[0] ?? "";
+  if (!/^\s*(?:COMMAND\s*:|[$>]\s+\S)/i.test(firstLine)) return undefined;
+  return canonicalEvidenceCommandIdentity(commandLineFromEvidenceBlock(record));
 }
 
 function evidenceCorroboratesOperationalAssertion(
@@ -2017,7 +2238,8 @@ function evidenceCorroboratesOperationalAssertion(
   if (!evidenceText.trim()) return false;
   if (assertion.kind === "count") {
     const exact = new RegExp(`\\b${assertion.value}\\s+${assertion.outcome}\\b`, "i");
-    return splitEvidenceRecords(evidenceText).some((record) => {
+    const records = splitEvidenceRecords(evidenceText);
+    return records.some((record, recordIndex) => {
       if (!exact.test(record)) return false;
       const testFormatted =
         /\b(?:tests?|test files)\s*:?\s*\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i.test(
@@ -2028,7 +2250,22 @@ function evidenceCorroboratesOperationalAssertion(
       // record that proves "N failed" necessarily contains it (#217). The
       // veto still protects success counts within their record.
       if (assertion.outcome === "failed") return true;
-      return !evidenceHasExplicitFailureSignal(record);
+      if (evidenceHasExplicitFailureSignal(record)) return false;
+      const commandIdentity = evidenceRecordCommandIdentity(record);
+      // A deliberate RED for another command must not poison this GREEN, but
+      // two outcomes for the same command are ambiguous and cannot prove the
+      // success claim. If either record lacks an explicit command identity,
+      // their independence is unprovable and the gate also fails closed.
+      return !records.some((candidate, candidateIndex) => {
+        if (candidateIndex === recordIndex) return false;
+        if (!evidenceHasExplicitFailureSignal(candidate)) return false;
+        const candidateIdentity = evidenceRecordCommandIdentity(candidate);
+        return (
+          commandIdentity === undefined ||
+          candidateIdentity === undefined ||
+          candidateIdentity === commandIdentity
+        );
+      });
     });
   }
   if (assertion.kind === "command") {
@@ -2730,18 +2967,51 @@ export function truthfulnessPreflight(params: {
         value.replace(/_/g, "-").replace(/(^|[-.])v(?=[0-9])/g, "$1");
       const base = line.replace(/https?:\/\/\S+/gi, (m) => "#".repeat(m.length));
       const negationTailPattern =
-        /\b(?:not|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|nao|não|em\s+vez\s+de|anteriormente)(?:\s+(?!but\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
-      const negatedBefore = (matchStart: number): boolean =>
+        /\b(?:not(?!\s+(?:only|just|merely|solely|simply|exclusively)\b)|cannot|neither|nor|nem|rather\s+than|instead\s+of|no\s+longer|formerly|previously|(?:switched|migrated|moved|mudou|migrou)\s+from|(?:nao|não)(?!\s+(?:apenas|so|só|somente|meramente|simplesmente|exclusivamente|unicamente)(?=\s|[.,;:!?]|$))(?!\s+(?:e|é)\s+(?:apenas|so|só|somente|meramente|simplesmente|exclusivamente|unicamente)(?=\s|[.,;:!?]|$))|em\s+vez\s+de|anteriormente)(?:\s+(?!and\b|but\b|e\b|mas\b|por[eé]m\b)[a-z0-9à-ÿ._-]+){0,4}\s+$/i;
+      const contrastiveAdditionAfterPattern = /^[\s\S]*?\b(?:but\s+also|mas\s+tamb[eé]m)\b/i;
+      const additiveNegationBeforePattern =
+        /\b(?:not\s+(?:(?:limited|restricted|confined)\s+to|purely)|(?:nao|não)\s+est[aá]\s+(?:limitad[oa]|restrit[oa]|confinad[oa])\s+a)\s*$/i;
+      const additiveAloneAfterPattern = /^\s+alone\b/i;
+      const unrelatedClauseBeforeAdditionPattern =
+        /(?:,\s*(?:and|e|because|porque)\b|\b(?:because|since|while|although|though|whereas|however|yet|porque|desde|enquanto|embora|por[eé]m)\b)/i;
+      const explicitNegationAfterAdditionPattern =
+        /^\s*(?:(?:it|the\s+(?:runtime|peer|model)|ele|ela|o\s+(?:runtime|par|modelo))\s+)?(?:does\s+not|is\s+not|are\s+not|not|nao|não)\b/i;
+      const nestedNegationInAdditivePrefixPattern =
+        /\b(?:not\s+(?:only|just|merely|solely|simply|exclusively)|(?:nao|não)(?:\s+(?:e|é))?\s+(?:apenas|so|só|somente|meramente|simplesmente|exclusivamente|unicamente))\b[^;,.!?]{0,48}\b(?:does\s+not|is\s+not|are\s+not|not|nao|não)\b[^;,.!?]{0,32}\s*$/i;
+      const negatedBefore = (matchStart: number): boolean => {
         // Markdown code-span and quote delimiters are formatting, not
         // words: "not `pin`" must still end the window in whitespace.
-        negationTailPattern.test(
-          base.slice(Math.max(0, matchStart - 64), matchStart).replace(/[`*_~"'’“”]/g, " "),
-        );
-      // S3 (round 9): future/planning phrasing exempts only its own
-      // CLAUSE - a false current claim beside an unrelated future clause
-      // is still judged. Stamped per occurrence via clauseBounds.
-      const futureClausePattern =
-        /\b(?:will|would|planned|planning|plans\s+to|upcoming|roadmap|next\s+(?:quarter|release|version)|vai|ser[aá]|planejad[oa]|futur[oa])\b/i;
+        const tail = base
+          .slice(Math.max(0, matchStart - 64), matchStart)
+          .replace(/[`*_~"'’“”]/g, " ");
+        return negationTailPattern.test(tail);
+      };
+      // S3 (v4.6.3): future is fail-closed and occurrence-targeted. Broad
+      // words such as "planned", "roadmap" or "next quarter" do not exempt a
+      // model value by themselves. Only an explicit modal/intent plus a
+      // transition TARGET ("will move ... to X") or selection action ("plans
+      // to use X") can mark that occurrence future. Continuatives such as
+      // remain/continue/stay/keep are deliberately absent because they assert
+      // the current state. A source in "will move from A to B" likewise stays
+      // current while only target B is exempt.
+      const futureEnglishModal =
+        "(?:will|would|plans?\\s+to|intends?\\s+to|(?:is|are)\\s+going\\s+to|(?:is|are)\\s+(?:planned|scheduled)\\s+to)";
+      const futurePortugueseModal = "(?:vai|ir[aá]|planeja|pretende)";
+      const modelWords = "[a-z0-9à-ÿ._/-]+";
+      // A direct selection may contain a short nominal model descriptor, but
+      // never an arbitrary nested sentence. This prevents constructs such as
+      // "will use a report that says the runtime runs X" from laundering the
+      // present assertion after the future modal.
+      const futureSelectionFiller =
+        "(?:a|an|the|new|next|future|claude|codex|gemini|deepseek|grok|perplexity|anthropic|openai|google|xai|x-ai|moonshot|peer|model|runtime|provider|route|pin|version|endpoint|on|to|as|at|o|os|um|uma|novo|nova|pr[oó]ximo|pr[oó]xima|futuro|futura|modelo|par|provedor|rota|vers[aã]o|endpoint|em|para|como)";
+      const futureTransitionTargetPattern = new RegExp(
+        `\\b(?:(?:${futureEnglishModal})\\s+(?:move|migrate|switch|change|upgrade)\\b(?:\\s+${modelWords}){0,8}\\s+(?:to|onto)|(?:${futurePortugueseModal})\\s+(?:migrar|mudar|trocar|atualizar)\\b(?:\\s+${modelWords}){0,8}\\s+(?:para|ao|a))\\s*$`,
+        "i",
+      );
+      const futureSelectionTargetPattern = new RegExp(
+        `\\b(?:(?:${futureEnglishModal})\\s+(?:adopt|use|run|route|pin|set|be|become)\\b(?:\\s+${futureSelectionFiller}){0,6}|(?:${futurePortugueseModal})\\s+(?:adotar|usar|rodar|rotear|fixar|definir|ser|ficar)\\b(?:\\s+${futureSelectionFiller}){0,6}|ser[aá](?:\\s+${futureSelectionFiller}){0,6})\\s*$`,
+        "i",
+      );
       const occurrences: ModelOccurrence[] = [];
       const seenTokenStarts = new Set<number>();
       const recordOccurrence = (
@@ -2849,6 +3119,40 @@ export function truthfulnessPreflight(params: {
           }
         }
       }
+      occurrences.sort((left, right) => left.index - right.index);
+      for (const [occurrenceIndex, occurrence] of occurrences.entries()) {
+        if (!occurrence.negated) continue;
+        const nextOccurrence = occurrences[occurrenceIndex + 1];
+        const rawAdditionScope = base.slice(
+          occurrence.index + occurrence.rawLength,
+          nextOccurrence?.matchStart ?? base.length,
+        );
+        // Dots inside filenames and versions (for example config.ts and v1.2)
+        // are not sentence boundaries. Keep this aligned with
+        // splitTruthfulnessLines instead of treating every dot as terminal.
+        const additionBoundary = rawAdditionScope.search(/[!?;]|\.(?=\s|$)/);
+        const additionScope =
+          additionBoundary >= 0 ? rawAdditionScope.slice(0, additionBoundary) : rawAdditionScope;
+        const contrastiveAddition = contrastiveAdditionAfterPattern.exec(additionScope);
+        if (!contrastiveAddition) continue;
+        const beforeOccurrence = base.slice(
+          Math.max(0, occurrence.matchStart - 128),
+          occurrence.matchStart,
+        );
+        const connector = /\b(?:but\s+also|mas\s+tamb[eé]m)\b/i.exec(additionScope);
+        const additiveStructure =
+          additiveNegationBeforePattern.test(beforeOccurrence) ||
+          additiveAloneAfterPattern.test(additionScope);
+        const unrelatedClause = unrelatedClauseBeforeAdditionPattern.test(
+          additionScope.slice(0, connector?.index ?? 0),
+        );
+        if (!additiveStructure || unrelatedClause) continue;
+        const nestedNegation = nestedNegationInAdditivePrefixPattern.test(beforeOccurrence);
+        const negatedAfterAddition = explicitNegationAfterAdditionPattern.test(
+          additionScope.slice(contrastiveAddition[0].length),
+        );
+        if (!nestedNegation && !negatedAfterAddition) occurrence.negated = false;
+      }
       let aliasBase = base;
       const maskAliasRange = (start: number, end: number): void => {
         aliasBase = aliasBase.slice(0, start) + "#".repeat(end - start) + aliasBase.slice(end);
@@ -2869,7 +3173,9 @@ export function truthfulnessPreflight(params: {
         }
       }
       const clauseBounds: Array<{ start: number; end: number }> = [];
-      for (const match of aliasBase.matchAll(/[;,.]|\b(?:and|e)\b/gi)) {
+      for (const match of aliasBase.matchAll(
+        /[;,.]|\b(?:and|but|although|though|while|whereas|despite|because|since|then|however|yet|e|mas|embora|enquanto|apesar|porque|desde|ent[aã]o|por[eé]m)\b/gi,
+      )) {
         if (match.index !== undefined) {
           clauseBounds.push({ start: match.index, end: match.index + match[0].length });
         }
@@ -2921,13 +3227,66 @@ export function truthfulnessPreflight(params: {
         }
         occurrence.owner = best?.peer;
       }
+      const explicitFutureCandidates = new Set<ModelOccurrence>();
       for (const occurrence of occurrences) {
-        occurrence.future = futureClausePattern.test(
-          base.slice(
-            clauseStartFor(occurrence.matchStart),
-            clauseEndFor(occurrence.index + occurrence.rawLength),
-          ),
-        );
+        const clauseStart = clauseStartFor(occurrence.matchStart);
+        const prefix = base.slice(clauseStart, occurrence.matchStart);
+        if (
+          futureTransitionTargetPattern.test(prefix) ||
+          futureSelectionTargetPattern.test(prefix)
+        ) {
+          explicitFutureCandidates.add(occurrence);
+        }
+      }
+      const explicitReplacementOfCurrentSourcePattern =
+        /^\s*[,;:(-]?\s*(?:instead\s+of|replacing|to\s+replace|which\s+will\s+replace|em\s+vez\s+de|substituindo|para\s+substituir|que\s+substituir[aá])\b/i;
+      const explicitRetirementOfCurrentSourcePattern =
+        /^\s*[,;:(-]?\s*(?:after|when|once|before|ap[oó]s|quando|assim\s+que|antes\s+de)\b.{0,160}\b(?:retired|deprecated|removed|replaced|disabled|sunset|aposentad[oa]|descontinuad[oa]|removid[oa]|substitu[ií]d[oa]|desativad[oa])\b/i;
+      const targetCurrentUseRelationPattern =
+        /\b(?:(?:(?:which|that)\s+)?it\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes)(?:\s+it)?|(?:(?:which|that)(?:\s+it)?|it)\s+(?:is|are)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:(?:its|the)\s+)?(?:current|active|live|loaded|in\s+use)|which\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:peer|model))?\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes)|which\s+(?:(?:currently|presently|already|still|now)\s+)(?:powers|backs|serves)\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)|(?:codex|claude|gemini|deepseek|grok|perplexity)\s+(?:(?:currently|presently|already|still|now)\s+)(?:uses|runs|routes)\s+it)\b|(?:^|[,;:(])\s*(?:(?:its|the)\s+(?:current|active|live|loaded)\s+(?:(?:codex|claude|gemini|deepseek|grok|perplexity)\s+)?(?:model|peer)|(?:codex|claude|gemini|deepseek|grok|perplexity)['’]s\s+(?:current|active|live|loaded)\s+(?:model|peer)|(?:the\s+)?(?:model|peer)\s+(?:currently\s+)?(?:in\s+use|loaded)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i;
+      const targetCurrentSelectionRelationPattern =
+        /\b(?:(?:(?:which|that)\s+)?it\s+(?:(?:currently|presently|already|still|now)\s+)?(?:pins|selects)(?:\s+it)?|(?:(?:which|that)(?:\s+it)?|it)\s+(?:is|are)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:configured|selected)|(?:which|that)\s+(?:is|are)\s+(?:the\s+)?(?:model|peer)\s+(?:(?:currently|presently|already|still|now)\s+)(?:configured|selected)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity)|which\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:peer|model))?\s+(?:(?:currently|presently|already|still|now)\s+)?(?:pins|selects)|(?:codex|claude|gemini|deepseek|grok|perplexity)\s+(?:(?:currently|presently|already|still|now)\s+)(?:pins|selects)\s+it)\b|(?:^|[,;:(])\s*(?:(?:its|the)\s+(?:configured|selected)\s+(?:(?:codex|claude|gemini|deepseek|grok|perplexity)\s+)?(?:model|peer)|(?:codex|claude|gemini|deepseek|grok|perplexity)['’]s\s+(?:configured|selected)\s+(?:model|peer)|(?:the\s+)?(?:model|peer)\s+(?:currently\s+)?(?:configured|selected)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i;
+      const futureOnlySelectionQualificationPattern =
+        /\b(?:for\s+(?:the\s+)?next\s+(?:release|version)|as\s+(?:the\s+)?future\s+(?:target|model|pin)|only\s+in\s+(?:the\s+)?(?:migration\s+)?proposal|(?:is\s+)?not\s+(?:(?:currently|now)\s+)?(?:loaded|active|in\s+use|current))\b/i;
+      const positiveCurrentRuntimeAfterQualificationPattern =
+        /\b(?:but|yet|and)\s+(?:(?:it\s+)?(?:is|remains)\s+)?(?:(?:currently|presently|already|still|now)\s+)?(?:loaded|active|live|in\s+use)(?:\s+(?:currently|now))?(?:\s+(?:in|for)\s+(?:the\s+)?(?:current\s+)?(?:runtime|production))?(?=\s*[,;.)]|\s*$)/i;
+      const earliestFutureTargetByClause = new Map<number, number>();
+      for (const occurrence of explicitFutureCandidates) {
+        const clauseStart = clauseStartFor(occurrence.matchStart);
+        const earliest = earliestFutureTargetByClause.get(clauseStart);
+        if (earliest === undefined || occurrence.index < earliest) {
+          earliestFutureTargetByClause.set(clauseStart, occurrence.index);
+        }
+      }
+      for (const [occurrenceIndex, occurrence] of occurrences.entries()) {
+        const clauseStart = clauseStartFor(occurrence.matchStart);
+        const earliestFutureTarget = earliestFutureTargetByClause.get(clauseStart);
+        const earlierFutureTargetInClause =
+          earliestFutureTarget !== undefined && earliestFutureTarget < occurrence.index;
+        const lineSuffix = base.slice(occurrence.index + occurrence.rawLength);
+        const sentenceBoundary = lineSuffix.search(/[!?]|\.(?=\s|$)/);
+        const suffix = sentenceBoundary >= 0 ? lineSuffix.slice(0, sentenceBoundary) : lineSuffix;
+        const nextOccurrence = occurrences[occurrenceIndex + 1];
+        const continuationEnd =
+          occurrence.index +
+          occurrence.rawLength +
+          (sentenceBoundary >= 0 ? sentenceBoundary : lineSuffix.length);
+        const laterModelOccurrenceInContinuation =
+          nextOccurrence !== undefined && nextOccurrence.index < continuationEnd;
+        const targetCurrentRelation =
+          targetCurrentUseRelationPattern.test(suffix) ||
+          (targetCurrentSelectionRelationPattern.test(suffix) &&
+            (!futureOnlySelectionQualificationPattern.test(suffix) ||
+              positiveCurrentRuntimeAfterQualificationPattern.test(suffix)));
+        const presentContinuation =
+          !explicitReplacementOfCurrentSourcePattern.test(suffix) &&
+          !explicitRetirementOfCurrentSourcePattern.test(suffix) &&
+          !laterModelOccurrenceInContinuation &&
+          targetCurrentRelation;
+        occurrence.future =
+          explicitFutureCandidates.has(occurrence) &&
+          !earlierFutureTargetInClause &&
+          !presentContinuation;
       }
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];

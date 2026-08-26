@@ -2,10 +2,19 @@
 
 ## Supported status
 
-Current supported source/release target: v04.06.02 for package 4.6.2. This
+Current supported source/release target: v04.06.03 for package 4.6.3. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.06.03 restores fail-closed correlation in the two textual preflight
+boundaries affected by recent parser changes. A clean count cannot be proved by
+one execution when another record reports failure for the same normalized
+command, and unframed conflicting evidence remains ambiguous. Truthfulness
+parsing treats contrastive additions (`not only … but also …`, `não só … mas
+também …`) as affirmative on both sides and exempts a model occurrence as
+future only when an explicit transition or selection construct targets it.
+Continuative and present-state claims remain subject to the live model pins.
 
 v04.05.39 closes three residual caller-token recovery gaps found after the
 v04.05.37 merge. One boot never repeats a failed permission recovery; a file

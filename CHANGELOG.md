@@ -7,6 +7,26 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.06.03] — 25/08/2026
+
+### Fixed
+
+- Evidence preflight now correlates a passed count with the normalized command
+  that produced its clean record. A conflicting failing execution of that same
+  command — in either order or with cosmetic executable/subcommand case,
+  whitespace, wrapper or prompt-form differences — can no longer corroborate
+  success. Script arguments, argv boundaries and drive-relative versus absolute
+  prefixes remain semantic; a deliberate RED for a different, explicitly
+  identified command remains valid TDD evidence, while unframed ambiguity fails
+  closed.
+- Truthfulness preflight now treats additive constructions such as `not only …
+but also …` and `não só … mas também …` as assertions of both model values
+  instead of mistaking the first value for a denial. Future-state exemptions
+  are fail-closed and occurrence-targeted: only an explicit transition or
+  selection target is prospective; current sources, `continue`/`remain`/`stay`
+  claims and present-state claims near `planned`/`roadmap` language remain
+  checked against the live model pins.
+
 ## [v04.06.02] — 24/08/2026
 
 ### Fixed
