@@ -2275,19 +2275,21 @@ function buildEvidenceConflictIndex(evidenceText: string): EvidenceConflictIndex
     recordsAnalyzed += 1;
     const hasExplicitFailure = evidenceHasExplicitFailureSignal(record);
     const commandLine = commandLineFromEvidenceBlock(record);
+    const commandIdentity = evidenceRecordCommandIdentity(record);
     const exitCodes = [...record.matchAll(/\bEXIT[_ ]?CODE\s*[:=]\s*(\d+)\b/gi)].map((match) =>
       Number(match[1]),
     );
     return {
       record,
-      commandIdentity: evidenceRecordCommandIdentity(record),
+      commandIdentity,
       hasExplicitFailure,
       exitCodes,
       testFormatted:
         /\b(?:tests?|test files)\s*:?\s*\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i.test(
           record,
         ) ||
-        (/\btest\b/i.test(commandLine) &&
+        (commandIdentity !== undefined &&
+          /\btest\b/i.test(commandLine) &&
           exitCodes.length > 0 &&
           exitCodes.every((code) => code === 0) &&
           !hasExplicitFailure),
@@ -2352,10 +2354,13 @@ function evidenceCorroboratesOperationalAssertion(
     });
   }
   if (assertion.kind === "command") {
-    const matchingRecords = conflictIndex.records.filter((record) =>
-      operationalCommandMatches(record.record, assertion.command),
+    const matchingRecords = conflictIndex.records.filter(
+      (record) =>
+        record.commandIdentity !== undefined &&
+        operationalCommandMatches(record.record, assertion.command),
     );
     if (matchingRecords.length > 0) {
+      if (conflictIndex.hasUnidentifiedFailure) return false;
       return matchingRecords.every(
         (record) =>
           record.exitCodes.length > 0 &&
@@ -3379,14 +3384,27 @@ export function truthfulnessPreflight(params: {
         ModelOccurrence,
         { prefix: string; continuation: string; continuationEnd: number; nextClause: string }
       >();
+      const clauseBoundaryFrames = [
+        { language: "neutral", pattern: /[;!?]|\.(?=\s|$)/ },
+        { language: "en", pattern: /,\s*(?:but|yet|however|whereas)\b/i },
+        { language: "pt", pattern: /,\s*(?:mas|por[eé]m|contudo|todavia)\b/i },
+      ] as const;
+      const firstClauseBoundary = (text: string): number => {
+        let earliest = -1;
+        for (const frame of clauseBoundaryFrames) {
+          const index = text.search(frame.pattern);
+          if (index >= 0 && (earliest < 0 || index < earliest)) earliest = index;
+        }
+        return earliest;
+      };
       for (const occurrence of occurrences) {
         const prefixStart = clauseStartFor(occurrence.matchStart);
         const continuationStart = occurrence.index + occurrence.rawLength;
         const lineSuffix = base.slice(continuationStart);
-        // A semicolon starts an independent clause. A comma does not: relative
-        // clauses such as ", which it currently uses" must remain attached to
-        // the model occurrence they qualify.
-        const strongBoundary = lineSuffix.search(/[;!?]|\.(?=\s|$)/);
+        // Strong punctuation and finite EN/PT contrastive conjunctions start
+        // an independent clause. Other commas do not: relative clauses such
+        // as ", which it currently uses" remain attached to their occurrence.
+        const strongBoundary = firstClauseBoundary(lineSuffix);
         const continuationLength = strongBoundary >= 0 ? strongBoundary : lineSuffix.length;
         occurrenceClauseSpans.set(occurrence, {
           prefix: base.slice(prefixStart, occurrence.matchStart),
@@ -3427,33 +3445,86 @@ export function truthfulnessPreflight(params: {
       // from qualifying the target. Re-link only clauses whose syntax binds
       // the relation back to the target itself: an anaphoric state predicate
       // (`it is the current model`) or an explicit anaphoric object (`it uses
-      // it`). The full EN/PT relation tables are still evaluated below; these
-      // frames provide only the cross-boundary binding proof.
+      // it`, `Claude uses it`). Named peers require that explicit object, so an
+      // unrelated clause such as `Claude uses feature flags` cannot bind back.
+      // The full EN/PT relation tables are still evaluated below; these frames
+      // provide only the cross-boundary binding proof.
+      const postBoundaryDelimiterByLanguage = {
+        en: "(?:;|,\\s*(?:but|yet|however|whereas))",
+        pt: "(?:;|,\\s*(?:mas|por[eé]m|contudo|todavia))",
+      } as const;
+      const namedPeer = "(?:codex|claude|gemini|deepseek|grok|perplexity)";
       const postBoundaryTargetBindingFrames = [
         {
           language: "en",
           patterns: [
-            /^\s*;\s*(?:that|this|it)\s+(?:is|remains)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:the\s+)?(?:current|active|live|loaded|configured|selected|in\s+use)(?:\s+(?:model|peer))?\b/i,
-            /^\s*;\s*(?:it|(?:the\s+)?(?:runtime|peer|model))\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes|pins|selects)\s+it\b/i,
+            new RegExp(
+              `^\\s*${postBoundaryDelimiterByLanguage.en}\\s*(?:that|this|it)\\s+(?:is|remains)\\s+(?:(?:currently|presently|already|still|now)\\s+)?(?:the\\s+)?(?:current|active|live|loaded|configured|selected|in\\s+use)(?:\\s+(?:model|peer))?\\b`,
+              "i",
+            ),
+            new RegExp(
+              `^\\s*${postBoundaryDelimiterByLanguage.en}\\s*(?:it|(?:the\\s+)?(?:runtime|peer|model)|${namedPeer})\\s+(?:(?:currently|presently|already|still|now)\\s+)?(?:uses|runs|routes|pins|selects)\\s+it\\b`,
+              "i",
+            ),
           ],
         },
         {
           language: "pt",
           patterns: [
-            /^\s*;\s*(?:isso|esse|essa|este|esta|ele|ela)\s+(?:e|é|est[aá]|continua)\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:o\s+)?(?:modelo|par)?\s*(?:atual|ativo|carregado|configurad[oa]|selecionad[oa]|em\s+uso)\b/i,
-            /^\s*;\s*(?:ele|ela|(?:o\s+)?(?:runtime|par|modelo))\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:usa|roda|roteia|fixa|seleciona)\s+(?:ele|isso)\b/i,
+            new RegExp(
+              `^\\s*${postBoundaryDelimiterByLanguage.pt}\\s*(?:isso|esse|essa|este|esta|ele|ela)\\s+(?:e|é|est[aá]|continua)\\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\\s+)?(?:o\\s+)?(?:modelo|par)?\\s*(?:atual|ativo|carregado|configurad[oa]|selecionad[oa]|em\\s+uso)\\b`,
+              "i",
+            ),
+            new RegExp(
+              `^\\s*${postBoundaryDelimiterByLanguage.pt}\\s*(?:ele|ela|(?:o\\s+)?(?:runtime|par|modelo)|(?:o\\s+)?${namedPeer})\\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\\s+)?(?:usa|roda|roteia|fixa|seleciona)\\s+(?:ele|isso)\\b`,
+              "i",
+            ),
           ],
         },
       ] as const;
-      const futureOnlySelectionQualificationPattern =
-        /\b(?:for\s+(?:the\s+)?next\s+(?:release|version)|as\s+(?:the\s+)?future\s+(?:target|model|pin)|only\s+in\s+(?:the\s+)?(?:migration\s+)?proposal|(?:is\s+)?not\s+(?:(?:currently|now)\s+)?(?:loaded|active|in\s+use|current))\b/i;
-      const positiveCurrentRuntimeAfterQualificationPattern =
-        /\b(?:but|yet|and)\s+(?:(?:it\s+)?(?:is|remains)\s+)?(?:(?:currently|presently|already|still|now)\s+)?(?:loaded|active|live|in\s+use)(?:\s+(?:currently|now))?(?:\s+(?:in|for)\s+(?:the\s+)?(?:current\s+)?(?:runtime|production))?(?=\s*[,;.)]|\s*$)/i;
+      const futureOnlySelectionQualificationFrames = [
+        {
+          language: "en",
+          patterns: [
+            /\bfor\s+(?:the\s+)?next\s+(?:release|version)\b/i,
+            /\bas\s+(?:the\s+)?future\s+(?:target|model|pin)\b/i,
+            /\bonly\s+in\s+(?:the\s+)?(?:migration\s+)?proposal\b/i,
+            /\b(?:is\s+)?not\s+(?:(?:currently|now)\s+)?(?:loaded|active|in\s+use|current)\b/i,
+          ],
+        },
+        {
+          language: "pt",
+          patterns: [
+            /\bpara\s+(?:a\s+)?pr[oó]xima\s+(?:release|vers[aã]o)\b/i,
+            /\bcomo\s+(?:o\s+)?(?:alvo|modelo|pin)\s+futuro\b/i,
+            /\b(?:somente|apenas)\s+(?:na|em\s+(?:a\s+)?)proposta(?:\s+de\s+migra[cç][aã]o)?\b/i,
+            /\bn[aã]o\s+(?:est[aá]\s+)?(?:(?:atualmente|agora)\s+)?(?:carregado|ativo|em\s+uso|atual)\b/i,
+          ],
+        },
+      ] as const;
+      const hasFutureOnlySelectionQualification = (text: string): boolean =>
+        futureOnlySelectionQualificationFrames.some((frame) =>
+          frame.patterns.some((pattern) => pattern.test(text)),
+        );
+      const positiveCurrentRuntimeAfterQualificationFrames = [
+        {
+          language: "en",
+          pattern:
+            /\b(?:but|yet|and)\s+(?:(?:it\s+)?(?:is|remains)\s+)?(?:(?:currently|presently|already|still|now)\s+)?(?:loaded|active|live|in\s+use)(?:\s+(?:currently|now))?(?:\s+(?:in|for)\s+(?:the\s+)?(?:current\s+)?(?:runtime|production))?(?=\s*[,;.)]|\s*$)/i,
+        },
+        {
+          language: "pt",
+          pattern:
+            /\b(?:mas|por[eé]m|contudo|todavia|e)\s+(?:(?:ele|isso)\s+)?(?:(?:e|é|est[aá]|continua)\s+)?(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:carregado|ativo|em\s+uso|atual)(?:\s+(?:atualmente|agora))?(?:\s+(?:no|na|em\s+(?:o|a))\s+(?:runtime|produ[cç][aã]o)(?:\s+atual)?)?(?=\s*[,;.)]|\s*$)/i,
+        },
+      ] as const;
+      const hasPositiveCurrentRuntimeAfterQualification = (text: string): boolean =>
+        positiveCurrentRuntimeAfterQualificationFrames.some((frame) => frame.pattern.test(text));
       const matchesTargetCurrentRelation = (text: string): boolean =>
         targetCurrentRelationFrames.some((frame) => frame.use.test(text)) ||
         (targetCurrentRelationFrames.some((frame) => frame.selection.test(text)) &&
-          (!futureOnlySelectionQualificationPattern.test(text) ||
-            positiveCurrentRuntimeAfterQualificationPattern.test(text)));
+          (!hasFutureOnlySelectionQualification(text) ||
+            hasPositiveCurrentRuntimeAfterQualification(text)));
       const hasPostBoundaryTargetBinding = (text: string): boolean =>
         postBoundaryTargetBindingFrames.some((frame) =>
           frame.patterns.some((pattern) => pattern.test(text)),

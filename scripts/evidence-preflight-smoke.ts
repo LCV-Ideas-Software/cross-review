@@ -569,6 +569,59 @@ assert.equal(
   "v4.6.3 / evidence_preflight: an unframed failure cannot be assumed independent of the green command",
 );
 
+// CROSREV-29 follow-up: narrative prose that happens to mention a command is
+// not a second structured execution record. Only the explicit COMMAND frame
+// may participate in command-success corroboration.
+const narrativePreambleBeforeCommandFrame = evidencePreflight({
+  task: "Review completed work: npm run check passed.",
+  structuredEvidence:
+    "The report says npm run check passed.\n\nCOMMAND: npm run check\nEXIT_CODE: 0\nSTDOUT:\nChecks passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  narrativePreambleBeforeCommandFrame.pass,
+  true,
+  "CROSREV-29 / evidence_preflight: narrative command mentions must not veto the explicit green COMMAND frame",
+);
+const unidentifiedFailureBeforeCommandFrame = evidencePreflight({
+  task: "Review completed work: npm run check passed.",
+  structuredEvidence:
+    "An unidentified check failed.\nEXIT_CODE: 1\n\nCOMMAND: npm run check\nEXIT_CODE: 0\nSTDOUT:\nChecks passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  unidentifiedFailureBeforeCommandFrame.pass,
+  false,
+  "CROSREV-29 / evidence_preflight: an unidentified failure must still fail closed beside a green COMMAND frame",
+);
+
+// A loose line containing `test` plus an exit code and count is not a framed
+// command record. The symmetric explicit COMMAND frame remains admissible.
+const unframedTestCount = evidencePreflight({
+  task: "Review completed work: 88 passed.",
+  structuredEvidence: "node test-runner.js\nEXIT_CODE: 0\n88 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  unframedTestCount.pass,
+  false,
+  "CROSREV-29 / evidence_preflight: an unframed test-looking block must not corroborate a loose count",
+);
+const framedTestCount = evidencePreflight({
+  task: "Review completed work: 88 passed.",
+  structuredEvidence: "COMMAND: node test-runner.js\nEXIT_CODE: 0\n88 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  framedTestCount.pass,
+  true,
+  "CROSREV-29 / evidence_preflight: the equivalent explicit COMMAND frame must corroborate its count",
+);
+
 const mismatchedStructuredValue = evidencePreflight({
   task: "Review my patch - 99 passed.",
   structuredEvidence: "Tests 199 passed, 0 failed\nEXIT_CODE: 0",
