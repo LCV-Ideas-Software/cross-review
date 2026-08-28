@@ -2,10 +2,18 @@
 
 ## Supported status
 
-Current supported source/release target: v04.06.03 for package 4.6.3. This
+Current supported source/release target: v04.06.04 for package 4.6.4. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.06.04 keeps those boundaries fail-closed while removing their residual
+ambiguity and scaling defect. Evidence records are analyzed once; generic
+command identity keeps normalized executable spelling separate from exact
+argument boundaries and case. Truthfulness parsing uses finite English and
+Portuguese transition/relation frames over occurrence-specific clause spans,
+so strong punctuation isolates clauses while comma-relative current qualifiers
+remain attached to their model occurrence.
 
 v04.06.03 restores fail-closed correlation in the two textual preflight
 boundaries affected by recent parser changes. A clean count cannot be proved by

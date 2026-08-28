@@ -66,9 +66,12 @@ supported wrappers or `COMMAND:`/prompt syntax. Semantic script arguments keep
 their case and argv boundaries, and Windows drive-relative (`C:foo`) and
 absolute (`C:/foo`) prefixes remain distinct. If either side lacks an explicit
 command identity, their independence is unprovable and the check fails closed.
-Unframed evidence (no
-`COMMAND:`/prompt blocks) remains a single record and keeps the strict
-corpus-wide behavior.
+The runtime analyzes each framed record once into a conflict index. Known
+failing identities are held in a set, while any failing record without a
+provable identity sets a corpus-level fail-closed marker; count corroboration
+reuses that index instead of rescanning and reparsing all records. Unframed
+evidence (no `COMMAND:`/prompt blocks) remains a single record and keeps the
+strict corpus-wide behavior.
 
 Current-runtime model claims are also interpreted conservatively. Contrastive
 additions such as `not only A but also B` and `não só A mas também B` affirm
@@ -79,6 +82,12 @@ migrar … para X`). Generic planning words, future cutoffs and continuatives
 such as `will continue`, `remain`, `stay` or `keep` do not exempt a simultaneous
 current-state claim. In `will switch from A to B`, source `A` is still checked
 as the current state and only target `B` is prospective.
+
+Transition targets and present-state relations are recognized by finite
+English/Portuguese frame tables over spans computed for each model occurrence.
+Semicolons start independent clauses; commas remain inside the occurrence span
+so genuine relative qualifiers such as `which it currently uses` and `que ele
+usa atualmente` still cancel a prospective exemption.
 
 Mere keyword presence does **not** trip it. "I plan to write a patch"
 or "here is the test plan" is a design review with legitimately no diff

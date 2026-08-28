@@ -7,6 +7,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.06.04] — 28/08/2026
+
+### Fixed
+
+- Evidence conflict indexing now analyzes every record once, preserves generic
+  executable identity separately from the case-sensitive `argv` vector, and
+  compares failures through a set while keeping unidentified failures
+  fail-closed. This removes the nested record rescans without collapsing quoted
+  arguments or semantically distinct argument case.
+- Truthfulness parsing now uses finite English/Portuguese transition and
+  current-relation frames over occurrence-specific clause spans. Explicit
+  `replace … with` and `update … to` targets are prospective, Portuguese
+  present qualifiers still cancel that exemption, and semicolons isolate
+  independent clauses without cutting genuine comma-relative qualifiers.
+
 ## [v04.06.03] — 25/08/2026
 
 ### Fixed

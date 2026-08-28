@@ -1272,56 +1272,59 @@ export function groundReadyPeerEvidence(
   const failedClaimsForCorpus = (
     corpusName: "caller_evidence" | "peer_sources",
     corpusText: string,
-  ) => [
-    ...operationalAssertions.flatMap((claim, index) =>
-      evidenceCorroboratesOperationalAssertion(claim, corpusText)
-        ? []
-        : [
-            {
-              corpus: corpusName,
-              claim_type: "operational_assertion" as const,
-              index,
-              claim_excerpt: claim.display.slice(0, 240),
-            },
-          ],
-    ),
-    ...fabricationProneClaims.flatMap((claim, index) =>
-      operationalClaimCorroborated(claim, corpusText)
-        ? []
-        : [
-            {
-              corpus: corpusName,
-              claim_type: "fabrication_prone_claim" as const,
-              index,
-              claim_excerpt: claim.slice(0, 240),
-            },
-          ],
-    ),
-    ...historicalClaims.flatMap((claim, index) =>
-      historicalClaimHasMatchingSnapshot(claim, corpusText)
-        ? []
-        : [
-            {
-              corpus: corpusName,
-              claim_type: "historical_claim" as const,
-              index,
-              claim_excerpt: claim.slice(0, 240),
-            },
-          ],
-    ),
-    ...forcedCurrentStateClaims.flatMap((claim, index) =>
-      truthfulnessClaimHasMatchingEvidence(claim, corpusText)
-        ? []
-        : [
-            {
-              corpus: corpusName,
-              claim_type: "forced_current_state_claim" as const,
-              index,
-              claim_excerpt: claim.slice(0, 240),
-            },
-          ],
-    ),
-  ];
+  ) => {
+    const conflictIndex = buildEvidenceConflictIndex(corpusText);
+    return [
+      ...operationalAssertions.flatMap((claim, index) =>
+        evidenceCorroboratesOperationalAssertion(claim, corpusText, conflictIndex)
+          ? []
+          : [
+              {
+                corpus: corpusName,
+                claim_type: "operational_assertion" as const,
+                index,
+                claim_excerpt: claim.display.slice(0, 240),
+              },
+            ],
+      ),
+      ...fabricationProneClaims.flatMap((claim, index) =>
+        operationalClaimCorroborated(claim, corpusText)
+          ? []
+          : [
+              {
+                corpus: corpusName,
+                claim_type: "fabrication_prone_claim" as const,
+                index,
+                claim_excerpt: claim.slice(0, 240),
+              },
+            ],
+      ),
+      ...historicalClaims.flatMap((claim, index) =>
+        historicalClaimHasMatchingSnapshot(claim, corpusText)
+          ? []
+          : [
+              {
+                corpus: corpusName,
+                claim_type: "historical_claim" as const,
+                index,
+                claim_excerpt: claim.slice(0, 240),
+              },
+            ],
+      ),
+      ...forcedCurrentStateClaims.flatMap((claim, index) =>
+        truthfulnessClaimHasMatchingEvidence(claim, corpusText)
+          ? []
+          : [
+              {
+                corpus: corpusName,
+                claim_type: "forced_current_state_claim" as const,
+                index,
+                claim_excerpt: claim.slice(0, 240),
+              },
+            ],
+      ),
+    ];
+  };
   const failedCallerEvidenceClaimDiagnostics = failedClaimsForCorpus(
     "caller_evidence",
     callerSubmittedEvidenceText,
@@ -1331,10 +1334,15 @@ export function groundReadyPeerEvidence(
     fabricationProneClaims.length > 0 ||
     historicalClaims.length > 0 ||
     forcedCurrentStateClaims.length > 0;
+  const operatorAttachedConflictIndex = buildEvidenceConflictIndex(input.attachedEvidenceText);
   const operatorGrounded =
     hasHighRiskOperationalClaims &&
     operationalAssertions.every((assertion) =>
-      evidenceCorroboratesOperationalAssertion(assertion, input.attachedEvidenceText),
+      evidenceCorroboratesOperationalAssertion(
+        assertion,
+        input.attachedEvidenceText,
+        operatorAttachedConflictIndex,
+      ),
     ) &&
     fabricationProneClaims.every((claim) =>
       operationalClaimCorroborated(claim, input.attachedEvidenceText),
@@ -1753,6 +1761,8 @@ function stripUnquotedShellComment(value: string): string {
 function canonicalEvidenceCommandIdentity(value: string): string | undefined {
   const executableBasename = (token: string): string =>
     (token.split(/[\\/]/).at(-1) ?? token).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/i, "");
+  const genericCommandIdentity = (executable: string, argv: string[]): string =>
+    `command:${executable} argv=${JSON.stringify(argv)}`;
   const canonicalNpmIdentity = (tokens: string[]): string | undefined => {
     const context: string[] = [];
     const normalizeContextPath = (raw: string): string => {
@@ -1854,11 +1864,11 @@ function canonicalEvidenceCommandIdentity(value: string): string | undefined {
         // unknown leading option is not a test alias. Preserve it literally;
         // never collapse a coincidental later `test` token into npm:test.
         if ((npmTokens[cursor] ?? "").startsWith("-")) return undefined;
-        return normalizeOperationalCommand(tokens.join(" "));
+        return genericCommandIdentity("npm", tokens.slice(1));
       }
       cursor = next;
     }
-    if (commandIndex < 0) return normalizeOperationalCommand(tokens.join(" "));
+    if (commandIndex < 0) return genericCommandIdentity("npm", tokens.slice(1));
 
     let script = "test";
     let argumentStart = commandIndex + 1;
@@ -1890,25 +1900,19 @@ function canonicalEvidenceCommandIdentity(value: string): string | undefined {
       explicitScriptArguments.length > 0 ? ` args=${JSON.stringify(explicitScriptArguments)}` : "";
     return `${baseIdentity}${contextIdentity}${argumentIdentity}`;
   };
-  const canonicalize = (raw: string, depth: number): string | undefined => {
+  const canonicalizeTokens = (tokens: string[], depth: number): string | undefined => {
     if (depth > 4) return undefined;
-    const command = stripUnquotedShellComment(raw).trim().replace(/^&\s+/, "");
-    // A composed shell line is not a single provable command identity. Leaving
-    // it unknown makes any conflicting failure fail closed instead of allowing
-    // wrappers such as `npm test; exit 0` to manufacture independence.
-    if (!command || hasUnquotedCommandComposition(command)) return undefined;
-    const tokens = shellLikeTokens(command);
     while (tokens.at(-1) === "--") tokens.pop();
     if (tokens.length === 0) return undefined;
     const executable = executableBasename(tokens[0] ?? "");
 
-    if (executable === "call") return canonicalize(tokens.slice(1).join(" "), depth + 1);
+    if (executable === "call") return canonicalizeTokens(tokens.slice(1), depth + 1);
     if (executable === "cmd") {
       const commandFlag = tokens.findIndex((token, index) =>
         index > 0 ? /^\/[ck]$/i.test(token) : false,
       );
       return commandFlag >= 0
-        ? canonicalize(tokens.slice(commandFlag + 1).join(" "), depth + 1)
+        ? canonicalizeNestedCommand(tokens.slice(commandFlag + 1), depth + 1)
         : undefined;
     }
     if (executable === "pwsh" || executable === "powershell") {
@@ -1916,17 +1920,17 @@ function canonicalEvidenceCommandIdentity(value: string): string | undefined {
         index > 0 ? /^(?:-c|-command)$/i.test(token) : false,
       );
       return commandFlag >= 0
-        ? canonicalize(tokens.slice(commandFlag + 1).join(" "), depth + 1)
+        ? canonicalizeNestedCommand(tokens.slice(commandFlag + 1), depth + 1)
         : undefined;
     }
     if (executable === "npx" && /^npm(?:@[^\s]+)?$/i.test(tokens[1] ?? "")) {
-      return canonicalize(["npm", ...tokens.slice(2)].join(" "), depth + 1);
+      return canonicalizeTokens(["npm", ...tokens.slice(2)], depth + 1);
     }
     if (
       executable === "node" &&
       /(?:^|[\\/])npm-cli\.js$/i.test((tokens[1] ?? "").replace(/^['"]|['"]$/g, ""))
     ) {
-      return canonicalize(["npm", ...tokens.slice(2)].join(" "), depth + 1);
+      return canonicalizeTokens(["npm", ...tokens.slice(2)], depth + 1);
     }
     if (executable === "npm") {
       return canonicalNpmIdentity(tokens);
@@ -1941,7 +1945,25 @@ function canonicalEvidenceCommandIdentity(value: string): string | undefined {
     ) {
       return undefined;
     }
-    return normalizeOperationalCommand([executable, ...tokens.slice(1)].join(" "));
+    // Generic commands are executions, not display strings. The executable is
+    // normalized independently, while JSON preserves argv boundaries and
+    // argument case (`"red case"` is one argument; `red case` is two).
+    return genericCommandIdentity(executable, tokens.slice(1));
+  };
+  const canonicalize = (raw: string, depth: number): string | undefined => {
+    if (depth > 4) return undefined;
+    const command = stripUnquotedShellComment(raw).trim().replace(/^&\s+/, "");
+    // A composed shell line is not a single provable command identity. Leaving
+    // it unknown makes any conflicting failure fail closed instead of allowing
+    // wrappers such as `npm test; exit 0` to manufacture independence.
+    if (!command || hasUnquotedCommandComposition(command)) return undefined;
+    return canonicalizeTokens(shellLikeTokens(command), depth);
+  };
+  const canonicalizeNestedCommand = (tokens: string[], depth: number): string | undefined => {
+    if (tokens.length === 1 && /\s/.test(tokens[0] ?? "")) {
+      return canonicalize(tokens[0] ?? "", depth);
+    }
+    return canonicalizeTokens(tokens, depth);
   };
   return canonicalize(value, 0);
 }
@@ -2231,62 +2253,115 @@ function evidenceRecordCommandIdentity(record: string): string | undefined {
   return canonicalEvidenceCommandIdentity(commandLineFromEvidenceBlock(record));
 }
 
+interface EvidenceRecordAnalysis {
+  record: string;
+  commandIdentity: string | undefined;
+  hasExplicitFailure: boolean;
+  exitCodes: number[];
+  testFormatted: boolean;
+}
+
+interface EvidenceConflictIndex {
+  records: EvidenceRecordAnalysis[];
+  failingCommandIdentities: Set<string>;
+  hasUnidentifiedFailure: boolean;
+  recordsAnalyzed: number;
+}
+
+function buildEvidenceConflictIndex(evidenceText: string): EvidenceConflictIndex {
+  let recordsAnalyzed = 0;
+  const rawRecords = evidenceText.trim() ? splitEvidenceRecords(evidenceText) : [];
+  const records = rawRecords.map((record): EvidenceRecordAnalysis => {
+    recordsAnalyzed += 1;
+    const hasExplicitFailure = evidenceHasExplicitFailureSignal(record);
+    const commandLine = commandLineFromEvidenceBlock(record);
+    const exitCodes = [...record.matchAll(/\bEXIT[_ ]?CODE\s*[:=]\s*(\d+)\b/gi)].map((match) =>
+      Number(match[1]),
+    );
+    return {
+      record,
+      commandIdentity: evidenceRecordCommandIdentity(record),
+      hasExplicitFailure,
+      exitCodes,
+      testFormatted:
+        /\b(?:tests?|test files)\s*:?\s*\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i.test(
+          record,
+        ) ||
+        (/\btest\b/i.test(commandLine) &&
+          exitCodes.length > 0 &&
+          exitCodes.every((code) => code === 0) &&
+          !hasExplicitFailure),
+    };
+  });
+  const failingCommandIdentities = new Set<string>();
+  let hasUnidentifiedFailure = false;
+  for (const record of records) {
+    if (!record.hasExplicitFailure) continue;
+    if (record.commandIdentity === undefined) hasUnidentifiedFailure = true;
+    else failingCommandIdentities.add(record.commandIdentity);
+  }
+  return {
+    records,
+    failingCommandIdentities,
+    hasUnidentifiedFailure,
+    recordsAnalyzed,
+  };
+}
+
+export function evidenceConflictIndexDiagnostics(evidenceText: string): {
+  record_count: number;
+  records_analyzed: number;
+  failing_identity_count: number;
+  has_unidentified_failure: boolean;
+} {
+  const index = buildEvidenceConflictIndex(evidenceText);
+  return {
+    record_count: index.records.length,
+    records_analyzed: index.recordsAnalyzed,
+    failing_identity_count: index.failingCommandIdentities.size,
+    has_unidentified_failure: index.hasUnidentifiedFailure,
+  };
+}
+
 function evidenceCorroboratesOperationalAssertion(
   assertion: EvidenceOperationalAssertion,
   evidenceText: string,
+  conflictIndex = buildEvidenceConflictIndex(evidenceText),
 ): boolean {
   if (!evidenceText.trim()) return false;
   if (assertion.kind === "count") {
     const exact = new RegExp(`\\b${assertion.value}\\s+${assertion.outcome}\\b`, "i");
-    const records = splitEvidenceRecords(evidenceText);
-    return records.some((record, recordIndex) => {
-      if (!exact.test(record)) return false;
-      const testFormatted =
-        /\b(?:tests?|test files)\s*:?\s*\d+\s+(?:passed|failed)\b|\btest result:\s*(?:ok|FAILED)\b/i.test(
-          record,
-        ) || evidenceHasSuccessfulCommandRecord(record, /\btest\b/i);
-      if (!testFormatted) return false;
+    return conflictIndex.records.some((record) => {
+      if (!exact.test(record.record)) return false;
+      if (!record.testFormatted) return false;
       // A failure count is corroborated BY its own failure signal: the RED
       // record that proves "N failed" necessarily contains it (#217). The
       // veto still protects success counts within their record.
       if (assertion.outcome === "failed") return true;
-      if (evidenceHasExplicitFailureSignal(record)) return false;
-      const commandIdentity = evidenceRecordCommandIdentity(record);
+      if (record.hasExplicitFailure) return false;
       // A deliberate RED for another command must not poison this GREEN, but
       // two outcomes for the same command are ambiguous and cannot prove the
       // success claim. If either record lacks an explicit command identity,
       // their independence is unprovable and the gate also fails closed.
-      return !records.some((candidate, candidateIndex) => {
-        if (candidateIndex === recordIndex) return false;
-        if (!evidenceHasExplicitFailureSignal(candidate)) return false;
-        const candidateIdentity = evidenceRecordCommandIdentity(candidate);
-        return (
-          commandIdentity === undefined ||
-          candidateIdentity === undefined ||
-          candidateIdentity === commandIdentity
-        );
-      });
+      if (conflictIndex.hasUnidentifiedFailure) return false;
+      if (conflictIndex.failingCommandIdentities.size === 0) return true;
+      return (
+        record.commandIdentity !== undefined &&
+        !conflictIndex.failingCommandIdentities.has(record.commandIdentity)
+      );
     });
   }
   if (assertion.kind === "command") {
-    const explicitBlocks = evidenceText
-      .replace(/\r\n?/g, "\n")
-      .split(/(?=^\s*(?:COMMAND\s*:|[$>]\s+\S))/gim)
-      .filter((block) => /^\s*(?:COMMAND\s*:|[$>]\s+\S)/im.test(block));
-    const matchingBlocks = explicitBlocks.filter((block) =>
-      operationalCommandMatches(block, assertion.command),
+    const matchingRecords = conflictIndex.records.filter((record) =>
+      operationalCommandMatches(record.record, assertion.command),
     );
-    if (matchingBlocks.length > 0) {
-      return matchingBlocks.every((block) => {
-        const exitCodes = [...block.matchAll(/\bEXIT[_ ]?CODE\s*[:=]\s*(\d+)\b/gi)].map((match) =>
-          Number(match[1]),
-        );
-        return (
-          exitCodes.length > 0 &&
-          exitCodes.every((code) => code === 0) &&
-          !evidenceHasExplicitFailureSignal(block)
-        );
-      });
+    if (matchingRecords.length > 0) {
+      return matchingRecords.every(
+        (record) =>
+          record.exitCodes.length > 0 &&
+          record.exitCodes.every((code) => code === 0) &&
+          !record.hasExplicitFailure,
+      );
     }
     if (assertion.command === "git diff --check") {
       // A global cleanliness assertion requires the explicit command record
@@ -2470,14 +2545,26 @@ export function evidencePreflight(params: {
     .filter((value) => value.trim().length > 0)
     .join("\n");
   const assertions = extractEvidenceOperationalAssertions(claimText);
+  const reviewableConflictIndex = buildEvidenceConflictIndex(reviewableEvidenceText);
+  const operatorConflictIndex = buildEvidenceConflictIndex(operatorEvidenceText);
   const uncorroboratedClaims = assertions
     .filter(
-      (assertion) => !evidenceCorroboratesOperationalAssertion(assertion, reviewableEvidenceText),
+      (assertion) =>
+        !evidenceCorroboratesOperationalAssertion(
+          assertion,
+          reviewableEvidenceText,
+          reviewableConflictIndex,
+        ),
     )
     .map((assertion) => assertion.display);
   const operatorUncorroboratedClaims = assertions
     .filter(
-      (assertion) => !evidenceCorroboratesOperationalAssertion(assertion, operatorEvidenceText),
+      (assertion) =>
+        !evidenceCorroboratesOperationalAssertion(
+          assertion,
+          operatorEvidenceText,
+          operatorConflictIndex,
+        ),
     )
     .map((assertion) => assertion.display);
   const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
@@ -2994,9 +3081,10 @@ export function truthfulnessPreflight(params: {
       // remain/continue/stay/keep are deliberately absent because they assert
       // the current state. A source in "will move from A to B" likewise stays
       // current while only target B is exempt.
-      const futureEnglishModal =
-        "(?:will|would|plans?\\s+to|intends?\\s+to|(?:is|are)\\s+going\\s+to|(?:is|are)\\s+(?:planned|scheduled)\\s+to)";
-      const futurePortugueseModal = "(?:vai|ir[aá]|planeja|pretende)";
+      const futureModalByLanguage = {
+        en: "(?:will|would|plans?\\s+to|intends?\\s+to|(?:is|are)\\s+going\\s+to|(?:is|are)\\s+(?:planned|scheduled)\\s+to)",
+        pt: "(?:vai|ir[aá]|planeja|pretende)",
+      } as const;
       const modelWords = "[a-z0-9à-ÿ._/-]+";
       // A direct selection may contain a short nominal model descriptor, but
       // never an arbitrary nested sentence. This prevents constructs such as
@@ -3004,14 +3092,74 @@ export function truthfulnessPreflight(params: {
       // present assertion after the future modal.
       const futureSelectionFiller =
         "(?:a|an|the|new|next|future|claude|codex|gemini|deepseek|grok|perplexity|anthropic|openai|google|xai|x-ai|moonshot|peer|model|runtime|provider|route|pin|version|endpoint|on|to|as|at|o|os|um|uma|novo|nova|pr[oó]ximo|pr[oó]xima|futuro|futura|modelo|par|provedor|rota|vers[aã]o|endpoint|em|para|como)";
-      const futureTransitionTargetPattern = new RegExp(
-        `\\b(?:(?:${futureEnglishModal})\\s+(?:move|migrate|switch|change|upgrade)\\b(?:\\s+${modelWords}){0,8}\\s+(?:to|onto)|(?:${futurePortugueseModal})\\s+(?:migrar|mudar|trocar|atualizar)\\b(?:\\s+${modelWords}){0,8}\\s+(?:para|ao|a))\\s*$`,
-        "i",
+      const futureTransitionFrames = [
+        {
+          language: "en",
+          modal: futureModalByLanguage.en,
+          verb: "(?:move|migrate|switch|change|upgrade)",
+          targetPreposition: "(?:to|onto)",
+        },
+        {
+          language: "en",
+          modal: futureModalByLanguage.en,
+          verb: "replace",
+          targetPreposition: "with",
+        },
+        {
+          language: "en",
+          modal: futureModalByLanguage.en,
+          verb: "(?:update|set)",
+          targetPreposition: "to",
+        },
+        {
+          language: "pt",
+          modal: futureModalByLanguage.pt,
+          verb: "(?:migrar|mudar|trocar|atualizar)",
+          targetPreposition: "(?:para|ao|a)",
+        },
+        {
+          language: "pt",
+          modal: futureModalByLanguage.pt,
+          verb: "substituir",
+          targetPreposition: "por",
+        },
+        {
+          language: "pt",
+          modal: futureModalByLanguage.pt,
+          verb: "(?:atualizar|definir|trocar)",
+          targetPreposition: "(?:para|por|a)",
+        },
+      ] as const;
+      const futureTransitionTargetPatterns = futureTransitionFrames.map(
+        (frame) =>
+          new RegExp(
+            `\\b(?:${frame.modal})\\s+${frame.verb}\\b(?:\\s+${modelWords}){0,8}\\s+${frame.targetPreposition}\\s*$`,
+            "i",
+          ),
       );
-      const futureSelectionTargetPattern = new RegExp(
-        `\\b(?:(?:${futureEnglishModal})\\s+(?:adopt|use|run|route|pin|set|be|become)\\b(?:\\s+${futureSelectionFiller}){0,6}|(?:${futurePortugueseModal})\\s+(?:adotar|usar|rodar|rotear|fixar|definir|ser|ficar)\\b(?:\\s+${futureSelectionFiller}){0,6}|ser[aá](?:\\s+${futureSelectionFiller}){0,6})\\s*$`,
-        "i",
+      const futureSelectionFrames = [
+        {
+          language: "en",
+          modal: futureModalByLanguage.en,
+          verb: "(?:adopt|use|run|route|pin|set|be|become)",
+        },
+        {
+          language: "pt",
+          modal: futureModalByLanguage.pt,
+          verb: "(?:adotar|usar|rodar|rotear|fixar|definir|ser|ficar)",
+        },
+        { language: "pt", modal: "ser[aá]", verb: "" },
+      ] as const;
+      const futureSelectionTargetPatterns = futureSelectionFrames.map((frame) =>
+        frame.verb
+          ? new RegExp(
+              `\\b(?:${frame.modal})\\s+${frame.verb}\\b(?:\\s+${futureSelectionFiller}){0,6}\\s*$`,
+              "i",
+            )
+          : new RegExp(`\\b(?:${frame.modal})(?:\\s+${futureSelectionFiller}){0,6}\\s*$`, "i"),
       );
+      const matchesAnyFrame = (patterns: RegExp[], text: string): boolean =>
+        patterns.some((pattern) => pattern.test(text));
       const occurrences: ModelOccurrence[] = [];
       const seenTokenStarts = new Set<number>();
       const recordOccurrence = (
@@ -3227,13 +3375,32 @@ export function truthfulnessPreflight(params: {
         }
         occurrence.owner = best?.peer;
       }
+      const occurrenceClauseSpans = new Map<
+        ModelOccurrence,
+        { prefix: string; continuation: string; continuationEnd: number; nextClause: string }
+      >();
+      for (const occurrence of occurrences) {
+        const prefixStart = clauseStartFor(occurrence.matchStart);
+        const continuationStart = occurrence.index + occurrence.rawLength;
+        const lineSuffix = base.slice(continuationStart);
+        // A semicolon starts an independent clause. A comma does not: relative
+        // clauses such as ", which it currently uses" must remain attached to
+        // the model occurrence they qualify.
+        const strongBoundary = lineSuffix.search(/[;!?]|\.(?=\s|$)/);
+        const continuationLength = strongBoundary >= 0 ? strongBoundary : lineSuffix.length;
+        occurrenceClauseSpans.set(occurrence, {
+          prefix: base.slice(prefixStart, occurrence.matchStart),
+          continuation: lineSuffix.slice(0, continuationLength),
+          continuationEnd: continuationStart + continuationLength,
+          nextClause: strongBoundary >= 0 ? lineSuffix.slice(strongBoundary) : "",
+        });
+      }
       const explicitFutureCandidates = new Set<ModelOccurrence>();
       for (const occurrence of occurrences) {
-        const clauseStart = clauseStartFor(occurrence.matchStart);
-        const prefix = base.slice(clauseStart, occurrence.matchStart);
+        const prefix = occurrenceClauseSpans.get(occurrence)?.prefix ?? "";
         if (
-          futureTransitionTargetPattern.test(prefix) ||
-          futureSelectionTargetPattern.test(prefix)
+          matchesAnyFrame(futureTransitionTargetPatterns, prefix) ||
+          matchesAnyFrame(futureSelectionTargetPatterns, prefix)
         ) {
           explicitFutureCandidates.add(occurrence);
         }
@@ -3242,14 +3409,55 @@ export function truthfulnessPreflight(params: {
         /^\s*[,;:(-]?\s*(?:instead\s+of|replacing|to\s+replace|which\s+will\s+replace|em\s+vez\s+de|substituindo|para\s+substituir|que\s+substituir[aá])\b/i;
       const explicitRetirementOfCurrentSourcePattern =
         /^\s*[,;:(-]?\s*(?:after|when|once|before|ap[oó]s|quando|assim\s+que|antes\s+de)\b.{0,160}\b(?:retired|deprecated|removed|replaced|disabled|sunset|aposentad[oa]|descontinuad[oa]|removid[oa]|substitu[ií]d[oa]|desativad[oa])\b/i;
-      const targetCurrentUseRelationPattern =
-        /\b(?:(?:(?:which|that)\s+)?it\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes)(?:\s+it)?|(?:(?:which|that)(?:\s+it)?|it)\s+(?:is|are)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:(?:its|the)\s+)?(?:current|active|live|loaded|in\s+use)|which\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:peer|model))?\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes)|which\s+(?:(?:currently|presently|already|still|now)\s+)(?:powers|backs|serves)\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)|(?:codex|claude|gemini|deepseek|grok|perplexity)\s+(?:(?:currently|presently|already|still|now)\s+)(?:uses|runs|routes)\s+it)\b|(?:^|[,;:(])\s*(?:(?:its|the)\s+(?:current|active|live|loaded)\s+(?:(?:codex|claude|gemini|deepseek|grok|perplexity)\s+)?(?:model|peer)|(?:codex|claude|gemini|deepseek|grok|perplexity)['’]s\s+(?:current|active|live|loaded)\s+(?:model|peer)|(?:the\s+)?(?:model|peer)\s+(?:currently\s+)?(?:in\s+use|loaded)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i;
-      const targetCurrentSelectionRelationPattern =
-        /\b(?:(?:(?:which|that)\s+)?it\s+(?:(?:currently|presently|already|still|now)\s+)?(?:pins|selects)(?:\s+it)?|(?:(?:which|that)(?:\s+it)?|it)\s+(?:is|are)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:configured|selected)|(?:which|that)\s+(?:is|are)\s+(?:the\s+)?(?:model|peer)\s+(?:(?:currently|presently|already|still|now)\s+)(?:configured|selected)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity)|which\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:peer|model))?\s+(?:(?:currently|presently|already|still|now)\s+)?(?:pins|selects)|(?:codex|claude|gemini|deepseek|grok|perplexity)\s+(?:(?:currently|presently|already|still|now)\s+)(?:pins|selects)\s+it)\b|(?:^|[,;:(])\s*(?:(?:its|the)\s+(?:configured|selected)\s+(?:(?:codex|claude|gemini|deepseek|grok|perplexity)\s+)?(?:model|peer)|(?:codex|claude|gemini|deepseek|grok|perplexity)['’]s\s+(?:configured|selected)\s+(?:model|peer)|(?:the\s+)?(?:model|peer)\s+(?:currently\s+)?(?:configured|selected)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i;
+      const targetCurrentRelationFrames = [
+        {
+          language: "en",
+          use: /\b(?:(?:(?:which|that)\s+)?it\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes)(?:\s+it)?|(?:(?:which|that)(?:\s+it)?|it)\s+(?:is|are)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:(?:its|the)\s+)?(?:current|active|live|loaded|in\s+use)|which\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:peer|model))?\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes)|which\s+(?:(?:currently|presently|already|still|now)\s+)(?:powers|backs|serves)\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)|(?:codex|claude|gemini|deepseek|grok|perplexity)\s+(?:(?:currently|presently|already|still|now)\s+)(?:uses|runs|routes)\s+it)\b|(?:^|[,;:(])\s*(?:(?:its|the)\s+(?:current|active|live|loaded)\s+(?:(?:codex|claude|gemini|deepseek|grok|perplexity)\s+)?(?:model|peer)|(?:codex|claude|gemini|deepseek|grok|perplexity)['’]s\s+(?:current|active|live|loaded)\s+(?:model|peer)|(?:the\s+)?(?:model|peer)\s+(?:currently\s+)?(?:in\s+use|loaded)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i,
+          selection:
+            /\b(?:(?:(?:which|that)\s+)?it\s+(?:(?:currently|presently|already|still|now)\s+)?(?:pins|selects)(?:\s+it)?|(?:(?:which|that)(?:\s+it)?|it)\s+(?:is|are)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:configured|selected)|(?:which|that)\s+(?:is|are)\s+(?:the\s+)?(?:model|peer)\s+(?:(?:currently|presently|already|still|now)\s+)(?:configured|selected)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity)|which\s+(?:the\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:peer|model))?\s+(?:(?:currently|presently|already|still|now)\s+)?(?:pins|selects)|(?:codex|claude|gemini|deepseek|grok|perplexity)\s+(?:(?:currently|presently|already|still|now)\s+)(?:pins|selects)\s+it)\b|(?:^|[,;:(])\s*(?:(?:its|the)\s+(?:configured|selected)\s+(?:(?:codex|claude|gemini|deepseek|grok|perplexity)\s+)?(?:model|peer)|(?:codex|claude|gemini|deepseek|grok|perplexity)['’]s\s+(?:configured|selected)\s+(?:model|peer)|(?:the\s+)?(?:model|peer)\s+(?:currently\s+)?(?:configured|selected)\s+(?:by|for)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i,
+        },
+        {
+          language: "pt",
+          use: /\b(?:(?:que\s+)?(?:ele|ela|o\s+(?:runtime|par|modelo))\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:usa|roda|roteia)(?:\s+(?:ele|isso))?(?:\s+(?:atualmente|presentemente|j[aá]|ainda|agora))?|(?:que\s+)?(?:ele|ela|o\s+(?:runtime|par|modelo))\s+(?:e|é|est[aá])\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:(?:seu|o)\s+)?(?:(?:modelo|par)\s+)?(?:atual|ativo|carregado|em\s+uso)|que\s+(?:o\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:par|modelo))?\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:usa|roda|roteia)|(?:codex|claude|gemini|deepseek|grok|perplexity)\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)(?:usa|roda|roteia)(?:\s+(?:ele|isso))?)\b|(?:^|[,;:(])\s*(?:(?:seu|o)\s+(?:modelo|par)\s+(?:atual|ativo|carregado)|(?:o\s+)?(?:modelo|par)\s+(?:atualmente\s+)?(?:em\s+uso|carregado)\s+(?:por|para)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i,
+          selection:
+            /\b(?:(?:que\s+)?(?:ele|ela|o\s+(?:runtime|par|modelo))\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:fixa|seleciona)(?:\s+(?:ele|isso))?(?:\s+(?:atualmente|presentemente|j[aá]|ainda|agora))?|(?:que\s+)?(?:ele|ela|o\s+(?:runtime|par|modelo))\s+(?:e|é|est[aá])\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:configurad[oa]|selecionad[oa])|que\s+(?:o\s+)?(?:codex|claude|gemini|deepseek|grok|perplexity)(?:\s+(?:par|modelo))?\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:fixa|seleciona))\b|(?:^|[,;:(])\s*(?:(?:seu|o)\s+(?:modelo|par)\s+(?:configurad[oa]|selecionad[oa])|(?:o\s+)?(?:modelo|par)\s+(?:atualmente\s+)?(?:configurad[oa]|selecionad[oa])\s+(?:por|para)\s+(?:codex|claude|gemini|deepseek|grok|perplexity))(?=\s*[,;.)]|\s*$)/i,
+        },
+      ] as const;
+      // A strong boundary deliberately prevents an unrelated later clause
+      // from qualifying the target. Re-link only clauses whose syntax binds
+      // the relation back to the target itself: an anaphoric state predicate
+      // (`it is the current model`) or an explicit anaphoric object (`it uses
+      // it`). The full EN/PT relation tables are still evaluated below; these
+      // frames provide only the cross-boundary binding proof.
+      const postBoundaryTargetBindingFrames = [
+        {
+          language: "en",
+          patterns: [
+            /^\s*;\s*(?:that|this|it)\s+(?:is|remains)\s+(?:(?:currently|presently|already|still|now)\s+)?(?:the\s+)?(?:current|active|live|loaded|configured|selected|in\s+use)(?:\s+(?:model|peer))?\b/i,
+            /^\s*;\s*(?:it|(?:the\s+)?(?:runtime|peer|model))\s+(?:(?:currently|presently|already|still|now)\s+)?(?:uses|runs|routes|pins|selects)\s+it\b/i,
+          ],
+        },
+        {
+          language: "pt",
+          patterns: [
+            /^\s*;\s*(?:isso|esse|essa|este|esta|ele|ela)\s+(?:e|é|est[aá]|continua)\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:o\s+)?(?:modelo|par)?\s*(?:atual|ativo|carregado|configurad[oa]|selecionad[oa]|em\s+uso)\b/i,
+            /^\s*;\s*(?:ele|ela|(?:o\s+)?(?:runtime|par|modelo))\s+(?:(?:atualmente|presentemente|j[aá]|ainda|agora)\s+)?(?:usa|roda|roteia|fixa|seleciona)\s+(?:ele|isso)\b/i,
+          ],
+        },
+      ] as const;
       const futureOnlySelectionQualificationPattern =
         /\b(?:for\s+(?:the\s+)?next\s+(?:release|version)|as\s+(?:the\s+)?future\s+(?:target|model|pin)|only\s+in\s+(?:the\s+)?(?:migration\s+)?proposal|(?:is\s+)?not\s+(?:(?:currently|now)\s+)?(?:loaded|active|in\s+use|current))\b/i;
       const positiveCurrentRuntimeAfterQualificationPattern =
         /\b(?:but|yet|and)\s+(?:(?:it\s+)?(?:is|remains)\s+)?(?:(?:currently|presently|already|still|now)\s+)?(?:loaded|active|live|in\s+use)(?:\s+(?:currently|now))?(?:\s+(?:in|for)\s+(?:the\s+)?(?:current\s+)?(?:runtime|production))?(?=\s*[,;.)]|\s*$)/i;
+      const matchesTargetCurrentRelation = (text: string): boolean =>
+        targetCurrentRelationFrames.some((frame) => frame.use.test(text)) ||
+        (targetCurrentRelationFrames.some((frame) => frame.selection.test(text)) &&
+          (!futureOnlySelectionQualificationPattern.test(text) ||
+            positiveCurrentRuntimeAfterQualificationPattern.test(text)));
+      const hasPostBoundaryTargetBinding = (text: string): boolean =>
+        postBoundaryTargetBindingFrames.some((frame) =>
+          frame.patterns.some((pattern) => pattern.test(text)),
+        );
       const earliestFutureTargetByClause = new Map<number, number>();
       for (const occurrence of explicitFutureCandidates) {
         const clauseStart = clauseStartFor(occurrence.matchStart);
@@ -3263,21 +3471,15 @@ export function truthfulnessPreflight(params: {
         const earliestFutureTarget = earliestFutureTargetByClause.get(clauseStart);
         const earlierFutureTargetInClause =
           earliestFutureTarget !== undefined && earliestFutureTarget < occurrence.index;
-        const lineSuffix = base.slice(occurrence.index + occurrence.rawLength);
-        const sentenceBoundary = lineSuffix.search(/[!?]|\.(?=\s|$)/);
-        const suffix = sentenceBoundary >= 0 ? lineSuffix.slice(0, sentenceBoundary) : lineSuffix;
+        const span = occurrenceClauseSpans.get(occurrence);
+        const suffix = span?.continuation ?? "";
         const nextOccurrence = occurrences[occurrenceIndex + 1];
-        const continuationEnd =
-          occurrence.index +
-          occurrence.rawLength +
-          (sentenceBoundary >= 0 ? sentenceBoundary : lineSuffix.length);
         const laterModelOccurrenceInContinuation =
-          nextOccurrence !== undefined && nextOccurrence.index < continuationEnd;
+          nextOccurrence !== undefined && nextOccurrence.index < (span?.continuationEnd ?? 0);
+        const nextClause = span?.nextClause ?? "";
         const targetCurrentRelation =
-          targetCurrentUseRelationPattern.test(suffix) ||
-          (targetCurrentSelectionRelationPattern.test(suffix) &&
-            (!futureOnlySelectionQualificationPattern.test(suffix) ||
-              positiveCurrentRuntimeAfterQualificationPattern.test(suffix)));
+          matchesTargetCurrentRelation(suffix) ||
+          (hasPostBoundaryTargetBinding(nextClause) && matchesTargetCurrentRelation(nextClause));
         const presentContinuation =
           !explicitReplacementOfCurrentSourcePattern.test(suffix) &&
           !explicitRetirementOfCurrentSourcePattern.test(suffix) &&
