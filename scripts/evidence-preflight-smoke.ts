@@ -8,7 +8,11 @@ import {
   blockConvergenceForUnresolvedEvidence,
   checkConvergence,
 } from "../src/core/convergence.js";
-import { CrossReviewOrchestrator, evidencePreflight } from "../src/core/orchestrator.js";
+import {
+  CrossReviewOrchestrator,
+  evidenceConflictIndexDiagnostics,
+  evidencePreflight,
+} from "../src/core/orchestrator.js";
 import type { EvidenceChecklistItem, PeerResult } from "../src/core/types.js";
 
 // v3.5.0 (CRV2-4) - evidence_preflight pure-function behavioral matrix.
@@ -385,6 +389,102 @@ for (const [redCommand, greenCommand] of [
   );
 }
 
+// CROSREV-29: generic command identities preserve the executable separately
+// from the argv vector. Quoting determines argument boundaries, and argument
+// case can be semantic even though executable matching is case-insensitive.
+for (const [label, redCommand, greenCommand] of [
+  ["quoted argument boundary", 'node runner.js "red case"', "node runner.js red case"],
+  ["argument case", "node runner.js RED", "node runner.js red"],
+] as const) {
+  const distinctGenericCommands = evidencePreflight({
+    task: "Review completed work: the selected generic command completed with 88 passed.",
+    structuredEvidence: `COMMAND: ${redCommand}\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${greenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    distinctGenericCommands.pass,
+    true,
+    `CROSREV-29 / evidence_preflight: preserve generic command ${label}: ${redCommand} != ${greenCommand}`,
+  );
+}
+
+for (const equivalentGenericCommand of [
+  "node runner.js 'red case'",
+  'NODE.EXE runner.js "red case"',
+  'C:\\Tools\\node.exe runner.js "red case"',
+]) {
+  const equivalentGenericCommandsConflict = evidencePreflight({
+    task: "Review completed work: the selected generic command completed with 88 passed.",
+    structuredEvidence: `COMMAND: node runner.js "red case"\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${equivalentGenericCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
+    caller: "codex",
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    equivalentGenericCommandsConflict.pass,
+    false,
+    `CROSREV-29 / evidence_preflight: quote spelling and executable path/case must not manufacture independence: ${equivalentGenericCommand}`,
+  );
+}
+
+// The conflict index is built by the same production path used above. Its
+// structural counter must grow exactly once per record; elapsed time is not a
+// deterministic complexity proof on shared CI runners.
+const conflictCorpus = (count: number): string =>
+  Array.from({ length: count }, (_, index) =>
+    index === 0
+      ? "COMMAND: node runner.js shared\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed"
+      : index === count - 1
+        ? "COMMAND: node runner.js shared\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed"
+        : `COMMAND: node runner.js clean-${index}\nEXIT_CODE: 0\nSTDOUT:\nTests 1 passed`,
+  ).join("\n\n");
+const conflictIndexAtOneThousand = evidenceConflictIndexDiagnostics(conflictCorpus(1_000));
+const conflictIndexAtTwoThousand = evidenceConflictIndexDiagnostics(conflictCorpus(2_000));
+assert.deepEqual(conflictIndexAtOneThousand, {
+  record_count: 1_000,
+  records_analyzed: 1_000,
+  failing_identity_count: 1,
+  has_unidentified_failure: false,
+});
+assert.deepEqual(conflictIndexAtTwoThousand, {
+  record_count: 2_000,
+  records_analyzed: 2_000,
+  failing_identity_count: 1,
+  has_unidentified_failure: false,
+});
+const twoThousandRecordConflict = evidencePreflight({
+  task: "Review completed work: the shared command completed with 88 passed.",
+  structuredEvidence: conflictCorpus(2_000),
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  twoThousandRecordConflict.pass,
+  false,
+  "CROSREV-29 / evidence_preflight: the linear index must find a same-command failure after 1,999 preceding records",
+);
+
+const unknownFailureIndex = evidenceConflictIndexDiagnostics(
+  "Tests 1 failed\nEXIT_CODE: 1\n\nCOMMAND: node runner.js green\nEXIT_CODE: 0\nTests 1 passed",
+);
+assert.equal(
+  unknownFailureIndex.has_unidentified_failure,
+  true,
+  "CROSREV-29 / evidence_preflight: a failing record without a provable command identity must remain fail-closed",
+);
+const repeatedZeroExitCodesRemainSuccessful = evidencePreflight({
+  task: "Review completed work: the generic test runner completed with 1 passed.",
+  structuredEvidence:
+    "COMMAND: node test-runner.js\nEXIT_CODE: 0\nEXIT_CODE: 0\nSTDOUT:\nTests 1 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  repeatedZeroExitCodesRemainSuccessful.pass,
+  true,
+  "CROSREV-29 / evidence_preflight: the indexed test-format analysis must preserve multiple successful exit markers",
+);
+
 const wrappedSameCommandArgumentsConflict = evidencePreflight({
   task: "Review completed work: the selected suite completed with 88 passed.",
   structuredEvidence:
@@ -467,6 +567,59 @@ assert.equal(
   unframedFailureCannotProveIndependence.pass,
   false,
   "v4.6.3 / evidence_preflight: an unframed failure cannot be assumed independent of the green command",
+);
+
+// CROSREV-29 follow-up: narrative prose that happens to mention a command is
+// not a second structured execution record. Only the explicit COMMAND frame
+// may participate in command-success corroboration.
+const narrativePreambleBeforeCommandFrame = evidencePreflight({
+  task: "Review completed work: npm run check passed.",
+  structuredEvidence:
+    "The report says npm run check passed.\n\nCOMMAND: npm run check\nEXIT_CODE: 0\nSTDOUT:\nChecks passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  narrativePreambleBeforeCommandFrame.pass,
+  true,
+  "CROSREV-29 / evidence_preflight: narrative command mentions must not veto the explicit green COMMAND frame",
+);
+const unidentifiedFailureBeforeCommandFrame = evidencePreflight({
+  task: "Review completed work: npm run check passed.",
+  structuredEvidence:
+    "An unidentified check failed.\nEXIT_CODE: 1\n\nCOMMAND: npm run check\nEXIT_CODE: 0\nSTDOUT:\nChecks passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  unidentifiedFailureBeforeCommandFrame.pass,
+  false,
+  "CROSREV-29 / evidence_preflight: an unidentified failure must still fail closed beside a green COMMAND frame",
+);
+
+// A loose line containing `test` plus an exit code and count is not a framed
+// command record. The symmetric explicit COMMAND frame remains admissible.
+const unframedTestCount = evidencePreflight({
+  task: "Review completed work: 88 passed.",
+  structuredEvidence: "node test-runner.js\nEXIT_CODE: 0\n88 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  unframedTestCount.pass,
+  false,
+  "CROSREV-29 / evidence_preflight: an unframed test-looking block must not corroborate a loose count",
+);
+const framedTestCount = evidencePreflight({
+  task: "Review completed work: 88 passed.",
+  structuredEvidence: "COMMAND: node test-runner.js\nEXIT_CODE: 0\n88 passed",
+  caller: "codex",
+  attachmentsPresent: false,
+});
+assert.equal(
+  framedTestCount.pass,
+  true,
+  "CROSREV-29 / evidence_preflight: the equivalent explicit COMMAND frame must corroborate its count",
 );
 
 const mismatchedStructuredValue = evidencePreflight({

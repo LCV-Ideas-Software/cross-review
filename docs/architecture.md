@@ -255,13 +255,16 @@ or build results with the actual runtime facts and corresponding evidence. A
 generic or unrelated attachment cannot bless a claim. Fabricated relator
 assertions, model mismatches, unresolved evidence, self-review, incomplete
 structured output, or unsupported verified confidence remain blocking.
-Command-count corroboration is keyed by normalized command identity: a failure
-for that command invalidates a claimed clean count, while a separately framed
-RED for a different command remains independent. Unframed conflicts fail
-closed. Model parsing treats contrastive additions as affirmative on both sides
-and marks only the explicit target of a future transition/selection as
-prospective. Planning vocabulary and continuative verbs do not shield a
-current-state assertion; a transition source remains a checked current value.
+Command-count corroboration is keyed by normalized command identity: a
+single-pass record index keeps normalized executable spelling separate from an
+exact serialized argument vector, stores known failing identities in a set and
+marks unidentified failures fail-closed. A separately framed RED for a
+different command remains independent. Model parsing treats contrastive
+additions as affirmative on both sides and uses finite English/Portuguese
+transition and relation frames over occurrence-specific clause spans. Only an
+explicit transition/selection target is prospective; planning vocabulary,
+continuative verbs and present qualifiers do not shield a current-state
+assertion, and a transition source remains a checked current value.
 
 READY uses a canonical decision envelope rather than natural-language intent
 classification: `summary` is exactly `No blocking objections remain.`,

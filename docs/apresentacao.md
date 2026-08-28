@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 25/08/2026: `4.6.3`. O registro pode ficar
+> Estado do source/release target em 28/08/2026: `4.6.4`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -631,6 +631,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.06.04`      | Torna a correlação de conflitos linear e exata por `argv`, e interpreta estado futuro/atual por frames finitos em inglês/português e spans por ocorrência, com `replace … with`, `update … to`, qualificadores presentes e isolamento por ponto e vírgula.                                                            |
 | `v04.06.03`      | Restaura o fail-closed contra execuções conflitantes do mesmo comando, construções aditivas `not only`/`não só` e alegações atuais próximas de linguagem de planejamento, preservando RED/GREEN independentes e alvos futuros explícitos.                                                                             |
 | `v04.06.02`      | Republish da v04.06.01 com a action do validador de pins autocontida (parser embutido, prova de runner limpo), manifests locais resolvidos por referência e allowance do Scorecard restrita por localização.                                                                                                          |
 | `v04.06.01`      | Republish da v04.06.00 com o fix do gate de supply-chain: permissions mínimas por job em todos os workflows, `TokenPermissionsID` de volta à vigilância do Scorecard e revalidação real de pinning no gate do Publish cobrindo as referências imutáveis `$/` same-repo.                                               |
