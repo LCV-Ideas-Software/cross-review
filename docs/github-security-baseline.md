@@ -52,9 +52,19 @@ API-first package is separate from the archived CLI package
 `@lcv-ideas-software/cross-review-v1`.
 
 CodeQL Advanced Setup is committed for GitHub Actions and
-JavaScript/TypeScript, and Python, with `security-and-quality` queries. Any change to that
-workflow or a migration to Default Setup must be proposed with justification;
-the two modes must not run duplicate analyses.
+JavaScript/TypeScript, and Python, with `security-and-quality` queries. The
+workflow runs on `merge_group` so the native merge queue requires the three
+`Analyze ...` status contexts and scans the synthetic merge commit. GitHub
+documents that Code Scanning ruleset merge protection does not apply to merge
+queue groups; consequently, those required contexts prove that the official
+analysis completed and uploaded SARIF, but they do not make findings fail the
+job on that synthetic commit. This organization-standard platform limitation
+is accepted here instead of adding a custom or cross-repository SARIF gate.
+Release automation remains stricter and independently checks the exact-SHA
+CodeQL analyses before publishing. Any change to this workflow or a migration
+to Default Setup must be proposed with justification; the two modes must not
+run duplicate analyses. See
+<https://docs.github.com/en/code-security/concepts/code-scanning/merge-protection#exceptions-and-limitations>.
 
 No secrets, runtime sessions, logs, prompts, provider responses, API keys or
 local AI memories may be committed. The `.gitignore` stays strict because this
