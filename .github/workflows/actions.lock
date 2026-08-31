@@ -13,6 +13,7 @@ workflows:
     '.github/workflows/codeql.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'github/codeql-action@cdf488f595d80d6e07e03d4674febd5ab45fa938'
+        - 'lcv-ideas-software/.github@24b0bcc09a48b47f740b8a8bd972374f7289e48e'
     '.github/workflows/dependency-review.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294'
@@ -42,7 +43,7 @@ workflows:
         - 'zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054'
 dependencies:
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
-        ref: 'v7.0.1'
+        ref: '3d3c42e5aac5ba805825da76410c181273ba90b1'
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
         owner_id: 44036562
         repo_id: 197814629
@@ -77,7 +78,7 @@ dependencies:
         owner_id: 44036562
         repo_id: 192625525
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a':
-        ref: 'v7.0.1'
+        ref: '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
         commit: 'sha1-043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
         owner_id: 44036562
         repo_id: 192625955
@@ -103,13 +104,18 @@ dependencies:
         commit: 'sha1-cdf488f595d80d6e07e03d4674febd5ab45fa938'
         owner_id: 9919
         repo_id: 259445878
+    'lcv-ideas-software/.github@24b0bcc09a48b47f740b8a8bd972374f7289e48e':
+        ref: '24b0bcc09a48b47f740b8a8bd972374f7289e48e'
+        commit: 'sha1-24b0bcc09a48b47f740b8a8bd972374f7289e48e'
+        owner_id: 279524964
+        repo_id: 1224096002
     'linear/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4':
         ref: 'v0.17.1'
         commit: 'sha1-3f31fcf14c110cc53579fcc3575a26d469c413b4'
         owner_id: 46686594
         repo_id: 1150447766
     'ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc':
-        ref: 'v2.4.4'
+        ref: '2d1146689b8cda280b9bc96326124645441f03bc'
         commit: 'sha1-2d1146689b8cda280b9bc96326124645441f03bc'
         owner_id: 67707773
         repo_id: 421101922
