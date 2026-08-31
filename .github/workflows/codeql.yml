@@ -62,9 +62,3 @@ jobs:
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: "/language:${{ matrix.language }}"
-          output: ${{ runner.temp }}/codeql-results
-
-      - name: Enforce zero CodeQL findings
-        uses: LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate/v1.0.0
-        with:
-          sarif-directory: ${{ runner.temp }}/codeql-results

@@ -77,8 +77,6 @@ const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
 const expectedZizmorAction = "zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054";
-const expectedCodeqlSarifGateAction =
-  "LCV-Ideas-Software/.github/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e";
 
 assert.equal(
   packageJson.packageManager,
@@ -352,92 +350,102 @@ for (const mutation of [codeqlWithoutReadyForReview, codeqlWithReadyForReviewMov
     "CodeQL trigger regression guard must reject ready_for_review when absent or outside pull_request.types",
   );
 }
-function assertStrictCodeqlSarifGate(workflow) {
-  const lines = workflow.split(/\r?\n/);
-  const gateName = "      - name: Enforce zero CodeQL findings";
-  assert.equal(
-    lines.filter((line) => line === gateName).length,
-    1,
-    "CodeQL must contain exactly one named strict SARIF gate step",
-  );
-  const gateStart = lines.indexOf(gateName);
-  const nextStepOffset = lines.slice(gateStart + 1).findIndex((line) => /^ {6}- /.test(line));
-  const gateEnd = nextStepOffset === -1 ? lines.length : gateStart + 1 + nextStepOffset;
-  const gateLines = lines.slice(gateStart + 1, gateEnd);
-  const expectedUsesLine = `        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0`;
+function assertNativeCodeqlEnforcement(workflow) {
+  const document = parseDocument(workflow);
+  assert.deepEqual(document.errors, [], "CodeQL workflow must remain valid YAML");
+  const workflowValue = document.toJS();
+  const jobs = workflowValue?.jobs;
   assert.deepEqual(
-    gateLines.filter((line) => /^ {8}uses\s*:/.test(line)),
-    [expectedUsesLine],
-    "CodeQL strict SARIF gate must have exactly one active uses entry pinned to the immutable release commit",
+    Object.keys(jobs ?? {}),
+    ["analyze"],
+    "CodeQL must contain only the repository-local official analyze job",
   );
-  const expectedWithLine = "        with:";
-  const expectedSarifDirectoryLine = "          sarif-directory: ${{ runner.temp }}/codeql-results";
+  const steps = jobs?.analyze?.steps;
+  assert.ok(Array.isArray(steps), "CodeQL must retain the analyze job steps");
   assert.deepEqual(
-    gateLines.filter((line) => /^ {8}with\s*:/.test(line)),
-    [expectedWithLine],
-    "CodeQL strict SARIF gate must contain exactly one active with mapping",
+    steps.map((step) => step.name),
+    ["Checkout", "Initialize CodeQL", "Perform CodeQL analysis"],
+    "CodeQL must remain repository-local and use only checkout plus the official init/analyze lifecycle",
   );
-  assert.deepEqual(
-    gateLines.filter((line) => /^ {10}sarif-directory\s*:/.test(line)),
-    [expectedSarifDirectoryLine],
-    "CodeQL strict SARIF gate must pass the analyzer's exact SARIF output directory once",
+  assert.match(
+    steps[0].uses,
+    /^actions\/checkout@[0-9a-f]{40}$/,
+    "CodeQL checkout must remain pinned to an immutable official Action commit",
   );
-  assert.equal(
-    gateLines.indexOf(expectedWithLine),
-    gateLines.indexOf(expectedUsesLine) + 1,
-    "CodeQL strict SARIF gate must bind with directly to the pinned action",
+  assert.match(
+    steps[1].uses,
+    /^github\/codeql-action\/init@[0-9a-f]{40}$/,
+    "CodeQL initialization must use the official Action pinned to an immutable commit",
+  );
+  assert.match(
+    steps[2].uses,
+    /^github\/codeql-action\/analyze@[0-9a-f]{40}$/,
+    "CodeQL analysis must use the official Action pinned to an immutable commit",
   );
   assert.equal(
-    gateLines.indexOf(expectedSarifDirectoryLine),
-    gateLines.indexOf(expectedWithLine) + 1,
-    "CodeQL strict SARIF gate must bind sarif-directory directly under with",
+    steps[1].uses.split("@")[1],
+    steps[2].uses.split("@")[1],
+    "CodeQL init and analyze must use the same immutable official release commit",
   );
-  assert.doesNotMatch(
-    gateLines.join("\n"),
-    /^ {8}(?:env|run|shell)\s*:/m,
-    "CodeQL strict SARIF gate must delegate enforcement without an inline command",
+  assert.deepEqual(
+    steps[1].with,
+    {
+      languages: `\${{ matrix.language }}`,
+      "build-mode": `\${{ matrix.build-mode }}`,
+      queries: "security-and-quality",
+      "dependency-caching": true,
+    },
+    "CodeQL initialization must keep only repository-local official inputs and reject remote configuration",
   );
-  assert.doesNotMatch(
+  assert.deepEqual(
+    steps[2].with,
+    { category: `/language:\${{ matrix.language }}` },
+    "CodeQL analysis must keep only the category input; no local SARIF output may be retained for a removed gate",
+  );
+  assert.match(
     workflow,
-    /mapfile\s+-d|find\s+"\$CODEQL_RESULTS"|jq\s+-s\s+'\[\.\[\]\.runs|CODEQL_RESULTS:/,
-    "CodeQL must not retain a weaker inline SARIF gate beside the central policy action",
+    /^ {6}security-events: write # uploads the CodeQL SARIF analyses$/m,
+    "CodeQL must retain the permission required for the official native upload",
   );
 }
-assertStrictCodeqlSarifGate(codeqlWorkflow);
-const codeqlWithCommentedPinDecoy = codeqlWorkflow.replace(
-  /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate\/v1\.0\.0$/m,
-  `        uses: LCV-Ideas-Software/.github/codeql-sarif-gate@main
-        # uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0`,
+assertNativeCodeqlEnforcement(codeqlWorkflow);
+const codeqlWithCrossRepositoryGate = `${codeqlWorkflow}
+      - name: Alternate SARIF policy
+        uses: example/security-gate@${"a".repeat(40)}`;
+assert.throws(
+  () => assertNativeCodeqlEnforcement(codeqlWithCrossRepositoryGate),
+  /use only checkout plus the official init\/analyze lifecycle/,
+  "CodeQL regression guard must reject any additional cross-repository gate, irrespective of its name",
+);
+const codeqlWithCrossRepositoryJob = `${codeqlWorkflow}
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Alternate SARIF policy
+        uses: example/security-gate@${"a".repeat(40)}`;
+assert.throws(
+  () => assertNativeCodeqlEnforcement(codeqlWithCrossRepositoryJob),
+  /contain only the repository-local official analyze job/,
+  "CodeQL regression guard must reject an equivalent cross-repository gate in a second job",
+);
+const codeqlWithInlineGate = `${codeqlWorkflow}
+      - name: Inline policy
+        run: test ! -s result.sarif`;
+assert.throws(
+  () => assertNativeCodeqlEnforcement(codeqlWithInlineGate),
+  /use only checkout plus the official init\/analyze lifecycle/,
+  "CodeQL regression guard must reject a replacement inline gate",
+);
+const codeqlWithRemoteInitConfig = codeqlWorkflow.replace(
+  "          dependency-caching: true",
+  `          dependency-caching: true
+          config-file: LCV-Ideas-Software/.github/codeql.yml@main
+          external-repository-token: \${{ secrets.GITHUB_TOKEN }}`,
 );
 assert.throws(
-  () => assertStrictCodeqlSarifGate(codeqlWithCommentedPinDecoy),
-  /immutable release commit/,
-  "CodeQL regression guard must reject an unpinned active action even when a comment contains the expected pin",
-);
-const codeqlWithPinOutsideGate =
-  codeqlWorkflow.replace(
-    /^ {8}uses: LCV-Ideas-Software\/\.github\/codeql-sarif-gate@24b0bcc09a48b47f740b8a8bd972374f7289e48e # codeql-sarif-gate\/v1\.0\.0$/m,
-    "        uses: LCV-Ideas-Software/.github/codeql-sarif-gate@main",
-  ) +
-  `
-      - name: Decoy SARIF step
-        uses: ${expectedCodeqlSarifGateAction} # codeql-sarif-gate/v1.0.0
-        with:
-          sarif-directory: \${{ runner.temp }}/codeql-results`;
-assert.throws(
-  () => assertStrictCodeqlSarifGate(codeqlWithPinOutsideGate),
-  /immutable release commit/,
-  "CodeQL regression guard must reject the expected pin when it exists only outside the named gate step",
-);
-const codeqlWithInlineFallback = `${codeqlWorkflow}
-      - name: Inline SARIF fallback
-        env:
-          CODEQL_RESULTS: \${{ runner.temp }}/codeql-results
-        run: find "$CODEQL_RESULTS" -type f -name '*.sarif'`;
-assert.throws(
-  () => assertStrictCodeqlSarifGate(codeqlWithInlineFallback),
-  /weaker inline SARIF gate/,
-  "CodeQL regression guard must reject a weaker inline fallback outside the named central gate step",
+  () => assertNativeCodeqlEnforcement(codeqlWithRemoteInitConfig),
+  /reject remote configuration/,
+  "CodeQL regression guard must reject a remote init config hidden inside the official Action step",
 );
 assert.ok(
   autoTagWorkflow.includes("Require triggered Dependabot updates to pass") &&

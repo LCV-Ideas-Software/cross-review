@@ -7,6 +7,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- Aligns CodeQL admission with the organization-wide native GitHub pattern:
+  the repository keeps the SHA-pinned official `github/codeql-action`
+  `init`/`analyze` lifecycle and removes the cross-repository SARIF gate. The
+  documented GitHub limitation for Code Scanning merge protection on
+  `merge_group` is now explicit; the release path still evaluates exact-SHA
+  CodeQL SARIF independently before publication.
+
 ## [v04.06.04] — 28/08/2026
 
 ### Fixed
