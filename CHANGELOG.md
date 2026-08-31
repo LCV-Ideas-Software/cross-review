@@ -7,6 +7,13 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- CodeQL admission now relies exclusively on the active Enterprise-native
+  Code Scanning ruleset and the official `github/codeql-action` upload. The
+  redundant cross-repository SARIF gate was removed so this repository keeps
+  its security lifecycle self-contained.
+
 ## [v04.06.04] — 28/08/2026
 
 ### Fixed
