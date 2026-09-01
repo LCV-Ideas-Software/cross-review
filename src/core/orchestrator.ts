@@ -652,15 +652,36 @@ function assertiveMatches(pattern: RegExp, text: string): RegExpMatchArray[] {
   });
 }
 
-function fabricatedAssertionKey(label: string, match: string): string {
-  return `${label}:${match.toLowerCase()}`;
+function fabricatedAssertionKey(
+  label: string,
+  match: string,
+  sourceText: string,
+  matchIndex: number,
+): string {
+  // CROSREV-32: provider JSON may preserve the escape before the quote that
+  // terminates an embedded JSON URL. The URL regexp correctly stops at the
+  // quote, but pre-v4.6.5 retained that preceding backslash as part of the
+  // assertion key (`.../job/123\\`). The integrity-checked attachment carries
+  // the same URL as ordinary JSON (`.../job/123`), so byte-correlated sources
+  // were mislabeled as net-new fabrication. Remove only terminal JSON quote
+  // escapes from URL tokens; every substantive URL byte remains exact, so an
+  // invented URL still has a distinct key and stays fail-closed. Removing the
+  // escape is deliberately context-bound: it must be the odd terminal backslash
+  // immediately before the provider JSON closing quote. A literal terminal
+  // backslash in any other context is retained.
+  const trailingBackslashes = /\\+$/.exec(match)?.[0].length ?? 0;
+  const nextCharacter = sourceText[matchIndex + match.length];
+  const hasProviderQuoteEscape =
+    label === "github_url_reference" && trailingBackslashes % 2 === 1 && nextCharacter === '"';
+  const canonicalMatch = hasProviderQuoteEscape ? match.slice(0, -1) : match;
+  return `${label}:${canonicalMatch.toLowerCase()}`;
 }
 
 function collectFabricatedAssertionKeys(text: string): Set<string> {
   const keys = new Set<string>();
   for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
     for (const match of assertiveMatches(pattern, text)) {
-      keys.add(fabricatedAssertionKey(label, match[0]));
+      keys.add(fabricatedAssertionKey(label, match[0], text, match.index ?? 0));
     }
   }
   return keys;
@@ -742,7 +763,7 @@ export function detectFabricatedEvidence(
     const matches = assertiveMatches(pattern, revisionText);
     for (const match of matches) {
       const m = match[0];
-      const key = fabricatedAssertionKey(label, m);
+      const key = fabricatedAssertionKey(label, m, revisionText, match.index ?? 0);
       if (seenAssertions.has(key)) continue;
       seenAssertions.add(key);
       if (!assertionCorpusKeys.has(key)) {
@@ -2435,6 +2456,12 @@ const EMBEDDED_EVIDENCE_FILE_REF_PATTERN =
 function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
   const refs: string[] = [];
   const seen = new Set<string>();
+  const addRef = (rawRef: string): void => {
+    const canonical = normalizeEvidenceRef(rawRef);
+    if (!canonical || seen.has(canonical)) return;
+    seen.add(canonical);
+    refs.push(canonical);
+  };
   const lines = evidenceText.replace(/\r\n?/g, "\n").split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const begin = /^\s*BEGIN FILE\s+(.+?)\s*$/i.exec(lines[index] ?? "");
@@ -2453,10 +2480,222 @@ function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
       }
       if ((lines[cursor] ?? "").trim()) bodyHasContent = true;
     }
-    if (!paired || !bodyHasContent || seen.has(canonical)) continue;
-    seen.add(canonical);
-    refs.push(canonical);
+    if (!paired || !bodyHasContent) continue;
+    addRef(canonical);
   }
+
+  // CROSREV-32: a persisted unified diff is itself literal file evidence.
+  // Recognize only a structurally complete post-image section: a parseable
+  // `diff --git a/... b/...` header, ordered and path-coherent `---`/`+++`
+  // headers, a hunk header, and at least one context or added line. A filename
+  // merely mentioned in prose, a header-only patch, a mismatched path, or a
+  // deleted-file pre-image therefore cannot manufacture attachment custody.
+  let inDiff = false;
+  let structureValid = false;
+  let diffPreImageRef: string | undefined;
+  let diffPostImageRef: string | undefined;
+  let preImageRef: string | null | undefined;
+  let postImageRef: string | null | undefined;
+  let sawHunk = false;
+  let hunkOldRemaining: number | undefined;
+  let hunkNewRemaining: number | undefined;
+  let postImageHasContent = false;
+  const pathsAreCoherent = (): boolean =>
+    diffPreImageRef !== undefined &&
+    diffPostImageRef !== undefined &&
+    preImageRef !== undefined &&
+    postImageRef !== undefined &&
+    postImageRef !== null &&
+    postImageRef === diffPostImageRef &&
+    (preImageRef === null ? diffPreImageRef === diffPostImageRef : preImageRef === diffPreImageRef);
+  const finishDiff = (): void => {
+    if (
+      inDiff &&
+      structureValid &&
+      pathsAreCoherent() &&
+      postImageRef &&
+      sawHunk &&
+      hunkOldRemaining === 0 &&
+      hunkNewRemaining === 0 &&
+      postImageHasContent
+    ) {
+      addRef(postImageRef);
+    }
+    inDiff = false;
+    structureValid = false;
+    diffPreImageRef = undefined;
+    diffPostImageRef = undefined;
+    preImageRef = undefined;
+    postImageRef = undefined;
+    sawHunk = false;
+    hunkOldRemaining = undefined;
+    hunkNewRemaining = undefined;
+    postImageHasContent = false;
+  };
+  const decodeGitPath = (
+    rawPath: string,
+    expectedPrefix: "a/" | "b/",
+    allowNull: boolean,
+  ): string | null | undefined => {
+    const withoutTimestamp = rawPath.split("\t", 1)[0]?.trim() ?? "";
+    if (!withoutTimestamp) return undefined;
+    if (withoutTimestamp === "/dev/null") return allowNull ? null : undefined;
+    let decoded = withoutTimestamp;
+    if (decoded.startsWith('"') && decoded.endsWith('"')) {
+      try {
+        // Git's quoted paths overlap with JSON strings for ordinary escapes
+        // and whitespace, which is the only subset admitted here. Octal
+        // `core.quotePath` sequences are not JSON and deliberately fail closed
+        // until a byte-exact Git decoder is required by a persisted incident.
+        const parsed = JSON.parse(decoded) as unknown;
+        if (typeof parsed !== "string") return undefined;
+        decoded = parsed;
+      } catch {
+        return undefined;
+      }
+    }
+    if (!decoded.startsWith(expectedPrefix)) return undefined;
+    const normalized = normalizeEvidenceRef(decoded.slice(2));
+    return normalized || undefined;
+  };
+  const splitGitPathTokens = (rawHeader: string): [string, string] | undefined => {
+    const tokens: string[] = [];
+    let index = 0;
+    while (index < rawHeader.length) {
+      while (index < rawHeader.length && /\s/.test(rawHeader[index] ?? "")) index += 1;
+      if (index >= rawHeader.length) break;
+      const start = index;
+      if (rawHeader[index] === '"') {
+        index += 1;
+        let closed = false;
+        while (index < rawHeader.length) {
+          const character = rawHeader[index];
+          if (character === "\\") {
+            if (index + 1 >= rawHeader.length) return undefined;
+            index += 2;
+            continue;
+          }
+          index += 1;
+          if (character === '"') {
+            closed = true;
+            break;
+          }
+        }
+        if (!closed) return undefined;
+      } else {
+        while (index < rawHeader.length && !/\s/.test(rawHeader[index] ?? "")) index += 1;
+      }
+      tokens.push(rawHeader.slice(start, index));
+      if (tokens.length > 2) return undefined;
+    }
+    return tokens.length === 2 ? [tokens[0] ?? "", tokens[1] ?? ""] : undefined;
+  };
+  const parseDiffHeader = (line: string): [string, string] | undefined => {
+    const tokens = splitGitPathTokens(line.slice("diff --git".length));
+    if (!tokens) return undefined;
+    const before = decodeGitPath(tokens[0], "a/", false);
+    const after = decodeGitPath(tokens[1], "b/", false);
+    return typeof before === "string" && typeof after === "string" ? [before, after] : undefined;
+  };
+  for (const line of lines) {
+    if (/^diff --git\s+/.test(line)) {
+      finishDiff();
+      const parsedHeader = parseDiffHeader(line);
+      if (parsedHeader) {
+        [diffPreImageRef, diffPostImageRef] = parsedHeader;
+        inDiff = true;
+        structureValid = true;
+      }
+      continue;
+    }
+    if (!inDiff) continue;
+    // Once a hunk starts, its prefix owns the line. File content can itself
+    // begin with `---` or `+++`; treating those as new file headers would both
+    // reject a valid post-image and open header-confusion edge cases. Consume
+    // every hunk line against the declared old/new counts before considering
+    // structural headers.
+    if (hunkOldRemaining !== undefined && hunkNewRemaining !== undefined) {
+      if (line.startsWith("+")) {
+        if (hunkNewRemaining <= 0) {
+          structureValid = false;
+        } else {
+          hunkNewRemaining -= 1;
+          postImageHasContent = true;
+        }
+        continue;
+      }
+      if (line.startsWith(" ")) {
+        if (hunkOldRemaining <= 0 || hunkNewRemaining <= 0) {
+          structureValid = false;
+        } else {
+          hunkOldRemaining -= 1;
+          hunkNewRemaining -= 1;
+          postImageHasContent = true;
+        }
+        continue;
+      }
+      if (line.startsWith("-")) {
+        if (hunkOldRemaining <= 0) {
+          structureValid = false;
+        } else {
+          hunkOldRemaining -= 1;
+        }
+        continue;
+      }
+      if (line === "\\ No newline at end of file") continue;
+    }
+    const preImage = /^---\s+(.+?)\s*$/.exec(line);
+    if (preImage) {
+      if (sawHunk || preImageRef !== undefined || postImageRef !== undefined) {
+        structureValid = false;
+      } else {
+        preImageRef = decodeGitPath(preImage[1] ?? "", "a/", true);
+        if (preImageRef === undefined) structureValid = false;
+      }
+      continue;
+    }
+    const postImage = /^\+\+\+\s+(.+?)\s*$/.exec(line);
+    if (postImage) {
+      if (sawHunk || preImageRef === undefined || postImageRef !== undefined) {
+        structureValid = false;
+      } else {
+        postImageRef = decodeGitPath(postImage[1] ?? "", "b/", true);
+        if (postImageRef === undefined) structureValid = false;
+      }
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(line);
+      const numericFields = header
+        ? [header[1], header[2] ?? "1", header[3], header[4] ?? "1"].map(Number)
+        : [];
+      const previousHunkComplete =
+        hunkOldRemaining === undefined || (hunkOldRemaining === 0 && hunkNewRemaining === 0);
+      if (
+        !header ||
+        !structureValid ||
+        !pathsAreCoherent() ||
+        !previousHunkComplete ||
+        numericFields.some((value) => !Number.isSafeInteger(value) || value < 0)
+      ) {
+        structureValid = false;
+      } else {
+        sawHunk = true;
+        hunkOldRemaining = numericFields[1];
+        hunkNewRemaining = numericFields[3];
+      }
+      continue;
+    }
+    if (hunkOldRemaining === undefined || hunkNewRemaining === undefined) {
+      if (preImageRef !== undefined || postImageRef !== undefined) structureValid = false;
+      continue;
+    }
+    // A persisted attachment can concatenate a complete patch with raw check
+    // records or prose. Terminate the current diff at the first non-diff line;
+    // do not let trailing material invalidate an already complete post-image.
+    finishDiff();
+  }
+  finishDiff();
   return refs;
 }
 

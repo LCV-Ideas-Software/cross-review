@@ -31,7 +31,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.06.04** (package `4.6.4`).
+**Status.** Stable. The current source/release target is **v04.06.05** (package `4.6.5`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +49,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.06.05`**      | Preserves READY for 20 path+digest+literal sources whose GitHub URLs only differ by provider JSON quote escaping, and carries unified-diff file custody through relator rounds while invented URLs, crossed quotes and absent files remain fail-closed.                               |
 | **`v04.06.04`**      | Makes evidence conflict correlation linear and argv-exact, and makes future/current model parsing clause-aware through finite English/Portuguese frames, including `replace … with`, `update … to`, Portuguese present qualifiers, and semicolon isolation.                           |
 | **`v04.06.03`**      | Restores fail-closed anti-deception semantics for conflicting executions of the same command, additive `not only`/`não só` model claims, and current-state claims beside planning language, while preserving independent RED/GREEN records and genuine future targets.                |
 | **`v04.06.02`**      | Republish of v04.06.01 with a self-contained pin-validator action (bundled parser, clean-runner proven), reference-resolved local action manifests and a location-scoped Scorecard allowance.                                                                                         |

@@ -2,10 +2,19 @@
 
 ## Supported status
 
-Current supported source/release target: v04.06.04 for package 4.6.4. This
+Current supported source/release target: v04.06.05 for package 4.6.5. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
+
+v04.06.05 preserves exact attachment custody across provider serialization and
+relator rounds. Only terminal JSON quote escaping is removed from GitHub URL
+assertion keys; substantive URL bytes, attachment path, SHA-256 and literal
+quote correlation remain mandatory. Embedded file custody is derived only
+from a structurally complete unified-diff post-image, never from prose, a
+header-only patch, a deleted pre-image or an absent file. Quoted Git paths are
+admitted only for the JSON-compatible subset; C-style octal encodings remain
+fail-closed rather than being decoded ambiguously.
 
 v04.06.04 keeps those boundaries fail-closed while removing their residual
 ambiguity and scaling defect. Evidence records are analyzed once; generic

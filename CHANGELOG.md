@@ -7,6 +7,8 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v04.06.05] — 01/09/2026
+
 ### Changed
 
 - Aligns CodeQL admission with the organization-wide native GitHub pattern:
@@ -15,6 +17,21 @@ standard `v00.00.00`; npm package versions remain SemVer.
   documented GitHub limitation for Code Scanning merge protection on
   `merge_group` is now explicit; the release path still evaluates exact-SHA
   CodeQL SARIF independently before publication.
+
+### Fixed
+
+- Evidence grounding now canonicalizes only the terminal JSON quote escape of
+  GitHub URL citation tokens. A provider-serialized literal that matches the
+  exact path, SHA-256 and bytes of one active attachment no longer becomes
+  `ready_evidence_sources_fabricated`; a different URL or a quote borrowed
+  from another attachment remains fail-closed.
+- Evidence preflight now inventories files materialized by structurally
+  complete unified-diff post-images. A relator may refer to `package.json` or
+  `THIRDPARTY.md` already present in the active attachment without losing
+  custody between rounds, while prose-only names, header-only patches,
+  deleted-file pre-images and genuinely absent files remain blocked. The
+  focused regression reproduces the original 20-source panel and proves four
+  reviewer adapters reach dispatch without a false `evidence_preflight`.
 
 ## [v04.06.04] — 28/08/2026
 
