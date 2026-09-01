@@ -181,6 +181,25 @@ function regressionConfig(dataDir: string) {
   };
 }
 
+function assertUnifiedDiffCustody(
+  claim: string,
+  patchPath: string,
+  attachedEvidenceText: string[],
+  expectedPass: boolean,
+): void {
+  const preflight = evidencePreflight({
+    task: "Review the attached dependency update.",
+    initialDraft: `The attached evidence confirms ${claim}.`,
+    caller: "perplexity",
+    attachmentsPresent: true,
+    attachedEvidenceRefs: [patchPath],
+    attachedEvidenceText: attachedEvidenceText.join("\n"),
+  });
+
+  assert.equal(preflight.pass, expectedPass, preflight.reason);
+  assert.deepEqual(preflight.unattached_evidence_references, expectedPass ? [] : [claim]);
+}
+
 const regressions: Regression[] = [
   {
     name: "the fixture SHA-256 matches its exact UTF-8/LF attachment bytes",
@@ -484,6 +503,136 @@ const regressions: Regression[] = [
 
       assert.equal(preflight.pass, true, preflight.reason);
       assert.deepEqual(preflight.unattached_evidence_references, []);
+    },
+  },
+  {
+    name: "a completed hunk remains valid before a plus-prefixed raw trailer",
+    run: () => {
+      assertUnifiedDiffCustody(
+        "package.json",
+        "evidence/plus-trailer.patch",
+        [
+          "diff --git a/package.json b/package.json",
+          "--- a/package.json",
+          "+++ b/package.json",
+          "@@ -1 +1 @@",
+          '-{"version":"1.0.0"}',
+          '+{"version":"1.0.1"}',
+          "+raw provider record",
+        ],
+        true,
+      );
+    },
+  },
+  {
+    name: "a completed hunk remains valid before a minus-prefixed Markdown trailer",
+    run: () => {
+      assertUnifiedDiffCustody(
+        "package.json",
+        "evidence/minus-trailer.patch",
+        [
+          "diff --git a/package.json b/package.json",
+          "--- a/package.json",
+          "+++ b/package.json",
+          "@@ -1 +1 @@",
+          '-{"version":"1.0.0"}',
+          '+{"version":"1.0.1"}',
+          "- Markdown bullet",
+        ],
+        true,
+      );
+    },
+  },
+  {
+    name: "a completed hunk remains valid before a space-prefixed raw trailer",
+    run: () => {
+      assertUnifiedDiffCustody(
+        "package.json",
+        "evidence/space-trailer.patch",
+        [
+          "diff --git a/package.json b/package.json",
+          "--- a/package.json",
+          "+++ b/package.json",
+          "@@ -1 +1 @@",
+          '-{"version":"1.0.0"}',
+          '+{"version":"1.0.1"}',
+          " indented record",
+        ],
+        true,
+      );
+    },
+  },
+  {
+    name: "a completed hunk remains valid before a Markdown thematic-break trailer",
+    run: () => {
+      assertUnifiedDiffCustody(
+        "package.json",
+        "evidence/thematic-break-trailer.patch",
+        [
+          "diff --git a/package.json b/package.json",
+          "--- a/package.json",
+          "+++ b/package.json",
+          "@@ -1 +1 @@",
+          '-{"version":"1.0.0"}',
+          '+{"version":"1.0.1"}',
+          "-- ",
+        ],
+        true,
+      );
+    },
+  },
+  {
+    name: "a JSON-only Unicode escape cannot forge Git path custody",
+    run: () => {
+      assertUnifiedDiffCustody(
+        "package.json",
+        "evidence/unicode-escape-path.patch",
+        [
+          'diff --git "a/p\\u0061ckage.json" "b/p\\u0061ckage.json"',
+          '--- "a/p\\u0061ckage.json"',
+          '+++ "b/p\\u0061ckage.json"',
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ],
+        false,
+      );
+    },
+  },
+  {
+    name: "a JSON-only escaped slash cannot forge Git path custody",
+    run: () => {
+      assertUnifiedDiffCustody(
+        "package.json",
+        "evidence/escaped-slash-path.patch",
+        [
+          'diff --git "a/docs\\/package.json" "b/docs\\/package.json"',
+          '--- "a/docs\\/package.json"',
+          '+++ "b/docs\\/package.json"',
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ],
+        false,
+      );
+    },
+  },
+  {
+    name: "a literal backslash in a Git-quoted path cannot alias a forward slash",
+    run: () => {
+      assertUnifiedDiffCustody(
+        "foo/bar.md",
+        "evidence/backslash-alias-path.patch",
+        [
+          'diff --git "a/foo\\\\bar.md" "b/foo\\\\bar.md"',
+          '--- "a/foo\\\\bar.md"',
+          '+++ "b/foo\\\\bar.md"',
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ],
+        false,
+      );
     },
   },
   {

@@ -2543,10 +2543,19 @@ function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
     let decoded = withoutTimestamp;
     if (decoded.startsWith('"') && decoded.endsWith('"')) {
       try {
-        // Git's quoted paths overlap with JSON strings for ordinary escapes
-        // and whitespace, which is the only subset admitted here. Octal
-        // `core.quotePath` sequences are not JSON and deliberately fail closed
-        // until a byte-exact Git decoder is required by a persisted incident.
+        // Git's `core.quotePath` uses C-style quoting, not JSON. Admit only the
+        // escape intersection that both grammars decode identically. In
+        // particular, JSON-only `\/` and `\uXXXX` must fail closed instead of
+        // manufacturing custody for another repository path.
+        const quotedBody = decoded.slice(1, -1);
+        for (let index = 0; index < quotedBody.length; index += 1) {
+          if (quotedBody[index] !== "\\") continue;
+          const escaped = quotedBody[index + 1];
+          if (!escaped || !['"', "\\", "b", "f", "n", "r", "t"].includes(escaped)) {
+            return undefined;
+          }
+          index += 1;
+        }
         const parsed = JSON.parse(decoded) as unknown;
         if (typeof parsed !== "string") return undefined;
         decoded = parsed;
@@ -2555,7 +2564,13 @@ function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
       }
     }
     if (!decoded.startsWith(expectedPrefix)) return undefined;
-    const normalized = normalizeEvidenceRef(decoded.slice(2));
+    const repositoryPath = decoded.slice(2);
+    // A literal backslash is a valid byte in a POSIX path. Normalizing it to a
+    // slash here would conflate two distinct Git objects, so reject it at this
+    // provenance boundary while leaving human-facing reference normalization
+    // unchanged elsewhere.
+    if (repositoryPath.includes("\\")) return undefined;
+    const normalized = normalizeEvidenceRef(repositoryPath);
     return normalized || undefined;
   };
   const splitGitPathTokens = (rawHeader: string): [string, string] | undefined => {
@@ -2615,6 +2630,11 @@ function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
     // every hunk line against the declared old/new counts before considering
     // structural headers.
     if (hunkOldRemaining !== undefined && hunkNewRemaining !== undefined) {
+      const hunkComplete = hunkOldRemaining === 0 && hunkNewRemaining === 0;
+      if (hunkComplete && line !== "\\ No newline at end of file" && !line.startsWith("@@")) {
+        finishDiff();
+        continue;
+      }
       if (line.startsWith("+")) {
         if (hunkNewRemaining <= 0) {
           structureValid = false;
