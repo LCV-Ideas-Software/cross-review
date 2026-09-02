@@ -894,12 +894,8 @@ const regressions: Regression[] = [
         assert.equal(redirectedStatus.status, "FAILED");
         assert.match(redirectedStatus.failures.join("\n"), /evidence_integrity_path_not_contained/);
       } finally {
-        try {
+        if (fs.existsSync(evidenceDirectory)) {
           fs.unlinkSync(evidenceDirectory);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-            throw error;
-          }
         }
         fs.renameSync(savedEvidenceDirectory, evidenceDirectory);
       }
