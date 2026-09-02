@@ -895,9 +895,11 @@ const regressions: Regression[] = [
         assert.match(redirectedStatus.failures.join("\n"), /evidence_integrity_path_not_contained/);
       } finally {
         try {
-          fs.rmdirSync(evidenceDirectory);
-        } catch {
-          /* fixture cleanup continues with the contained directory restore */
+          fs.unlinkSync(evidenceDirectory);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
+          }
         }
         fs.renameSync(savedEvidenceDirectory, evidenceDirectory);
       }
