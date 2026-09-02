@@ -2,7 +2,6 @@
 import http from "node:http";
 import { loadConfig, VERSION } from "../core/config.js";
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
-import { sessionReportMarkdown } from "../core/reports.js";
 import { EventLog } from "../observability/logger.js";
 
 const config = loadConfig();
@@ -363,7 +362,10 @@ const server = http.createServer(async (request, response) => {
       }
       const sessionId = reportSessionId;
       const session = orchestrator.store.read(sessionId);
-      const markdown = sessionReportMarkdown(session, orchestrator.store.readEvents(sessionId));
+      const markdown = orchestrator.store.renderSessionReport(
+        session,
+        orchestrator.store.readEvents(sessionId),
+      );
       if (request.method === "POST") {
         orchestrator.store.saveReport(sessionId, markdown);
       }

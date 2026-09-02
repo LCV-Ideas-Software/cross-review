@@ -9,6 +9,12 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [v04.06.05] — 01/09/2026
 
+> **Prepared source target.** This heading is source metadata required by the
+> runtime and does not assert publication. The latest published release remains
+> independently verifiable through
+> [npm](https://www.npmjs.com/package/@lcv-ideas-software/cross-review) and
+> [GitHub Releases](https://github.com/LCV-Ideas-Software/cross-review/releases).
+
 ### Changed
 
 - Aligns CodeQL admission with the organization-wide native GitHub pattern:
@@ -25,13 +31,59 @@ standard `v00.00.00`; npm package versions remain SemVer.
   exact path, SHA-256 and bytes of one active attachment no longer becomes
   `ready_evidence_sources_fabricated`; a different URL or a quote borrowed
   from another attachment remains fail-closed.
-- Evidence preflight now inventories files materialized by structurally
-  complete unified-diff post-images. A relator may refer to `package.json` or
-  `THIRDPARTY.md` already present in the active attachment without losing
-  custody between rounds, while prose-only names, header-only patches,
-  deleted-file pre-images and genuinely absent files remain blocked. The
-  focused regression reproduces the original 20-source panel and proves four
-  reviewer adapters reach dispatch without a false `evidence_preflight`.
+- Evidence preflight now builds one SHA-addressed custody index for supplied
+  unified diffs and delegates grammar/path decoding to the official Git parser
+  through a fixed, shell-free
+  `git -c core.quotePath=false apply --numstat --summary -z --whitespace=nowarn -p1 -`
+  operation. Exact post-image paths preserve case, punctuation and spaces;
+  malformed EOF markers, unsafe paths, ambiguous basenames, header-only
+  patches, deleted pre-images and an unavailable Git capability fail closed.
+  The same typed index now feeds both quote grounding and relator artifact
+  references, eliminating the two handwritten parsers that had diverged.
+- Patch custody now rejects bare carriage returns instead of truncating a
+  Git-authenticated hunk line, while preserving canonical LF/CRLF line content.
+  Traditional mode-less creation/deletion summaries are reconciled against the
+  exact NUL-delimited numstat path, including filenames that begin with
+  `mode <digits>`, and deleted destinations receive no post-image custody.
+- Ordinary non-patch evidence no longer occupies the Git-derived index cache,
+  preventing unrelated logs from evicting reusable validated custody results.
+- Git reporting output is now followed by a fail-closed coherence pass over
+  old/new hunk geometry. Non-monotonic or overlapping ranges, unequal unchanged
+  gaps and repeated effective destinations are rejected, so mutually exclusive
+  or intermediate post-images cannot both acquire custody. The patch parser's
+  byte ceiling now covers the public 200,000-UTF-16-code-unit evidence field
+  for multibyte UTF-8 input instead of imposing an undocumented ASCII-only
+  limit.
+- Definitive `NOT_READY` responses now use a machine-shaped wire contract:
+  exactly one `BLOCKER: <path:line>` summary line maps to exactly one canonical
+  `Location` + persisted path + SHA-256 + literal quote source. Prose summaries,
+  ranges, duplicate locations, mismatched counts and ungrounded locations are
+  downgraded to `NEEDS_EVIDENCE`; remediation belongs in `caller_requests`.
+- Governed review rounds now persist an explicit round kind and bind every peer
+  decision to the authenticated redacted reviewed artifact, the exact visible
+  attachment slices, and the exact persisted redacted prompt variant actually
+  dispatched. Normal, fallback, moderation-safe, format-recovery,
+  decision-retry, generation, and evidence-judge calls use descriptor-verified
+  prompt readback and durable path/SHA-256/UTF-8-byte/UTF-16-unit custody.
+- Circular generation now persists its mode and resumable cursor and settles
+  each paid generation exactly once. A restart atomically promotes one staged,
+  descriptor-authenticated result or archives an unusable settled result before
+  advancing; an accepted rotation retains the provider-result path, SHA-256 and
+  byte count on its round while that round's peer remains the sole accounting
+  owner. It never repeats or double-counts the paid call and never fabricates a
+  reviewed-artifact round.
+- Secret assignment redaction now preserves only a structurally complete,
+  unquoted TypeScript function-parameter annotation. Ambiguous colon values
+  remain fail-closed, and `=` assignments cannot use primitive-looking prefixes
+  plus punctuation to bypass redaction.
+- Report and restart paths reauthenticate visible attachments and governed
+  reviewed artifacts before claiming verified custody. A missing `final.md`
+  mirror can be recreated atomically from authenticated terminal-round bytes;
+  an existing mismatch, link, directory, or redirected path is never replaced.
+- A single current evidence artifact can use the complete 200,000-UTF-16-unit
+  transport budget, while multi-artifact submissions retain bounded splitting.
+  Secret redaction remains linear at that public limit by bounding generic JWT
+  token segments without weakening token-boundary matches.
 
 ## [v04.06.04] — 28/08/2026
 

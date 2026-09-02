@@ -45,12 +45,48 @@ if (process.env.PRPL_WORKER === "1") {
   for (let i = 0; i < rounds; i++) {
     try {
       await store.appendRound(sessionId, {
+        review_kind: "pre_dispatch_block",
         caller_status: "READY",
         prompt_file: `pid${process.pid}-round${i}-prompt.md`,
         peers: [],
-        rejected: [],
-        convergence: { converged: true, reason: `pid${process.pid}_round${i}`, ready_peers: [] },
-        convergence_scope: { petitioner: "operator", caller: "operator" },
+        rejected: [
+          {
+            peer: "codex",
+            provider: "race-fixture",
+            model: "pre-dispatch",
+            failure_class: "budget_preflight",
+            message: `pid${process.pid}_round${i}`,
+            retryable: false,
+            attempts: 0,
+            latency_ms: 0,
+          },
+        ],
+        convergence: {
+          converged: false,
+          reason: `pid${process.pid}_round${i}`,
+          ready_peers: [],
+          not_ready_peers: [],
+          needs_evidence_peers: [],
+          rejected_peers: ["codex"],
+          skipped_peers: [],
+          decision_quality: {
+            codex: "failed",
+            claude: "clean",
+            gemini: "clean",
+            deepseek: "clean",
+            grok: "clean",
+            perplexity: "clean",
+          },
+          blocking_details: [`pid${process.pid}_round${i}`],
+        },
+        convergence_scope: {
+          petitioner: "operator",
+          caller: "operator",
+          acting_peer: "operator",
+          caller_status: "READY",
+          expected_peers: [],
+          reviewer_peers: [],
+        },
         started_at: new Date().toISOString(),
       });
       written += 1;

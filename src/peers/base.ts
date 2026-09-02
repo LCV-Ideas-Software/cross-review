@@ -534,24 +534,18 @@ export abstract class BasePeerAdapter {
     ].join("\n\n");
   }
 
-  // v2.9.0: default judge implementation. Builds a tightly-scoped prompt
-  // that gives the LLM ONLY the ask + draft (no session history per
-  // design) and asks for a structured boolean satisfied + confidence +
-  // rationale. Routes through this.generate() so cost/usage/latency are
-  // accounted by the same FinOps path as generations. Provider adapters
-  // can override if they want to use structured-output APIs (e.g. OpenAI
-  // structured outputs, Gemini json mode) for stricter parsing.
+  // v2.9.0: default judge implementation. The orchestrator first builds,
+  // persists and authenticates this tightly scoped ask + draft prompt, then
+  // passes only that readback across the provider boundary.
   async judgeEvidenceAsk(
-    ask: string,
-    draft: string,
+    persistedPrompt: string,
     context: PeerCallContext,
   ): Promise<EvidenceAskJudgment> {
-    const prompt = this.buildJudgePrompt(ask, draft);
-    const generation = await this.generate(prompt, context);
-    return this.parseJudgeResponse(generation, draft.length);
+    const generation = await this.generate(persistedPrompt, context);
+    return this.parseJudgeResponse(generation, persistedPrompt.length);
   }
 
-  protected buildJudgePrompt(ask: string, draft: string): string {
+  buildEvidenceJudgePrompt(ask: string, draft: string): string {
     return [
       "# Evidence Ask Judgment",
       "",

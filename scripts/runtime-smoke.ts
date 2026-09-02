@@ -12,6 +12,8 @@ const runtimeSmokeDataDir =
 const runtimeSmokeConfigPath = path.join(runtimeSmokeDataDir, "config.json");
 const runtimeSmokeCodexToken = "01".repeat(32);
 const runtimeSmokeOperatorToken = "07".repeat(32);
+const EVIDENCE_PATCH_OPERATION =
+  "git -c core.quotePath=false apply --numstat --summary -z --whitespace=nowarn -p1 -";
 fs.writeFileSync(
   runtimeSmokeConfigPath,
   JSON.stringify({ version: "runtime-smoke-v1" }, null, 2),
@@ -141,6 +143,41 @@ async function callToolText(name: string, args: Record<string, unknown>): Promis
 }
 
 type PollState = { outcome?: string; jobs?: Array<{ status: string }> };
+type EvidencePatchValidationStatus = {
+  available: boolean;
+  version: string | null;
+  provenance: "platform_standard_absolute_path" | null;
+  failure_reason: "git_unavailable" | "version_probe_failed" | null;
+  operation: string;
+};
+
+function evidencePatchValidationFrom(
+  payload: unknown,
+  toolName: "server_info" | "runtime_capabilities",
+): EvidencePatchValidationStatus {
+  assert.ok(payload && typeof payload === "object" && !Array.isArray(payload));
+  const status = (payload as { evidence_patch_validation?: unknown }).evidence_patch_validation;
+  assert.ok(status && typeof status === "object" && !Array.isArray(status));
+  assert.deepEqual(
+    Object.keys(status).sort(),
+    ["available", "failure_reason", "operation", "provenance", "version"],
+    `runtime-smoke: ${toolName}.evidence_patch_validation must keep its exact public shape`,
+  );
+  assert.equal(
+    typeof (status as { available?: unknown }).available,
+    "boolean",
+    `runtime-smoke: ${toolName}.evidence_patch_validation.available must be boolean`,
+  );
+  for (const forbiddenField of ["path", "executable", "executable_path", "git_path"]) {
+    assert.equal(
+      Object.hasOwn(status, forbiddenField),
+      false,
+      `runtime-smoke: ${toolName}.evidence_patch_validation must not expose ${forbiddenField}`,
+    );
+  }
+  return status as EvidencePatchValidationStatus;
+}
+
 type RuntimePreflightPayload = {
   pass?: boolean;
   truthfulness_pass?: boolean;
@@ -209,6 +246,35 @@ try {
     packageVersion,
     "runtime-smoke: runtime_capabilities.version must match package.json version",
   );
+  const serverInfoPatchValidation = evidencePatchValidationFrom(serverInfo, "server_info");
+  const capabilitiesPatchValidation = evidencePatchValidationFrom(
+    capabilities,
+    "runtime_capabilities",
+  );
+  assert.deepEqual(
+    capabilitiesPatchValidation,
+    serverInfoPatchValidation,
+    "runtime-smoke: both public tools must serialize identical evidence-patch capability state",
+  );
+  assert.equal(
+    serverInfoPatchValidation.operation,
+    EVIDENCE_PATCH_OPERATION,
+    "runtime-smoke: the public readback must pin the fixed shell-free Git operation",
+  );
+  if (serverInfoPatchValidation.available) {
+    assert.equal(typeof serverInfoPatchValidation.version, "string");
+    assert.ok((serverInfoPatchValidation.version?.length ?? 0) > 0);
+    assert.equal(serverInfoPatchValidation.provenance, "platform_standard_absolute_path");
+    assert.equal(serverInfoPatchValidation.failure_reason, null);
+  } else {
+    assert.equal(serverInfoPatchValidation.version, null);
+    assert.equal(serverInfoPatchValidation.provenance, null);
+    assert.ok(
+      serverInfoPatchValidation.failure_reason === "git_unavailable" ||
+        serverInfoPatchValidation.failure_reason === "version_probe_failed",
+      "runtime-smoke: unavailable capability must expose one documented failure reason",
+    );
+  }
   const configLoad = (
     serverInfo as {
       config_load?: {

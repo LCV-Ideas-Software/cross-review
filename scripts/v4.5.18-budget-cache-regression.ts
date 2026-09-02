@@ -56,11 +56,11 @@ function fixtureConfig(label: string): AppConfig {
   };
 }
 
-function judgment(peer: PeerId = "claude"): EvidenceAskJudgment {
+function judgment(adapter: Pick<PeerAdapter, "id" | "provider" | "model">): EvidenceAskJudgment {
   return {
-    peer,
-    provider: "fixture-provider",
-    model: "fixture-model",
+    peer: adapter.id,
+    provider: adapter.provider,
+    model: adapter.model,
     satisfied: false,
     confidence: "verified",
     rationale: "The requested evidence is not present.",
@@ -112,7 +112,7 @@ const regressions: Regression[] = [
       let calls = 0;
       orchestrator.adapters.claude.judgeEvidenceAsk = async () => {
         calls += 1;
-        return judgment();
+        return judgment(orchestrator.adapters.claude);
       };
       const judge = orchestrator.runEvidenceChecklistJudgePass.bind(orchestrator) as (
         params: Parameters<typeof orchestrator.runEvidenceChecklistJudgePass>[0] & {
@@ -184,7 +184,7 @@ const regressions: Regression[] = [
       let calls = 0;
       orchestrator.adapters.claude.judgeEvidenceAsk = async () => {
         calls += 1;
-        return judgment();
+        return judgment(orchestrator.adapters.claude);
       };
       await orchestrator.runEvidenceChecklistJudgePass({
         session_id: sessionId,
@@ -223,7 +223,7 @@ const regressions: Regression[] = [
       let calls = 0;
       orchestrator.adapters.claude.judgeEvidenceAsk = async () => {
         calls += 1;
-        return judgment();
+        return judgment(orchestrator.adapters.claude);
       };
       await assert.rejects(
         () =>
@@ -364,7 +364,8 @@ const regressions: Regression[] = [
     name: "judge cache usage is durable and distinguished in cache_manifest",
     run: async () => {
       const { orchestrator, sessionId } = await seededJudge("judge-cache-manifest");
-      orchestrator.adapters.claude.judgeEvidenceAsk = async () => judgment();
+      orchestrator.adapters.claude.judgeEvidenceAsk = async () =>
+        judgment(orchestrator.adapters.claude);
       await orchestrator.runEvidenceChecklistJudgePass({
         session_id: sessionId,
         judge_peer: "claude",
@@ -389,7 +390,7 @@ const regressions: Regression[] = [
       orchestrator.adapters.claude.judgeEvidenceAsk = async () => {
         started.resolve();
         await release.promise;
-        return judgment();
+        return judgment(orchestrator.adapters.claude);
       };
       const pass = orchestrator.runEvidenceChecklistJudgePass({
         session_id: sessionId,
@@ -432,7 +433,7 @@ const regressions: Regression[] = [
       orchestrator.adapters.claude.judgeEvidenceAsk = async () => {
         started.resolve();
         await release.promise;
-        return judgment();
+        return judgment(orchestrator.adapters.claude);
       };
       const pass = orchestrator.runEvidenceChecklistJudgePass({
         session_id: sessionId,
@@ -477,7 +478,7 @@ const regressions: Regression[] = [
         return originalPromotion(...args);
       };
       orchestrator.adapters.claude.judgeEvidenceAsk = async () => ({
-        ...judgment(),
+        ...judgment(orchestrator.adapters.claude),
         satisfied: true,
         confidence: "verified",
         rationale: "The exact fixture evidence satisfies the checklist ask.",

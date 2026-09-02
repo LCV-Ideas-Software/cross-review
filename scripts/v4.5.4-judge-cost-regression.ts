@@ -472,10 +472,41 @@ const regressions: Regression[] = [
           },
         ],
       });
+      const draft = "Decision-trace report fixture under review.\n";
+      const draftFile = orchestrator.store.saveDraft(session.session_id, 1, draft);
+      const reviewedArtifact = orchestrator.store.readReviewedArtifact(
+        session.session_id,
+        1,
+        draft,
+      );
+      const providerPrompt = await orchestrator.store.saveProviderPrompt(
+        session.session_id,
+        1,
+        peer.peer,
+        peer.provider,
+        peer.model,
+        "peer_review",
+        "fixture-decision-report",
+        `Review the authenticated fixture artifact.\n\n${reviewedArtifact.content}`,
+      );
+      peer.review_custody = {
+        dispatch_kind: "normal",
+        reviewed_artifact: {
+          relative_path: reviewedArtifact.relative_path,
+          sha256: reviewedArtifact.sha256,
+          visible_utf16_units: reviewedArtifact.content.length,
+          truncated: false,
+        },
+        visible_attachments: [],
+        provider_prompt: providerPrompt.custody,
+      };
       const convergence = checkConvergence(["gemini"], "READY", [peer], []);
       await orchestrator.store.appendRound(session.session_id, {
+        review_kind: "reviewed_artifact",
         caller_status: "READY",
-        prompt_file: "agent-runs/round-1-prompt.md",
+        draft_file: draftFile,
+        reviewed_artifact: reviewedArtifact,
+        prompt_file: orchestrator.store.savePrompt(session.session_id, 1, providerPrompt.content),
         peers: [peer],
         rejected: [],
         convergence,

@@ -82,11 +82,11 @@ function stubAdapters(config: AppConfig): Record<PeerId, PeerAdapter> {
   ) as unknown as Record<PeerId, PeerAdapter>;
 }
 
-function judgeResult(peer: PeerId): EvidenceAskJudgment {
+function judgeResult(adapter: Pick<PeerAdapter, "id" | "provider" | "model">): EvidenceAskJudgment {
   return {
-    peer,
-    provider: `fixture-${peer}`,
-    model: `fixture-${peer}`,
+    peer: adapter.id,
+    provider: adapter.provider,
+    model: adapter.model,
     satisfied: false,
     confidence: "verified",
     rationale: "The exact requested evidence is still absent.",
@@ -106,6 +106,17 @@ function judgeResult(peer: PeerId): EvidenceAskJudgment {
     attempts: 1,
     parser_warnings: [],
   };
+}
+
+function assertJudgeIdentity(
+  judgment: EvidenceAskJudgment,
+  adapter: Pick<PeerAdapter, "id" | "provider" | "model">,
+): void {
+  assert.deepEqual(
+    { peer: judgment.peer, provider: judgment.provider, model: judgment.model },
+    { peer: adapter.id, provider: adapter.provider, model: adapter.model },
+    "the judge fixture identity drifted from the adapter and its prompt-custody reservation",
+  );
 }
 
 function reviewResult(peer: PeerId, status: "READY" | "NEEDS_EVIDENCE", ask: string): PeerResult {
@@ -151,9 +162,9 @@ const regressions: Regression[] = [
       const adapters = stubAdapters(config);
       const contexts: Array<{ peer: PeerId; context: PeerCallContext }> = [];
       for (const peer of ["codex", "claude"] as const) {
-        adapters[peer].judgeEvidenceAsk = async (_ask, _draft, context) => {
+        adapters[peer].judgeEvidenceAsk = async (_persistedPrompt, context) => {
           contexts.push({ peer, context });
-          return judgeResult(peer);
+          return judgeResult(adapters[peer]);
         };
       }
       const orchestrator = new CrossReviewOrchestrator(
@@ -204,9 +215,9 @@ const regressions: Regression[] = [
       }));
       const adapters = stubAdapters(config);
       let context: PeerCallContext | undefined;
-      adapters.codex.judgeEvidenceAsk = async (_ask, _draft, candidateContext) => {
+      adapters.codex.judgeEvidenceAsk = async (_persistedPrompt, candidateContext) => {
         context = candidateContext;
-        return judgeResult("codex");
+        return judgeResult(adapters.codex);
       };
       const orchestrator = new CrossReviewOrchestrator(
         config,
@@ -248,11 +259,13 @@ const regressions: Regression[] = [
       let judgeCalls = 0;
       adapters.codex.judgeEvidenceAsk = async () => {
         judgeCalls += 1;
-        return {
-          ...judgeResult("codex"),
+        const judgment = {
+          ...judgeResult(adapters.codex),
           satisfied: true,
           rationale: "The revised draft supplies the exact requested evidence.",
         };
+        assertJudgeIdentity(judgment, adapters.codex);
+        return judgment;
       };
       const orchestrator = new CrossReviewOrchestrator(
         config,
@@ -315,7 +328,7 @@ const regressions: Regression[] = [
       adapters.codex.judgeEvidenceAsk = async () => {
         judgeCalls += 1;
         return {
-          ...judgeResult("codex"),
+          ...judgeResult(adapters.codex),
           satisfied: true,
           rationale: "This answer must not be used against a reasserted ask.",
         };
@@ -359,11 +372,15 @@ const regressions: Regression[] = [
       const config = fixtureConfig("not-resurfaced-consensus");
       const adapters = stubAdapters(config);
       for (const peer of ["codex", "gemini"] as const) {
-        adapters[peer].judgeEvidenceAsk = async () => ({
-          ...judgeResult(peer),
-          satisfied: true,
-          rationale: `Independent ${peer} judge verified the requested evidence.`,
-        });
+        adapters[peer].judgeEvidenceAsk = async () => {
+          const judgment = {
+            ...judgeResult(adapters[peer]),
+            satisfied: true,
+            rationale: `Independent ${peer} judge verified the requested evidence.`,
+          };
+          assertJudgeIdentity(judgment, adapters[peer]);
+          return judgment;
+        };
       }
       const orchestrator = new CrossReviewOrchestrator(
         config,
@@ -501,7 +518,7 @@ const regressions: Regression[] = [
       for (const peer of ["codex", "claude"] as const) {
         adapters[peer].judgeEvidenceAsk = async () => {
           judgeCalls += 1;
-          return judgeResult(peer);
+          return judgeResult(adapters[peer]);
         };
       }
       const orchestrator = new CrossReviewOrchestrator(
@@ -542,7 +559,7 @@ const regressions: Regression[] = [
       let judgeCalls = 0;
       adapters.codex.judgeEvidenceAsk = async () => {
         judgeCalls += 1;
-        return judgeResult("codex");
+        return judgeResult(adapters.codex);
       };
       const orchestrator = new CrossReviewOrchestrator(
         config,

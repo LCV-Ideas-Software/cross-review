@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 
 import {
   evidencePreflight,
@@ -29,8 +30,12 @@ const RUNTIME_FACTS = {
 } as const;
 
 const EVIDENCE_PATH = "evidence/caller-submitted-test-output.txt";
-const EVIDENCE_SHA = "7b7ff5b959d17e07f20d5b3a481a3f320624af987cd38a1d3df3d8635c8f8a31";
 const EVIDENCE_CONTENT = ["COMMAND: npm test", "EXIT_CODE: 0", "Tests 74 passed (74)"].join("\n");
+const EVIDENCE_SHA = sha256(EVIDENCE_CONTENT);
+
+function sha256(content: string): string {
+  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
+}
 
 function readyPeer(
   evidenceSources: string[],
@@ -86,7 +91,11 @@ function groundingInput(
       relative_path,
       sha256,
     })),
-    callerSubmittedAttachments: attachments,
+    callerSubmittedAttachments: attachments.map((attachment) => ({
+      ...attachment,
+      bytes: Buffer.byteLength(attachment.content, "utf8"),
+      truncated: false,
+    })),
     requirePeerSubmittedCorroboration: true,
     runtimeFacts: RUNTIME_FACTS,
   } satisfies Parameters<typeof groundReadyPeerEvidence>[1];
@@ -216,14 +225,15 @@ const regressions: Regression[] = [
   {
     name: "a digest for attachment A cannot ground a literal that exists only in attachment B",
     run: () => {
+      const attachmentAContent = "COMMAND: npm test\nEXIT_CODE: 0\nTests 73 passed (73)";
       const attachmentA: EvidenceAttachment = {
         relative_path: "evidence/run-a.txt",
-        sha256: "a".repeat(64),
-        content: "COMMAND: npm test\nEXIT_CODE: 0\nTests 73 passed (73)",
+        sha256: sha256(attachmentAContent),
+        content: attachmentAContent,
       };
       const attachmentB: EvidenceAttachment = {
         relative_path: "evidence/run-b.txt",
-        sha256: "b".repeat(64),
+        sha256: sha256(EVIDENCE_CONTENT),
         content: EVIDENCE_CONTENT,
       };
       const mismatchedCitation = citation(attachmentA, "Tests 74 passed (74)");

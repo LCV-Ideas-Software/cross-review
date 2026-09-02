@@ -14,9 +14,9 @@ import {
   VERSION,
 } from "../core/config.js";
 import { isPerplexityAgentModel } from "../core/cost.js";
+import { getEvidenceCustodyRuntimeStatus } from "../core/evidence-custody.js";
 import { CrossReviewOrchestrator } from "../core/orchestrator.js";
 import { maxOutputTokensForPeer } from "../core/output-budget.js";
-import { sessionReportMarkdown } from "../core/reports.js";
 import type { SessionStore } from "../core/session-store.js";
 import type {
   BackgroundJobKind,
@@ -1670,6 +1670,7 @@ export async function main(): Promise<void> {
           cli_execution: false,
           stable_release: true,
           capabilities: runtimeCapabilities(runtime),
+          evidence_patch_validation: getEvidenceCustodyRuntimeStatus(),
           tools: toolNames,
           data_dir: runtime.config.data_dir,
           log_file: runtime.eventLog.path(),
@@ -1787,6 +1788,7 @@ export async function main(): Promise<void> {
           version: VERSION,
           release_date: RELEASE_DATE,
           capabilities: runtimeCapabilities(runtime),
+          evidence_patch_validation: getEvidenceCustodyRuntimeStatus(),
           tools: toolNames,
         },
         response_format,
@@ -2114,7 +2116,7 @@ export async function main(): Promise<void> {
         // No parallel peer-voting in circular mode. Best for producing
         // shared prose/spec artifacts. For approve/reject judgments over
         // external code, prefer ship (default) or review.
-        mode: z.enum(["ship", "review", "circular"]).default("ship"),
+        mode: z.enum(["ship", "review", "circular"]).optional(),
         // v3.5.0 (CRV2-4): optional structured evidence supplied up-front.
         // The preflight checks value correspondence with every operational
         // claim; presence alone is never proof. Peer material is persisted,
@@ -2202,7 +2204,7 @@ export async function main(): Promise<void> {
         // No parallel peer-voting in circular mode. Best for producing
         // shared prose/spec artifacts. For approve/reject judgments over
         // external code, prefer ship (default) or review.
-        mode: z.enum(["ship", "review", "circular"]).default("ship"),
+        mode: z.enum(["ship", "review", "circular"]).optional(),
         // v3.5.0 (CRV2-4): optional structured evidence supplied up-front.
         // The preflight checks value correspondence with every operational
         // claim; presence alone is never proof. Peer material is persisted,
@@ -2250,7 +2252,12 @@ export async function main(): Promise<void> {
       const initCaller = locked.caller;
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
-        : await runtime.orchestrator.initSession(locked.task, initCaller, locked.review_focus);
+        : await runtime.orchestrator.initSession(
+            locked.task,
+            initCaller,
+            locked.review_focus,
+            locked.mode ?? "ship",
+          );
       const job = await startJob(runtime, "run_until_unanimous", session.session_id, (signal) =>
         runtime.orchestrator.runUntilUnanimous({
           ...locked,
@@ -2668,7 +2675,7 @@ export async function main(): Promise<void> {
     },
     async ({ session_id, response_format }) => {
       const session = runtime.orchestrator.store.read(session_id);
-      const markdown = sessionReportMarkdown(
+      const markdown = runtime.orchestrator.store.renderSessionReport(
         session,
         runtime.orchestrator.store.readEvents(session_id),
       );
@@ -2736,14 +2743,20 @@ export async function main(): Promise<void> {
     }: z.infer<typeof savedSessionPreflightSchema>) => {
       verifyToolCallerIdentity(runtime, site, caller, server.server.getClientVersion(), session_id);
       const session = runtime.orchestrator.store.read(session_id);
-      const latestDraftPath = session.rounds.at(-1)?.draft_file;
+      const latestRound = session.rounds.at(-1);
+      const latestDraftPath = latestRound?.draft_file;
       let effectiveDraft = draft;
-      if (!effectiveDraft && latestDraftPath) {
-        effectiveDraft = runtime.orchestrator.store.readTextArtifact(
-          session_id,
-          latestDraftPath,
-          SCHEMA_DRAFT_MAX_CHARS,
-        );
+      if (!effectiveDraft && latestRound && latestDraftPath) {
+        effectiveDraft =
+          latestRound.reviewed_artifact ||
+          (session.reviewed_artifact_custody_schema_version === 1 &&
+            latestRound.round >= (session.reviewed_artifact_custody_start_round ?? 1))
+            ? runtime.orchestrator.store.readRoundReviewedArtifact(session_id, latestRound).content
+            : runtime.orchestrator.store.readTextArtifact(
+                session_id,
+                latestDraftPath,
+                SCHEMA_DRAFT_MAX_CHARS,
+              );
       }
       const result = runtime.orchestrator.checkSessionPreflights({
         sessionId: session_id,

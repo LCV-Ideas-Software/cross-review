@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { classifyProviderError } from "../peers/errors.js";
 import { resolveBestModels } from "../peers/model-selection.js";
 import { createAdapters, selectAdapters } from "../peers/registry.js";
@@ -17,12 +18,14 @@ import {
   mergeUsage,
   resolveCostRate,
 } from "./cost.js";
+import { buildEvidenceCustodyIndex, type EvidenceCustodyIndex } from "./evidence-custody.js";
 import { maxOutputTokensForPeer } from "./output-budget.js";
 import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
-import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
+import { unresolvedEvidenceItems } from "./reports.js";
 import {
   type EvidenceChecklistAdmission,
   EvidenceChecklistContractViolationError,
+  type PersistedReviewedArtifact,
   SessionStore,
 } from "./session-store.js";
 import { decisionQualityFromStatus, parsePeerStatus } from "./status.js";
@@ -32,6 +35,7 @@ import type {
   ConvergenceResult,
   ConvergenceScope,
   CostEstimate,
+  EvidenceAskJudgment,
   FallbackEvent,
   GenerationResult,
   PeerAdapter,
@@ -40,6 +44,9 @@ import type {
   PeerId,
   PeerProbeResult,
   PeerResult,
+  PeerReviewDispatchCustody,
+  PeerReviewDispatchKind,
+  ProviderPromptCustody,
   ReasoningEffort,
   ResolvedEvidenceAttachment,
   ReviewRound,
@@ -49,11 +56,17 @@ import type {
   SessionMeta,
   TokenUsage,
 } from "./types.js";
+
 import {
   INDETERMINATE_SPEND_FAILURE_CLASSES,
   PEERS,
   POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX,
 } from "./types.js";
+
+type PreparedPendingProviderPromptCall = Awaited<
+  ReturnType<SessionStore["preparePendingProviderPromptCall"]>
+>;
+type PersistedProviderPrompt = Awaited<ReturnType<SessionStore["saveProviderPrompt"]>>;
 
 export interface AskPeersInput {
   session_id?: string | undefined;
@@ -147,6 +160,26 @@ export function callerSubmittedEvidenceAttachments(
   );
 }
 
+function readyPeerEvidenceAttachments(
+  attachments: readonly ResolvedEvidenceAttachment[],
+): ReadyPeerEvidenceAttachment[] {
+  return attachments.flatMap((attachment) => {
+    if (attachment.provenance_status !== "verified" || typeof attachment.sha256 !== "string") {
+      return [];
+    }
+    return [
+      {
+        label: attachment.label,
+        relative_path: attachment.relative_path,
+        sha256: attachment.sha256,
+        content: attachment.content,
+        bytes: attachment.bytes,
+        truncated: attachment.truncated,
+      },
+    ];
+  });
+}
+
 export interface RunUntilUnanimousInput {
   session_id?: string | undefined;
   task: string;
@@ -186,8 +219,8 @@ export interface RunUntilUnanimousInput {
   // caller supplies up-front. It is value-correlated with operational
   // claims; mere presence is never proof. Authenticated peer evidence is
   // persisted and transported as unverified review material, without any
-  // manual operator step. Cross-review stays API-only and never executes
-  // shell or reads the caller's repo (see docs/evidence-preflight.md).
+  // manual operator step. Cross-review stays API-only and never executes a
+  // caller command or reads the caller's repo (see docs/evidence-preflight.md).
   evidence?: string | undefined;
 }
 
@@ -210,6 +243,90 @@ function safePromptText(value: string, maxLength = 4_000): string {
   const cleaned = redact(value).replace(/\r\n/g, "\n").trim();
   if (cleaned.length <= maxLength) return cleaned;
   return `${cleaned.slice(0, maxLength - 3)}...`;
+}
+
+export interface ReviewedArtifactPromptView {
+  readonly artifact: PersistedReviewedArtifact;
+  readonly visible_content: string;
+  readonly truncated: boolean;
+}
+
+export function reviewedArtifactPromptView(
+  artifact: PersistedReviewedArtifact,
+  maxLength: number,
+): ReviewedArtifactPromptView {
+  const limit = Math.max(0, Math.floor(maxLength));
+  let visibleEnd = Math.min(limit, artifact.content.length);
+  if (
+    visibleEnd > 0 &&
+    visibleEnd < artifact.content.length &&
+    ((/[\uD800-\uDBFF]/.test(artifact.content[visibleEnd - 1] ?? "") &&
+      /[\uDC00-\uDFFF]/.test(artifact.content[visibleEnd] ?? "")) ||
+      (artifact.content[visibleEnd - 1] === "\r" && artifact.content[visibleEnd] === "\n"))
+  ) {
+    visibleEnd -= 1;
+  }
+  return {
+    artifact,
+    visible_content: artifact.content.slice(0, visibleEnd),
+    truncated: artifact.content.length > visibleEnd,
+  };
+}
+
+function visibleAttachmentDispatchCustody(
+  visibleAttachments: readonly ResolvedEvidenceAttachment[],
+): PeerReviewDispatchCustody["visible_attachments"] {
+  return visibleAttachments.map((attachment) => ({
+    relative_path: attachment.relative_path,
+    sha256:
+      attachment.sha256 ??
+      crypto.createHash("sha256").update(attachment.content, "utf8").digest("hex"),
+    visible_utf16_units: attachment.content.length,
+    truncated: attachment.truncated,
+  }));
+}
+
+function peerReviewDispatchCustody(
+  dispatchKind: PeerReviewDispatchKind,
+  reviewedArtifact: ReviewedArtifactPromptView,
+  visibleAttachments: readonly ResolvedEvidenceAttachment[],
+  providerPrompt: ProviderPromptCustody,
+): PeerReviewDispatchCustody {
+  return {
+    dispatch_kind: dispatchKind,
+    reviewed_artifact: {
+      relative_path: reviewedArtifact.artifact.relative_path,
+      sha256: reviewedArtifact.artifact.sha256,
+      visible_utf16_units: reviewedArtifact.visible_content.length,
+      truncated: reviewedArtifact.truncated,
+    },
+    visible_attachments: visibleAttachmentDispatchCustody(visibleAttachments),
+    provider_prompt: providerPrompt,
+  };
+}
+
+function reviewedArtifactCustodyBlock(view: ReviewedArtifactPromptView): string[] {
+  const visibility = view.truncated
+    ? `prefix ${view.visible_content.length}/${view.artifact.content.length} UTF-16 code units`
+    : `full ${view.visible_content.length}/${view.artifact.content.length} UTF-16 code units`;
+  return [
+    "## Reviewed Artifact Custody",
+    "This is the persisted redacted draft under review. Its custody is distinct from caller-submitted or operator-verified operational evidence.",
+    "For NOT_READY, use this persisted artifact path plus its physical line number in BLOCKER/Location. If the complete artifact is a Git-validated unified diff, an exact logical post-image path plus line is also allowed. A prefix-only diff must use a complete visible physical artifact line; logical post-image locations fail closed when any suffix was omitted.",
+    `Attachment: ${view.artifact.relative_path}`,
+    `sha256=${view.artifact.sha256}`,
+    `Visibility: ${visibility}`,
+    "",
+    "## Draft Or Solution Under Review",
+    view.visible_content,
+    ...(view.truncated
+      ? [
+          "",
+          "[Reviewed artifact excerpt ends here; the omitted suffix was not visible to this peer.]",
+        ]
+      : []),
+    "",
+  ];
 }
 
 // v2.5.0 (operator directive 2026-05-03): session-start contract injected
@@ -248,7 +365,7 @@ export function sessionContractDirectives(): string[] {
     // supplied inline. This wastes rounds without improving safety.
     "5) Proportionality: scale evidence demands to change risk. For pure config/script/text changes validated by static scans (rg/grep, JSON parse, git diff --check), supply the literal scan output inline or in the evidence field. For changes with runtime effect (build, test, deploy, migration, network call), always demand raw output. If the supplied proof is suspect, ask the authenticated caller to correct and resubmit it through those same automatic channels; never require a manual operator attachment for an ordinary review. When in doubt, prefer asking for evidence over assuming.",
     "6) Peer-evidence corroboration: peer-submitted operational evidence is reviewable but UNVERIFIED. A READY vote that relies on it MUST use `confidence: verified` and cite the persisted attachment path, its SHA-256, and verbatim raw lines that value-correlate every operational assertion. When withdrawing a prior evidence ask, also cite its `Checklist-Item` id. Narrative-only citations and inferred confidence cannot support READY. At least two independent non-author reviewers must satisfy this contract; no manual operator attachment is required.",
-    "7) Blocking-evidence relevance: every factual NOT_READY summary MUST name the concrete `path:line` it alleges and cite the same `path:line` in an evidence_sources item with a verbatim raw quote. A real but unrelated quote cannot support a blocking verdict; request evidence instead.",
+    "7) Blocking-evidence relevance: NOT_READY summary is machine-shaped, not prose: use exactly one `BLOCKER: <path:line>` line per finding and no other summary text. Each line MUST have exactly one canonical evidence_sources item that prepends `Location: <the same path:line>` before Attachment/SHA-256/Artifact quote. Backtick-delimit the complete location when its path contains spaces. Put remediation in caller_requests. Ranges, duplicate locations, arbitrary prose, unmatched source counts, and unrelated quotes fail closed; request evidence instead.",
     // v4.5.44 (#216): the contract and the draft ceiling were calibrated
     // independently — peers demanded the full unfiltered diff as one
     // artifact inside the round while the draft cap made that impossible
@@ -350,7 +467,7 @@ function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
 // context limits, so per-attachment + total caps in
 // `config.prompt.max_attached_evidence_chars` keep prompts within
 // peer context budgets.
-function attachedEvidenceBlock(attachments: ResolvedEvidenceAttachment[]): string[] {
+function attachedEvidenceBlock(attachments: readonly ResolvedEvidenceAttachment[]): string[] {
   if (!attachments.length) return [];
   const operatorVerified = trustedEvidenceAttachments(attachments);
   const callerSubmitted = callerSubmittedEvidenceAttachments(attachments);
@@ -364,8 +481,10 @@ function attachedEvidenceBlock(attachments: ResolvedEvidenceAttachment[]): strin
     lines.push(heading, "", explanation, "");
     for (const att of artifacts) {
       const truncatedNote = att.truncated
-        ? ` (truncated to ${att.content.length} of ${att.bytes} bytes)`
-        : ` (${att.bytes} bytes)`;
+        ? att.total_utf16_units === undefined
+          ? ` (truncated to ${att.content.length} UTF-16 code units; ${att.bytes} persisted bytes)`
+          : ` (truncated to ${att.content.length} of ${att.total_utf16_units} UTF-16 code units; ${att.bytes} persisted bytes)`
+        : ` (${att.total_utf16_units ?? att.content.length} UTF-16 code units; ${att.bytes} persisted bytes)`;
       const ctype = att.content_type ? ` content-type: \`${att.content_type}\`,` : "";
       lines.push(
         `### ${att.label} — \`${att.relative_path}\`${ctype}${truncatedNote}`,
@@ -393,7 +512,7 @@ function attachedEvidenceBlock(attachments: ResolvedEvidenceAttachment[]): strin
 
 function buildModerationSafeReviewPrompt(
   meta: SessionMeta,
-  draft: string,
+  reviewedArtifact: ReviewedArtifactPromptView,
   config: AppConfig,
   reviewFocus?: string,
   // v2.14.0: attachments deliberately omitted from moderation-safe path
@@ -417,16 +536,14 @@ function buildModerationSafeReviewPrompt(
     "## Recent History (structured summary only)",
     summarizePriorRounds(meta, config),
     "",
-    "## Draft Or Solution Under Review (sanitized excerpt)",
-    safePromptText(draft, Math.min(config.prompt.max_draft_chars, 16_000)),
-    "",
+    ...reviewedArtifactCustodyBlock(reviewedArtifact),
     "Decide whether any blocking issue remains.",
   ].join("\n");
 }
 
 function buildReviewPrompt(
   meta: SessionMeta,
-  draft: string,
+  reviewedArtifact: ReviewedArtifactPromptView,
   config: AppConfig,
   reviewFocus?: string,
   attachments?: ResolvedEvidenceAttachment[],
@@ -444,9 +561,7 @@ function buildReviewPrompt(
     "## Recent History",
     summarizePriorRounds(meta, config),
     "",
-    "## Draft Or Solution Under Review",
-    safePromptText(draft, config.prompt.max_draft_chars),
-    "",
+    ...reviewedArtifactCustodyBlock(reviewedArtifact),
     "Review rigorously whether the draft or solution satisfies the task. Identify concrete blocking issues.",
   ].join("\n");
 }
@@ -652,6 +767,48 @@ function assertiveMatches(pattern: RegExp, text: string): RegExpMatchArray[] {
   });
 }
 
+function jsonValueContainsExactString(value: unknown, expected: string): boolean {
+  if (typeof value === "string") return value === expected;
+  if (Array.isArray(value)) {
+    return value.some((entry) => jsonValueContainsExactString(entry, expected));
+  }
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value).some((entry) => jsonValueContainsExactString(entry, expected));
+}
+
+function isRecognizedProviderSerializedArtifactUrl(
+  sourceText: string,
+  match: string,
+  matchIndex: number,
+): boolean {
+  const lineStart = sourceText.lastIndexOf("\n", Math.max(0, matchIndex - 1)) + 1;
+  const nextLineBreak = sourceText.indexOf("\n", matchIndex);
+  const lineEnd = nextLineBreak === -1 ? sourceText.length : nextLineBreak;
+  const line = sourceText.slice(lineStart, lineEnd);
+  const artifactQuote = /^\s*Artifact quote:\s*("(?:\\[^\r\n]|[^"\\\r\n])*")\s*$/i.exec(line);
+  const encodedLiteral = artifactQuote?.[1];
+  if (!encodedLiteral) return false;
+
+  const tokenStart = line.indexOf(encodedLiteral);
+  const localMatchStart = matchIndex - lineStart;
+  if (
+    localMatchStart < tokenStart ||
+    localMatchStart + match.length > tokenStart + encodedLiteral.length
+  ) {
+    return false;
+  }
+
+  try {
+    const serializedRecord = JSON.parse(encodedLiteral) as unknown;
+    if (typeof serializedRecord !== "string") return false;
+    const record = JSON.parse(serializedRecord) as unknown;
+    if (!record || typeof record !== "object") return false;
+    return jsonValueContainsExactString(record, match.slice(0, -1));
+  } catch {
+    return false;
+  }
+}
+
 function fabricatedAssertionKey(
   label: string,
   match: string,
@@ -672,9 +829,17 @@ function fabricatedAssertionKey(
   const trailingBackslashes = /\\+$/.exec(match)?.[0].length ?? 0;
   const nextCharacter = sourceText[matchIndex + match.length];
   const hasProviderQuoteEscape =
-    label === "github_url_reference" && trailingBackslashes % 2 === 1 && nextCharacter === '"';
+    label === "github_url_reference" &&
+    trailingBackslashes % 2 === 1 &&
+    nextCharacter === '"' &&
+    isRecognizedProviderSerializedArtifactUrl(sourceText, match, matchIndex);
   const canonicalMatch = hasProviderQuoteEscape ? match.slice(0, -1) : match;
-  return `${label}:${canonicalMatch.toLowerCase()}`;
+  if (label !== "github_url_reference") return `${label}:${canonicalMatch.toLowerCase()}`;
+  const url = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]+)([\s\S]*)$/.exec(canonicalMatch);
+  const canonicalUrl = url
+    ? `${(url[1] ?? "").toLowerCase()}://${(url[2] ?? "").toLowerCase()}${url[3] ?? ""}`
+    : canonicalMatch;
+  return `${label}:${canonicalUrl}`;
 }
 
 function collectFabricatedAssertionKeys(text: string): Set<string> {
@@ -702,6 +867,7 @@ export interface FabricationDetectionCorpus {
    * authority path. Callers do not acquire operator authority here.
    */
   provenanceCorpus: string;
+  provenanceCorpora?: readonly string[] | undefined;
   /**
    * PRIOR-ARTIFACT corpus. The prior round's draft / the caller's
    * `initial_draft` — i.e. the artifact the relator is revising.
@@ -715,6 +881,7 @@ export interface FabricationDetectionCorpus {
    * source for operational assertions.
    */
   priorDraftCorpus: string;
+  priorDraftCorpora?: readonly string[] | undefined;
   /**
    * NARRATIVE corpus. The caller's task body ONLY (prose framing /
    * instructions) — NOT the draft. An operational assertion that
@@ -726,20 +893,31 @@ export interface FabricationDetectionCorpus {
    * without being claimed as command-output evidence.
    */
   narrativeCorpus: string;
+  narrativeCorpora?: readonly string[] | undefined;
 }
 
-export function detectFabricatedEvidence(
-  revisionText: string,
+function fabricationCorpora(explicit: readonly string[] | undefined, legacy: string): string[] {
+  return (explicit ?? [legacy]).filter((value) => value.length > 0);
+}
+
+function detectFabricatedEvidenceAcrossRevisions(
+  revisionTexts: readonly string[],
   corpus: FabricationDetectionCorpus,
 ): FabricationDetectionResult {
   // Hex tokens (SHAs/IDs/file paths) may legitimately be referenced
   // from ANY tier — they are identifiers, not command-output claims.
-  const hexCorpus = `${corpus.provenanceCorpus}\n${corpus.priorDraftCorpus}\n${corpus.narrativeCorpus}`;
+  const provenanceCorpora = fabricationCorpora(corpus.provenanceCorpora, corpus.provenanceCorpus);
+  const priorDraftCorpora = fabricationCorpora(corpus.priorDraftCorpora, corpus.priorDraftCorpus);
+  const narrativeCorpora = fabricationCorpora(corpus.narrativeCorpora, corpus.narrativeCorpus);
   const revisionHex = new Set(
-    (revisionText.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []).map((token) => token.toLowerCase()),
+    revisionTexts.flatMap((text) =>
+      (text.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []).map((token) => token.toLowerCase()),
+    ),
   );
   const corpusHex = new Set(
-    (hexCorpus.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []).map((token) => token.toLowerCase()),
+    [...provenanceCorpora, ...priorDraftCorpora, ...narrativeCorpora].flatMap((text) =>
+      (text.match(FABRICATED_HEX_TOKEN_PATTERN) ?? []).map((token) => token.toLowerCase()),
+    ),
   );
   const netNewHex: string[] = [];
   for (const tok of revisionHex) {
@@ -755,19 +933,23 @@ export function detectFabricatedEvidence(
   // narrated only in the task body, promoted by the relator into the
   // artifact, is still flagged (eee886d3 — operator directive
   // 2026-05-10: narrative is not evidence).
-  const assertionCorpus = `${corpus.provenanceCorpus}\n${corpus.priorDraftCorpus}`;
-  const assertionCorpusKeys = collectFabricatedAssertionKeys(assertionCorpus);
+  const assertionCorpusKeys = new Set<string>();
+  for (const text of [...provenanceCorpora, ...priorDraftCorpora]) {
+    for (const key of collectFabricatedAssertionKeys(text)) assertionCorpusKeys.add(key);
+  }
   const suspicious: Array<{ label: string; match: string }> = [];
   const seenAssertions = new Set<string>();
-  for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
-    const matches = assertiveMatches(pattern, revisionText);
-    for (const match of matches) {
-      const m = match[0];
-      const key = fabricatedAssertionKey(label, m, revisionText, match.index ?? 0);
-      if (seenAssertions.has(key)) continue;
-      seenAssertions.add(key);
-      if (!assertionCorpusKeys.has(key)) {
-        suspicious.push({ label, match: m });
+  for (const revisionText of revisionTexts) {
+    for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
+      const matches = assertiveMatches(pattern, revisionText);
+      for (const match of matches) {
+        const m = match[0];
+        const key = fabricatedAssertionKey(label, m, revisionText, match.index ?? 0);
+        if (seenAssertions.has(key)) continue;
+        seenAssertions.add(key);
+        if (!assertionCorpusKeys.has(key)) {
+          suspicious.push({ label, match: m });
+        }
       }
     }
   }
@@ -783,20 +965,44 @@ export function detectFabricatedEvidence(
   };
 }
 
+export function detectFabricatedEvidence(
+  revisionText: string,
+  corpus: FabricationDetectionCorpus,
+): FabricationDetectionResult {
+  return detectFabricatedEvidenceAcrossRevisions([revisionText], corpus);
+}
+
+export interface ReadyPeerEvidenceAttachment {
+  label?: string | undefined;
+  relative_path: string;
+  sha256: string;
+  content: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface ReviewedArtifactGroundingSource extends ReadyPeerEvidenceAttachment {
+  readonly artifact_kind: "reviewed_artifact";
+  readonly visible_content: string;
+  readonly visibility_truncated: boolean;
+}
+
 export interface ReadyPeerEvidenceGroundingInput {
   artifactText: string;
+  /** @deprecated Production callers must pass operatorVerifiedAttachments. */
   attachedEvidenceText: string;
   attachmentRefs: string[];
   evidenceAttachments?: ReadonlyArray<{
     relative_path: string;
     sha256?: string | undefined;
   }>;
-  callerSubmittedAttachments?: ReadonlyArray<{
-    label?: string | undefined;
-    relative_path: string;
-    sha256?: string | undefined;
-    content: string;
-  }>;
+  operatorVerifiedAttachments?: ReadonlyArray<ReadyPeerEvidenceAttachment> | undefined;
+  callerSubmittedAttachments?: ReadonlyArray<ReadyPeerEvidenceAttachment> | undefined;
+  /**
+   * The authenticated persisted redacted draft exactly as visible to this
+   * peer dispatch. It is review material, never operational evidence.
+   */
+  reviewedArtifactSource?: ReviewedArtifactGroundingSource | undefined;
   /**
    * Server-issued checklist identifiers visible to peers in the round prompt.
    * They are trusted reference metadata, not model-invented hex tokens.
@@ -872,80 +1078,6 @@ function citationPhraseCandidates(phrase: string): string[] {
   return decoded === undefined || decoded === phrase ? [phrase] : [phrase, decoded];
 }
 
-function unifiedDiffPostImageHunks(content: string): string[] {
-  const hunks: string[] = [];
-  let current: string[] | null = null;
-  const finishHunk = (): void => {
-    if (current?.length) hunks.push(current.join("\n"));
-    current = null;
-  };
-  for (const line of content.replace(/\r\n?/g, "\n").split("\n")) {
-    if (/^@@(?:\s|$)/.test(line)) {
-      finishHunk();
-      current = [];
-      continue;
-    }
-    if (/^(?:diff --git |--- |\+\+\+ )/.test(line)) {
-      finishHunk();
-      continue;
-    }
-    if (current === null) continue;
-    if (line.startsWith("+")) {
-      current.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith(" ")) {
-      current.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith("-") || line === "\\ No newline at end of file") continue;
-    // A non-diff line terminates the hunk instead of being admitted as
-    // evidence. This keeps prose following a patch outside the post-image.
-    finishHunk();
-  }
-  finishHunk();
-  return hunks;
-}
-
-function unifiedDiffRemovedHunks(content: string): string[] {
-  const hunks: string[] = [];
-  let current: string[] | null = null;
-  let currentWithMarkers: string[] | null = null;
-  const finishHunk = (): void => {
-    if (current?.length) hunks.push(current.join("\n"));
-    if (currentWithMarkers?.length) hunks.push(currentWithMarkers.join("\n"));
-    current = null;
-    currentWithMarkers = null;
-  };
-  for (const line of content.replace(/\r\n?/g, "\n").split("\n")) {
-    if (/^@@(?:\s|$)/.test(line)) {
-      finishHunk();
-      current = [];
-      currentWithMarkers = [];
-      continue;
-    }
-    if (/^(?:diff --git |--- |\+\+\+ )/.test(line)) {
-      finishHunk();
-      continue;
-    }
-    if (current === null) continue;
-    if (line.startsWith("-")) {
-      current.push(line.slice(1));
-      currentWithMarkers?.push(line);
-      continue;
-    }
-    if (line.startsWith(" ")) {
-      current.push(line.slice(1));
-      currentWithMarkers?.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith("+") || line === "\\ No newline at end of file") continue;
-    finishHunk();
-  }
-  finishHunk();
-  return hunks;
-}
-
 function phraseMatchesCorpus(phrase: string, corpus: string): boolean {
   const literalCorpus = normalizeLiteralGroundingText(corpus);
   if (!literalCorpus) return false;
@@ -955,57 +1087,85 @@ function phraseMatchesCorpus(phrase: string, corpus: string): boolean {
   });
 }
 
-function phraseMatchesAttachment(phrase: string, content: string): boolean {
-  const postImageMatches = unifiedDiffPostImageHunks(content).some((hunk) =>
+function phraseMatchesAttachment(
+  phrase: string,
+  content: string,
+  custodyIndex: EvidenceCustodyIndex,
+): boolean {
+  if (custodyIndex.validation === "not_patch") {
+    return phraseMatchesCorpus(phrase, content);
+  }
+  if (custodyIndex.validation !== "validated") return false;
+  const postImageMatches = custodyIndex.postImageHunks.some((hunk) =>
     phraseMatchesCorpus(phrase, hunk),
   );
-  if (postImageMatches) return true;
-  if (!phraseMatchesCorpus(phrase, content)) return false;
-
-  // Raw patches are still trusted for headers, metadata, commands and logs,
-  // but code quoted exclusively from a removed hunk is not evidence of the
-  // submitted post-image. Context lines are admitted into both images; a quote
-  // containing them plus an actual addition already matched above.
-  const removedOnly = unifiedDiffRemovedHunks(content).some((hunk) =>
-    phraseMatchesCorpus(phrase, hunk),
-  );
-  return !removedOnly;
+  return postImageMatches;
 }
 
-function quotedEvidencePhrases(source: string): string[] {
-  const explicitMarker = /\b(?:Artifact quote|verbatim|literal quote|quote)\s*:\s*/i.exec(source);
-  if (explicitMarker) {
-    const wrapped = source.slice((explicitMarker.index ?? 0) + explicitMarker[0].length).trim();
-    const phrases = wrapped.length >= 12 ? [wrapped] : [];
-    const pairs = [
-      ['"', '"'],
-      ["'", "'"],
-      ["“", "”"],
-      ["`", "`"],
-    ] as const;
-    for (const [open, close] of pairs) {
-      if (!wrapped.startsWith(open) || !wrapped.endsWith(close)) continue;
-      const phrase = wrapped.slice(open.length, -close.length);
-      if (phrase.trim().length >= 12) phrases.push(phrase);
-    }
-    // The first quote in a JSON fragment is usually data, not an outer
-    // delimiter (`"org":{"activeCount":11}`). Preserve the complete marker
-    // payload as a candidate and additionally offer a genuinely paired
-    // unwrapped form. Both still have to match the same path+digest attachment
-    // byte-for-byte, so this removes false negatives without weakening custody.
-    return [...new Set(phrases)];
-  }
-
-  const phrases: string[] = [];
+function unmarkedQuotedEvidencePhraseGroups(source: string): string[][] {
+  const groups: string[][] = [];
   for (const match of source.matchAll(/["“]([^"”\r\n]{12,})["”]/g)) {
     const phrase = match[1];
-    if (phrase) phrases.push(phrase);
+    if (phrase) groups.push([phrase]);
   }
+  // Treat standalone single-quoted literals as citations too, while avoiding
+  // apostrophes inside ordinary prose (for example, contractions and
+  // possessives). Both ASCII and typographic quote pairs are recognized.
+  for (const pattern of [
+    /(?:^|[\s([{:=,])'([^'\r\n]{12,})'(?=$|[\s,;.!?)}\]])/g,
+    /(?:^|[\s([{:=,])‘([^’\r\n]{12,})’(?=$|[\s,;.!?)}\]])/g,
+  ]) {
+    for (const match of source.matchAll(pattern)) {
+      const phrase = match[1];
+      if (phrase) groups.push([phrase]);
+    }
+  }
+  const artifactReferenceSpans = concreteArtifactReferences(source).map(({ start, end }) => ({
+    start,
+    end,
+  }));
   for (const match of source.matchAll(/`([^`\r\n]{12,})`/g)) {
+    const start = match.index ?? 0;
+    const end = start + (match[0]?.length ?? 0);
+    if (artifactReferenceSpans.some((span) => span.start === start && span.end === end)) continue;
     const phrase = match[1];
-    if (phrase) phrases.push(phrase);
+    if (phrase) groups.push([phrase]);
   }
-  return phrases;
+  return groups;
+}
+
+function quotedEvidencePhraseGroups(source: string): string[][] {
+  const markerPattern = /\b(?:Artifact quote|verbatim|literal quote|quote)\s*:\s*/gi;
+  const markers = [...source.matchAll(markerPattern)];
+  if (markers.length > 0) {
+    // A marker must not turn earlier quoted assertions invisible. Validate
+    // every literal that precedes the first marker as an independent group,
+    // then validate each marked region. This keeps the parser fail-closed when
+    // a removed or invented quote is prepended to one legitimate citation.
+    const prefixEnd = markers[0]?.index ?? 0;
+    const prefixGroups = unmarkedQuotedEvidencePhraseGroups(source.slice(0, prefixEnd));
+    const markedGroups = markers.flatMap((marker, index) => {
+      const start = (marker.index ?? 0) + marker[0].length;
+      const end = markers[index + 1]?.index ?? source.length;
+      const wrapped = source.slice(start, end).trim();
+      const phrases = wrapped.length >= 12 ? [wrapped] : [];
+      const pairs = [
+        ['"', '"'],
+        ["'", "'"],
+        ["“", "”"],
+        ["`", "`"],
+      ] as const;
+      for (const [open, close] of pairs) {
+        if (!wrapped.startsWith(open) || !wrapped.endsWith(close)) continue;
+        const phrase = wrapped.slice(open.length, -close.length);
+        if (phrase.trim().length >= 12) phrases.push(phrase);
+      }
+      return phrases.length > 0 ? [[...new Set(phrases)]] : [];
+    });
+    return [...prefixGroups, ...markedGroups];
+  }
+
+  return unmarkedQuotedEvidencePhraseGroups(source);
 }
 
 const GENERIC_READY_ASSURANCE_PATTERN =
@@ -1017,7 +1177,7 @@ function evidenceSourceIsGenericAssurance(source: string): boolean {
 
 function evidenceSourceHasGroundedAnchor(
   source: string,
-  trustedCorpus: string,
+  trustedCorpora: readonly string[],
   attachmentRefs: ReadonlySet<string>,
 ): boolean {
   // A verdict cannot prove itself merely because the caller's draft contains
@@ -1025,22 +1185,33 @@ function evidenceSourceHasGroundedAnchor(
   // while claims such as "implementation is correct and fully tested" must be
   // tied to independent evidence (for example a path+digest+literal log).
   if (evidenceSourceIsGenericAssurance(source)) return false;
-  const normalizedSource = normalizeGroundingText(source);
-  const normalizedCorpus = normalizeGroundingText(trustedCorpus);
-  if (!normalizedSource || !normalizedCorpus) return false;
   const literalSource = normalizeLiteralGroundingText(source).trim();
-  const literalCorpus = normalizeLiteralGroundingText(trustedCorpus);
-  if (literalSource.length >= 12 && literalCorpus.includes(literalSource)) return true;
+  if (
+    literalSource.length >= 12 &&
+    trustedCorpora.some((corpus) => normalizeLiteralGroundingText(corpus).includes(literalSource))
+  ) {
+    return true;
+  }
 
-  const quoted = quotedEvidencePhrases(source);
-  if (quoted.some((phrase) => phraseMatchesCorpus(phrase, trustedCorpus))) {
+  const quoteGroups = quotedEvidencePhraseGroups(source);
+  if (
+    quoteGroups.length > 0 &&
+    trustedCorpora.some((corpus) =>
+      quoteGroups.every((alternatives) =>
+        alternatives.some((phrase) => phraseMatchesCorpus(phrase, corpus)),
+      ),
+    )
+  ) {
     return true;
   }
 
   const urls = source.match(/https?:\/\/[^\s`'"<>]+/gi) ?? [];
   if (
     urls.length > 0 &&
-    urls.every((url) => literalCorpus.includes(normalizeLiteralGroundingText(url)))
+    trustedCorpora.some((corpus) => {
+      const literalCorpus = normalizeLiteralGroundingText(corpus);
+      return urls.every((url) => literalCorpus.includes(normalizeLiteralGroundingText(url)));
+    })
   ) {
     return true;
   }
@@ -1058,89 +1229,551 @@ function evidenceSourceHasGroundedAnchor(
       line.replace(/^\s*(?:Attachment|Artifact quote|Source|Evidence)\s*:\s*/i, "").trim(),
     )
     .filter((line) => line.length >= 16 && !/^https?:\/\//i.test(line));
-  const hasVerbatimLine = candidateLines.some((line) => phraseMatchesCorpus(line, trustedCorpus));
-  return referencesKnownAttachment && hasVerbatimLine;
+  const allVerbatimLinesShareCorpus =
+    candidateLines.length > 0 &&
+    trustedCorpora.some((corpus) =>
+      candidateLines.every((line) => phraseMatchesCorpus(line, corpus)),
+    );
+  return referencesKnownAttachment && allVerbatimLinesShareCorpus;
 }
 
-function evidenceSourceNamesPeerCustody(
-  sourceText: string,
-  attachments: NonNullable<ReadyPeerEvidenceGroundingInput["callerSubmittedAttachments"]>,
+type GroundingEvidenceAttachment = NonNullable<
+  ReadyPeerEvidenceGroundingInput["callerSubmittedAttachments"]
+>[number];
+
+interface IndexedGroundingEvidenceAttachment {
+  attachment: GroundingEvidenceAttachment;
+  custodyIndex: EvidenceCustodyIndex;
+}
+
+function indexGroundingEvidenceAttachment(
+  attachment: GroundingEvidenceAttachment,
+): IndexedGroundingEvidenceAttachment {
+  return {
+    attachment,
+    custodyIndex: buildEvidenceCustodyIndex(attachment.content),
+  };
+}
+
+function attachmentEnvelopeMatchesContent(
+  indexedAttachment: IndexedGroundingEvidenceAttachment,
 ): boolean {
-  const normalizedSource = normalizeGroundingText(sourceText);
-  return attachments.some((attachment) => {
-    const pathMentioned = normalizedSource.includes(
-      normalizeGroundingText(attachment.relative_path),
-    );
-    const labelMentioned = attachment.label
-      ? normalizedSource.includes(normalizeGroundingText(attachment.label))
-      : false;
-    const digestMentioned =
-      typeof attachment.sha256 === "string" &&
-      attachment.sha256.length >= 32 &&
-      normalizedSource.includes(attachment.sha256.toLowerCase());
-    return (pathMentioned || labelMentioned) && digestMentioned;
-  });
+  const { attachment, custodyIndex } = indexedAttachment;
+  if (
+    !/^[a-f0-9]{64}$/.test(attachment.sha256) ||
+    !Number.isSafeInteger(attachment.bytes) ||
+    attachment.bytes < 0 ||
+    typeof attachment.truncated !== "boolean" ||
+    attachment.truncated
+  ) {
+    return false;
+  }
+  return (
+    custodyIndex.sourceSha256 === attachment.sha256 &&
+    attachment.bytes === Buffer.byteLength(attachment.content, "utf8")
+  );
+}
+
+function custodyFieldValue(raw: string): string {
+  const trimmed = raw.trim();
+  for (const [open, close] of [
+    ['"', '"'],
+    ["'", "'"],
+    ["`", "`"],
+  ] as const) {
+    if (trimmed.startsWith(open) && trimmed.endsWith(close)) {
+      return trimmed.slice(open.length, -close.length);
+    }
+  }
+  return trimmed;
+}
+
+interface ParsedAttachmentEvidenceSource {
+  attachmentIdentity: string;
+  digest: string;
+  location?: ConcreteArtifactReference;
+  quoteSource: string;
+}
+
+function exactLocationField(raw: string): ConcreteArtifactReference | undefined {
+  const value = raw.trim();
+  const references = concreteArtifactReferences(value);
+  const exact =
+    references.length === 1 &&
+    references[0]?.start === 0 &&
+    references[0]?.end === value.length &&
+    (value === references[0].raw || value === `\`${references[0].raw}\``);
+  return exact ? references[0] : undefined;
+}
+
+function parseAttachmentEvidenceSource(source: string): ParsedAttachmentEvidenceSource | undefined {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  let cursor = 0;
+
+  if (/^Checklist-Item:\s*[A-Za-z0-9._:-]+\s*$/.test(lines[cursor] ?? "")) cursor += 1;
+  const locationField = /^Location:\s*(.+?)\s*$/.exec(lines[cursor] ?? "");
+  let location: ConcreteArtifactReference | undefined;
+  if (locationField) {
+    location = exactLocationField(locationField[1] ?? "");
+    if (!location) return undefined;
+    cursor += 1;
+  }
+
+  const attachment = /^Attachment:\s*(.+?)\s*$/.exec(lines[cursor] ?? "");
+  if (!attachment) return undefined;
+  cursor += 1;
+  const digest = /^sha256=([a-f0-9]{64})\s*$/.exec(lines[cursor] ?? "");
+  if (!digest) return undefined;
+  cursor += 1;
+  const quote = /^Artifact quote:\s*(.*)$/.exec(lines[cursor] ?? "");
+  if (!quote) return undefined;
+
+  const quotePayload = [quote[1] ?? "", ...lines.slice(cursor + 1)].join("\n").trim();
+  if (quotePayload.length < 12) return undefined;
+  return {
+    attachmentIdentity: custodyFieldValue(attachment[1] ?? ""),
+    digest: digest[1] ?? "",
+    ...(location ? { location } : {}),
+    quoteSource: `Artifact quote: ${quotePayload}`,
+  };
+}
+
+// biome-ignore format: Prettier keeps this short union on one line.
+type EvidenceCorpus =
+  Readonly<{ kind: "literal"; text: string }> | Readonly<{ kind: "validated_patch"; text: string }>;
+
+function literalEvidenceCorpus(text: string): EvidenceCorpus {
+  return { kind: "literal", text };
+}
+
+function validatedPatchEvidenceCorpora(postImageHunks: readonly string[]): EvidenceCorpus[] {
+  // Preserve the validation result even when a legitimate deletion-only patch
+  // has no post-image bytes. The empty typed corpus may prove only that a Git
+  // diff was validated; it cannot ground any arbitrary content assertion.
+  return postImageHunks.length > 0
+    ? postImageHunks.map((text) => ({ kind: "validated_patch", text }))
+    : [{ kind: "validated_patch", text: "" }];
+}
+
+function evidenceCustodyCorpora(
+  indexedAttachment: IndexedGroundingEvidenceAttachment,
+): readonly EvidenceCorpus[] {
+  if (!attachmentEnvelopeMatchesContent(indexedAttachment)) return [];
+  const { attachment, custodyIndex } = indexedAttachment;
+  if (custodyIndex.validation === "not_patch") return [literalEvidenceCorpus(attachment.content)];
+  if (custodyIndex.validation !== "validated") return [];
+  // Git authenticates the effective post-image, not advisory hunk suffixes,
+  // headers, trailers, or arbitrary text surrounding a patch. Logs and command
+  // records remain admissible when supplied as their own non-patch attachment.
+  return validatedPatchEvidenceCorpora(custodyIndex.postImageHunks);
+}
+
+function evidenceTextCorpora(content: string): readonly EvidenceCorpus[] {
+  if (!content.trim()) return [];
+  const custodyIndex = buildEvidenceCustodyIndex(content);
+  if (custodyIndex.validation === "not_patch") return [literalEvidenceCorpus(content)];
+  if (custodyIndex.validation !== "validated") return [];
+  return validatedPatchEvidenceCorpora(custodyIndex.postImageHunks);
+}
+
+function attachmentEvidenceCorpora(
+  attachments: readonly ReadyPeerEvidenceAttachment[],
+): readonly EvidenceCorpus[] {
+  return attachments.map(indexGroundingEvidenceAttachment).flatMap(evidenceCustodyCorpora);
+}
+
+function relatorAttachmentFabricationCorpora(
+  attachments: readonly ResolvedEvidenceAttachment[],
+): readonly string[] {
+  return attachmentEvidenceCorpora(readyPeerEvidenceAttachments(attachments)).map(
+    (corpus) => corpus.text,
+  );
+}
+
+function evidenceCorporaContainMaterial(corpora: readonly EvidenceCorpus[]): boolean {
+  return corpora.some(
+    (corpus) => corpus.kind === "validated_patch" || corpus.text.trim().length > 0,
+  );
 }
 
 function evidenceSourceMatchesSingleAttachment(
   source: string,
-  attachment: NonNullable<ReadyPeerEvidenceGroundingInput["callerSubmittedAttachments"]>[number],
+  indexedAttachment: IndexedGroundingEvidenceAttachment,
 ): boolean {
-  const normalizedSource = normalizeGroundingText(source);
-  const pathMentioned = normalizedSource.includes(normalizeGroundingText(attachment.relative_path));
-  const labelMentioned = attachment.label
-    ? normalizedSource.includes(normalizeGroundingText(attachment.label))
-    : false;
-  const digestMentioned =
-    typeof attachment.sha256 === "string" &&
-    attachment.sha256.length >= 32 &&
-    normalizedSource.includes(attachment.sha256.toLowerCase());
-  if ((!pathMentioned && !labelMentioned) || !digestMentioned) return false;
+  const { attachment, custodyIndex } = indexedAttachment;
+  if (!attachmentEnvelopeMatchesContent(indexedAttachment)) return false;
+  const citation = parseAttachmentEvidenceSource(source);
+  if (
+    !citation ||
+    citation.attachmentIdentity !== attachment.relative_path ||
+    citation.digest !== attachment.sha256
+  ) {
+    return false;
+  }
 
-  return quotedEvidencePhrases(source).some((phrase) =>
-    phraseMatchesAttachment(phrase, attachment.content),
+  const quoteGroups = quotedEvidencePhraseGroups(citation.quoteSource);
+  return (
+    quoteGroups.length > 0 &&
+    quoteGroups.every((alternatives) =>
+      alternatives.some((phrase) =>
+        phraseMatchesAttachment(phrase, attachment.content, custodyIndex),
+      ),
+    )
   );
 }
 
-function evidenceSourceClaimsAttachmentCustody(
+function exactSubstantiveLines(text: string): Set<string> {
+  return new Set(
+    text
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map(normalizeLiteralGroundingText)
+      .filter((line) => blockingLineHasSubstantiveBytes(line)),
+  );
+}
+
+function evidenceSourceQuotesExactSubstantiveLine(source: string, visibleContent: string): boolean {
+  const citation = parseAttachmentEvidenceSource(source);
+  if (!citation) return false;
+  const visibleLines = exactSubstantiveLines(visibleContent);
+  if (visibleLines.size === 0) return false;
+  const quoteGroups = quotedEvidencePhraseGroups(citation.quoteSource);
+  return (
+    quoteGroups.length > 0 &&
+    quoteGroups.every((alternatives) =>
+      alternatives.some((phrase) =>
+        citationPhraseCandidates(phrase).some((candidate) => {
+          const candidateLines = candidate
+            .replace(/\r\n?/g, "\n")
+            .split("\n")
+            .map(normalizeLiteralGroundingText)
+            .filter(blockingLineHasSubstantiveBytes);
+          return (
+            candidateLines.length > 0 && candidateLines.every((line) => visibleLines.has(line))
+          );
+        }),
+      ),
+    )
+  );
+}
+
+function evidenceSourceMatchesReviewedArtifactEnvelope(
   source: string,
-  attachments: NonNullable<ReadyPeerEvidenceGroundingInput["callerSubmittedAttachments"]>,
+  reviewedArtifact: ReviewedArtifactGroundingSource,
 ): boolean {
-  if (/\bAttachment\s*:/i.test(source)) return true;
-  const normalizedSource = normalizeGroundingText(source);
-  return attachments.some(
-    (attachment) =>
-      normalizedSource.includes(normalizeGroundingText(attachment.relative_path)) ||
-      Boolean(
-        attachment.label && normalizedSource.includes(normalizeGroundingText(attachment.label)),
-      ) ||
-      Boolean(attachment.sha256 && normalizedSource.includes(attachment.sha256.toLowerCase())),
+  const citation = parseAttachmentEvidenceSource(source);
+  const contentSha256 = buildEvidenceCustodyIndex(reviewedArtifact.content).sourceSha256;
+  const visibleContentIsAuthenticPrefix = reviewedArtifact.content.startsWith(
+    reviewedArtifact.visible_content,
+  );
+  const visibilityFlagMatchesContent = reviewedArtifact.visibility_truncated
+    ? reviewedArtifact.visible_content.length < reviewedArtifact.content.length
+    : reviewedArtifact.visible_content === reviewedArtifact.content;
+  if (
+    !citation ||
+    citation.attachmentIdentity !== reviewedArtifact.relative_path ||
+    citation.digest !== reviewedArtifact.sha256 ||
+    reviewedArtifact.sha256 !== contentSha256 ||
+    reviewedArtifact.bytes !== Buffer.byteLength(reviewedArtifact.content, "utf8") ||
+    reviewedArtifact.truncated ||
+    !visibleContentIsAuthenticPrefix ||
+    !visibilityFlagMatchesContent
+  ) {
+    return false;
+  }
+  const quoteGroups = quotedEvidencePhraseGroups(citation.quoteSource);
+  return (
+    quoteGroups.length > 0 &&
+    quoteGroups.every((alternatives) =>
+      alternatives.some((phrase) => phraseMatchesCorpus(phrase, reviewedArtifact.content)),
+    )
   );
 }
 
-const CONCRETE_ARTIFACT_REFERENCE_PATTERN =
-  /(?:[a-z0-9_.@-]+(?:[\\/][a-z0-9_.@-]+)*\.[a-z0-9_-]+:\d+(?::\d+)?)/gi;
+function evidenceSourceMatchesReviewedArtifact(
+  source: string,
+  reviewedArtifact: ReviewedArtifactGroundingSource,
+): boolean {
+  return (
+    evidenceSourceMatchesReviewedArtifactEnvelope(source, reviewedArtifact) &&
+    evidenceSourceQuotesExactSubstantiveLine(source, reviewedArtifact.visible_content)
+  );
+}
+
+function evidenceSourceClaimsAttachmentCustody(source: string): boolean {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const quoteIndex = lines.findIndex((line) => /^\s*Artifact quote\s*:/i.test(line));
+  const topLevelLines = quoteIndex >= 0 ? lines.slice(0, quoteIndex) : lines;
+  return topLevelLines.some((line) => /^\s*(?:Attachment\s*:|sha256\s*=)/i.test(line));
+}
+
+const UNQUOTED_CONCRETE_ARTIFACT_REFERENCE_PATTERN =
+  /(?:^|[\s([{"'])((?:\.\.?[\\/])?[a-z0-9_.@-]+(?:[\\/][a-z0-9_.@-]+)*\.[a-z0-9_-]+):(\d+)(?=$|[\s,;.!?)}\]'"])/gi;
+const BACKTICK_CONCRETE_ARTIFACT_REFERENCE_PATTERN =
+  /`((?:\.\.?[\\/])?[^`\r\n]+\.[a-z0-9_-]+):(\d+)`(?![-–—:]\d)/gi;
+
+interface ConcreteArtifactReference {
+  raw: string;
+  path: string;
+  line: number;
+  start: number;
+  end: number;
+}
+
+function concreteArtifactReferences(text: string): ConcreteArtifactReference[] {
+  const references: ConcreteArtifactReference[] = [];
+  const occupiedSpans: Array<{ start: number; end: number }> = [];
+
+  for (const match of text.matchAll(BACKTICK_CONCRETE_ARTIFACT_REFERENCE_PATTERN)) {
+    const path = match[1] ?? "";
+    const line = Number(match[2]);
+    const start = match.index ?? 0;
+    const end = start + (match[0]?.length ?? 0);
+    if (!path || !Number.isSafeInteger(line) || line < 1) {
+      continue;
+    }
+    const raw = `${path}:${line}`;
+    references.push({ raw, path, line, start, end });
+    occupiedSpans.push({ start, end });
+  }
+
+  for (const match of text.matchAll(UNQUOTED_CONCRETE_ARTIFACT_REFERENCE_PATTERN)) {
+    const path = match[1] ?? "";
+    const line = Number(match[2]);
+    const full = match[0] ?? "";
+    const pathOffset = full.indexOf(path);
+    const start = (match.index ?? 0) + Math.max(pathOffset, 0);
+    const raw = `${path}:${line}`;
+    const end = start + raw.length;
+    if (!path || !Number.isSafeInteger(line) || line < 1) {
+      continue;
+    }
+    if (occupiedSpans.some((span) => start >= span.start && end <= span.end)) continue;
+
+    // Unquoted references are accepted only at a clause boundary or after an
+    // explicit location marker. This prevents a suffix from being extracted
+    // out of an ambiguous whitespace-bearing path; such paths use backticks.
+    const precedingClause =
+      text
+        .slice(0, start)
+        .split(/[\n;.!?]/)
+        .at(-1) ?? "";
+    const canonicalPrefix = precedingClause.replace(/^\s*(?:[-*•]|\d+[.)])?\s*/, "").trim();
+    const atClauseBoundary = /^[([{'"]*$/.test(canonicalPrefix);
+    const afterLocationMarker = /(?:\b(?:at|in|line|location|em|no|na|linha|local)\s*|:\s*)$/i.test(
+      canonicalPrefix,
+    );
+    if (!atClauseBoundary && !afterLocationMarker) continue;
+
+    references.push({ raw, path, line, start, end });
+  }
+
+  return references.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function textWithoutConcreteArtifactReferences(text: string): string {
+  const references = concreteArtifactReferences(text);
+  if (references.length === 0) return text;
+  let result = "";
+  let cursor = 0;
+  for (const reference of references) {
+    result += text.slice(cursor, reference.start);
+    cursor = Math.max(cursor, reference.end);
+  }
+  return result + text.slice(cursor);
+}
+
+function quoteGroupsTouchLine(quoteGroups: readonly (readonly string[])[], line: string): boolean {
+  if (!blockingLineHasSubstantiveBytes(line)) return false;
+  return quoteGroups.some((alternatives) =>
+    alternatives.some((phrase) =>
+      citationPhraseCandidates(phrase).some((candidate) =>
+        candidate
+          .replace(/\r\n?/g, "\n")
+          .split("\n")
+          .some(
+            (candidateLine) =>
+              blockingLineHasSubstantiveBytes(candidateLine) &&
+              (phraseMatchesCorpus(candidateLine, line) ||
+                phraseMatchesCorpus(line, candidateLine)),
+          ),
+      ),
+    ),
+  );
+}
+
+function blockingLineHasSubstantiveBytes(line: string): boolean {
+  const withoutArtifactReferences = normalizeLiteralGroundingText(
+    textWithoutConcreteArtifactReferences(line),
+  );
+  // A path:line pointer, punctuation, or a token such as "OK" is routing
+  // metadata, not diagnostic evidence for a definitive blocking verdict.
+  const substantive = withoutArtifactReferences.replace(/[\p{P}\p{S}\s_]+/gu, "");
+  return [...substantive].length >= 12;
+}
+
+function evidenceSourceCorrelatesBlockingReference(
+  source: string,
+  reference: ConcreteArtifactReference,
+  indexedAttachment: IndexedGroundingEvidenceAttachment,
+): boolean {
+  const citation = parseAttachmentEvidenceSource(source);
+  if (
+    !citation?.location ||
+    citation.location.raw !== reference.raw ||
+    citation.location.path !== reference.path ||
+    citation.location.line !== reference.line
+  ) {
+    return false;
+  }
+  if (!evidenceSourceMatchesSingleAttachment(source, indexedAttachment)) return false;
+  const quoteGroups = quotedEvidencePhraseGroups(source);
+  if (quoteGroups.length === 0) return false;
+  const { attachment, custodyIndex } = indexedAttachment;
+
+  if (custodyIndex.validation === "not_patch" && attachment.relative_path === reference.path) {
+    const targetLine = attachment.content.replace(/\r\n?/g, "\n").split("\n")[reference.line - 1];
+    if (targetLine !== undefined && quoteGroupsTouchLine(quoteGroups, targetLine)) {
+      return true;
+    }
+  }
+
+  if (custodyIndex.validation === "validated") {
+    for (const hunk of custodyIndex.postImageFiles) {
+      if (hunk.path !== reference.path) continue;
+      const offset = reference.line - hunk.startLine;
+      const targetLine = offset >= 0 ? hunk.lines[offset] : undefined;
+      if (targetLine !== undefined && quoteGroupsTouchLine(quoteGroups, targetLine)) {
+        return true;
+      }
+    }
+  }
+
+  return evidenceCustodyCorpora(indexedAttachment).some((corpus) =>
+    corpus.text
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .some(
+        (line) =>
+          concreteArtifactReferences(line).some(
+            (declared) =>
+              declared.raw === reference.raw &&
+              declared.path === reference.path &&
+              declared.line === reference.line,
+          ) && quoteGroupsTouchLine(quoteGroups, line),
+      ),
+  );
+}
+
+function blockingClaimsCorrelatedToReviewedArtifact(
+  peerResult: PeerResult,
+  sources: readonly string[],
+  reviewedArtifact: ReviewedArtifactGroundingSource,
+): boolean {
+  if (peerResult.status !== "NOT_READY") return true;
+  const references = canonicalBlockingSummaryReferences(peerResult.structured?.summary ?? "");
+  if (!references || sources.length !== references.length) return false;
+  const normalizedVisible = reviewedArtifact.visible_content.replace(/\r\n?/g, "\n");
+  const visibleSegments = normalizedVisible.split("\n");
+  const completeVisibleLineCount = reviewedArtifact.visibility_truncated
+    ? Math.max(0, visibleSegments.length - 1)
+    : normalizedVisible.endsWith("\n")
+      ? Math.max(0, visibleSegments.length - 1)
+      : visibleSegments.length;
+  const custodyIndex = buildEvidenceCustodyIndex(reviewedArtifact.content);
+  const fullArtifactWasVisible =
+    !reviewedArtifact.visibility_truncated &&
+    reviewedArtifact.visible_content === reviewedArtifact.content;
+  return references.every((reference) => {
+    const physicalTargetLine =
+      reference.path === reviewedArtifact.relative_path &&
+      reference.line <= completeVisibleLineCount
+        ? reviewedArtifact.content.replace(/\r\n?/g, "\n").split("\n")[reference.line - 1]
+        : undefined;
+    const logicalPostImageTargetLines =
+      fullArtifactWasVisible && custodyIndex.validation === "validated"
+        ? custodyIndex.postImageFiles.flatMap((hunk) => {
+            if (hunk.path !== reference.path) return [];
+            const offset = reference.line - hunk.startLine;
+            const targetLine = offset >= 0 ? hunk.lines[offset] : undefined;
+            return targetLine === undefined ? [] : [targetLine];
+          })
+        : [];
+    return sources.some((source) => {
+      const citation = parseAttachmentEvidenceSource(source);
+      if (
+        !citation?.location ||
+        citation.location.raw !== reference.raw ||
+        citation.location.path !== reference.path ||
+        citation.location.line !== reference.line ||
+        !evidenceSourceMatchesReviewedArtifactEnvelope(source, reviewedArtifact)
+      ) {
+        return false;
+      }
+      const physicalLineGrounded =
+        physicalTargetLine !== undefined &&
+        visibleSegments[reference.line - 1] === physicalTargetLine &&
+        blockingLineHasSubstantiveBytes(physicalTargetLine) &&
+        evidenceSourceQuotesExactSubstantiveLine(source, physicalTargetLine);
+      const logicalLineGrounded = logicalPostImageTargetLines.some(
+        (targetLine) =>
+          blockingLineHasSubstantiveBytes(targetLine) &&
+          evidenceSourceQuotesExactSubstantiveLine(source, targetLine),
+      );
+      return physicalLineGrounded || logicalLineGrounded;
+    });
+  });
+}
+
+function canonicalBlockingSummaryReferences(
+  summary: string,
+): ConcreteArtifactReference[] | undefined {
+  const normalized = summary.replace(/\r\n?/g, "\n").trim();
+  if (!normalized) return undefined;
+  const lines = normalized.split("\n");
+  const references: ConcreteArtifactReference[] = [];
+  for (const line of lines) {
+    const blocker = /^BLOCKER:\s*(.+?)\s*$/.exec(line);
+    if (!blocker) return undefined;
+    const reference = exactLocationField(blocker[1] ?? "");
+    if (!reference) return undefined;
+    references.push(reference);
+  }
+  const keys = references.map((reference) => `${reference.path}\0${reference.line}`);
+  return new Set(keys).size === keys.length ? references : undefined;
+}
 
 /**
  * A genuine quote proves only that the quote exists. For a definitive blocking
  * verdict, the peer must also bind the alleged defect to that quote. Requiring
- * the concrete path:line from the short structured summary to appear in a
- * grounded source gives us a deterministic, auditable relevance predicate
- * without attempting to infer program semantics from model prose.
+ * a canonical BLOCKER path:line from the structured summary to equal the
+ * Location field of one grounded source gives us a deterministic, auditable
+ * relevance predicate without attempting to infer clauses from model prose.
  */
 function blockingClaimsCorrelatedToSources(
   peerResult: PeerResult,
   sources: readonly string[],
+  indexedAttachments: readonly IndexedGroundingEvidenceAttachment[],
 ): boolean {
   if (peerResult.status !== "NOT_READY") return true;
   const summary = peerResult.structured?.summary ?? "";
-  const references = [...summary.matchAll(CONCRETE_ARTIFACT_REFERENCE_PATTERN)]
-    .map((match) => normalizeGroundingText(match[0] ?? ""))
-    .filter(Boolean);
-  if (references.length === 0 || sources.length === 0) return false;
-  const normalizedSources = sources.map(normalizeGroundingText);
+  const references = canonicalBlockingSummaryReferences(summary);
+  if (!references || sources.length !== references.length) return false;
+  const sourceLocations = sources.map((source) => parseAttachmentEvidenceSource(source)?.location);
+  if (sourceLocations.some((location) => !location)) return false;
+  const referenceKeys = references
+    .map((reference) => `${reference.path}\0${reference.line}`)
+    .sort();
+  const sourceKeys = sourceLocations
+    .map((location) => `${location?.path}\0${location?.line}`)
+    .sort();
+  if (referenceKeys.some((key, index) => key !== sourceKeys[index])) return false;
   return references.every((reference) =>
-    normalizedSources.some((source) => source.includes(reference)),
+    sources.some((source) =>
+      indexedAttachments.some((attachment) =>
+        evidenceSourceCorrelatesBlockingReference(source, reference, attachment),
+      ),
+    ),
   );
 }
 
@@ -1228,53 +1861,116 @@ export function groundReadyPeerEvidence(
   input: ReadyPeerEvidenceGroundingInput,
 ): ReadyPeerEvidenceGroundingResult {
   const sources = peerResult.structured?.evidence_sources ?? [];
+  const definitiveVerdict = peerResult.status === "READY" || peerResult.status === "NOT_READY";
+  const operatorVerifiedAttachments = input.operatorVerifiedAttachments ?? [];
   const callerSubmittedAttachments = input.callerSubmittedAttachments ?? [];
-  const callerSubmittedEvidenceText = callerSubmittedAttachments
-    .map((attachment) => attachment.content)
-    .join("\n");
-  const evidenceAttachmentProvenanceText = (input.evidenceAttachments ?? callerSubmittedAttachments)
-    .map((attachment) =>
-      [
-        `relative_path=${attachment.relative_path}`,
-        attachment.sha256 ? `sha256=${attachment.sha256}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    )
-    .join("\n");
-  const evidenceChecklistProvenanceText = (input.evidenceChecklistItemIds ?? [])
-    .map((id) => `Checklist-Item: ${id}`)
-    .join("\n");
+  const reviewedArtifact = input.reviewedArtifactSource;
+  const indexedOperatorVerifiedAttachments: IndexedGroundingEvidenceAttachment[] =
+    operatorVerifiedAttachments.map(indexGroundingEvidenceAttachment);
+  if (
+    indexedOperatorVerifiedAttachments.length === 0 &&
+    input.attachedEvidenceText.trim().length > 0
+  ) {
+    const content = input.attachedEvidenceText;
+    const custodyIndex = buildEvidenceCustodyIndex(content);
+    indexedOperatorVerifiedAttachments.push({
+      attachment: {
+        label: "legacy-operator-evidence",
+        relative_path: "evidence/legacy-operator-evidence.txt",
+        sha256: custodyIndex.sourceSha256,
+        content,
+        bytes: Buffer.byteLength(content, "utf8"),
+        truncated: false,
+      },
+      custodyIndex,
+    });
+  }
+  const indexedCallerSubmittedAttachments: IndexedGroundingEvidenceAttachment[] =
+    callerSubmittedAttachments.map(indexGroundingEvidenceAttachment);
+  const allIndexedAttachments = [
+    ...indexedOperatorVerifiedAttachments,
+    ...indexedCallerSubmittedAttachments,
+  ];
+  const operatorEvidenceCorpora =
+    indexedOperatorVerifiedAttachments.flatMap(evidenceCustodyCorpora);
+  const callerEvidenceCorpora = indexedCallerSubmittedAttachments.flatMap(evidenceCustodyCorpora);
+  const runtimeFactCorpora = [
+    input.runtimeFacts.runtime_version
+      ? `runtime_version=${input.runtimeFacts.runtime_version}`
+      : "",
+    input.runtimeFacts.release_date ? `release_date=${input.runtimeFacts.release_date}` : "",
+    ...Object.entries(input.runtimeFacts.model_pins ?? {}).flatMap(([peer, model]) =>
+      model ? [`model.${peer}=${model}`] : [],
+    ),
+  ]
+    .filter(Boolean)
+    .map(literalEvidenceCorpus);
+  const evidenceAttachmentProvenanceCorpora = (
+    input.evidenceAttachments ?? [...operatorVerifiedAttachments, ...callerSubmittedAttachments]
+  ).map((attachment) =>
+    [
+      `relative_path=${attachment.relative_path}`,
+      attachment.sha256 ? `sha256=${attachment.sha256}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  const evidenceChecklistProvenanceCorpora = (input.evidenceChecklistItemIds ?? []).map(
+    (id) => `Checklist-Item: ${id}`,
+  );
   const attachmentRefs = new Set(
     input.attachmentRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
   );
-  const fabrication = detectFabricatedEvidence(sources.join("\n"), {
-    provenanceCorpus: `${input.attachedEvidenceText}\n${callerSubmittedEvidenceText}\n${evidenceAttachmentProvenanceText}\n${evidenceChecklistProvenanceText}`,
+  const fabrication = detectFabricatedEvidenceAcrossRevisions(sources, {
+    provenanceCorpus: "",
+    provenanceCorpora: [
+      ...operatorEvidenceCorpora.map((corpus) => corpus.text),
+      ...callerEvidenceCorpora.map((corpus) => corpus.text),
+      ...evidenceAttachmentProvenanceCorpora,
+      ...evidenceChecklistProvenanceCorpora,
+    ],
     priorDraftCorpus: input.artifactText,
+    priorDraftCorpora: [input.artifactText],
     narrativeCorpus: "",
   });
-  const nonCallerTrustedCorpus = `${input.artifactText}\n${input.attachedEvidenceText}`;
+  const nonCallerTrustedCorpora = [
+    input.artifactText,
+    ...operatorEvidenceCorpora.map((corpus) => corpus.text),
+  ];
   const unsupportedSources = sources.filter((source) => {
-    if (evidenceSourceClaimsAttachmentCustody(source, callerSubmittedAttachments)) {
-      return !callerSubmittedAttachments.some((attachment) =>
-        evidenceSourceMatchesSingleAttachment(source, attachment),
+    if (reviewedArtifact && definitiveVerdict && !evidenceSourceClaimsAttachmentCustody(source)) {
+      // Once canonical reviewed-artifact custody is available, a definitive
+      // vote cannot fall back to the legacy unbound Artifact quote grammar.
+      return true;
+    }
+    if (evidenceSourceClaimsAttachmentCustody(source)) {
+      return !(
+        (reviewedArtifact &&
+          evidenceSourceMatchesReviewedArtifactEnvelope(source, reviewedArtifact)) ||
+        allIndexedAttachments.some((attachment) =>
+          evidenceSourceMatchesSingleAttachment(source, attachment),
+        )
       );
     }
-    return !evidenceSourceHasGroundedAnchor(source, nonCallerTrustedCorpus, attachmentRefs);
+    return !evidenceSourceHasGroundedAnchor(source, nonCallerTrustedCorpora, attachmentRefs);
   });
   const sourceDiagnostics = sources.map((source, index) => {
-    const correlatedAttachment = callerSubmittedAttachments.find((attachment) =>
+    const correlatedAttachment = allIndexedAttachments.find((attachment) =>
       evidenceSourceMatchesSingleAttachment(source, attachment),
     );
+    const correlatedReviewedArtifact =
+      reviewedArtifact && evidenceSourceMatchesReviewedArtifactEnvelope(source, reviewedArtifact)
+        ? reviewedArtifact.relative_path
+        : undefined;
     return {
       index,
       supported: !unsupportedSources.includes(source),
-      attachment_custody_claimed: evidenceSourceClaimsAttachmentCustody(
-        source,
-        callerSubmittedAttachments,
-      ),
-      ...(correlatedAttachment
-        ? { correlated_attachment: correlatedAttachment.relative_path }
+      attachment_custody_claimed: evidenceSourceClaimsAttachmentCustody(source),
+      ...(correlatedReviewedArtifact || correlatedAttachment
+        ? {
+            correlated_attachment:
+              correlatedReviewedArtifact ?? correlatedAttachment?.attachment.relative_path,
+          }
         : {}),
     };
   });
@@ -1290,14 +1986,17 @@ export function groundReadyPeerEvidence(
         isAssertiveCurrentStateClaim(line),
       )
     : [];
-  const failedClaimsForCorpus = (
+  const operationalAssertionMatchesCorpora = (
+    claim: EvidenceOperationalAssertion,
+    corpora: readonly EvidenceCorpus[],
+  ): boolean => evidenceCorroboratesOperationalAssertionAcrossCorpora(claim, corpora);
+  const failedClaimsForCorpora = (
     corpusName: "caller_evidence" | "peer_sources",
-    corpusText: string,
+    corpora: readonly EvidenceCorpus[],
   ) => {
-    const conflictIndex = buildEvidenceConflictIndex(corpusText);
     return [
       ...operationalAssertions.flatMap((claim, index) =>
-        evidenceCorroboratesOperationalAssertion(claim, corpusText, conflictIndex)
+        operationalAssertionMatchesCorpora(claim, corpora)
           ? []
           : [
               {
@@ -1309,7 +2008,7 @@ export function groundReadyPeerEvidence(
             ],
       ),
       ...fabricationProneClaims.flatMap((claim, index) =>
-        operationalClaimCorroborated(claim, corpusText)
+        operationalClaimCorroboratedAcrossCorpora(claim, corpora)
           ? []
           : [
               {
@@ -1321,7 +2020,7 @@ export function groundReadyPeerEvidence(
             ],
       ),
       ...historicalClaims.flatMap((claim, index) =>
-        historicalClaimHasMatchingSnapshot(claim, corpusText)
+        corpora.some((corpus) => historicalClaimHasMatchingSnapshot(claim, corpus.text))
           ? []
           : [
               {
@@ -1333,7 +2032,7 @@ export function groundReadyPeerEvidence(
             ],
       ),
       ...forcedCurrentStateClaims.flatMap((claim, index) =>
-        truthfulnessClaimHasMatchingEvidence(claim, corpusText)
+        truthfulnessClaimHasMatchingEvidenceAcrossCorpora(claim, corpora)
           ? []
           : [
               {
@@ -1346,68 +2045,117 @@ export function groundReadyPeerEvidence(
       ),
     ];
   };
-  const failedCallerEvidenceClaimDiagnostics = failedClaimsForCorpus(
+  const failedCallerEvidenceClaimDiagnostics = failedClaimsForCorpora(
     "caller_evidence",
-    callerSubmittedEvidenceText,
+    callerEvidenceCorpora,
   );
   const hasHighRiskOperationalClaims =
     operationalAssertions.length > 0 ||
     fabricationProneClaims.length > 0 ||
     historicalClaims.length > 0 ||
     forcedCurrentStateClaims.length > 0;
-  const operatorAttachedConflictIndex = buildEvidenceConflictIndex(input.attachedEvidenceText);
   const operatorGrounded =
     hasHighRiskOperationalClaims &&
     operationalAssertions.every((assertion) =>
-      evidenceCorroboratesOperationalAssertion(
-        assertion,
-        input.attachedEvidenceText,
-        operatorAttachedConflictIndex,
-      ),
+      operationalAssertionMatchesCorpora(assertion, operatorEvidenceCorpora),
     ) &&
     fabricationProneClaims.every((claim) =>
-      operationalClaimCorroborated(claim, input.attachedEvidenceText),
+      operationalClaimCorroboratedAcrossCorpora(claim, operatorEvidenceCorpora),
     ) &&
     historicalClaims.every((claim) =>
-      historicalClaimHasMatchingSnapshot(claim, input.attachedEvidenceText),
+      operatorEvidenceCorpora.some((corpus) =>
+        historicalClaimHasMatchingSnapshot(claim, corpus.text),
+      ),
     ) &&
     forcedCurrentStateClaims.every((claim) =>
-      truthfulnessClaimHasMatchingEvidence(claim, input.attachedEvidenceText),
+      truthfulnessClaimHasMatchingEvidenceAcrossCorpora(claim, operatorEvidenceCorpora),
     );
   const peerEvidenceGrounded =
     hasHighRiskOperationalClaims && failedCallerEvidenceClaimDiagnostics.length === 0;
+  const visibleOperationalAuthorityCorpora = [
+    ...operatorEvidenceCorpora,
+    ...callerEvidenceCorpora,
+    ...runtimeFactCorpora,
+  ];
+  const visibleOperationalClaimsGrounded =
+    !hasHighRiskOperationalClaims ||
+    (operationalAssertions.every((assertion) =>
+      operationalAssertionMatchesCorpora(assertion, visibleOperationalAuthorityCorpora),
+    ) &&
+      fabricationProneClaims.every((claim) =>
+        operationalClaimCorroboratedAcrossCorpora(claim, visibleOperationalAuthorityCorpora),
+      ) &&
+      historicalClaims.every((claim) =>
+        visibleOperationalAuthorityCorpora.some((corpus) =>
+          historicalClaimHasMatchingSnapshot(claim, corpus.text),
+        ),
+      ) &&
+      forcedCurrentStateClaims.every((claim) =>
+        truthfulnessClaimHasMatchingEvidenceAcrossCorpora(
+          claim,
+          visibleOperationalAuthorityCorpora,
+        ),
+      ));
+  const reviewedArtifactOperationalAuthorityAllowsVerdict = !(
+    reviewedArtifact &&
+    peerResult.status === "READY" &&
+    !visibleOperationalClaimsGrounded
+  );
   const peerSubmittedEvidenceRequired =
     peerResult.status === "READY" &&
     (input.requirePeerSubmittedCorroboration === true ||
       (!operatorGrounded && hasHighRiskOperationalClaims && callerSubmittedAttachments.length > 0));
-  const sourceText = sources.join("\n");
-  const failedPeerSourceClaimDiagnostics = failedClaimsForCorpus("peer_sources", sourceText);
-  const blockingClaimsCorrelated = blockingClaimsCorrelatedToSources(peerResult, sources);
+  const failedPeerSourceClaimDiagnostics = failedClaimsForCorpora(
+    "peer_sources",
+    sources.map(literalEvidenceCorpus),
+  );
+  const blockingClaimsCorrelated = reviewedArtifact
+    ? blockingClaimsCorrelatedToReviewedArtifact(peerResult, sources, reviewedArtifact)
+    : blockingClaimsCorrelatedToSources(peerResult, sources, allIndexedAttachments);
+  const reviewedArtifactCitationPresent =
+    !reviewedArtifact ||
+    !definitiveVerdict ||
+    (peerResult.status === "NOT_READY"
+      ? blockingClaimsCorrelated
+      : sources.some((source) => evidenceSourceMatchesReviewedArtifact(source, reviewedArtifact)));
+  const reviewedArtifactVisibilityAllowsVerdict = !(
+    peerResult.status === "READY" && reviewedArtifact?.visibility_truncated
+  );
   const peerCustodySourcesCorrelated =
     sources.length > 0 &&
-    sources.every((source) =>
-      callerSubmittedAttachments.some((attachment) =>
-        evidenceSourceMatchesSingleAttachment(source, attachment),
-      ),
+    sources.every(
+      (source) =>
+        (reviewedArtifact !== undefined &&
+          evidenceSourceMatchesReviewedArtifact(source, reviewedArtifact)) ||
+        indexedCallerSubmittedAttachments.some((attachment) =>
+          evidenceSourceMatchesSingleAttachment(source, attachment),
+        ),
     );
+  const callerCustodySourcePresent = sources.some((source) =>
+    indexedCallerSubmittedAttachments.some((attachment) =>
+      evidenceSourceMatchesSingleAttachment(source, attachment),
+    ),
+  );
   const peerSubmittedEvidenceCorroborated =
     !peerSubmittedEvidenceRequired ||
     (peerResult.structured?.confidence === "verified" &&
       callerSubmittedAttachments.length > 0 &&
       peerEvidenceGrounded &&
-      evidenceSourceNamesPeerCustody(sourceText, callerSubmittedAttachments) &&
       peerCustodySourcesCorrelated &&
+      callerCustodySourcePresent &&
       failedPeerSourceClaimDiagnostics.length === 0);
   const failedClaimDiagnostics = peerSubmittedEvidenceRequired
     ? [...failedCallerEvidenceClaimDiagnostics, ...failedPeerSourceClaimDiagnostics]
     : [];
-  const definitiveVerdict = peerResult.status === "READY" || peerResult.status === "NOT_READY";
   const suppliedSourcesGrounded =
     sources.length > 0 &&
     unsupportedSources.length === 0 &&
     !fabrication.fabricated &&
     peerSubmittedEvidenceCorroborated &&
-    blockingClaimsCorrelated;
+    blockingClaimsCorrelated &&
+    reviewedArtifactCitationPresent &&
+    reviewedArtifactVisibilityAllowsVerdict &&
+    reviewedArtifactOperationalAuthorityAllowsVerdict;
   const grounded = definitiveVerdict
     ? suppliedSourcesGrounded
     : sources.length === 0 || suppliedSourcesGrounded;
@@ -1420,6 +2168,15 @@ export function groundReadyPeerEvidence(
   if (peerResult.status === "NOT_READY" && !blockingClaimsCorrelated) {
     failedPredicates.push("blocking_claims_correlated_to_sources");
   }
+  if (definitiveVerdict && !reviewedArtifactCitationPresent) {
+    failedPredicates.push("reviewed_artifact_citation_present");
+  }
+  if (!reviewedArtifactVisibilityAllowsVerdict) {
+    failedPredicates.push("reviewed_artifact_fully_visible_for_ready");
+  }
+  if (!reviewedArtifactOperationalAuthorityAllowsVerdict) {
+    failedPredicates.push("operational_claims_corroborated_by_visible_authoritative_evidence");
+  }
   if (peerSubmittedEvidenceRequired) {
     if (peerResult.structured?.confidence !== "verified") {
       failedPredicates.push("peer_confidence_verified");
@@ -1430,6 +2187,9 @@ export function groundReadyPeerEvidence(
     if (!peerEvidenceGrounded) failedPredicates.push("artifact_claims_match_caller_evidence");
     if (!peerCustodySourcesCorrelated) {
       failedPredicates.push("each_source_path_digest_quote_match_one_attachment");
+    }
+    if (!callerCustodySourcePresent) {
+      failedPredicates.push("caller_submitted_evidence_citation_present");
     }
     if (!peerSubmittedEvidenceCorroborated) {
       failedPredicates.push("peer_submitted_evidence_corroborated");
@@ -1457,21 +2217,27 @@ export function groundReadyPeerEvidence(
         : "needs_evidence";
   const warning = fabrication.fabricated
     ? `${warningPrefix}_evidence_sources_fabricated`
-    : sources.length === 0
-      ? `${warningPrefix}_evidence_sources_missing`
-      : unsupportedSources.length > 0
-        ? `${warningPrefix}_evidence_sources_ungrounded`
-        : !blockingClaimsCorrelated
-          ? "blocking_evidence_sources_irrelevant"
-          : peerResult.structured?.confidence !== "verified"
-            ? "ready_peer_submitted_evidence_requires_verified_confidence"
-            : callerSubmittedAttachments.length === 0
-              ? "ready_peer_submitted_evidence_requires_attachment"
-              : !peerCustodySourcesCorrelated
-                ? "ready_peer_submitted_evidence_requires_path_hash_and_correlated_raw_quote"
-                : !peerEvidenceGrounded
-                  ? "ready_peer_submitted_evidence_does_not_corroborate_artifact_claims"
-                  : "ready_peer_submitted_evidence_not_corroborated";
+    : !reviewedArtifactVisibilityAllowsVerdict
+      ? "ready_reviewed_artifact_truncated_in_prompt"
+      : !reviewedArtifactOperationalAuthorityAllowsVerdict
+        ? "ready_operational_claims_lack_visible_authoritative_evidence"
+        : !reviewedArtifactCitationPresent
+          ? `${warningPrefix}_reviewed_artifact_citation_missing`
+          : sources.length === 0
+            ? `${warningPrefix}_evidence_sources_missing`
+            : unsupportedSources.length > 0
+              ? `${warningPrefix}_evidence_sources_ungrounded`
+              : !blockingClaimsCorrelated
+                ? "blocking_evidence_sources_irrelevant"
+                : peerResult.structured?.confidence !== "verified"
+                  ? "ready_peer_submitted_evidence_requires_verified_confidence"
+                  : callerSubmittedAttachments.length === 0
+                    ? "ready_peer_submitted_evidence_requires_attachment"
+                    : !peerCustodySourcesCorrelated
+                      ? "ready_peer_submitted_evidence_requires_path_hash_and_correlated_raw_quote"
+                      : !peerEvidenceGrounded
+                        ? "ready_peer_submitted_evidence_does_not_corroborate_artifact_claims"
+                        : "ready_peer_submitted_evidence_not_corroborated";
   const parserWarnings = [...peerResult.parser_warnings, warning];
   const callerRequest =
     peerResult.status === "READY" ? GROUNDING_READY_REMEDIATION : GROUNDING_BLOCKING_REMEDIATION;
@@ -1698,11 +2464,11 @@ export function detectMetaAuditFabrication(revisionText: string): MetaAuditDetec
 
 // v3.5.0 (CRV2-4, Codex operational report) — evidence preflight.
 //
-// A PURE TEXTUAL pre-check that runs BEFORE any paid peer call.
-// cross-review stays an API-only orchestrator: this function never
-// executes shell, never reads the repo, never runs `git diff`. It only
-// inspects text the caller already supplied (task + initial_draft +
-// the structured `evidence` field + already-attached evidence).
+// A local pre-check that runs BEFORE any paid peer call. cross-review stays an
+// API-only orchestrator: it never executes caller commands, reads the repo or
+// runs `git diff`. A fixed shell-free Git parser may validate a supplied patch
+// without applying it; every inspected byte still comes from task,
+// initial_draft, structured evidence or an already-attached artifact.
 //
 // Goal: catch the f0db3970-class failure — a submission that CLAIMS
 // completed operational work (tests pass, a diff exists, a build was
@@ -2331,6 +3097,18 @@ function buildEvidenceConflictIndex(evidenceText: string): EvidenceConflictIndex
   };
 }
 
+function mergeEvidenceConflictIndexes(corpora: readonly EvidenceCorpus[]): EvidenceConflictIndex {
+  const indexes = corpora.map((corpus) => buildEvidenceConflictIndex(corpus.text));
+  return {
+    records: indexes.flatMap((index) => index.records),
+    failingCommandIdentities: new Set(
+      indexes.flatMap((index) => [...index.failingCommandIdentities]),
+    ),
+    hasUnidentifiedFailure: indexes.some((index) => index.hasUnidentifiedFailure),
+    recordsAnalyzed: indexes.reduce((total, index) => total + index.recordsAnalyzed, 0),
+  };
+}
+
 export function evidenceConflictIndexDiagnostics(evidenceText: string): {
   record_count: number;
   records_analyzed: number;
@@ -2348,10 +3126,18 @@ export function evidenceConflictIndexDiagnostics(evidenceText: string): {
 
 function evidenceCorroboratesOperationalAssertion(
   assertion: EvidenceOperationalAssertion,
-  evidenceText: string,
-  conflictIndex = buildEvidenceConflictIndex(evidenceText),
+  corpus: EvidenceCorpus,
+  conflictIndex = buildEvidenceConflictIndex(corpus.text),
 ): boolean {
+  const evidenceText = corpus.text;
+  if (assertion.kind === "git_diff" && corpus.kind === "validated_patch") return true;
   if (!evidenceText.trim()) return false;
+  if (
+    conflictIndex.hasUnidentifiedFailure &&
+    ["tests_success", "build_success", "ci_success", "checks_success"].includes(assertion.kind)
+  ) {
+    return false;
+  }
   if (assertion.kind === "count") {
     const exact = new RegExp(`\\b${assertion.value}\\s+${assertion.outcome}\\b`, "i");
     return conflictIndex.records.some((record) => {
@@ -2435,6 +3221,57 @@ function evidenceCorroboratesOperationalAssertion(
   );
 }
 
+function evidenceCorroboratesOperationalAssertionAcrossCorpora(
+  assertion: EvidenceOperationalAssertion,
+  corpora: readonly EvidenceCorpus[],
+): boolean {
+  if (corpora.length === 0) return false;
+  const conflictIndex = mergeEvidenceConflictIndexes(corpora);
+  return corpora.some((corpus) =>
+    evidenceCorroboratesOperationalAssertion(assertion, corpus, conflictIndex),
+  );
+}
+
+function operationalStateClaimCorroboratedAcrossCorpora(
+  claim: string,
+  corpora: readonly EvidenceCorpus[],
+): boolean {
+  if (
+    POSITIVE_OPERATIONAL_STATE_PATTERN.test(claim) &&
+    mergeEvidenceConflictIndexes(corpora).hasUnidentifiedFailure
+  ) {
+    return false;
+  }
+  return corpora.some((corpus) => operationalStateClaimCorroborated(claim, corpus.text));
+}
+
+function operationalClaimCorroboratedAcrossCorpora(
+  claim: string,
+  corpora: readonly EvidenceCorpus[],
+): boolean {
+  if (
+    /\b(?:confirmed|confirmei|succeeded|success|sucesso)\b/i.test(claim) &&
+    mergeEvidenceConflictIndexes(corpora).hasUnidentifiedFailure
+  ) {
+    return false;
+  }
+  return corpora.some((corpus) => operationalClaimCorroborated(claim, corpus.text));
+}
+
+function truthfulnessClaimHasMatchingEvidenceAcrossCorpora(
+  claim: string,
+  corpora: readonly EvidenceCorpus[],
+): boolean {
+  if (
+    operationalStateClaimDetected(claim) &&
+    POSITIVE_OPERATIONAL_STATE_PATTERN.test(claim) &&
+    mergeEvidenceConflictIndexes(corpora).hasUnidentifiedFailure
+  ) {
+    return false;
+  }
+  return corpora.some((corpus) => truthfulnessClaimHasMatchingEvidence(claim, corpus.text));
+}
+
 function normalizeEvidenceRef(value: string): string {
   return value
     .trim()
@@ -2453,14 +3290,26 @@ function evidenceRefBasename(normalized: string): string | undefined {
 const EMBEDDED_EVIDENCE_FILE_REF_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._/\\-]*\.(?:output|log|txt|json|ndjson|md|diff|patch|csv)$/i;
 
-function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
-  const refs: string[] = [];
-  const seen = new Set<string>();
-  const addRef = (rawRef: string): void => {
+interface EmbeddedEvidenceRefs {
+  normalizedRefs: string[];
+  exactGitPaths: string[];
+}
+
+function extractEmbeddedEvidenceRefs(evidenceText: string): EmbeddedEvidenceRefs {
+  const normalizedRefs: string[] = [];
+  const exactGitPaths: string[] = [];
+  const seenNormalized = new Set<string>();
+  const seenGitPaths = new Set<string>();
+  const addNormalizedRef = (rawRef: string): void => {
     const canonical = normalizeEvidenceRef(rawRef);
-    if (!canonical || seen.has(canonical)) return;
-    seen.add(canonical);
-    refs.push(canonical);
+    if (!canonical || seenNormalized.has(canonical)) return;
+    seenNormalized.add(canonical);
+    normalizedRefs.push(canonical);
+  };
+  const addExactGitPath = (repositoryPath: string): void => {
+    if (!repositoryPath || seenGitPaths.has(repositoryPath)) return;
+    seenGitPaths.add(repositoryPath);
+    exactGitPaths.push(repositoryPath);
   };
   const lines = evidenceText.replace(/\r\n?/g, "\n").split("\n");
   for (let index = 0; index < lines.length; index += 1) {
@@ -2481,245 +3330,69 @@ function extractEmbeddedEvidenceRefs(evidenceText: string): string[] {
       if ((lines[cursor] ?? "").trim()) bodyHasContent = true;
     }
     if (!paired || !bodyHasContent) continue;
-    addRef(canonical);
+    addNormalizedRef(canonical);
   }
 
-  // CROSREV-32: a persisted unified diff is itself literal file evidence.
-  // Recognize only a structurally complete post-image section: a parseable
-  // `diff --git a/... b/...` header, ordered and path-coherent `---`/`+++`
-  // headers, a hunk header, and at least one context or added line. A filename
-  // merely mentioned in prose, a header-only patch, a mismatched path, or a
-  // deleted-file pre-image therefore cannot manufacture attachment custody.
-  let inDiff = false;
-  let structureValid = false;
-  let diffPreImageRef: string | undefined;
-  let diffPostImageRef: string | undefined;
-  let preImageRef: string | null | undefined;
-  let postImageRef: string | null | undefined;
-  let sawHunk = false;
-  let hunkOldRemaining: number | undefined;
-  let hunkNewRemaining: number | undefined;
-  let postImageHasContent = false;
-  const pathsAreCoherent = (): boolean =>
-    diffPreImageRef !== undefined &&
-    diffPostImageRef !== undefined &&
-    preImageRef !== undefined &&
-    postImageRef !== undefined &&
-    postImageRef !== null &&
-    postImageRef === diffPostImageRef &&
-    (preImageRef === null ? diffPreImageRef === diffPostImageRef : preImageRef === diffPreImageRef);
-  const finishDiff = (): void => {
-    if (
-      inDiff &&
-      structureValid &&
-      pathsAreCoherent() &&
-      postImageRef &&
-      sawHunk &&
-      hunkOldRemaining === 0 &&
-      hunkNewRemaining === 0 &&
-      postImageHasContent
-    ) {
-      addRef(postImageRef);
-    }
-    inDiff = false;
-    structureValid = false;
-    diffPreImageRef = undefined;
-    diffPostImageRef = undefined;
-    preImageRef = undefined;
-    postImageRef = undefined;
-    sawHunk = false;
-    hunkOldRemaining = undefined;
-    hunkNewRemaining = undefined;
-    postImageHasContent = false;
-  };
-  const decodeGitPath = (
-    rawPath: string,
-    expectedPrefix: "a/" | "b/",
-    allowNull: boolean,
-  ): string | null | undefined => {
-    const withoutTimestamp = rawPath.split("\t", 1)[0]?.trim() ?? "";
-    if (!withoutTimestamp) return undefined;
-    if (withoutTimestamp === "/dev/null") return allowNull ? null : undefined;
-    let decoded = withoutTimestamp;
-    if (decoded.startsWith('"') && decoded.endsWith('"')) {
-      try {
-        // Git's `core.quotePath` uses C-style quoting, not JSON. Admit only the
-        // escape intersection that both grammars decode identically. In
-        // particular, JSON-only `\/` and `\uXXXX` must fail closed instead of
-        // manufacturing custody for another repository path.
-        const quotedBody = decoded.slice(1, -1);
-        for (let index = 0; index < quotedBody.length; index += 1) {
-          if (quotedBody[index] !== "\\") continue;
-          const escaped = quotedBody[index + 1];
-          if (!escaped || !['"', "\\", "b", "f", "n", "r", "t"].includes(escaped)) {
-            return undefined;
-          }
-          index += 1;
-        }
-        const parsed = JSON.parse(decoded) as unknown;
-        if (typeof parsed !== "string") return undefined;
-        decoded = parsed;
-      } catch {
-        return undefined;
-      }
-    }
-    if (!decoded.startsWith(expectedPrefix)) return undefined;
-    const repositoryPath = decoded.slice(2);
-    // A literal backslash is a valid byte in a POSIX path. Normalizing it to a
-    // slash here would conflate two distinct Git objects, so reject it at this
-    // provenance boundary while leaving human-facing reference normalization
-    // unchanged elsewhere.
-    if (repositoryPath.includes("\\")) return undefined;
-    const normalized = normalizeEvidenceRef(repositoryPath);
-    return normalized || undefined;
-  };
-  const splitGitPathTokens = (rawHeader: string): [string, string] | undefined => {
-    const tokens: string[] = [];
-    let index = 0;
-    while (index < rawHeader.length) {
-      while (index < rawHeader.length && /\s/.test(rawHeader[index] ?? "")) index += 1;
-      if (index >= rawHeader.length) break;
-      const start = index;
-      if (rawHeader[index] === '"') {
-        index += 1;
-        let closed = false;
-        while (index < rawHeader.length) {
-          const character = rawHeader[index];
-          if (character === "\\") {
-            if (index + 1 >= rawHeader.length) return undefined;
-            index += 2;
-            continue;
-          }
-          index += 1;
-          if (character === '"') {
-            closed = true;
-            break;
-          }
-        }
-        if (!closed) return undefined;
-      } else {
-        while (index < rawHeader.length && !/\s/.test(rawHeader[index] ?? "")) index += 1;
-      }
-      tokens.push(rawHeader.slice(start, index));
-      if (tokens.length > 2) return undefined;
-    }
-    return tokens.length === 2 ? [tokens[0] ?? "", tokens[1] ?? ""] : undefined;
-  };
-  const parseDiffHeader = (line: string): [string, string] | undefined => {
-    const tokens = splitGitPathTokens(line.slice("diff --git".length));
-    if (!tokens) return undefined;
-    const before = decodeGitPath(tokens[0], "a/", false);
-    const after = decodeGitPath(tokens[1], "b/", false);
-    return typeof before === "string" && typeof after === "string" ? [before, after] : undefined;
-  };
-  for (const line of lines) {
-    if (/^diff --git\s+/.test(line)) {
-      finishDiff();
-      const parsedHeader = parseDiffHeader(line);
-      if (parsedHeader) {
-        [diffPreImageRef, diffPostImageRef] = parsedHeader;
-        inDiff = true;
-        structureValid = true;
-      }
-      continue;
-    }
-    if (!inDiff) continue;
-    // Once a hunk starts, its prefix owns the line. File content can itself
-    // begin with `---` or `+++`; treating those as new file headers would both
-    // reject a valid post-image and open header-confusion edge cases. Consume
-    // every hunk line against the declared old/new counts before considering
-    // structural headers.
-    if (hunkOldRemaining !== undefined && hunkNewRemaining !== undefined) {
-      const hunkComplete = hunkOldRemaining === 0 && hunkNewRemaining === 0;
-      if (hunkComplete && line !== "\\ No newline at end of file" && !line.startsWith("@@")) {
-        finishDiff();
-        continue;
-      }
-      if (line.startsWith("+")) {
-        if (hunkNewRemaining <= 0) {
-          structureValid = false;
-        } else {
-          hunkNewRemaining -= 1;
-          postImageHasContent = true;
-        }
-        continue;
-      }
-      if (line.startsWith(" ")) {
-        if (hunkOldRemaining <= 0 || hunkNewRemaining <= 0) {
-          structureValid = false;
-        } else {
-          hunkOldRemaining -= 1;
-          hunkNewRemaining -= 1;
-          postImageHasContent = true;
-        }
-        continue;
-      }
-      if (line.startsWith("-")) {
-        if (hunkOldRemaining <= 0) {
-          structureValid = false;
-        } else {
-          hunkOldRemaining -= 1;
-        }
-        continue;
-      }
-      if (line === "\\ No newline at end of file") continue;
-    }
-    const preImage = /^---\s+(.+?)\s*$/.exec(line);
-    if (preImage) {
-      if (sawHunk || preImageRef !== undefined || postImageRef !== undefined) {
-        structureValid = false;
-      } else {
-        preImageRef = decodeGitPath(preImage[1] ?? "", "a/", true);
-        if (preImageRef === undefined) structureValid = false;
-      }
-      continue;
-    }
-    const postImage = /^\+\+\+\s+(.+?)\s*$/.exec(line);
-    if (postImage) {
-      if (sawHunk || preImageRef === undefined || postImageRef !== undefined) {
-        structureValid = false;
-      } else {
-        postImageRef = decodeGitPath(postImage[1] ?? "", "b/", true);
-        if (postImageRef === undefined) structureValid = false;
-      }
-      continue;
-    }
-    if (line.startsWith("@@")) {
-      const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(line);
-      const numericFields = header
-        ? [header[1], header[2] ?? "1", header[3], header[4] ?? "1"].map(Number)
-        : [];
-      const previousHunkComplete =
-        hunkOldRemaining === undefined || (hunkOldRemaining === 0 && hunkNewRemaining === 0);
-      if (
-        !header ||
-        !structureValid ||
-        !pathsAreCoherent() ||
-        !previousHunkComplete ||
-        numericFields.some((value) => !Number.isSafeInteger(value) || value < 0)
-      ) {
-        structureValid = false;
-      } else {
-        sawHunk = true;
-        hunkOldRemaining = numericFields[1];
-        hunkNewRemaining = numericFields[3];
-      }
-      continue;
-    }
-    if (hunkOldRemaining === undefined || hunkNewRemaining === undefined) {
-      if (preImageRef !== undefined || postImageRef !== undefined) structureValid = false;
-      continue;
-    }
-    // A persisted attachment can concatenate a complete patch with raw check
-    // records or prose. Terminate the current diff at the first non-diff line;
-    // do not let trailing material invalidate an already complete post-image.
-    finishDiff();
+  // Git is the grammar authority for persisted unified diffs. The shared,
+  // SHA-addressed index preserves post-image paths byte-for-byte and fails
+  // closed when Git is absent, rejects the patch, times out, or emits unsafe
+  // output. BEGIN FILE references remain a separate human-facing convention.
+  for (const repositoryPath of buildEvidenceCustodyIndex(evidenceText).exactGitPaths) {
+    addExactGitPath(repositoryPath);
   }
-  finishDiff();
-  return refs;
+  return { normalizedRefs, exactGitPaths };
 }
 
-function findUnattachedEvidenceReferences(text: string, attachedEvidenceRefs: string[]): string[] {
+interface EvidenceArtifactCandidate {
+  rawRef: string;
+  start: number;
+  end: number;
+  attachedByExactGitPath: boolean;
+}
+
+const QUOTED_EVIDENCE_ARTIFACT_PATTERN =
+  /([`'"])((?:\.[/\\])?[A-Za-z0-9][A-Za-z0-9._/\\ -]*\.(?:output|log|txt|json|ndjson|md|diff|patch|csv))\1/gi;
+
+function exactGitPathCandidates(
+  line: string,
+  exactGitPaths: string[],
+): EvidenceArtifactCandidate[] {
+  const candidates: EvidenceArtifactCandidate[] = [];
+  for (const repositoryPath of exactGitPaths) {
+    let cursor = 0;
+    while (cursor <= line.length - repositoryPath.length) {
+      const start = line.indexOf(repositoryPath, cursor);
+      if (start === -1) break;
+      const end = start + repositoryPath.length;
+      const before = line[start - 1];
+      const after = line[end];
+      const boundedBefore = start === 0 || before === undefined || /[\s`'"([{]/.test(before);
+      const boundedAfter =
+        end === line.length || after === undefined || /[\s`'")}\],;:!?.]/.test(after);
+      const terminalPunctuation = /[.,;:)\]}]$/.test(repositoryPath);
+      const explicitlyQuoted =
+        (before === "`" && after === "`") ||
+        (before === "'" && after === "'") ||
+        (before === '"' && after === '"');
+      if (boundedBefore && boundedAfter && (!terminalPunctuation || explicitlyQuoted)) {
+        candidates.push({
+          rawRef: repositoryPath,
+          start,
+          end,
+          attachedByExactGitPath: true,
+        });
+      }
+      cursor = Math.max(end, start + 1);
+    }
+  }
+  return candidates;
+}
+
+function findUnattachedEvidenceReferences(
+  text: string,
+  attachedEvidenceRefs: string[],
+  exactGitPaths: string[],
+): string[] {
   const attachedExact = new Set(
     attachedEvidenceRefs.map(normalizeEvidenceRef).filter((ref) => ref.length > 0),
   );
@@ -2728,31 +3401,85 @@ function findUnattachedEvidenceReferences(text: string, attachedEvidenceRefs: st
       .map((ref) => evidenceRefBasename(ref))
       .filter((ref): ref is string => Boolean(ref)),
   );
+  const attachedGitPaths = new Set(exactGitPaths);
+  const attachedGitBasenameCounts = new Map<string, number>();
+  for (const repositoryPath of exactGitPaths) {
+    const basename = repositoryPath.split("/").at(-1);
+    if (!basename) continue;
+    attachedGitBasenameCounts.set(basename, (attachedGitBasenameCounts.get(basename) ?? 0) + 1);
+  }
   const missing: string[] = [];
   const seen = new Set<string>();
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   for (const line of lines) {
+    const exactCandidates = exactGitPathCandidates(line, exactGitPaths);
+    QUOTED_EVIDENCE_ARTIFACT_PATTERN.lastIndex = 0;
+    const quotedCandidates = [...line.matchAll(QUOTED_EVIDENCE_ARTIFACT_PATTERN)].map(
+      (match): EvidenceArtifactCandidate => {
+        const rawRef = match[2] ?? "";
+        const rawOffset = match[0].indexOf(rawRef);
+        const start = (match.index ?? 0) + Math.max(rawOffset, 0);
+        return {
+          rawRef,
+          start,
+          end: start + rawRef.length,
+          attachedByExactGitPath: false,
+        };
+      },
+    );
     EXTERNAL_EVIDENCE_ARTIFACT_PATTERN.lastIndex = 0;
-    const artifactMatches = [...line.matchAll(EXTERNAL_EVIDENCE_ARTIFACT_PATTERN)];
-    if (!artifactMatches.length) continue;
-    const contextWithoutArtifactTokens = artifactMatches.reduce((current, match) => {
-      const rawRef = match[1];
-      return rawRef ? current.replace(rawRef, " ") : current;
-    }, line);
+    const occupiedRanges = [...exactCandidates, ...quotedCandidates];
+    const unquotedCandidates = [...line.matchAll(EXTERNAL_EVIDENCE_ARTIFACT_PATTERN)]
+      .map((match): EvidenceArtifactCandidate => {
+        const rawRef = match[1] ?? "";
+        const rawOffset = match[0].indexOf(rawRef);
+        const start = (match.index ?? 0) + Math.max(rawOffset, 0);
+        return {
+          rawRef,
+          start,
+          end: start + rawRef.length,
+          attachedByExactGitPath: false,
+        };
+      })
+      .filter(
+        (candidate) =>
+          !occupiedRanges.some(
+            (occupied) => candidate.start >= occupied.start && candidate.end <= occupied.end,
+          ),
+      );
+    const candidates = [...exactCandidates, ...quotedCandidates, ...unquotedCandidates].filter(
+      (candidate, index, all) =>
+        candidate.rawRef.length > 0 &&
+        all.findIndex(
+          (other) =>
+            other.start === candidate.start &&
+            other.end === candidate.end &&
+            other.rawRef === candidate.rawRef,
+        ) === index,
+    );
+    if (!candidates.length) continue;
+    const contextWithoutArtifactTokens = [...candidates]
+      .sort((left, right) => right.start - left.start)
+      .reduce(
+        (current, candidate) =>
+          `${current.slice(0, candidate.start)} ${current.slice(candidate.end)}`,
+        line,
+      );
     if (!EXTERNAL_EVIDENCE_CONTEXT_PATTERN.test(contextWithoutArtifactTokens)) continue;
-    for (const match of artifactMatches) {
-      const rawRef = match[1];
-      if (!rawRef) continue;
-      const rawOffset = match[0].indexOf(rawRef);
-      const rawStart = (match.index ?? 0) + Math.max(rawOffset, 0);
-      if (line[rawStart + rawRef.length] === "(") continue;
+    for (const candidate of candidates) {
+      const { rawRef, end, attachedByExactGitPath } = candidate;
+      if (line[end] === "(") continue;
       const canonical = normalizeEvidenceRef(rawRef);
       if (!canonical || seen.has(canonical)) continue;
       const pathQualified = canonical.includes("/");
-      const attached = pathQualified
+      const attachedByNormalizedRef = pathQualified
         ? attachedExact.has(canonical)
         : attachedExact.has(canonical) || attachedBasenames.has(canonical);
-      if (attached) continue;
+      const exactClaim = rawRef.replace(/^(?:\.\/)+/, "");
+      const attachedByGitIdentity = pathQualified
+        ? attachedGitPaths.has(exactClaim)
+        : attachedGitPaths.has(exactClaim) || attachedGitBasenameCounts.get(exactClaim) === 1;
+      if (attachedByExactGitPath || attachedByNormalizedRef || attachedByGitIdentity) continue;
       seen.add(canonical);
       missing.push(rawRef.replace(/\\/g, "/"));
     }
@@ -2779,7 +3506,10 @@ export function evidencePreflight(params: {
   initialDraft?: string | undefined;
   structuredEvidence?: string | undefined;
   attachedEvidenceText?: string | undefined;
+  attachedEvidenceSources?: readonly string[] | undefined;
   operatorVerifiedEvidenceText?: string | undefined;
+  reviewableAttachments?: readonly ReadyPeerEvidenceAttachment[] | undefined;
+  operatorVerifiedAttachments?: readonly ReadyPeerEvidenceAttachment[] | undefined;
   caller?: PeerId | "operator" | undefined;
   attachmentsPresent: boolean;
   attachedEvidenceRefs?: string[] | undefined;
@@ -2792,54 +3522,69 @@ export function evidencePreflight(params: {
   // CHANGELOG.md value plus an unrelated `artifact` property).
   const referenceCorpus = claimText;
   const evidenceMarkerCorpus = `${claimText}\n${params.structuredEvidence ?? ""}`;
-  const reviewableEvidenceText = [
-    params.structuredEvidence ?? "",
-    params.attachedEvidenceText ?? "",
-    extractInlineRawEvidence(claimText),
-  ]
-    .filter((value) => value.trim().length > 0)
-    .join("\n");
   const callerIsOperator = params.caller === undefined || params.caller === "operator";
-  const operatorEvidenceText = [
-    callerIsOperator ? (params.structuredEvidence ?? "") : "",
-    params.operatorVerifiedEvidenceText ??
-      (callerIsOperator ? (params.attachedEvidenceText ?? "") : ""),
-    callerIsOperator ? extractInlineRawEvidence(claimText) : "",
-  ]
-    .filter((value) => value.trim().length > 0)
-    .join("\n");
+  const attachedEvidenceSources =
+    params.attachedEvidenceSources ??
+    ((params.attachedEvidenceText ?? "").trim().length > 0
+      ? [params.attachedEvidenceText ?? ""]
+      : []);
+  const reviewableAttachmentCorpora =
+    params.reviewableAttachments !== undefined
+      ? attachmentEvidenceCorpora(params.reviewableAttachments)
+      : attachedEvidenceSources.flatMap(evidenceTextCorpora);
+  const operatorAttachmentCorpora =
+    params.operatorVerifiedAttachments !== undefined
+      ? attachmentEvidenceCorpora(params.operatorVerifiedAttachments)
+      : evidenceTextCorpora(
+          params.operatorVerifiedEvidenceText ??
+            (callerIsOperator ? (params.attachedEvidenceText ?? "") : ""),
+        );
+  const structuredEvidenceCorpora = evidenceTextCorpora(params.structuredEvidence ?? "");
+  const inlineEvidenceCorpora = evidenceTextCorpora(extractInlineRawEvidence(claimText));
+  const reviewableEvidenceCorpora = [
+    ...structuredEvidenceCorpora,
+    ...reviewableAttachmentCorpora,
+    ...inlineEvidenceCorpora,
+  ];
+  const operatorEvidenceCorpora = [
+    ...(callerIsOperator ? structuredEvidenceCorpora : []),
+    ...operatorAttachmentCorpora,
+    ...(callerIsOperator ? inlineEvidenceCorpora : []),
+  ];
   const assertions = extractEvidenceOperationalAssertions(claimText);
-  const reviewableConflictIndex = buildEvidenceConflictIndex(reviewableEvidenceText);
-  const operatorConflictIndex = buildEvidenceConflictIndex(operatorEvidenceText);
   const uncorroboratedClaims = assertions
     .filter(
       (assertion) =>
-        !evidenceCorroboratesOperationalAssertion(
+        !evidenceCorroboratesOperationalAssertionAcrossCorpora(
           assertion,
-          reviewableEvidenceText,
-          reviewableConflictIndex,
+          reviewableEvidenceCorpora,
         ),
     )
     .map((assertion) => assertion.display);
   const operatorUncorroboratedClaims = assertions
     .filter(
       (assertion) =>
-        !evidenceCorroboratesOperationalAssertion(
-          assertion,
-          operatorEvidenceText,
-          operatorConflictIndex,
-        ),
+        !evidenceCorroboratesOperationalAssertionAcrossCorpora(assertion, operatorEvidenceCorpora),
     )
     .map((assertion) => assertion.display);
   const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
   const operatorGrounded =
     claimMatched && assertions.length > 0 && operatorUncorroboratedClaims.length === 0;
-  const unattachedEvidenceReferences = findUnattachedEvidenceReferences(referenceCorpus, [
-    ...(params.attachedEvidenceRefs ?? []),
-    ...extractEmbeddedEvidenceRefs(
-      `${params.structuredEvidence ?? ""}\n${params.attachedEvidenceText ?? ""}`,
-    ),
-  ]);
+  const custodySources = [
+    params.structuredEvidence ?? "",
+    ...(params.reviewableAttachments?.map((attachment) => attachment.content) ??
+      attachedEvidenceSources),
+  ].filter((source) => source.trim().length > 0);
+  const embeddedBySource = custodySources.map((source) => extractEmbeddedEvidenceRefs(source));
+  const embeddedEvidenceRefs: EmbeddedEvidenceRefs = {
+    normalizedRefs: [...new Set(embeddedBySource.flatMap((source) => source.normalizedRefs))],
+    exactGitPaths: [...new Set(embeddedBySource.flatMap((source) => source.exactGitPaths))],
+  };
+  const unattachedEvidenceReferences = findUnattachedEvidenceReferences(
+    referenceCorpus,
+    [...(params.attachedEvidenceRefs ?? []), ...embeddedEvidenceRefs.normalizedRefs],
+    embeddedEvidenceRefs.exactGitPaths,
+  );
   if (unattachedEvidenceReferences.length > 0) {
     return {
       pass: false,
@@ -2856,12 +3601,12 @@ export function evidencePreflight(params: {
       operator_grounded: operatorGrounded,
       evidence_authority: operatorGrounded
         ? "operator_verified"
-        : claimMatched && reviewableEvidenceText.trim()
+        : claimMatched && evidenceCorporaContainMaterial(reviewableEvidenceCorpora)
           ? "caller_submitted_unverified"
           : "none",
     };
   }
-  const evidenceFound = reviewableEvidenceText.trim().length > 0;
+  const evidenceFound = evidenceCorporaContainMaterial(reviewableEvidenceCorpora);
   const pass = !claimMatched || (assertions.length > 0 && uncorroboratedClaims.length === 0);
   // No claim is neutral, not operator verification. Authority exists only
   // when concrete operational assertions are actually corroborated by the
@@ -3216,29 +3961,49 @@ export function truthfulnessPreflight(params: {
   initialDraft?: string | undefined;
   structuredEvidence?: string | undefined;
   attachedEvidenceText?: string | undefined;
+  attachedEvidenceSources?: readonly string[] | undefined;
   operatorVerifiedEvidenceText?: string | undefined;
+  reviewableAttachments?: readonly ReadyPeerEvidenceAttachment[] | undefined;
+  operatorVerifiedAttachments?: readonly ReadyPeerEvidenceAttachment[] | undefined;
   caller?: PeerId | "operator" | undefined;
   attachmentsPresent: boolean;
   runtimeFacts?: TruthfulnessRuntimeFacts | undefined;
 }): TruthfulnessPreflightResult {
   const structuredEvidenceSupplied = (params.structuredEvidence ?? "").trim().length > 0;
   const corpus = `${params.task}\n${params.initialDraft ?? ""}`;
-  const suppliedEvidence = `${params.structuredEvidence ?? ""}\n${
-    params.attachedEvidenceText ?? ""
-  }\n${extractInlineRawEvidence(corpus)}`;
   const callerIsOperator = params.caller === undefined || params.caller === "operator";
-  const operatorEvidence = [
-    callerIsOperator ? (params.structuredEvidence ?? "") : "",
-    params.operatorVerifiedEvidenceText ?? "",
-    callerIsOperator ? extractInlineRawEvidence(corpus) : "",
-  ]
-    .filter((value) => value.trim().length > 0)
-    .join("\n");
+  const attachedEvidenceSources =
+    params.attachedEvidenceSources ??
+    ((params.attachedEvidenceText ?? "").trim().length > 0
+      ? [params.attachedEvidenceText ?? ""]
+      : []);
+  const reviewableAttachmentCorpora =
+    params.reviewableAttachments !== undefined
+      ? attachmentEvidenceCorpora(params.reviewableAttachments)
+      : attachedEvidenceSources.flatMap(evidenceTextCorpora);
+  const operatorAttachmentCorpora =
+    params.operatorVerifiedAttachments !== undefined
+      ? attachmentEvidenceCorpora(params.operatorVerifiedAttachments)
+      : evidenceTextCorpora(params.operatorVerifiedEvidenceText ?? "");
+  const structuredEvidenceCorpora = evidenceTextCorpora(params.structuredEvidence ?? "");
+  const inlineEvidenceCorpora = evidenceTextCorpora(extractInlineRawEvidence(corpus));
+  const suppliedEvidenceCorpora = [
+    ...structuredEvidenceCorpora,
+    ...reviewableAttachmentCorpora,
+    ...inlineEvidenceCorpora,
+  ];
+  const operatorEvidenceCorpora = [
+    ...(callerIsOperator ? structuredEvidenceCorpora : []),
+    ...operatorAttachmentCorpora,
+    ...(callerIsOperator ? inlineEvidenceCorpora : []),
+  ];
   const lines = splitTruthfulnessLines(corpus);
   const runtimeVersion = params.runtimeFacts?.runtime_version;
   const releaseDate = params.runtimeFacts?.release_date;
   const modelPins = params.runtimeFacts?.model_pins ?? {};
-  const sourceMarkerFound = TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(suppliedEvidence);
+  const sourceMarkerFound = suppliedEvidenceCorpora.some((evidenceCorpus) =>
+    TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(evidenceCorpus.text),
+  );
   const runtimeFactsAvailable = Boolean(
     runtimeVersion || releaseDate || Object.values(modelPins).some(Boolean),
   );
@@ -3255,12 +4020,12 @@ export function truthfulnessPreflight(params: {
     let lineCurrentModelClaimMatched = false;
     if (FABRICATION_PRONE_OPERATIONAL_CLAIM_PATTERN.test(line)) {
       fabricationProneClaimMatched = true;
-      if (!operationalClaimCorroborated(line, suppliedEvidence)) {
+      if (!operationalClaimCorroboratedAcrossCorpora(line, suppliedEvidenceCorpora)) {
         addIssueClass(issueClasses, "fabrication_pattern");
         unsupportedClaims.push(
           `fabrication-prone operational claim lacks value-corresponding provenance evidence: ${line.slice(0, 240)}`,
         );
-      } else if (!operationalClaimCorroborated(line, operatorEvidence)) {
+      } else if (!operationalClaimCorroboratedAcrossCorpora(line, operatorEvidenceCorpora)) {
         independentReviewRequired = true;
       }
     }
@@ -3927,24 +4692,32 @@ export function truthfulnessPreflight(params: {
 
     if (!historicalClaim && !lineCurrentModelClaimMatched && operationalStateClaimDetected(line)) {
       currentStateClaimMatched = true;
-      if (!operationalStateClaimCorroborated(line, suppliedEvidence)) {
+      if (!operationalStateClaimCorroboratedAcrossCorpora(line, suppliedEvidenceCorpora)) {
         addIssueClass(issueClasses, "unsupported_current_state_claim");
         unsupportedClaims.push(
           `current operational-state claim lacks a correlated raw status record: ${line.slice(0, 240)}`,
         );
-      } else if (!operationalStateClaimCorroborated(line, operatorEvidence)) {
+      } else if (!operationalStateClaimCorroboratedAcrossCorpora(line, operatorEvidenceCorpora)) {
         independentReviewRequired = true;
       }
     }
 
     if (historicalClaim) {
       historicalStateClaimMatched = true;
-      if (!historicalEvidenceHasSnapshotTiming(suppliedEvidence)) {
+      if (
+        !suppliedEvidenceCorpora.some((evidenceCorpus) =>
+          historicalEvidenceHasSnapshotTiming(evidenceCorpus.text),
+        )
+      ) {
         addIssueClass(issueClasses, "unsupported_historical_claim");
         unsupportedClaims.push(
           `historical runtime timing claim lacks raw workflow/run/session-start snapshot provenance: ${line.slice(0, 240)}`,
         );
-      } else if (!historicalEvidenceHasSnapshotTiming(operatorEvidence)) {
+      } else if (
+        !operatorEvidenceCorpora.some((evidenceCorpus) =>
+          historicalEvidenceHasSnapshotTiming(evidenceCorpus.text),
+        )
+      ) {
         independentReviewRequired = true;
       }
     }
@@ -3990,7 +4763,9 @@ export function truthfulnessPreflight(params: {
       } else if (
         !runtimeFactsAvailable &&
         sourceMarkerFound &&
-        !TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(operatorEvidence)
+        !operatorEvidenceCorpora.some((evidenceCorpus) =>
+          TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(evidenceCorpus.text),
+        )
       ) {
         independentReviewRequired = true;
       }
@@ -4205,12 +4980,14 @@ function buildInitialDraftPrompt(
   ].join("\n");
 }
 
-function buildFormatRecoveryPrompt(
+export function buildFormatRecoveryPrompt(
   meta: SessionMeta,
   priorResponse: string,
   config: AppConfig,
   reviewFocus?: string,
   lossyReadyDecision = false,
+  reviewedArtifact?: ReviewedArtifactPromptView,
+  visibleAttachments: readonly ResolvedEvidenceAttachment[] = [],
 ): string {
   const boundedTask = safePromptText(meta.task, Math.min(config.prompt.max_task_chars, 4_000));
   const boundedResponse =
@@ -4227,11 +5004,14 @@ function buildFormatRecoveryPrompt(
     "Recover your own decision as one valid JSON object using the required response schema.",
     "",
     ...reviewFocusBlock(meta, config, reviewFocus),
+    ...attachedEvidenceBlock(visibleAttachments),
     "## Original Task",
     boundedTask,
     "",
     "## Previous Unparseable Response",
     boundedResponse,
+    "",
+    ...(reviewedArtifact ? reviewedArtifactCustodyBlock(reviewedArtifact) : []),
   ].join("\n");
 }
 
@@ -4242,9 +5022,21 @@ export function buildDecisionRetryPrompt(
   config: AppConfig,
   reviewFocus: string | undefined,
   attachments: ResolvedEvidenceAttachment[],
+  reviewedArtifact?: PersistedReviewedArtifact | ReviewedArtifactPromptView,
+  moderationSafe = false,
 ): string {
+  const retryArtifactView = reviewedArtifact
+    ? "artifact" in reviewedArtifact
+      ? reviewedArtifact
+      : reviewedArtifactPromptView(
+          reviewedArtifact,
+          Math.min(config.prompt.max_draft_chars, 20_000),
+        )
+    : undefined;
   return [
-    "# Cross Review - Decision Retry",
+    moderationSafe
+      ? "# Cross Review - Decision Retry (Compact Moderation-Safe Review)"
+      : "# Cross Review - Decision Retry",
     "",
     ...sessionContractDirectives(),
     "Your previous provider response contained no usable peer-review decision.",
@@ -4260,9 +5052,13 @@ export function buildDecisionRetryPrompt(
     "## Recent History",
     summarizePriorRounds(meta, config),
     "",
-    "## Draft Or Solution Under Review",
-    safePromptText(draft, Math.min(config.prompt.max_draft_chars, 20_000)),
-    "",
+    ...(retryArtifactView
+      ? reviewedArtifactCustodyBlock(retryArtifactView)
+      : [
+          "## Draft Or Solution Under Review",
+          safePromptText(draft, Math.min(config.prompt.max_draft_chars, 20_000)),
+          "",
+        ]),
     "## Previous Non-Decision Response",
     safePromptText(priorResponse || "[empty response]", 1_200),
   ].join("\n");
@@ -4305,23 +5101,88 @@ function resolveQuorumPeers(session: SessionMeta, selectedPeers: PeerId[]): Peer
   return selectedPeers;
 }
 
-function latestPeerResultsForQuorum(
+function peerReviewLineageMatchesArtifact(
+  peer: PeerResult,
+  artifact: PersistedReviewedArtifact,
+): boolean {
+  const custody = peer.review_custody?.reviewed_artifact;
+  if (
+    !custody ||
+    custody.relative_path !== artifact.relative_path ||
+    custody.sha256 !== artifact.sha256 ||
+    !Number.isSafeInteger(custody.visible_utf16_units) ||
+    custody.visible_utf16_units < 0 ||
+    custody.visible_utf16_units > artifact.content.length
+  ) {
+    return false;
+  }
+  return (
+    peer.status !== "READY" ||
+    (custody.truncated === false && custody.visible_utf16_units === artifact.content.length)
+  );
+}
+
+export function latestPeerResultsForQuorum(
   session: SessionMeta,
   currentPeers: PeerResult[],
   quorumPeers: PeerId[],
+  currentArtifact: PersistedReviewedArtifact,
+  store: SessionStore,
+  currentVisibleAttachments: readonly ResolvedEvidenceAttachment[],
 ): PeerResult[] {
-  const latest = new Map<PeerId, PeerResult>();
+  const currentAttachmentCustody = visibleAttachmentDispatchCustody(currentVisibleAttachments);
+  const attachmentsMatchCurrentCorpus = (peer: PeerResult): boolean => {
+    const historical = peer.review_custody?.visible_attachments;
+    return (
+      historical !== undefined &&
+      historical.length === currentAttachmentCustody.length &&
+      historical.every((attachment, index) => {
+        const current = currentAttachmentCustody[index];
+        return (
+          current !== undefined &&
+          attachment.relative_path === current.relative_path &&
+          attachment.sha256 === current.sha256 &&
+          attachment.visible_utf16_units === current.visible_utf16_units &&
+          attachment.truncated === current.truncated
+        );
+      })
+    );
+  };
+  const latest = new Map<PeerId, { peer: PeerResult; round?: ReviewRound | undefined }>();
   for (const round of session.rounds) {
     for (const peer of round.peers) {
-      if (quorumPeers.includes(peer.peer)) latest.set(peer.peer, peer);
+      if (quorumPeers.includes(peer.peer)) latest.set(peer.peer, { peer, round });
     }
   }
   for (const peer of currentPeers) {
-    if (quorumPeers.includes(peer.peer)) latest.set(peer.peer, peer);
+    if (quorumPeers.includes(peer.peer)) latest.set(peer.peer, { peer });
   }
   return quorumPeers
     .map((peer) => latest.get(peer))
-    .filter((peer): peer is PeerResult => Boolean(peer));
+    .filter((entry): entry is { peer: PeerResult; round?: ReviewRound | undefined } => {
+      if (!entry) return false;
+      if (!entry.round) return peerReviewLineageMatchesArtifact(entry.peer, currentArtifact);
+      let historicalArtifact: PersistedReviewedArtifact;
+      try {
+        historicalArtifact = store.readRoundReviewedArtifact(session.session_id, entry.round);
+        store.assertPeerReviewDispatchVisibility(
+          session.session_id,
+          session,
+          [entry.peer],
+          historicalArtifact,
+          true,
+        );
+      } catch {
+        return false;
+      }
+      return (
+        historicalArtifact.sha256 === currentArtifact.sha256 &&
+        historicalArtifact.bytes === currentArtifact.bytes &&
+        attachmentsMatchCurrentCorpus(entry.peer) &&
+        peerReviewLineageMatchesArtifact(entry.peer, historicalArtifact)
+      );
+    })
+    .map((entry) => entry.peer);
 }
 
 function silentModelDowngradeFailure(result: PeerResult): PeerFailure {
@@ -4617,6 +5478,30 @@ function evidenceJudgeOutputTokens(config: AppConfig, peer: PeerId): number {
   );
 }
 
+function preserveCompletedJudgeAccounting(
+  failure: PeerFailure,
+  judgment: EvidenceAskJudgment | undefined,
+): PeerFailure {
+  if (!judgment) return failure;
+  return {
+    ...failure,
+    attempts: judgment.attempts,
+    latency_ms: judgment.latency_ms,
+    usage: judgment.usage,
+    cost: judgment.cost,
+    billing_status:
+      (judgment.unpriced_attempts ?? 0) > 0
+        ? "unknown"
+        : judgment.usage !== undefined || judgment.cost !== undefined
+          ? "reported"
+          : judgment.attempts > 0
+            ? "unknown"
+            : undefined,
+    unpriced_attempts: judgment.unpriced_attempts,
+    indeterminate_spend_attempts: judgment.indeterminate_spend_attempts,
+  };
+}
+
 function budgetPreflightFailure(
   peer: PeerId,
   provider: string,
@@ -4824,6 +5709,17 @@ interface PeerCallOutcome {
   adapter: PeerAdapter;
   result?: PeerResult | undefined;
   failure?: PeerFailure | undefined;
+  dispatch_kind?: PeerReviewDispatchKind | undefined;
+  reviewed_artifact_view?: ReviewedArtifactPromptView | undefined;
+  visible_attachments?: readonly ResolvedEvidenceAttachment[] | undefined;
+  provider_prompt?: ProviderPromptCustody | undefined;
+}
+
+interface PeerReviewDispatchViews {
+  readonly normal: ReviewedArtifactPromptView;
+  readonly moderation_safe: ReviewedArtifactPromptView;
+  readonly normal_attachments: readonly ResolvedEvidenceAttachment[];
+  readonly moderation_safe_attachments: readonly ResolvedEvidenceAttachment[];
 }
 
 type PeerAdapterFactory = typeof createAdapters;
@@ -4932,6 +5828,9 @@ export class CrossReviewOrchestrator {
       ),
     );
     if (!attachments.length) return [];
+    const indexedAttachments = readyPeerEvidenceAttachments(attachments).map(
+      indexGroundingEvidenceAttachment,
+    );
     const promotedIds: string[] = [];
     for (const round of session.rounds) {
       for (const peer of round.peers) {
@@ -4949,7 +5848,7 @@ export class CrossReviewOrchestrator {
           (peer.parsed_status !== undefined && peer.parsed_status !== "READY") ||
           (peer.normalized_status !== undefined && peer.normalized_status !== "READY") ||
           !sources.every((source) =>
-            attachments.some((attachment) =>
+            indexedAttachments.some((attachment) =>
               evidenceSourceMatchesSingleAttachment(source, attachment),
             ),
           )
@@ -5058,6 +5957,9 @@ export class CrossReviewOrchestrator {
           structuredEvidence: params.evidence,
           caller: params.caller,
           attachmentsPresent: reviewableAttachments.length > 0,
+          reviewableAttachments: readyPeerEvidenceAttachments(reviewableAttachments),
+          operatorVerifiedAttachments: readyPeerEvidenceAttachments(trustedAttachments),
+          attachedEvidenceSources: reviewableAttachments.map((attachment) => attachment.content),
           attachedEvidenceText: reviewableAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
@@ -5077,6 +5979,9 @@ export class CrossReviewOrchestrator {
           structuredEvidence: params.evidence,
           caller: params.caller,
           attachmentsPresent: reviewableAttachments.length > 0,
+          reviewableAttachments: readyPeerEvidenceAttachments(reviewableAttachments),
+          operatorVerifiedAttachments: readyPeerEvidenceAttachments(trustedAttachments),
+          attachedEvidenceSources: reviewableAttachments.map((attachment) => attachment.content),
           attachedEvidenceText: reviewableAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
@@ -5188,6 +6093,7 @@ export class CrossReviewOrchestrator {
         | "insufficient_independent_judges"
         | "consensus_disagreement"
         | "consensus_unsatisfied"
+        | "judge_failed"
         | undefined;
     }>;
     shadow_decisions: Array<{
@@ -5267,6 +6173,7 @@ export class CrossReviewOrchestrator {
         | "insufficient_independent_judges"
         | "consensus_disagreement"
         | "consensus_unsatisfied"
+        | "judge_failed"
         | undefined;
     }> = [];
     const shadowDecisions: Array<{
@@ -5395,16 +6302,23 @@ export class CrossReviewOrchestrator {
           }
           const judgeStarted = Date.now();
           let pendingReservationId: string | undefined;
+          let persistedJudgePrompt: PreparedPendingProviderPromptCall | undefined;
+          let completedJudgment: EvidenceAskJudgment | undefined;
           try {
-            pendingReservationId = await this.store.reservePendingProviderCall(params.session_id, {
-              peer,
-              provider: adapter.provider,
-              model: adapter.model,
-              round: judgmentRound,
-              label: `judge-${item.id}`,
-              call_kind: "evidence_judge",
-            });
-            const judgment = await adapter.judgeEvidenceAsk(item.ask, params.draft, {
+            persistedJudgePrompt = await this.store.preparePendingProviderPromptCall(
+              params.session_id,
+              {
+                peer,
+                provider: adapter.provider,
+                model: adapter.model,
+                round: judgmentRound,
+                label: `judge-${item.id}`,
+                call_kind: "evidence_judge",
+              },
+              adapter.buildEvidenceJudgePrompt(item.ask, params.draft),
+            );
+            pendingReservationId = persistedJudgePrompt.reservation_id;
+            const judgment = await adapter.judgeEvidenceAsk(persistedJudgePrompt.content, {
               session_id: params.session_id,
               round: judgmentRound,
               task: meta.task,
@@ -5419,12 +6333,13 @@ export class CrossReviewOrchestrator {
                 this.config.evidence_judge_autowire.reasoning_effort ?? "medium",
               emit: this.emit,
             });
+            completedJudgment = judgment;
             // A judge call is a paid generation even though it does not author
             // the relator draft. Persist the successful result through the
             // existing generation ledger so usage/cost enter session totals.
             // The item id in the label prevents same-peer/same-round judge
             // artifacts from overwriting each other.
-            await this.store.saveGeneration(
+            const generationPath = await this.store.saveGeneration(
               params.session_id,
               judgmentRound,
               {
@@ -5446,6 +6361,7 @@ export class CrossReviewOrchestrator {
                 indeterminate_spend_attempts: judgment.indeterminate_spend_attempts,
                 parser_warnings:
                   judgment.parser_warnings.length > 0 ? judgment.parser_warnings : undefined,
+                provider_prompt: persistedJudgePrompt.custody,
               },
               `judge-${item.id}`,
               pendingReservationId,
@@ -5471,16 +6387,15 @@ export class CrossReviewOrchestrator {
                 parser_warnings: judgment.parser_warnings,
               },
             });
-            return { peer, judgment };
+            return { peer, judgment, generation_path: generationPath };
           } catch (err) {
-            const judgeFailure = classifyProviderError(
-              peer,
-              adapter.provider,
-              adapter.model,
-              err,
-              1,
-              judgeStarted,
+            const judgeFailure = preserveCompletedJudgeAccounting(
+              classifyProviderError(peer, adapter.provider, adapter.model, err, 1, judgeStarted),
+              completedJudgment,
             );
+            if (persistedJudgePrompt) {
+              judgeFailure.provider_prompt = persistedJudgePrompt.custody;
+            }
             if (pendingReservationId !== undefined) {
               await this.store.recordPeerFailureAccounting(
                 params.session_id,
@@ -5514,6 +6429,7 @@ export class CrossReviewOrchestrator {
       > = {};
       let unanimousVerifiedSatisfied = true;
       const rationales: Record<string, string> = {};
+      const generationPaths: string[] = [];
       for (const r of perPeerJudgments) {
         if (r.error) {
           perPeerVerdict[r.peer] = "failed";
@@ -5529,10 +6445,12 @@ export class CrossReviewOrchestrator {
           j.satisfied === true &&
           j.confidence === "verified" &&
           !rationaleEmpty &&
-          j.parser_warnings.length === 0;
+          j.parser_warnings.length === 0 &&
+          typeof r.generation_path === "string";
         if (isVerifiedSatisfied) {
           perPeerVerdict[r.peer] = "verified_satisfied";
           rationales[r.peer] = j.rationale;
+          generationPaths.push(r.generation_path);
         } else {
           perPeerVerdict[r.peer] = "disagree";
           unanimousVerifiedSatisfied = false;
@@ -5555,7 +6473,7 @@ export class CrossReviewOrchestrator {
       const negativeConsensusReason = allJudgesUnsatisfied
         ? ("consensus_unsatisfied" as const)
         : ("consensus_disagreement" as const);
-      consensus_decisions.push({
+      const consensusDecision: (typeof consensus_decisions)[number] = {
         item_id: item.id,
         unanimous_verified_satisfied: unanimousVerifiedSatisfied,
         per_peer_verdict: perPeerVerdict,
@@ -5563,21 +6481,45 @@ export class CrossReviewOrchestrator {
         eligible_judge_peers: [...eligibleJudgePeers],
         excluded_judge_peers: [...excludedJudgePeers],
         reason: unanimousVerifiedSatisfied ? undefined : negativeConsensusReason,
-      });
+      };
+      consensus_decisions.push(consensusDecision);
       if (unanimousVerifiedSatisfied && mode === "active") {
         const primaryJudgePeer = eligibleJudgePeers[0];
         if (!primaryJudgePeer) {
           throw new Error("evidence_judge_consensus_no_primary_judge");
         }
-        const result = await this.store.markEvidenceItemAddressedByJudge(
-          params.session_id,
-          item.id,
-          {
+        let result: Awaited<ReturnType<SessionStore["markEvidenceItemAddressedByJudge"]>>;
+        try {
+          result = await this.store.markEvidenceItemAddressedByJudge(params.session_id, item.id, {
             round: judgmentRound,
             rationale: Object.values(rationales).join(" || "),
             judge_peer: primaryJudgePeer,
-          },
-        );
+            judge_peers: eligibleJudgePeers,
+            generation_paths: generationPaths,
+          });
+        } catch (error) {
+          const message = safeErrorMessage(error);
+          const attributedPeer =
+            error &&
+            typeof error === "object" &&
+            PEERS.includes((error as { judge_peer?: PeerId }).judge_peer as PeerId)
+              ? ((error as { judge_peer: PeerId }).judge_peer as PeerId)
+              : primaryJudgePeer;
+          perPeerVerdict[attributedPeer] = "failed";
+          perPeerDetails[attributedPeer] = { error: message };
+          consensusDecision.unanimous_verified_satisfied = false;
+          consensusDecision.reason = "judge_failed";
+          skipped.push({ item_id: item.id, reason: "judge_failed", per_peer: perPeerDetails });
+          this.emit({
+            type: "peer.judge.failed",
+            session_id: params.session_id,
+            round: judgmentRound,
+            peer: attributedPeer,
+            message: `Consensus judge custody failed on ${item.id}: ${message}`,
+            data: { item_id: item.id, message },
+          });
+          continue;
+        }
         if (result) {
           promoted.push({ item_id: item.id, rationales });
           this.emit({
@@ -5911,20 +6853,28 @@ export class CrossReviewOrchestrator {
       };
       const judgeStarted = Date.now();
       let pendingReservationId: string | undefined;
+      let persistedJudgePrompt: PreparedPendingProviderPromptCall | undefined;
+      let completedJudgment: EvidenceAskJudgment | undefined;
       try {
-        pendingReservationId = await this.store.reservePendingProviderCall(params.session_id, {
-          peer: params.judge_peer,
-          provider: adapter.provider,
-          model: adapter.model,
-          round: judgmentRound,
-          label: `judge-${item.id}`,
-          call_kind: "evidence_judge",
-        });
-        const judgment = await adapter.judgeEvidenceAsk(item.ask, params.draft, context);
+        persistedJudgePrompt = await this.store.preparePendingProviderPromptCall(
+          params.session_id,
+          {
+            peer: params.judge_peer,
+            provider: adapter.provider,
+            model: adapter.model,
+            round: judgmentRound,
+            label: `judge-${item.id}`,
+            call_kind: "evidence_judge",
+          },
+          adapter.buildEvidenceJudgePrompt(item.ask, params.draft),
+        );
+        pendingReservationId = persistedJudgePrompt.reservation_id;
+        const judgment = await adapter.judgeEvidenceAsk(persistedJudgePrompt.content, context);
+        completedJudgment = judgment;
         // A judge is a paid generation even though it does not author the
         // draft. Persist it immediately so usage/cost survives later
         // cancellation, parser rejection, or state-mutation failure.
-        await this.store.saveGeneration(
+        const generationPath = await this.store.saveGeneration(
           params.session_id,
           judgmentRound,
           {
@@ -5946,6 +6896,7 @@ export class CrossReviewOrchestrator {
             indeterminate_spend_attempts: judgment.indeterminate_spend_attempts,
             parser_warnings:
               judgment.parser_warnings.length > 0 ? judgment.parser_warnings : undefined,
+            provider_prompt: persistedJudgePrompt.custody,
           },
           `judge-${item.id}`,
           pendingReservationId,
@@ -6050,6 +7001,8 @@ export class CrossReviewOrchestrator {
                 round: judgmentRound,
                 rationale: judgment.rationale,
                 judge_peer: params.judge_peer,
+                judge_peers: [params.judge_peer],
+                generation_paths: [generationPath],
               },
             );
             if (result) {
@@ -6145,14 +7098,20 @@ export class CrossReviewOrchestrator {
           }
         }
       } catch (err) {
-        const judgeFailure = classifyProviderError(
-          params.judge_peer,
-          adapter.provider,
-          adapter.model,
-          err,
-          1,
-          judgeStarted,
+        const judgeFailure = preserveCompletedJudgeAccounting(
+          classifyProviderError(
+            params.judge_peer,
+            adapter.provider,
+            adapter.model,
+            err,
+            1,
+            judgeStarted,
+          ),
+          completedJudgment,
         );
+        if (persistedJudgePrompt) {
+          judgeFailure.provider_prompt = persistedJudgePrompt.custody;
+        }
         if (pendingReservationId !== undefined) {
           await this.store.recordPeerFailureAccounting(
             params.session_id,
@@ -6220,10 +7179,11 @@ export class CrossReviewOrchestrator {
     task: string,
     caller: PeerId | "operator" = "operator",
     reviewFocus?: string,
+    mode: import("./types.js").SessionMode = "ship",
   ): Promise<SessionMeta> {
     const snapshot = await this.probeAll();
     const normalizedReviewFocus = normalizeReviewFocus(reviewFocus, this.config);
-    const meta = await this.store.init(task, caller, snapshot, normalizedReviewFocus);
+    const meta = await this.store.init(task, caller, snapshot, normalizedReviewFocus, mode);
     this.emit({
       type: "session.created",
       session_id: meta.session_id,
@@ -6414,6 +7374,7 @@ export class CrossReviewOrchestrator {
     prompt: string,
     moderationSafePrompt: string,
     context: Parameters<PeerAdapter["call"]>[1],
+    dispatchViews?: PeerReviewDispatchViews,
   ): Promise<PeerCallOutcome> {
     const started = Date.now();
     if (this.isCancelled(context.session_id, context.signal)) {
@@ -6427,8 +7388,29 @@ export class CrossReviewOrchestrator {
         ),
       };
     }
+    const primaryProviderPrompt = await this.store.saveProviderPrompt(
+      context.session_id,
+      context.round,
+      adapter.id,
+      adapter.provider,
+      adapter.model,
+      "peer_review",
+      "normal",
+      prompt,
+    );
     try {
-      return { adapter, result: await adapter.call(prompt, context) };
+      return {
+        adapter,
+        result: await adapter.call(primaryProviderPrompt.content, context),
+        provider_prompt: primaryProviderPrompt.custody,
+        ...(dispatchViews
+          ? {
+              dispatch_kind: "normal" as const,
+              reviewed_artifact_view: dispatchViews.normal,
+              visible_attachments: dispatchViews.normal_attachments,
+            }
+          : {}),
+      };
     } catch (error) {
       const failure = classifyProviderError(
         adapter.id,
@@ -6443,6 +7425,7 @@ export class CrossReviewOrchestrator {
         if (fallbackEligible) {
           let fallbackWasTried = false;
           let lastFallbackFailure: PeerFailure | undefined;
+          let lastFallbackProviderPrompt: ProviderPromptCustody | undefined;
           const fallbackFailures: PeerFailure[] = [failure];
           for (const fallback of this.fallbackAdapters(adapter)) {
             if (this.isCancelled(context.session_id, context.signal)) {
@@ -6454,6 +7437,7 @@ export class CrossReviewOrchestrator {
               );
               return {
                 adapter,
+                provider_prompt: primaryProviderPrompt.custody,
                 failure: mergeFailureChain([...fallbackFailures, cancelled], {
                   failure_class: "cancelled",
                   message: cancelled.message,
@@ -6532,6 +7516,7 @@ export class CrossReviewOrchestrator {
               });
               return {
                 adapter,
+                provider_prompt: primaryProviderPrompt.custody,
                 failure: mergeFailureChain(fallbackFailures, {
                   peer: adapter.id,
                   provider: adapter.provider,
@@ -6543,13 +7528,32 @@ export class CrossReviewOrchestrator {
               };
             }
             try {
-              const fallbackResult = await fallback.call(prompt, context);
+              const fallbackProviderPrompt = await this.store.saveProviderPrompt(
+                context.session_id,
+                context.round,
+                fallback.id,
+                fallback.provider,
+                fallback.model,
+                "peer_review",
+                "fallback-normal",
+                prompt,
+              );
+              lastFallbackProviderPrompt = fallbackProviderPrompt.custody;
+              const fallbackResult = await fallback.call(fallbackProviderPrompt.content, context);
               const parserWarnings = [
                 ...fallbackResult.parser_warnings,
                 `fallback_model_used:${adapter.model}->${fallback.model}`,
               ];
               return {
                 adapter: fallback,
+                provider_prompt: fallbackProviderPrompt.custody,
+                ...(dispatchViews
+                  ? {
+                      dispatch_kind: "fallback_normal" as const,
+                      reviewed_artifact_view: dispatchViews.normal,
+                      visible_attachments: dispatchViews.normal_attachments,
+                    }
+                  : {}),
                 result: {
                   ...mergePeerResultWithFailures(fallbackResult, fallbackFailures),
                   parser_warnings: parserWarnings,
@@ -6574,6 +7578,7 @@ export class CrossReviewOrchestrator {
               if (!fallbackFailure.retryable) {
                 return {
                   adapter: fallback,
+                  provider_prompt: lastFallbackProviderPrompt,
                   failure: mergeFailureChain(fallbackFailures, {
                     message: `Primary model failed with ${failure.failure_class}; fallback ${fallback.model} failed terminally: ${fallbackFailure.message}`,
                     retryable: false,
@@ -6585,6 +7590,7 @@ export class CrossReviewOrchestrator {
           if (fallbackWasTried) {
             return {
               adapter,
+              provider_prompt: lastFallbackProviderPrompt ?? primaryProviderPrompt.custody,
               failure: mergeFailureChain(fallbackFailures, {
                 failure_class: "fallback_exhausted",
                 message: `Primary model failed with ${failure.failure_class}; fallback models were attempted and exhausted. Last fallback: ${
@@ -6595,7 +7601,7 @@ export class CrossReviewOrchestrator {
             };
           }
         }
-        return { adapter, failure };
+        return { adapter, failure, provider_prompt: primaryProviderPrompt.custody };
       }
 
       if (this.isCancelled(context.session_id, context.signal)) {
@@ -6607,6 +7613,7 @@ export class CrossReviewOrchestrator {
         );
         return {
           adapter,
+          provider_prompt: primaryProviderPrompt.custody,
           failure: mergeFailureChain([failure, cancelled], {
             failure_class: "cancelled",
             message: cancelled.message,
@@ -6674,6 +7681,7 @@ export class CrossReviewOrchestrator {
         });
         return {
           adapter,
+          provider_prompt: primaryProviderPrompt.custody,
           failure: mergeFailureChain([failure], {
             peer: adapter.id,
             provider: adapter.provider,
@@ -6685,11 +7693,30 @@ export class CrossReviewOrchestrator {
         };
       }
 
+      let moderationProviderPrompt: PersistedProviderPrompt | undefined;
       try {
-        const recovered = await adapter.call(moderationSafePrompt, context);
+        moderationProviderPrompt = await this.store.saveProviderPrompt(
+          context.session_id,
+          context.round,
+          adapter.id,
+          adapter.provider,
+          adapter.model,
+          "peer_review",
+          "moderation-safe",
+          moderationSafePrompt,
+        );
+        const recovered = await adapter.call(moderationProviderPrompt.content, context);
         const parserWarnings = [...recovered.parser_warnings, "moderation_safe_retry_succeeded"];
         return {
           adapter,
+          provider_prompt: moderationProviderPrompt.custody,
+          ...(dispatchViews
+            ? {
+                dispatch_kind: "moderation_safe" as const,
+                reviewed_artifact_view: dispatchViews.moderation_safe,
+                visible_attachments: dispatchViews.moderation_safe_attachments,
+              }
+            : {}),
           result: {
             ...mergePeerResultWithFailures(recovered, [failure]),
             parser_warnings: parserWarnings,
@@ -6707,6 +7734,7 @@ export class CrossReviewOrchestrator {
         );
         return {
           adapter,
+          provider_prompt: moderationProviderPrompt?.custody ?? primaryProviderPrompt.custody,
           failure: mergeFailureChain([failure, retryFailure], {
             failure_class:
               retryFailure.failure_class === "prompt_flagged_by_moderation"
@@ -6728,6 +7756,7 @@ export class CrossReviewOrchestrator {
     context: Parameters<PeerAdapter["generate"]>[1],
     callLabel: string,
     failureLabel = `${callLabel}-failure`,
+    options: { deferCircularPromotion?: boolean } = {},
   ): Promise<GenerationResult> {
     const session = this.store.read(context.session_id);
     const limit = sessionBudgetLimit(this.config, session);
@@ -6820,10 +7849,22 @@ export class CrossReviewOrchestrator {
       (error as Error & { code?: string }).code = "generation_dispatch_marker_not_persisted";
       throw error;
     }
+    const persistedProviderPrompt = await this.store.preparePendingProviderPromptCall(
+      context.session_id,
+      {
+        peer: adapter.id,
+        provider: adapter.provider,
+        model: adapter.model,
+        round: context.round,
+        label: callLabel,
+        call_kind: "generation",
+      },
+      prompt,
+    );
     const started = Date.now();
     let result: GenerationResult;
     try {
-      result = await adapter.generate(prompt, context);
+      result = await adapter.generate(persistedProviderPrompt.content, context);
     } catch (error) {
       const failure = classifyProviderError(
         adapter.id,
@@ -6833,18 +7874,45 @@ export class CrossReviewOrchestrator {
         this.config.retry.max_attempts,
         started,
       );
+      failure.provider_prompt = persistedProviderPrompt.custody;
       await this.store.recordPeerFailureAccounting(
         context.session_id,
         context.round,
         failure,
         failureLabel,
+        persistedProviderPrompt.reservation_id,
       );
       throw error;
     }
+    result = { ...result, provider_prompt: persistedProviderPrompt.custody };
     // The accounting ledger is authoritative. Cache telemetry is a
     // secondary optimization record and must never exist for a generation
     // that has not already been durably settled.
-    await this.store.saveGeneration(context.session_id, context.round, result, callLabel);
+    await this.store.saveGeneration(
+      context.session_id,
+      context.round,
+      result,
+      callLabel,
+      persistedProviderPrompt.reservation_id,
+      { defer_circular_promotion: options.deferCircularPromotion === true },
+    );
+    if (options.deferCircularPromotion === true) {
+      const canonical = this.store.readStagedCircularGeneration(
+        context.session_id,
+        context.round,
+        adapter.id,
+        callLabel === "initial-draft" ? "initial-draft" : "rotation",
+      );
+      if (!canonical) {
+        throw new Error(
+          `circular_generation_canonical_readback_required: ${adapter.id}/round-${context.round}/${callLabel}`,
+        );
+      }
+      // writeJson recursively redacts the provider result before settlement.
+      // All validation and promotion must use those authenticated persisted
+      // bytes, never the transient unredacted object returned by the adapter.
+      result = canonical;
+    }
     await this.recordCacheTelemetry(
       context.session_id,
       context.round,
@@ -7068,6 +8136,7 @@ export class CrossReviewOrchestrator {
         await this.store.savePeerFailure(session.session_id, roundNumber, failure);
       }
       const round = await this.store.appendRound(session.session_id, {
+        review_kind: "pre_dispatch_block",
         caller_status: callerStatus,
         prompt_file: promptFile,
         peers: [],
@@ -7115,6 +8184,11 @@ export class CrossReviewOrchestrator {
       includeInline: !internalRelatorContinuation,
     });
     const draftFile = this.store.saveDraft(session.session_id, roundNumber, input.draft);
+    const persistedReviewedArtifact = this.store.readReviewedArtifact(
+      session.session_id,
+      roundNumber,
+      input.draft,
+    );
     // v2.14.0 (path-A structural fix): resolve session-attached evidence
     // once per round and inline into the review prompt so peers see the
     // full literal content (gates output, diff hunks, log files) without
@@ -7128,6 +8202,11 @@ export class CrossReviewOrchestrator {
         structuredEvidence: input.evidence,
         caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
+        reviewableAttachments: readyPeerEvidenceAttachments(attachments),
+        operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+          trustedEvidenceAttachments(attachments),
+        ),
+        attachedEvidenceSources: attachments.map((attachment) => attachment.content),
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
         operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
           .map((attachment) => attachment.content)
@@ -7160,8 +8239,10 @@ export class CrossReviewOrchestrator {
         }
         const convergence = checkConvergence(selectedPeers, callerStatus, [], rejected);
         const round = await this.store.appendRound(session.session_id, {
+          review_kind: "reviewed_artifact",
           caller_status: callerStatus,
           draft_file: draftFile,
+          reviewed_artifact: persistedReviewedArtifact,
           prompt_file: promptFile,
           peers: [],
           rejected,
@@ -7197,6 +8278,11 @@ export class CrossReviewOrchestrator {
         structuredEvidence: input.evidence,
         caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
+        reviewableAttachments: readyPeerEvidenceAttachments(attachments),
+        operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+          trustedEvidenceAttachments(attachments),
+        ),
+        attachedEvidenceSources: attachments.map((attachment) => attachment.content),
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
         operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
           .map((attachment) => attachment.content)
@@ -7232,8 +8318,10 @@ export class CrossReviewOrchestrator {
         }
         const convergence = checkConvergence(selectedPeers, callerStatus, [], rejected);
         const round = await this.store.appendRound(session.session_id, {
+          review_kind: "reviewed_artifact",
           caller_status: callerStatus,
           draft_file: draftFile,
+          reviewed_artifact: persistedReviewedArtifact,
           prompt_file: promptFile,
           peers: [],
           rejected,
@@ -7263,16 +8351,24 @@ export class CrossReviewOrchestrator {
         return { session: updated, round, converged: false };
       }
     }
+    const normalReviewedArtifactView = reviewedArtifactPromptView(
+      persistedReviewedArtifact,
+      this.config.prompt.max_draft_chars,
+    );
+    const moderationSafeReviewedArtifactView = reviewedArtifactPromptView(
+      persistedReviewedArtifact,
+      Math.min(this.config.prompt.max_draft_chars, 16_000),
+    );
     const prompt = buildReviewPrompt(
       session,
-      input.draft,
+      normalReviewedArtifactView,
       this.config,
       input.review_focus,
       attachments,
     );
     const moderationSafePrompt = buildModerationSafeReviewPrompt(
       session,
-      input.draft,
+      moderationSafeReviewedArtifactView,
       this.config,
       input.review_focus,
     );
@@ -7295,8 +8391,10 @@ export class CrossReviewOrchestrator {
       }
       const convergence = checkConvergence(selectedPeers, callerStatus, [], rejected);
       const round = await this.store.appendRound(session.session_id, {
+        review_kind: "reviewed_artifact",
         caller_status: callerStatus,
         draft_file: draftFile,
+        reviewed_artifact: persistedReviewedArtifact,
         prompt_file: promptFile,
         peers: [],
         rejected,
@@ -7348,8 +8446,10 @@ export class CrossReviewOrchestrator {
       }
       const convergence = checkConvergence(selectedPeers, callerStatus, [], rejected);
       const round = await this.store.appendRound(session.session_id, {
+        review_kind: "reviewed_artifact",
         caller_status: callerStatus,
         draft_file: draftFile,
+        reviewed_artifact: persistedReviewedArtifact,
         prompt_file: promptFile,
         peers: [],
         rejected,
@@ -7391,8 +8491,10 @@ export class CrossReviewOrchestrator {
         await this.store.savePeerFailure(session.session_id, roundNumber, failure);
       }
       const round = await this.store.appendRound(session.session_id, {
+        review_kind: "reviewed_artifact",
         caller_status: callerStatus,
         draft_file: draftFile,
+        reviewed_artifact: persistedReviewedArtifact,
         prompt_file: promptFile,
         peers: [],
         rejected,
@@ -7406,21 +8508,43 @@ export class CrossReviewOrchestrator {
 
     const settled = await Promise.all(
       selectAdapters(adapters, selectedPeers).map(async (adapter) => {
-        const outcome = await this.callPeerForReview(adapter, prompt, moderationSafePrompt, {
-          session_id: session.session_id,
-          round: roundNumber,
-          task: session.task,
-          signal: input.signal,
-          stream: this.config.streaming.events,
-          stream_tokens: this.config.streaming.tokens,
-          emit: this.emit,
-          reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
-          // v2.21.0 (caching): pair-scoped cache key needs caller
-          // identity. Pass petitioner so cache hits bucket per
-          // caller+peer pair.
-          caller: requestedPetitioner,
-        });
+        const outcome = await this.callPeerForReview(
+          adapter,
+          prompt,
+          moderationSafePrompt,
+          {
+            session_id: session.session_id,
+            round: roundNumber,
+            task: session.task,
+            signal: input.signal,
+            stream: this.config.streaming.events,
+            stream_tokens: this.config.streaming.tokens,
+            emit: this.emit,
+            reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
+            // v2.21.0 (caching): pair-scoped cache key needs caller
+            // identity. Pass petitioner so cache hits bucket per
+            // caller+peer pair.
+            caller: requestedPetitioner,
+          },
+          {
+            normal: normalReviewedArtifactView,
+            moderation_safe: moderationSafeReviewedArtifactView,
+            normal_attachments: attachments,
+            moderation_safe_attachments: [],
+          },
+        );
         if (outcome.result) {
+          if (outcome.reviewed_artifact_view && outcome.provider_prompt) {
+            outcome.result = {
+              ...outcome.result,
+              review_custody: peerReviewDispatchCustody(
+                outcome.dispatch_kind ?? "normal",
+                outcome.reviewed_artifact_view,
+                outcome.visible_attachments ?? [],
+                outcome.provider_prompt,
+              ),
+            };
+          }
           await this.store.saveInFlightPeerResult(
             session.session_id,
             roundNumber,
@@ -7428,6 +8552,9 @@ export class CrossReviewOrchestrator {
             "provider-response",
           );
         } else if (outcome.failure) {
+          if (outcome.provider_prompt) {
+            outcome.failure = { ...outcome.failure, provider_prompt: outcome.provider_prompt };
+          }
           await this.store.saveInFlightPeerFailure(
             session.session_id,
             roundNumber,
@@ -7517,6 +8644,18 @@ export class CrossReviewOrchestrator {
       const { adapter } = item;
       if (item.result) {
         let peerResult = item.result;
+        // This lineage records the exact persisted draft excerpt dispatched to
+        // the stateless provider call that produced the current decision.
+        let peerDispatchKind = item.dispatch_kind ?? "normal";
+        const peerReviewedArtifactView = item.reviewed_artifact_view ?? normalReviewedArtifactView;
+        const peerVisibleAttachments = item.visible_attachments ?? attachments;
+        let peerProviderPrompt =
+          item.provider_prompt ?? item.result.review_custody?.provider_prompt;
+        if (!peerProviderPrompt) {
+          throw new Error(
+            `provider_prompt_custody_missing: ${peerResult.peer}/round-${roundNumber}`,
+          );
+        }
         const lossyReadyDecision = peerResult.parser_warnings.includes(
           "ready_rejected_lossy_parse",
         );
@@ -7573,6 +8712,7 @@ export class CrossReviewOrchestrator {
                 : "Peer response did not include a parseable status; requesting format recovery.",
           });
           let recoveryReservationId: string | undefined;
+          let recoveryProviderPrompt: ProviderPromptCustody | undefined;
           try {
             const recoveryPrompt = decisionRetry
               ? buildDecisionRetryPrompt(
@@ -7581,7 +8721,9 @@ export class CrossReviewOrchestrator {
                   peerResult.text,
                   this.config,
                   input.review_focus,
-                  attachments,
+                  [...peerVisibleAttachments],
+                  peerReviewedArtifactView,
+                  peerDispatchKind === "moderation_safe",
                 )
               : buildFormatRecoveryPrompt(
                   session,
@@ -7589,6 +8731,8 @@ export class CrossReviewOrchestrator {
                   this.config,
                   input.review_focus,
                   lossyReadyDecision,
+                  peerReviewedArtifactView,
+                  peerVisibleAttachments,
                 );
             const recoveryEstimate = estimatedPeerRoundCost(
               this.config,
@@ -7673,7 +8817,18 @@ export class CrossReviewOrchestrator {
                 label: recoveryLabel,
               },
             );
-            const recovered = await adapter.call(recoveryPrompt, {
+            const persistedRecoveryPrompt = await this.store.saveProviderPrompt(
+              session.session_id,
+              roundNumber,
+              adapter.id,
+              adapter.provider,
+              adapter.model,
+              "peer_review",
+              recoveryLabel,
+              recoveryPrompt,
+            );
+            recoveryProviderPrompt = persistedRecoveryPrompt.custody;
+            const recoveredRaw = await adapter.call(persistedRecoveryPrompt.content, {
               session_id: session.session_id,
               round: roundNumber,
               task: session.task,
@@ -7683,6 +8838,16 @@ export class CrossReviewOrchestrator {
               reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
               caller: requestedPetitioner,
             });
+            const recoveryDispatchKind = decisionRetry ? "decision_retry" : "format_recovery";
+            const recovered: PeerResult = {
+              ...recoveredRaw,
+              review_custody: peerReviewDispatchCustody(
+                recoveryDispatchKind,
+                peerReviewedArtifactView,
+                peerVisibleAttachments,
+                persistedRecoveryPrompt.custody,
+              ),
+            };
             await this.store.saveInFlightPeerResult(
               session.session_id,
               roundNumber,
@@ -7723,6 +8888,8 @@ export class CrossReviewOrchestrator {
               parser_warnings: parserWarnings,
               decision_quality: decisionQualityFromStatus(recovered.status, parserWarnings),
             };
+            peerDispatchKind = recoveryDispatchKind;
+            peerProviderPrompt = persistedRecoveryPrompt.custody;
             if (peerResult.status == null) {
               const failure = unparseableAfterRecoveryFailure(peerResult);
               rejected.push(failure);
@@ -7737,6 +8904,7 @@ export class CrossReviewOrchestrator {
               this.config.retry.max_attempts,
               Date.parse(startedAt),
             );
+            if (recoveryProviderPrompt) failure.provider_prompt = recoveryProviderPrompt;
             recoveryCostIncurred += failure.cost?.total_cost ?? 0;
             rejected.push(failure);
             if (recoveryReservationId) {
@@ -7753,19 +8921,41 @@ export class CrossReviewOrchestrator {
             }
           }
         }
+        peerResult = {
+          ...peerResult,
+          review_custody: peerReviewDispatchCustody(
+            peerDispatchKind,
+            peerReviewedArtifactView,
+            peerVisibleAttachments,
+            peerProviderPrompt,
+          ),
+        };
         if ((!this.config.stub || this.injectedAdapterFactory) && peerResult.status !== null) {
-          const trustedAttachments = trustedEvidenceAttachments(attachments);
-          const submittedAttachments = callerSubmittedEvidenceAttachments(attachments);
+          const trustedAttachments = trustedEvidenceAttachments(peerVisibleAttachments);
+          const submittedAttachments = callerSubmittedEvidenceAttachments(peerVisibleAttachments);
+          const trustedGroundingAttachments = readyPeerEvidenceAttachments(trustedAttachments);
+          const submittedGroundingAttachments = readyPeerEvidenceAttachments(submittedAttachments);
           const grounding = groundReadyPeerEvidence(peerResult, {
-            artifactText: `${session.task}\n${input.draft}`,
+            artifactText: peerReviewedArtifactView.visible_content,
             attachedEvidenceText: trustedAttachments
               .map((attachment) => attachment.content)
               .join("\n"),
-            evidenceAttachments: attachments,
-            callerSubmittedAttachments: submittedAttachments,
+            operatorVerifiedAttachments: trustedGroundingAttachments,
+            evidenceAttachments: peerVisibleAttachments,
+            callerSubmittedAttachments: submittedGroundingAttachments,
+            reviewedArtifactSource: {
+              artifact_kind: "reviewed_artifact",
+              relative_path: persistedReviewedArtifact.relative_path,
+              sha256: persistedReviewedArtifact.sha256,
+              content: persistedReviewedArtifact.content,
+              bytes: persistedReviewedArtifact.bytes,
+              truncated: false,
+              visible_content: peerReviewedArtifactView.visible_content,
+              visibility_truncated: peerReviewedArtifactView.truncated,
+            },
             requirePeerSubmittedCorroboration:
               roundTruthfulnessPreflight?.independent_review_required === true,
-            attachmentRefs: attachments.flatMap((attachment) => [
+            attachmentRefs: peerVisibleAttachments.flatMap((attachment) => [
               attachment.label,
               attachment.relative_path,
             ]),
@@ -7847,7 +9037,14 @@ export class CrossReviewOrchestrator {
       skipped,
     );
     const quorumPeerResults = isRecoveryRound
-      ? latestPeerResultsForQuorum(session, peers, quorumPeers)
+      ? latestPeerResultsForQuorum(
+          session,
+          peers,
+          quorumPeers,
+          persistedReviewedArtifact,
+          this.store,
+          attachments,
+        )
       : peers;
     const quorumConvergence = isRecoveryRound
       ? checkConvergence(quorumPeers, callerStatus, quorumPeerResults, rejected, skipped)
@@ -7946,8 +9143,10 @@ export class CrossReviewOrchestrator {
         if (!(error instanceof EvidenceChecklistContractViolationError)) throw error;
         const message = evidenceBrokerContractMessage(error.admission);
         const round = await this.store.appendRound(session.session_id, {
+          review_kind: "reviewed_artifact",
           caller_status: callerStatus,
           draft_file: draftFile,
+          reviewed_artifact: persistedReviewedArtifact,
           prompt_file: promptFile,
           peers,
           rejected,
@@ -8078,8 +9277,10 @@ export class CrossReviewOrchestrator {
       : pendingRoundAttempts.reduce((sum, result) => sum + (result.cost?.total_cost ?? 0), 0);
     if (this.isCancelled(session.session_id, input.signal)) {
       const round = await this.store.appendRound(session.session_id, {
+        review_kind: "reviewed_artifact",
         caller_status: callerStatus,
         draft_file: draftFile,
+        reviewed_artifact: persistedReviewedArtifact,
         prompt_file: promptFile,
         peers,
         rejected,
@@ -8237,8 +9438,10 @@ export class CrossReviewOrchestrator {
     // in-flight recovery marker fail-closed instead of a durable round whose
     // convergence disagrees with its checklist.
     const round = await this.store.appendRound(session.session_id, {
+      review_kind: "reviewed_artifact",
       caller_status: callerStatus,
       draft_file: draftFile,
+      reviewed_artifact: persistedReviewedArtifact,
       prompt_file: promptFile,
       peers,
       rejected,
@@ -8293,7 +9496,6 @@ export class CrossReviewOrchestrator {
     });
     await this.store.flushPendingEvents();
     if (finalConvergence.converged) {
-      this.store.saveFinal(session.session_id, input.draft);
       const baseReason = finalConvergence.recovery_converged
         ? "recovered_unanimity"
         : "unanimous_ready";
@@ -8301,7 +9503,7 @@ export class CrossReviewOrchestrator {
     }
     this.store.saveReport(
       session.session_id,
-      sessionReportMarkdown(
+      this.store.renderSessionReport(
         this.store.read(session.session_id),
         this.store.readEvents(session.session_id),
       ),
@@ -8353,7 +9555,33 @@ export class CrossReviewOrchestrator {
       callerSubmissionId,
     } = params;
     let session = params.session;
-    let draft = params.initialDraft;
+    const latestExplicitCircularRound = [...session.rounds]
+      .reverse()
+      .find((round) => round.review_kind === "circular_revision");
+    const legacyCircularRound =
+      latestExplicitCircularRound === undefined &&
+      session.mode === "circular" &&
+      session.circular_state !== undefined
+        ? [...session.rounds]
+            .reverse()
+            .find(
+              (round) =>
+                round.review_kind === undefined &&
+                round.draft_file === undefined &&
+                round.reviewed_artifact === undefined &&
+                round.provider_result === undefined &&
+                round.peers.length === 1,
+            )
+        : undefined;
+    const latestCircularRound = latestExplicitCircularRound ?? legacyCircularRound;
+    // Durable circular state always outranks continuation input. A completed
+    // round is self-sufficient, so do not touch obsolete round-zero custody;
+    // only sessions without a completed round need that authenticated source.
+    let draft = latestCircularRound?.peers[0]?.text ?? params.initialDraft;
+    const acceptedInitialGeneration = latestCircularRound
+      ? undefined
+      : this.store.readAcceptedCircularInitialDraft(session.session_id);
+    if (acceptedInitialGeneration) draft = acceptedInitialGeneration.text;
 
     // Rotation length guard. With sessionPeers already caller-excluded
     // by the upstream lottery setup, we just need len >= 2 to keep the
@@ -8383,39 +9611,81 @@ export class CrossReviewOrchestrator {
     // remaining session peers fill subsequent slots in canonical PEERS order.
     // Lottery for slot 0 preserves anti-bias; subsequent slots are
     // deterministic for audit/replay.
-    const rotationOrder: PeerId[] = [
+    const assignedRotationOrder: PeerId[] = [
       firstRotator,
       ...sessionPeers.filter((peer) => peer !== firstRotator),
     ];
+    const persistedCircularState = session.circular_state;
+    const rotationOrder = persistedCircularState?.rotation_order ?? assignedRotationOrder;
+    if (
+      persistedCircularState &&
+      (rotationOrder.length !== assignedRotationOrder.length ||
+        !rotationOrder.every((peer) => assignedRotationOrder.includes(peer)))
+    ) {
+      throw new Error("circular_rotation_mismatch_on_resume");
+    }
 
     let consecutiveLeadDrifts = 0;
-    let consecutiveNoChangeCount = 0;
-    let lastRevisionRound: number | null = null;
-    let cursor = 0;
+    let consecutiveNoChangeCount = persistedCircularState?.consecutive_no_change_count ?? 0;
+    let lastRevisionRound: number | null = persistedCircularState?.last_revision_round ?? null;
+    const completedCircularRounds = session.rounds.filter(
+      (round) =>
+        round.review_kind === "circular_revision" ||
+        (session.mode === "circular" &&
+          session.circular_state !== undefined &&
+          round.review_kind === undefined &&
+          round.draft_file === undefined &&
+          round.reviewed_artifact === undefined &&
+          round.provider_result === undefined &&
+          round.peers.length === 1),
+    ).length;
+    const completedRejectedRotations = (session.generation_files ?? []).filter(
+      (artifact) => artifact.label === "rotation",
+    ).length;
+    let cursor =
+      persistedCircularState?.next_cursor ?? completedCircularRounds % rotationOrder.length;
 
-    await this.store.setCircularState(session.session_id, {
-      rotation_order: rotationOrder,
-      consecutive_no_change_count: 0,
-      last_revision_round: null,
-    });
-    this.emit({
-      type: "session.circular_rotation_assigned",
-      session_id: session.session_id,
-      message: `Circular rotation: ${rotationOrder.join(" -> ")} (caller=${callerForLottery} excluded; length=${rotationOrder.length}).`,
-      data: {
+    if (!persistedCircularState) {
+      session = await this.store.setCircularState(session.session_id, {
         rotation_order: rotationOrder,
-        caller: callerForLottery,
-        rotation_size: rotationOrder.length,
-      },
-    });
+        consecutive_no_change_count: 0,
+        last_revision_round: null,
+        next_cursor: 0,
+      });
+      this.emit({
+        type: "session.circular_rotation_assigned",
+        session_id: session.session_id,
+        message: `Circular rotation: ${rotationOrder.join(" -> ")} (caller=${callerForLottery} excluded; length=${rotationOrder.length}).`,
+        data: {
+          rotation_order: rotationOrder,
+          caller: callerForLottery,
+          rotation_size: rotationOrder.length,
+        },
+      });
+    }
 
     const sessionMode: import("./types.js").SessionMode = "circular";
 
-    // Initial-draft generation if caller did not supply one. Use the
-    // first rotator (rotationOrder[0]) as generator, then advance the
-    // cursor so round 1 hands custody to a different peer — preserving
-    // no-self-immediate-output across the initial-draft → round 1 hop.
-    if (!draft) {
+    const pendingInitialRotator =
+      !latestCircularRound && !acceptedInitialGeneration ? rotationOrder[cursor] : undefined;
+    const stagedInitialGeneration = pendingInitialRotator
+      ? this.store.readStagedCircularGeneration(
+          session.session_id,
+          0,
+          pendingInitialRotator,
+          "initial-draft",
+        )
+      : undefined;
+
+    // A settled round-zero result is already durable provider work and must be
+    // disposed exactly once even if continuation input supplies a replacement
+    // draft. Only dispatch when neither durable initial source nor caller draft
+    // exists. The first rotator then advances before round 1 to preserve the
+    // no-self-immediate-output invariant.
+    if (
+      !latestCircularRound &&
+      (stagedInitialGeneration !== undefined || (!acceptedInitialGeneration && !draft))
+    ) {
       if (this.isCancelled(session.session_id, input.signal)) {
         await this.store.markCancelled(session.session_id, "session_cancelled");
         return {
@@ -8425,33 +9695,43 @@ export class CrossReviewOrchestrator {
           rounds: 0,
         };
       }
-      const initRotator = rotationOrder[cursor];
+      const initRotator = pendingInitialRotator;
       if (!initRotator) {
         throw new Error("circular_rotation_cursor_out_of_bounds");
       }
-      const initGeneration = await this.generateWithFailureAccounting(
-        adapters[initRotator],
-        buildInitialDraftPrompt(
-          input.task,
-          this.config,
-          input.review_focus,
-          sessionMode,
-          this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId),
-        ),
-        {
-          session_id: session.session_id,
-          round: 0,
-          task: input.task,
-          signal: input.signal,
-          stream: this.config.streaming.events,
-          stream_tokens: this.config.streaming.tokens,
-          emit: this.emit,
-          reasoning_effort_override: input.reasoning_effort_overrides?.[initRotator],
-          caller: callerForLottery,
-        },
-        "initial-draft",
-        "circular-initial-draft-failure",
-      );
+      const initGeneration =
+        stagedInitialGeneration ??
+        (await this.generateWithFailureAccounting(
+          adapters[initRotator],
+          buildInitialDraftPrompt(
+            input.task,
+            this.config,
+            input.review_focus,
+            sessionMode,
+            this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId),
+          ),
+          {
+            session_id: session.session_id,
+            round: 0,
+            task: input.task,
+            signal: input.signal,
+            stream: this.config.streaming.events,
+            stream_tokens: this.config.streaming.tokens,
+            emit: this.emit,
+            reasoning_effort_override: input.reasoning_effort_overrides?.[initRotator],
+            caller: callerForLottery,
+          },
+          "initial-draft",
+          "circular-initial-draft-failure",
+          { deferCircularPromotion: true },
+        ));
+      const initialNextCursor = (cursor + 1) % rotationOrder.length;
+      const initialDispositionState = {
+        rotation_order: rotationOrder,
+        consecutive_no_change_count: consecutiveNoChangeCount,
+        last_revision_round: lastRevisionRound,
+        next_cursor: initialNextCursor,
+      };
       if (initGeneration.model_match === false) {
         this.emit({
           type: "session.lead_model_mismatch",
@@ -8466,7 +9746,15 @@ export class CrossReviewOrchestrator {
             round_kind: "initial-draft",
           },
         });
-        await this.store.finalize(session.session_id, "aborted", "lead_silent_model_downgrade");
+        await this.store.commitCircularGenerationDisposition(session.session_id, {
+          expected: { round: 0, peer: initRotator, label: "initial-draft" },
+          circular_state: initialDispositionState,
+          disposition: {
+            kind: "reject_terminal",
+            outcome: "aborted",
+            reason: "lead_silent_model_downgrade",
+          },
+        });
         return {
           session: this.store.read(session.session_id),
           final_text: undefined,
@@ -8485,6 +9773,11 @@ export class CrossReviewOrchestrator {
           structuredEvidence: input.evidence,
           caller: callerForLottery,
           attachmentsPresent: initAttachments.length > 0,
+          reviewableAttachments: readyPeerEvidenceAttachments(initAttachments),
+          operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+            trustedEvidenceAttachments(initAttachments),
+          ),
+          attachedEvidenceSources: initAttachments.map((attachment) => attachment.content),
           attachedEvidenceText: initAttachments.map((attachment) => attachment.content).join("\n"),
           operatorVerifiedEvidenceText: trustedEvidenceAttachments(initAttachments)
             .map((attachment) => attachment.content)
@@ -8516,7 +9809,15 @@ export class CrossReviewOrchestrator {
               round_kind: "initial-draft",
             },
           });
-          await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
+          await this.store.commitCircularGenerationDisposition(session.session_id, {
+            expected: { round: 0, peer: initRotator, label: "initial-draft" },
+            circular_state: initialDispositionState,
+            disposition: {
+              kind: "reject_terminal",
+              outcome: "aborted",
+              reason: "needs_truthfulness_preflight",
+            },
+          });
           return {
             session: this.store.read(session.session_id),
             final_text: undefined,
@@ -8530,13 +9831,16 @@ export class CrossReviewOrchestrator {
       const initialFabricationResult =
         !initialEmptyText && !initialDriftDetected
           ? detectFabricatedEvidence(initGeneration.text, {
-              provenanceCorpus: trustedEvidenceAttachments(initAttachments)
-                .map((attachment) => attachment.content)
-                .join("\n"),
-              priorDraftCorpus: callerSubmittedEvidenceAttachments(initAttachments)
-                .map((attachment) => attachment.content)
-                .join("\n"),
+              provenanceCorpus: "",
+              provenanceCorpora: relatorAttachmentFabricationCorpora(
+                trustedEvidenceAttachments(initAttachments),
+              ),
+              priorDraftCorpus: "",
+              priorDraftCorpora: relatorAttachmentFabricationCorpora(
+                callerSubmittedEvidenceAttachments(initAttachments),
+              ),
               narrativeCorpus: input.task,
+              narrativeCorpora: [input.task],
             })
           : null;
       const initialMetaAuditResult =
@@ -8588,7 +9892,15 @@ export class CrossReviewOrchestrator {
             : initialMetaAuditDetected
               ? "lead_meta_audit_initial"
               : "lead_meta_review_drift";
-        await this.store.finalize(session.session_id, "aborted", finalizeReason);
+        await this.store.commitCircularGenerationDisposition(session.session_id, {
+          expected: { round: 0, peer: initRotator, label: "initial-draft" },
+          circular_state: initialDispositionState,
+          disposition: {
+            kind: "reject_terminal",
+            outcome: "aborted",
+            reason: finalizeReason,
+          },
+        });
         return {
           session: this.store.read(session.session_id),
           final_text: undefined,
@@ -8596,8 +9908,13 @@ export class CrossReviewOrchestrator {
           rounds: 0,
         };
       }
+      session = await this.store.commitCircularGenerationDisposition(session.session_id, {
+        expected: { round: 0, peer: initRotator, label: "initial-draft" },
+        circular_state: initialDispositionState,
+        disposition: { kind: "accept_initial" },
+      });
       draft = initGeneration.text;
-      cursor = (cursor + 1) % rotationOrder.length;
+      cursor = initialNextCursor;
     }
 
     // Derive max round ceiling from circular_max_rotations × rotation_size.
@@ -8610,14 +9927,20 @@ export class CrossReviewOrchestrator {
         ? input.max_rounds
         : circularMaxRotations * rotationOrder.length;
 
-    for (let round = 1; round <= maxCircularRounds; round++) {
+    const firstPendingAttempt = completedCircularRounds + completedRejectedRotations + 1;
+    for (let attempt = firstPendingAttempt; attempt <= maxCircularRounds; attempt++) {
+      // Rejected rotations are paid attempts but are not accepted ReviewRound
+      // records. Their generation artifacts share the next durable round
+      // number and remain unique by rotator, while the ceiling counts every
+      // provider attempt across restarts.
+      const round = session.rounds.length + 1;
       if (this.isCancelled(session.session_id, input.signal)) {
         await this.store.markCancelled(session.session_id, "session_cancelled");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
           converged: false,
-          rounds: round - 1,
+          rounds: attempt - 1,
         };
       }
       if (budgetExceeded(session, costLimit)) {
@@ -8625,14 +9948,14 @@ export class CrossReviewOrchestrator {
           type: "session.budget_exceeded",
           session_id: session.session_id,
           round,
-          message: `Circular session aborted: budget exceeded at round ${round}.`,
+          message: `Circular session aborted: budget exceeded at rotation attempt ${attempt}.`,
         });
         await this.store.finalize(session.session_id, "max-rounds", "budget_exceeded");
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
           converged: false,
-          rounds: round - 1,
+          rounds: attempt - 1,
         };
       }
 
@@ -8656,23 +9979,32 @@ export class CrossReviewOrchestrator {
       );
       const promptFile = this.store.savePrompt(session.session_id, round, prompt);
 
-      const generation = await this.generateWithFailureAccounting(
-        adapters[rotator],
-        prompt,
-        {
-          session_id: session.session_id,
-          round,
-          task: input.task,
-          signal: input.signal,
-          stream: this.config.streaming.events,
-          stream_tokens: this.config.streaming.tokens,
-          emit: this.emit,
-          reasoning_effort_override: input.reasoning_effort_overrides?.[rotator],
-          caller: callerForLottery,
-        },
-        "rotation",
-        "circular-rotation-failure",
-      );
+      const generation =
+        this.store.readStagedCircularGeneration(session.session_id, round, rotator, "rotation") ??
+        (await this.generateWithFailureAccounting(
+          adapters[rotator],
+          prompt,
+          {
+            session_id: session.session_id,
+            round,
+            task: input.task,
+            signal: input.signal,
+            stream: this.config.streaming.events,
+            stream_tokens: this.config.streaming.tokens,
+            emit: this.emit,
+            reasoning_effort_override: input.reasoning_effort_overrides?.[rotator],
+            caller: callerForLottery,
+          },
+          "rotation",
+          "circular-rotation-failure",
+          { deferCircularPromotion: true },
+        ));
+      const rejectedRotationState = {
+        rotation_order: rotationOrder,
+        consecutive_no_change_count: consecutiveNoChangeCount,
+        last_revision_round: lastRevisionRound,
+        next_cursor: (cursor + 1) % rotationOrder.length,
+      };
 
       if (generation.model_match === false) {
         this.emit({
@@ -8688,12 +10020,20 @@ export class CrossReviewOrchestrator {
             round_kind: "rotation",
           },
         });
-        await this.store.finalize(session.session_id, "aborted", "lead_silent_model_downgrade");
+        await this.store.commitCircularGenerationDisposition(session.session_id, {
+          expected: { round, peer: rotator, label: "rotation" },
+          circular_state: rejectedRotationState,
+          disposition: {
+            kind: "reject_terminal",
+            outcome: "aborted",
+            reason: "lead_silent_model_downgrade",
+          },
+        });
         return {
           session: this.store.read(session.session_id),
           final_text: draft,
           converged: false,
-          rounds: round - 1,
+          rounds: attempt - 1,
         };
       }
 
@@ -8704,6 +10044,11 @@ export class CrossReviewOrchestrator {
           structuredEvidence: input.evidence,
           caller: callerForLottery,
           attachmentsPresent: attachedEvidence.length > 0,
+          reviewableAttachments: readyPeerEvidenceAttachments(attachedEvidence),
+          operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+            trustedEvidenceAttachments(attachedEvidence),
+          ),
+          attachedEvidenceSources: attachedEvidence.map((attachment) => attachment.content),
           attachedEvidenceText: attachedEvidence.map((attachment) => attachment.content).join("\n"),
           operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachedEvidence)
             .map((attachment) => attachment.content)
@@ -8735,12 +10080,20 @@ export class CrossReviewOrchestrator {
               round_kind: "rotation",
             },
           });
-          await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
+          await this.store.commitCircularGenerationDisposition(session.session_id, {
+            expected: { round, peer: rotator, label: "rotation" },
+            circular_state: rejectedRotationState,
+            disposition: {
+              kind: "reject_terminal",
+              outcome: "aborted",
+              reason: "needs_truthfulness_preflight",
+            },
+          });
           return {
             session: this.store.read(session.session_id),
             final_text: draft,
             converged: false,
-            rounds: round - 1,
+            rounds: attempt - 1,
           };
         }
       }
@@ -8755,15 +10108,19 @@ export class CrossReviewOrchestrator {
         const trustedAttachedEvidence = trustedEvidenceAttachments(attachedEvidence);
         const submittedAttachedEvidence = callerSubmittedEvidenceAttachments(attachedEvidence);
         fabricationResult = detectFabricatedEvidence(generation.text, {
-          provenanceCorpus: trustedAttachedEvidence.map((a) => a.content).join("\n"),
+          provenanceCorpus: "",
+          provenanceCorpora: relatorAttachmentFabricationCorpora(trustedAttachedEvidence),
           // v3.7.4: the prior artifact (the draft the relator is
           // revising) is its own corpus tier — assertions preserved
           // from it are not fabrication. The task narrative stays
           // separate (a task-narrated claim is still not evidence).
-          priorDraftCorpus: `${draft as string}\n${submittedAttachedEvidence
-            .map((attachment) => attachment.content)
-            .join("\n")}`,
+          priorDraftCorpus: "",
+          priorDraftCorpora: [
+            draft as string,
+            ...relatorAttachmentFabricationCorpora(submittedAttachedEvidence),
+          ],
           narrativeCorpus: input.task,
+          narrativeCorpora: [input.task],
         });
         metaAuditResult = detectMetaAuditFabrication(generation.text);
       }
@@ -8820,6 +10177,13 @@ export class CrossReviewOrchestrator {
           message: `Circular rotator ${rotator} returned unusable output (${driftReason}); preserving prior draft. Consecutive drifts: ${consecutiveLeadDrifts}.`,
           data: eventData,
         });
+        const nextCursor = (cursor + 1) % rotationOrder.length;
+        const rejectedState = {
+          rotation_order: rotationOrder,
+          consecutive_no_change_count: consecutiveNoChangeCount,
+          last_revision_round: lastRevisionRound,
+          next_cursor: nextCursor,
+        };
         if (consecutiveLeadDrifts >= 2) {
           const finalizeReason = emptyText
             ? "lead_empty_revision_repeated"
@@ -8828,16 +10192,29 @@ export class CrossReviewOrchestrator {
               : metaAuditDetected
                 ? "lead_meta_audit_repeated"
                 : "lead_meta_review_drift";
-          await this.store.finalize(session.session_id, "aborted", finalizeReason);
+          await this.store.commitCircularGenerationDisposition(session.session_id, {
+            expected: { round, peer: rotator, label: "rotation" },
+            circular_state: rejectedState,
+            disposition: {
+              kind: "reject_terminal",
+              outcome: "aborted",
+              reason: finalizeReason,
+            },
+          });
           return {
             session: this.store.read(session.session_id),
             final_text: draft,
             converged: false,
-            rounds: round,
+            rounds: attempt,
           };
         }
+        session = await this.store.commitCircularGenerationDisposition(session.session_id, {
+          expected: { round, peer: rotator, label: "rotation" },
+          circular_state: rejectedState,
+          disposition: { kind: "reject_continue" },
+        });
         // preserve prior draft; advance cursor so next peer gets a turn
-        cursor = (cursor + 1) % rotationOrder.length;
+        cursor = nextCursor;
         continue;
       }
       consecutiveLeadDrifts = 0;
@@ -8884,6 +10261,8 @@ export class CrossReviewOrchestrator {
         parser_warnings: generation.parser_warnings ?? [],
         decision_quality: "clean",
         fallback: generation.fallback,
+        unpriced_attempts: generation.unpriced_attempts,
+        indeterminate_spend_attempts: generation.indeterminate_spend_attempts,
       };
       const baseConvergenceResult: ConvergenceResult = {
         converged: fullRotationConverged,
@@ -8923,7 +10302,9 @@ export class CrossReviewOrchestrator {
         lead_peer: rotator,
       };
 
+      const nextCursor = (cursor + 1) % rotationOrder.length;
       await this.store.appendRound(session.session_id, {
+        review_kind: "circular_revision",
         caller_status: "READY",
         prompt_file: promptFile,
         peers: [peerResult],
@@ -8931,11 +10312,13 @@ export class CrossReviewOrchestrator {
         convergence: convergenceResult,
         convergence_scope: convergenceScope,
         started_at: startedAt,
-      });
-      await this.store.setCircularState(session.session_id, {
-        rotation_order: rotationOrder,
-        consecutive_no_change_count: consecutiveNoChangeCount,
-        last_revision_round: lastRevisionRound,
+        circular_state: {
+          rotation_order: rotationOrder,
+          consecutive_no_change_count: consecutiveNoChangeCount,
+          last_revision_round: lastRevisionRound,
+          next_cursor: nextCursor,
+        },
+        promote_staged_generation: true,
       });
       this.emit({
         type: unchanged ? "session.circular_step_unchanged" : "session.circular_step_revised",
@@ -8964,7 +10347,8 @@ export class CrossReviewOrchestrator {
           message: `Circular convergence: full rotation of ${rotationOrder.length} peers without substantive change at round ${round}.`,
           data: {
             rotation_order: rotationOrder,
-            rounds_completed: round,
+            rounds_completed: attempt,
+            durable_round: round,
             last_revision_round: lastRevisionRound,
           },
         });
@@ -8977,11 +10361,11 @@ export class CrossReviewOrchestrator {
           session: this.store.read(session.session_id),
           final_text: draft,
           converged: true,
-          rounds: round,
+          rounds: attempt,
         };
       }
 
-      cursor = (cursor + 1) % rotationOrder.length;
+      cursor = nextCursor;
     }
 
     // Exhausted max rotations without convergence.
@@ -9045,6 +10429,14 @@ export class CrossReviewOrchestrator {
     // `input.caller ?? "operator"`, identical to pre-v3.7.2.
     if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
+    const persistedMode =
+      existingSession?.mode ?? (existingSession?.circular_state ? "circular" : undefined);
+    const sessionMode: import("./types.js").SessionMode = persistedMode ?? input.mode ?? "ship";
+    if (persistedMode !== undefined && input.mode !== undefined && input.mode !== persistedMode) {
+      throw new Error(
+        `session_mode_mismatch: session ${existingSession?.session_id} is ${persistedMode}; refusing ${input.mode}`,
+      );
+    }
     const actingCaller: PeerId | "operator" = input.caller ?? "operator";
     const callerForLottery: PeerId | "operator" =
       existingSession?.convergence_scope?.petitioner ?? existingSession?.caller ?? actingCaller;
@@ -9169,6 +10561,7 @@ export class CrossReviewOrchestrator {
           callerForLottery,
           [],
           normalizeReviewFocus(input.review_focus, this.config),
+          sessionMode,
         ));
       this.emit({
         type: "session.blocked.financial_controls_missing",
@@ -9189,7 +10582,9 @@ export class CrossReviewOrchestrator {
       };
     }
     let session =
-      existingSession ?? (await this.initSession(input.task, callerForLottery, input.review_focus));
+      existingSession ??
+      (await this.initSession(input.task, callerForLottery, input.review_focus, sessionMode));
+    session = await this.store.ensureSessionMode(session.session_id, sessionMode);
     const reviewerPeers = selectedPeers.filter((peer) => peer !== leadPeer);
     if (!reviewerPeers.length) {
       throw new Error(
@@ -9234,6 +10629,11 @@ export class CrossReviewOrchestrator {
         structuredEvidence: input.evidence,
         caller: callerForLottery,
         attachmentsPresent: truthfulnessAttachments.length > 0,
+        reviewableAttachments: readyPeerEvidenceAttachments(truthfulnessAttachments),
+        operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+          trustedEvidenceAttachments(truthfulnessAttachments),
+        ),
+        attachedEvidenceSources: truthfulnessAttachments.map((attachment) => attachment.content),
         attachedEvidenceText: truthfulnessAttachments
           .map((attachment) => attachment.content)
           .join("\n"),
@@ -9305,6 +10705,11 @@ export class CrossReviewOrchestrator {
         structuredEvidence: input.evidence,
         caller: callerForLottery,
         attachmentsPresent: attachments.length > 0,
+        reviewableAttachments: readyPeerEvidenceAttachments(attachments),
+        operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+          trustedEvidenceAttachments(attachments),
+        ),
+        attachedEvidenceSources: attachments.map((attachment) => attachment.content),
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
         operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
           .map((attachment) => attachment.content)
@@ -9382,8 +10787,6 @@ export class CrossReviewOrchestrator {
     // v2.13.0: track consecutive lead drifts. After 2 in a row the
     // session is aborted with `lead_meta_review_drift` to avoid burning
     // budget on a stuck lead.
-    const sessionMode: import("./types.js").SessionMode = input.mode ?? "ship";
-
     // v2.25.0 (circular mode): serial deliberative custody. Branch out
     // of the ship/review flow entirely — no parallel peer-voting,
     // rotator-only turns, convergence on full-rotation-no-change.
@@ -9468,6 +10871,11 @@ export class CrossReviewOrchestrator {
           structuredEvidence: input.evidence,
           caller: callerForLottery,
           attachmentsPresent,
+          reviewableAttachments: readyPeerEvidenceAttachments(initialAttachments),
+          operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+            trustedEvidenceAttachments(initialAttachments),
+          ),
+          attachedEvidenceSources: initialAttachments.map((attachment) => attachment.content),
           attachedEvidenceText: initialAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
@@ -9542,11 +10950,12 @@ export class CrossReviewOrchestrator {
         const trustedInitialAttachments = trustedEvidenceAttachments(initialAttachments);
         const submittedInitialAttachments = callerSubmittedEvidenceAttachments(initialAttachments);
         initialFabricationResult = detectFabricatedEvidence(generation.text, {
-          provenanceCorpus: trustedInitialAttachments.map((a) => a.content).join("\n"),
-          priorDraftCorpus: submittedInitialAttachments
-            .map((attachment) => attachment.content)
-            .join("\n"),
+          provenanceCorpus: "",
+          provenanceCorpora: relatorAttachmentFabricationCorpora(trustedInitialAttachments),
+          priorDraftCorpus: "",
+          priorDraftCorpora: relatorAttachmentFabricationCorpora(submittedInitialAttachments),
           narrativeCorpus: input.task,
+          narrativeCorpora: [input.task],
         });
         initialMetaAuditResult = detectMetaAuditFabrication(generation.text);
       }
@@ -9805,6 +11214,13 @@ export class CrossReviewOrchestrator {
             structuredEvidence: input.evidence,
             caller: callerForLottery,
             attachmentsPresent: truthfulnessAttachments.length > 0,
+            reviewableAttachments: readyPeerEvidenceAttachments(truthfulnessAttachments),
+            operatorVerifiedAttachments: readyPeerEvidenceAttachments(
+              trustedEvidenceAttachments(truthfulnessAttachments),
+            ),
+            attachedEvidenceSources: truthfulnessAttachments.map(
+              (attachment) => attachment.content,
+            ),
             attachedEvidenceText: truthfulnessAttachments
               .map((attachment) => attachment.content)
               .join("\n"),
@@ -9920,11 +11336,15 @@ export class CrossReviewOrchestrator {
           // union since IDs/paths/SHAs are commonly referenced as
           // identifiers without being claimed as command-output evidence.
           fabricationResult = detectFabricatedEvidence(generation.text, {
-            provenanceCorpus: trustedAttachmentsForCheck.map((a) => a.content).join("\n"),
-            priorDraftCorpus: `${draft}\n${submittedAttachmentsForCheck
-              .map((attachment) => attachment.content)
-              .join("\n")}`,
+            provenanceCorpus: "",
+            provenanceCorpora: relatorAttachmentFabricationCorpora(trustedAttachmentsForCheck),
+            priorDraftCorpus: "",
+            priorDraftCorpora: [
+              draft,
+              ...relatorAttachmentFabricationCorpora(submittedAttachmentsForCheck),
+            ],
             narrativeCorpus: input.task,
+            narrativeCorpora: [input.task],
           });
           // v3.4.0: meta-audit detector. Sess 51973fac shipped a
           // checklist of `MISSING: diff hunk` placeholders instead of

@@ -1,7 +1,7 @@
 # Evidence and Truthfulness Preflight
 
-`run_until_unanimous` and `session_start_unanimous` run a **pure textual
-evidence preflight** before any paid peer call. It catches the
+`run_until_unanimous` and `session_start_unanimous` run a **local evidence
+preflight** before any paid peer call. It catches the
 `f0db3970`-class failure — a submission that _claims_ completed
 operational work (tests pass, a diff exists, a build was validated) but
 embeds **zero concrete evidence** — and fails it locally with
@@ -12,16 +12,51 @@ embeds **zero concrete evidence** — and fails it locally with
 
 cross-review is an **API-only orchestrator**. The preflight:
 
-- **does NOT** execute shell, run `git diff`, or read the repo;
+- **does NOT** execute caller-supplied shell, run `git diff`, or read the repo;
 - **does NOT** invent or gather evidence for you;
 - only inspects text the caller already supplied — `task`,
   `initial_draft`, the structured `evidence` field, and
   already-attached evidence.
 
-The runtime packages authenticated caller material for transport: raw inline
-blocks and the `evidence` field are persisted with caller identity, SHA-256
-and byte count, then included verbatim in reviewer prompts. No manual operator
-attachment is required.
+For a supplied unified diff only, the runtime may invoke the official Git
+parser with constant arguments:
+`git -c core.quotePath=false apply --numstat --summary -z --whitespace=nowarn -p1 -`.
+Git-format input may contain multiple `diff --git` sections. A traditional
+unified diff without those section delimiters is accepted for exactly one file;
+send multiple traditional diffs as separate attachments so record-to-file
+custody never depends on a guessed boundary.
+This is validation, not execution: Git runs in the platform temporary
+directory and never applies the patch or selects or mutates the caller
+repository. Patch bytes enter only through standard input, `spawnSync` uses
+`shell: false`, and system/global Git configuration is disabled. Git officially
+defines both reporting options as turning off patch application unless
+`--apply` is also passed; cross-review never passes `--apply`. It also does not
+pass `--check`, because that would test applicability against the unrelated
+temporary working tree and reject legitimate modification or deletion
+evidence. Exact NUL-delimited
+post-image paths feed one shared custody index. Before admitting any post-image
+hunk region, the runtime additionally requires monotonic, non-overlapping
+old/new hunk ranges, equal unchanged gaps, and global destination uniqueness:
+each effective destination may appear in at most one section. This rejects
+mutually exclusive or intermediate images that Git's reporting-only mode can
+describe without applying. LF and CRLF are accepted as line terminators and
+canonicalized to line content; a bare CR inside a patch fails closed because
+Git treats it as content.
+Only those effective post-image bytes may establish a claim: diff headers,
+advisory hunk suffixes, trailers, and arbitrary text surrounding a valid patch
+are never treated as evidence. Supply command output and logs as separate
+non-patch attachments. If Git is unavailable or rejects the input,
+patch-derived custody fails closed without blocking ordinary text evidence.
+`server_info.evidence_patch_validation` and
+`runtime_capabilities.evidence_patch_validation` expose the same five-field
+readback: `available`, `version`, `provenance`, `failure_reason`, and the exact
+fixed `operation`. Neither response exposes the executable path.
+
+The runtime packages authenticated caller material for transport. Raw inline
+blocks and the `evidence` field are redacted and persisted with caller identity,
+SHA-256, and UTF-8 byte count. Each reviewer receives the authenticated visible
+slice selected for that dispatch; its visibility and truncation metadata define
+exactly what was reviewable. No manual operator attachment is required.
 
 Each authenticated external submission is a complete snapshot. Its immutable
 manifest becomes the sole active automatic caller-evidence bundle; older
@@ -95,19 +130,27 @@ or "here is the test plan" is a design review with legitimately no diff
 
 Authenticated peer material may satisfy the transport/admission gate when it
 contains value-corresponding raw output. It is labeled
-`PEER-SUBMITTED / UNVERIFIED`: reviewers may inspect and cite the exact bytes,
-but must not claim they independently executed the command. Optional operator
-material is labeled `OPERATOR-VERIFIED`; it is a higher authority tier, not a
-routine prerequisite for review or convergence.
+`PEER-SUBMITTED / UNVERIFIED`: reviewers may inspect and cite literal content
+from the authenticated visible slice, but must not claim they independently
+executed the command. Optional operator material is labeled
+`OPERATOR-VERIFIED`; it is a higher authority tier, not a routine prerequisite
+for review or convergence.
 
 The persisted evidence channel is also the single-artifact surface (v4.5.44,
 issue #216): a request for a full or unfiltered artifact — such as the
 complete base→head diff — is satisfied by one persisted evidence artifact of
-the current round containing it verbatim, cited by path/label plus SHA-256.
-The `evidence` field carries up to 200K chars per round versus the much
-smaller draft budget, so bulky artifacts belong there, never re-pasted into
-the draft body. The active submission replaces prior ones, so the caller
-resubmits referenced artifacts through the same channel on every round.
+the current round containing its canonical redacted persisted bytes, cited by
+path/label plus SHA-256. A single current artifact whose persisted text is at
+most 200,000 UTF-16 code units is included completely. With multiple current
+artifacts, each visible prefix is bounded so the combined `evidence` channel
+remains within 200,000 UTF-16 code units per round, as measured by JavaScript
+`String.length`, versus the much smaller draft budget. Patch custody accepts
+that same code-unit range, including multibyte UTF-8 text; bulky artifacts
+belong there, never re-pasted into the draft body. “Exact” or “verbatim” in
+this contract always refers to the redacted bytes persisted under session
+custody, not to any secret-bearing caller input before redaction.
+The active submission replaces prior ones, so the caller resubmits referenced
+artifacts through the same channel on every round.
 
 Integrity does not turn peer text into truth. Operational claims supported only
 by `PEER-SUBMITTED / UNVERIFIED` material require at least two independent
@@ -155,7 +198,10 @@ independent panel decides whether peer-submitted material can sustain READY.
 ### Reviewer citation contract
 
 When a reviewer cites an admitted attachment in `evidence_sources`, each source
-is one string with exactly one attachment identity and one correlated literal:
+is one string with exactly one attachment identity and one correlated literal.
+When the citation closes an evidence request owned by that reviewer, one
+optional `Checklist-Item: <id>` line may appear first. For `READY`, it precedes
+the three mandatory lines below:
 
 ```text
 Attachment: evidence/review.txt
@@ -178,6 +224,56 @@ characters. The schema permits up to 2,500 characters for the complete item and
 unbounded logs, peer messages, and provider responses are not acceptable
 substitutes for review. Conversely, a path or digest without the correlated
 literal is not proof that the reviewer inspected the artifact.
+
+For `NOT_READY`, `summary` is deliberately not free-form prose. It contains
+exactly one `BLOCKER: <path:line>` line per finding. Every line has exactly one
+canonical source item. The optional `Checklist-Item` line, when applicable,
+comes first; mandatory `Location: <the same exact path:line>` comes next;
+`Attachment`, `sha256`, and the terminal `Artifact quote` follow in that order.
+Remediation belongs in `caller_requests`. Paths containing spaces use a
+backtick-delimited token such as `` `src/my file.ts:42` ``. Arbitrary prose, duplicate locations,
+unmatched source counts, an unquoted suffix, or a line range fails closed. The
+quoted diagnostic must be substantive on the correlated line itself: a bare
+pointer, `path:line OK`, or unrelated text on an adjacent line is not blocking
+evidence. This gate proves exact custody and path/line co-location; it does not
+claim that deterministic parsing can judge whether the quoted sentence is
+semantically correct. Independent reviewers still own that judgment.
+
+When the prompt supplies `Reviewed Artifact Custody`, that block identifies the
+persisted redacted draft under review; it is not caller/operator evidence for
+the draft's own operational claims. A definitive `READY` or `NOT_READY` source
+uses the exact reviewed-artifact `Attachment` path and lowercase SHA-256 plus a
+substantive quoted line that was visible in the dispatched excerpt. Visibility
+counts are UTF-16 code units, matching JavaScript `String.length` and the prompt
+limits.
+
+Every custody-schema-v1 round persists an explicit `review_kind`.
+`reviewed_artifact` rounds require the canonical draft file, authenticated
+round custody, and dispatch custody for every peer result. `circular_revision`
+rounds are generation/revision turns rather than independent artifact reviews,
+so they deliberately carry no reviewed-artifact custody. Instead, each accepted
+circular round binds its persisted provider-result path, SHA-256, and UTF-8 byte
+count while the synthetic round peer remains the sole usage/cost owner. The
+append transition reauthenticates that result and its provider prompt before it
+removes the staged marker; report, doctor, and terminal paths reauthenticate the
+round descriptor again. A provider-free circuit-breaker round is recorded
+separately as `pre_dispatch_block`. Rounds before a legacy session's
+`reviewed_artifact_custody_start_round` remain readable without these fields.
+
+Every provider settlement binds the exact persisted redacted prompt variant
+used for that attempt—normal, fallback, moderation-safe, format recovery,
+decision retry, generation, or evidence judge—by relative path, SHA-256, UTF-8
+byte count, and UTF-16 code units. Provider calls receive the authenticated
+readback, not the pre-persistence input. This records transport custody only;
+it neither exposes nor claims custody of hidden provider serialization or
+chain-of-thought.
+
+For an ordinary reviewed artifact, each `NOT_READY` `BLOCKER`/`Location` uses
+the physical persisted-artifact path and line number. Only when the complete
+visible artifact is a Git-validated unified diff may the reviewer instead use
+an exact logical post-image path and line with the exact target quote. If any
+diff suffix was omitted, logical post-image locations fail closed: cite a
+complete visible physical artifact line or return `NEEDS_EVIDENCE`.
 
 ## The `evidence` field
 
@@ -219,12 +315,22 @@ mutations and security configuration.
 
 Every new attachment records `attached_by`, `origin`, `attached_at`, UTF-8
 `bytes`, `sha256`, and `integrity_version`, and persists a
-`session.evidence_attached` event. `readEvidenceAttachments` recalculates byte
-count and SHA-256 on every read; deletion, containment failure, malformed
-custody metadata or content tampering fails closed and the orchestrator
+`session.evidence_attached` event. `readEvidenceAttachments` opens each
+contained regular file through a descriptor, binds the descriptor identity to
+the inspected directory entry, and recalculates byte count and SHA-256 on every
+read; deletion, containment failure, path replacement, malformed custody
+metadata or content tampering fails closed and the orchestrator
 continues without treating the file as evidence. Pre-custody attachments remain
 readable for historical compatibility but are labeled
 `provenance_status=legacy_unverified` and are not provenance-grade.
+
+A `verified` report status reopens every visible attachment as a contained
+regular file and rechecks its path, SHA-256, UTF-8 byte count, UTF-16 visibility,
+and truncation metadata. For a converged governed round, it also verifies that
+`final.md` exactly mirrors the authenticated reviewed artifact. Restart
+recovery may recreate only an absent `final.md` from those authenticated bytes,
+using atomic no-clobber publication and a forensic recovery event. It refuses
+to replace an existing mismatch, symbolic link, directory, or redirected path.
 
 Operator authority is not inferred from `caller="operator"` or `clientInfo`.
 It requires the seventh, dedicated operator capability from
@@ -357,6 +463,25 @@ judges until a later submission could actually contain responsive evidence.
 From v4.2.4, preflight blocks that happen before a peer round is appended are
 also visible in `meta.failed_attempts` with `failure_class =
 "truthfulness_preflight"` and `attempts = 0`.
+
+## Official implementation references
+
+- [git apply](https://git-scm.com/docs/git-apply) — standard-input patch data,
+  reporting-only `--numstat`/`--summary`, explicit `--apply`, `-z`, `-p`, and
+  whitespace behavior.
+- [Git diff format](https://git-scm.com/docs/diff-format) — pre-image and
+  post-image semantics, extended headers, and NUL-delimited rename/copy
+  records.
+- [Git `core.quotePath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corequotePath)
+  — pathname quoting behavior.
+- [Node.js `child_process.spawnSync`](https://nodejs.org/api/child_process.html#child_processspawnsynccommand-args-options)
+  — standard input, working directory, environment isolation, timeout, output
+  cap, and `shell: false`.
+- [Node.js file-system API](https://nodejs.org/api/fs.html) — `lstat`,
+  `realpath`, `open`, and `fstat` containment and identity checks.
+- [JavaScript `String.length`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/length)
+  and [Node.js `Buffer.byteLength`](https://nodejs.org/api/buffer.html#static-method-bufferbytelengthstring-encoding)
+  — UTF-16 code units versus UTF-8 bytes.
 
 ## Retesting after evidence
 

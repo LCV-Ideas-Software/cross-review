@@ -310,11 +310,10 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v4.5.0 / evidence: current-format attachments must be re-hashed on every read; stale content caches cannot bypass custody integrity.",
   );
   assert.ok(
-    storeSrc.includes("safeResolveContainedExistingPath") &&
-      storeSrc.includes(
-        "const absolutePath = this.safeResolveContainedExistingPath(sessionDir, file.path)",
-      ),
-    "v4.4.5 / evidence: readEvidenceAttachments must use a non-throwing contained realpath resolver.",
+    storeSrc.includes(
+      'authenticated = this.readContainedRegularFile(sessionId, file.path, "evidence_integrity");',
+    ) && storeSrc.includes("candidateStat.dev !== descriptorStat.dev"),
+    "v4.6.5 / evidence: readEvidenceAttachments must use descriptor-bound contained-file authentication.",
   );
   assert.ok(
     orchSrc.includes("private safeReadEvidenceAttachments") &&
