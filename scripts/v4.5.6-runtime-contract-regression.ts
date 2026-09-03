@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -44,10 +43,7 @@ const READY = JSON.stringify({
 });
 
 const EVIDENCE_PATH = "evidence/caller-structured-evidence.txt";
-
-function sha256(content: string): string {
-  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
-}
+const EVIDENCE_SHA = "be96b58cc183b1a1712a2d0dd881d944d961e14da90cc81463fb1f7d4bdcd924";
 
 function context(streamTokens = false): PeerCallContext {
   return {
@@ -126,28 +122,25 @@ function readyPeer(source: string): PeerResult {
   } as PeerResult;
 }
 
-function citation(quote: string, contentSha256: string): string {
+function citation(quote: string): string {
   return [
     `Attachment: ${EVIDENCE_PATH}`,
-    `sha256=${contentSha256}`,
+    `sha256=${EVIDENCE_SHA}`,
     `Artifact quote: "${quote}"`,
   ].join("\n");
 }
 
-function grounding(quote: string, content: string) {
-  const contentSha256 = sha256(content);
-  return groundReadyPeerEvidence(readyPeer(citation(quote, contentSha256)), {
+function grounding(source: string, content: string) {
+  return groundReadyPeerEvidence(readyPeer(source), {
     artifactText: "Review this static implementation candidate.",
     attachedEvidenceText: "",
     attachmentRefs: [EVIDENCE_PATH],
-    evidenceAttachments: [{ relative_path: EVIDENCE_PATH, sha256: contentSha256 }],
+    evidenceAttachments: [{ relative_path: EVIDENCE_PATH, sha256: EVIDENCE_SHA }],
     callerSubmittedAttachments: [
       {
         relative_path: EVIDENCE_PATH,
-        sha256: contentSha256,
+        sha256: EVIDENCE_SHA,
         content,
-        bytes: Buffer.byteLength(content, "utf8"),
-        truncated: false,
       },
     ],
     runtimeFacts: {},
@@ -1989,7 +1982,7 @@ const regressions: Regression[] = [
     name: "one provider-serialization escape layer preserves a valid citation",
     run: () => {
       const result = grounding(
-        String.raw`{\"conclusion\":\"success\"}`,
+        citation(String.raw`{\"conclusion\":\"success\"}`),
         '{"conclusion":"success"}',
       );
       assert.equal(result.grounded, true);
@@ -1999,40 +1992,42 @@ const regressions: Regression[] = [
   {
     name: "a logical multiline quote matches the safe post-image of a unified diff",
     run: () => {
-      const diff =
-        [
-          "diff --git a/src/types.ts b/src/types.ts",
-          "--- a/src/types.ts",
-          "+++ b/src/types.ts",
-          "@@ -1 +1,2 @@",
-          "-export type X = 'old';",
-          "+export type X =",
-          "+  | 'a';",
-        ].join("\n") + "\n";
-      const result = grounding(String.raw`export type X =\n  | 'a';`, diff);
+      const diff = [
+        "diff --git a/src/types.ts b/src/types.ts",
+        "--- a/src/types.ts",
+        "+++ b/src/types.ts",
+        "@@ -1 +1,2 @@",
+        "-export type X = 'old';",
+        "+export type X =",
+        "+  | 'a';",
+      ].join("\n");
+      const result = grounding(citation(String.raw`export type X =\n  | 'a';`), diff);
       assert.equal(result.grounded, true);
       assert.equal(result.result.status, "READY");
 
-      const removedOnly = grounding("export type X = 'old';", diff);
+      const removedOnly = grounding(citation("export type X = 'old';"), diff);
       assert.equal(
         removedOnly.grounded,
         false,
         "a safe post-image must never treat a removed line as current evidence",
       );
-      const removedWithDiffMarker = grounding("-export type X = 'old';", diff);
+      const removedWithDiffMarker = grounding(citation("-export type X = 'old';"), diff);
       assert.equal(
         removedWithDiffMarker.grounded,
         false,
         "a raw '-' diff marker must not bypass removed-only post-image rejection",
       );
 
-      const caseChangedCode = grounding("if (isadmin) allow();", "if (isAdmin) allow();");
+      const caseChangedCode = grounding(citation("if (isadmin) allow();"), "if (isAdmin) allow();");
       assert.equal(
         caseChangedCode.grounded,
         false,
         "literal code grounding must preserve case-sensitive identifiers",
       );
-      const whitespaceChangedString = grounding('const mode = "a b";', 'const mode = "a  b";');
+      const whitespaceChangedString = grounding(
+        citation('const mode = "a b";'),
+        'const mode = "a  b";',
+      );
       assert.equal(
         whitespaceChangedString.grounded,
         false,
@@ -2040,20 +2035,16 @@ const regressions: Regression[] = [
       );
 
       const genericAssurance = "The implementation is correct and fully tested.";
-      const genericEvidence = "raw test log that does not contain the claim";
-      const genericEvidenceSha = sha256(genericEvidence);
       const selfGrounded = groundReadyPeerEvidence(readyPeer(genericAssurance), {
         artifactText: genericAssurance,
-        attachedEvidenceText: genericEvidence,
+        attachedEvidenceText: "raw test log that does not contain the claim",
         attachmentRefs: [EVIDENCE_PATH],
-        evidenceAttachments: [{ relative_path: EVIDENCE_PATH, sha256: genericEvidenceSha }],
+        evidenceAttachments: [{ relative_path: EVIDENCE_PATH, sha256: EVIDENCE_SHA }],
         callerSubmittedAttachments: [
           {
             relative_path: EVIDENCE_PATH,
-            sha256: genericEvidenceSha,
-            content: genericEvidence,
-            bytes: Buffer.byteLength(genericEvidence, "utf8"),
-            truncated: false,
+            sha256: EVIDENCE_SHA,
+            content: "raw test log that does not contain the claim",
           },
         ],
         runtimeFacts: {},

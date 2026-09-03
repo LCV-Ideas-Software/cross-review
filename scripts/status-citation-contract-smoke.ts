@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+
 import {
   parsePeerStatus,
   READY_CANONICAL_SUMMARY,
@@ -24,11 +25,6 @@ assert.match(
   instruction,
   /Attachment: <persisted-path>[\s\S]*sha256=<64 lowercase hex>[\s\S]*Artifact quote: "<literal text from that same attachment>"/,
   "the prompt must state the exact Attachment + digest + literal quote grammar",
-);
-assert.match(
-  instruction,
-  /For NOT_READY[\s\S]*BLOCKER: <path:line>[\s\S]*Location: <the same path:line>[\s\S]*No other prefix or suffix prose is allowed/,
-  "the prompt must state the exact fail-closed blocker location grammar",
 );
 assert.match(
   instruction,

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,7 +14,7 @@ import {
   truthfulnessPreflight,
 } from "../src/core/orchestrator.js";
 import { sessionReportMarkdown } from "../src/core/reports.js";
-import { extractChecklistCommands, SessionStore } from "../src/core/session-store.js";
+import { extractChecklistCommands } from "../src/core/session-store.js";
 import type { PeerAdapter, PeerId, PeerResult } from "../src/core/types.js";
 import { StubAdapter } from "../src/peers/stub.js";
 
@@ -92,22 +91,19 @@ const RETRY_BAD_SNAPSHOT_SENTINEL = "RETRY_BAD_SNAPSHOT_7521be";
 const RETRY_GOOD_SNAPSHOT_SENTINEL = "RETRY_GOOD_SNAPSHOT_0dd4f9";
 const PRIOR_SUCCESS_SNAPSHOT_SENTINEL = "PRIOR_SUCCESS_SNAPSHOT_f9a37c";
 const PANEL_EVIDENCE_PATH = "evidence/caller-submitted-tests.txt";
+const PANEL_EVIDENCE_SHA = "7b7ff5b959d17e07f20d5b3a481a3f320624af987cd38a1d3df3d8635c8f8a31";
 const PANEL_EVIDENCE_CONTENT = [
   "COMMAND: npm test",
   "EXIT_CODE: 0",
   "Test Files 13 passed (13)",
   "Tests 74 passed (74)",
+  `sha256=${PANEL_EVIDENCE_SHA}`,
 ].join("\n");
-const PANEL_EVIDENCE_SHA = sha256(PANEL_EVIDENCE_CONTENT);
 const GENERATED_EVIDENCE_PATH =
   "evidence/2026-07-11T21-15-48-680Z-caller-structured-evidence-70d40191-c100-4144-9fbd-eca598d4af03.txt";
+const GENERATED_EVIDENCE_SHA = "43009998c876789fa9a74e04363f3109a932883212ebeae1fb14cc9f5aa84285";
 const GENERATED_EVIDENCE_CONTENT = 'STDOUT: package.json:3:  "version": "4.5.3",';
-const GENERATED_EVIDENCE_SHA = sha256(GENERATED_EVIDENCE_CONTENT);
 const GENERATED_DIFF_LINE = "diff --git a/CHANGELOG.md b/CHANGELOG.md";
-
-function sha256(content: string): string {
-  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
-}
 
 function readyPeer(
   peer: PeerId,
@@ -136,67 +132,6 @@ function readyPeer(
   };
 }
 
-async function appendGovernedFixtureRound(
-  store: SessionStore,
-  sessionId: string,
-  params: Parameters<SessionStore["appendRound"]>[1],
-  draft = "Governed fixture artifact under review.\n",
-) {
-  const round = store.read(sessionId).rounds.length + 1;
-  const draftFile = store.saveDraft(sessionId, round, draft);
-  const reviewedArtifact = store.readReviewedArtifact(sessionId, round, draft);
-  const visibleAttachments = store.readEvidenceAttachments(sessionId, 200_000);
-  const peers: PeerResult[] = [];
-  for (const peer of params.peers) {
-    const promptText = [
-      `Review the authenticated fixture artifact.\n\n${reviewedArtifact.content}`,
-      ...visibleAttachments.map(
-        (attachment) =>
-          `Attachment: ${attachment.relative_path}\nsha256=${attachment.sha256 ?? "legacy-unverified"}\n${attachment.content}`,
-      ),
-    ].join("\n\n");
-    const prompt = await store.saveProviderPrompt(
-      sessionId,
-      round,
-      peer.peer,
-      peer.provider,
-      peer.model,
-      "peer_review",
-      "fixture-reviewed-artifact",
-      promptText,
-    );
-    peers.push({
-      ...peer,
-      review_custody: {
-        dispatch_kind: "normal",
-        reviewed_artifact: {
-          relative_path: reviewedArtifact.relative_path,
-          sha256: reviewedArtifact.sha256,
-          visible_utf16_units: reviewedArtifact.content.length,
-          truncated: false,
-        },
-        visible_attachments: visibleAttachments.map((attachment) => {
-          assert.ok(attachment.sha256, "governed fixture attachments require SHA-256 custody");
-          return {
-            relative_path: attachment.relative_path,
-            sha256: attachment.sha256,
-            visible_utf16_units: attachment.content.length,
-            truncated: attachment.truncated,
-          };
-        }),
-        provider_prompt: prompt.custody,
-      },
-    });
-  }
-  return store.appendRound(sessionId, {
-    ...params,
-    review_kind: "reviewed_artifact",
-    draft_file: draftFile,
-    reviewed_artifact: reviewedArtifact,
-    peers,
-  });
-}
-
 function peerSubmittedGroundingInput(artifactText: string) {
   return {
     artifactText: `${artifactText}\nThe completed implementation reports npm test with 74 passed.`,
@@ -208,8 +143,6 @@ function peerSubmittedGroundingInput(artifactText: string) {
         relative_path: PANEL_EVIDENCE_PATH,
         sha256: PANEL_EVIDENCE_SHA,
         content: PANEL_EVIDENCE_CONTENT,
-        bytes: Buffer.byteLength(PANEL_EVIDENCE_CONTENT, "utf8"),
-        truncated: false,
       },
     ],
   } satisfies Parameters<typeof groundReadyPeerEvidence>[1];
@@ -222,7 +155,7 @@ const regressions: Regression[] = [
       const source = [
         `Attachment: ${GENERATED_EVIDENCE_PATH}`,
         `sha256=${GENERATED_EVIDENCE_SHA}`,
-        `Artifact quote: ${JSON.stringify(GENERATED_EVIDENCE_CONTENT)}`,
+        `"${GENERATED_EVIDENCE_CONTENT}"`,
       ].join("\n");
       const grounding = groundReadyPeerEvidence(readyPeer("claude", "verified", [source]), {
         artifactText: "Release metadata candidate under review.",
@@ -233,8 +166,6 @@ const regressions: Regression[] = [
             relative_path: GENERATED_EVIDENCE_PATH,
             sha256: GENERATED_EVIDENCE_SHA,
             content: GENERATED_EVIDENCE_CONTENT,
-            bytes: Buffer.byteLength(GENERATED_EVIDENCE_CONTENT, "utf8"),
-            truncated: false,
           },
         ],
         runtimeFacts: { runtime_version: "4.5.2" },
@@ -277,12 +208,9 @@ const regressions: Regression[] = [
   {
     name: "explicit single-quoted artifact quote grounds a generated attachment citation",
     run: () => {
-      const generatedDiffSha = sha256(GENERATED_DIFF_LINE);
-      const source = [
-        `Attachment: ${GENERATED_EVIDENCE_PATH}`,
-        `sha256=${generatedDiffSha}`,
-        `Artifact quote: '${GENERATED_DIFF_LINE}'`,
-      ].join("\n");
+      const source =
+        `Attachment: ${GENERATED_EVIDENCE_PATH}; sha256=${GENERATED_EVIDENCE_SHA}; ` +
+        `Artifact quote: '${GENERATED_DIFF_LINE}'`;
       const grounding = groundReadyPeerEvidence(readyPeer("deepseek", "verified", [source]), {
         artifactText: "Release metadata candidate under review.",
         attachedEvidenceText: "",
@@ -290,10 +218,8 @@ const regressions: Regression[] = [
         callerSubmittedAttachments: [
           {
             relative_path: GENERATED_EVIDENCE_PATH,
-            sha256: generatedDiffSha,
+            sha256: GENERATED_EVIDENCE_SHA,
             content: GENERATED_DIFF_LINE,
-            bytes: Buffer.byteLength(GENERATED_DIFF_LINE, "utf8"),
-            truncated: false,
           },
         ],
         runtimeFacts: { runtime_version: "4.5.2" },
@@ -356,8 +282,7 @@ const regressions: Regression[] = [
         "EXIT_CODE: 0",
         "Tests 74 passed (74)",
       ].join("\n");
-      const operationalSha = sha256(operationalEvidence);
-      const alteredSha = `${operationalSha[0] === "5" ? "6" : "5"}${operationalSha.slice(1)}`;
+      const alteredSha = `5${GENERATED_EVIDENCE_SHA.slice(1)}`;
       const source = [
         `Attachment: ${GENERATED_EVIDENCE_PATH}`,
         `sha256=${alteredSha}`,
@@ -370,16 +295,14 @@ const regressions: Regression[] = [
         evidenceAttachments: [
           {
             relative_path: GENERATED_EVIDENCE_PATH,
-            sha256: operationalSha,
+            sha256: GENERATED_EVIDENCE_SHA,
           },
         ],
         callerSubmittedAttachments: [
           {
             relative_path: GENERATED_EVIDENCE_PATH,
-            sha256: operationalSha,
+            sha256: GENERATED_EVIDENCE_SHA,
             content: operationalEvidence,
-            bytes: Buffer.byteLength(operationalEvidence, "utf8"),
-            truncated: false,
           },
         ],
         requirePeerSubmittedCorroboration: true,
@@ -1120,30 +1043,13 @@ const regressions: Regression[] = [
           );
           assert.ok(attachment, `${peer} must receive the persisted caller evidence identity`);
           const [, attachmentPath, attachmentSha] = attachment;
-          const reviewedArtifact = prompt.match(
-            /## Reviewed Artifact Custody[\s\S]*?\nAttachment: ([^\n]+)\nsha256=([a-f0-9]{64})[\s\S]*?\n## Draft Or Solution Under Review\n([^\n]+)/,
-          );
-          assert.ok(
-            reviewedArtifact,
-            `${peer} must receive canonical persisted reviewed-artifact custody`,
-          );
-          const [, reviewedPath, reviewedSha, reviewedLine] = reviewedArtifact;
           const source = (line: string) =>
             [
               `Attachment: ${attachmentPath}`,
               `sha256=${attachmentSha}`,
               `Artifact quote: "${line}"`,
             ].join("\n");
-          const reviewedSource = [
-            `Attachment: ${reviewedPath}`,
-            `sha256=${reviewedSha}`,
-            `Artifact quote: "${reviewedLine}"`,
-          ].join("\n");
-          return readyPeer(peer, "verified", [
-            reviewedSource,
-            source(flowLine),
-            source(validationLine),
-          ]);
+          return readyPeer(peer, "verified", [source(flowLine), source(validationLine)]);
         };
         adapters[peer] = adapter;
       }
@@ -1165,7 +1071,7 @@ const regressions: Regression[] = [
         "Attach the current state of the code sections under review (generateValidated, executeOneAnalysisStep, isRetryableTransportError) with line numbers, or a git diff for the patch, to allow static verification of the flow proof.";
       const validationAsk =
         "Provide raw vitest output (e.g., terminal log) showing 281 passed tests and exit code 0 for the same code version.";
-      await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [],
@@ -1258,7 +1164,7 @@ const regressions: Regression[] = [
       // The ask must belong to a completed historical round. Autowire must
       // never spend a judge call on an ask raised by the round currently
       // reviewing the same unchanged draft.
-      await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [],
@@ -1345,7 +1251,7 @@ const regressions: Regression[] = [
         "Review a design fixture without operational claims.",
         "codex",
       );
-      await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [],
@@ -1404,7 +1310,7 @@ const regressions: Regression[] = [
         expected_peers: ["claude" as const],
         reviewer_peers: ["claude" as const],
       };
-      await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [],
@@ -1497,7 +1403,7 @@ const regressions: Regression[] = [
       const staleReady = checkConvergence(["claude"], "READY", [ready], []);
       assert.equal(staleReady.converged, true);
 
-      const round = await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      const round = await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [ready],
@@ -1556,7 +1462,7 @@ const regressions: Regression[] = [
         parser_warnings: ["ready_evidence_sources_missing"],
         decision_quality: "needs_operator_review",
       };
-      await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [legacyDemotion],
@@ -1630,7 +1536,7 @@ const regressions: Regression[] = [
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "claude", ask: collidingAsk },
       ]);
-      await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [genuineRequest],
@@ -1675,7 +1581,7 @@ const regressions: Regression[] = [
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 2, [
         { peer: "claude", ask: collidingAsk },
       ]);
-      await appendGovernedFixtureRound(orchestrator.store, session.session_id, {
+      await orchestrator.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-2-prompt.md",
         peers: [laterSyntheticDemotion],
@@ -1829,7 +1735,7 @@ const regressions: Regression[] = [
         "When the workflow began, cross-review runtime version 4.5.0 was in use.";
       const historicalRaw = "session_read snapshot captured for workflow start";
       const historicalPath = "evidence/workflow-start-snapshot.txt";
-      const historicalSha = sha256(historicalRaw);
+      const historicalSha = "a".repeat(64);
       const truthfulness = truthfulnessPreflight({
         task: historicalClaim,
         initialDraft: "Historical runtime report.",
@@ -1848,8 +1754,6 @@ const regressions: Regression[] = [
             relative_path: historicalPath,
             sha256: historicalSha,
             content: historicalRaw,
-            bytes: Buffer.byteLength(historicalRaw, "utf8"),
-            truncated: false,
           },
         ],
         runtimeFacts: {},
@@ -1914,7 +1818,7 @@ const regressions: Regression[] = [
         ["Portuguese", "npm run test não foi executado; somente a documentação parece ok."],
       ] as const) {
         const evidencePath = `evidence/caller-structured-evidence-${language.toLowerCase()}.txt`;
-        const evidenceSha = sha256(evidence);
+        const evidenceSha = "b".repeat(64);
         const preflight = evidencePreflight({
           task: claim,
           initialDraft: "Release report.",
@@ -1931,8 +1835,6 @@ const regressions: Regression[] = [
               relative_path: evidencePath,
               sha256: evidenceSha,
               content: evidence,
-              bytes: Buffer.byteLength(evidence, "utf8"),
-              truncated: false,
             },
           ],
           runtimeFacts: {},
@@ -2158,7 +2060,7 @@ const regressions: Regression[] = [
         "Historical requester reverification replay fixture.",
         "codex",
       );
-      await appendGovernedFixtureRound(firstRuntime.store, session.session_id, {
+      await firstRuntime.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-1-prompt.md",
         peers: [],
@@ -2210,7 +2112,9 @@ const regressions: Regression[] = [
         `Checklist-Item: ${item.id}`,
         `Attachment: ${attachmentPath}`,
         `sha256=${attachment.sha256}`,
-        'Artifact quote: "COMMAND: npm test\nEXIT_CODE: 0\nTests 74 passed (74)"',
+        "COMMAND: npm test",
+        "EXIT_CODE: 0",
+        'Artifact quote: "Tests 74 passed (74)"',
       ].join("\n");
       const historicalPeer = {
         ...readyPeer("claude", "verified", [source]),
@@ -2218,7 +2122,7 @@ const regressions: Regression[] = [
         parsed_status: "READY" as const,
         normalized_status: "READY" as const,
       };
-      await appendGovernedFixtureRound(firstRuntime.store, session.session_id, {
+      await firstRuntime.store.appendRound(session.session_id, {
         caller_status: "READY",
         prompt_file: "agent-runs/round-2-prompt.md",
         peers: [historicalPeer],
@@ -2557,7 +2461,7 @@ const regressions: Regression[] = [
       const claim = "When the workflow began, cross-review runtime version 4.5.0 was in use.";
       const currentSnapshot = "server_info current runtime_version=4.5.0";
       const evidencePath = "evidence/workflow-start-snapshot.txt";
-      const evidenceSha = sha256(currentSnapshot);
+      const evidenceSha = "c".repeat(64);
       const preflight = truthfulnessPreflight({
         task: claim,
         initialDraft: "Historical runtime report.",
@@ -2575,8 +2479,6 @@ const regressions: Regression[] = [
             relative_path: evidencePath,
             sha256: evidenceSha,
             content: currentSnapshot,
-            bytes: Buffer.byteLength(currentSnapshot, "utf8"),
-            truncated: false,
           },
         ],
         requirePeerSubmittedCorroboration: preflight.independent_review_required,
@@ -2633,7 +2535,7 @@ const regressions: Regression[] = [
         "server_info current runtime_version=4.5.0",
       ].join("\n");
       const evidencePath = "evidence/mixed-current-and-start-metadata.txt";
-      const evidenceSha = sha256(mixedEvidence);
+      const evidenceSha = "d".repeat(64);
       const preflight = truthfulnessPreflight({
         task: claim,
         initialDraft: "Historical runtime report.",
@@ -2657,8 +2559,6 @@ const regressions: Regression[] = [
             relative_path: evidencePath,
             sha256: evidenceSha,
             content: mixedEvidence,
-            bytes: Buffer.byteLength(mixedEvidence, "utf8"),
-            truncated: false,
           },
         ],
         requirePeerSubmittedCorroboration: preflight.independent_review_required,
@@ -2684,7 +2584,9 @@ const regressions: Regression[] = [
       const source = [
         `Attachment: ${PANEL_EVIDENCE_PATH}`,
         `sha256=${PANEL_EVIDENCE_SHA}`,
-        'Artifact quote: "COMMAND: npm test\nEXIT_CODE: 0\nTest Files 13 passed (13)\nTests 74 passed (74)"',
+        '"COMMAND: npm test"',
+        '"EXIT_CODE: 0"',
+        '"Tests 74 passed (74)"',
       ].join("\n");
       const input = peerSubmittedGroundingInput("Implementation candidate under review.");
       const claude = groundReadyPeerEvidence(readyPeer("claude", "verified", [source]), input);

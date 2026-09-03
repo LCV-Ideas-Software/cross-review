@@ -318,19 +318,7 @@ function peerRequestLines(peer: PeerResult): string[] {
   return lines;
 }
 
-export interface ReviewedArtifactCustodyReportStatus {
-  status: "verified" | "FAILED" | "not_checked" | "legacy_unset";
-  failures: string[];
-}
-
-export function sessionReportMarkdown(
-  session: SessionMeta,
-  events: SessionEvent[] = [],
-  reviewedArtifactCustody: ReviewedArtifactCustodyReportStatus = {
-    status: session.reviewed_artifact_custody_schema_version === 1 ? "not_checked" : "legacy_unset",
-    failures: [],
-  },
-): string {
+export function sessionReportMarkdown(session: SessionMeta, events: SessionEvent[] = []): string {
   const latestRound = session.rounds.at(-1);
   const lines = [
     `# Cross Review Session ${session.session_id}`,
@@ -354,9 +342,6 @@ export function sessionReportMarkdown(
         session.convergence_health?.last_event_at,
     )}`,
     `- Rounds: ${session.rounds.length}`,
-    `- Reviewed artifact custody schema: ${session.reviewed_artifact_custody_schema_version ?? "legacy/unset"}`,
-    `- Reviewed artifact custody: ${reviewedArtifactCustody.status}`,
-    ...reviewedArtifactCustody.failures.slice(0, 20).map((failure) => `  - ${failure}`),
     ...costSummaryLines(session),
     `- Total tokens: ${valueOrDash(session.totals.usage.total_tokens)}`,
     "",
@@ -384,18 +369,6 @@ export function sessionReportMarkdown(
 
   for (const round of session.rounds) {
     lines.push(`### Round ${round.round}`, "");
-    if (round.reviewed_artifact) {
-      lines.push(
-        `- Reviewed artifact: ${round.reviewed_artifact.relative_path}; sha256=${round.reviewed_artifact.sha256}; bytes=${round.reviewed_artifact.bytes}`,
-      );
-    } else if (round.draft_file) {
-      lines.push(`- Reviewed artifact: legacy/unverified (${round.draft_file})`);
-    }
-    if (round.provider_result) {
-      lines.push(
-        `- Provider result: ${round.provider_result.relative_path}; sha256=${round.provider_result.sha256}; bytes=${round.provider_result.bytes}; accounting=round peer`,
-      );
-    }
     for (const peer of round.peers) {
       lines.push(
         `- ${peer.peer}: ${peer.status ?? "NO_STATUS"} (${peer.decision_quality ?? "unknown"}) - ${
@@ -403,12 +376,6 @@ export function sessionReportMarkdown(
         }`,
       );
       lines.push(...peerDecisionTraceLines(peer));
-      if (peer.review_custody) {
-        const custody = peer.review_custody;
-        lines.push(
-          `  - Review dispatch custody: kind=${custody.dispatch_kind}; artifact=${custody.reviewed_artifact.relative_path}; sha256=${custody.reviewed_artifact.sha256}; visible_utf16_units=${custody.reviewed_artifact.visible_utf16_units}; truncated=${custody.reviewed_artifact.truncated}; visible_attachments=${custody.visible_attachments.length}`,
-        );
-      }
       if (peer.parser_warnings.length) {
         lines.push(`  - Parser warnings: ${peer.parser_warnings.join("; ")}`);
       }

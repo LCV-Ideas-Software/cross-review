@@ -411,18 +411,14 @@ const regressions: Regression[] = [
         "operator",
         [],
       );
-      await orchestrator.store.preparePendingProviderPromptCall(
-        session.session_id,
-        {
-          peer: "claude",
-          provider: "fixture-claude",
-          model: "fixture-claude",
-          round: 1,
-          label: "judge-checklist-1",
-          call_kind: "evidence_judge",
-        },
-        "Fixture interrupted evidence-judge prompt",
-      );
+      await orchestrator.store.reservePendingProviderCall(session.session_id, {
+        peer: "claude",
+        provider: "fixture-claude",
+        model: "fixture-claude",
+        round: 1,
+        label: "judge-checklist-1",
+        call_kind: "evidence_judge",
+      });
       const metaPath = orchestrator.store.metaPath(session.session_id);
       const persisted = JSON.parse(fs.readFileSync(metaPath, "utf8")) as {
         pending_provider_call_reservations?: Array<{ owner_pid?: number }>;
@@ -458,18 +454,14 @@ const regressions: Regression[] = [
         "operator",
         [],
       );
-      await orchestrator.store.preparePendingProviderPromptCall(
-        session.session_id,
-        {
-          peer: "claude",
-          provider: "fixture-claude",
-          model: "fixture-claude",
-          round: 1,
-          label: "judge-live-owner",
-          call_kind: "evidence_judge",
-        },
-        "Fixture live-owner evidence-judge prompt",
-      );
+      await orchestrator.store.reservePendingProviderCall(session.session_id, {
+        peer: "claude",
+        provider: "fixture-claude",
+        model: "fixture-claude",
+        round: 1,
+        label: "judge-live-owner",
+        call_kind: "evidence_judge",
+      });
 
       const recoveredSessions = await orchestrator.store.recoverInterruptedSessions();
       assert.deepEqual(
@@ -493,18 +485,14 @@ const regressions: Regression[] = [
         "operator",
         [],
       );
-      await orchestrator.store.preparePendingProviderPromptCall(
-        session.session_id,
-        {
-          peer: "claude",
-          provider: "fixture-claude",
-          model: "fixture-claude",
-          round: 1,
-          label: "judge-dead-owner",
-          call_kind: "evidence_judge",
-        },
-        "Fixture dead-owner evidence-judge prompt",
-      );
+      await orchestrator.store.reservePendingProviderCall(session.session_id, {
+        peer: "claude",
+        provider: "fixture-claude",
+        model: "fixture-claude",
+        round: 1,
+        label: "judge-dead-owner",
+        call_kind: "evidence_judge",
+      });
       const metaPath = orchestrator.store.metaPath(session.session_id);
       const persisted = JSON.parse(fs.readFileSync(metaPath, "utf8")) as {
         pending_provider_call_reservations?: Array<{ owner_pid?: number }>;

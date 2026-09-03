@@ -68,26 +68,6 @@ function config(label: string): AppConfig {
   };
 }
 
-async function persistGenerationPrompt(
-  store: SessionStore,
-  sessionId: string,
-  round: number,
-  generation: GenerationResult,
-  label: string,
-): Promise<GenerationResult> {
-  const prompt = await store.saveProviderPrompt(
-    sessionId,
-    round,
-    generation.peer,
-    generation.provider,
-    generation.model,
-    "generation",
-    label,
-    `Accounting fixture prompt for ${generation.peer}/${round}/${label}`,
-  );
-  return { ...generation, provider_prompt: prompt.custody };
-}
-
 function fixturePeer(cost: number, unpricedAttempts = 0): PeerResult {
   return {
     peer: "claude",
@@ -184,47 +164,9 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         latency_ms: 1,
       };
       const peer = fixturePeer(1, 1);
-      const draft = "Accounting coverage fixture under review.\n";
-      const draftFile = store.saveDraft(session.session_id, 1, draft);
-      const reviewedArtifact = store.readReviewedArtifact(session.session_id, 1, draft);
-      const peerPrompt = await store.saveProviderPrompt(
-        session.session_id,
-        1,
-        peer.peer,
-        peer.provider,
-        peer.model,
-        "peer_review",
-        "fixture-accounting-peer",
-        `Review the authenticated accounting fixture.\n\n${reviewedArtifact.content}`,
-      );
-      peer.review_custody = {
-        dispatch_kind: "normal",
-        reviewed_artifact: {
-          relative_path: reviewedArtifact.relative_path,
-          sha256: reviewedArtifact.sha256,
-          visible_utf16_units: reviewedArtifact.content.length,
-          truncated: false,
-        },
-        visible_attachments: [],
-        provider_prompt: peerPrompt.custody,
-      };
-      const failurePrompt = await store.saveProviderPrompt(
-        session.session_id,
-        1,
-        failure.peer,
-        failure.provider ?? "fixture",
-        failure.model ?? "fixture",
-        "peer_review",
-        "fixture-accounting-failure",
-        `Review the authenticated accounting fixture.\n\n${reviewedArtifact.content}`,
-      );
-      failure.provider_prompt = failurePrompt.custody;
       await store.appendRound(session.session_id, {
-        review_kind: "reviewed_artifact",
         caller_status: "READY",
-        draft_file: draftFile,
-        reviewed_artifact: reviewedArtifact,
-        prompt_file: store.savePrompt(session.session_id, 1, peerPrompt.content),
+        prompt_file: "agent-runs/fixture-prompt.md",
         peers: [peer],
         rejected: [failure],
         convergence: {
@@ -431,12 +373,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         attempts: 1,
       };
 
-      await store.saveGeneration(
-        session.session_id,
-        0,
-        await persistGenerationPrompt(store, session.session_id, 0, generation, "initial-draft"),
-        "initial-draft",
-      );
+      await store.saveGeneration(session.session_id, 0, generation, "initial-draft");
 
       const meta = store.read(session.session_id);
       assert.equal(meta.generation_in_flight, undefined);
@@ -643,25 +580,8 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         latency_ms: 1,
         attempts: 1,
       };
-      const generationWithPrompt = await persistGenerationPrompt(
-        store,
-        session.session_id,
-        1,
-        generation,
-        "judge-item",
-      );
-      const first = await store.saveGeneration(
-        session.session_id,
-        1,
-        generationWithPrompt,
-        "judge-item",
-      );
-      const second = await store.saveGeneration(
-        session.session_id,
-        1,
-        generationWithPrompt,
-        "judge-item",
-      );
+      const first = await store.saveGeneration(session.session_id, 1, generation, "judge-item");
+      const second = await store.saveGeneration(session.session_id, 1, generation, "judge-item");
       assert.notEqual(first, second);
       assert.equal(fs.existsSync(path.join(store.sessionDir(session.session_id), first)), true);
       assert.equal(fs.existsSync(path.join(store.sessionDir(session.session_id), second)), true);

@@ -6,11 +6,7 @@ import lockfile from "proper-lockfile";
 import { redact, redactJsonValue, safeErrorMessage } from "../security/redact.js";
 import { blockConvergenceForUnresolvedEvidence } from "./convergence.js";
 import { mergeCost, mergeUsage } from "./cost.js";
-import {
-  type ReviewedArtifactCustodyReportStatus,
-  sessionCostBreakdown,
-  sessionReportMarkdown,
-} from "./reports.js";
+import { sessionCostBreakdown, sessionReportMarkdown } from "./reports.js";
 import type {
   AppConfig,
   BackgroundGenerationInFlight,
@@ -42,13 +38,8 @@ import type {
   PreflightCheckRecord,
   ProviderCallReservation,
   ProviderCallSettlement,
-  ProviderPromptArtifact,
-  ProviderPromptCustody,
-  ProviderResultCustody,
   ResolvedEvidenceAttachment,
-  ReviewedArtifactCustody,
   ReviewRound,
-  ReviewRoundKind,
   ReviewStatus,
   RuntimeEvent,
   RuntimeEventData,
@@ -57,7 +48,6 @@ import type {
   SessionDoctorReport,
   SessionEvent,
   SessionMeta,
-  SessionMode,
   ShadowJudgmentPeerStats,
   ShadowJudgmentRollup,
 } from "./types.js";
@@ -65,66 +55,8 @@ import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
 
 export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Exact persisted bytes of the draft currently under review.
- *
- * This is intentionally not an EvidenceAttachment: the reviewed artifact is
- * the object of the review, not caller-submitted or operator-verified proof of
- * its own factual claims.
- */
-export interface PersistedReviewedArtifact extends ReviewedArtifactCustody {
-  readonly artifact_kind: "reviewed_artifact";
-  readonly round: number;
-  readonly relative_path: string;
-  readonly sha256: string;
-  readonly bytes: number;
-  readonly content: string;
-}
-
-type CircularGenerationLabel = "initial-draft" | "rotation";
-
-interface CircularGenerationExpectation {
-  readonly round: number;
-  readonly peer: PeerId;
-  readonly label: CircularGenerationLabel;
-}
-
-type CircularGenerationDisposition =
-  | { readonly kind: "accept_initial" }
-  | { readonly kind: "reject_continue" }
-  | {
-      readonly kind: "reject_terminal";
-      readonly outcome: "aborted" | "max-rounds";
-      readonly reason: string;
-    };
-
 function now(): string {
   return new Date().toISOString();
-}
-
-function utf16PrefixAtSafeBoundary(text: string, maxUnits: number): string {
-  let end = Math.min(Math.max(0, Math.floor(maxUnits)), text.length);
-  if (
-    end > 0 &&
-    end < text.length &&
-    ((/[\uD800-\uDBFF]/.test(text[end - 1] ?? "") && /[\uDC00-\uDFFF]/.test(text[end] ?? "")) ||
-      (text[end - 1] === "\r" && text[end] === "\n"))
-  ) {
-    end -= 1;
-  }
-  return text.slice(0, end);
-}
-
-function dispatchVisibilityIsValid(
-  visibleUtf16Units: number,
-  totalUtf16Units: number,
-  truncated: boolean,
-): boolean {
-  return (
-    Number.isSafeInteger(visibleUtf16Units) &&
-    visibleUtf16Units >= 0 &&
-    (truncated ? visibleUtf16Units < totalUtf16Units : visibleUtf16Units === totalUtf16Units)
-  );
 }
 
 function canonicalJsonValue(value: unknown): unknown {
@@ -694,388 +626,6 @@ export function evaluateEvidenceChecklistAdmission(
   };
 }
 
-const PEER_REVIEW_DISPATCH_KINDS = new Set([
-  "normal",
-  "fallback_normal",
-  "moderation_safe",
-  "format_recovery",
-  "decision_retry",
-]);
-
-function reviewedArtifactCustodyShapeError(meta: Record<string, unknown>): string | undefined {
-  const rounds = meta.rounds as unknown[];
-  const marker = meta.reviewed_artifact_custody_schema_version;
-  const startRound = meta.reviewed_artifact_custody_start_round;
-  const containsCustody = rounds.some((value) => {
-    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-    const round = value as Record<string, unknown>;
-    if (
-      round.review_kind !== undefined ||
-      round.reviewed_artifact !== undefined ||
-      round.provider_result !== undefined
-    ) {
-      return true;
-    }
-    return (
-      Array.isArray(round.peers) &&
-      round.peers.some(
-        (peer) =>
-          peer !== null &&
-          typeof peer === "object" &&
-          !Array.isArray(peer) &&
-          (peer as Record<string, unknown>).review_custody !== undefined,
-      )
-    );
-  });
-
-  if (marker === undefined) {
-    if (startRound !== undefined || containsCustody) {
-      return "reviewed_artifact_custody_schema_version 1 is required for custody-marked session metadata";
-    }
-  } else {
-    if (marker !== 1) return "reviewed_artifact_custody_schema_version must be 1";
-    if (!Number.isSafeInteger(startRound) || (startRound as number) < 1) {
-      return "reviewed_artifact_custody_start_round must be a positive safe integer";
-    }
-    if ((startRound as number) > rounds.length + 1) {
-      return "reviewed_artifact_custody_start_round cannot skip unallocated rounds";
-    }
-  }
-
-  const evidenceFiles = Array.isArray(meta.evidence_files) ? meta.evidence_files : [];
-  const providerPromptMarker = meta.provider_prompt_custody_schema_version;
-  const providerPromptStartRound = meta.provider_prompt_custody_start_round;
-  const providerPromptFiles = Array.isArray(meta.provider_prompt_files)
-    ? meta.provider_prompt_files
-    : [];
-  if (providerPromptMarker === undefined) {
-    if (
-      marker === 1 ||
-      providerPromptStartRound !== undefined ||
-      meta.provider_prompt_files !== undefined
-    ) {
-      return "provider_prompt_custody_schema_version 1 is required for custody-marked session metadata";
-    }
-  } else {
-    if (providerPromptMarker !== 1) return "provider_prompt_custody_schema_version must be 1";
-    if (
-      !Number.isSafeInteger(providerPromptStartRound) ||
-      (providerPromptStartRound as number) < 1 ||
-      (providerPromptStartRound as number) > rounds.length + 1
-    ) {
-      return "provider_prompt_custody_start_round must identify an allocated or next round";
-    }
-  }
-  for (let promptIndex = 0; promptIndex < providerPromptFiles.length; promptIndex += 1) {
-    const promptValue = providerPromptFiles[promptIndex];
-    if (promptValue === null || typeof promptValue !== "object" || Array.isArray(promptValue)) {
-      return `provider_prompt_files[${promptIndex}] must be an object`;
-    }
-    const prompt = promptValue as Record<string, unknown>;
-    if (
-      typeof prompt.relative_path !== "string" ||
-      prompt.relative_path.length === 0 ||
-      path.isAbsolute(prompt.relative_path) ||
-      prompt.relative_path.split(/[\\/]/).includes("..") ||
-      typeof prompt.sha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(prompt.sha256) ||
-      !Number.isSafeInteger(prompt.bytes) ||
-      (prompt.bytes as number) < 0 ||
-      !Number.isSafeInteger(prompt.utf16_units) ||
-      (prompt.utf16_units as number) < 0 ||
-      prompt.reconstructible !== true ||
-      prompt.redacted !== true ||
-      !Number.isSafeInteger(prompt.round) ||
-      (prompt.round as number) < 0 ||
-      !PEERS.includes(prompt.peer as PeerId) ||
-      typeof prompt.provider !== "string" ||
-      typeof prompt.model !== "string" ||
-      (prompt.call_kind !== "peer_review" &&
-        prompt.call_kind !== "generation" &&
-        prompt.call_kind !== "evidence_judge") ||
-      typeof prompt.label !== "string"
-    ) {
-      return `provider_prompt_files[${promptIndex}] is invalid`;
-    }
-  }
-  const pendingProviderCalls = Array.isArray(meta.pending_provider_call_reservations)
-    ? meta.pending_provider_call_reservations
-    : [];
-  for (let index = 0; index < pendingProviderCalls.length; index += 1) {
-    const reservationValue = pendingProviderCalls[index];
-    if (
-      reservationValue === null ||
-      typeof reservationValue !== "object" ||
-      Array.isArray(reservationValue)
-    ) {
-      return `pending_provider_call_reservations[${index}] must be an object`;
-    }
-    const reservation = reservationValue as Record<string, unknown>;
-    const reservationRequiresPromptCustody =
-      providerPromptMarker === 1 &&
-      Number.isSafeInteger(reservation.round) &&
-      (reservation.round as number) >= (providerPromptStartRound as number);
-    if (reservation.provider_prompt === undefined) {
-      if (reservationRequiresPromptCustody) {
-        return `pending_provider_call_reservations[${index}].provider_prompt is required`;
-      }
-      continue;
-    }
-    const promptValue = reservation.provider_prompt;
-    if (promptValue === null || typeof promptValue !== "object" || Array.isArray(promptValue)) {
-      return `pending_provider_call_reservations[${index}].provider_prompt must be an object`;
-    }
-    const prompt = promptValue as Record<string, unknown>;
-    const ledger = providerPromptFiles.find(
-      (candidate) =>
-        candidate !== null &&
-        typeof candidate === "object" &&
-        !Array.isArray(candidate) &&
-        (candidate as Record<string, unknown>).relative_path === prompt.relative_path,
-    ) as Record<string, unknown> | undefined;
-    if (
-      !ledger ||
-      ledger.round !== reservation.round ||
-      ledger.peer !== reservation.peer ||
-      ledger.provider !== reservation.provider ||
-      ledger.model !== reservation.model ||
-      ledger.call_kind !== reservation.call_kind ||
-      ledger.label !== reservation.label ||
-      prompt.sha256 !== ledger.sha256 ||
-      prompt.bytes !== ledger.bytes ||
-      prompt.utf16_units !== ledger.utf16_units ||
-      prompt.reconstructible !== true ||
-      prompt.redacted !== true
-    ) {
-      return `pending_provider_call_reservations[${index}].provider_prompt does not match the dispatch ledger`;
-    }
-  }
-  // A marker-less record with no custody fields is a legitimate legacy
-  // session even when its package version is 4.6.5: that version was already
-  // published before this schema landed. Provider-prompt custody is validated
-  // independently above so a judge-only continuation can upgrade atomically.
-  if (marker === undefined) return undefined;
-  for (let index = 0; index < rounds.length; index += 1) {
-    const value = rounds[index];
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      return `rounds[${index}] must be an object`;
-    }
-    const round = value as Record<string, unknown>;
-    const roundNumber = round.round;
-    if (!Number.isSafeInteger(roundNumber) || (roundNumber as number) !== index + 1) {
-      return `rounds[${index}].round must equal ${index + 1}`;
-    }
-    if ((roundNumber as number) < (startRound as number)) continue;
-
-    const reviewKind = round.review_kind;
-    if (
-      reviewKind !== "reviewed_artifact" &&
-      reviewKind !== "circular_revision" &&
-      reviewKind !== "pre_dispatch_block"
-    ) {
-      return `round ${roundNumber} review_kind is required and must be canonical`;
-    }
-    const draftFile = round.draft_file;
-    if (reviewKind !== "reviewed_artifact") {
-      if (draftFile !== undefined || round.reviewed_artifact !== undefined) {
-        return `round ${roundNumber} ${reviewKind} must not claim reviewed-artifact custody`;
-      }
-      if (!Array.isArray(round.peers)) return `round ${roundNumber} peers must be an array`;
-      if (reviewKind === "circular_revision") {
-        if (
-          (meta.session_mode_schema_version === 1 && meta.mode !== "circular") ||
-          meta.circular_state === null ||
-          typeof meta.circular_state !== "object" ||
-          Array.isArray(meta.circular_state) ||
-          round.peers.length !== 1
-        ) {
-          return `round ${roundNumber} circular_revision requires circular state and one rotator`;
-        }
-        const providerResultValue = round.provider_result;
-        if (
-          providerResultValue === null ||
-          typeof providerResultValue !== "object" ||
-          Array.isArray(providerResultValue)
-        ) {
-          return `round ${roundNumber} circular_revision requires provider-result custody`;
-        }
-        const providerResult = providerResultValue as Record<string, unknown>;
-        if (
-          providerResult.artifact_kind !== "provider_result" ||
-          typeof providerResult.relative_path !== "string" ||
-          providerResult.relative_path.length === 0 ||
-          path.isAbsolute(providerResult.relative_path) ||
-          providerResult.relative_path.split(/[\\/]/).includes("..") ||
-          typeof providerResult.sha256 !== "string" ||
-          !/^[a-f0-9]{64}$/.test(providerResult.sha256) ||
-          !Number.isSafeInteger(providerResult.bytes) ||
-          (providerResult.bytes as number) < 0
-        ) {
-          return `round ${roundNumber} circular_revision provider-result custody is invalid`;
-        }
-      } else if (
-        round.provider_result !== undefined ||
-        round.peers.length !== 0 ||
-        !Array.isArray(round.rejected) ||
-        round.rejected.length === 0
-      ) {
-        return `round ${roundNumber} pre_dispatch_block requires zero peers and at least one rejection`;
-      }
-      if (
-        round.peers.some(
-          (peer) =>
-            peer !== null &&
-            typeof peer === "object" &&
-            !Array.isArray(peer) &&
-            (peer as Record<string, unknown>).review_custody !== undefined,
-        )
-      ) {
-        return `round ${roundNumber} ${reviewKind} must not contain reviewed-artifact peer custody`;
-      }
-      continue;
-    }
-    if (draftFile === undefined || round.reviewed_artifact === undefined) {
-      return `round ${roundNumber} reviewed_artifact round requires draft_file and custody`;
-    }
-    if (round.provider_result !== undefined) {
-      return `round ${roundNumber} reviewed_artifact round must not claim provider-result custody`;
-    }
-    const expectedPath = `agent-runs/round-${roundNumber}-draft.md`;
-    if (draftFile !== expectedPath) {
-      return `round ${roundNumber} draft_file must equal ${expectedPath}`;
-    }
-    const custody = round.reviewed_artifact;
-    if (custody === null || typeof custody !== "object" || Array.isArray(custody)) {
-      return `round ${roundNumber} reviewed_artifact custody is required`;
-    }
-    const reviewed = custody as Record<string, unknown>;
-    if (
-      reviewed.artifact_kind !== "reviewed_artifact" ||
-      reviewed.relative_path !== expectedPath ||
-      typeof reviewed.sha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(reviewed.sha256) ||
-      !Number.isSafeInteger(reviewed.bytes) ||
-      (reviewed.bytes as number) < 0
-    ) {
-      return `round ${roundNumber} reviewed_artifact custody is invalid`;
-    }
-    if (!Array.isArray(round.peers)) return `round ${roundNumber} peers must be an array`;
-
-    for (let peerIndex = 0; peerIndex < round.peers.length; peerIndex += 1) {
-      const peerValue = round.peers[peerIndex];
-      if (peerValue === null || typeof peerValue !== "object" || Array.isArray(peerValue)) {
-        return `round ${roundNumber} peers[${peerIndex}] must be an object`;
-      }
-      const peer = peerValue as Record<string, unknown>;
-      const peerCustodyValue = peer.review_custody;
-      if (
-        peerCustodyValue === null ||
-        typeof peerCustodyValue !== "object" ||
-        Array.isArray(peerCustodyValue)
-      ) {
-        return `round ${roundNumber} peers[${peerIndex}].review_custody is required`;
-      }
-      const peerCustody = peerCustodyValue as Record<string, unknown>;
-      if (!PEER_REVIEW_DISPATCH_KINDS.has(String(peerCustody.dispatch_kind))) {
-        return `round ${roundNumber} peers[${peerIndex}].review_custody.dispatch_kind is invalid`;
-      }
-      const peerArtifactValue = peerCustody.reviewed_artifact;
-      if (
-        peerArtifactValue === null ||
-        typeof peerArtifactValue !== "object" ||
-        Array.isArray(peerArtifactValue)
-      ) {
-        return `round ${roundNumber} peers[${peerIndex}].review_custody.reviewed_artifact is required`;
-      }
-      const peerArtifact = peerArtifactValue as Record<string, unknown>;
-      if (
-        peerArtifact.relative_path !== reviewed.relative_path ||
-        peerArtifact.sha256 !== reviewed.sha256 ||
-        !Number.isSafeInteger(peerArtifact.visible_utf16_units) ||
-        (peerArtifact.visible_utf16_units as number) < 0 ||
-        typeof peerArtifact.truncated !== "boolean"
-      ) {
-        return `round ${roundNumber} peers[${peerIndex}].review_custody reviewed artifact does not match the round`;
-      }
-      if (!Array.isArray(peerCustody.visible_attachments)) {
-        return `round ${roundNumber} peers[${peerIndex}].review_custody.visible_attachments must be an array`;
-      }
-      if (
-        providerPromptMarker === 1 &&
-        (roundNumber as number) >= (providerPromptStartRound as number)
-      ) {
-        const promptValue = peerCustody.provider_prompt;
-        if (promptValue === null || typeof promptValue !== "object" || Array.isArray(promptValue)) {
-          return `round ${roundNumber} peers[${peerIndex}].review_custody.provider_prompt is required`;
-        }
-        const prompt = promptValue as Record<string, unknown>;
-        const ledger = providerPromptFiles.find(
-          (candidate) =>
-            candidate !== null &&
-            typeof candidate === "object" &&
-            !Array.isArray(candidate) &&
-            (candidate as Record<string, unknown>).relative_path === prompt.relative_path,
-        ) as Record<string, unknown> | undefined;
-        if (
-          !ledger ||
-          ledger.call_kind !== "peer_review" ||
-          ledger.round !== roundNumber ||
-          ledger.peer !== peer.peer ||
-          prompt.sha256 !== ledger.sha256 ||
-          prompt.bytes !== ledger.bytes ||
-          prompt.utf16_units !== ledger.utf16_units ||
-          prompt.reconstructible !== true ||
-          prompt.redacted !== true
-        ) {
-          return `round ${roundNumber} peers[${peerIndex}].review_custody.provider_prompt does not match the dispatch ledger`;
-        }
-      }
-      for (
-        let attachmentIndex = 0;
-        attachmentIndex < peerCustody.visible_attachments.length;
-        attachmentIndex += 1
-      ) {
-        const attachmentValue = peerCustody.visible_attachments[attachmentIndex];
-        if (
-          attachmentValue === null ||
-          typeof attachmentValue !== "object" ||
-          Array.isArray(attachmentValue)
-        ) {
-          return `round ${roundNumber} peer attachment custody ${attachmentIndex} must be an object`;
-        }
-        const attachment = attachmentValue as Record<string, unknown>;
-        if (
-          typeof attachment.relative_path !== "string" ||
-          attachment.relative_path.length === 0 ||
-          path.isAbsolute(attachment.relative_path) ||
-          attachment.relative_path.split(/[\\/]/).includes("..") ||
-          typeof attachment.sha256 !== "string" ||
-          !/^[a-f0-9]{64}$/.test(attachment.sha256) ||
-          !Number.isSafeInteger(attachment.visible_utf16_units) ||
-          (attachment.visible_utf16_units as number) < 0 ||
-          typeof attachment.truncated !== "boolean"
-        ) {
-          return `round ${roundNumber} peer attachment custody ${attachmentIndex} is invalid`;
-        }
-        const evidence = evidenceFiles.find(
-          (candidate) =>
-            candidate !== null &&
-            typeof candidate === "object" &&
-            !Array.isArray(candidate) &&
-            (candidate as Record<string, unknown>).path === attachment.relative_path,
-        ) as Record<string, unknown> | undefined;
-        if (!evidence) {
-          return `round ${roundNumber} peer attachment custody ${attachmentIndex} is not a persisted evidence file`;
-        }
-        if (typeof evidence.sha256 === "string" && evidence.sha256 !== attachment.sha256) {
-          return `round ${roundNumber} peer attachment custody ${attachmentIndex} does not match persisted evidence`;
-        }
-      }
-    }
-  }
-  return undefined;
-}
-
 function sessionMetaShapeError(value: unknown): string | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return "root must be an object";
@@ -1088,19 +638,6 @@ function sessionMetaShapeError(value: unknown): string | undefined {
   }
   if (meta.caller !== "operator" && !PEERS.includes(meta.caller as PeerId)) {
     return "caller must be operator or a known peer";
-  }
-  if (meta.session_mode_schema_version !== undefined) {
-    if (meta.session_mode_schema_version !== 1) return "session_mode_schema_version must be 1";
-    if (meta.mode !== "ship" && meta.mode !== "review" && meta.mode !== "circular") {
-      return "mode is required and must be ship, review, or circular";
-    }
-  } else if (
-    meta.mode !== undefined &&
-    meta.mode !== "ship" &&
-    meta.mode !== "review" &&
-    meta.mode !== "circular"
-  ) {
-    return "mode must be ship, review, or circular";
   }
   if (meta.convergence_scope !== undefined) {
     if (
@@ -1188,8 +725,6 @@ function sessionMetaShapeError(value: unknown): string | undefined {
   }
   if (!Array.isArray(meta.capability_snapshot)) return "capability_snapshot must be an array";
   if (!Array.isArray(meta.rounds)) return "rounds must be an array";
-  const reviewedArtifactError = reviewedArtifactCustodyShapeError(meta);
-  if (reviewedArtifactError) return reviewedArtifactError;
   if (meta.in_flight !== undefined) {
     if (
       meta.in_flight === null ||
@@ -1270,29 +805,10 @@ const ATOMIC_WRITE_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EEXIST"])
 const ATOMIC_WRITE_MAX_ATTEMPTS = 5;
 const TMP_NONCE_BYTES = 2;
 
-function atomicTempPath(file: string): string {
-  const nonce = crypto.randomBytes(TMP_NONCE_BYTES).toString("hex");
-  return `${file}.${process.pid}.${Date.now()}.${nonce}.tmp`;
-}
-
-function writeTextAtomically(file: string, content: string): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = atomicTempPath(file);
-  try {
-    fs.writeFileSync(tmp, content, "utf8");
-    fs.renameSync(tmp, file);
-  } finally {
-    try {
-      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-    } catch {
-      /* best-effort temporary-file cleanup */
-    }
-  }
-}
-
 async function writeJson(file: string, data: unknown): Promise<void> {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = atomicTempPath(file);
+  const nonce = crypto.randomBytes(TMP_NONCE_BYTES).toString("hex");
+  const tmp = `${file}.${process.pid}.${Date.now()}.${nonce}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(redactJsonValue(data), null, 2)}\n`, "utf8");
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < ATOMIC_WRITE_MAX_ATTEMPTS; attempt += 1) {
@@ -1586,67 +1102,6 @@ export class SessionStore {
     }
   }
 
-  private readContainedRegularFile(
-    sessionId: string,
-    relativePath: string,
-    errorPrefix: "reviewed_artifact" | "evidence_integrity" | "provider_prompt" | "provider_result",
-  ): { bytes: number; sha256: string; content: string; persisted: Buffer } {
-    const sessionDir = this.sessionDir(sessionId);
-    if (
-      relativePath.length === 0 ||
-      path.isAbsolute(relativePath) ||
-      relativePath.split(/[\\/]/).includes("..")
-    ) {
-      throw new Error(`${errorPrefix}_path_not_contained: ${relativePath}`);
-    }
-    const candidate = path.join(sessionDir, ...relativePath.split("/"));
-    let candidateStat: fs.BigIntStats;
-    try {
-      candidateStat = fs.lstatSync(candidate, { bigint: true });
-    } catch (error) {
-      throw new Error(`${errorPrefix}_unavailable: ${relativePath}`, { cause: error });
-    }
-    if (candidateStat.isSymbolicLink() || !candidateStat.isFile()) {
-      throw new Error(`${errorPrefix}_not_regular_file: ${relativePath}`);
-    }
-    const absolutePath = this.safeResolveContainedExistingPath(sessionDir, relativePath);
-    if (!absolutePath) {
-      throw new Error(`${errorPrefix}_path_not_contained: ${relativePath}`);
-    }
-
-    let persisted: Buffer;
-    try {
-      const descriptor = fs.openSync(absolutePath, "r");
-      try {
-        const descriptorStat = fs.fstatSync(descriptor, { bigint: true });
-        if (!descriptorStat.isFile()) {
-          throw new Error(`${errorPrefix}_not_regular_file: ${relativePath}`);
-        }
-        if (candidateStat.dev !== descriptorStat.dev || candidateStat.ino !== descriptorStat.ino) {
-          throw new Error(`${errorPrefix}_identity_mismatch: ${relativePath}`);
-        }
-        persisted = fs.readFileSync(descriptor);
-      } finally {
-        fs.closeSync(descriptor);
-      }
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        (error.message === `${errorPrefix}_not_regular_file: ${relativePath}` ||
-          error.message === `${errorPrefix}_identity_mismatch: ${relativePath}`)
-      ) {
-        throw error;
-      }
-      throw new Error(`${errorPrefix}_unavailable: ${relativePath}`, { cause: error });
-    }
-    return {
-      bytes: persisted.byteLength,
-      sha256: crypto.createHash("sha256").update(persisted).digest("hex"),
-      content: persisted.toString("utf8"),
-      persisted,
-    };
-  }
-
   private processAlive(pid: number): boolean {
     try {
       process.kill(pid, 0);
@@ -1670,14 +1125,12 @@ export class SessionStore {
         ...providerSettlements.map((settlement) => settlement.usage),
         ...generations.map((generation) => generation.usage),
         ...failedAttempts.map((failure) => failure.usage),
-        meta.generation_in_flight?.settled_result_usage,
       ]),
       cost: mergeCost([
         ...peerResults.map((peer) => peer.cost),
         ...providerSettlements.map((settlement) => settlement.cost),
         ...generations.map((generation) => generation.cost),
         ...failedAttempts.map((failure) => failure.cost),
-        meta.generation_in_flight?.settled_result_cost,
       ]),
     };
   }
@@ -1904,7 +1357,6 @@ export class SessionStore {
         unpriced_attempts: 1,
         indeterminate_spend_attempts: 1,
         round: reservation.round,
-        ...(reservation.provider_prompt ? { provider_prompt: reservation.provider_prompt } : {}),
       };
     });
     meta.failed_attempts = [...(meta.failed_attempts ?? []), ...unknownAttempts];
@@ -1917,53 +1369,21 @@ export class SessionStore {
 
   private sealRecoveredAppendedConvergence(meta: SessionMeta): ReviewRound | undefined {
     const latestRound = meta.rounds.at(-1);
-    const appendedCircularConvergence =
-      meta.mode === "circular" &&
-      latestRound?.review_kind === "circular_revision" &&
-      latestRound.convergence.converged === true &&
-      !meta.in_flight &&
-      !meta.generation_in_flight &&
-      meta.control?.status === "running";
     if (
-      (!inFlightRoundAlreadyAppended(meta) && !appendedCircularConvergence) ||
+      !inFlightRoundAlreadyAppended(meta) ||
       latestRound?.convergence.converged !== true ||
       meta.control?.status === "cancel_requested" ||
       (meta.pending_provider_call_reservations?.length ?? 0) > 0
     ) {
       return undefined;
     }
-    if (
-      this.roundRequiresReviewedArtifactCustody(meta, latestRound) ||
-      latestRound.reviewed_artifact
-    ) {
-      try {
-        this.readRoundReviewedArtifact(meta.session_id, latestRound);
-      } catch {
-        // A converged vote cannot be auto-sealed when the reviewed bytes no
-        // longer match the durable round custody. Leave the reservation open
-        // so ordinary restart recovery marks the session stale/blocked.
-        return undefined;
-      }
-    }
-    if (latestRound.review_kind === "circular_revision") {
-      try {
-        this.readRoundProviderResult(meta.session_id, meta, latestRound);
-      } catch {
-        // Circular convergence is authorized by the exact accepted provider
-        // result. Recovery must never terminalize a missing or changed result.
-        return undefined;
-      }
-    }
     delete meta.in_flight;
     delete meta.generation_in_flight;
     delete meta.control;
     meta.outcome = "converged";
-    meta.outcome_reason =
-      latestRound.review_kind === "circular_revision"
-        ? "circular_full_rotation_no_change"
-        : latestRound.convergence.recovery_converged
-          ? "recovered_unanimity"
-          : "unanimous_ready";
+    meta.outcome_reason = latestRound.convergence.recovery_converged
+      ? "recovered_unanimity"
+      : "unanimous_ready";
     const transitionedAt = now();
     meta.convergence_health = transitionHealth(
       meta,
@@ -1975,38 +1395,19 @@ export class SessionStore {
     return latestRound;
   }
 
-  private restoreFinalArtifactFromRound(meta: SessionMeta, round: ReviewRound): boolean {
-    const finalPath = path.join(this.sessionDir(meta.session_id), "final.md");
+  private restoreFinalArtifactFromRound(meta: SessionMeta, round: ReviewRound): void {
+    if (!round.draft_file) return;
+    const source = this.safeResolveContainedExistingPath(
+      this.sessionDir(meta.session_id),
+      round.draft_file,
+    );
+    if (!source || !fs.existsSync(source)) return;
     try {
-      fs.lstatSync(finalPath);
-      // An existing mirror is evidence. Recovery must never overwrite it,
-      // including when it is mismatched, redirected or not a regular file.
-      return false;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-    }
-    try {
-      const reviewed = this.readRoundReviewedArtifact(meta.session_id, round);
-      const tmp = atomicTempPath(finalPath);
-      try {
-        fs.writeFileSync(tmp, reviewed.content, "utf8");
-        // Hard-link creation is atomic and refuses EEXIST, so a concurrent
-        // artifact can never be replaced between the missing check and commit.
-        fs.linkSync(tmp, finalPath);
-      } finally {
-        try {
-          if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-        } catch {
-          /* best-effort temporary-file cleanup */
-        }
-      }
-      this.assertFinalMirrorMatches(meta.session_id, reviewed);
-      return true;
+      this.saveFinal(meta.session_id, fs.readFileSync(source, "utf8"));
     } catch {
-      // Never recreate final.md from unauthenticated or mutated bytes. The
-      // round metadata remains forensic evidence, while the missing mirror
-      // makes the custody failure visible to session diagnostics.
-      return false;
+      // The round draft remains the authoritative durable fallback. The
+      // terminal outcome must not be reopened merely because a convenience
+      // final.md mirror could not be recreated during restart recovery.
     }
   }
 
@@ -2125,7 +1526,6 @@ export class SessionStore {
     caller: PeerId | "operator",
     snapshot: PeerProbeResult[],
     reviewFocus?: string,
-    mode: SessionMode = "ship",
   ): Promise<SessionMeta> {
     const session_id = crypto.randomUUID();
     const initializedAt = now();
@@ -2142,12 +1542,6 @@ export class SessionStore {
       session_id,
       version: this.config.version,
       accounting_schema_version: 2,
-      reviewed_artifact_custody_schema_version: 1,
-      reviewed_artifact_custody_start_round: 1,
-      provider_prompt_custody_schema_version: 1,
-      provider_prompt_custody_start_round: 1,
-      session_mode_schema_version: 1,
-      mode,
       effective_config_snapshot: configSnapshot,
       effective_config_sha256: configSnapshotSha256,
       created_at: initializedAt,
@@ -2304,16 +1698,10 @@ export class SessionStore {
     const file = this.eventsPath(sessionId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const meta = this.read(sessionId);
-    const terminalRecoveryEvent =
-      event.type === "session.recovered_after_restart" &&
-      event.data !== undefined &&
-      (event.data as Record<string, unknown>).final_artifact_recovered === true &&
-      (event.data as Record<string, unknown>).source === "terminal_missing_final_mirror";
     const terminalEvent =
       event.type === "session.finalized" ||
       event.type === "session.cancelled" ||
-      event.type === "session.evidence_broker_transaction_rolled_back" ||
-      terminalRecoveryEvent;
+      event.type === "session.evidence_broker_transaction_rolled_back";
     if (meta.outcome && !terminalEvent) {
       const error = new Error(
         `post_terminal_event_rejected: ${event.type} cannot be appended after outcome=${meta.outcome}`,
@@ -2333,7 +1721,7 @@ export class SessionStore {
     // An event is activity, not necessarily a convergence-state transition.
     // Keep the old last_event_at field as an activity alias while preserving
     // the independently meaningful state-transition timestamp.
-    if (meta.convergence_health && !terminalRecoveryEvent) {
+    if (meta.convergence_health) {
       const previousLastEvent = meta.convergence_health.last_event_at;
       const activityAt = latestTimestamp(
         meta.convergence_health.last_activity_at ?? previousLastEvent,
@@ -2507,425 +1895,10 @@ export class SessionStore {
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
   }
 
-  private prepareProviderPromptFile(
-    sessionId: string,
-    round: number,
-    peer: PeerId,
-    label: string,
-    prompt: string,
-  ): {
-    readonly file: string;
-    readonly content: string;
-    readonly custody: ProviderPromptCustody;
-  } {
-    if (!Number.isSafeInteger(round) || round < 0) {
-      throw new Error(`provider_prompt_round_invalid: ${String(round)}`);
-    }
-    const safeLabel = label.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "") || "call";
-    const file = path.join(
-      this.sessionDir(sessionId),
-      "agent-runs",
-      `round-${round}-${peer}-${safeLabel}-prompt-${crypto.randomUUID()}.md`,
-    );
-    const redactedPrompt = redact(prompt);
-    writeTextAtomically(file, redactedPrompt);
-    const relativePath = path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
-    const authenticated = this.readContainedRegularFile(sessionId, relativePath, "provider_prompt");
-    if (authenticated.content !== redactedPrompt) {
-      throw new Error(`provider_prompt_readback_mismatch: ${relativePath}`);
-    }
-    const custody: ProviderPromptCustody = {
-      relative_path: relativePath,
-      sha256: authenticated.sha256,
-      bytes: authenticated.bytes,
-      utf16_units: authenticated.content.length,
-      reconstructible: true,
-      redacted: true,
-    };
-    return { file, content: authenticated.content, custody };
-  }
-
-  private appendProviderPromptArtifact(meta: SessionMeta, artifact: ProviderPromptArtifact): void {
-    if (meta.provider_prompt_custody_schema_version !== 1) {
-      // Marker-less sessions are legacy regardless of their package version.
-      // Upgrade the schema marker and first governed round in the same
-      // meta.json replacement as the first prompt ledger entry so a crash
-      // cannot persist a half-upgraded record.
-      meta.provider_prompt_custody_schema_version = 1;
-      meta.provider_prompt_custody_start_round = Math.max(
-        1,
-        Math.min(artifact.round, meta.rounds.length + 1),
-      );
-    }
-    meta.provider_prompt_files = [...(meta.provider_prompt_files ?? []), artifact];
-  }
-
-  private removeUnledgeredProviderPrompt(
-    sessionId: string,
-    prepared: { readonly file: string; readonly custody: ProviderPromptCustody },
-  ): void {
-    try {
-      const meta = this.read(sessionId);
-      if (
-        (meta.provider_prompt_files ?? []).some(
-          (artifact) => artifact.relative_path === prepared.custody.relative_path,
-        )
-      ) {
-        return;
-      }
-      fs.unlinkSync(prepared.file);
-    } catch {
-      // Fail closed: if metadata cannot prove the file is unledgered, retain it
-      // for recovery/forensics rather than deleting a possibly committed prompt.
-    }
-  }
-
-  /**
-   * Persist, descriptor-authenticate and ledger the exact redacted prompt that
-   * a provider will receive. Callers must dispatch the returned content rather
-   * than their pre-redaction input.
-   */
-  async saveProviderPrompt(
-    sessionId: string,
-    round: number,
-    peer: PeerId,
-    provider: string,
-    model: string,
-    callKind: ProviderPromptArtifact["call_kind"],
-    label: string,
-    prompt: string,
-  ): Promise<{ readonly content: string; readonly custody: ProviderPromptCustody }> {
-    const prepared = this.prepareProviderPromptFile(sessionId, round, peer, label, prompt);
-    try {
-      await this.withSessionLock(sessionId, async () => {
-        const meta = this.read(sessionId);
-        if (meta.outcome) {
-          throw new Error(
-            `session_already_finalized: cannot dispatch provider prompt for ${sessionId} with outcome=${meta.outcome}`,
-          );
-        }
-        this.appendProviderPromptArtifact(meta, {
-          ...prepared.custody,
-          ts: now(),
-          round,
-          peer,
-          provider,
-          model,
-          call_kind: callKind,
-          label,
-        });
-        meta.updated_at = now();
-        await writeJson(this.metaPath(sessionId), meta);
-      });
-      return { content: prepared.content, custody: prepared.custody };
-    } catch (error) {
-      this.removeUnledgeredProviderPrompt(sessionId, prepared);
-      throw error;
-    }
-  }
-
-  /**
-   * Prepare an exact provider prompt and its non-review dispatch reservation as
-   * one durable metadata transition. A crash can never commit an unreserved
-   * prompt ledger entry: metadata contains neither entry or both.
-   */
-  async preparePendingProviderPromptCall(
-    sessionId: string,
-    params: Omit<
-      PendingProviderCallReservation,
-      "id" | "started_at" | "owner_pid" | "provider_prompt"
-    >,
-    prompt: string,
-  ): Promise<{
-    readonly reservation_id: string;
-    readonly content: string;
-    readonly custody: ProviderPromptCustody;
-  }> {
-    const prepared = this.prepareProviderPromptFile(
-      sessionId,
-      params.round,
-      params.peer,
-      params.label,
-      prompt,
-    );
-    try {
-      const reservationId = await this.withSessionLock(sessionId, async () => {
-        const meta = this.read(sessionId);
-        if (meta.outcome) {
-          const error = new Error(
-            `post_terminal_provider_reservation: refusing to mutate ${sessionId} after outcome=${meta.outcome}`,
-          );
-          (error as Error & { code?: string }).code = "post_terminal_provider_reservation";
-          throw error;
-        }
-        if (meta.control?.status === "cancel_requested") {
-          const error = new Error(
-            `provider_reservation_cancelled: refusing to dispatch ${params.call_kind}/${params.label} after cancellation was requested`,
-          );
-          (error as Error & { code?: string }).code = "provider_reservation_cancelled";
-          throw error;
-        }
-        const transactionAt = now();
-        const artifact: ProviderPromptArtifact = {
-          ...prepared.custody,
-          ts: transactionAt,
-          round: params.round,
-          peer: params.peer,
-          provider: params.provider,
-          model: params.model,
-          call_kind: params.call_kind,
-          label: params.label,
-        };
-        const reservation: PendingProviderCallReservation = {
-          id: crypto.randomUUID(),
-          ...params,
-          provider_prompt: prepared.custody,
-          started_at: transactionAt,
-          owner_pid: process.pid,
-        };
-        this.appendProviderPromptArtifact(meta, artifact);
-        meta.pending_provider_call_reservations = [
-          ...(meta.pending_provider_call_reservations ?? []),
-          reservation,
-        ];
-        meta.updated_at = transactionAt;
-        await writeJson(this.metaPath(sessionId), meta);
-        return reservation.id;
-      });
-      return {
-        reservation_id: reservationId,
-        content: prepared.content,
-        custody: prepared.custody,
-      };
-    } catch (error) {
-      this.removeUnledgeredProviderPrompt(sessionId, prepared);
-      throw error;
-    }
-  }
-
   saveDraft(sessionId: string, round: number, draft: string): string {
     const file = path.join(this.sessionDir(sessionId), "agent-runs", `round-${round}-draft.md`);
     fs.writeFileSync(file, redact(draft), "utf8");
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
-  }
-
-  private readReviewedArtifactFile(sessionId: string, round: number): PersistedReviewedArtifact {
-    if (!Number.isSafeInteger(round) || round < 0) {
-      throw new Error(`reviewed_artifact_round_invalid: ${String(round)}`);
-    }
-
-    const relativePath = `agent-runs/round-${round}-draft.md`;
-    // The shared contained-file reader authenticates the opened descriptor
-    // against the original directory entry. This closes path-swap/reparse
-    // races without relying on O_NOFOLLOW, which is not portable on Windows.
-    const persisted = this.readContainedRegularFile(sessionId, relativePath, "reviewed_artifact");
-    return {
-      artifact_kind: "reviewed_artifact",
-      round,
-      relative_path: relativePath,
-      sha256: persisted.sha256,
-      bytes: persisted.bytes,
-      content: persisted.content,
-    };
-  }
-
-  private assertReviewedArtifactMatches(
-    actual: PersistedReviewedArtifact,
-    expected: ReviewedArtifactCustody & { readonly content?: string | undefined },
-  ): void {
-    const expectedPath = `agent-runs/round-${actual.round}-draft.md`;
-    const contentMatches = expected.content === undefined || actual.content === expected.content;
-    if (
-      expected.relative_path !== expectedPath ||
-      actual.relative_path !== expectedPath ||
-      actual.sha256 !== expected.sha256 ||
-      actual.bytes !== expected.bytes ||
-      !contentMatches
-    ) {
-      throw new Error(
-        `reviewed_artifact_integrity_mismatch: ${expectedPath} expected sha256=${expected.sha256} bytes=${expected.bytes}, got sha256=${actual.sha256} bytes=${actual.bytes}`,
-      );
-    }
-  }
-
-  /**
-   * Read back and authenticate the exact redacted bytes written by saveDraft.
-   *
-   * The expected draft is mandatory so this first read-back can detect a file
-   * replacement or content mutation without trusting a model-supplied digest.
-   * The path is derived from the validated round number; callers cannot use
-   * this primitive as an arbitrary session-file reader.
-   */
-  readReviewedArtifact(
-    sessionId: string,
-    round: number,
-    expectedDraft: string,
-  ): PersistedReviewedArtifact {
-    const expectedContent = redact(expectedDraft);
-    const expected = {
-      artifact_kind: "reviewed_artifact" as const,
-      relative_path: `agent-runs/round-${round}-draft.md`,
-      sha256: crypto.createHash("sha256").update(expectedContent, "utf8").digest("hex"),
-      bytes: Buffer.byteLength(expectedContent, "utf8"),
-      content: expectedContent,
-    };
-    const actual = this.readReviewedArtifactFile(sessionId, round);
-    this.assertReviewedArtifactMatches(actual, expected);
-    return actual;
-  }
-
-  /** Re-authenticate a previously read reviewed artifact after provider work. */
-  revalidateReviewedArtifact(
-    sessionId: string,
-    expected: PersistedReviewedArtifact,
-  ): PersistedReviewedArtifact {
-    const actual = this.readReviewedArtifactFile(sessionId, expected.round);
-    this.assertReviewedArtifactMatches(actual, expected);
-    return actual;
-  }
-
-  /**
-   * Read a round draft only through its durable custody metadata. Legacy
-   * rounds remain parseable but are not silently promoted to authenticated
-   * reviewed-artifact custody.
-   */
-  readRoundReviewedArtifact(sessionId: string, round: ReviewRound): PersistedReviewedArtifact {
-    const expectedPath = `agent-runs/round-${round.round}-draft.md`;
-    if (
-      !round.reviewed_artifact ||
-      round.draft_file !== expectedPath ||
-      round.reviewed_artifact.relative_path !== expectedPath
-    ) {
-      throw new Error(`reviewed_artifact_custody_missing_or_invalid: ${expectedPath}`);
-    }
-    const actual = this.readReviewedArtifactFile(sessionId, round.round);
-    this.assertReviewedArtifactMatches(actual, round.reviewed_artifact);
-    return actual;
-  }
-
-  private roundRequiresReviewedArtifactCustody(meta: SessionMeta, round: ReviewRound): boolean {
-    return (
-      meta.reviewed_artifact_custody_schema_version === 1 &&
-      round.round >= (meta.reviewed_artifact_custody_start_round ?? 1) &&
-      (round.review_kind === "reviewed_artifact" ||
-        // Tightly scoped compatibility for pre-kind governed records: only a
-        // physical draft/custody marker can opt the legacy round into review
-        // artifact validation. Explicit circular/pre-dispatch rounds never do.
-        (round.review_kind === undefined &&
-          (round.draft_file !== undefined || round.reviewed_artifact !== undefined)))
-    );
-  }
-
-  assertPeerReviewDispatchVisibility(
-    sessionId: string,
-    meta: SessionMeta,
-    peers: readonly PeerResult[],
-    reviewedArtifact: PersistedReviewedArtifact,
-    validateAttachments: boolean,
-  ): void {
-    for (const peer of peers) {
-      const custody = peer.review_custody;
-      if (!custody) {
-        throw new Error(`peer_review_custody_required: peer=${peer.peer}`);
-      }
-      if (
-        custody.reviewed_artifact.relative_path !== reviewedArtifact.relative_path ||
-        custody.reviewed_artifact.sha256 !== reviewedArtifact.sha256
-      ) {
-        throw new Error(
-          `review_custody reviewed artifact does not match the round: peer=${peer.peer}`,
-        );
-      }
-      if (
-        !dispatchVisibilityIsValid(
-          custody.reviewed_artifact.visible_utf16_units,
-          reviewedArtifact.content.length,
-          custody.reviewed_artifact.truncated,
-        )
-      ) {
-        throw new Error(
-          `review_custody reviewed artifact visibility is invalid: peer=${peer.peer}`,
-        );
-      }
-      if (
-        meta.provider_prompt_custody_schema_version === 1 &&
-        reviewedArtifact.round >= (meta.provider_prompt_custody_start_round ?? 1)
-      ) {
-        const prompt = custody.provider_prompt;
-        if (!prompt) {
-          throw new Error(`provider_prompt_custody_required: peer=${peer.peer}`);
-        }
-        const ledger = (meta.provider_prompt_files ?? []).find(
-          (candidate) =>
-            candidate.relative_path === prompt.relative_path &&
-            candidate.call_kind === "peer_review" &&
-            candidate.round === reviewedArtifact.round &&
-            candidate.peer === peer.peer,
-        );
-        if (
-          !ledger ||
-          ledger.sha256 !== prompt.sha256 ||
-          ledger.bytes !== prompt.bytes ||
-          ledger.utf16_units !== prompt.utf16_units ||
-          prompt.reconstructible !== true ||
-          prompt.redacted !== true
-        ) {
-          throw new Error(`provider_prompt_custody_ledger_mismatch: peer=${peer.peer}`);
-        }
-        const authenticatedPrompt = this.readContainedRegularFile(
-          sessionId,
-          prompt.relative_path,
-          "provider_prompt",
-        );
-        if (
-          authenticatedPrompt.sha256 !== prompt.sha256 ||
-          authenticatedPrompt.bytes !== prompt.bytes ||
-          authenticatedPrompt.content.length !== prompt.utf16_units
-        ) {
-          throw new Error(`provider_prompt_integrity_mismatch: ${prompt.relative_path}`);
-        }
-      }
-      if (!validateAttachments) continue;
-
-      for (let index = 0; index < custody.visible_attachments.length; index += 1) {
-        const attachment = custody.visible_attachments[index];
-        if (!attachment) continue;
-        const evidence = (meta.evidence_files ?? []).find(
-          (candidate) => candidate.path === attachment.relative_path,
-        );
-        if (!evidence) {
-          throw new Error(
-            `peer attachment custody ${index} is not a persisted evidence file: peer=${peer.peer}`,
-          );
-        }
-        const authenticated = this.readContainedRegularFile(
-          sessionId,
-          attachment.relative_path,
-          "evidence_integrity",
-        );
-        const expected = currentEvidenceAttachment(evidence);
-        if (
-          attachment.sha256 !== authenticated.sha256 ||
-          (expected !== undefined &&
-            (expected.sha256 !== authenticated.sha256 || expected.bytes !== authenticated.bytes))
-        ) {
-          throw new Error(
-            `peer attachment custody ${index} does not match persisted evidence: peer=${peer.peer}`,
-          );
-        }
-        if (
-          !dispatchVisibilityIsValid(
-            attachment.visible_utf16_units,
-            authenticated.content.length,
-            attachment.truncated,
-          )
-        ) {
-          throw new Error(
-            `peer attachment custody ${index} visibility is invalid: peer=${peer.peer}`,
-          );
-        }
-      }
-    }
   }
 
   async saveGeneration(
@@ -2934,7 +1907,6 @@ export class SessionStore {
     result: GenerationResult,
     label = "generation",
     pendingReservationId?: string,
-    options: { defer_circular_promotion?: boolean } = {},
   ): Promise<string> {
     const baseFile = path.join(
       this.sessionDir(sessionId),
@@ -2946,11 +1918,6 @@ export class SessionStore {
       : baseFile;
     await writeJson(file, { ...result, text: redact(result.text) });
     const relativePath = path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
-    const authenticatedArtifact = this.readContainedRegularFile(
-      sessionId,
-      relativePath,
-      "provider_result",
-    );
     await this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
       // Cancellation may settle while the provider call is returning. The
@@ -2963,73 +1930,12 @@ export class SessionStore {
         (err as Error & { code?: string }).code = "post_terminal_generation_settlement";
         throw err;
       }
-      // A provider result is not authorized merely because its JSON bytes are
-      // durable. Reauthenticate the exact redacted prompt descriptor against
-      // the session ledger while holding the same lock that settles the paid
-      // call. This applies to generation round zero as well as later rounds;
-      // provider_prompt_custody_start_round governs peer-review rounds, not
-      // whether a generation dispatch may omit its prompt.
-      const pendingReservation = pendingReservationId
-        ? (meta.pending_provider_call_reservations ?? []).find(
-            (candidate) => candidate.id === pendingReservationId,
-          )
-        : undefined;
-      this.assertGenerationProviderPromptIntegrity(
-        sessionId,
-        meta,
-        result,
-        round,
-        pendingReservation?.label ?? label,
-        pendingReservation?.call_kind ?? "generation",
-      );
-      this.assertPendingProviderPromptIntegrity(
-        sessionId,
-        meta,
-        pendingReservationId,
-        result.peer,
-        round,
-      );
-      if (options.defer_circular_promotion) {
-        const marker = meta.generation_in_flight;
-        if (
-          meta.mode !== "circular" ||
-          !marker ||
-          marker.peer !== result.peer ||
-          marker.round !== round ||
-          marker.label !== label
-        ) {
-          throw new Error(
-            `circular_generation_promotion_marker_mismatch: ${result.peer}/round-${round}/${label}`,
-          );
-        }
-        marker.settled_result_path = relativePath;
-        marker.settled_result_sha256 = authenticatedArtifact.sha256;
-        marker.settled_result_bytes = authenticatedArtifact.bytes;
-        marker.settled_result_usage = result.usage;
-        marker.settled_result_cost = result.cost;
-        marker.settled_result_latency_ms = result.latency_ms;
-        marker.settled_result_attempts = result.attempts;
-        marker.settled_result_unpriced_attempts = result.unpriced_attempts;
-        marker.settled_result_indeterminate_spend_attempts = result.indeterminate_spend_attempts;
-        this.consumePendingProviderCallReservation(meta, pendingReservationId, result.peer, round);
-        meta.totals = this.totalsFor(meta);
-        meta.updated_at = now();
-        await writeJson(this.metaPath(sessionId), meta);
-        return;
-      }
-      // The exact provider prompt remains authorization material until the
-      // paid result settles. Reauthenticate it while holding the same session
-      // lock that will ledger the result and consume its dispatch reservation;
-      // otherwise a prompt changed after dispatch could still authorize a
-      // judge result and a later checklist promotion.
       const artifact: GenerationArtifact = {
         ts: now(),
         round,
         label,
         peer: result.peer,
         path: relativePath,
-        sha256: authenticatedArtifact.sha256,
-        bytes: authenticatedArtifact.bytes,
         usage: result.usage,
         cost: result.cost,
         latency_ms: result.latency_ms,
@@ -3054,565 +1960,16 @@ export class SessionStore {
     return relativePath;
   }
 
-  readStagedCircularGeneration(
-    sessionId: string,
-    round: number,
-    peer: PeerId,
-    label?: CircularGenerationLabel,
-  ): GenerationResult | undefined {
-    const meta = this.read(sessionId);
-    const marker = meta.generation_in_flight;
-    if (
-      meta.mode !== "circular" ||
-      !marker?.settled_result_path ||
-      marker.peer !== peer ||
-      marker.round !== round ||
-      (label !== undefined && marker.label !== label)
-    ) {
-      return undefined;
-    }
-    return this.authenticateStagedCircularGeneration(sessionId, meta, {
-      round,
-      peer,
-      label: label ?? (marker.label as CircularGenerationLabel),
-    }).parsed;
-  }
-
-  private authenticateStagedCircularGeneration(
-    sessionId: string,
-    meta: SessionMeta,
-    expected: CircularGenerationExpectation,
-  ): {
-    marker: BackgroundGenerationInFlight;
-    authenticated: ReturnType<SessionStore["readContainedRegularFile"]>;
-    parsed: GenerationResult;
-  } {
-    const marker = meta.generation_in_flight;
-    if (
-      meta.mode !== "circular" ||
-      !marker?.settled_result_path ||
-      marker.peer !== expected.peer ||
-      marker.round !== expected.round ||
-      marker.label !== expected.label
-    ) {
-      throw new Error(
-        `circular_generation_staged_result_required: ${expected.peer}/round-${expected.round}/${expected.label}`,
-      );
-    }
-    const authenticated = this.readContainedRegularFile(
-      sessionId,
-      marker.settled_result_path,
-      "provider_result",
-    );
-    if (
-      authenticated.sha256 !== marker.settled_result_sha256 ||
-      authenticated.bytes !== marker.settled_result_bytes
-    ) {
-      throw new Error(
-        `provider_result_integrity_mismatch: ${marker.settled_result_path} expected sha256=${marker.settled_result_sha256} bytes=${marker.settled_result_bytes}, got sha256=${authenticated.sha256} bytes=${authenticated.bytes}`,
-      );
-    }
-    let parsed: GenerationResult;
-    try {
-      parsed = JSON.parse(authenticated.content) as GenerationResult;
-    } catch (error) {
-      throw new Error(`provider_result_invalid_json: ${marker.settled_result_path}`, {
-        cause: error,
-      });
-    }
-    if (
-      parsed.peer !== expected.peer ||
-      parsed.provider !== marker.provider ||
-      parsed.model !== marker.model
-    ) {
-      throw new Error(`provider_result_identity_mismatch: ${marker.settled_result_path}`);
-    }
-    this.assertGenerationProviderPromptIntegrity(
-      sessionId,
-      meta,
-      parsed,
-      expected.round,
-      expected.label,
-      "generation",
-    );
-    return { marker, authenticated, parsed };
-  }
-
-  /**
-   * Move one already-settled circular result from the transient marker into
-   * the exact generation ledger without writing meta.json. The caller owns the
-   * session lock and commits this mutation together with its state transition.
-   */
-  private promoteSettledCircularGenerationForAccounting(
-    sessionId: string,
-    meta: SessionMeta,
-    expected?: CircularGenerationExpectation,
-  ):
-    | {
-        marker: BackgroundGenerationInFlight;
-        authenticated: ReturnType<SessionStore["readContainedRegularFile"]>;
-        parsed: GenerationResult;
-      }
-    | undefined {
-    const pending = meta.generation_in_flight;
-    if (meta.mode !== "circular" || !pending?.settled_result_path) return undefined;
-    if (pending.label !== "initial-draft" && pending.label !== "rotation") {
-      throw new Error(`circular_generation_label_invalid: ${pending.label}`);
-    }
-    const authenticatedStage = this.authenticateStagedCircularGeneration(
-      sessionId,
-      meta,
-      expected ?? {
-        round: pending.round,
-        peer: pending.peer,
-        label: pending.label,
-      },
-    );
-    const { marker, authenticated } = authenticatedStage;
-    const settledResultPath = marker.settled_result_path;
-    if (!settledResultPath) {
-      throw new Error("circular_generation_staged_result_required");
-    }
-    if ((meta.generation_files ?? []).some((artifact) => artifact.path === settledResultPath)) {
-      throw new Error(`circular_generation_artifact_already_promoted: ${settledResultPath}`);
-    }
-    const artifact: GenerationArtifact = {
-      ts: now(),
-      round: marker.round,
-      label: marker.label,
-      peer: marker.peer,
-      path: settledResultPath,
-      sha256: authenticated.sha256,
-      bytes: authenticated.bytes,
-      usage: marker.settled_result_usage,
-      cost: marker.settled_result_cost,
-      latency_ms: marker.settled_result_latency_ms,
-      unpriced_attempts: marker.settled_result_unpriced_attempts,
-      indeterminate_spend_attempts: marker.settled_result_indeterminate_spend_attempts,
-    };
-    meta.generation_files = [...(meta.generation_files ?? []), artifact];
-    delete meta.generation_in_flight;
-    meta.totals = this.totalsFor(meta);
-    return authenticatedStage;
-  }
-
-  /** Reauthenticate the exact provider-result bytes owned by an accepted
-   * circular round. The round peer remains the sole usage/cost ledger entry. */
-  private readRoundProviderResult(
-    sessionId: string,
-    meta: SessionMeta,
-    round: ReviewRound,
-  ): GenerationResult {
-    const custody = round.provider_result;
-    const peer = round.peers[0];
-    if (round.review_kind !== "circular_revision" || !custody || !peer) {
-      throw new Error(`circular_round_provider_result_required: round-${round.round}`);
-    }
-    const authenticated = this.readContainedRegularFile(
-      sessionId,
-      custody.relative_path,
-      "provider_result",
-    );
-    if (authenticated.sha256 !== custody.sha256 || authenticated.bytes !== custody.bytes) {
-      throw new Error(
-        `provider_result_integrity_mismatch: ${custody.relative_path} expected sha256=${custody.sha256} bytes=${custody.bytes}, got sha256=${authenticated.sha256} bytes=${authenticated.bytes}`,
-      );
-    }
-    let parsed: GenerationResult;
-    try {
-      parsed = JSON.parse(authenticated.content) as GenerationResult;
-    } catch (error) {
-      throw new Error(`provider_result_invalid_json: ${custody.relative_path}`, { cause: error });
-    }
-    if (
-      parsed.peer !== peer.peer ||
-      parsed.provider !== peer.provider ||
-      parsed.model !== peer.model ||
-      parsed.text !== peer.text
-    ) {
-      throw new Error(`provider_result_identity_mismatch: ${custody.relative_path}`);
-    }
-    this.assertGenerationProviderPromptIntegrity(
-      sessionId,
-      meta,
-      parsed,
-      round.round,
-      "rotation",
-      "generation",
-    );
-    return parsed;
-  }
-
-  /**
-   * Authenticate and return the exact canonical redacted round-zero result
-   * accepted by the circular state machine. The generation ledger and the
-   * state descriptor must independently identify the same persisted bytes.
-   */
-  readAcceptedCircularInitialDraft(sessionId: string): GenerationResult | undefined {
-    const meta = this.read(sessionId);
-    const custody = meta.circular_state?.initial_draft_custody;
-    if (!custody) return undefined;
-    if (meta.mode !== "circular") {
-      throw new Error("circular_initial_draft_custody_requires_circular_mode");
-    }
-    const matchingArtifacts = (meta.generation_files ?? []).filter(
-      (artifact) =>
-        artifact.round === 0 &&
-        artifact.label === "initial-draft" &&
-        artifact.peer === custody.peer &&
-        artifact.path === custody.relative_path &&
-        artifact.sha256 === custody.sha256 &&
-        artifact.bytes === custody.bytes,
-    );
-    if (matchingArtifacts.length !== 1) {
-      throw new Error(
-        `circular_initial_draft_ledger_mismatch: ${custody.relative_path} has ${matchingArtifacts.length} authenticated ledger entries`,
-      );
-    }
-    const authenticated = this.readContainedRegularFile(
-      sessionId,
-      custody.relative_path,
-      "provider_result",
-    );
-    if (authenticated.sha256 !== custody.sha256 || authenticated.bytes !== custody.bytes) {
-      throw new Error(
-        `provider_result_integrity_mismatch: ${custody.relative_path} expected sha256=${custody.sha256} bytes=${custody.bytes}, got sha256=${authenticated.sha256} bytes=${authenticated.bytes}`,
-      );
-    }
-    let parsed: GenerationResult;
-    try {
-      parsed = JSON.parse(authenticated.content) as GenerationResult;
-    } catch (error) {
-      throw new Error(`provider_result_invalid_json: ${custody.relative_path}`, { cause: error });
-    }
-    if (
-      parsed.peer !== custody.peer ||
-      parsed.provider !== custody.provider ||
-      parsed.model !== custody.model
-    ) {
-      throw new Error(`provider_result_identity_mismatch: ${custody.relative_path}`);
-    }
-    return parsed;
-  }
-
-  /**
-   * Commit the one durable disposition of a settled circular generation.
-   *
-   * The provider-result descriptor, financial ledger, circular cursor, marker
-   * removal and (when requested) terminal outcome share one locked meta.json
-   * replacement. Therefore a crash can expose the staged marker or the complete
-   * disposition, never an unaccounted result or a terminal session that still
-   * owns a settled provider marker.
-   */
-  async commitCircularGenerationDisposition(
-    sessionId: string,
-    params: {
-      expected: CircularGenerationExpectation;
-      circular_state: NonNullable<SessionMeta["circular_state"]>;
-      disposition: CircularGenerationDisposition;
-    },
-  ): Promise<SessionMeta> {
-    // A terminal disposition must follow all events that preceded its durable
-    // outcome. Flush unconditionally because a cancellation request may win the
-    // same lock even when the caller proposed a non-terminal disposition.
-    await this.flushPendingEvents();
-    return this.withSessionLock(sessionId, async () => {
-      const meta = this.read(sessionId);
-      if (meta.outcome) {
-        if (
-          params.disposition.kind === "reject_terminal" &&
-          meta.outcome === params.disposition.outcome &&
-          meta.outcome_reason === params.disposition.reason
-        ) {
-          return meta;
-        }
-        throw new Error(
-          `session_already_finalized: cannot dispose circular generation for ${sessionId} with outcome=${meta.outcome}`,
-        );
-      }
-      const promotedGeneration = this.promoteSettledCircularGenerationForAccounting(
-        sessionId,
-        meta,
-        params.expected,
-      );
-      if (!promotedGeneration) {
-        throw new Error("circular_generation_staged_result_required");
-      }
-      const { marker, authenticated } = promotedGeneration;
-      const settledResultPath = marker.settled_result_path;
-      if (!settledResultPath) {
-        throw new Error("circular_generation_staged_result_required");
-      }
-      const state = params.circular_state;
-      if (
-        state.rotation_order.length < 2 ||
-        !Number.isSafeInteger(state.next_cursor) ||
-        (state.next_cursor as number) < 0 ||
-        (state.next_cursor as number) >= state.rotation_order.length
-      ) {
-        throw new Error("circular_generation_disposition_next_cursor_invalid");
-      }
-      if (
-        meta.circular_state &&
-        (meta.circular_state.rotation_order.length !== state.rotation_order.length ||
-          !meta.circular_state.rotation_order.every(
-            (peer, index) => peer === state.rotation_order[index],
-          ))
-      ) {
-        throw new Error("circular_generation_disposition_rotation_mismatch");
-      }
-      if (
-        (params.expected.label === "initial-draft" && params.expected.round !== 0) ||
-        (params.expected.label === "rotation" && params.expected.round !== meta.rounds.length + 1)
-      ) {
-        throw new Error("circular_generation_disposition_round_mismatch");
-      }
-      const initialDraftCustody =
-        params.disposition.kind === "accept_initial"
-          ? {
-              relative_path: settledResultPath,
-              sha256: authenticated.sha256,
-              bytes: authenticated.bytes,
-              peer: marker.peer,
-              provider: marker.provider,
-              model: marker.model,
-            }
-          : meta.circular_state?.initial_draft_custody;
-      meta.circular_state = {
-        ...state,
-        ...(initialDraftCustody ? { initial_draft_custody: initialDraftCustody } : {}),
-      };
-      // Cancellation is authoritative and shares this same metadata commit.
-      // The settled result was promoted above, so cancellation must not invent
-      // an unknown provider attempt for it.
-      if (meta.control?.status === "cancel_requested") {
-        return this.persistCancelledTerminal(meta, "session_cancelled");
-      }
-
-      const transitionedAt = now();
-      if (params.disposition.kind === "reject_terminal") {
-        delete meta.control;
-        meta.outcome = params.disposition.outcome;
-        meta.outcome_reason = params.disposition.reason;
-        meta.convergence_health = transitionHealth(
-          meta,
-          params.disposition.outcome === "max-rounds" ? "blocked" : "aborted",
-          params.disposition.reason,
-          transitionedAt,
-        );
-      }
-      meta.updated_at = transitionedAt;
-      if (meta.control) meta.control.updated_at = transitionedAt;
-      const shapeError = sessionMetaShapeError(meta);
-      if (shapeError) throw new Error(`schema_validation_failed: ${shapeError}`);
-      await writeJson(this.metaPath(sessionId), meta);
-
-      if (params.disposition.kind === "reject_terminal") {
-        try {
-          await this.appendEventRecord({
-            type: "session.finalized",
-            session_id: sessionId,
-            ts: transitionedAt,
-            message: `Session finalized as ${params.disposition.outcome}: ${params.disposition.reason}`,
-            data: {
-              outcome: params.disposition.outcome,
-              reason: params.disposition.reason,
-            },
-          });
-        } catch {
-          /* event persistence is best-effort; session_doctor will flag gaps */
-        }
-        try {
-          this.saveReport(sessionId, this.renderSessionReport(meta, this.readEvents(sessionId)));
-        } catch {
-          /* report regeneration is best-effort; meta.json remains authoritative */
-        }
-      }
-      return meta;
-    });
-  }
-
-  /**
-   * Atomically accounts for a settled circular provider result that the
-   * orchestrator rejected before it could become a review round. The raw
-   * provider artifact remains in the financial/forensic ledger, while the
-   * accepted draft and rounds stay unchanged and custody advances to the next
-   * rotator in the same meta.json replacement.
-   */
-  async promoteRejectedCircularGeneration(
-    sessionId: string,
-    circularState: NonNullable<SessionMeta["circular_state"]>,
-  ): Promise<SessionMeta> {
-    const meta = this.read(sessionId);
-    const marker = meta.generation_in_flight;
-    if (
-      meta.mode !== "circular" ||
-      !marker?.settled_result_path ||
-      marker.label !== "rotation" ||
-      marker.round !== meta.rounds.length + 1
-    ) {
-      throw new Error("circular_rejected_generation_staged_result_required");
-    }
-    return this.commitCircularGenerationDisposition(sessionId, {
-      expected: { round: marker.round, peer: marker.peer, label: "rotation" },
-      circular_state: circularState,
-      disposition: { kind: "reject_continue" },
-    });
-  }
-
   saveFinal(sessionId: string, text: string): string {
-    return this.saveAuthenticatedFinal(sessionId, redact(text));
-  }
-
-  private saveAuthenticatedFinal(sessionId: string, content: string): string {
     const file = path.join(this.sessionDir(sessionId), "final.md");
-    writeTextAtomically(file, content);
+    fs.writeFileSync(file, redact(text), "utf8");
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
-  }
-
-  saveFinalFromReviewedRound(sessionId: string, round: ReviewRound): string {
-    const reviewedArtifact = this.readRoundReviewedArtifact(sessionId, round);
-    return this.saveAuthenticatedFinal(sessionId, reviewedArtifact.content);
-  }
-
-  private assertFinalMirrorMatches(
-    sessionId: string,
-    reviewedArtifact: PersistedReviewedArtifact,
-  ): void {
-    const relativePath = "final.md";
-    const sessionDir = this.sessionDir(sessionId);
-    const candidate = path.join(sessionDir, relativePath);
-    let candidateStat: fs.BigIntStats;
-    try {
-      candidateStat = fs.lstatSync(candidate, { bigint: true });
-    } catch (error) {
-      throw new Error("reviewed_artifact_final_mirror_unavailable: final.md", { cause: error });
-    }
-    if (candidateStat.isSymbolicLink() || !candidateStat.isFile()) {
-      throw new Error("reviewed_artifact_final_mirror_not_regular_file: final.md");
-    }
-    const absolutePath = this.safeResolveContainedExistingPath(sessionDir, relativePath);
-    if (!absolutePath) {
-      throw new Error("reviewed_artifact_final_mirror_not_contained: final.md");
-    }
-
-    let persisted: Buffer;
-    const descriptor = fs.openSync(absolutePath, "r");
-    try {
-      const descriptorStat = fs.fstatSync(descriptor, { bigint: true });
-      if (
-        !descriptorStat.isFile() ||
-        descriptorStat.dev !== candidateStat.dev ||
-        descriptorStat.ino !== candidateStat.ino
-      ) {
-        throw new Error("reviewed_artifact_final_mirror_identity_mismatch: final.md");
-      }
-      persisted = fs.readFileSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
-    }
-    const expected = Buffer.from(reviewedArtifact.content, "utf8");
-    if (!persisted.equals(expected)) {
-      throw new Error(
-        `reviewed_artifact_final_mirror_integrity_mismatch: final.md expected sha256=${reviewedArtifact.sha256} bytes=${reviewedArtifact.bytes}`,
-      );
-    }
   }
 
   saveReport(sessionId: string, text: string): string {
     const file = path.join(this.sessionDir(sessionId), "session-report.md");
     fs.writeFileSync(file, redact(text), "utf8");
     return path.relative(this.sessionDir(sessionId), file).replace(/\\/g, "/");
-  }
-
-  reviewedArtifactCustodyReportStatus(session: SessionMeta): ReviewedArtifactCustodyReportStatus {
-    const failures: string[] = [];
-    for (const prompt of session.provider_prompt_files ?? []) {
-      try {
-        const authenticated = this.readContainedRegularFile(
-          session.session_id,
-          prompt.relative_path,
-          "provider_prompt",
-        );
-        if (
-          authenticated.sha256 !== prompt.sha256 ||
-          authenticated.bytes !== prompt.bytes ||
-          authenticated.content.length !== prompt.utf16_units
-        ) {
-          throw new Error(`provider_prompt_integrity_mismatch: ${prompt.relative_path}`);
-        }
-      } catch (error) {
-        failures.push(`provider prompt ${prompt.relative_path}: ${safeErrorMessage(error)}`);
-      }
-    }
-    const providerResultRounds = session.rounds.filter(
-      (round) => round.review_kind === "circular_revision",
-    );
-    for (const round of providerResultRounds) {
-      try {
-        this.readRoundProviderResult(session.session_id, session, round);
-      } catch (error) {
-        failures.push(`round ${round.round} provider result: ${safeErrorMessage(error)}`);
-      }
-    }
-    const governedRounds = session.rounds.filter(
-      (round) =>
-        (round.review_kind === "reviewed_artifact" ||
-          (round.review_kind === undefined && round.draft_file !== undefined)) &&
-        round.draft_file !== undefined &&
-        (this.roundRequiresReviewedArtifactCustody(session, round) || round.reviewed_artifact),
-    );
-    if (governedRounds.length === 0) {
-      return {
-        status:
-          failures.length > 0
-            ? "FAILED"
-            : (session.provider_prompt_files?.length ?? 0) > 0
-              ? "verified"
-              : providerResultRounds.length > 0
-                ? "verified"
-                : session.reviewed_artifact_custody_schema_version === 1
-                  ? "not_checked"
-                  : "legacy_unset",
-        failures,
-      };
-    }
-    const authenticatedRounds = new Map<number, PersistedReviewedArtifact>();
-    for (const round of governedRounds) {
-      try {
-        const authenticated = this.readRoundReviewedArtifact(session.session_id, round);
-        this.assertPeerReviewDispatchVisibility(
-          session.session_id,
-          session,
-          round.peers,
-          authenticated,
-          true,
-        );
-        authenticatedRounds.set(round.round, authenticated);
-      } catch (error) {
-        failures.push(`round ${round.round}: ${safeErrorMessage(error)}`);
-      }
-    }
-    if (session.outcome === "converged") {
-      const latestRound = session.rounds.at(-1);
-      const authenticated = latestRound ? authenticatedRounds.get(latestRound.round) : undefined;
-      if (authenticated) {
-        try {
-          this.assertFinalMirrorMatches(session.session_id, authenticated);
-        } catch (error) {
-          failures.push(`final mirror: ${safeErrorMessage(error)}`);
-        }
-      }
-    }
-    return { status: failures.length > 0 ? "FAILED" : "verified", failures };
-  }
-
-  renderSessionReport(session: SessionMeta, events: SessionEvent[] = []): string {
-    return sessionReportMarkdown(
-      session,
-      events,
-      this.reviewedArtifactCustodyReportStatus(session),
-    );
   }
 
   async savePeerResult(
@@ -3707,16 +2064,6 @@ export class SessionStore {
         (error as Error & { code?: string }).code = "provider_reservation_cancelled";
         throw error;
       }
-      if (
-        meta.provider_prompt_custody_schema_version === 1 &&
-        params.round >= (meta.provider_prompt_custody_start_round ?? 1)
-      ) {
-        const error = new Error(
-          `provider_prompt_custody_required: use preparePendingProviderPromptCall for ${params.call_kind}/${params.label}`,
-        );
-        (error as Error & { code?: string }).code = "provider_prompt_custody_required";
-        throw error;
-      }
       const reservation: PendingProviderCallReservation = {
         id: crypto.randomUUID(),
         ...params,
@@ -3731,128 +2078,6 @@ export class SessionStore {
       await writeJson(this.metaPath(sessionId), meta);
       return reservation.id;
     });
-  }
-
-  private assertPendingProviderPromptIntegrity(
-    sessionId: string,
-    meta: SessionMeta,
-    reservationId: string | undefined,
-    peer: PeerId,
-    round: number,
-  ): void {
-    if (reservationId === undefined) return;
-    const reservation = (meta.pending_provider_call_reservations ?? []).find(
-      (candidate) => candidate.id === reservationId,
-    );
-    if (!reservation || reservation.peer !== peer || reservation.round !== round) {
-      const error = new Error(
-        `provider_settlement_without_matching_pending_reservation: ${peer}/round-${round}/${reservationId}`,
-      );
-      (error as Error & { code?: string }).code =
-        "provider_settlement_without_matching_pending_reservation";
-      throw error;
-    }
-
-    const prompt = reservation.provider_prompt;
-    const custodyRequired =
-      meta.provider_prompt_custody_schema_version === 1 &&
-      round >= (meta.provider_prompt_custody_start_round ?? 1);
-    if (!prompt) {
-      if (custodyRequired) {
-        const error = new Error(
-          `provider_prompt_custody_required: ${reservation.call_kind}/${reservation.label}`,
-        );
-        (error as Error & { code?: string }).code = "provider_prompt_custody_required";
-        throw error;
-      }
-      return;
-    }
-
-    this.assertProviderPromptCustodyIntegrity(sessionId, meta, prompt, {
-      round: reservation.round,
-      peer: reservation.peer,
-      provider: reservation.provider,
-      model: reservation.model,
-      call_kind: reservation.call_kind,
-      label: reservation.label,
-    });
-  }
-
-  private assertGenerationProviderPromptIntegrity(
-    sessionId: string,
-    meta: SessionMeta,
-    result: GenerationResult,
-    round: number,
-    label: string,
-    callKind: ProviderPromptArtifact["call_kind"],
-  ): void {
-    const prompt = result.provider_prompt;
-    if (!prompt) {
-      if (meta.provider_prompt_custody_schema_version === 1) {
-        const error = new Error(`provider_prompt_custody_required: ${callKind}/${label}`);
-        (error as Error & { code?: string }).code = "provider_prompt_custody_required";
-        throw error;
-      }
-      return;
-    }
-    this.assertProviderPromptCustodyIntegrity(sessionId, meta, prompt, {
-      round,
-      peer: result.peer,
-      provider: result.provider,
-      model: result.model,
-      call_kind: callKind,
-      label,
-    });
-  }
-
-  private assertProviderPromptCustodyIntegrity(
-    sessionId: string,
-    meta: SessionMeta,
-    prompt: ProviderPromptCustody,
-    expected: Pick<
-      ProviderPromptArtifact,
-      "round" | "peer" | "provider" | "model" | "call_kind" | "label"
-    >,
-  ): void {
-    const ledger = (meta.provider_prompt_files ?? []).find(
-      (candidate) =>
-        candidate.relative_path === prompt.relative_path &&
-        candidate.round === expected.round &&
-        candidate.peer === expected.peer &&
-        candidate.provider === expected.provider &&
-        candidate.model === expected.model &&
-        candidate.call_kind === expected.call_kind &&
-        candidate.label === expected.label,
-    );
-    if (
-      !ledger ||
-      ledger.sha256 !== prompt.sha256 ||
-      ledger.bytes !== prompt.bytes ||
-      ledger.utf16_units !== prompt.utf16_units ||
-      prompt.reconstructible !== true ||
-      prompt.redacted !== true
-    ) {
-      const error = new Error(
-        `provider_prompt_custody_ledger_mismatch: ${expected.call_kind}/${expected.label}`,
-      );
-      (error as Error & { code?: string }).code = "provider_prompt_custody_ledger_mismatch";
-      throw error;
-    }
-
-    const authenticated = this.readContainedRegularFile(
-      sessionId,
-      prompt.relative_path,
-      "provider_prompt",
-    );
-    if (
-      authenticated.sha256 !== prompt.sha256 ||
-      authenticated.bytes !== prompt.bytes ||
-      authenticated.content.length !== prompt.utf16_units
-    ) {
-      const error = new Error(`provider_prompt_integrity_mismatch: ${prompt.relative_path}`);
-      (error as Error & { code?: string }).code = "provider_prompt_integrity_mismatch";
-      throw error;
-    }
   }
 
   private consumePendingProviderCallReservation(
@@ -4053,9 +2278,7 @@ export class SessionStore {
     sessionId: string,
     params: {
       caller_status: ReviewStatus;
-      review_kind?: ReviewRoundKind | undefined;
       draft_file?: string | undefined;
-      reviewed_artifact?: PersistedReviewedArtifact | undefined;
       prompt_file: string;
       peers: PeerResult[];
       rejected: PeerFailure[];
@@ -4068,8 +2291,6 @@ export class SessionStore {
       convergence_scope: ConvergenceScope;
       started_at: string;
       hold_in_flight_for_finalize?: boolean | undefined;
-      circular_state?: NonNullable<SessionMeta["circular_state"]> | undefined;
-      promote_staged_generation?: boolean | undefined;
     },
   ): Promise<ReviewRound> {
     return this.withSessionLock(sessionId, async () => {
@@ -4089,163 +2310,22 @@ export class SessionStore {
         (err as Error & { code?: string }).code = "session_already_finalized";
         throw err;
       }
-      let reviewedArtifactCustody: ReviewedArtifactCustody | undefined;
-      let authenticatedReviewedArtifact: PersistedReviewedArtifact | undefined;
-      let providerResultCustody: ProviderResultCustody | undefined;
-      if (params.draft_file) {
-        if (!params.reviewed_artifact) {
-          if (meta.reviewed_artifact_custody_schema_version !== 1) {
-            // A pre-custody session remains appendable by legacy tooling. Any
-            // current runtime continuation supplies reviewed_artifact below
-            // and upgrades the session marker permanently.
-          } else {
-            throw new Error(
-              `reviewed_artifact_custody_required: ${params.draft_file} must include its authenticated path, sha256 and byte count`,
-            );
-          }
-        } else if (params.draft_file !== params.reviewed_artifact.relative_path) {
-          throw new Error(
-            `reviewed_artifact_custody_required: ${params.draft_file} must include its authenticated path, sha256 and byte count`,
-          );
-        } else {
-          const authenticated = this.revalidateReviewedArtifact(
-            sessionId,
-            params.reviewed_artifact,
-          );
-          authenticatedReviewedArtifact = authenticated;
-          reviewedArtifactCustody = {
-            artifact_kind: "reviewed_artifact",
-            relative_path: authenticated.relative_path,
-            sha256: authenticated.sha256,
-            bytes: authenticated.bytes,
-          };
-          if (meta.reviewed_artifact_custody_schema_version !== 1) {
-            meta.reviewed_artifact_custody_start_round = meta.rounds.length + 1;
-          }
-          meta.reviewed_artifact_custody_schema_version = 1;
-        }
-      } else if (params.reviewed_artifact) {
-        throw new Error(
-          "reviewed_artifact_custody_without_draft_file: custody metadata requires draft_file",
-        );
-      }
       const durableConvergence = blockConvergenceForUnresolvedEvidence(
         params.convergence,
         meta.evidence_checklist ?? [],
       );
-      if (params.review_kind === "circular_revision") {
-        if (meta.mode !== "circular" || !params.circular_state) {
-          throw new Error("circular_round_requires_mode_and_atomic_state");
-        }
-        const state = params.circular_state;
-        if (
-          !Number.isSafeInteger(state.next_cursor) ||
-          (state.next_cursor as number) < 0 ||
-          (state.next_cursor as number) >= state.rotation_order.length
-        ) {
-          throw new Error("circular_round_next_cursor_invalid");
-        }
-        if (params.promote_staged_generation) {
-          const marker = meta.generation_in_flight;
-          const peer = params.peers[0];
-          if (
-            !marker?.settled_result_path ||
-            marker.round !== meta.rounds.length + 1 ||
-            marker.peer !== peer?.peer ||
-            marker.label !== "rotation"
-          ) {
-            throw new Error("circular_round_staged_generation_required");
-          }
-          const staged = this.authenticateStagedCircularGeneration(sessionId, meta, {
-            round: meta.rounds.length + 1,
-            peer: peer.peer,
-            label: "rotation",
-          });
-          const { authenticated, parsed } = staged;
-          if (
-            parsed.peer !== peer.peer ||
-            parsed.provider !== peer.provider ||
-            parsed.model !== peer.model ||
-            parsed.text !== peer.text
-          ) {
-            throw new Error(`provider_result_identity_mismatch: ${marker.settled_result_path}`);
-          }
-          providerResultCustody = {
-            artifact_kind: "provider_result",
-            relative_path: marker.settled_result_path,
-            sha256: authenticated.sha256,
-            bytes: authenticated.bytes,
-          };
-        } else {
-          throw new Error("circular_round_staged_generation_required");
-        }
-      }
-      if (authenticatedReviewedArtifact) {
-        this.assertPeerReviewDispatchVisibility(
-          sessionId,
-          meta,
-          params.peers,
-          authenticatedReviewedArtifact,
-          true,
-        );
-      }
-      if (durableConvergence.recovery_converged && authenticatedReviewedArtifact) {
-        const currentPeerIds = new Set(params.peers.map((peer) => peer.peer));
-        for (const peerId of durableConvergence.ready_peers) {
-          if (currentPeerIds.has(peerId)) continue;
-          const historicalRound = [...meta.rounds]
-            .reverse()
-            .find((round) => round.peers.some((peer) => peer.peer === peerId));
-          const historicalPeer = historicalRound?.peers.find((peer) => peer.peer === peerId);
-          if (!historicalRound || !historicalPeer) {
-            throw new Error(`recovery_quorum_peer_custody_missing: peer=${peerId}`);
-          }
-          const historicalArtifact = this.readRoundReviewedArtifact(sessionId, historicalRound);
-          if (
-            historicalArtifact.sha256 !== authenticatedReviewedArtifact.sha256 ||
-            historicalArtifact.bytes !== authenticatedReviewedArtifact.bytes
-          ) {
-            throw new Error(`recovery_quorum_artifact_mismatch: peer=${peerId}`);
-          }
-          this.assertPeerReviewDispatchVisibility(
-            sessionId,
-            meta,
-            [historicalPeer],
-            historicalArtifact,
-            true,
-          );
-        }
-      }
       const round: ReviewRound = {
         round: meta.rounds.length + 1,
-        review_kind:
-          params.review_kind ??
-          (meta.reviewed_artifact_custody_schema_version === 1
-            ? params.draft_file === undefined
-              ? "pre_dispatch_block"
-              : "reviewed_artifact"
-            : undefined),
         started_at: params.started_at,
         completed_at: now(),
         caller_status: params.caller_status,
         draft_file: params.draft_file,
-        reviewed_artifact: reviewedArtifactCustody,
-        provider_result: providerResultCustody,
         prompt_file: params.prompt_file,
         peers: params.peers,
         rejected: params.rejected,
         convergence: durableConvergence,
       };
       meta.rounds.push(round);
-      if (params.circular_state) {
-        const initialDraftCustody =
-          params.circular_state.initial_draft_custody ?? meta.circular_state?.initial_draft_custody;
-        meta.circular_state = {
-          ...params.circular_state,
-          ...(initialDraftCustody ? { initial_draft_custody: initialDraftCustody } : {}),
-        };
-      }
-      if (params.promote_staged_generation) delete meta.generation_in_flight;
       meta.failed_attempts = [
         ...(meta.failed_attempts ?? []),
         ...params.rejected.map((failure) => ({ ...failure, round: round.round })),
@@ -4300,8 +2380,6 @@ export class SessionStore {
           .filter((generation) => generation.round === round.round)
           .reduce((sum, generation) => sum + (generation.cost?.total_cost ?? 0), 0);
       meta.costs_per_round = [...(meta.costs_per_round ?? []), roundCost];
-      const shapeError = sessionMetaShapeError(meta);
-      if (shapeError) throw new Error(`schema_validation_failed: ${shapeError}`);
       await writeJson(this.metaPath(sessionId), meta);
       return round;
     });
@@ -4376,29 +2454,7 @@ export class SessionStore {
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
-      const initialDraftCustody =
-        state.initial_draft_custody ?? meta.circular_state?.initial_draft_custody;
-      meta.circular_state = {
-        ...state,
-        ...(initialDraftCustody ? { initial_draft_custody: initialDraftCustody } : {}),
-      };
-      meta.updated_at = now();
-      await writeJson(this.metaPath(sessionId), meta);
-      return meta;
-    });
-  }
-
-  async ensureSessionMode(sessionId: string, mode: SessionMode): Promise<SessionMeta> {
-    return this.withSessionLock(sessionId, async () => {
-      const meta = this.read(sessionId);
-      const persistedMode = meta.mode ?? (meta.circular_state ? "circular" : undefined);
-      if (persistedMode !== undefined && persistedMode !== mode) {
-        throw new Error(
-          `session_mode_mismatch: session ${sessionId} is ${persistedMode}; refusing ${mode}`,
-        );
-      }
-      meta.session_mode_schema_version = 1;
-      meta.mode = persistedMode ?? mode;
+      meta.circular_state = state;
       meta.updated_at = now();
       await writeJson(this.metaPath(sessionId), meta);
       return meta;
@@ -4466,21 +2522,12 @@ export class SessionStore {
     const ts = now();
     const requestedReason = meta.control?.reason ?? outcomeReason;
     let brokerRollback: EvidenceBrokerRollback | undefined;
-    // A settled circular marker already owns exact authenticated bytes and
-    // provider accounting. Promote it into the generation ledger before the
-    // terminal write instead of misclassifying it as an interrupted unknown
-    // attempt. This mutation and outcome=aborted share the caller-held lock and
-    // the single meta.json replacement below.
-    const settledCircularGeneration = this.promoteSettledCircularGenerationForAccounting(
-      sessionId,
-      meta,
-    );
     if (meta.in_flight) {
       if (!inFlightRoundAlreadyAppended(meta)) {
         this.accountInterruptedInFlight(meta, `cancelled: ${requestedReason}`);
         brokerRollback = restoreInterruptedEvidenceBrokerSnapshot(meta);
       }
-    } else if (!settledCircularGeneration) {
+    } else {
       this.accountInterruptedBackgroundGeneration(meta, `cancelled: ${requestedReason}`);
     }
     this.accountInterruptedPendingProviderCalls(meta, `cancelled: ${requestedReason}`);
@@ -4520,7 +2567,7 @@ export class SessionStore {
       /* event persistence is best-effort; session_doctor will flag gaps */
     }
     try {
-      this.saveReport(sessionId, this.renderSessionReport(meta, this.readEvents(sessionId)));
+      this.saveReport(sessionId, sessionReportMarkdown(meta, this.readEvents(sessionId)));
     } catch {
       /* report regeneration is best-effort; meta.json remains authoritative */
     }
@@ -4570,7 +2617,6 @@ export class SessionStore {
         throw err;
       }
       const latestRound = meta.rounds.at(-1);
-      let authenticatedFinalContent: string | undefined;
       const completingReservedConvergedRound =
         outcome === "converged" &&
         meta.in_flight !== undefined &&
@@ -4608,16 +2654,6 @@ export class SessionStore {
           (err as Error & { code?: string }).code = "session_finalize_outcome_mismatch";
           throw err;
         }
-        if (latest.review_kind === "circular_revision") {
-          this.readRoundProviderResult(sessionId, meta, latest);
-        }
-        // The vote applies to the exact redacted bytes authenticated before
-        // dispatch and again at round append. A later replacement invalidates
-        // convergence rather than allowing a verdict to finalize a different
-        // artifact.
-        if (this.roundRequiresReviewedArtifactCustody(meta, latest) || latest.reviewed_artifact) {
-          authenticatedFinalContent = this.readRoundReviewedArtifact(sessionId, latest).content;
-        }
       }
       if (completingReservedConvergedRound) delete meta.in_flight;
       // A normal background job is terminalized inside this same session
@@ -4637,17 +2673,6 @@ export class SessionStore {
       );
       meta.updated_at = ts;
       await writeJson(this.metaPath(sessionId), meta);
-      if (authenticatedFinalContent !== undefined) {
-        try {
-          // Write only the descriptor-authenticated bytes used by the verdict,
-          // and only after the terminal metadata has committed. A failed
-          // terminal write therefore cannot leave a misleading final.md.
-          this.saveAuthenticatedFinal(sessionId, authenticatedFinalContent);
-        } catch {
-          // meta.json is authoritative. Restart recovery can recreate this
-          // convenience mirror only after revalidating the same custody.
-        }
-      }
       try {
         await this.appendEventRecord({
           type: "session.finalized",
@@ -4662,7 +2687,7 @@ export class SessionStore {
       // Keep the durable report terminally consistent without requiring an
       // explicit session_report call from the operator.
       try {
-        this.saveReport(sessionId, this.renderSessionReport(meta, this.readEvents(sessionId)));
+        this.saveReport(sessionId, sessionReportMarkdown(meta, this.readEvents(sessionId)));
       } catch {
         /* report regeneration is best-effort; meta.json remains authoritative */
       }
@@ -5171,116 +3196,10 @@ export class SessionStore {
   // ask; it is not a terminal disposition. Atomic under the session lock.
   // Returns null when the item is already addressed, terminal, or missing so
   // the caller can skip emit.
-  private authenticateEvidenceJudgeGeneration(
-    sessionId: string,
-    meta: SessionMeta,
-    params: { item_id: string; round: number; judge_peer: PeerId; artifact_path: string },
-  ): { peer: PeerId; rationale: string } {
-    const fail = (detail: string, cause?: unknown): Error => {
-      const error = new Error(
-        `evidence_judge_authorization_failed: peer=${params.judge_peer} ${detail}`,
-        cause === undefined ? undefined : { cause },
-      );
-      (
-        error as Error & {
-          code?: string;
-          judge_peer?: PeerId;
-        }
-      ).code = "evidence_judge_authorization_failed";
-      (error as Error & { judge_peer?: PeerId }).judge_peer = params.judge_peer;
-      return error;
-    };
-    const expectedLabel = `judge-${params.item_id}`;
-    const matchingArtifacts = (meta.generation_files ?? []).filter(
-      (artifact) =>
-        artifact.path === params.artifact_path &&
-        artifact.round === params.round &&
-        artifact.peer === params.judge_peer &&
-        artifact.label === expectedLabel,
-    );
-    if (matchingArtifacts.length !== 1) {
-      throw fail(
-        `generation_ledger_mismatch: ${params.artifact_path} has ${matchingArtifacts.length} matching entries`,
-      );
-    }
-    const artifact = matchingArtifacts[0];
-    if (!artifact) throw fail(`generation_ledger_missing: ${params.artifact_path}`);
-    const authenticated = this.readContainedRegularFile(
-      sessionId,
-      params.artifact_path,
-      "provider_result",
-    );
-    if (authenticated.sha256 !== artifact.sha256 || authenticated.bytes !== artifact.bytes) {
-      throw fail(`provider_result_integrity_mismatch: ${params.artifact_path}`);
-    }
-
-    let generation: GenerationResult;
-    try {
-      generation = JSON.parse(authenticated.content) as GenerationResult;
-    } catch (error) {
-      throw fail(`provider_result_invalid_json: ${params.artifact_path}`, error);
-    }
-    if (
-      generation.peer !== params.judge_peer ||
-      typeof generation.provider !== "string" ||
-      typeof generation.model !== "string" ||
-      typeof generation.text !== "string"
-    ) {
-      throw fail(`provider_result_identity_mismatch: ${params.artifact_path}`);
-    }
-    if (!generation.provider_prompt) {
-      throw fail(`provider_prompt_custody_required: ${params.artifact_path}`);
-    }
-    try {
-      this.assertProviderPromptCustodyIntegrity(sessionId, meta, generation.provider_prompt, {
-        round: params.round,
-        peer: params.judge_peer,
-        provider: generation.provider,
-        model: generation.model,
-        call_kind: "evidence_judge",
-        label: expectedLabel,
-      });
-    } catch (error) {
-      throw fail(safeErrorMessage(error), error);
-    }
-
-    let judgment: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(generation.text) as unknown;
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("structured judgment must be an object");
-      }
-      judgment = parsed as Record<string, unknown>;
-    } catch (error) {
-      throw fail(`structured_judgment_invalid_json: ${params.artifact_path}`, error);
-    }
-    const parserWarnings = judgment.parser_warnings;
-    const rationale = judgment.rationale;
-    if (
-      judgment.satisfied !== true ||
-      judgment.confidence !== "verified" ||
-      typeof rationale !== "string" ||
-      rationale.trim().length === 0 ||
-      !Array.isArray(parserWarnings) ||
-      parserWarnings.length > 0 ||
-      parserWarnings.some((warning) => typeof warning !== "string") ||
-      (generation.parser_warnings !== undefined && generation.parser_warnings.length > 0)
-    ) {
-      throw fail(`structured_judgment_not_verified: ${params.artifact_path}`);
-    }
-    return { peer: params.judge_peer, rationale };
-  }
-
   async markEvidenceItemAddressedByJudge(
     sessionId: string,
     itemId: string,
-    params: {
-      round: number;
-      rationale: string;
-      judge_peer: PeerId;
-      judge_peers: readonly PeerId[];
-      generation_paths: readonly string[];
-    },
+    params: { round: number; rationale: string; judge_peer: PeerId },
   ): Promise<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry } | null> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
@@ -5298,30 +3217,8 @@ export class SessionStore {
       // Terminal statuses (satisfied/deferred/rejected) and already-addressed
       // items are NOT auto-mutated here.
       if (status !== "open" && status !== "not_resurfaced") return null;
-      if (
-        params.judge_peers.length === 0 ||
-        params.judge_peers.length !== params.generation_paths.length ||
-        new Set(params.judge_peers).size !== params.judge_peers.length ||
-        params.judge_peers[0] !== params.judge_peer
-      ) {
-        throw new Error(`evidence_judge_authorization_set_invalid: ${itemId}`);
-      }
-      const authorizations = params.judge_peers.map((judgePeer, index) =>
-        this.authenticateEvidenceJudgeGeneration(sessionId, meta, {
-          item_id: itemId,
-          round: params.round,
-          judge_peer: judgePeer,
-          artifact_path: params.generation_paths[index] ?? "",
-        }),
-      );
-      const authenticatedRationale = authorizations
-        .map((authorization) => authorization.rationale)
-        .join(" || ");
-      if (params.rationale !== authenticatedRationale) {
-        throw new Error(`evidence_judge_authorization_rationale_mismatch: ${itemId}`);
-      }
       const ts = now();
-      const rationale = authenticatedRationale.trim().slice(0, 800);
+      const rationale = params.rationale.trim().slice(0, 800);
       item.status = "addressed";
       item.addressed_at_round = params.round;
       item.address_method = "judge";
@@ -5417,49 +3314,6 @@ export class SessionStore {
         // Operational job history is advisory. A failed status repair must not
         // block recovery of authoritative session metadata.
       }
-      if (session.outcome === "converged") {
-        let restoredMissingFinal = false;
-        await this.withSessionLock(session.session_id, async () => {
-          const current = this.read(session.session_id);
-          const latest = current.rounds.at(-1);
-          if (
-            current.outcome === "converged" &&
-            latest &&
-            (this.roundRequiresReviewedArtifactCustody(current, latest) || latest.reviewed_artifact)
-          ) {
-            restoredMissingFinal = this.restoreFinalArtifactFromRound(current, latest);
-          }
-        });
-        if (restoredMissingFinal) {
-          const repaired = this.read(session.session_id);
-          try {
-            await this.appendEvent({
-              type: "session.recovered_after_restart",
-              session_id: repaired.session_id,
-              ts: now(),
-              message:
-                "Restart recovery authenticated the converged round and recreated its missing final.md mirror without replacing any existing artifact.",
-              data: {
-                recovered_after_restart: true,
-                final_artifact_recovered: true,
-                source: "terminal_missing_final_mirror",
-              },
-            });
-          } catch {
-            /* event persistence is best-effort; session_doctor will flag gaps */
-          }
-          try {
-            this.saveReport(
-              repaired.session_id,
-              this.renderSessionReport(repaired, this.readEvents(repaired.session_id)),
-            );
-          } catch {
-            /* report regeneration is best-effort; meta.json remains authoritative */
-          }
-          recovered.push(repaired);
-        }
-        continue;
-      }
       const pendingProviderCalls = (session.pending_provider_call_reservations?.length ?? 0) > 0;
       const livePendingProviderCall = (session.pending_provider_call_reservations ?? []).some(
         (reservation) => this.pendingProviderCallOwnerIsAlive(reservation),
@@ -5503,34 +3357,6 @@ export class SessionStore {
             !currentPendingProviderCalls &&
             !currentOrphanedBackgroundControl)
         ) {
-          return current;
-        }
-        const stagedCircularGeneration =
-          current.mode === "circular" &&
-          current.generation_in_flight?.settled_result_path !== undefined;
-        if (stagedCircularGeneration && current.generation_in_flight) {
-          if (current.control?.status === "cancel_requested") {
-            // The request and exact provider result both survived the owner.
-            // Cancellation remains authoritative: consume the staged bytes and
-            // terminalize them in the same locked metadata replacement.
-            actuallyRecovered = true;
-            return this.persistCancelledTerminal(current, "session_cancelled");
-          }
-          // The provider already settled and its exact redacted result is
-          // descriptor-authenticated on disk. Preserve it for deterministic
-          // continuation instead of charging/repeating the provider call.
-          current.generation_in_flight.owner_pid = 0;
-          delete current.control;
-          const transitionedAt = now();
-          current.convergence_health = transitionHealth(
-            current,
-            "blocked",
-            "A settled circular result was recovered and awaits atomic round promotion.",
-            transitionedAt,
-          );
-          current.updated_at = transitionedAt;
-          actuallyRecovered = true;
-          await writeJson(this.metaPath(current.session_id), current);
           return current;
         }
         const recoveredRound = this.sealRecoveredAppendedConvergence(current);
@@ -5644,7 +3470,7 @@ export class SessionStore {
           const reported = this.read(updated.session_id);
           this.saveReport(
             reported.session_id,
-            this.renderSessionReport(reported, this.readEvents(reported.session_id)),
+            sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
           );
         } catch {
           /* report regeneration is best-effort; meta.json remains authoritative */
@@ -6191,7 +4017,6 @@ export class SessionStore {
     const grokProviderErrorSessions: SessionDoctorEntry[] = [];
     const eventReadErrorSessions: SessionDoctorEntry[] = [];
     const terminalEventMissingSessions: SessionDoctorEntry[] = [];
-    const reviewedArtifactCustodyFailureSessions: SessionDoctorEntry[] = [];
     let eventsTotal = 0;
     let tokenDeltaEvents = 0;
     let tokenCompletedEvents = 0;
@@ -6224,8 +4049,6 @@ export class SessionStore {
       const grokProviderErrors = (session.failed_attempts ?? []).filter(
         (failure) => failure.peer === "grok" && failure.failure_class === "provider_error",
       ).length;
-      const reviewedArtifactCustodyFailures =
-        this.reviewedArtifactCustodyReportStatus(session).failures.length;
       if (isStubSession(session)) stubSessions += 1;
       else realSessions += 1;
       const costBreakdown = sessionCostBreakdown(session);
@@ -6260,9 +4083,6 @@ export class SessionStore {
           ? { not_resurfaced_evidence_items: notResurfacedEvidenceItems }
           : {}),
         ...(grokProviderErrors > 0 ? { grok_provider_errors: grokProviderErrors } : {}),
-        ...(reviewedArtifactCustodyFailures > 0
-          ? { reviewed_artifact_custody_failures: reviewedArtifactCustodyFailures }
-          : {}),
       };
 
       // v2.22.0 (B.P2): drill-down for open-evidence entries. Aggregate
@@ -6304,9 +4124,6 @@ export class SessionStore {
       if (notResurfacedEvidenceItems > 0 && (!isTerminal || includeTerminalFindings))
         pushLimited(notResurfacedEvidenceSessions, entry);
       if (grokProviderErrors > 0) pushLimited(grokProviderErrorSessions, entry);
-      if (reviewedArtifactCustodyFailures > 0) {
-        pushLimited(reviewedArtifactCustodyFailureSessions, entry);
-      }
 
       let sessionEvents: SessionEvent[] = [];
       try {
@@ -6398,11 +4215,6 @@ export class SessionStore {
         "Terminal outcome metadata exists without matching terminal events; treat as legacy/event-gap evidence and inspect before relying on event-only analytics.",
       );
     }
-    if (reviewedArtifactCustodyFailureSessions.length > 0) {
-      recommendations.push(
-        "Do not finalize or restore sessions with reviewed_artifact_custody_failures; inspect the persisted draft path, SHA-256 and byte count.",
-      );
-    }
 
     return {
       generated_at: now(),
@@ -6434,9 +4246,6 @@ export class SessionStore {
         ).length,
         event_read_error_sessions: eventReadErrorSessions.length,
         terminal_event_missing_sessions: terminalEventMissingCount,
-        reviewed_artifact_custody_failure_sessions: sessions.filter(
-          (session) => this.reviewedArtifactCustodyReportStatus(session).status === "FAILED",
-        ).length,
       },
       cost_breakdown: {
         total_cost_usd: totalCostUsd,
@@ -6460,7 +4269,6 @@ export class SessionStore {
         grok_provider_error_sessions: grokProviderErrorSessions,
         event_read_error_sessions: eventReadErrorSessions,
         terminal_event_missing_sessions: terminalEventMissingSessions,
-        reviewed_artifact_custody_failure_sessions: reviewedArtifactCustodyFailureSessions,
       },
       event_noise: {
         events_total: eventsTotal,
@@ -6596,10 +4404,9 @@ export class SessionStore {
 
   // v2.14.0 (path-A structural fix): resolve `meta.evidence_files[]`
   // entries into in-memory contents for inlining into peer prompts.
-  // Reads each attachment from disk. A single selected artifact may consume
-  // the complete UTF-16 budget; multiple artifacts use a 60% per-file cap to
-  // leave room for at least one other attachment plus headers. The method
-  // accumulates into a total cap and returns whatever fits. The active
+  // Reads each attachment from disk, applies a per-file cap (60% of the
+  // total cap to leave room for at least 1 other attachment + headers),
+  // accumulates into a total-cap, and returns whatever fits. The active
   // automatic caller snapshot is read first. Superseded caller submissions
   // remain audit-only by default. The orchestrator may read them locally to
   // replay a previously grounded requester verdict against the corrected
@@ -6621,8 +4428,10 @@ export class SessionStore {
   ): ResolvedEvidenceAttachment[] {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
     let meta: SessionMeta;
+    let sessionDir: string;
     try {
       meta = this.read(sessionId);
+      sessionDir = this.sessionDir(sessionId);
     } catch {
       return [];
     }
@@ -6676,42 +4485,45 @@ export class SessionStore {
         : [];
       files = [...activeFiles, ...historicalCallerFiles, ...nonCallerSubmissionFiles];
     }
-    const perFileCap =
-      files.length === 1
-        ? Math.floor(totalCapChars)
-        : Math.max(2_000, Math.floor(totalCapChars * 0.6));
+    const perFileCap = Math.max(2_000, Math.floor(totalCapChars * 0.6));
     const result: ResolvedEvidenceAttachment[] = [];
     let used = 0;
     for (const file of files) {
       const custody = currentEvidenceAttachment(file);
-      let authenticated: ReturnType<SessionStore["readContainedRegularFile"]>;
-      try {
-        authenticated = this.readContainedRegularFile(sessionId, file.path, "evidence_integrity");
-      } catch (error) {
+      const absolutePath = this.safeResolveContainedExistingPath(sessionDir, file.path);
+      if (!absolutePath) {
         if (custody) {
-          throw error;
+          throw new Error(`evidence_integrity_unavailable: ${file.path}`);
         }
         continue;
       }
-      const actualBytes = authenticated.bytes;
-      const actualSha256 = authenticated.sha256;
+      let persisted: Buffer;
+      try {
+        persisted = fs.readFileSync(absolutePath);
+      } catch (error) {
+        if (custody) {
+          throw new Error(`evidence_integrity_unavailable: ${file.path}`, { cause: error });
+        }
+        continue;
+      }
+      const actualBytes = persisted.byteLength;
+      const actualSha256 = crypto.createHash("sha256").update(persisted).digest("hex");
       if (custody && (actualBytes !== custody.bytes || actualSha256 !== custody.sha256)) {
         throw new Error(
           `evidence_integrity_mismatch: ${file.path} expected sha256=${custody.sha256} bytes=${custody.bytes}, got sha256=${actualSha256} bytes=${actualBytes}`,
         );
       }
-      const raw = authenticated.content;
+      const raw = persisted.toString("utf8");
       const remaining = totalCapChars - used;
       if (remaining <= 0) break;
       const cap = Math.min(perFileCap, remaining);
       const truncated = raw.length > cap;
-      const slice = truncated ? utf16PrefixAtSafeBoundary(raw, cap) : raw;
+      const slice = truncated ? raw.slice(0, cap) : raw;
       result.push({
         label: file.label,
         relative_path: file.path,
         content: slice,
         bytes: actualBytes,
-        total_utf16_units: raw.length,
         truncated,
         provenance_status: custody ? "verified" : "legacy_unverified",
         authority_status: custody
@@ -7113,7 +4925,7 @@ export class SessionStore {
         try {
           this.saveReport(
             session.session_id,
-            this.renderSessionReport(current, this.readEvents(session.session_id)),
+            sessionReportMarkdown(current, this.readEvents(session.session_id)),
           );
         } catch {
           /* report regeneration is best-effort; meta.json remains authoritative */
@@ -7297,7 +5109,7 @@ export class SessionStore {
           const reported = this.read(recovered.session_id);
           this.saveReport(
             reported.session_id,
-            this.renderSessionReport(reported, this.readEvents(reported.session_id)),
+            sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
           );
         }
       } catch {
@@ -7470,7 +5282,7 @@ export class SessionStore {
               const reported = this.read(recoveredConvergedSession.session_id);
               this.saveReport(
                 reported.session_id,
-                this.renderSessionReport(reported, this.readEvents(reported.session_id)),
+                sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
               );
             } catch {
               /* report regeneration is best-effort; meta.json remains authoritative */
@@ -7497,7 +5309,7 @@ export class SessionStore {
               const reported = this.read(recoveredInterruptedSession.session_id);
               this.saveReport(
                 reported.session_id,
-                this.renderSessionReport(reported, this.readEvents(reported.session_id)),
+                sessionReportMarkdown(reported, this.readEvents(reported.session_id)),
               );
             } catch {
               /* report regeneration is best-effort; meta.json remains authoritative */

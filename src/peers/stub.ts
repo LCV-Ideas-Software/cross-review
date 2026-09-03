@@ -319,9 +319,11 @@ export class StubAdapter extends BasePeerAdapter implements PeerAdapter {
   //   FORCE_JUDGE_PARSE_FAIL → invalid JSON returned (parser_warnings populated)
   //   default                → satisfied=false, confidence=verified
   override async judgeEvidenceAsk(
-    persistedPrompt: string,
+    ask: string,
+    draft: string,
     context: PeerCallContext,
   ): Promise<EvidenceAskJudgment> {
+    void ask;
     context.emit({
       type: "peer.judge.started",
       session_id: context.session_id,
@@ -335,7 +337,7 @@ export class StubAdapter extends BasePeerAdapter implements PeerAdapter {
       confidence: "verified" | "inferred" | "unknown";
       rationale: string;
     };
-    if (persistedPrompt.includes("FORCE_JUDGE_PARSE_FAIL")) {
+    if (draft.includes("FORCE_JUDGE_PARSE_FAIL")) {
       // Bypass the JSON parser by emitting plain prose.
       const generation: GenerationResult = {
         peer: this.id,
@@ -343,30 +345,26 @@ export class StubAdapter extends BasePeerAdapter implements PeerAdapter {
         model: this.model,
         text: "stub: this response intentionally lacks a JSON object",
         raw: { stub: true },
-        usage: {
-          input_tokens: persistedPrompt.length,
-          output_tokens: 60,
-          total_tokens: persistedPrompt.length + 60,
-        },
+        usage: { input_tokens: ask.length, output_tokens: 60, total_tokens: ask.length + 60 },
         cost: shouldForceRealStubCost() ? undefined : stubZeroCost(),
         latency_ms: Date.now() - started,
         attempts: 1,
       };
-      return this.parseJudgeResponse(generation, persistedPrompt.length);
+      return this.parseJudgeResponse(generation, draft.length);
     }
-    if (persistedPrompt.includes("FORCE_JUDGE_SATISFIED")) {
+    if (draft.includes("FORCE_JUDGE_SATISFIED")) {
       payload = {
         satisfied: true,
         confidence: "verified",
         rationale: "Stub judge: draft contains FORCE_JUDGE_SATISFIED marker.",
       };
-    } else if (persistedPrompt.includes("FORCE_JUDGE_INFERRED")) {
+    } else if (draft.includes("FORCE_JUDGE_INFERRED")) {
       payload = {
         satisfied: true,
         confidence: "inferred",
         rationale: "Stub judge: draft hints at satisfaction but evidence is indirect.",
       };
-    } else if (persistedPrompt.includes("FORCE_JUDGE_UNKNOWN")) {
+    } else if (draft.includes("FORCE_JUDGE_UNKNOWN")) {
       payload = {
         satisfied: false,
         confidence: "unknown",
@@ -387,14 +385,14 @@ export class StubAdapter extends BasePeerAdapter implements PeerAdapter {
       text,
       raw: { stub: true, payload },
       usage: {
-        input_tokens: persistedPrompt.length,
+        input_tokens: ask.length,
         output_tokens: text.length,
-        total_tokens: persistedPrompt.length + text.length,
+        total_tokens: ask.length + text.length,
       },
       cost: shouldForceRealStubCost() ? undefined : stubZeroCost(),
       latency_ms: Date.now() - started,
       attempts: 1,
     };
-    return this.parseJudgeResponse(generation, persistedPrompt.length);
+    return this.parseJudgeResponse(generation, draft.length);
   }
 }

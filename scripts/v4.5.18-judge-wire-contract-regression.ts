@@ -100,7 +100,8 @@ const regressions: Regression[] = [
       });
 
       await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         judgeContext("codex"),
       );
 
@@ -135,7 +136,8 @@ const regressions: Regression[] = [
       });
 
       await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         judgeContext("claude"),
       );
 
@@ -177,7 +179,8 @@ const regressions: Regression[] = [
       });
 
       await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         judgeContext("gemini"),
       );
 
@@ -212,7 +215,8 @@ const regressions: Regression[] = [
       });
 
       await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         judgeContext("deepseek"),
       );
 
@@ -247,7 +251,8 @@ const regressions: Regression[] = [
       });
 
       await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         judgeContext("grok"),
       );
 
@@ -287,7 +292,8 @@ const regressions: Regression[] = [
       });
 
       await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         judgeContext("perplexity"),
       );
 
@@ -341,7 +347,8 @@ const regressions: Regression[] = [
       });
 
       const result = await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         recoveryContext("codex"),
       );
 
@@ -399,7 +406,8 @@ const regressions: Regression[] = [
       });
 
       const result = await adapter.judgeEvidenceAsk(
-        adapter.buildEvidenceJudgePrompt("Provide raw evidence.", "Draft under judgment."),
+        "Provide raw evidence.",
+        "Draft under judgment.",
         recoveryContext("claude"),
       );
 

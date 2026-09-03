@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import {
@@ -20,18 +19,11 @@ const RUNTIME_FACTS = {
   model_pins: {},
 } as const;
 
-const ATTACHMENT_CONTENT = "src/index.ts:10: return verifiedValue;\nEXIT_CODE: 0";
 const ATTACHMENT = {
   relative_path: "evidence/review-output.txt",
-  sha256: sha256(ATTACHMENT_CONTENT),
-  content: ATTACHMENT_CONTENT,
-  bytes: Buffer.byteLength(ATTACHMENT_CONTENT, "utf8"),
-  truncated: false,
+  sha256: "7b7ff5b959d17e07f20d5b3a481a3f320624af987cd38a1d3df3d8635c8f8a31",
+  content: "src/index.ts:10: return verifiedValue;\nEXIT_CODE: 0",
 };
-
-function sha256(content: string): string {
-  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
-}
 
 function peerResult(status: ReviewStatus, evidenceSources: string[]): PeerResult {
   return {
@@ -45,7 +37,9 @@ function peerResult(status: ReviewStatus, evidenceSources: string[]): PeerResult
     structured: {
       status,
       summary:
-        status === "NOT_READY" ? "BLOCKER: src/index.ts:10" : "Additional evidence is required.",
+        status === "NOT_READY"
+          ? "A factual blocking defect exists at src/index.ts:10."
+          : "Additional evidence is required.",
       confidence: "verified",
       evidence_sources: evidenceSources,
       caller_requests:
@@ -180,7 +174,6 @@ const regressions: Regression[] = [
     name: "a factual NOT_READY must correlate its blocker with the cited source",
     run: () => {
       const source = [
-        "Location: db.ts:99",
         `Attachment: ${ATTACHMENT.relative_path}`,
         `sha256=${ATTACHMENT.sha256}`,
         'Artifact quote: "src/index.ts:10: return verifiedValue;"',
@@ -188,7 +181,7 @@ const regressions: Regression[] = [
       const blocker = peerResult("NOT_READY", [source]);
       blocker.structured = {
         status: "NOT_READY",
-        summary: "BLOCKER: db.ts:99",
+        summary: "A SQL injection defect blocks release at db.ts:99.",
         confidence: "verified",
         evidence_sources: [source],
         caller_requests: [],
@@ -211,11 +204,9 @@ const regressions: Regression[] = [
   {
     name: "aggregate caller-evidence failures identify the exact unsupported artifact claim",
     run: () => {
-      const expandedAttachmentContent = `${ATTACHMENT.content}\nTests 9 passed, 0 failed.`;
-      const expandedAttachmentSha = sha256(expandedAttachmentContent);
       const source = [
         `Attachment: ${ATTACHMENT.relative_path}`,
-        `sha256=${expandedAttachmentSha}`,
+        `sha256=${ATTACHMENT.sha256}`,
         'Artifact quote: "src/index.ts:10: return verifiedValue;"',
       ].join("\n");
       const grounding = groundReadyPeerEvidence(peerResult("READY", [source]), {
@@ -224,15 +215,7 @@ const regressions: Regression[] = [
         callerSubmittedAttachments: [
           {
             ...ATTACHMENT,
-            sha256: expandedAttachmentSha,
-            content: expandedAttachmentContent,
-            bytes: Buffer.byteLength(expandedAttachmentContent, "utf8"),
-          },
-        ],
-        evidenceAttachments: [
-          {
-            relative_path: ATTACHMENT.relative_path,
-            sha256: expandedAttachmentSha,
+            content: `${ATTACHMENT.content}\nTests 9 passed, 0 failed.`,
           },
         ],
         requirePeerSubmittedCorroboration: true,
@@ -320,19 +303,16 @@ const regressions: Regression[] = [
   {
     name: "literal JSON fragments remain groundable without artificial quote wrappers",
     run: () => {
-      const jsonAttachmentContent = [
-        '"org":{"activeCount":11,"allMainVerified":true,"openPR":0}',
-        '"process": {',
-        '  "package_version": "1.2.10",',
-        '  "bundle_matches_release_checkout": true',
-        "}",
-      ].join("\n");
       const jsonAttachment = {
         relative_path: "evidence/session-snapshot.txt",
-        sha256: sha256(jsonAttachmentContent),
-        content: jsonAttachmentContent,
-        bytes: Buffer.byteLength(jsonAttachmentContent, "utf8"),
-        truncated: false,
+        sha256: "e00bdc6d3f29e682e7e6586c09eba32ed57521d11d56404545939f95370e132e",
+        content: [
+          '"org":{"activeCount":11,"allMainVerified":true,"openPR":0}',
+          '"process": {',
+          '  "package_version": "1.2.10",',
+          '  "bundle_matches_release_checkout": true',
+          "}",
+        ].join("\n"),
       };
       const sources = [
         [

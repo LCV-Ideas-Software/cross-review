@@ -28,7 +28,7 @@ import {
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import { SWEEP_MIN_IDLE_MS } from "../src/core/session-store.js";
 import { parsePeerStatus } from "../src/core/status.js";
-import type { PeerFailure, PeerId, PeerResult, RuntimeEvent } from "../src/core/types.js";
+import type { PeerId, PeerResult, RuntimeEvent } from "../src/core/types.js";
 import { PEERS } from "../src/core/types.js";
 import type { JobStatus } from "../src/mcp/server.js";
 import {
@@ -562,30 +562,6 @@ assert.equal(
   yamlExcerpt,
   "YAML excerpts with `token: write` value (5 chars) stay below {6,} threshold",
 );
-// CROSREV-32: source-code evidence must not be changed into a fake syntax
-// error merely because a typed parameter is named `token`. The positive
-// assignment control above continues to protect real secret-shaped values.
-const typedTokenParameter =
-  "const exactLengthPatch = (targetLength: number, token: string): string => {";
-assert.equal(
-  redact(typedTokenParameter),
-  typedTokenParameter,
-  "TypeScript token type annotations remain verbatim in persisted review evidence",
-);
-const syntheticTokenAssignment = `token: ${["ABCD1234", "EFGH5678"].join("")} next`;
-assert.equal(
-  redact(syntheticTokenAssignment),
-  "token: [REDACTED] next",
-  "Secret-shaped token assignments remain redacted",
-);
-for (const [input, expected] of [
-  ["TOKEN=string)ABCD1234EFGH5678", "TOKEN=[REDACTED]"],
-  ["TOKEN=number]ABCD1234EFGH5678", "TOKEN=[REDACTED]"],
-  ["PASSWORD=boolean;ABCD1234EFGH5678", "PASSWORD=[REDACTED]"],
-  ["SECRET=unknown)super-secret-value", "SECRET=[REDACTED]"],
-] as const) {
-  assert.equal(redact(input), expected, `Secret-shaped assignment must remain redacted: ${input}`);
-}
 
 // v2.26.0 (2026-05-11): full pricing-model schema with
 // extended-tier (>threshold) + cache (read/write) + promo
@@ -2157,13 +2133,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const reportSession = await auditStore.init("cost split report fixture", "operator", []);
   const reportMeta = auditStore.read(reportSession.session_id);
   const nowIso = new Date().toISOString();
-  // This report fixture intentionally reproduces the pre-custody v4.2.5 disk
-  // shape. Current init() marks new sessions as custody-governed, so remove
-  // those opt-in markers before injecting the historical round below.
-  delete reportMeta.reviewed_artifact_custody_schema_version;
-  delete reportMeta.reviewed_artifact_custody_start_round;
-  delete reportMeta.provider_prompt_custody_schema_version;
-  delete reportMeta.provider_prompt_custody_start_round;
   reportMeta.rounds = [
     {
       round: 1,
@@ -2480,12 +2449,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   const reliabilityMeta = reliabilityStore.read(reliabilitySession.session_id);
   const ts = new Date().toISOString();
-  // This observational fixture reproduces a pre-custody v4.3.0 session. Keep
-  // it marker-less instead of mixing a legacy round into a governed record.
-  delete reliabilityMeta.reviewed_artifact_custody_schema_version;
-  delete reliabilityMeta.reviewed_artifact_custody_start_round;
-  delete reliabilityMeta.provider_prompt_custody_schema_version;
-  delete reliabilityMeta.provider_prompt_custody_start_round;
   reliabilityMeta.rounds = [
     {
       round: 1,
@@ -6567,83 +6530,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     grok: "clean" as const,
     perplexity: "clean" as const,
   };
-  const appendInvariantReviewedRound = async (
-    sessionId: string,
-    params: Parameters<typeof invariantStore.appendRound>[1],
-  ) => {
-    const round = invariantStore.read(sessionId).rounds.length + 1;
-    const draft = `Invariant fixture round ${round}.\n`;
-    const draftFile = invariantStore.saveDraft(sessionId, round, draft);
-    const reviewedArtifact = invariantStore.readReviewedArtifact(sessionId, round, draft);
-    const peers: PeerResult[] = [];
-    for (const peer of params.peers) {
-      const providerPrompt = await invariantStore.saveProviderPrompt(
-        sessionId,
-        round,
-        peer.peer,
-        peer.provider,
-        peer.model,
-        "peer_review",
-        "fixture-finalize-invariant-peer",
-        `Review the authenticated invariant fixture.\n\n${reviewedArtifact.content}`,
-      );
-      peers.push({
-        ...peer,
-        review_custody: {
-          dispatch_kind: "normal",
-          reviewed_artifact: {
-            relative_path: reviewedArtifact.relative_path,
-            sha256: reviewedArtifact.sha256,
-            visible_utf16_units: reviewedArtifact.content.length,
-            truncated: false,
-          },
-          visible_attachments: [],
-          provider_prompt: providerPrompt.custody,
-        },
-      });
-    }
-    const rejected: PeerFailure[] = [];
-    for (const failure of params.rejected) {
-      const providerPrompt = await invariantStore.saveProviderPrompt(
-        sessionId,
-        round,
-        failure.peer,
-        failure.provider ?? "fixture",
-        failure.model ?? "fixture",
-        "peer_review",
-        "fixture-finalize-invariant-failure",
-        `Review the authenticated invariant fixture.\n\n${reviewedArtifact.content}`,
-      );
-      rejected.push({ ...failure, provider_prompt: providerPrompt.custody });
-    }
-    return invariantStore.appendRound(sessionId, {
-      ...params,
-      review_kind: "reviewed_artifact",
-      draft_file: draftFile,
-      reviewed_artifact: reviewedArtifact,
-      prompt_file: invariantStore.savePrompt(sessionId, round, draft),
-      peers,
-      rejected,
-    });
-  };
-  const failedPerplexityRound: PeerFailure = {
-    peer: "perplexity",
-    provider: "stub",
-    model: "stub",
-    failure_class: "unparseable_after_recovery",
-    message: "fixture provider response remained unparseable after recovery",
-    retryable: false,
-    attempts: 1,
-    latency_ms: 0,
-  };
   // Scenario A: finalize("converged") on a session whose latest round
   // did NOT converge MUST be rejected with a structured error code.
   const sess = await invariantStore.init("invariant-fixture", "operator", []);
-  await appendInvariantReviewedRound(sess.session_id, {
+  await invariantStore.appendRound(sess.session_id, {
     caller_status: "READY",
     prompt_file: "round-1-prompt.md",
     peers: [],
-    rejected: [failedPerplexityRound],
+    rejected: [],
     convergence: {
       converged: false,
       reason: "peers failed or did not respond: perplexity:unparseable_after_recovery",
@@ -6690,10 +6584,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // Scenario B: finalize("converged") on a session whose latest round
   // DID converge succeeds and leaves a consistent meta.
   const sess2 = await invariantStore.init("invariant-fixture-2", "operator", []);
-  await appendInvariantReviewedRound(sess2.session_id, {
+  await invariantStore.appendRound(sess2.session_id, {
     caller_status: "READY",
     prompt_file: "round-1-prompt.md",
-    peers: [fakeReady("codex"), fakeReady("claude"), fakeReady("gemini")],
+    peers: [],
     rejected: [],
     convergence: {
       converged: true,
@@ -6725,32 +6619,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   let appendRejected: Error | null = null;
   try {
     await invariantStore.appendRound(sess2.session_id, {
-      review_kind: "pre_dispatch_block",
       caller_status: "READY",
       prompt_file: "round-2-prompt.md",
       peers: [],
-      rejected: [
-        {
-          peer: "codex",
-          provider: "runtime",
-          model: "pre-dispatch",
-          failure_class: "budget_preflight",
-          message: "fixture pre-dispatch block",
-          retryable: false,
-          attempts: 0,
-          latency_ms: 0,
-        },
-      ],
+      rejected: [],
       convergence: {
         converged: false,
         reason: "stale round on finalized session",
         ready_peers: [],
         not_ready_peers: [],
         needs_evidence_peers: [],
-        rejected_peers: ["codex"],
+        rejected_peers: [],
         skipped_peers: [],
-        decision_quality: { ...fullClean, codex: "failed" },
-        blocking_details: ["fixture pre-dispatch block"],
+        decision_quality: fullClean,
+        blocking_details: [],
       },
       convergence_scope: {
         petitioner: "operator",
@@ -9065,10 +8947,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v2.25.0 / circular_mode: SessionMeta.circular_state declares {rotation_order, consecutive_no_change_count, last_revision_round}",
   );
   assert.ok(
-    /async setCircularState\([\s\S]{0,300}return this\.withSessionLock\([\s\S]{0,500}meta\.circular_state\s*=\s*\{[\s\S]{0,100}\.\.\.state/.test(
-      storeSrc,
-    ),
-    "v2.25.0 / circular_mode: SessionStore.setCircularState() persists circular_state (including custody extensions) under the session lock",
+    /setCircularState\(/.test(storeSrc) && /meta\.circular_state\s*=\s*state/.test(storeSrc),
+    "v2.25.0 / circular_mode: await SessionStore.setCircularState() persists circular_state under session lock",
   );
 
   // (10) MCP tool schemas accept "circular".

@@ -10,29 +10,11 @@ for security fixes after publication.
 v04.06.05 preserves exact attachment custody across provider serialization and
 relator rounds. Only terminal JSON quote escaping is removed from GitHub URL
 assertion keys; substantive URL bytes, attachment path, SHA-256 and literal
-quote correlation remain mandatory. Embedded file custody is derived only
-from a unified diff accepted by the official Git parser, never from prose, a
-header-only patch, a deleted pre-image or an absent file. Exact post-image
-paths come from the NUL-delimited numstat records emitted by
-`git -c core.quotePath=false apply --numstat --summary -z --whitespace=nowarn -p1 -`
-and retain case, punctuation and spaces. Unsafe paths, malformed EOF markers, ambiguous
-basenames, bare carriage returns, ambiguous mode-shaped summary paths and an
-unavailable Git capability remain fail-closed. Traditional mode-less deletions
-are correlated to the NUL-delimited record and never receive post-image custody.
-Reporting syntax alone is insufficient: old/new hunk ranges must also be
-monotonic and non-overlapping with equal unchanged gaps, and repeated effective
-destinations are rejected so intermediate or mutually exclusive bytes never
-become citeable as the current image.
-
-Each governed review round authenticates the persisted redacted reviewed
-artifact and the exact visible attachment slices dispatched to every peer. Each
-provider attempt—including fallback, moderation-safe, format-recovery,
-decision-retry, generation, and evidence-judge calls—uses an authenticated
-readback of its separately persisted redacted prompt and records path, SHA-256,
-UTF-8 bytes, and UTF-16 units. Reports reopen the governed corpus before
-claiming `verified`. Restart recovery recreates a missing terminal mirror only
-from authenticated round bytes and never overwrites an existing filesystem
-object.
+quote correlation remain mandatory. Embedded file custody is derived only from
+a post-image path reported by the official Git parser, never from prose, a
+rejected patch, a deleted pre-image or an absent file. Git path identity remains
+byte-exact for case, punctuation and C-style quoting; an ambiguous basename or
+unavailable parser fails closed.
 
 v04.06.04 keeps those boundaries fail-closed while removing their residual
 ambiguity and scaling defect. Evidence records are analyzed once; generic

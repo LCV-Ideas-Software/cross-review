@@ -1,30 +1,3 @@
-const ENV_STYLE_ASSIGNMENT_PATTERN =
-  /\b((?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*[:=]\s*["']?)([^\s"',}\\]{6,})/gi;
-
-const HIGH_CONFIDENCE_TYPESCRIPT_FUNCTION_TAIL =
-  /^(?:string|number|boolean|unknown|object|symbol|bigint|never|void)\s*\)\s*(?::\s*(?:string|number|boolean|unknown|object|symbol|bigint|never|void)\s*)?(?:=>|\{)/;
-
-function isHighConfidenceTypeScriptFunctionParameter(
-  keyPrefix: string,
-  candidateValue: string,
-  match: string,
-  offset: number,
-  input: string,
-): boolean {
-  // Redaction is fail-closed for ambiguous `token: value` prose/YAML. Preserve
-  // only an unquoted colon annotation that is structurally inside a function
-  // parameter list and immediately closes into a typed return/arrow or body.
-  // This is deliberately narrower than the TypeScript type grammar: broad
-  // primitive-prefix exemptions let values such as TOKEN=string)SECRET bypass
-  // redaction and therefore cannot be used here.
-  if (keyPrefix.includes("=") || /["']/.test(keyPrefix)) return false;
-  const lineStart = input.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
-  const linePrefix = input.slice(lineStart, offset);
-  if (!/(?:^|[,(])\s*$/.test(linePrefix)) return false;
-  const tail = `${candidateValue}${input.slice(offset + match.length)}`;
-  return HIGH_CONFIDENCE_TYPESCRIPT_FUNCTION_TAIL.test(tail);
-}
-
 const SECRET_PATTERNS = [
   /sk-[A-Za-z0-9_-]{20,}/g,
   /sk-ant-[A-Za-z0-9_-]{20,}/g,
@@ -50,12 +23,7 @@ const SECRET_PATTERNS = [
   /xai-[A-Za-z0-9_-]{20,}/g,
   /AKIA[A-Z0-9]{16}/g,
   /Bearer\s+[A-Za-z0-9._-]{20,}/gi,
-  // Anchor the candidate at a base64url-token boundary. Without the left
-  // boundary, a long non-JWT base64url string made the unbounded first
-  // segment restart at every offset and backtrack quadratically while
-  // looking for a dot. The boundary preserves complete JWT matching while
-  // preventing partial matches that start inside a longer token segment.
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/g,
+  /[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,
   // v2.4.0 / audit closure: env-style assignments. Catches `PASSWORD=value`
   // / `API_KEY="value"` / `SECRET: value` / `Authorization: token` shapes
   // that providers, smoke fixtures or stack traces sometimes echo back.
@@ -71,7 +39,7 @@ const SECRET_PATTERNS = [
   // when the scorecard hotfix peer responses quoted `id-token: write` in
   // backtick-fenced YAML excerpts. Excluding `\` keeps the regex from
   // crossing JSON-escape boundaries.
-  ENV_STYLE_ASSIGNMENT_PATTERN,
+  /\b((?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*[:=]\s*["']?)([^\s"',}\\]{6,})/gi,
 ];
 
 const PRIVATE_KEY_LABELS = [
@@ -84,36 +52,31 @@ const PRIVATE_KEY_LABELS = [
 
 const PRIVATE_KEY_BEGIN_MARKERS = PRIVATE_KEY_LABELS.map((label) => `-----BEGIN ${label}-----`);
 const PRIVATE_KEY_END_MARKERS = PRIVATE_KEY_LABELS.map((label) => `-----END ${label}-----`);
-const PRIVATE_KEY_MARKER_PREFIX = "-----";
-const PRIVATE_KEY_MARKERS = [
-  ...PRIVATE_KEY_BEGIN_MARKERS.map((marker) => ({ marker, side: "BEGIN" as const })),
-  ...PRIVATE_KEY_END_MARKERS.map((marker) => ({ marker, side: "END" as const })),
-];
+
+function findNextMarker(
+  value: string,
+  markers: readonly string[],
+  fromIndex: number,
+): { index: number; marker: string } | undefined {
+  let found: { index: number; marker: string } | undefined;
+  for (const marker of markers) {
+    const index = value.indexOf(marker, fromIndex);
+    if (index !== -1 && (!found || index < found.index)) {
+      found = { index, marker };
+    }
+  }
+  return found;
+}
 
 function findNextPrivateKeyMarker(
   value: string,
   fromIndex: number,
-  requiredSide?: "BEGIN" | "END",
 ): { index: number; marker: string; side: "BEGIN" | "END" } | undefined {
-  // Search the shared fixed prefix once, then classify each candidate against
-  // the bounded marker table. The previous implementation ran one `indexOf`
-  // over the complete remaining suffix for every label and for every nested
-  // BEGIN marker. Repeated unterminated markers therefore rescanned the same
-  // tail quadratically. Advancing monotonically by one candidate position
-  // keeps the scan linear while preserving overlapping-hyphen correctness.
-  let candidate = value.indexOf(PRIVATE_KEY_MARKER_PREFIX, fromIndex);
-  while (candidate !== -1) {
-    for (const entry of PRIVATE_KEY_MARKERS) {
-      if (
-        (requiredSide === undefined || entry.side === requiredSide) &&
-        value.startsWith(entry.marker, candidate)
-      ) {
-        return { index: candidate, marker: entry.marker, side: entry.side };
-      }
-    }
-    candidate = value.indexOf(PRIVATE_KEY_MARKER_PREFIX, candidate + 1);
-  }
-  return undefined;
+  const begin = findNextMarker(value, PRIVATE_KEY_BEGIN_MARKERS, fromIndex);
+  const end = findNextMarker(value, PRIVATE_KEY_END_MARKERS, fromIndex);
+  if (!begin) return end ? { ...end, side: "END" } : undefined;
+  if (!end) return { ...begin, side: "BEGIN" };
+  return begin.index <= end.index ? { ...begin, side: "BEGIN" } : { ...end, side: "END" };
 }
 
 function redactPrivateKeyBlocks(value: string): string {
@@ -121,7 +84,7 @@ function redactPrivateKeyBlocks(value: string): string {
   let parts: string[] | undefined;
 
   while (cursor < value.length) {
-    const begin = findNextPrivateKeyMarker(value, cursor, "BEGIN");
+    const begin = findNextMarker(value, PRIVATE_KEY_BEGIN_MARKERS, cursor);
     if (!begin) break;
 
     let depth = 1;
@@ -183,27 +146,6 @@ export function redact(value: string): string {
     // including JWT-shaped tokens, replace the whole match because there
     // is no key half to preserve.
     output = output.replace(re, (...args) => {
-      if (re === ENV_STYLE_ASSIGNMENT_PATTERN) {
-        const [match, keyPrefix, candidateValue, offset, input] = args as [
-          string,
-          string,
-          string,
-          number,
-          string,
-        ];
-        if (
-          isHighConfidenceTypeScriptFunctionParameter(
-            keyPrefix,
-            candidateValue,
-            match,
-            offset,
-            input,
-          )
-        ) {
-          return match;
-        }
-        return `${keyPrefix}[REDACTED]`;
-      }
       const groups = args.slice(1, -2).filter((g) => typeof g === "string");
       if (groups.length >= 2) {
         return `${groups[0]}[REDACTED]`;

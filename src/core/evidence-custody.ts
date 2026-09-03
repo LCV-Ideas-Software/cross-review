@@ -23,38 +23,8 @@ const GIT_TIMEOUT_MS = 5_000;
 const INDEX_CACHE_LIMIT = 64;
 const INDEX_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 
-const _EVIDENCE_CUSTODY_VALIDATIONS = [
-  "validated",
-  "not_patch",
-  "git_unavailable",
-  "invalid_patch",
-  "input_too_large",
-] as const;
-
-export type EvidenceCustodyValidation = (typeof _EVIDENCE_CUSTODY_VALIDATIONS)[number];
-
-export interface EvidencePostImageHunk {
-  path: string;
-  startLine: number;
-  lines: readonly string[];
-}
-
 export interface EvidenceCustodyIndex {
-  sourceSha256: string;
-  validation: EvidenceCustodyValidation;
   exactGitPaths: readonly string[];
-  postImageHunks: readonly string[];
-  postImageFiles: readonly EvidencePostImageHunk[];
-  removedHunks: readonly string[];
-  removedHunksWithMarkers: readonly string[];
-}
-
-export interface EvidenceCustodyRuntimeStatus {
-  available: boolean;
-  version: string | null;
-  provenance: "platform_standard_absolute_path" | null;
-  failure_reason: "git_unavailable" | "version_probe_failed" | null;
-  operation: "git -c core.quotePath=false apply --numstat --summary -z --whitespace=nowarn -p1 -";
 }
 
 interface EvidenceCustodyOptions {
@@ -78,18 +48,9 @@ interface ParsedHunks {
   added: number;
   removed: number;
   sawHunk: boolean;
-  postImageLineCount: number;
-  postImageHunks: string[];
-  postImageLineHunks: Array<{ startLine: number; lines: string[] }>;
-  removedHunks: string[];
-  removedHunksWithMarkers: string[];
 }
 
 interface ParsedEvidenceHunks {
-  postImageHunks: string[];
-  postImageFiles: EvidencePostImageHunk[];
-  removedHunks: string[];
-  removedHunksWithMarkers: string[];
   materializedPaths: Set<string>;
 }
 
@@ -101,20 +62,10 @@ interface CachedEvidenceCustodyIndex {
 const indexCache = new Map<string, CachedEvidenceCustodyIndex>();
 let indexCacheBytes = 0;
 let defaultGitExecutable: string | null | undefined;
-let evidenceCustodyRuntimeStatus: EvidenceCustodyRuntimeStatus | undefined;
 
-function emptyIndex(
-  sourceSha256: string,
-  validation: Exclude<EvidenceCustodyValidation, "validated">,
-): EvidenceCustodyIndex {
+function emptyIndex(): EvidenceCustodyIndex {
   return Object.freeze({
-    sourceSha256,
-    validation,
     exactGitPaths: Object.freeze([]),
-    postImageHunks: Object.freeze([]),
-    postImageFiles: Object.freeze([]),
-    removedHunks: Object.freeze([]),
-    removedHunksWithMarkers: Object.freeze([]),
   });
 }
 
@@ -198,44 +149,6 @@ function gitEnvironment(): NodeJS.ProcessEnv {
     if (value) environment[name] = value;
   }
   return environment;
-}
-
-export function getEvidenceCustodyRuntimeStatus(): EvidenceCustodyRuntimeStatus {
-  if (evidenceCustodyRuntimeStatus) return evidenceCustodyRuntimeStatus;
-  const gitExecutable = resolveDefaultGitExecutable();
-  if (!gitExecutable) {
-    evidenceCustodyRuntimeStatus = Object.freeze({
-      available: false,
-      version: null,
-      provenance: null,
-      failure_reason: "git_unavailable",
-      operation:
-        "git -c core.quotePath=false apply --numstat --summary -z --whitespace=nowarn -p1 -",
-    });
-    return evidenceCustodyRuntimeStatus;
-  }
-  const probe = spawnSync(gitExecutable, ["--version"], {
-    cwd: os.tmpdir(),
-    encoding: "utf8",
-    env: gitEnvironment(),
-    input: "",
-    maxBuffer: 4_096,
-    shell: false,
-    timeout: GIT_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  const version =
-    !probe.error && probe.status === 0
-      ? /^git version ([^\r\n]+)$/i.exec(probe.stdout.trim())?.[1]
-      : undefined;
-  evidenceCustodyRuntimeStatus = Object.freeze({
-    available: Boolean(version),
-    version: version ?? null,
-    provenance: version ? "platform_standard_absolute_path" : null,
-    failure_reason: version ? null : "version_probe_failed",
-    operation: "git -c core.quotePath=false apply --numstat --summary -z --whitespace=nowarn -p1 -",
-  });
-  return evidenceCustodyRuntimeStatus;
 }
 
 function decodeUtf8(buffer: Buffer): string | undefined {
@@ -340,63 +253,18 @@ function parseGitOutput(output: Buffer): ParsedGitOutput | undefined {
   return { records, deletedPaths, createdPaths };
 }
 
-function finishHunk(
-  postImage: string[] | null,
-  postImageStartLine: number | null,
-  removed: string[] | null,
-  removedWithMarkers: string[] | null,
-  postImageHunks: string[],
-  postImageLineHunks: Array<{ startLine: number; lines: string[] }>,
-  removedHunks: string[],
-  removedHunksWithMarkers: string[],
-): void {
-  if (postImage?.length) {
-    postImageHunks.push(postImage.join("\n"));
-    if (postImageStartLine !== null) {
-      postImageLineHunks.push({ startLine: postImageStartLine, lines: [...postImage] });
-    }
-  }
-  if (removed?.length) removedHunks.push(removed.join("\n"));
-  if (removedWithMarkers?.length) {
-    removedHunksWithMarkers.push(removedWithMarkers.join("\n"));
-  }
-}
-
 function parseValidatedSectionHunks(section: string): ParsedHunks | undefined {
-  const postImageHunks: string[] = [];
-  const postImageLineHunks: Array<{ startLine: number; lines: string[] }> = [];
-  const removedHunks: string[] = [];
-  const removedHunksWithMarkers: string[] = [];
-  let postImage: string[] | null = null;
-  let postImageStartLine: number | null = null;
-  let removedImage: string[] | null = null;
-  let removedImageWithMarkers: string[] | null = null;
   let oldRemaining: number | undefined;
   let newRemaining: number | undefined;
   let added = 0;
   let removed = 0;
   let sawHunk = false;
-  let postImageLineCount = 0;
   let previousOldStart: number | undefined;
   let previousOldEnd: number | undefined;
   let previousNewStart: number | undefined;
   let previousNewEnd: number | undefined;
 
   const endCurrentHunk = (): void => {
-    finishHunk(
-      postImage,
-      postImageStartLine,
-      removedImage,
-      removedImageWithMarkers,
-      postImageHunks,
-      postImageLineHunks,
-      removedHunks,
-      removedHunksWithMarkers,
-    );
-    postImage = null;
-    postImageStartLine = null;
-    removedImage = null;
-    removedImageWithMarkers = null;
     oldRemaining = undefined;
     newRemaining = undefined;
   };
@@ -411,25 +279,16 @@ function parseValidatedSectionHunks(section: string): ParsedHunks | undefined {
         if (newRemaining <= 0) return undefined;
         newRemaining -= 1;
         added += 1;
-        postImageLineCount += 1;
-        postImage?.push(line.slice(1));
         continue;
       } else if (line.startsWith("-")) {
         if (oldRemaining <= 0) return undefined;
         oldRemaining -= 1;
         removed += 1;
-        removedImage?.push(line.slice(1));
-        removedImageWithMarkers?.push(line);
         continue;
       } else if (line.startsWith(" ")) {
         if (oldRemaining <= 0 || newRemaining <= 0) return undefined;
         oldRemaining -= 1;
         newRemaining -= 1;
-        postImageLineCount += 1;
-        const content = line.slice(1);
-        postImage?.push(content);
-        removedImage?.push(content);
-        removedImageWithMarkers?.push(content);
         continue;
       } else if (line === "\\ No newline at end of file") {
         // The official Git validation already proves adjacency and uniqueness.
@@ -484,10 +343,6 @@ function parseValidatedSectionHunks(section: string): ParsedHunks | undefined {
     previousOldEnd = oldRangeEnd;
     previousNewStart = newRangeStart;
     previousNewEnd = newRangeEnd;
-    postImage = [];
-    postImageStartLine = newStart;
-    removedImage = [];
-    removedImageWithMarkers = [];
     sawHunk = true;
     oldRemaining = oldCount;
     newRemaining = newCount;
@@ -500,11 +355,6 @@ function parseValidatedSectionHunks(section: string): ParsedHunks | undefined {
     added,
     removed,
     sawHunk,
-    postImageLineCount,
-    postImageHunks,
-    postImageLineHunks,
-    removedHunks,
-    removedHunksWithMarkers,
   };
 }
 
@@ -537,10 +387,6 @@ function parseValidatedHunks(
   const recordPaths = records.map((record) => record.path);
   if (new Set(recordPaths).size !== recordPaths.length) return undefined;
   const sectionStarts = starts.length > 0 ? starts : [0];
-  const postImageHunks: string[] = [];
-  const postImageFiles: EvidencePostImageHunk[] = [];
-  const removedHunks: string[] = [];
-  const removedHunksWithMarkers: string[] = [];
   const materializedPaths = new Set<string>();
   for (let index = 0; index < sectionStarts.length; index += 1) {
     const start = sectionStarts[index] ?? 0;
@@ -560,36 +406,12 @@ function parseValidatedHunks(
     ) {
       materializedPaths.add(record.path);
     }
-    postImageHunks.push(...parsed.postImageHunks);
-    postImageFiles.push(
-      ...parsed.postImageLineHunks.map((hunk) => ({
-        path: record.path,
-        startLine: hunk.startLine,
-        lines: hunk.lines,
-      })),
-    );
-    removedHunks.push(...parsed.removedHunks);
-    removedHunksWithMarkers.push(...parsed.removedHunksWithMarkers);
   }
-  return {
-    postImageHunks,
-    postImageFiles,
-    removedHunks,
-    removedHunksWithMarkers,
-    materializedPaths,
-  };
+  return { materializedPaths };
 }
 
 function evidenceCustodyIndexWeight(cacheKey: string, index: EvidenceCustodyIndex): number {
-  const strings = [
-    cacheKey,
-    index.sourceSha256,
-    ...index.exactGitPaths,
-    ...index.postImageHunks,
-    ...index.postImageFiles.flatMap((hunk) => [hunk.path, String(hunk.startLine), ...hunk.lines]),
-    ...index.removedHunks,
-    ...index.removedHunksWithMarkers,
-  ];
+  const strings = [cacheKey, ...index.exactGitPaths];
   return 256 + strings.reduce((weight, value) => weight + value.length * 2 + 64, 0);
 }
 
@@ -617,26 +439,24 @@ export function buildEvidenceCustodyIndex(
   const input = Buffer.from(content, "utf8");
   const sourceSha256 = crypto.createHash("sha256").update(input).digest("hex");
   if (input.toString("utf8") !== content) {
-    return emptyIndex(sourceSha256, "invalid_patch");
+    return emptyIndex();
   }
   if (!looksLikePatch(content)) {
-    return emptyIndex(sourceSha256, "not_patch");
+    return emptyIndex();
   }
   if (content.length > MAX_PATCH_CHARS || input.length > MAX_PATCH_BYTES) {
-    return emptyIndex(sourceSha256, "input_too_large");
+    return emptyIndex();
   }
   // CRLF and LF are accepted line terminators. Git treats a bare CR inside a
   // hunk line as content, so normalizing it would truncate authenticated bytes.
   // Reject that ambiguous patch form rather than certify a divergent post-image.
   if (/\r(?!\n)/.test(content)) {
-    return emptyIndex(sourceSha256, "invalid_patch");
+    return emptyIndex();
   }
 
   const gitExecutable =
     options.gitExecutable === undefined ? resolveDefaultGitExecutable() : options.gitExecutable;
-  const runtimeStatus =
-    options.gitExecutable === undefined ? getEvidenceCustodyRuntimeStatus() : undefined;
-  const cacheKey = `${gitExecutable ?? "unavailable"}:${runtimeStatus?.version ?? "test-seam"}:${sourceSha256}`;
+  const cacheKey = `${gitExecutable ?? "unavailable"}:${sourceSha256}`;
   if (options.gitExecutable === undefined) {
     const cached = indexCache.get(cacheKey);
     if (cached) {
@@ -645,9 +465,7 @@ export function buildEvidenceCustodyIndex(
       return cached.index;
     }
   }
-  if (!gitExecutable || (runtimeStatus !== undefined && !runtimeStatus.available)) {
-    return emptyIndex(sourceSha256, "git_unavailable");
-  }
+  if (!gitExecutable) return emptyIndex();
 
   const result = spawnSync(
     gitExecutable,
@@ -685,7 +503,7 @@ export function buildEvidenceCustodyIndex(
     ? parseValidatedHunks(content, parsedOutput.records, parsedOutput.createdPaths)
     : undefined;
   if (!parsedOutput || !parsedHunks) {
-    const invalidIndex = emptyIndex(sourceSha256, "invalid_patch");
+    const invalidIndex = emptyIndex();
     const deterministicFailure = !result.error && typeof result.status === "number";
     return options.gitExecutable === undefined && deterministicFailure
       ? rememberIndex(cacheKey, invalidIndex)
@@ -702,21 +520,7 @@ export function buildEvidenceCustodyIndex(
     )
     .map((record) => record.path);
   const index: EvidenceCustodyIndex = Object.freeze({
-    sourceSha256,
-    validation: "validated",
     exactGitPaths: Object.freeze([...new Set(exactGitPaths)]),
-    postImageHunks: Object.freeze(parsedHunks.postImageHunks),
-    postImageFiles: Object.freeze(
-      parsedHunks.postImageFiles.map((hunk) =>
-        Object.freeze({
-          path: hunk.path,
-          startLine: hunk.startLine,
-          lines: Object.freeze([...hunk.lines]),
-        }),
-      ),
-    ),
-    removedHunks: Object.freeze(parsedHunks.removedHunks),
-    removedHunksWithMarkers: Object.freeze(parsedHunks.removedHunksWithMarkers),
   });
   return options.gitExecutable === undefined ? rememberIndex(cacheKey, index) : index;
 }

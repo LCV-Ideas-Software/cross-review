@@ -779,18 +779,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
             reviewer_peers: ["claude"],
           },
         });
-        await store.preparePendingProviderPromptCall(
-          session.session_id,
-          {
-            peer: "claude",
-            provider: "anthropic",
-            model: "claude-fable-5",
-            label: "evidence_judge/single",
-            round: 1,
-            call_kind: "evidence_judge",
-          },
-          "Fixture live evidence-judge prompt",
-        );
+        await store.reservePendingProviderCall(session.session_id, {
+          peer: "claude",
+          provider: "anthropic",
+          model: "claude-fable-5",
+          label: "evidence_judge/single",
+          round: 1,
+          call_kind: "evidence_judge",
+        });
 
         const result = await store.clearStaleInFlight();
         const meta = store.read(session.session_id);
@@ -1162,20 +1158,9 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           job_id: jobId,
           owner_pid: process.pid,
         });
-        const fixtureDraft = "Authenticated cancellation/finalization race fixture.\n";
-        const promptFile = store.savePrompt(
-          session.session_id,
-          1,
-          "Review the authenticated cancellation/finalization race fixture.",
-        );
-        const draftFile = store.saveDraft(session.session_id, 1, fixtureDraft);
-        const reviewedArtifact = store.readReviewedArtifact(session.session_id, 1, fixtureDraft);
         await store.appendRound(session.session_id, {
           caller_status: "READY",
-          review_kind: "reviewed_artifact",
-          draft_file: draftFile,
-          reviewed_artifact: reviewedArtifact,
-          prompt_file: promptFile,
+          prompt_file: "agent-runs/cancel-finalize-prompt.md",
           peers: [],
           rejected: [],
           convergence: {

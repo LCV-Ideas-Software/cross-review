@@ -252,58 +252,6 @@ export interface PeerStructuredStatus {
   follow_ups?: string[] | undefined;
 }
 
-type InitialPeerReviewDispatchKind = "normal" | "fallback_normal" | "moderation_safe";
-type RecoveryPeerReviewDispatchKind = "format_recovery" | "decision_retry";
-
-export type PeerReviewDispatchKind = InitialPeerReviewDispatchKind | RecoveryPeerReviewDispatchKind;
-
-export interface PeerReviewArtifactDispatchCustody {
-  relative_path: string;
-  sha256: string;
-  visible_utf16_units: number;
-  truncated: boolean;
-}
-
-export interface PeerReviewAttachmentDispatchCustody {
-  relative_path: string;
-  sha256: string;
-  visible_utf16_units: number;
-  truncated: boolean;
-}
-
-/** Descriptor-authenticated custody for the exact redacted prompt bytes sent
- * to one provider attempt. The persisted copy contains no unredacted secret
- * material and can be reconstructed byte-for-byte from relative_path. */
-export interface ProviderPromptCustody {
-  relative_path: string;
-  sha256: string;
-  bytes: number;
-  utf16_units: number;
-  reconstructible: true;
-  redacted: true;
-}
-
-export interface ProviderPromptArtifact extends ProviderPromptCustody {
-  ts: string;
-  round: number;
-  peer: PeerId;
-  provider: string;
-  model: string;
-  call_kind: "peer_review" | "generation" | "evidence_judge";
-  label: string;
-}
-
-/**
- * Durable metadata for the exact corpus that produced a peer's final decision.
- * It intentionally records no hidden content and grants no evidence authority.
- */
-export interface PeerReviewDispatchCustody {
-  dispatch_kind: PeerReviewDispatchKind;
-  reviewed_artifact: PeerReviewArtifactDispatchCustody;
-  visible_attachments: PeerReviewAttachmentDispatchCustody[];
-  provider_prompt: ProviderPromptCustody;
-}
-
 export interface PeerResult {
   peer: PeerId;
   provider: string;
@@ -333,7 +281,6 @@ export interface PeerResult {
   parser_warnings: string[];
   decision_quality: DecisionQuality;
   fallback?: FallbackEvent | undefined;
-  review_custody?: PeerReviewDispatchCustody | undefined;
 }
 
 export interface GenerationResult {
@@ -360,7 +307,6 @@ export interface GenerationResult {
   // The relator-revision path in CrossReviewOrchestrator inspects this
   // field before promoting `generation.text` to the next-round draft.
   parser_warnings?: string[] | undefined;
-  provider_prompt?: ProviderPromptCustody | undefined;
 }
 
 export interface FallbackEvent {
@@ -460,7 +406,6 @@ export interface PeerFailure {
         docs_url?: string | undefined;
       }
     | undefined;
-  provider_prompt?: ProviderPromptCustody | undefined;
 }
 
 /**
@@ -504,9 +449,6 @@ export interface ProviderCallReservation {
 export interface PendingProviderCallReservation extends ProviderCallReservation {
   round: number;
   call_kind: "generation" | "evidence_judge";
-  /** Exact authenticated prompt selected for this durable dispatch reservation.
-   * Legacy reservations created before provider-prompt custody may omit it. */
-  provider_prompt?: ProviderPromptCustody | undefined;
   /** Process that owns the in-flight call; prevents another live host from
    * conservatively reconciling a provider call that is still running. */
   owner_pid: number;
@@ -639,8 +581,6 @@ export interface ResolvedEvidenceAttachment {
   relative_path: string;
   content: string;
   bytes: number;
-  /** Full persisted text length measured in JavaScript UTF-16 code units. */
-  total_utf16_units?: number | undefined;
   truncated: boolean;
   provenance_status: "verified" | "legacy_unverified";
   // Integrity and authority are deliberately separate. `verified` above
@@ -803,9 +743,6 @@ export interface GenerationArtifact {
   label: string;
   peer: PeerId;
   path: string;
-  /** Descriptor authentication for artifacts written by current runtimes. */
-  sha256?: string | undefined;
-  bytes?: number | undefined;
   usage?: TokenUsage | undefined;
   cost?: CostEstimate | undefined;
   latency_ms?: number | undefined;
@@ -836,16 +773,6 @@ export interface BackgroundGenerationInFlight {
   round: number;
   started_at: string;
   owner_pid: number;
-  /** A settled circular generation retained until round/state promotion. */
-  settled_result_path?: string | undefined;
-  settled_result_sha256?: string | undefined;
-  settled_result_bytes?: number | undefined;
-  settled_result_usage?: TokenUsage | undefined;
-  settled_result_cost?: CostEstimate | undefined;
-  settled_result_latency_ms?: number | undefined;
-  settled_result_attempts?: number | undefined;
-  settled_result_unpriced_attempts?: number | undefined;
-  settled_result_indeterminate_spend_attempts?: number | undefined;
 }
 
 export interface SessionControl {
@@ -900,17 +827,18 @@ export interface PeerAdapter {
   model: string;
   call(prompt: string, context: PeerCallContext): Promise<PeerResult>;
   generate(prompt: string, context: PeerCallContext): Promise<GenerationResult>;
-  // Build the complete provider-ready judge prompt before custody is
-  // persisted. The orchestrator dispatches only the authenticated readback.
-  buildEvidenceJudgePrompt(ask: string, draft: string): string;
-  // v2.9.0: judge an open evidence-checklist ask from the exact persisted
-  // prompt (no session history) — by design.
+  // v2.9.0: judge an open evidence-checklist ask against a draft. The
+  // judge sees only `ask + draft` (no session history) — by design.
   // Returns a structured judgment with confidence so the orchestrator
   // can promote items to "addressed" only when the judge is verified.
   // Default implementation lives on BasePeerAdapter and routes through
   // `generate()`; provider adapters do NOT need to override unless they
   // want a specialized structured-output path.
-  judgeEvidenceAsk(persistedPrompt: string, context: PeerCallContext): Promise<EvidenceAskJudgment>;
+  judgeEvidenceAsk(
+    ask: string,
+    draft: string,
+    context: PeerCallContext,
+  ): Promise<EvidenceAskJudgment>;
   probe(): Promise<PeerProbeResult>;
 }
 
@@ -1082,18 +1010,6 @@ export interface SessionMeta {
   version: string;
   /** v2 records every known billable path and marks unknown attempts explicitly. */
   accounting_schema_version?: 2 | undefined;
-  /** New rounds with a draft require authenticated reviewed-artifact custody. */
-  reviewed_artifact_custody_schema_version?: 1 | undefined;
-  /** First round governed by reviewed_artifact_custody_schema_version. */
-  reviewed_artifact_custody_start_round?: number | undefined;
-  /** New provider calls persist exact redacted outgoing prompt custody. */
-  provider_prompt_custody_schema_version?: 1 | undefined;
-  /** First round governed by provider_prompt_custody_schema_version. */
-  provider_prompt_custody_start_round?: number | undefined;
-  /** Marks sessions whose execution mode is a write-once durable contract. */
-  session_mode_schema_version?: 1 | undefined;
-  /** Execution protocol selected when the session was created. */
-  mode?: SessionMode | undefined;
   /** Redacted, credential-free settings actually used when the session began. */
   effective_config_snapshot?: Record<string, unknown> | undefined;
   /** SHA-256 of the canonical JSON form of effective_config_snapshot. */
@@ -1129,8 +1045,6 @@ export interface SessionMeta {
   // evidence checklist item (auto + operator). Newest entries appended.
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;
   generation_files?: GenerationArtifact[] | undefined;
-  /** Every exact redacted prompt prepared and authenticated before dispatch. */
-  provider_prompt_files?: ProviderPromptArtifact[] | undefined;
   operator_escalations?: OperatorEscalation[] | undefined;
   preflight_checks?: PreflightCheckRecord[] | undefined;
   control?: SessionControl | undefined;
@@ -1171,22 +1085,6 @@ export interface SessionMeta {
     rotation_order: PeerId[];
     consecutive_no_change_count: number;
     last_revision_round: number | null;
-    /** Rotation index that owns the next uncommitted turn. */
-    next_cursor?: number | undefined;
-    /**
-     * Authenticated canonical round-zero provider result. Its presence means
-     * initial generation was accepted and must never be dispatched again.
-     */
-    initial_draft_custody?:
-      | {
-          relative_path: string;
-          sha256: string;
-          bytes: number;
-          peer: PeerId;
-          provider: string;
-          model: string;
-        }
-      | undefined;
   };
   // v2.22.0 (B.P3): per-round cost telemetry + budget ceiling snapshot.
   // `cost_ceiling_usd` captures `config.budget.max_session_cost_usd` at
@@ -1222,38 +1120,12 @@ export interface SessionMeta {
   effective_max_rounds?: number | null | undefined;
 }
 
-/**
- * Integrity metadata for the persisted redacted draft reviewed in one round.
- * Optional only so pre-custody session files remain readable.
- */
-export interface ReviewedArtifactCustody {
-  artifact_kind: "reviewed_artifact";
-  relative_path: string;
-  sha256: string;
-  bytes: number;
-}
-
-/** Integrity metadata for the persisted provider result accepted by one
- * circular round. Usage and cost remain owned exactly once by round.peers. */
-export interface ProviderResultCustody {
-  artifact_kind: "provider_result";
-  relative_path: string;
-  sha256: string;
-  bytes: number;
-}
-
-export type ReviewRoundKind = "reviewed_artifact" | "circular_revision" | "pre_dispatch_block";
-
 export interface ReviewRound {
   round: number;
-  /** Mandatory for rounds governed by reviewed-artifact custody schema v1. */
-  review_kind?: ReviewRoundKind | undefined;
   started_at: string;
   completed_at?: string | undefined;
   caller_status: ReviewStatus;
   draft_file?: string | undefined;
-  reviewed_artifact?: ReviewedArtifactCustody | undefined;
-  provider_result?: ProviderResultCustody | undefined;
   prompt_file: string;
   peers: PeerResult[];
   rejected: PeerFailure[];
@@ -1347,9 +1219,8 @@ export interface AppConfig {
     max_peer_requests: number;
     // Cap on total persisted evidence inlined into peer-facing prompts.
     // Authenticated caller evidence is persisted automatically; optional
-    // operator artifacts share the same bounded read path. The default is
-    // 200_000 UTF-16 code units, measured by JavaScript String.length, balancing
-    // literal evidence needs against provider context limits.
+    // operator artifacts share the same bounded read path. Default 80_000
+    // bytes balances literal evidence needs against provider context limits.
     max_attached_evidence_chars: number;
   };
   evidence_broker: EvidenceBrokerLimits;
@@ -1362,11 +1233,11 @@ export interface AppConfig {
    */
   max_output_tokens_by_peer?: Partial<Record<PeerId, number | undefined>> | undefined;
   // v3.5.0 (CRV2-4): when true (default), run_until_unanimous runs a
-  // local evidence preflight before any paid peer call and fails
+  // pure-textual evidence preflight before any paid peer call and fails
   // under-evidenced submissions locally with `needs_evidence_preflight`.
   evidence_preflight_enabled: boolean;
   // v4.2.2: when true (default), ask_peers and run_until_unanimous run a
-  // local truthfulness preflight before paid peer calls. The guard
+  // pure-textual truthfulness preflight before paid peer calls. The guard
   // blocks high-risk current-runtime/model/version claims that contradict
   // runtime facts or lack source evidence, plus unsupported historical
   // runtime-timing narratives.
@@ -1667,7 +1538,6 @@ export interface SessionDoctorEntry {
   event_read_error?: string | undefined;
   terminal_event_missing?: boolean | undefined;
   terminal_event_expected?: "session.finalized" | "session.cancelled" | undefined;
-  reviewed_artifact_custody_failures?: number | undefined;
   // v2.22.0 (B.P2): evidence checklist drill-down. Populated only on
   // entries where `open_evidence_items > 0` (i.e. those routed into
   // `findings.open_evidence_sessions`). `item_types` aggregates open
@@ -1696,7 +1566,6 @@ export interface SessionDoctorReport {
     grok_provider_error_sessions: number;
     event_read_error_sessions: number;
     terminal_event_missing_sessions: number;
-    reviewed_artifact_custody_failure_sessions: number;
   };
   cost_breakdown: {
     total_cost_usd: number | null;
@@ -1717,7 +1586,6 @@ export interface SessionDoctorReport {
     grok_provider_error_sessions: SessionDoctorEntry[];
     event_read_error_sessions: SessionDoctorEntry[];
     terminal_event_missing_sessions: SessionDoctorEntry[];
-    reviewed_artifact_custody_failure_sessions: SessionDoctorEntry[];
   };
   event_noise: {
     events_total: number;
