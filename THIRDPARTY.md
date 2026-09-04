@@ -31,3 +31,26 @@ consumers resolve those ranges through their own lockfiles.
 
 The package build writes the complete license texts for the exact components
 incorporated into the stdio bundle to `dist/THIRD_PARTY_LICENSES.txt`.
+
+The committed bundle of the local GitHub Action `validate-action-pins`
+(`.github/actions/validate-action-pins/dist/index.mjs`) incorporates `yaml`
+(ISC) and carries that license text at its top.
+
+GitHub Actions used by the workflows in `.github/workflows/` (each pinned to a
+full-length commit SHA in the workflow files, where Dependabot updates them):
+
+| Action                           | License    | Source                                              |
+| -------------------------------- | ---------- | --------------------------------------------------- |
+| actions/checkout                 | MIT        | https://github.com/actions/checkout                 |
+| actions/configure-pages          | MIT        | https://github.com/actions/configure-pages          |
+| actions/dependency-review-action | MIT        | https://github.com/actions/dependency-review-action |
+| actions/deploy-pages             | MIT        | https://github.com/actions/deploy-pages             |
+| actions/download-artifact        | MIT        | https://github.com/actions/download-artifact        |
+| actions/setup-node               | MIT        | https://github.com/actions/setup-node               |
+| actions/setup-python             | MIT        | https://github.com/actions/setup-python             |
+| actions/upload-artifact          | MIT        | https://github.com/actions/upload-artifact          |
+| actions/upload-pages-artifact    | MIT        | https://github.com/actions/upload-pages-artifact    |
+| github/codeql-action             | MIT        | https://github.com/github/codeql-action             |
+| linear/linear-release-action     | MIT        | https://github.com/linear/linear-release-action     |
+| ossf/scorecard-action            | Apache-2.0 | https://github.com/ossf/scorecard-action            |
+| zizmorcore/zizmor-action         | MIT        | https://github.com/zizmorcore/zizmor-action         |

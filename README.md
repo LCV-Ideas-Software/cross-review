@@ -11,7 +11,6 @@
 [![release](https://img.shields.io/github/v/release/LCV-Ideas-Software/cross-review?sort=semver)](https://github.com/LCV-Ideas-Software/cross-review/releases)
 [![npm](https://img.shields.io/npm/v/@lcv-ideas-software/cross-review.svg)](https://www.npmjs.com/package/@lcv-ideas-software/cross-review)
 [![CI](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/ci.yml/badge.svg)](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/codeql.yml/badge.svg)](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/codeql.yml)
 [![Publish](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/publish.yml/badge.svg)](https://github.com/LCV-Ideas-Software/cross-review/actions/workflows/publish.yml)
 [![runtime: API-only](https://img.shields.io/badge/runtime-API--only-blue.svg)](#what-it-does)
 [![license: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](./LICENSE)
@@ -31,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.06.04** (package `4.6.4`).
+**Status.** Stable. The current source/release target is **v04.06.05** (package `4.6.5`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -49,6 +48,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.06.05`**      | **Native organization governance.** Actions lockfile, advanced CodeQL workflow, merge-queue triggers and the v04.05.26 recovery workflow leave; the canonical Dependabot auto-merge and the organization workflows enter; the release gates read the CodeQL default-setup analyses.   |
 | **`v04.06.04`**      | Makes evidence conflict correlation linear and argv-exact, and makes future/current model parsing clause-aware through finite English/Portuguese frames, including `replace … with`, `update … to`, Portuguese present qualifiers, and semicolon isolation.                           |
 | **`v04.06.03`**      | Restores fail-closed anti-deception semantics for conflicting executions of the same command, additive `not only`/`não só` model claims, and current-state claims beside planning language, while preserving independent RED/GREEN records and genuine future targets.                |
 | **`v04.06.02`**      | Republish of v04.06.01 with a self-contained pin-validator action (bundled parser, clean-runner proven), reference-resolved local action manifests and a location-scoped Scorecard allowance.                                                                                         |

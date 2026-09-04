@@ -5,21 +5,12 @@
 # Agent and repository governance
 /AGENTS.md @lcv-leo
 /CLAUDE.md @lcv-leo
-/GEMINI.md @lcv-leo
-/.ai/ @lcv-leo
-/.agents/ @lcv-leo
-/.gemini/ @lcv-leo
 /.github/CODEOWNERS @lcv-leo
-/.github/copilot-instructions.md @lcv-leo
 /.github/dependabot.yml @lcv-leo
+/.github/FUNDING.yml @lcv-leo
+/INBOUND.md @lcv-leo
 /.github/workflows/ @lcv-leo
-/.github/scripts/ @lcv-leo
 
 # Application and infra surfaces
 /src/ @lcv-leo
 /scripts/ @lcv-leo
-/tests/ @lcv-leo
-/wrangler.json @lcv-leo
-/**/wrangler.json @lcv-leo
-/wrangler.toml @lcv-leo
-/**/wrangler.toml @lcv-leo

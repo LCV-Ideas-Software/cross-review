@@ -1,103 +1,112 @@
 version: 2
 
 # `package.json` deliberately has no Corepack `packageManager` hint: Dependabot
-# uses its supported bundled npm, while CI/Publish pin and verify npm 12.0.2.
+# uses its supported bundled npm, while CI and Publish pin and verify npm 12.0.2.
 
 updates:
   - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "01:00"
-      timezone: "America/Los_Angeles"
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Sao_Paulo
     cooldown:
-      default-days: 3
+      default-days: 7
+    rebase-strategy: auto
+    versioning-strategy: increase
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      minor-e-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
     ignore:
       # typescript-eslint 8.66.0 still declares TypeScript <6.1.0.
       # Remove this constraint as soon as the upstream peer range supports it.
       - dependency-name: typescript
         versions:
           - ">=6.1.0"
-    open-pull-requests-limit: 10
-    groups:
-      production-dependencies:
-        dependency-type: production
-        update-types:
-          - minor
-          - patch
-      development-dependencies:
-        dependency-type: development
-        update-types:
-          - minor
-          - patch
-    labels:
-      - dependencies
-      - npm
-    commit-message:
-      prefix: "chore(deps)"
-      include: scope
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "01:00"
-      timezone: "America/Los_Angeles"
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Sao_Paulo
     cooldown:
-      default-days: 3
+      default-days: 7
       exclude:
         - "actions/*"
         - "github/*"
+    rebase-strategy: auto
     open-pull-requests-limit: 10
-    groups:
-      codeql-action:
-        applies-to: version-updates
-        patterns:
-          - github/codeql-action*
-      codeql-action-security-updates:
-        applies-to: security-updates
-        patterns:
-          - github/codeql-action*
     labels:
       - dependencies
-      - github-actions
     commit-message:
-      prefix: "chore(actions)"
+      prefix: deps
       include: scope
-
-  - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: "daily"
-      time: "01:00"
-      timezone: "America/Los_Angeles"
-    cooldown:
-      default-days: 3
-    open-pull-requests-limit: 10
-    labels:
-      - dependencies
     groups:
-      python-tools:
+      minor-e-patch:
         patterns:
           - "*"
         update-types:
           - minor
           - patch
-    commit-message:
-      prefix: "chore(python-deps)"
-      include: scope
 
-  - package-ecosystem: pre-commit
+  - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "01:00"
-      timezone: "America/Los_Angeles"
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Sao_Paulo
     cooldown:
-      default-days: 3
+      default-days: 7
+    rebase-strategy: auto
+    versioning-strategy: increase
     open-pull-requests-limit: 10
     labels:
       - dependencies
     commit-message:
-      prefix: "chore(pre-commit)"
+      prefix: deps
       include: scope
+    groups:
+      minor-e-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Sao_Paulo
+    cooldown:
+      default-days: 7
+    rebase-strategy: auto
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      minor-e-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

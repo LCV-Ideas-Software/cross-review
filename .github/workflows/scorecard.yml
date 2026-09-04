@@ -1,49 +1,55 @@
-# This workflow is managed by gh actions-lock.
+name: Scorecard supply-chain security
 
-name: OpenSSF Scorecard
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
   schedule:
     - cron: "37 8 * * 1"
-  workflow_dispatch:
+
+permissions: {}
+
+# The release pipeline (auto-tag.yml, publish.yml) requires a successful push-event
+# run of this workflow on main for the exact release SHA, so runs are queued, never
+# cancelled.
 concurrency:
-  group: scorecard-${{ github.ref }}
+  group: scorecard-${{ github.workflow }}-${{ github.ref }}
   queue: max
   cancel-in-progress: false
-# Read-only top level (Scorecard Token-Permissions): the scorecard job
-# declares the SARIF upload write scope itself.
-permissions:
-  contents: read
 
 jobs:
-  scorecard:
-    name: OpenSSF Scorecard
-    # contents:read fetches the repository; security-events:write
-    # uploads the Scorecard SARIF analyses.
-    permissions:
-      contents: read # checkout of the analyzed repository
-      security-events: write # uploads the Scorecard SARIF analyses
+  analysis:
+    name: Scorecard analysis
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      actions: read # Read workflow metadata.
+      checks: read # Discover configured security checks.
+      contents: read # Analyze repository history and configuration.
+      issues: read # Read security-policy issue metadata.
+      pull-requests: read # Inspect repository contribution practices.
+      security-events: write # Upload SARIF to code scanning.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
-          results_file: scorecard-results.sarif
+          results_file: results.sarif
           results_format: sarif
-          # OpenSSF's publication API rejects workflows with organization-mandated write-all.
-          # SARIF and artifacts remain enabled below.
           publish_results: false
-      - name: Upload SARIF artifact
+
+      - name: Upload Scorecard artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: scorecard-results
-          path: scorecard-results.sarif
+          name: SARIF file
+          path: results.sarif
           retention-days: 5
-      - name: Upload SARIF to code-scanning
+
+      - name: Upload Scorecard results to code scanning
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
-          sarif_file: scorecard-results.sarif
+          sarif_file: results.sarif

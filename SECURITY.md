@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Current supported source/release target: v04.06.04 for package 4.6.4. This
+Current supported source/release target: v04.06.05 for package 4.6.5. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
@@ -119,8 +119,8 @@ remain forbidden.
 
 Publishing is independently fail-closed even when invoked from a tag or manual
 dispatch: the tag must still equal the current `main` SHA, all applicable
-workflows and both CodeQL categories must be green for that SHA, and the
-default-branch alert set must be empty. The documented `workflow_dispatch`
+workflows must be green for that SHA and every CodeQL default-setup category
+must carry zero results for it. The documented `workflow_dispatch`
 bridge is retained only because a tag push made with `GITHUB_TOKEN` does not
 start a second workflow. It has no tag input: the actual event must be the
 protected `refs/tags/v*` ref (`github.ref`, `github.ref_type` and
@@ -179,10 +179,10 @@ interrupted and appends an explicit compensation event; an appended converged
 round keeps the reservation until terminal finalization, preventing concurrent
 operator changes from reopening the checklist between those transitions.
 
-Release automation waits for the CodeQL workflow on the exact CI-verified SHA
-and separately requires the default branch to have zero open code-scanning
-alerts before creating a tag. Workflow success alone is not treated as proof
-that the uploaded analysis is finding-free. Regex changes over untrusted text
+Release automation reads the CodeQL default-setup analyses for the exact
+CI-verified SHA and requires zero results in every configured category before
+creating a tag. Workflow success alone is not treated as proof that the
+uploaded analysis is finding-free. Regex changes over untrusted text
 must use bounded or linear matching and include adversarial long-input coverage.
 
 Dependabot covers every package ecosystem represented by a committed manifest:
@@ -201,7 +201,7 @@ avoid a burst of lockfile PRs racing each other.
 When `.github/dependabot.yml` changes, Auto-tag waits for the four dynamic
 Dependabot ecosystem jobs attached to the same SHA and requires every one to
 complete successfully. Missing, pending or failed updater jobs block tag
-creation and publication just like CI, CodeQL or an open scanning alert.
+creation and publication just like CI or the CodeQL analyses.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored

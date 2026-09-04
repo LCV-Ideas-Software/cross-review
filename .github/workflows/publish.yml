@@ -1,5 +1,3 @@
-# This workflow is managed by gh actions-lock.
-
 name: Publish
 on:
   push:
@@ -410,14 +408,15 @@ jobs:
           # blob, so a later same-version recovery commit cannot skip it.
           GH_TOKEN="$github_token" bash scripts/require-dependabot-release-evidence.sh require "$TAG_SHA" "$VERSION_BOUNDARY_SHA"
 
-          # A successful CodeQL workflow only proves upload completion. Read
-          # and evaluate the SARIF tied to TAG_SHA itself. The alert state of a
-          # newer main commit is not historical evidence for this release.
+          # CodeQL runs through GitHub's default setup (Enterprise security
+          # configuration). Read and evaluate the SARIF tied to TAG_SHA itself:
+          # the alert state of a newer main commit is not historical evidence
+          # for this release. Poll for up to fifteen minutes for every category.
           target_codeql="[]"
           required_codeql_categories=("/language:actions" "/language:javascript-typescript" "/language:python")
-          for attempt in {1..12}; do
+          for attempt in {1..90}; do
             assert_target_on_live_main
-            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100&tool_name=CodeQL&ref=refs/heads/main")"
             target_codeql="$(jq -c --arg sha "$TAG_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL")]' <<<"$analyses_json")"
             codeql_ready=true
             for category in "${required_codeql_categories[@]}"; do
@@ -434,14 +433,14 @@ jobs:
               fi
             done
             if [ "$codeql_ready" = true ]; then
-              echo "Both exact CodeQL categories are processed for $TAG_SHA."
+              echo "Every required CodeQL category is processed for $TAG_SHA."
               break
             fi
-            if [ "$attempt" -eq 12 ]; then
-              echo "::error::Exact CodeQL analyses were not visible for both categories on $TAG_SHA."
+            if [ "$attempt" -eq 90 ]; then
+              echo "::error::Exact CodeQL analyses were not visible for every required category on $TAG_SHA."
               exit 1
             fi
-            sleep 5
+            sleep 10
           done
           missing_category_count="$(jq '[.[] | select((.category // "") == "")] | length' <<<"$target_codeql")"
           if [ "$missing_category_count" -ne 0 ]; then
@@ -482,7 +481,7 @@ jobs:
           target_scorecard="[]"
           for attempt in {1..12}; do
             assert_target_on_live_main
-            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100&tool_name=Scorecard&ref=refs/heads/main")"
             target_scorecard="$(jq -c --arg sha "$TAG_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "Scorecard")]' <<<"$analyses_json")"
             scorecard_ready=true
             for category in "supply-chain/local" "supply-chain/online-scm" "supply-chain/branch-protection"; do
