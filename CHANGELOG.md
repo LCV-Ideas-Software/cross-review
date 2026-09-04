@@ -10,11 +10,14 @@ standard `v00.00.00`; npm package versions remain SemVer.
 ### Changed
 
 - **Publishing follows GitHub's documented model.** `publish.yml` now runs on
-  `release: published`, with the released tag already checked out: two jobs
-  install dependencies without lifecycle scripts and publish
-  `@lcv-ideas-software/cross-review` to npmjs.com with npm Trusted Publishing
-  (OIDC) and `--provenance`, and then to GitHub Packages with the workflow's
-  own token. The operator publishing a Release is the release gesture.
+  `release: published`, with the released tag already checked out. An
+  unprivileged `build` job installs without lifecycle scripts, packs the
+  tarball and uploads it; two writer jobs install nothing and publish that
+  artifact with `--ignore-scripts`, first to npmjs.com through npm Trusted
+  Publishing (OIDC) with `--provenance`, then to GitHub Packages with the
+  workflow's own token. Only the writers hold `id-token: write`, so
+  dependency-provided build tools never run beside the publishing identity.
+  The operator publishing a Release is the release gesture.
 - **Zizmor, Scorecard, Pages and CI return to the organization's concurrency.**
   The queued, non-cancelling deviation and the Pages path-filter removal existed
   only because the previous release gate needed a push run per exact SHA;

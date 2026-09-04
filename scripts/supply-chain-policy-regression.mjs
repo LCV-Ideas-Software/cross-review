@@ -470,10 +470,23 @@ const externalUses =
   /^\s+(?:-\s+)?(?:"uses"|'uses'|uses)\s*:\s*(?!["']?[.$]\/)(\S.*?)\s*(?:#.*)?$/gm;
 const pinnedAction =
   /^["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}["']?$/;
+// Any `uses` key this reader does not recognize fails the contract instead of
+// escaping the inventory: no YAML parser is hand-rolled here.
+const anyUsesKey = /(?:^|[\s{,])(?:"uses"|'uses'|uses)\s*:/g;
 for (const entry of await readdir(workflowDirectory)) {
   if (!/\.ya?ml$/.test(entry)) continue;
   const workflow = await readFile(path.join(workflowDirectory, entry), "utf8");
-  for (const match of workflow.matchAll(externalUses)) {
+  const recognized = [...workflow.matchAll(externalUses)];
+  const localUses = [
+    ...workflow.matchAll(/^\s+(?:-\s+)?(?:"uses"|'uses'|uses)\s*:\s*["']?[.$]\//gm),
+  ];
+  const declared = [...workflow.matchAll(anyUsesKey)];
+  assert.equal(
+    declared.length,
+    recognized.length + localUses.length,
+    `${entry} contains a uses form this inventory reader does not recognize; extend the reader instead of letting the action escape THIRDPARTY.md`,
+  );
+  for (const match of recognized) {
     const reference = match[1];
     const pinned = pinnedAction.exec(reference);
     assert.ok(

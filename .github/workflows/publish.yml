@@ -52,11 +52,21 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # `npm pack` runs `prepack`, whose build writes to stdout, so the
+      # filename is discovered on disk instead of captured from the command.
       - name: Pack the release tarball
         id: pack
         run: |
           set -euo pipefail
-          tarball="$(npm pack --pack-destination "$RUNNER_TEMP")"
+          pack_dir="$RUNNER_TEMP/release"
+          mkdir -p "$pack_dir"
+          npm pack --pack-destination "$pack_dir"
+          packed_count="$(find "$pack_dir" -maxdepth 1 -name '*.tgz' | wc -l)"
+          if [ "$packed_count" -ne 1 ]; then
+            echo "::error::Expected exactly one packed tarball, found $packed_count."
+            exit 1
+          fi
+          tarball="$(basename "$(find "$pack_dir" -maxdepth 1 -name '*.tgz')")"
           echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
           echo "Packed $tarball"
 
@@ -64,7 +74,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-tarball
-          path: ${{ runner.temp }}/${{ steps.pack.outputs.tarball }}
+          path: ${{ runner.temp }}/release/*.tgz
           retention-days: 5
           if-no-files-found: error
 
