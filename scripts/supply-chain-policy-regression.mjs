@@ -214,25 +214,67 @@ assert.match(
   /on:\s*\r?\n\s+release:\s*\r?\n\s+types:\s*\[published\]/,
   "publishing must be triggered by a published GitHub Release, not by repository-owned tagging",
 );
+// Every publishing job is audited on its own: a contract satisfied by one job
+// must not excuse the other.
+const [, npmjsJob, githubPackagesJob] = publishWorkflow.split(/\n {2}(?=npmjs:|github-packages:)/);
+for (const [job, label] of [
+  [npmjsJob, "the npmjs job"],
+  [githubPackagesJob, "the GitHub Packages job"],
+]) {
+  assert.ok(job, `${label} must remain independently auditable`);
+  assert.match(
+    job,
+    /npm ci --ignore-scripts/,
+    `${label} must install dependencies without running their lifecycle scripts`,
+  );
+  assert.match(job, /id-token:\s*write/, `${label} must request the OIDC credential`);
+  assert.match(job, /contents:\s*read/, `${label} must check out the released tag read-only`);
+  assert.match(
+    job,
+    /if:\s*\$\{\{\s*!github\.event\.release\.prerelease\s*\}\}/,
+    `${label} must refuse a prerelease, which would otherwise take the latest dist-tag`,
+  );
+  assert.match(
+    job,
+    /npm publish --provenance/,
+    `${label} must publish with a provenance statement`,
+  );
+}
 assert.match(
-  publishWorkflow,
-  /id-token:\s*write/,
-  "publishing must request the OIDC credential npm Trusted Publishing and provenance require",
-);
-assert.match(
-  publishWorkflow,
+  npmjsJob,
   /environment:\s*npm-production/,
   "npmjs publishing must run in the protected npm-production environment npm authorizes",
 );
 assert.match(
-  publishWorkflow,
-  /npm publish --provenance --access public/,
-  "npmjs publishing must request provenance explicitly",
+  npmjsJob,
+  /registry-url:\s*https:\/\/registry\.npmjs\.org/,
+  "the npmjs job must select the public registry through setup-node",
+);
+// GitHub has no native rule binding a Release to the default branch.
+assert.match(
+  npmjsJob,
+  /compare\/main\.\.\.\$GITHUB_SHA/,
+  "publishing must prove the released commit is part of main, where the required checks ran",
 );
 assert.match(
-  publishWorkflow,
-  /npm ci --ignore-scripts/,
-  "the publishing path must install dependencies without running their lifecycle scripts",
+  npmjsJob,
+  /identical \| behind\) ;;/,
+  "only a commit identical to or already merged into main may be published",
+);
+assert.match(
+  npmjsJob,
+  /RELEASE_TAG" != "\$manifest_tag/,
+  "publishing must refuse a release tag that does not name the manifest version",
+);
+assert.match(
+  npmjsJob,
+  /npm publish --provenance --access public/,
+  "the scoped package must be published publicly",
+);
+assert.match(
+  githubPackagesJob,
+  /registry-url:\s*https:\/\/npm\.pkg\.github\.com/,
+  "the mirror job must select GitHub Packages through setup-node",
 );
 for (const forbidden of [
   ["NPM_TOKEN", "a long-lived npm publish token"],

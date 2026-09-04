@@ -179,18 +179,18 @@ interrupted and appends an explicit compensation event; an appended converged
 round keeps the reservation until terminal finalization, preventing concurrent
 operator changes from reopening the checklist between those transitions.
 
-Release automation reads the CodeQL default-setup analyses for the exact
-CI-verified SHA and requires zero results in every configured category before
-creating a tag. Workflow success alone is not treated as proof that the
-uploaded analysis is finding-free. Regex changes over untrusted text
+Code scanning runs through GitHub's CodeQL default setup and its analyses
+gate every pull request into `main` through the Enterprise ruleset and the
+repository's required checks, so a released commit already carries them.
+Regex changes over untrusted text
 must use bounded or linear matching and include adversarial long-input coverage.
 
 Dependabot covers every package ecosystem represented by a committed manifest:
 npm, GitHub Actions, pip/pip-compile and pre-commit. The committed `.npmrc`
 declares npmjs.org as npm's global dependency registry. `package.json`
 intentionally does not carry a `packageManager` Corepack hint: Dependabot uses
-its supported npm resolver, while CI and Publish independently bootstrap npm
-12.0.2 from the npm registry tarball and verify its pinned SHA-512. Ordinary CI
+its supported npm resolver, while CI bootstraps npm 12.0.2 from the npm
+registry tarball and verifies its pinned SHA-512. Ordinary CI
 installs the Python tool lock with `--require-hashes` under the centrally pinned
 Python 3.12 and executes the pre-commit hooks, so those bot updates are not
 auto-merged on skipped consumer checks. `python-tools-requirements.in` is the
@@ -248,20 +248,13 @@ in v04.04.07 and v04.04.08.
 
 Package publication uses npm Trusted Publishing/OIDC from the protected
 `npm-production` GitHub environment, not a long-lived npm publish token. The
-release workflow pins npm 12, disables dependency caches, enforces the
-dependency install-script allowlist, rejects unreviewed dependency scripts and
-verifies registry-visible SLSA provenance. The published package has no
-install-time lifecycle script of its own; operators must not bypass npm 12
-policy with `--dangerously-allow-all-scripts` or replace a registry upgrade with
-a locally built source installation.
-
-The post-publish verifier treats package visibility and the advertised
-attestation document as independently propagated registry surfaces. It retries
-only bounded transient failures, pins the advertised pathname back to the npm
-registry origin, rejects redirects and still requires SLSA provenance v1.
-Protocol-relative paths cannot replace that origin. This gate verifies
-registry-visible metadata and predicate presence; it does not claim independent
-cryptographic verification of the attestation signature or subject digest.
+workflow runs on a published GitHub Release, disables dependency caches,
+installs with `--ignore-scripts` so no dependency lifecycle script executes on
+the publishing path, and publishes with `--provenance`, so npm records and
+verifies the SLSA provenance itself. The published package has no install-time
+lifecycle script of its own; operators must not bypass npm 12 policy with
+`--dangerously-allow-all-scripts` or replace a registry upgrade with a locally
+built source installation.
 
 READY is a canonical envelope, not a free-form natural-language classification:
 its summary is fixed, requests/follow-ups are empty and outside prose is

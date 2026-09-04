@@ -43,7 +43,7 @@ O produto é estável. O source/release target de referência reporta:
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
 | Versão preparada pelo source  | `v04.06.06`                        |
-| Data do source/release target | `03/09/2026`                       |
+| Data do source/release target | `04/09/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |

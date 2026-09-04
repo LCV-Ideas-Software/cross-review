@@ -20,6 +20,9 @@ jobs:
     name: Publish to npmjs.com
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # `release: published` also fires for a prerelease, and `npm publish`
+    # without `--tag` would move `latest` onto it.
+    if: ${{ !github.event.release.prerelease }}
     # npm Trusted Publishing authorizes this exact repository, workflow and
     # environment, so the registry holds no long-lived publish token.
     environment: npm-production
@@ -40,6 +43,31 @@ jobs:
           package-manager-cache: false
           registry-url: https://registry.npmjs.org
 
+      # GitHub has no rule binding a Release to the default branch, so the
+      # publishing job proves it: the released commit must be part of `main`,
+      # where the required checks ran, and the tag must name the manifest
+      # version.
+      - name: Refuse a release outside main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          comparison="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq '.status')"
+          case "$comparison" in
+            identical | behind) ;;
+            *)
+              echo "::error::$GITHUB_SHA is not part of main (compare status: $comparison); refusing to publish."
+              exit 1
+              ;;
+          esac
+          manifest_tag="v$(node -p "require('./package.json').version.split('.').map((part) => part.padStart(2, '0')).join('.')")"
+          if [ "$RELEASE_TAG" != "$manifest_tag" ]; then
+            echo "::error::Release tag $RELEASE_TAG does not name the manifest version $manifest_tag."
+            exit 1
+          fi
+          echo "Release $RELEASE_TAG is on main at $GITHUB_SHA and matches the manifest."
+
       # No dependency lifecycle script runs on the publishing path; the
       # package's own `prepack` still cleans and builds the tarball.
       - name: Install dependencies
@@ -55,6 +83,9 @@ jobs:
     needs: npmjs
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # `release: published` also fires for a prerelease, and `npm publish`
+    # without `--tag` would move `latest` onto it.
+    if: ${{ !github.event.release.prerelease }}
     permissions:
       contents: read # Check out the released tag.
       packages: write # Publish the package to GitHub Packages.
