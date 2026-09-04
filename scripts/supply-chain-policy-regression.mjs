@@ -310,6 +310,24 @@ for (const [job, label] of [
     `${label} must publish exactly that tarball, publicly, with provenance and without lifecycle scripts`,
   );
 }
+// A job that holds a publishing credential may run only the two
+// GitHub-authored actions that configuring the registry and fetching the
+// artifact require. Anything else added there would execute beside the token.
+const allowedWriterActions = ["actions/setup-node", "actions/download-artifact"];
+for (const [job, label] of [
+  [npmjsJob, "the npmjs job"],
+  [githubPackagesJob, "the GitHub Packages job"],
+]) {
+  const used = [...job.matchAll(/uses:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(
+    [...new Set(used)].sort(),
+    [...allowedWriterActions].sort(),
+    `${label} must run only the two GitHub-authored actions publishing requires`,
+  );
+}
+
 assert.match(
   npmjsJob,
   /environment:\s*npm-production/,

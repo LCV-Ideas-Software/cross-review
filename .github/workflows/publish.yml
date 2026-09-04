@@ -141,7 +141,11 @@ jobs:
 
   # The writers do one thing: publish the artifact the build job produced.
   # They never check out the repository and never install a dependency, so no
-  # third-party code runs beside the publishing identity.
+  # repository code and no npm dependency runs beside the publishing identity.
+  # Two GitHub-authored actions do run there, pinned by full-length SHA:
+  # configuring the registry and fetching the artifact cannot be done without
+  # them, and replacing them with hand-written shell would put more code, not
+  # less, next to the credential. The contract suite allows only those two.
   npmjs:
     name: Publish to npmjs.com
     needs: build
