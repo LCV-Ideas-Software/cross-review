@@ -23,7 +23,6 @@ Direct dependencies declared by this repository:
 | tsx                       | MIT               | development | https://www.npmjs.com/package/tsx                       |
 | typescript                | Apache-2.0        | development | https://www.npmjs.com/package/typescript                |
 | typescript-eslint         | MIT               | development | https://www.npmjs.com/package/typescript-eslint         |
-| yaml                      | ISC               | development | https://www.npmjs.com/package/yaml                      |
 
 `package.json` is the source of truth for declared ranges.
 `package-lock.json` records the exact resolution for this repository checkout;
@@ -31,10 +30,6 @@ consumers resolve those ranges through their own lockfiles.
 
 The package build writes the complete license texts for the exact components
 incorporated into the stdio bundle to `dist/THIRD_PARTY_LICENSES.txt`.
-
-The committed bundle of the local GitHub Action `validate-action-pins`
-(`.github/actions/validate-action-pins/dist/index.mjs`) incorporates `yaml`
-(ISC) and carries that license text at its top.
 
 GitHub Actions used by the workflows in `.github/workflows/` (each pinned to a
 full-length commit SHA in the workflow files, where Dependabot updates them):

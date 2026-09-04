@@ -5,6 +5,76 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v04.06.06] — 04/09/2026
+
+### Changed
+
+- **Publishing follows GitHub's documented model.** `publish.yml` now runs on
+  `release: published`, with the released tag already checked out. An
+  unprivileged `build` job installs without lifecycle scripts, packs the
+  tarball and uploads it; two writer jobs install nothing and publish that
+  artifact with `--ignore-scripts`, first to npmjs.com through npm Trusted
+  Publishing (OIDC) with `--provenance`, then to GitHub Packages with the
+  workflow's own token. Only the writers hold `id-token: write`, so
+  dependency-provided build tools never run beside the publishing identity.
+  The operator publishing a Release is the release gesture. A Release marked
+  as a prerelease fails the run with an explicit error instead of skipping
+  the workflow, so a consumed `release: published` event never reads as a
+  completed no-op.
+- **Zizmor, Scorecard, Pages and CI return to the organization's concurrency.**
+  The queued, non-cancelling deviation and the Pages path-filter removal existed
+  only because the previous release gate needed a push run per exact SHA;
+  `zizmor.yml` and `scorecard.yml` are byte-identical to the organization copies
+  again.
+- The repository-owned workflow-policy regression is gone, not rewritten. Its
+  contracts are owned by native, official mechanisms that already gate this
+  repository: zizmor audits workflow permissions, action pinning, tool pinning,
+  trusted publishing, template injection, cache poisoning and credential
+  persistence; CodeQL default setup analyzes the `actions` language; Dependency
+  Review, Dependabot and the Enterprise license rule own the dependency and
+  legal surface; the GitHub dependency graph is the live inventory; npm itself
+  enforces the `.npmrc` script policy and refuses a lockfile/manifest mismatch;
+  and npm Trusted Publishing authorizes the publication by repository, workflow
+  and environment. The release guards that remain are business logic and live in
+  `publish.yml` itself, protected by CODEOWNERS, required review and the
+  Enterprise rulesets.
+
+### Removed
+
+- `scripts/npm-v12-release-security-regression.mjs` and its replacement: the
+  repository owns no hand-written policy engine, and no npm script or CI step
+  runs one.
+- `.github/workflows/auto-tag.yml` and the release scripts it drove:
+  `release-policy.mjs`, `require-release-push-workflows.sh`,
+  `require-dependabot-release-evidence.sh`, `verify-registry-dist.mjs`,
+  `verify-published-package-runtime-contract.mjs`,
+  `create-signature-audit-lock.mjs` and their npm scripts.
+- Every reference to the `LCV_AUTOMATION_TOKEN` personal access token. The
+  pre-publication gate that read it only re-checked immutable releases, a
+  setting the owner already enforces for the organization; its expiry is what
+  blocked the v04.06.05 publication.
+- The repeated tag-identity revalidations, artifact digest re-checks, npm OIDC
+  boundary probes and the registry signature audit: each restated a guarantee
+  the platform or npm already makes. Dist-tag monotonicity is not one of them
+  and is not removed: npm moves `latest` to whatever it publishes, in any
+  order, so the build job keeps comparing the candidate with `npm view`.
+
+### Security
+
+- Refreshes the lockfile so the transitive `qs` dependency moves from 6.15.2 to
+  6.16.0, closing GHSA-4mjr-xmp4-gh2g and GHSA-x5fp-wj9c-mxmx. `qs` reaches the
+  production tree through `@modelcontextprotocol/sdk` and `express`, whose range
+  `^6.14.0` already admits the fixed version, so no override is needed. The
+  three patch bumps `qs` requires (`es-object-atoms`, `hasown`, `side-channel`)
+  come with it; nothing else in the tree moves.
+
+### Note
+
+The `v04.06.05` tag exists on `37a9dc1` and was never published: the machinery
+that would have published it is what this release replaces. npm goes from
+`4.6.4` to `4.6.6`, and publishing that superseded tag is refused, because the
+released version must be the one `main` declares.
+
 ## [v04.06.05] — 03/09/2026
 
 ### Changed

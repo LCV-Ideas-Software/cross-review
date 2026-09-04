@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Current supported source/release target: v04.06.05 for package 4.6.5. This
+Current supported source/release target: v04.06.06 for package 4.6.6. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
@@ -97,18 +97,20 @@ The advisory was published while the 4.5.28 release gate was running, so the
 immutable 4.5.28 tag was not published. v04.05.25 had resolved the three
 advisories known at that time: `body-parser` 2.3.0, nested `protobufjs` 7.6.5,
 and the earlier `brace-expansion` advisory with 5.0.7.
-The Scorecard/Code Scanning and Auto-tag gates remain fail-closed; no finding is
-suppressed. Its version-pinned `allowScripts` approval is likewise updated only
-to `protobufjs@7.6.5`; the cryptographic `npm audit signatures` gate remains mandatory. It
+At that release the Scorecard/Code Scanning and Auto-tag gates were fail-closed
+and no finding was suppressed; Auto-tag was removed in v04.06.06. Its version-pinned `allowScripts` approval is likewise updated only
+to `protobufjs@7.6.5`; the cryptographic `npm audit signatures` gate was mandatory then (removed in
+v04.06.06: npm verifies provenance itself at publication). It
 preserves v04.05.23 normalization of the one-item JSON array that npm v12 returns
 from `npm view --json`; v04.05.22 decoding of npm's published Sigstore DSSE
 envelope before binding SLSA provenance to the release workflow, protected tag,
 and immutable source commit; the v04.05.21 durable telemetry fixture; the v04.05.20 deterministic
 budget/cache fixture, the v04.05.19 release-gate hardening and the 4.5.18 runtime
-trust-boundary controls: the release gate does not weaken artifact verification;
-the post-publish audit
-uses an integrity-bound lock and `npm ci`, validates the installed package
-contract, then verifies npm registry signatures and provenance. The preceding
+trust-boundary controls: that release gate did not weaken artifact verification;
+its post-publish audit used an integrity-bound lock and `npm ci`, validated the
+installed package contract, then verified npm registry signatures and
+provenance. That machinery was removed in v04.06.06; no post-publish verifier
+exists in this repository. The preceding
 4.5.18 release extends the runtime trust boundary symmetrically to factual
 `NOT_READY` and `NEEDS_EVIDENCE` verdicts: missing or fabricated blocker
 evidence cannot remain a clean veto. Raw provider results are persisted as each
@@ -117,20 +119,16 @@ preflight outcomes no longer remain stale-open. npm 12 still fails closed on
 dependency lifecycle changes; wildcard script permission and broad bypasses
 remain forbidden.
 
-Publishing is independently fail-closed even when invoked from a tag or manual
-dispatch: the tag must still equal the current `main` SHA, all applicable
-workflows must be green for that SHA and every CodeQL default-setup category
-must carry zero results for it. The documented `workflow_dispatch`
-bridge is retained only because a tag push made with `GITHUB_TOKEN` does not
-start a second workflow. It has no tag input: the actual event must be the
-protected `refs/tags/v*` ref (`github.ref`, `github.ref_type` and
-`github.ref_protected` are all checked), and tag, checkout and current `main`
-are revalidated after local tests and immediately before each external write.
-The active `v*` tag ruleset prohibits deletion and non-fast-forward updates
-without bypass, so the ref cannot be silently retargeted between those checks.
-After trusted OIDC publication, the workflow installs the exact registry
-version with scripts/Git/remote dependencies disabled and runs `npm audit
-signatures` to verify registry signatures and provenance attestations.
+Publishing is fail-closed on the four things neither GitHub nor npm proves on
+its own: the released commit must be part of `main`, where the required checks
+ran; the Release tag must name the manifest version, which has to be a plain
+three-part numeric version the `vXX.XX.XX` form can express; that version must be the
+one `main` declares now, so an older tag that was never released cannot be
+published after `main` moved past it; and it must be newer than the one the
+registry already serves, so `latest` cannot move backward. A registry read that fails for any reason other than an explicit
+not-found refuses the publication. The Enterprise tag ruleset prohibits
+deletion and non-fast-forward updates without bypass, so a published ref cannot
+be silently retargeted.
 
 The 4.5.16 controls preserved here transport evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
@@ -179,18 +177,18 @@ interrupted and appends an explicit compensation event; an appended converged
 round keeps the reservation until terminal finalization, preventing concurrent
 operator changes from reopening the checklist between those transitions.
 
-Release automation reads the CodeQL default-setup analyses for the exact
-CI-verified SHA and requires zero results in every configured category before
-creating a tag. Workflow success alone is not treated as proof that the
-uploaded analysis is finding-free. Regex changes over untrusted text
+Code scanning runs through GitHub's CodeQL default setup and its analyses
+gate every pull request into `main` through the Enterprise ruleset and the
+repository's required checks, so a released commit already carries them.
+Regex changes over untrusted text
 must use bounded or linear matching and include adversarial long-input coverage.
 
 Dependabot covers every package ecosystem represented by a committed manifest:
 npm, GitHub Actions, pip/pip-compile and pre-commit. The committed `.npmrc`
 declares npmjs.org as npm's global dependency registry. `package.json`
 intentionally does not carry a `packageManager` Corepack hint: Dependabot uses
-its supported npm resolver, while CI and Publish independently bootstrap npm
-12.0.2 from the npm registry tarball and verify its pinned SHA-512. Ordinary CI
+its supported npm resolver, while CI bootstraps npm 12.0.2 from the npm
+registry tarball and verifies its pinned SHA-512. Ordinary CI
 installs the Python tool lock with `--require-hashes` under the centrally pinned
 Python 3.12 and executes the pre-commit hooks, so those bot updates are not
 auto-merged on skipped consumer checks. `python-tools-requirements.in` is the
@@ -198,10 +196,9 @@ direct pip-compile source; its generated `.txt` companion must contain the full
 pinned, hashed transitive closure. Compatible Python updates are grouped to
 avoid a burst of lockfile PRs racing each other.
 
-When `.github/dependabot.yml` changes, Auto-tag waits for the four dynamic
-Dependabot ecosystem jobs attached to the same SHA and requires every one to
-complete successfully. Missing, pending or failed updater jobs block tag
-creation and publication just like CI or the CodeQL analyses.
+Dependabot updates reach `main` through the same required checks as any other
+pull request, and the native auto-merge workflow arms a squash merge only after
+those checks pass.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored
@@ -249,20 +246,13 @@ in v04.04.07 and v04.04.08.
 
 Package publication uses npm Trusted Publishing/OIDC from the protected
 `npm-production` GitHub environment, not a long-lived npm publish token. The
-release workflow pins npm 12, disables dependency caches, enforces the
-dependency install-script allowlist, rejects unreviewed dependency scripts and
-verifies registry-visible SLSA provenance. The published package has no
-install-time lifecycle script of its own; operators must not bypass npm 12
-policy with `--dangerously-allow-all-scripts` or replace a registry upgrade with
-a locally built source installation.
-
-The post-publish verifier treats package visibility and the advertised
-attestation document as independently propagated registry surfaces. It retries
-only bounded transient failures, pins the advertised pathname back to the npm
-registry origin, rejects redirects and still requires SLSA provenance v1.
-Protocol-relative paths cannot replace that origin. This gate verifies
-registry-visible metadata and predicate presence; it does not claim independent
-cryptographic verification of the attestation signature or subject digest.
+workflow runs on a published GitHub Release, disables dependency caches,
+installs with `--ignore-scripts` so no dependency lifecycle script executes on
+the publishing path, and publishes with `--provenance`, so npm records and
+verifies the SLSA provenance itself. The published package has no install-time
+lifecycle script of its own; operators must not bypass npm 12 policy with
+`--dangerously-allow-all-scripts` or replace a registry upgrade with a locally
+built source installation.
 
 READY is a canonical envelope, not a free-form natural-language classification:
 its summary is fixed, requests/follow-ups are empty and outside prose is

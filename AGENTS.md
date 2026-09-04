@@ -31,6 +31,49 @@ npm pack --dry-run
 Regression suites are versioned (`npm run` lists the full set); a change that
 touches a guarded contract must run the matching regression before closure.
 
+## Release
+
+Publishing runs on GitHub's documented model: `publish.yml` reacts to a
+published Release and npm authorizes it through Trusted Publishing (OIDC). The
+repository owns no tagging or dispatch automation, so a Release is always a
+deliberate act.
+
+Immediately after a merge that carries a version bump, and on the operator's
+order, the agent performs the gesture. A published Release is immutable and
+its tag cannot be deleted, and `publish.yml` only reacts after publication:
+it can refuse the registries, never undo the Release. So the gesture is
+checked before it is typed, with native commands and nothing else:
+
+1. `git fetch origin main` and confirm `origin/main` is the merge commit that
+   carried the bump.
+2. Read the version `main` declares:
+   `gh api repos/LCV-Ideas-Software/cross-review/contents/package.json?ref=main -H 'Accept: application/vnd.github.raw' --jq .version`.
+   It must be a plain three-part numeric version; anything else stops here.
+3. Derive the tag by padding each part to two digits (`4.6.6` is `v04.06.06`)
+   and prove it does not exist yet:
+   `git ls-remote --tags origin refs/tags/v04.06.06` must print nothing.
+   `--target` only chooses the commit when `gh` creates the tag; an existing
+   tag is used as it is, and the Enterprise ruleset forbids deleting it, so a
+   stale tag with this name means the version has to be bumped again, never
+   released over.
+4. Create the Release against `main` explicitly:
+
+```bash
+gh release create v04.06.06 --target main --generate-notes
+```
+
+The display tag mirrors `package.json` in the organization's `vXX.XX.XX` form,
+so the manifest version has to be a plain three-part numeric version: the
+workflow refuses a prerelease or SemVer build metadata before deriving it, as
+the backstop to step 2, not as a substitute for it.
+The operator keeps the decision; the agent keeps the keystrokes.
+
+The release guards inside `publish.yml` are business logic with no
+repository-owned regression, by the operator's decision: native scanners
+(zizmor, CodeQL) own workflow security, and the guard script changes only
+through a reviewed pull request. The regression rule above does not apply to
+them.
+
 ## Workspace Policy
 
 Follow the workspace-root `AGENTS.md` directives of the private workspace that

@@ -22,8 +22,6 @@ This product includes software developed by third parties. The MCP stdio
 entrypoint incorporates the audited, reachable subset of the official
 `@modelcontextprotocol/sdk` and its validation dependencies. The generated
 `dist/THIRD_PARTY_LICENSES.txt` included in every package contains their
-exact versions and complete license notices. The committed bundle of the local
-GitHub Action `validate-action-pins` incorporates `yaml` (ISC) with its license
-text. All other runtime dependencies remain external and are listed in
+exact versions and complete license notices. All other runtime dependencies remain external and are listed in
 package.json and package-lock.json; THIRDPARTY.md lists every direct
 dependency and every GitHub Action by name, license and source.

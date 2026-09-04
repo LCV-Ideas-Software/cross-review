@@ -1,10 +1,6 @@
 # Dependencies and build output
 node_modules/
 dist/
-# GitHub Actions JS/composite bundles are committed artifacts (the gate
-# invokes them from the workflow-side checkout before any install step).
-!.github/actions/**/dist/
-!.github/actions/**/dist/**
 artifacts/
 coverage/
 __pycache__/
