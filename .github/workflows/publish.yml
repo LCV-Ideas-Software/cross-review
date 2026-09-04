@@ -33,7 +33,7 @@ jobs:
     # whose author marked it as a prerelease. The manifest is checked below.
     if: ${{ !github.event.release.prerelease }}
     permissions:
-      contents: read # Check out the released tag and compare it with main.
+      contents: read # Read the released tag, main's manifest and nothing else.
     outputs:
       tarball: ${{ steps.pack.outputs.tarball }}
     steps:
@@ -49,12 +49,12 @@ jobs:
           check-latest: true
           package-manager-cache: false
 
-      # Three properties that neither GitHub nor npm enforces on its own: the
+      # Four properties that neither GitHub nor npm enforces on its own: the
       # released commit belongs to `main`, where the required checks ran; the
-      # tag names the manifest version; and the version is newer than the one
-      # the registry serves, because `npm publish` moves `latest` to whatever
-      # it publishes, in any order.
-      - name: Refuse a release outside main, mislabelled or behind the registry
+      # tag names the manifest version; that version is the one `main` declares
+      # now; and it is newer than the one the registry serves, because
+      # `npm publish` moves `latest` to whatever it publishes, in any order.
+      - name: Refuse a release outside main, mislabelled, superseded or behind the registry
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -88,6 +88,17 @@ jobs:
             exit 1
           fi
 
+          # The released version must be the one `main` declares now. Without
+          # this, an older tag that was never released still satisfies every
+          # check above and the registry comparison below: `v04.06.05` sits on
+          # `main` and is newer than the published 4.6.4, so it would publish a
+          # version `main` has already superseded.
+          main_version="$(gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=main" -H "Accept: application/vnd.github.raw" --jq '.version')"
+          if [ "$package_version" != "$main_version" ]; then
+            echo "::error::$package_version is not the version main declares ($main_version); refusing to publish a superseded release."
+            exit 1
+          fi
+
           # Fail closed: only npm's explicit not-found means the package has
           # never been published. Every other failure refuses to publish
           # instead of silently allowing a downgrade.
@@ -108,7 +119,7 @@ jobs:
               exit 1
             fi
           fi
-          echo "Release $RELEASE_TAG is on main at $GITHUB_SHA, names the manifest version and is newer than ${published_latest:-no published version}."
+          echo "Release $RELEASE_TAG is on main at $GITHUB_SHA, names the version main declares ($main_version) and is newer than ${published_latest:-no published version}."
 
       - name: Install dependencies
         run: npm ci --ignore-scripts

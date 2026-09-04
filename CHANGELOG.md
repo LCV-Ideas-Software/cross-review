@@ -47,7 +47,8 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 The `v04.06.05` tag exists on `37a9dc1` and was never published: the machinery
 that would have published it is what this release replaces. npm goes from
-`4.6.4` to `4.6.6`.
+`4.6.4` to `4.6.6`, and publishing that superseded tag is refused, because the
+released version must be the one `main` declares.
 
 ## [v04.06.05] — 03/09/2026
 

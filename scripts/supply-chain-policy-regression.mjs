@@ -231,10 +231,31 @@ const [, buildJob, npmjsJob, githubPackagesJob] = publishWorkflow.split(
 );
 assert.ok(buildJob && npmjsJob && githubPackagesJob, "every publishing job must be auditable");
 
-assert.doesNotMatch(
-  buildJob,
-  /id-token:\s*write/,
-  "the build job must not hold the publishing identity while dependency build tools run",
+// The prose introducing the writer jobs is indented like a job key but begins
+// with `#`, so the split leaves it inside this chunk. An absence check here
+// would therefore be scanning that comment as well; the permission block is
+// extracted and compared exactly instead, which also refuses any other write
+// scope, not just the publishing identity.
+function validateBuildPermissions(job) {
+  const block = job.match(/\n {4}permissions:\n((?: {6}\S[^\n]*\n)+)/);
+  assert.ok(block, "the build job must declare its own permissions");
+  assert.deepEqual(
+    block[1]
+      .trimEnd()
+      .split("\n")
+      .map((line) => line.trim().replace(/\s+#.*$/, "")),
+    ["contents: read"],
+    "the build job must hold read access and nothing else while dependency build tools run",
+  );
+}
+validateBuildPermissions(buildJob);
+assert.throws(
+  () =>
+    validateBuildPermissions(
+      buildJob.replace(/( {6}contents: read[^\n]*\n)/, "$1      packages: write\n"),
+    ),
+  /nothing else/,
+  "any further scope granted to the build job must fail the contract",
 );
 assert.match(
   buildJob,
@@ -251,7 +272,7 @@ assert.match(
   /if:\s*\$\{\{\s*!github\.event\.release\.prerelease\s*\}\}/,
   "a Release marked as a prerelease must stop the publication before anything is built",
 );
-// The three properties neither GitHub nor npm enforces on its own.
+// The four properties neither GitHub nor npm enforces on its own.
 for (const [pattern, contract] of [
   [
     /compare\/main\.\.\.\$GITHUB_SHA/,
@@ -261,6 +282,11 @@ for (const [pattern, contract] of [
   [
     /RELEASE_TAG" != "\$manifest_tag/,
     "refuse a release tag that does not name the manifest version",
+  ],
+  [/contents\/package\.json\?ref=main/, "read the version main declares now"],
+  [
+    /is not the version main declares/,
+    "refuse a superseded release, such as a tag that was never published",
   ],
   [
     /is a prerelease; this repository publishes only stable versions/,
@@ -283,50 +309,80 @@ for (const [pattern, contract] of [
   assert.match(buildJob, pattern, `the build job must ${contract}`);
 }
 
+// A job that holds a publishing credential runs one command and only the two
+// GitHub-authored actions that configuring the registry and fetching the
+// artifact require. Both are compared exactly rather than asserted absent: a
+// substring match would accept an appended `--provenance=false`, and an
+// absence check on `npm ci` would accept `npm install` or any other step.
+const publishCommand =
+  'npm publish "$RUNNER_TEMP/release/$TARBALL" --provenance --access public --ignore-scripts';
+const allowedWriterActions = ["actions/setup-node", "actions/download-artifact"];
+function validateWriterJob(job, label) {
+  assert.deepEqual(
+    [...job.matchAll(/^ +run: (.+)$/gm)].map((match) => match[1]),
+    [publishCommand],
+    `${label} must run that publish command, complete and alone, beside the credential`,
+  );
+  assert.deepEqual(
+    [
+      ...new Set(
+        [...job.matchAll(/uses:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g)].map((match) => match[1]),
+      ),
+    ].sort(),
+    [...allowedWriterActions].sort(),
+    `${label} must run only the two GitHub-authored actions publishing requires`,
+  );
+}
 for (const [job, label] of [
   [npmjsJob, "the npmjs job"],
   [githubPackagesJob, "the GitHub Packages job"],
 ]) {
   assert.match(job, /id-token:\s*write/, `${label} must request the OIDC credential`);
   assert.match(job, /needs:[^\n]*build/, `${label} must publish the artifact the build job packed`);
-  assert.doesNotMatch(
-    job,
-    /actions\/checkout/,
-    `${label} must not check out the repository while it holds a publishing identity`,
-  );
-  assert.doesNotMatch(
-    job,
-    /npm ci/,
-    `${label} must not install dependencies while it holds a publishing identity`,
-  );
   assert.match(
     job,
     /TARBALL: \$\{\{ needs\.build\.outputs\.tarball \}\}/,
     `${label} must take the artifact name through the environment, never interpolated into the shell`,
   );
-  assert.match(
-    job,
-    /npm publish "\$RUNNER_TEMP\/release\/\$TARBALL" --provenance --access public --ignore-scripts/,
-    `${label} must publish exactly that tarball, publicly, with provenance and without lifecycle scripts`,
-  );
+  validateWriterJob(job, label);
 }
-// A job that holds a publishing credential may run only the two
-// GitHub-authored actions that configuring the registry and fetching the
-// artifact require. Anything else added there would execute beside the token.
-const allowedWriterActions = ["actions/setup-node", "actions/download-artifact"];
-for (const [job, label] of [
-  [npmjsJob, "the npmjs job"],
-  [githubPackagesJob, "the GitHub Packages job"],
+// Proven by injection, because both mutations survive a substring match.
+for (const [mutation, injected] of [
+  [
+    npmjsJob.replace(
+      "      - name: Publish",
+      "      - name: Injected\n        run: npm install attacker\n      - name: Publish",
+    ),
+    "a second command",
+  ],
+  [npmjsJob.replace(publishCommand, `${publishCommand} --provenance=false`), "an appended option"],
+  [
+    npmjsJob.replace(
+      "      - name: Publish",
+      "      - name: Injected\n        uses: third-party/action@0000000000000000000000000000000000000000\n      - name: Publish",
+    ),
+    "a third action",
+  ],
 ]) {
-  const used = [...job.matchAll(/uses:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g)].map(
-    (match) => match[1],
-  );
-  assert.deepEqual(
-    [...new Set(used)].sort(),
-    [...allowedWriterActions].sort(),
-    `${label} must run only the two GitHub-authored actions publishing requires`,
+  assert.throws(
+    () => validateWriterJob(mutation, "the npmjs job"),
+    /must run/,
+    `${injected} beside the publishing credential must fail the contract`,
   );
 }
+// GitHub Packages authorizes the mirror with the workflow's own token, so both
+// halves of that authorization are contract: removing either leaves the
+// publication failing deterministically.
+assert.match(
+  githubPackagesJob,
+  /^ {6}packages: write\b/m,
+  "the mirror job must hold the scope GitHub Packages publishing requires",
+);
+assert.match(
+  githubPackagesJob,
+  /NODE_AUTH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/,
+  "the mirror job must authenticate with the workflow's own token, never a stored credential",
+);
 
 assert.match(
   npmjsJob,
