@@ -285,6 +285,16 @@ assert.match(
 );
 assert.match(
   npmjsJob,
+  /grep -q 'E404'/,
+  "only npm's explicit not-found may mean the package was never published",
+);
+assert.match(
+  npmjsJob,
+  /Could not read the published version of \$package_name; refusing to publish/,
+  "a registry read failure must fail closed instead of skipping the downgrade guard",
+);
+assert.match(
+  npmjsJob,
   /refusing to move the latest dist-tag backward/,
   "publishing must refuse a version older than the published latest",
 );
@@ -321,10 +331,16 @@ if (configuredCodeqlLanguages.includes("python")) {
     "quality/code-quality-probe.py must keep analyzable Python source while CodeQL default setup analyzes python",
   );
 }
-assert.match(
-  serverSource,
-  /codeql_policy:\s*"Repository policy: CodeQL default setup applied by the Enterprise security configuration/,
-  "server_info must report the repository's actual CodeQL default-setup policy",
+// Asserted in full: a prefix match would keep reporting a policy the
+// repository no longer follows.
+const expectedCodeqlPolicy =
+  "Repository policy: CodeQL default setup applied by the Enterprise security configuration " +
+  "(actions, javascript-typescript, python; extended query suite); no repository CodeQL workflow. " +
+  "The Enterprise ruleset and the repository's required checks gate every pull request into main " +
+  "on those analyses, so a released commit already carries them.";
+assert.ok(
+  serverSource.includes(`codeql_policy:\n            "${expectedCodeqlPolicy}",`),
+  "server_info must report the repository's actual CodeQL policy, in full",
 );
 
 // --- published version documents --------------------------------------------

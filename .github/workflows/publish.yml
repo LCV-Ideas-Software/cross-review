@@ -74,7 +74,19 @@ jobs:
             echo "::error::Release tag $RELEASE_TAG does not name the manifest version $manifest_tag."
             exit 1
           fi
-          published_latest="$(npm view "$package_name" version 2>/dev/null || true)"
+          # Fail closed: only npm's explicit "not found" means the package has
+          # never been published. Every other failure keeps the guard honest
+          # instead of silently allowing a downgrade.
+          registry_error="$RUNNER_TEMP/npm-view.err"
+          if published_latest="$(npm view "$package_name" version 2>"$registry_error")"; then
+            :
+          elif grep -q 'E404' "$registry_error"; then
+            published_latest=""
+          else
+            cat "$registry_error" >&2
+            echo "::error::Could not read the published version of $package_name; refusing to publish."
+            exit 1
+          fi
           if [ -n "$published_latest" ] && [ "$published_latest" != "$package_version" ]; then
             newest="$(printf '%s\n%s\n' "$published_latest" "$package_version" | sort -V | tail -n 1)"
             if [ "$newest" != "$package_version" ]; then
