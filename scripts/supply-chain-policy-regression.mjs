@@ -245,10 +245,12 @@ assert.match(
   /environment:\s*npm-production/,
   "npmjs publishing must run in the protected npm-production environment npm authorizes",
 );
+// Anchored to the end of the value: an unanchored host would also accept a
+// lookalike suffix such as `registry.npmjs.org.example.invalid`.
 assert.match(
   npmjsJob,
-  /registry-url:\s*https:\/\/registry\.npmjs\.org/,
-  "the npmjs job must select the public registry through setup-node",
+  /^\s+registry-url:\s*https:\/\/registry\.npmjs\.org\/?\s*$/m,
+  "the npmjs job must select exactly the public registry through setup-node",
 );
 // GitHub has no native rule binding a Release to the default branch.
 assert.match(
@@ -273,8 +275,8 @@ assert.match(
 );
 assert.match(
   githubPackagesJob,
-  /registry-url:\s*https:\/\/npm\.pkg\.github\.com/,
-  "the mirror job must select GitHub Packages through setup-node",
+  /^\s+registry-url:\s*https:\/\/npm\.pkg\.github\.com\/?\s*$/m,
+  "the mirror job must select exactly GitHub Packages through setup-node",
 );
 for (const forbidden of [
   ["NPM_TOKEN", "a long-lived npm publish token"],
