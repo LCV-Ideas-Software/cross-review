@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Current supported source/release target: v04.06.05 for package 4.6.5. This
+Current supported source/release target: v04.06.06 for package 4.6.6. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
@@ -198,10 +198,9 @@ direct pip-compile source; its generated `.txt` companion must contain the full
 pinned, hashed transitive closure. Compatible Python updates are grouped to
 avoid a burst of lockfile PRs racing each other.
 
-When `.github/dependabot.yml` changes, Auto-tag waits for the four dynamic
-Dependabot ecosystem jobs attached to the same SHA and requires every one to
-complete successfully. Missing, pending or failed updater jobs block tag
-creation and publication just like CI or the CodeQL analyses.
+Dependabot updates reach `main` through the same required checks as any other
+pull request, and the native auto-merge workflow arms a squash merge only after
+those checks pass.
 
 Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored

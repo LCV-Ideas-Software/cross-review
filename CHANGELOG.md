@@ -5,6 +5,47 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v04.06.06] — 04/09/2026
+
+### Changed
+
+- **Publishing follows GitHub's documented model.** `publish.yml` now runs on
+  `release: published`, with the released tag already checked out: two jobs
+  install dependencies without lifecycle scripts and publish
+  `@lcv-ideas-software/cross-review` to npmjs.com with npm Trusted Publishing
+  (OIDC) and `--provenance`, and then to GitHub Packages with the workflow's
+  own token. The operator publishing a Release is the release gesture.
+- **Zizmor, Scorecard, Pages and CI return to the organization's concurrency.**
+  The queued, non-cancelling deviation and the Pages path-filter removal existed
+  only because the previous release gate needed a push run per exact SHA;
+  `zizmor.yml` and `scorecard.yml` are byte-identical to the organization copies
+  again.
+- The workflow-policy regression becomes
+  `scripts/supply-chain-policy-regression.mjs`: it keeps the manifest, lockfile,
+  npm client, CI toolchain, CodeQL marker and legal-inventory contracts, and
+  drops the contracts that only described the removed machinery.
+
+### Removed
+
+- `.github/workflows/auto-tag.yml` and the release scripts it drove:
+  `release-policy.mjs`, `require-release-push-workflows.sh`,
+  `require-dependabot-release-evidence.sh`, `verify-registry-dist.mjs`,
+  `verify-published-package-runtime-contract.mjs`,
+  `create-signature-audit-lock.mjs` and their npm scripts.
+- Every reference to the `LCV_AUTOMATION_TOKEN` personal access token. The
+  pre-publication gate that read it only re-checked immutable releases, a
+  setting the owner already enforces for the organization; its expiry is what
+  blocked the v04.06.05 publication.
+- The repeated tag-identity revalidations, artifact digest re-checks,
+  dist-tag monotonicity proofs, npm OIDC boundary probes and the registry
+  signature audit: each restated a guarantee the platform or npm already makes.
+
+### Note
+
+The `v04.06.05` tag exists on `37a9dc1` and was never published: the machinery
+that would have published it is what this release replaces. npm goes from
+`4.6.4` to `4.6.6`.
+
 ## [v04.06.05] — 03/09/2026
 
 ### Changed

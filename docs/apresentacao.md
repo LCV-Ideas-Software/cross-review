@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 03/09/2026: `4.6.5`. O registro pode ficar
+> Estado do source/release target em 04/09/2026: `4.6.6`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -631,6 +631,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.06.06`      | Publicação no modelo oficial do GitHub: Release publicada dispara o publish, com Trusted Publishing e proveniência; sai a máquina própria de tag, despacho e política.                                                                                                                                                |
 | `v04.06.05`      | Governança nativa da organização: workflows e Dependabot no padrão da organização, CodeQL pelo default setup, pipeline de release lendo as análises do SHA exato, inventário legal com as GitHub Actions.                                                                                                             |
 | `v04.06.04`      | Torna a correlação de conflitos linear e exata por `argv`, e interpreta estado futuro/atual por frames finitos em inglês/português e spans por ocorrência, com `replace … with`, `update … to`, qualificadores presentes e isolamento por ponto e vírgula.                                                            |
 | `v04.06.03`      | Restaura o fail-closed contra execuções conflitantes do mesmo comando, construções aditivas `not only`/`não só` e alegações atuais próximas de linguagem de planejamento, preservando RED/GREEN independentes e alvos futuros explícitos.                                                                             |

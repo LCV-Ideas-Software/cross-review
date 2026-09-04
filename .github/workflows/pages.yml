@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - .github/workflows/pages.yml
+      - site/**
   pull_request:
     branches:
       - main
@@ -19,12 +22,8 @@ on:
 
 permissions: {}
 
-# The release pipeline (auto-tag.yml, publish.yml) requires a successful push-event
-# Pages run on main for the exact release SHA, so every push to main builds and
-# deploys, without path filters, and runs are queued, never cancelled.
 concurrency:
   group: pages-${{ github.ref }}
-  queue: max
   cancel-in-progress: false
 
 jobs:

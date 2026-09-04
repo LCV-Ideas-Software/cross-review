@@ -9,13 +9,9 @@ on:
 
 permissions: {}
 
-# The release pipeline (auto-tag.yml, publish.yml) requires a successful push-event
-# run of this workflow on main for the exact release SHA, so runs are queued, never
-# cancelled.
 concurrency:
   group: scorecard-${{ github.workflow }}-${{ github.ref }}
-  queue: max
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   analysis:

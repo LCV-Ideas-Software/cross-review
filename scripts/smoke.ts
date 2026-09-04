@@ -10382,36 +10382,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 {
-  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
-  const script = String(pkg.scripts?.["release:verify-registry"] ?? "");
-  assert.ok(
-    script.includes("verify-registry-dist.mjs"),
-    "v4.0.5 / AUDIT-6: package.json must expose release:verify-registry.",
-  );
-  const verifyScript = fs.readFileSync(
-    path.join(process.cwd(), "scripts", "verify-registry-dist.mjs"),
-    "utf8",
-  );
-  assert.ok(
-    !verifyScript.includes("node:child_process"),
-    "v4.0.6 / F1: verify-registry-dist.mjs must not spawn npm/npm.cmd; Windows Node hardening rejects npm.cmd spawn.",
-  );
-  assert.ok(
-    verifyScript.includes("fetch("),
-    "v4.0.6 / F1: verify-registry-dist.mjs must query registry metadata directly without spawning npm.",
-  );
-  assert.ok(
-    verifyScript.includes("AbortSignal.timeout(") && verifyScript.includes("FETCH_TIMEOUT_MS"),
-    "v4.0.7 / F2: verify-registry-dist.mjs must bound the npm registry fetch with an explicit AbortSignal.timeout so a slow registry surfaces as a deterministic abort instead of hanging the workflow.",
-  );
-  assert.ok(
-    !verifyScript.includes("readFileSync") &&
-      !verifyScript.includes("readFile(") &&
-      verifyScript.includes("npm_package_name") &&
-      verifyScript.includes("npm_package_version"),
-    "v4.0.8 / F3: verify-registry-dist.mjs must not read package.json from disk; PACKAGE_NAME/PACKAGE_VERSION come from env (or npm-script-injected npm_package_name/version). Removing the file-data → fetch flow kills the recurring js/file-access-to-http CodeQL false positive at the source.",
-  );
-
   // v4.1.0 / F4: redactPrivateKeyBlocks must handle UNTERMINATED -----BEGIN
   // PRIVATE KEY----- blocks by redacting from BEGIN to end-of-string. Pre-
   // v4.1.0 leaked partial keys to events.ndjson when logs were truncated
@@ -10587,39 +10557,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
     console.log("[smoke] codeql_file_system_race_regression_test: PASS");
   }
-  for (const required of ["dist", "shasum", "integrity", "tarball"]) {
-    assert.ok(
-      verifyScript.includes(required),
-      `v4.0.5 / AUDIT-6: verify-registry-dist.mjs must validate npm registry dist.${required}.`,
-    );
-  }
-  const publishWorkflow = fs.readFileSync(
-    path.join(process.cwd(), ".github", "workflows", "publish.yml"),
-    "utf8",
-  );
-  assert.ok(
-    publishWorkflow.includes("run: node scripts/verify-registry-dist.mjs"),
-    "v4.0.5 / AUDIT-6: the unprivileged post-publication job must verify npm registry artifact metadata without invoking a project lifecycle script.",
-  );
-  assert.ok(
-    /if \[ "\$PUBLISH_REF" != "\$DISPLAY_TAG" \]/.test(publishWorkflow),
-    "v4.5.1 / release metadata: publish must reject a tag that does not match package.json.",
-  );
-  assert.ok(
-    /function matches_heading\(key, prefix, next_char\)/.test(publishWorkflow) &&
-      /return next_char == "" \|\| next_char == " "/.test(publishWorkflow),
-    "v4.5.1 / release notes: dated CHANGELOG headings must match an exact bracketed tag plus end/space boundary.",
-  );
-  const autoTagWorkflow = fs.readFileSync(
-    path.join(process.cwd(), ".github", "workflows", "auto-tag.yml"),
-    "utf8",
-  );
-  assert.ok(
-    autoTagWorkflow.includes('node scripts/release-policy.mjs display-tag "$CURRENT_VERSION"') &&
-      publishWorkflow.includes('node scripts/release-policy.mjs display-tag "$VERSION"'),
-    "v4.5.1 / release metadata: auto-tag and publish must share strict display-tag derivation.",
-  );
-  console.log("[smoke] registry_dist_metadata_verification_test: PASS");
 }
 
 {
@@ -10653,9 +10590,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         token.startsWith("--@lcv-ideas-software:registry="),
     );
     if (registryArgs.length === 0 && scopeRegistryArgs.length === 0) {
-      if (tokens[0] === "publish" && !/^['"]?\.\/artifacts\//.test(tokens[1] ?? "")) {
-        return false;
-      }
       return [
         "audit",
         "ci",
@@ -10671,7 +10605,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     }
 
     if (tokens[0] !== "view" && tokens[0] !== "publish") return false;
-    if (tokens[0] === "publish" && !/^['"]?\.\/artifacts\//.test(tokens[1] ?? "")) return false;
     return (
       registryArgs.length === 1 &&
       registryArgs[0] === githubPackagesRegistryArg &&
@@ -10733,7 +10666,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     `npm view "@lcv-ideas-software/cross-review@4.5.26" version ${npmjsRegistryArg}`,
     `npm publish "./artifacts/cross-review-4.5.26.tgz" ${npmjsScopeRegistryArg} --ignore-scripts`,
     `npm publish "artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg}`,
-    `npm publish "artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg}`,
     `npm view "@lcv-ideas-software/cross-review@4.5.26" version ${githubPackagesScopeRegistryArg}`,
     `npm exec --yes attacker ${githubPackagesRegistryArg} ${githubPackagesScopeRegistryArg}`,
     `npm publish "./artifacts/cross-review-4.5.26.tgz" ${githubPackagesRegistryArg}.example ${githubPackagesScopeRegistryArg}`,

@@ -54,8 +54,8 @@ jobs:
           echo "Verified npm $ACTUAL_NPM_VERSION for npm v12 policy."
       - name: Install dependencies
         run: npm ci --strict-allow-scripts --no-audit --no-fund
-      - name: Verify npm v12 CI and release policy
-        run: npm run npm-v12-release-security-regression
+      - name: Verify supply-chain and packaging policy
+        run: npm run supply-chain-policy-regression
       - name: Format check (prettier)
         run: npm run format:check
       - name: Lint (eslint)
@@ -101,5 +101,4 @@ jobs:
     timeout-minutes: 15
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  queue: max
-  cancel-in-progress: false
+  cancel-in-progress: true

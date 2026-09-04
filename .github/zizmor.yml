@@ -8,9 +8,3 @@ rules:
     # updates bypass cooldown.
     config:
       days: 7
-  dangerous-triggers:
-    ignore:
-      # Main-only workflow_run consumer validates a same-repository push, the
-      # exact successful CI SHA in live main history, and all immutable-SHA
-      # security gates before tagging.
-      - auto-tag.yml

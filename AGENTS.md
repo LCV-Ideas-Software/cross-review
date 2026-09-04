@@ -31,6 +31,23 @@ npm pack --dry-run
 Regression suites are versioned (`npm run` lists the full set); a change that
 touches a guarded contract must run the matching regression before closure.
 
+## Release
+
+Publishing runs on GitHub's documented model: `publish.yml` reacts to a
+published Release and npm authorizes it through Trusted Publishing (OIDC). The
+repository owns no tagging or dispatch automation, so a Release is always a
+deliberate act.
+
+Immediately after a merge that carries a version bump, and on the operator's
+order, the agent performs the gesture:
+
+```bash
+gh release create v00.00.00 --generate-notes
+```
+
+The display tag mirrors `package.json` in the organization's `vXX.XX.XX` form.
+The operator keeps the decision; the agent keeps the keystrokes.
+
 ## Workspace Policy
 
 Follow the workspace-root `AGENTS.md` directives of the private workspace that
