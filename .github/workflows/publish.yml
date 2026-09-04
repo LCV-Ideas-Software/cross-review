@@ -11,8 +11,12 @@ on:
 permissions: {}
 
 # Releases are published one at a time so two tags cannot race the registries.
+# `queue: max` keeps every pending publication: with the default `single`, a
+# third Release would cancel the pending second one, and its only
+# `release: published` event is already spent.
 concurrency:
   group: publish
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -43,11 +47,13 @@ jobs:
           package-manager-cache: false
           registry-url: https://registry.npmjs.org
 
-      # GitHub has no rule binding a Release to the default branch, so the
-      # publishing job proves it: the released commit must be part of `main`,
-      # where the required checks ran, and the tag must name the manifest
-      # version.
-      - name: Refuse a release outside main
+      # GitHub has no rule binding a Release to the default branch, and
+      # `npm publish` moves the `latest` dist-tag to whatever it publishes.
+      # This step proves the three things neither GitHub nor npm proves: the
+      # released commit is part of `main`, where the required checks ran; the
+      # tag names the manifest version; and the version is newer than what the
+      # registry already serves.
+      - name: Refuse a release outside main or behind the published latest
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -61,12 +67,22 @@ jobs:
               exit 1
               ;;
           esac
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
           manifest_tag="v$(node -p "require('./package.json').version.split('.').map((part) => part.padStart(2, '0')).join('.')")"
           if [ "$RELEASE_TAG" != "$manifest_tag" ]; then
             echo "::error::Release tag $RELEASE_TAG does not name the manifest version $manifest_tag."
             exit 1
           fi
-          echo "Release $RELEASE_TAG is on main at $GITHUB_SHA and matches the manifest."
+          published_latest="$(npm view "$package_name" version 2>/dev/null || true)"
+          if [ -n "$published_latest" ] && [ "$published_latest" != "$package_version" ]; then
+            newest="$(printf '%s\n%s\n' "$published_latest" "$package_version" | sort -V | tail -n 1)"
+            if [ "$newest" != "$package_version" ]; then
+              echo "::error::$package_version is older than the published latest ($published_latest); refusing to move the latest dist-tag backward."
+              exit 1
+            fi
+          fi
+          echo "Release $RELEASE_TAG is on main at $GITHUB_SHA, matches the manifest and is newer than ${published_latest:-no published version}."
 
       # No dependency lifecycle script runs on the publishing path; the
       # package's own `prepack` still cleans and builds the tarball.
@@ -109,7 +125,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # `--access public` is required for provenance: npm refuses to generate a
+      # statement for a package it treats as new or private.
       - name: Publish to GitHub Packages
-        run: npm publish --provenance
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

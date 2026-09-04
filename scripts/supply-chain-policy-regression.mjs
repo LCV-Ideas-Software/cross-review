@@ -214,6 +214,13 @@ assert.match(
   /on:\s*\r?\n\s+release:\s*\r?\n\s+types:\s*\[published\]/,
   "publishing must be triggered by a published GitHub Release, not by repository-owned tagging",
 );
+// A queued publication is never replaced: a `release: published` event happens
+// once, so a cancelled pending run would lose that release for good.
+assert.match(
+  publishWorkflow,
+  /concurrency:\s*\r?\n\s+group:[^\n]*\r?\n\s+queue:\s*max\r?\n\s+cancel-in-progress:\s*false/,
+  "publication must queue every pending release instead of replacing it",
+);
 // Every publishing job is audited on its own: a contract satisfied by one job
 // must not excuse the other.
 const [, npmjsJob, githubPackagesJob] = publishWorkflow.split(/\n {2}(?=npmjs:|github-packages:)/);
@@ -234,10 +241,12 @@ for (const [job, label] of [
     /if:\s*\$\{\{\s*!github\.event\.release\.prerelease\s*\}\}/,
     `${label} must refuse a prerelease, which would otherwise take the latest dist-tag`,
   );
+  // npm refuses to generate provenance for a package it treats as new or
+  // private, so both registries need the explicit public access.
   assert.match(
     job,
-    /npm publish --provenance/,
-    `${label} must publish with a provenance statement`,
+    /npm publish --provenance --access public/,
+    `${label} must publish publicly with a provenance statement`,
   );
 }
 assert.match(
@@ -268,10 +277,16 @@ assert.match(
   /RELEASE_TAG" != "\$manifest_tag/,
   "publishing must refuse a release tag that does not name the manifest version",
 );
+// `npm publish` moves `latest` to whatever it publishes, in any order.
 assert.match(
   npmjsJob,
-  /npm publish --provenance --access public/,
-  "the scoped package must be published publicly",
+  /published_latest="\$\(npm view "\$package_name" version/,
+  "publishing must read the version the registry already serves",
+);
+assert.match(
+  npmjsJob,
+  /refusing to move the latest dist-tag backward/,
+  "publishing must refuse a version older than the published latest",
 );
 assert.match(
   githubPackagesJob,
