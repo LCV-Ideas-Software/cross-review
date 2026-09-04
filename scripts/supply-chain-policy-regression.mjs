@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => readFile(path.join(root, file), "utf8");
@@ -226,52 +227,87 @@ assert.match(
 // Every check that reads the repository, the release or the registry runs in
 // the build job, where no publishing identity exists. The two writers only
 // publish the artifact it produced.
-const [, buildJob, npmjsJob, githubPackagesJob] = publishWorkflow.split(
-  /\n {2}(?=build:|npmjs:|github-packages:)/,
+//
+// The workflow is parsed, never pattern-matched. YAML spells one key many
+// ways -- `uses`, `"uses"`, `'uses'`, `"u\u0073es"`, a flow mapping -- so a
+// literal-key regex can be walked past by valid syntax while the contract
+// still reports green. Every reader below works on the parsed document.
+const publishDocument = parseYaml(publishWorkflow);
+assert.deepEqual(
+  Object.keys(publishDocument.jobs ?? {}).sort(),
+  ["build", "github-packages", "npmjs"],
+  "the publish workflow must define exactly the build job and the two writers",
 );
-assert.ok(buildJob && npmjsJob && githubPackagesJob, "every publishing job must be auditable");
+const buildJob = publishDocument.jobs.build;
+const npmjsJob = publishDocument.jobs.npmjs;
+const githubPackagesJob = publishDocument.jobs["github-packages"];
 
-// The prose introducing the writer jobs is indented like a job key but begins
-// with `#`, so the split leaves it inside this chunk. An absence check here
-// would therefore be scanning that comment as well; the permission block is
-// extracted and compared exactly instead, which also refuses any other write
-// scope, not just the publishing identity.
-function validateBuildPermissions(job) {
-  const block = job.match(/\n {4}permissions:\n((?: {6}\S[^\n]*\n)+)/);
-  assert.ok(block, "the build job must declare its own permissions");
+const stepsOf = (job) => (Array.isArray(job.steps) ? job.steps : []);
+const runScriptsOf = (job) =>
+  stepsOf(job)
+    .filter((step) => typeof step.run === "string")
+    .map((step) => step.run);
+const actionsOf = (job) =>
+  stepsOf(job)
+    .filter((step) => typeof step.uses === "string")
+    .map((step) => step.uses.split("@")[0]);
+const inputsOf = (job, action) =>
+  stepsOf(job).find((step) => typeof step.uses === "string" && step.uses.startsWith(`${action}@`))
+    ?.with ?? {};
+const publishStepOf = (job) => stepsOf(job).find((step) => typeof step.run === "string");
+
+// Permissions are compared as a whole mapping. Asserting that one scope is
+// absent, or that a required one is present, both accept an extra grant beside
+// the credential; only equality refuses `packages: write` added to the build
+// job or `contents: write` added to a writer.
+function assertPermissions(job, expected, label) {
   assert.deepEqual(
-    block[1]
-      .trimEnd()
-      .split("\n")
-      .map((line) => line.trim().replace(/\s+#.*$/, "")),
-    ["contents: read"],
-    "the build job must hold read access and nothing else while dependency build tools run",
+    job.permissions,
+    expected,
+    `${label} must hold exactly ${JSON.stringify(expected)} and nothing else`,
   );
 }
-validateBuildPermissions(buildJob);
-assert.throws(
-  () =>
-    validateBuildPermissions(
-      buildJob.replace(/( {6}contents: read[^\n]*\n)/, "$1      packages: write\n"),
-    ),
-  /nothing else/,
-  "any further scope granted to the build job must fail the contract",
+assert.deepEqual(
+  publishDocument.permissions,
+  {},
+  "the workflow must grant no token scope of its own; each job declares what it needs",
 );
+const jobPermissions = [
+  [buildJob, "the build job", { contents: "read" }, { packages: "write" }],
+  [npmjsJob, "the npmjs job", { "id-token": "write" }, { contents: "write" }],
+  [
+    githubPackagesJob,
+    "the GitHub Packages job",
+    { packages: "write", "id-token": "write" },
+    { actions: "write" },
+  ],
+];
+for (const [job, label, expected, extra] of jobPermissions) {
+  assertPermissions(job, expected, label);
+  // Proven by injection: any further scope must fail, not just a known one.
+  assert.throws(
+    () => assertPermissions({ ...job, permissions: { ...expected, ...extra } }, expected, label),
+    /nothing else/,
+    `${label} must fail the contract when a further scope is granted`,
+  );
+}
+
+// A GitHub Actions expression opens with the same `${` as a JavaScript
+// placeholder, so it is written as an escaped template literal: in a plain
+// string the linter reads it as an interpolation the author forgot to make.
+const actionsExpression = (body) => `\${{ ${body} }}`;
+assert.equal(
+  buildJob.if,
+  actionsExpression("!github.event.release.prerelease"),
+  "a Release marked as a prerelease must stop the publication before anything is built",
+);
+const buildScript = runScriptsOf(buildJob).join("\n");
 assert.match(
-  buildJob,
+  buildScript,
   /npm ci --ignore-scripts/,
   "the build job must install dependencies without running their lifecycle scripts",
 );
-assert.match(
-  buildJob,
-  /npm pack --pack-destination/,
-  "the build job must pack the release tarball",
-);
-assert.match(
-  buildJob,
-  /if:\s*\$\{\{\s*!github\.event\.release\.prerelease\s*\}\}/,
-  "a Release marked as a prerelease must stop the publication before anything is built",
-);
+assert.match(buildScript, /npm pack --pack-destination/, "the build job must pack the tarball");
 // The four properties neither GitHub nor npm enforces on its own.
 for (const [pattern, contract] of [
   [
@@ -306,29 +342,23 @@ for (const [pattern, contract] of [
     "refuse a version older than the published latest",
   ],
 ]) {
-  assert.match(buildJob, pattern, `the build job must ${contract}`);
+  assert.match(buildScript, pattern, `the build job must ${contract}`);
 }
 
 // A job that holds a publishing credential runs one command and only the two
 // GitHub-authored actions that configuring the registry and fetching the
-// artifact require. Both are compared exactly rather than asserted absent: a
-// substring match would accept an appended `--provenance=false`, and an
-// absence check on `npm ci` would accept `npm install` or any other step.
+// artifact require.
 const publishCommand =
   'npm publish "$RUNNER_TEMP/release/$TARBALL" --provenance --access public --ignore-scripts';
 const allowedWriterActions = ["actions/setup-node", "actions/download-artifact"];
 function validateWriterJob(job, label) {
   assert.deepEqual(
-    [...job.matchAll(/^ +run: (.+)$/gm)].map((match) => match[1]),
+    runScriptsOf(job),
     [publishCommand],
     `${label} must run that publish command, complete and alone, beside the credential`,
   );
   assert.deepEqual(
-    [
-      ...new Set(
-        [...job.matchAll(/uses:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g)].map((match) => match[1]),
-      ),
-    ].sort(),
+    [...new Set(actionsOf(job))].sort(),
     [...allowedWriterActions].sort(),
     `${label} must run only the two GitHub-authored actions publishing requires`,
   );
@@ -337,69 +367,55 @@ for (const [job, label] of [
   [npmjsJob, "the npmjs job"],
   [githubPackagesJob, "the GitHub Packages job"],
 ]) {
-  assert.match(job, /id-token:\s*write/, `${label} must request the OIDC credential`);
-  assert.match(job, /needs:[^\n]*build/, `${label} must publish the artifact the build job packed`);
-  assert.match(
-    job,
-    /TARBALL: \$\{\{ needs\.build\.outputs\.tarball \}\}/,
+  // The command contract comes first: an injected step would otherwise be the
+  // one inspected below, and the failure would name the wrong problem.
+  validateWriterJob(job, label);
+  const needs = Array.isArray(job.needs) ? job.needs : [job.needs];
+  assert.ok(needs.includes("build"), `${label} must publish the artifact the build job packed`);
+  assert.equal(
+    publishStepOf(job).env?.TARBALL,
+    actionsExpression("needs.build.outputs.tarball"),
     `${label} must take the artifact name through the environment, never interpolated into the shell`,
   );
-  validateWriterJob(job, label);
 }
-// Proven by injection, because both mutations survive a substring match.
-for (const [mutation, injected] of [
+// Proven by injection, in the YAML spellings a literal-key reader walks past.
+for (const [injected, description] of [
+  ['- "run": npm install attacker', "a double-quoted run key"],
+  ["- { run: npm install attacker }", "a flow-style run mapping"],
   [
-    npmjsJob.replace(
-      "      - name: Publish",
-      "      - name: Injected\n        run: npm install attacker\n      - name: Publish",
-    ),
-    "a second command",
-  ],
-  [npmjsJob.replace(publishCommand, `${publishCommand} --provenance=false`), "an appended option"],
-  [
-    npmjsJob.replace(
-      "      - name: Publish",
-      "      - name: Injected\n        uses: third-party/action@0000000000000000000000000000000000000000\n      - name: Publish",
-    ),
-    "a third action",
+    '- "u\\u0073es": third-party/action@0000000000000000000000000000000000000000',
+    "an escaped uses key",
   ],
 ]) {
+  const mutated = { ...npmjsJob, steps: [...stepsOf(npmjsJob), parseYaml(injected)[0]] };
   assert.throws(
-    () => validateWriterJob(mutation, "the npmjs job"),
+    () => validateWriterJob(mutated, "the npmjs job"),
     /must run/,
-    `${injected} beside the publishing credential must fail the contract`,
+    `${description} beside the publishing credential must fail the contract`,
   );
 }
-// GitHub Packages authorizes the mirror with the workflow's own token, so both
-// halves of that authorization are contract: removing either leaves the
-// publication failing deterministically.
-assert.match(
-  githubPackagesJob,
-  /^ {6}packages: write\b/m,
-  "the mirror job must hold the scope GitHub Packages publishing requires",
-);
-assert.match(
-  githubPackagesJob,
-  /NODE_AUTH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/,
-  "the mirror job must authenticate with the workflow's own token, never a stored credential",
-);
 
-assert.match(
-  npmjsJob,
-  /environment:\s*npm-production/,
+assert.equal(
+  npmjsJob.environment,
+  "npm-production",
   "npmjs publishing must run in the protected npm-production environment npm authorizes",
 );
-// Anchored to the end of the value: an unanchored host would also accept a
-// lookalike suffix such as `registry.npmjs.org.example.invalid`.
-assert.match(
-  npmjsJob,
-  /^\s+registry-url:\s*https:\/\/registry\.npmjs\.org\/?\s*$/m,
+// Compared for equality, not matched: a pattern would also accept a lookalike
+// host such as `registry.npmjs.org.example.invalid`.
+assert.equal(
+  inputsOf(npmjsJob, "actions/setup-node")["registry-url"],
+  "https://registry.npmjs.org",
   "the npmjs job must select exactly the public registry through setup-node",
 );
-assert.match(
-  githubPackagesJob,
-  /^\s+registry-url:\s*https:\/\/npm\.pkg\.github\.com\/?\s*$/m,
+assert.equal(
+  inputsOf(githubPackagesJob, "actions/setup-node")["registry-url"],
+  "https://npm.pkg.github.com",
   "the mirror job must select exactly GitHub Packages through setup-node",
+);
+assert.equal(
+  publishStepOf(githubPackagesJob).env?.NODE_AUTH_TOKEN,
+  actionsExpression("secrets.GITHUB_TOKEN"),
+  "the mirror job must authenticate with the workflow's own token, never a stored credential",
 );
 for (const forbidden of [
   ["NPM_TOKEN", "a long-lived npm publish token"],
@@ -550,37 +566,78 @@ validateThirdPartyInventory(thirdParty);
 
 const workflowDirectory = path.join(root, ".github/workflows");
 const workflowActions = new Set();
-// Every external `uses:` must be accounted for. An entry this reader cannot
-// parse fails here instead of quietly escaping the legal inventory.
-const externalUses =
-  /^\s+(?:-\s+)?(?:"uses"|'uses'|uses)\s*:\s*(?!["']?[.$]\/)(\S.*?)\s*(?:#.*)?$/gm;
-const pinnedAction =
-  /^["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}["']?$/;
-// Any `uses` key this reader does not recognize fails the contract instead of
-// escaping the inventory: no YAML parser is hand-rolled here.
-const anyUsesKey = /(?:^|[\s{,])(?:"uses"|'uses'|uses)\s*:/g;
-for (const entry of await readdir(workflowDirectory)) {
-  if (!/\.ya?ml$/.test(entry)) continue;
-  const workflow = await readFile(path.join(workflowDirectory, entry), "utf8");
-  const recognized = [...workflow.matchAll(externalUses)];
-  const localUses = [
-    ...workflow.matchAll(/^\s+(?:-\s+)?(?:"uses"|'uses'|uses)\s*:\s*["']?[.$]\//gm),
-  ];
-  const declared = [...workflow.matchAll(anyUsesKey)];
-  assert.equal(
-    declared.length,
-    recognized.length + localUses.length,
-    `${entry} contains a uses form this inventory reader does not recognize; extend the reader instead of letting the action escape THIRDPARTY.md`,
-  );
-  for (const match of recognized) {
-    const reference = match[1];
+const pinnedAction = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}$/;
+
+// The same structural reading as the publish workflow above, for the same
+// reason: a literal-key regex accepts only one of YAML's spellings of `uses`.
+function collectUsesFromDocument(document) {
+  const references = [];
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    if (typeof node.uses === "string") references.push(node.uses);
+    for (const value of Object.values(node)) visit(value);
+  };
+  visit(document);
+  return references;
+}
+// A local reference is followed to its own manifest: a composite action can
+// pull an external action of its own, which would otherwise never reach the
+// inventory. `seen` stops a local action that references itself or a sibling
+// loop from spinning.
+function localTargetOf(reference) {
+  const relative = reference.replace(/^[.$]\//, "");
+  return /\.ya?ml$/.test(relative)
+    ? path.join(root, relative)
+    : path.join(root, relative, "action.yml");
+}
+async function collectExternalActions(file, label, seen) {
+  if (seen.has(file)) return;
+  seen.add(file);
+  let text;
+  try {
+    text = await readFile(file, "utf8");
+  } catch {
+    assert.fail(`${label} references a local target that cannot be read: ${file}`);
+  }
+  let document;
+  try {
+    document = parseYaml(text);
+  } catch (error) {
+    assert.fail(`${label} is not parseable YAML, so its actions cannot be inventoried: ${error}`);
+  }
+  for (const reference of collectUsesFromDocument(document)) {
+    if (/^[.$]\//.test(reference)) {
+      await collectExternalActions(localTargetOf(reference), reference, seen);
+      continue;
+    }
     const pinned = pinnedAction.exec(reference);
     assert.ok(
       pinned,
-      `${entry} must pin every external action by full-length SHA; found ${reference}`,
+      `${label} must pin every external action by full-length SHA; found ${reference}`,
     );
     workflowActions.add(pinned[1]);
   }
+}
+for (const entry of await readdir(workflowDirectory)) {
+  if (!/\.ya?ml$/.test(entry)) continue;
+  await collectExternalActions(path.join(workflowDirectory, entry), entry, new Set());
+}
+// Proven against the spellings a literal-key reader walks past.
+const probeSha = "0".repeat(40);
+for (const [source, description] of [
+  [`steps:\n  - "u\\u0073es": a/b@${probeSha}`, "a double-quoted, escaped key"],
+  [`steps:\n  - 'uses': a/b@${probeSha}`, "a single-quoted key"],
+  [`steps:\n  - { uses: a/b@${probeSha} }`, "a flow-style mapping"],
+]) {
+  assert.deepEqual(
+    collectUsesFromDocument(parseYaml(source)),
+    [`a/b@${probeSha}`],
+    `the inventory reader must see ${description}`,
+  );
 }
 assert.ok(
   workflowActions.size > 0,

@@ -39,9 +39,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
   pre-publication gate that read it only re-checked immutable releases, a
   setting the owner already enforces for the organization; its expiry is what
   blocked the v04.06.05 publication.
-- The repeated tag-identity revalidations, artifact digest re-checks,
-  dist-tag monotonicity proofs, npm OIDC boundary probes and the registry
-  signature audit: each restated a guarantee the platform or npm already makes.
+- The repeated tag-identity revalidations, artifact digest re-checks, npm OIDC
+  boundary probes and the registry signature audit: each restated a guarantee
+  the platform or npm already makes. Dist-tag monotonicity is not one of them
+  and is not removed: npm moves `latest` to whatever it publishes, in any
+  order, so the build job keeps comparing the candidate with `npm view`.
 
 ### Security
 
