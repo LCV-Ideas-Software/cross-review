@@ -825,10 +825,11 @@ O gate de CI executa:
 - smoke tests com stub confirmado.
 
 O gate de publicação não repete lint nem a suíte de testes: esses portões são do
-CI, e a Release nasce de um commit que já passou por eles em `main`. Ele recusa a
-publicação quando o commit não pertence a `main`, quando a tag não nomeia a versão
-do manifesto, quando essa versão não é a que `main` declara ou quando ela é
-anterior à que o registro já serve; só então empacota e publica com proveniência.
+CI, e a publicação nasce de um push em `main` que já passou por eles. Ele só
+publica quando o push mudou a versão do manifesto; recusa pré-lançamento, versão
+que a forma `vXX.XX.XX` não expressa e versão anterior à que o registro já serve;
+trata tag existente como run já concluído; e só então empacota, publica com
+proveniência e cria a Release por último, com o token do próprio run.
 
 ## Changelog breve
 
