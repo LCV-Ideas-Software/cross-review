@@ -42,7 +42,7 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.06.06`                        |
+| Versão preparada pelo source  | `v04.06.07`                        |
 | Data do source/release target | `04/09/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
@@ -809,8 +809,8 @@ O repositório usa workflows para:
 - CI em push e pull request para `main`;
 - CodeQL pelo default setup do GitHub (configuração de segurança da Enterprise), sem
   workflow no repositório;
-- publicação disparada por uma Release publicada pelo operador, com Trusted
-  Publishing (OIDC) e proveniência, no modelo documentado pelo GitHub;
+- publicação disparada pelo push em `main` que muda a versão do manifesto, com
+  Trusted Publishing (OIDC) e proveniência, e a Release criada pelo próprio run;
 - Pages, Scorecard, Dependency Review, Zizmor, Linear Release e o auto-merge nativo dos
   PRs do Dependabot pelo workflow canônico da organização.
 
@@ -834,6 +834,7 @@ anterior à que o registro já serve; só então empacota e publica com proveni�
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                                                                              |
 | ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.06.07`      | 04/09/2026    | Publicação sem gesto manual: o push em `main` que muda a versão publica e o próprio run cria a Release por último; sai a guarda de ancestralidade.                                                                                                                                                                    |
 | `v04.06.06`      | 04/09/2026    | Publicação no modelo oficial do GitHub: Release publicada dispara o publish, com Trusted Publishing e proveniência; sai a máquina própria de tag, despacho e política.                                                                                                                                                |
 | `v04.06.05`      | 03/09/2026    | Governança nativa da organização: workflows e Dependabot no padrão da organização, CodeQL pelo default setup, pipeline de release lendo as análises do SHA exato, inventário legal com as GitHub Actions.                                                                                                             |
 | `v04.06.04`      | 28/08/2026    | Torna a correlação de conflitos linear e exata por `argv`, e interpreta estado futuro/atual por frames finitos em inglês/português e spans por ocorrência, com `replace … with`, `update … to`, qualificadores presentes e isolamento por ponto e vírgula.                                                            |

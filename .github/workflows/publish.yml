@@ -1,40 +1,46 @@
 name: Publish
 
-# GitHub's documented model for publishing an npm package: a Release is
-# published and the run starts with that tag already checked out. The
-# repository owns no tagging, dispatch or policy machinery.
+# GitHub's documented model, without a manual gesture: a push to `main` that
+# changes the manifest version publishes the package and then records the
+# Release. The repository owns no tagging, dispatch or policy machinery and
+# holds no publishing secret: npm authorizes the run through Trusted
+# Publishing (OIDC), and the Release is created with the run's own token.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths: [package.json]
 
 # No workflow-level grant: each job declares its own minimal token scope.
 permissions: {}
 
-# Releases are published one at a time so two tags cannot race the registries.
-# `queue: max` keeps every pending publication: with the default `single`, a
-# third Release would cancel the pending second one, and its only
-# `release: published` event is already spent.
+# Publications run one at a time so two bumps cannot race the registries.
+# `queue: max` keeps every pending run: with the default `single`, a third
+# push would cancel the pending second one and its version would never be
+# published.
 concurrency:
   group: publish
   queue: max
   cancel-in-progress: false
 
 jobs:
-  # Everything that inspects the repository, the release and the registry
-  # happens here, where no publishing identity exists. Dependency-provided
-  # build tools therefore never run in a job that could exchange the OIDC
-  # credential for a registry token, and a refusal stops the publication
-  # before an artifact exists.
+  # Everything that inspects the manifest, the tags and the registry happens
+  # here, where no publishing identity exists. Dependency-provided build tools
+  # therefore never run in a job that could exchange the OIDC credential for a
+  # registry token, and a refusal stops the publication before an artifact
+  # exists. A push that changed `package.json` without changing the version,
+  # which is what a Dependabot merge is, ends here as a no-op and says so.
   build:
-    name: Build the release tarball
+    name: Decide and build the release tarball
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read # Read the released tag, main's manifest and nothing else.
+      contents: read # Read the pushed commit and the existing tags, nothing else.
     outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+      tag: ${{ steps.decide.outputs.tag }}
       tarball: ${{ steps.pack.outputs.tarball }}
     steps:
-      - name: Check out the released tag
+      - name: Check out the pushed commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -46,42 +52,20 @@ jobs:
           check-latest: true
           package-manager-cache: false
 
-      # Four properties that neither GitHub nor npm enforces on its own: the
-      # released commit belongs to `main`, where the required checks ran; the
-      # tag names the manifest version; that version is the one `main` declares
-      # now; and it is newer than the one the registry serves, because
-      # `npm publish` moves `latest` to whatever it publishes, in any order.
-      - name: Refuse a release outside main, mislabelled, superseded or behind the registry
+      # The manifest decides whether there is anything to publish. A version
+      # whose tag already exists was released before: nothing to do, and the
+      # run ends green saying so. A prerelease, a version the `vXX.XX.XX` form
+      # cannot express, or a version older than the one the registry serves
+      # is a refusal, and the run fails saying which.
+      - name: Decide whether this push publishes
+        id: decide
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
           set -euo pipefail
-          # A Release its author marked as a prerelease is refused here, as a
-          # failed run, not through a job-level `if:`: a skipped workflow reads
-          # as a completed no-op, and the one-time `release: published` event
-          # is already spent by then.
-          if [ "$RELEASE_PRERELEASE" = "true" ]; then
-            echo "::error::Release $RELEASE_TAG is marked as a prerelease; this repository publishes only stable versions."
-            exit 1
-          fi
-
-          comparison="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq '.status')"
-          case "$comparison" in
-            identical | behind) ;;
-            *)
-              echo "::error::$GITHUB_SHA is not part of main (compare status: $comparison); refusing to publish."
-              exit 1
-              ;;
-          esac
-
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
 
-          # The manifest is checked as well: the Release flag above is set by
-          # whoever creates the Release and says nothing about the version
-          # being published.
           case "$package_version" in
             *-*)
               echo "::error::$package_version is a prerelease; this repository publishes only stable versions."
@@ -90,35 +74,34 @@ jobs:
           esac
 
           # SemVer also allows build metadata (`4.6.7+linux`), which carries no
-          # hyphen and would survive the guard above. The `vXX.XX.XX` tag below
-          # is derived by padding numeric components, so anything but a plain
-          # three-part version must stop here instead of producing a tag no
+          # hyphen. The tag below pads numeric components, so anything but a
+          # plain three-part version stops here instead of producing a tag no
           # Release can carry.
           if ! printf '%s\n' "$package_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::$package_version is not a plain three-part numeric version; this repository publishes only vXX.XX.XX releases."
             exit 1
           fi
+          tag="v$(printf '%s' "$package_version" | awk -F. '{ printf "%02d.%02d.%02d", $1, $2, $3 }')"
 
-          manifest_tag="v$(node -p "require('./package.json').version.split('.').map((part) => part.padStart(2, '0')).join('.')")"
-          if [ "$RELEASE_TAG" != "$manifest_tag" ]; then
-            echo "::error::Release tag $RELEASE_TAG does not name the manifest version $manifest_tag."
+          # Fail closed: only GitHub's explicit not-found means the tag is
+          # absent. Any other failure refuses to decide.
+          ref_error="$RUNNER_TEMP/tag-ref.err"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>"$ref_error"; then
+            echo "Tag $tag already exists: $package_version was released before, so this push publishes nothing."
+            echo "publish=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          elif grep -q 'HTTP 404' "$ref_error"; then
+            :
+          else
+            cat "$ref_error" >&2
+            echo "::error::Could not read tag $tag; refusing to decide."
             exit 1
           fi
 
-          # The released version must be the one `main` declares now. Without
-          # this, an older tag that was never released still satisfies every
-          # check above and the registry comparison below: `v04.06.05` sits on
-          # `main` and is newer than the published 4.6.4, so it would publish a
-          # version `main` has already superseded.
-          main_version="$(gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=main" -H "Accept: application/vnd.github.raw" --jq '.version')"
-          if [ "$package_version" != "$main_version" ]; then
-            echo "::error::$package_version is not the version main declares ($main_version); refusing to publish a superseded release."
-            exit 1
-          fi
-
+          # `npm publish` moves `latest` to whatever it publishes, in any order.
           # Fail closed: only npm's explicit not-found means the package has
-          # never been published. Every other failure refuses to publish
-          # instead of silently allowing a downgrade.
+          # never been published; every other failure refuses instead of
+          # silently allowing a downgrade.
           registry_error="$RUNNER_TEMP/npm-view.err"
           if published_latest="$(npm view "$package_name" version 2>"$registry_error")"; then
             :
@@ -136,14 +119,19 @@ jobs:
               exit 1
             fi
           fi
-          echo "Release $RELEASE_TAG is on main at $GITHUB_SHA, names the version main declares ($main_version) and is newer than ${published_latest:-no published version}."
+
+          echo "publish=true" >>"$GITHUB_OUTPUT"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "This push publishes $package_version as $tag, newer than ${published_latest:-no published version}."
 
       - name: Install dependencies
+        if: steps.decide.outputs.publish == 'true'
         run: npm ci --ignore-scripts
 
       # `npm pack` runs `prepack`, whose build writes to stdout, so the
       # filename is discovered on disk instead of captured from the command.
       - name: Pack the release tarball
+        if: steps.decide.outputs.publish == 'true'
         id: pack
         run: |
           set -euo pipefail
@@ -160,6 +148,7 @@ jobs:
           echo "Packed $tarball"
 
       - name: Upload the release tarball
+        if: steps.decide.outputs.publish == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-tarball
@@ -173,14 +162,16 @@ jobs:
   # Two GitHub-authored actions do run there, pinned by full-length SHA:
   # configuring the registry and fetching the artifact cannot be done without
   # them, and replacing them with hand-written shell would put more code, not
-  # less, next to the credential. The contract suite allows only those two.
+  # less, next to the credential.
   npmjs:
     name: Publish to npmjs.com
     needs: build
+    if: needs.build.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # npm Trusted Publishing authorizes this exact repository, workflow and
-    # environment, so the registry holds no long-lived publish token.
+    # npm Trusted Publishing authorizes this exact repository, workflow file
+    # and environment, whatever the event, so the registry holds no long-lived
+    # publish token.
     environment: npm-production
     permissions:
       id-token: write # OIDC credential for npm and the provenance statement.
@@ -207,6 +198,7 @@ jobs:
   github-packages:
     name: Publish to GitHub Packages
     needs: [build, npmjs]
+    if: needs.build.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -232,3 +224,22 @@ jobs:
           TARBALL: ${{ needs.build.outputs.tarball }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm publish "$RUNNER_TEMP/release/$TARBALL" --provenance --access public --ignore-scripts
+
+  # The Release is the record of a publication that already happened, created
+  # last so a registry failure never leaves an immutable Release behind. The
+  # run's own token creates the tag and the Release; no personal token, no
+  # App. This job checks nothing out and installs nothing.
+  release:
+    name: Record the Release
+    needs: [build, npmjs, github-packages]
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # Create the tag and the Release for the version just published.
+    steps:
+      - name: Create the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes

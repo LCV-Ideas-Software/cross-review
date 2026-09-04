@@ -5,6 +5,31 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v04.06.07] — 04/09/2026
+
+### Changed
+
+- **Publishing needs no manual gesture.** `publish.yml` now runs on a push to
+  `main` that changes the `package.json` version, publishes to npmjs.com
+  through npm Trusted Publishing (OIDC) with provenance, mirrors to GitHub
+  Packages, and then creates the Release with the run's own token, last, as
+  the record of the publication. The merge is the deliberate act. A push that
+  changes `package.json` without changing the version, such as a Dependabot
+  merge, ends as a no-op that says so; a version whose tag already exists
+  publishes nothing.
+- A Release created by a workflow with `GITHUB_TOKEN` does not fire
+  `release: published`, by GitHub's design; automating the gesture on the
+  previous design would have needed a personal token or an App, which this
+  repository does not hold. Collapsing publication and Release into one run is
+  the native path.
+
+### Removed
+
+- The ancestry check: the published commit is `main` by construction.
+- The Release prerelease-flag check: no Release exists before publication; the
+  manifest is still refused when it names a prerelease.
+- The documented pre-flight and `gh release create` gesture in `AGENTS.md`.
+
 ## [v04.06.06] — 04/09/2026
 
 ### Changed
