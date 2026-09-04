@@ -39,15 +39,27 @@ repository owns no tagging or dispatch automation, so a Release is always a
 deliberate act.
 
 Immediately after a merge that carries a version bump, and on the operator's
-order, the agent performs the gesture:
+order, the agent performs the gesture. A published Release is immutable and
+its tag cannot be deleted, and `publish.yml` only reacts after publication:
+it can refuse the registries, never undo the Release. So the gesture is
+checked before it is typed, with native commands and nothing else:
+
+1. `git fetch origin main` and confirm `origin/main` is the merge commit that
+   carried the bump.
+2. Read the version `main` declares:
+   `gh api repos/LCV-Ideas-Software/cross-review/contents/package.json?ref=main -H 'Accept: application/vnd.github.raw' --jq .version`.
+   It must be a plain three-part numeric version; anything else stops here.
+3. Derive the tag by padding each part to two digits (`4.6.6` is `v04.06.06`)
+   and create the Release against `main` explicitly:
 
 ```bash
-gh release create v00.00.00 --generate-notes
+gh release create v04.06.06 --target main --generate-notes
 ```
 
 The display tag mirrors `package.json` in the organization's `vXX.XX.XX` form,
 so the manifest version has to be a plain three-part numeric version: the
-workflow refuses a prerelease or SemVer build metadata before deriving it.
+workflow refuses a prerelease or SemVer build metadata before deriving it, as
+the backstop to step 2, not as a substitute for it.
 The operator keeps the decision; the agent keeps the keystrokes.
 
 The release guards inside `publish.yml` are business logic with no
