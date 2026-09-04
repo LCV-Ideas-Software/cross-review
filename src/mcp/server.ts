@@ -1756,7 +1756,7 @@ export async function main(): Promise<void> {
             identities: getHostTokensRecord() ? Object.keys(getHostTokensRecord()?.map ?? {}) : [],
           },
           codeql_policy:
-            "Repository policy: committed Advanced CodeQL workflow (.github/workflows/codeql.yml, security-and-quality); avoid duplicate Default Setup.",
+            "Repository policy: CodeQL default setup applied by the Enterprise security configuration (actions, javascript-typescript, python; extended query suite); no repository CodeQL workflow. Release automation reads the exact-SHA analyses before tagging and publishing.",
           secrets_policy: "API keys are read from Windows environment variables only.",
         },
         response_format,

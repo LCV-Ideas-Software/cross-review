@@ -5,16 +5,59 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
-## [Unreleased]
+## [v04.06.05] — 03/09/2026
 
 ### Changed
 
-- Aligns CodeQL admission with the organization-wide native GitHub pattern:
-  the repository keeps the SHA-pinned official `github/codeql-action`
-  `init`/`analyze` lifecycle and removes the cross-repository SARIF gate. The
-  documented GitHub limitation for Code Scanning merge protection on
-  `merge_group` is now explicit; the release path still evaluates exact-SHA
-  CodeQL SARIF independently before publication.
+- **Native organization governance.** The repository keeps only native GitHub
+  features and official integrations. Out: the Actions lockfile and its
+  headers, the advanced CodeQL workflow (GitHub's default setup, applied by the
+  Enterprise security configuration, analyzes GitHub Actions,
+  JavaScript/TypeScript and Python with the extended suite; the
+  cross-repository SARIF gate removed on 31/08 stays removed), every
+  `merge_group` trigger, the repository-owned Dependabot config validator and
+  the completed v04.05.26 recovery workflow. In: the organization's canonical
+  Dependabot auto-merge workflow, `INBOUND.md`, the organization copies of
+  the zizmor, Scorecard and Dependency Review workflows and the organization
+  starters for Pages and Linear Release (zizmor-action v0.6.3, deploy-pages
+  v5.0.1, linear-release-action v0.17.2).
+  Zizmor, Scorecard and Pages keep queued, non-cancelling runs on `main`
+  without path filters because the release pipeline requires a successful
+  push-event run of each on `main` for the exact release SHA.
+- **Release pipeline bound to CodeQL default setup.**
+  `scripts/require-release-push-workflows.sh` requires the four push workflows
+  (CI, Zizmor, Scorecard, Pages); auto-tag and publish no longer wait for a
+  CodeQL workflow run and poll the default-setup analyses of the exact SHA
+  (listing filtered by tool and branch) for up to fifteen minutes, keeping
+  the zero-results rule per category.
+  `server_info.codeql_policy` describes the default setup.
+  `quality/code-quality-probe.py` keeps analyzable Python source in the tree,
+  because the removed Dependabot config validator was the last `.py` file and
+  a configured language without source fails default setup; the release
+  regression fails fast if that marker ever disappears.
+- **Dependabot on the organization standard.** Weekly on Monday 06:00
+  America/Sao_Paulo, one `minor-e-patch` group per ecosystem, seven-day
+  cooldown (`actions/*` and `github/*` excluded for GitHub Actions),
+  `rebase-strategy: auto`; TypeScript >= 6.1 stays ignored until
+  typescript-eslint supports it.
+- **Inventory and notices.** `THIRDPARTY.md` also lists every GitHub Action
+  and the `yaml` license bundled into the pin-validator action; `NOTICE` points
+  to that inventory; `CODE_OF_CONDUCT.md` and `CONTRIBUTING.md` ship in the
+  package.
+
+### Removed
+
+- The `format:public` and `format:public:check` scripts and the matching
+  mandatory gate (no workflow ran them; `site/` is a sponsorship page without
+  version strings).
+- The governance contracts of the release-security regression that fixed
+  action SHAs, the CodeQL workflow shape, the Dependabot schedule and the
+  wording of the security baseline and presentations. The shape checks that
+  fix no Dependabot-managed value remain, together with the pre-existing exact
+  pins of the npm 12 install-script allowlist (`allowScripts`) and of
+  `ip-address` that the toolchain policy enforces on purpose.
+- `scripts/validate-dependabot-config.py`, `pyyaml` as a direct Python tool,
+  and the v04.05.26 recovery workflow and script (completed one-off).
 
 ## [v04.06.04] — 28/08/2026
 

@@ -3,10 +3,11 @@
 # declares its minimal scopes, so excessive-permissions guards regressions.
 rules:
   dependabot-cooldown:
-    # GitHub applies a three-day default to version updates while security
-    # updates bypass cooldown. Preserve that upstream security/freshness balance.
+    # The organization standard applies a seven-day cooldown to version updates
+    # (GitHub Actions: `actions/*` and `github/*` excluded) while security
+    # updates bypass cooldown.
     config:
-      days: 3
+      days: 7
   dangerous-triggers:
     ignore:
       # Main-only workflow_run consumer validates a same-repository push, the

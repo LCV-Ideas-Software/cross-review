@@ -1,5 +1,3 @@
-# This workflow is managed by gh actions-lock.
-
 name: Auto-tag on version bump
 # Organization version display convention: public tags/releases use
 # vXX.XX.XX with zero-padded numeric segments. package.json keeps npm SemVer
@@ -408,35 +406,17 @@ jobs:
           github_api() {
             GH_TOKEN="$github_token" gh api "$@"
           }
-          github_run() {
-            GH_TOKEN="$github_token" gh run "$@"
-          }
-          codeql_state="missing"
-          for poll_attempt in {1..60}; do
-            codeql_run="$(github_run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA" --event push --limit 1 --json databaseId,status,conclusion --jq 'sort_by(.databaseId) | last // null')"
-            codeql_state="$(jq -r 'if . == null then "missing" else "\(.status):\(.conclusion // "")" end' <<<"$codeql_run")"
-            if [ "$codeql_state" = "completed:success" ]; then
-              echo "CodeQL completed successfully for $TARGET_SHA."
-              break
-            fi
-            if [[ "$codeql_state" == completed:* ]]; then
-              echo "::error::CodeQL finished as $codeql_state for $TARGET_SHA; refusing to tag."
-              exit 1
-            fi
-            if [ "$poll_attempt" -eq 60 ]; then
-              echo "::error::CodeQL did not complete successfully for $TARGET_SHA (last state: $codeql_state); refusing to tag."
-              exit 1
-            fi
-            echo "Waiting for CodeQL on $TARGET_SHA ($poll_attempt/60; state: $codeql_state)."
-            sleep 5
-          done
 
-          # Workflow completion and SARIF processing are distinct states. Read
+          # CodeQL runs through GitHub's default setup (Enterprise security
+          # configuration): there is no repository workflow to wait for. Read
           # the immutable analyses for TARGET_SHA itself: current main alert
           # state cannot prove that an older queued release commit was clean.
+          # Default setup publishes one analysis per configured language and a
+          # burst of merges can queue them, so poll for up to fifteen minutes
+          # for every required category.
           required_codeql_categories=("/language:actions" "/language:javascript-typescript" "/language:python")
-          for attempt in {1..12}; do
-            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100")"
+          for attempt in {1..90}; do
+            analyses_json="$(github_api --paginate --slurp -H "Accept: application/vnd.github+json" "repos/$GITHUB_REPOSITORY/code-scanning/analyses?per_page=100&tool_name=CodeQL&ref=refs/heads/main")"
             target_analyses="$(jq -c --arg sha "$TARGET_SHA" '[.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL")]' <<<"$analyses_json")"
             analyses_ready=true
             for category in "${required_codeql_categories[@]}"; do
@@ -480,11 +460,11 @@ jobs:
               echo "All $category_count exact CodeQL SARIF categories contain zero results for $TARGET_SHA."
               break
             fi
-            if [ "$attempt" -eq 12 ]; then
-              echo "::error::Exact CodeQL analyses were not visible for both categories on $TARGET_SHA; refusing to tag."
+            if [ "$attempt" -eq 90 ]; then
+              echo "::error::Exact CodeQL analyses were not visible for every required category on $TARGET_SHA; refusing to tag."
               exit 1
             fi
-            sleep 5
+            sleep 10
           done
           echo "Code-scanning gate passed on immutable SHA $TARGET_SHA."
       - name: Require triggered Dependabot updates to pass
@@ -587,17 +567,6 @@ jobs:
             GH_TOKEN="$github_token" gh workflow "$@"
           }
           expected_sha="$TARGET_SHA"
-          # v04.05.26 contains the pre-fix publish workflow. GitHub executes a
-          # workflow_dispatch from the selected tag ref, so redispatching that
-          # immutable tag can only repeat Publish #119/#120's boolean-read
-          # failure. The dedicated main-only recovery workflow is the sole
-          # reviewed path for this exact release identity; later tags use the
-          # corrected publish.yml stored at their own immutable commit.
-          if [ "$TAG" = "v04.05.26" ] && \
-            [ "$TARGET_SHA" = "2b8b9b086b4ca48544e42334e7ae625f006c88ae" ]; then
-            echo "Refusing to redispatch the known-frozen publish.yml for $TAG at $TARGET_SHA; recover-v4.5.26-release.yml owns this exact historical reconciliation."
-            exit 0
-          fi
           for attempt in {1..10}; do
             ref_error="$RUNNER_TEMP/dispatch-tag-${GITHUB_RUN_ID}.err"
             if ref_json="$(github_api --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>"$ref_error")"; then

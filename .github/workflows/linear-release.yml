@@ -1,46 +1,45 @@
-# This workflow is managed by gh actions-lock.
-
 name: Linear Release
+
 on:
   push:
     branches:
       - main
-# Política enterprise (Discussion #150): sem write-all. Conjunto vazio no escopo do
-# workflow e grant mínimo declarado no job.
+
 permissions: {}
-# Fila integral: o grupo serializa as criações de release e queue: max preserva
-# todos os runs pendentes suportados, sem substituir pushes intermediários.
+
+# The group serializes release creation. The `queue: max` property lets up to
+# 100 runs wait as pending, instead of the default `single`, which cancels and
+# replaces the pending run; beyond 100, additional runs are cancelled. It cannot
+# be combined with `cancel-in-progress: true`, which is why that key is absent.
 concurrency:
   group: linear-release-${{ github.ref }}
   queue: max
+
 jobs:
   linear_release:
     name: Linear Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Política zizmor da casa: secret só é lido dentro de environment dedicado.
-    # LINEAR_ACCESS_KEY vive como environment secret de linear-release — escopo
-    # restrito a criar releases na pipeline deste repositório, nada além.
     environment: linear-release
     permissions:
-      contents: read # o CLI lê o histórico de commits para associar issues à release
+      contents: read # The CLI reads commit history to associate issues with the release.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # histórico completo: o CLI varre commits desde a última release
+          fetch-depth: 0 # Full history: the CLI scans commits since the last release.
           persist-credentials: false
 
-      # Action oficial da Linear, pinada ao commit da release v0.17.1, com a
-      # versão do CLI selecionada explicitamente. Desde a v0.16.1 o instalador
-      # verifica o CLI baixado contra um checksum SHA-256 publicado antes de
-      # executá-lo, fechando a lacuna rastreada em
-      # linear/linear-release-action#59.
+      # Linear's official action, pinned to the full-length SHA of v0.17.2. The
+      # CLI version is selected explicitly so a future rebuild of the action
+      # cannot change the tool that runs. The installer verifies the downloaded
+      # CLI against a published SHA-256 checksum before executing it.
       #
-      # Fail-closed: indisponibilidade ou segredo expirado deixam o run vermelho
-      # para que a divergência entre GitHub e Linear seja visível e reparável.
-      - name: Create Linear release (action oficial)
+      # Fail-closed: an outage, a CLI error or an expired secret leaves the run
+      # red instead of hiding a divergence between GitHub and Linear.
+      - name: Create Linear release with the official action
         id: linear_release
-        uses: linear/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4 # v0.17.1
+        uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
         with:
           access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
-          cli_version: v0.17.1
+          cli_version: v0.17.2

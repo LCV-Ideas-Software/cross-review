@@ -4,16 +4,14 @@ set -euo pipefail
 
 readonly WORKFLOW_PATHS=(
   ".github/workflows/ci.yml"
-  ".github/workflows/codeql.yml"
   ".github/workflows/zizmor.yml"
   ".github/workflows/scorecard.yml"
   ".github/workflows/pages.yml"
 )
 readonly WORKFLOW_LABELS=(
   "CI"
-  "CodeQL"
   "Zizmor"
-  "OpenSSF Scorecard"
+  "Scorecard supply-chain security"
   "Pages"
 )
 
@@ -67,7 +65,7 @@ for discovery_attempt in {1..60}; do
     break
   fi
   [ "$discovery_attempt" -lt 60 ] ||
-    die "GitHub did not register all five exact workflow paths within five minutes."
+    die "GitHub did not register all four exact workflow paths within five minutes."
   sleep 5
 done
 
@@ -134,7 +132,7 @@ for attempt in {1..360}; do
 
   if [ "$all_ready" = true ]; then
     assert_target_on_live_main
-    echo "All five exact-path, exact-ID push workflows passed for $TARGET_SHA."
+    echo "All four exact-path, exact-ID push workflows passed for $TARGET_SHA."
     exit 0
   fi
   [ "$attempt" -lt 360 ] || die "Not every exact-path push workflow completed successfully for $TARGET_SHA within 60 minutes."

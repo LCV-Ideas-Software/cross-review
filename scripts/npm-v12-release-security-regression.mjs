@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,17 +24,13 @@ const [
   presentationShort,
   thirdParty,
   changelog,
-  codeqlWorkflow,
   serverSource,
   dependabotConfig,
   pythonVersion,
-  dependencyReviewWorkflow,
   zizmorConfig,
   scorecardWorkflow,
   zizmorWorkflow,
   pagesWorkflow,
-  releaseRecoveryWorkflow,
-  releaseRecoveryScript,
   dependabotReleaseEvidence,
   releasePushWorkflowGate,
 ] = await Promise.all([
@@ -52,17 +48,13 @@ const [
   read("docs/apresentacao.md"),
   read("THIRDPARTY.md"),
   read("CHANGELOG.md"),
-  read(".github/workflows/codeql.yml"),
   read("src/mcp/server.ts"),
   read(".github/dependabot.yml"),
   read(".python-version"),
-  read(".github/workflows/dependency-review.yml"),
   read(".github/zizmor.yml"),
   read(".github/workflows/scorecard.yml"),
   read(".github/workflows/zizmor.yml"),
   read(".github/workflows/pages.yml"),
-  read(".github/workflows/recover-v4.5.26-release.yml"),
-  read("scripts/recover-v4.5.26-release.sh"),
   read("scripts/require-dependabot-release-evidence.sh"),
   read("scripts/require-release-push-workflows.sh"),
 ]);
@@ -76,7 +68,6 @@ const expectedAllowScripts = {
 const expectedNpmCliVersion = "12.0.2";
 const expectedNpmCliSha512 =
   "b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943";
-const expectedZizmorAction = "zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054";
 
 assert.equal(
   packageJson.packageManager,
@@ -140,313 +131,7 @@ for (const ecosystem of ["npm", "github-actions", "pip", "pre-commit"]) {
     `Dependabot must cover the repository's ${ecosystem} ecosystem`,
   );
 }
-assert.ok(
-  dependabotConfig.includes("python-tools:") &&
-    dependabotConfig.includes('patterns:\n          - "*"'),
-  "Dependabot must group Python tool updates instead of racing independent lockfile merges",
-);
-assert.doesNotMatch(
-  securityBaseline,
-  /Dependabot auto-merge workflow/i,
-  "the current security baseline must not instruct operators to restore the retired controller",
-);
-assert.match(
-  securityBaseline,
-  /explicit human action in\s+GitHub's native merge queue/,
-  "the current security baseline must preserve explicit native queue admission",
-);
-assert.doesNotMatch(
-  presentation,
-  /automerge de Dependabot/i,
-  "the current presentation must not advertise the retired controller",
-);
-assert.match(
-  presentation,
-  /admissão humana pela merge queue nativa/,
-  "the current presentation must describe explicit native queue admission",
-);
-function topLevelBody(workflow, key) {
-  const lines = workflow.split(/\r?\n/);
-  const start = lines.indexOf(`${key}:`);
-  assert.notEqual(start, -1, `${key} must be present`);
-  const relativeEnd = lines.slice(start + 1).findIndex((line) => /^[A-Za-z0-9_-]+:/.test(line));
-  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
-  return lines.slice(start + 1, end).join("\n");
-}
-
-function jobBody(workflow, jobName) {
-  const lines = workflow.split(/\r?\n/);
-  const start = lines.indexOf(`  ${jobName}:`);
-  assert.notEqual(start, -1, `${jobName} job must be present`);
-  const relativeEnd = lines
-    .slice(start + 1)
-    .findIndex((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line));
-  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
-  return lines.slice(start + 1, end).join("\n");
-}
-
-function namedStepBody(job, stepName) {
-  const lines = job.split(/\r?\n/);
-  const start = lines.indexOf(`      - name: ${stepName}`);
-  assert.notEqual(start, -1, `${stepName} step must be present`);
-  const relativeEnd = lines.slice(start + 1).findIndex((line) => /^ {6}- name:\s+/.test(line));
-  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
-  return lines.slice(start, end).join("\n");
-}
-
-function shouldPublishZizmorSarif({ eventName, headRepository, repository, actor }) {
-  return (
-    eventName !== "pull_request" || (headRepository === repository && actor !== "dependabot[bot]")
-  );
-}
-
-await assert.rejects(
-  access(path.join(root, ".github/workflows/native-auto-merge.yml")),
-  { code: "ENOENT" },
-  "the retired Native Auto-merge controller must stay absent",
-);
-
-const dependencyReviewJob = jobBody(dependencyReviewWorkflow, "dependency_review");
-assert.match(
-  topLevelBody(dependencyReviewWorkflow, "on"),
-  /pull_request:[\s\S]*merge_group:[\s\S]*checks_requested/,
-  "Dependency Review must validate both pull requests and merge groups",
-);
-assert.match(dependencyReviewWorkflow, /^permissions: \{\}$/m);
-assert.match(dependencyReviewJob, /^ {4}name: Dependency Review$/m);
-assert.match(dependencyReviewJob, /permissions:[\s\S]*contents: read/);
-assert.match(
-  dependencyReviewJob,
-  /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1[\s\S]*persist-credentials: false/,
-);
-assert.equal(
-  (
-    dependencyReviewJob.match(
-      /actions\/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294/g,
-    ) ?? []
-  ).length,
-  2,
-  "Dependency Review must pin the official action for PR and merge-group paths",
-);
-assert.match(dependencyReviewJob, /base-ref: \$\{\{ github\.event\.merge_group\.base_sha \}\}/);
-assert.match(dependencyReviewJob, /head-ref: \$\{\{ github\.event\.merge_group\.head_sha \}\}/);
-assert.match(
-  topLevelBody(dependencyReviewWorkflow, "concurrency"),
-  /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
-  "merge-group evidence must never be cancelled by PR concurrency",
-);
-assert.doesNotMatch(
-  dependencyReviewWorkflow,
-  /native-auto-merge|merge-group-feedback-gate|write-all|Dependency Review candidate|Native auto-merge workflow boundaries|secrets\./,
-  "Dependency Review must not retain the privileged custom controller or its legacy contexts",
-);
-
-const zizmorJob = jobBody(zizmorWorkflow, "zizmor");
-const zizmorEnforcement = namedStepBody(zizmorJob, "Enforce Zizmor findings");
-const zizmorSarif = namedStepBody(zizmorJob, "Publish the complete Zizmor SARIF result");
-const zizmorFailClosed = namedStepBody(zizmorJob, "Preserve the fail-closed Zizmor result");
-assert.equal(
-  (zizmorWorkflow.match(new RegExp(expectedZizmorAction, "g")) ?? []).length,
-  2,
-  "Zizmor enforcement and SARIF publication must use the exact official Action pin",
-);
-assert.match(zizmorWorkflow, /permissions:\s*\{\}/);
-assert.match(zizmorWorkflow, /contents: read/);
-assert.match(zizmorWorkflow, /security-events: write/);
-assert.match(zizmorEnforcement, /id: enforce[\s\S]*continue-on-error: true/);
-assert.match(zizmorEnforcement, /advanced-security: false/);
-assert.match(zizmorEnforcement, /annotations: false/);
-assert.doesNotMatch(zizmorEnforcement, /head\.repo\.full_name|dependabot\[bot\]/);
-assert.match(zizmorSarif, /always\(\)/);
-assert.match(zizmorSarif, /github\.event_name != 'pull_request'/);
-assert.match(
-  zizmorSarif,
-  /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
-);
-assert.match(zizmorSarif, /github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'/);
-assert.match(zizmorFailClosed, /always\(\) && steps\.enforce\.outcome != 'success'/);
-assert.match(zizmorFailClosed, /run: exit 1/);
-assert.match(zizmorWorkflow, /collect: all/);
-assert.match(zizmorWorkflow, /persona: auditor/);
-assert.equal((zizmorWorkflow.match(/advanced-security: false/g) ?? []).length, 1);
-assert.doesNotMatch(
-  zizmorWorkflow,
-  /write-all|LCV-Ideas-Software\/\.github\/\.github\/workflows\/zizmor\.yml/,
-);
-assert.doesNotMatch(
-  zizmorConfig,
-  /native-auto-merge\.yml/,
-  "Zizmor must not waive the retired privileged trigger",
-);
 assert.match(zizmorConfig, /- auto-tag\.yml/);
-
-const repository = "example-owner/example-repository";
-for (const [input, expected] of [
-  [{ eventName: "push", headRepository: repository, repository, actor: "dependabot[bot]" }, true],
-  [
-    { eventName: "pull_request", headRepository: repository, repository, actor: "example-user" },
-    true,
-  ],
-  [
-    {
-      eventName: "pull_request",
-      headRepository: "contributor/example-repository",
-      repository,
-      actor: "contributor",
-    },
-    false,
-  ],
-  [
-    {
-      eventName: "pull_request",
-      headRepository: repository,
-      repository,
-      actor: "dependabot[bot]",
-    },
-    false,
-  ],
-]) {
-  assert.equal(
-    shouldPublishZizmorSarif(input),
-    expected,
-    "Zizmor SARIF publication must skip only PR origins with read-only tokens",
-  );
-}
-function assertCodeqlReadyForReviewTrigger(workflow) {
-  const lines = workflow.split(/\r?\n/);
-  const pullRequestStart = lines.indexOf("  pull_request:");
-  assert.notEqual(pullRequestStart, -1, "CodeQL must retain a block-form pull_request trigger");
-  const nextEventOffset = lines
-    .slice(pullRequestStart + 1)
-    .findIndex((line) => /^ {2}[A-Za-z0-9_-]+:/.test(line));
-  const pullRequestEnd =
-    nextEventOffset === -1 ? lines.length : pullRequestStart + 1 + nextEventOffset;
-  const pullRequestBlock = lines.slice(pullRequestStart + 1, pullRequestEnd);
-  const typesStart = pullRequestBlock.indexOf("    types:");
-  assert.notEqual(typesStart, -1, "CodeQL pull_request must retain a block-form types filter");
-  const nextFieldOffset = pullRequestBlock
-    .slice(typesStart + 1)
-    .findIndex((line) => /^ {4}[A-Za-z0-9_-]+:/.test(line));
-  const typesEnd =
-    nextFieldOffset === -1 ? pullRequestBlock.length : typesStart + 1 + nextFieldOffset;
-  assert.equal(
-    pullRequestBlock
-      .slice(typesStart + 1, typesEnd)
-      .filter((line) => line.trim() === "- ready_for_review").length,
-    1,
-    "CodeQL pull_request.types must include ready_for_review exactly once",
-  );
-}
-assertCodeqlReadyForReviewTrigger(codeqlWorkflow);
-const codeqlWithoutReadyForReview = codeqlWorkflow.replace(/^ {6}- ready_for_review\r?\n/m, "");
-const codeqlWithReadyForReviewMoved = codeqlWithoutReadyForReview.replace(
-  /^ {6}- checks_requested$/m,
-  "$&\n      - ready_for_review",
-);
-for (const mutation of [codeqlWithoutReadyForReview, codeqlWithReadyForReviewMoved]) {
-  assert.throws(
-    () => assertCodeqlReadyForReviewTrigger(mutation),
-    /CodeQL pull_request\.types must include ready_for_review exactly once/,
-    "CodeQL trigger regression guard must reject ready_for_review when absent or outside pull_request.types",
-  );
-}
-function assertNativeCodeqlEnforcement(workflow) {
-  const document = parseDocument(workflow);
-  assert.deepEqual(document.errors, [], "CodeQL workflow must remain valid YAML");
-  const workflowValue = document.toJS();
-  const jobs = workflowValue?.jobs;
-  assert.deepEqual(
-    Object.keys(jobs ?? {}),
-    ["analyze"],
-    "CodeQL must contain only the repository-local official analyze job",
-  );
-  const steps = jobs?.analyze?.steps;
-  assert.ok(Array.isArray(steps), "CodeQL must retain the analyze job steps");
-  assert.deepEqual(
-    steps.map((step) => step.name),
-    ["Checkout", "Initialize CodeQL", "Perform CodeQL analysis"],
-    "CodeQL must remain repository-local and use only checkout plus the official init/analyze lifecycle",
-  );
-  assert.match(
-    steps[0].uses,
-    /^actions\/checkout@[0-9a-f]{40}$/,
-    "CodeQL checkout must remain pinned to an immutable official Action commit",
-  );
-  assert.match(
-    steps[1].uses,
-    /^github\/codeql-action\/init@[0-9a-f]{40}$/,
-    "CodeQL initialization must use the official Action pinned to an immutable commit",
-  );
-  assert.match(
-    steps[2].uses,
-    /^github\/codeql-action\/analyze@[0-9a-f]{40}$/,
-    "CodeQL analysis must use the official Action pinned to an immutable commit",
-  );
-  assert.equal(
-    steps[1].uses.split("@")[1],
-    steps[2].uses.split("@")[1],
-    "CodeQL init and analyze must use the same immutable official release commit",
-  );
-  assert.deepEqual(
-    steps[1].with,
-    {
-      languages: `\${{ matrix.language }}`,
-      "build-mode": `\${{ matrix.build-mode }}`,
-      queries: "security-and-quality",
-      "dependency-caching": true,
-    },
-    "CodeQL initialization must keep only repository-local official inputs and reject remote configuration",
-  );
-  assert.deepEqual(
-    steps[2].with,
-    { category: `/language:\${{ matrix.language }}` },
-    "CodeQL analysis must keep only the category input; no local SARIF output may be retained for a removed gate",
-  );
-  assert.match(
-    workflow,
-    /^ {6}security-events: write # uploads the CodeQL SARIF analyses$/m,
-    "CodeQL must retain the permission required for the official native upload",
-  );
-}
-assertNativeCodeqlEnforcement(codeqlWorkflow);
-const codeqlWithCrossRepositoryGate = `${codeqlWorkflow}
-      - name: Alternate SARIF policy
-        uses: example/security-gate@${"a".repeat(40)}`;
-assert.throws(
-  () => assertNativeCodeqlEnforcement(codeqlWithCrossRepositoryGate),
-  /use only checkout plus the official init\/analyze lifecycle/,
-  "CodeQL regression guard must reject any additional cross-repository gate, irrespective of its name",
-);
-const codeqlWithCrossRepositoryJob = `${codeqlWorkflow}
-  policy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Alternate SARIF policy
-        uses: example/security-gate@${"a".repeat(40)}`;
-assert.throws(
-  () => assertNativeCodeqlEnforcement(codeqlWithCrossRepositoryJob),
-  /contain only the repository-local official analyze job/,
-  "CodeQL regression guard must reject an equivalent cross-repository gate in a second job",
-);
-const codeqlWithInlineGate = `${codeqlWorkflow}
-      - name: Inline policy
-        run: test ! -s result.sarif`;
-assert.throws(
-  () => assertNativeCodeqlEnforcement(codeqlWithInlineGate),
-  /use only checkout plus the official init\/analyze lifecycle/,
-  "CodeQL regression guard must reject a replacement inline gate",
-);
-const codeqlWithRemoteInitConfig = codeqlWorkflow.replace(
-  "          dependency-caching: true",
-  `          dependency-caching: true
-          config-file: LCV-Ideas-Software/.github/codeql.yml@main
-          external-repository-token: \${{ secrets.GITHUB_TOKEN }}`,
-);
-assert.throws(
-  () => assertNativeCodeqlEnforcement(codeqlWithRemoteInitConfig),
-  /reject remote configuration/,
-  "CodeQL regression guard must reject a remote init config hidden inside the official Action step",
-);
 assert.ok(
   autoTagWorkflow.includes("Require triggered Dependabot updates to pass") &&
     autoTagWorkflow.includes("require-dependabot-release-evidence.sh require") &&
@@ -455,8 +140,7 @@ assert.ok(
 );
 for (const [workflow, label] of [
   [ciWorkflow, "CI"],
-  [codeqlWorkflow, "CodeQL"],
-  [scorecardWorkflow, "OpenSSF Scorecard"],
+  [scorecardWorkflow, "Scorecard supply-chain security"],
   [zizmorWorkflow, "Zizmor"],
   [pagesWorkflow, "Pages"],
 ]) {
@@ -467,7 +151,7 @@ for (const [workflow, label] of [
   );
 }
 for (const [workflow, label] of [
-  [scorecardWorkflow, "OpenSSF Scorecard"],
+  [scorecardWorkflow, "Scorecard supply-chain security"],
   [pagesWorkflow, "Pages"],
 ]) {
   assert.doesNotMatch(
@@ -486,21 +170,11 @@ assert.match(
   /python -m pre_commit run --all-files --show-diff-on-failure/,
   "CI must execute every Dependabot-managed pre-commit hook update",
 );
-assert.match(
-  ciWorkflow,
-  /python scripts\/validate-dependabot-config\.py/,
-  "CI must parse and semantically validate dependabot.yml",
-);
 assert.equal(pythonVersion.trim(), "3.12", "the Python security-tool lock is resolved for 3.12");
 assert.match(
   ciWorkflow,
   /python-version-file:\s*["']?\.python-version["']?/,
   "Python consumers must use the centrally pinned lock version",
-);
-assert.doesNotMatch(
-  dependabotConfig,
-  /interval:\s*["']?daily["']?\s*\r?\n\s*day:/,
-  "Dependabot daily schedules must not carry the weekly-only day option",
 );
 
 const npmBoundaryJobBlock = publishWorkflow.match(
@@ -1315,11 +989,10 @@ assert.match(
 assert.match(
   autoTagWorkflow,
   /Require every exact-SHA push workflow to pass[\s\S]*?require-release-push-workflows\.sh "\$TARGET_SHA"/,
-  "auto-tag must not create a release identity before all five exact-SHA push workflows pass",
+  "auto-tag must not create a release identity before all four exact-SHA push workflows pass",
 );
 for (const workflowPath of [
   ".github/workflows/ci.yml",
-  ".github/workflows/codeql.yml",
   ".github/workflows/zizmor.yml",
   ".github/workflows/scorecard.yml",
   ".github/workflows/pages.yml",
@@ -1413,7 +1086,7 @@ set -euo pipefail
 arguments="$*"
 case "$arguments" in
   *"/actions/workflows?per_page=100"*)
-    printf '%s\\n' '[{"workflows":[{"id":101,"path":".github/workflows/ci.yml","state":"active"},{"id":102,"path":".github/workflows/codeql.yml","state":"active"},{"id":103,"path":".github/workflows/zizmor.yml","state":"active"},{"id":104,"path":".github/workflows/scorecard.yml","state":"active"},{"id":105,"path":".github/workflows/pages.yml","state":"active"}]}]'
+    printf '%s\\n' '[{"workflows":[{"id":101,"path":".github/workflows/ci.yml","state":"active"},{"id":103,"path":".github/workflows/zizmor.yml","state":"active"},{"id":104,"path":".github/workflows/scorecard.yml","state":"active"},{"id":105,"path":".github/workflows/pages.yml","state":"active"}]}]'
     ;;
   *"/git/ref/heads/main"*)
     printf '%s\\n' "$MOCK_SHA"
@@ -1431,8 +1104,8 @@ case "$arguments" in
     printf '[{"workflow_runs":['
     printf '{"id":201,"workflow_id":101,"name":"CI","path":".github/workflows/ci.yml","event":"push","status":"completed","conclusion":"%s","head_sha":"%s","head_branch":"main","head_repository":{"full_name":"%s"}}' "$ci_conclusion" "$MOCK_SHA" "$MOCK_REPO"
     printf ',{"id":999,"workflow_id":999,"name":"CI","path":".github/workflows/not-ci.yml","event":"push","status":"completed","conclusion":"success","head_sha":"%s","head_branch":"main","head_repository":{"full_name":"%s"}}' "$MOCK_SHA" "$MOCK_REPO"
-    workflow_id=102
-    for workflow_path in codeql zizmor scorecard pages; do
+    workflow_id=103
+    for workflow_path in zizmor scorecard pages; do
       printf ',{"id":%s,"workflow_id":%s,"name":"fixture","path":".github/workflows/%s.yml","event":"push","status":"completed","conclusion":"success","head_sha":"%s","head_branch":"main","head_repository":{"full_name":"%s"}}' "$((workflow_id + 100))" "$workflow_id" "$workflow_path" "$MOCK_SHA" "$MOCK_REPO"
       workflow_id="$((workflow_id + 1))"
     done
@@ -1483,8 +1156,8 @@ esac
   });
   assert.match(
     happyOutput,
-    /All five exact-path, exact-ID push workflows passed/,
-    "the executable exact-workflow gate fixture must pass all five trusted identities",
+    /All four exact-path, exact-ID push workflows passed/,
+    "the executable exact-workflow gate fixture must pass all four trusted identities",
   );
 
   let spoofFailure;
@@ -1849,214 +1522,6 @@ assert.doesNotMatch(
   "no release path may use jq -e directly on a boolean that is validly false",
 );
 
-const frozenTagRecoverySkip = autoTagWorkflow.match(
-  /# v04\.05\.26 contains the pre-fix publish workflow[\s\S]*?(?=\n\s+for attempt in \{1\.\.10\}; do)/,
-)?.[0];
-assert.ok(
-  frozenTagRecoverySkip,
-  "auto-tag must retain a separately auditable exception for the immutable workflow frozen at v04.05.26",
-);
-assert.match(
-  frozenTagRecoverySkip,
-  /TAG" = "v04\.05\.26"[\s\S]*?TARGET_SHA" = "2b8b9b086b4ca48544e42334e7ae625f006c88ae"[\s\S]*?recover-v4\.5\.26-release\.yml[\s\S]*?exit 0/,
-  "only the exact broken tag and commit may bypass redispatch of its known-failing workflow",
-);
-assert.ok(
-  frozenTagRecoverySkip.indexOf("exit 0") <
-    autoTagWorkflow.indexOf("github_workflow run publish.yml"),
-  "the frozen-tag exception must stop before publish.yml can be redispatched",
-);
-
-assert.match(
-  releaseRecoveryWorkflow,
-  /^name: Recover v04\.05\.26 GitHub Release[\s\S]*?workflow_dispatch:[\s\S]*?confirmation:[\s\S]*?required: true/m,
-  "the historical recovery must require an explicit typed confirmation",
-);
-assert.equal(
-  (releaseRecoveryWorkflow.match(/permissions:\s*write-all/g) ?? []).length,
-  0,
-  "the abolished write-all grant must never return to the recovery workflow",
-);
-assert.match(
-  releaseRecoveryWorkflow,
-  /permissions:\s*\n\s+actions: read[^\n]*\n\s+contents: write[^\n]*\n\s+packages: read/,
-  "the recovery job must hold the minimal grant: contents:write for the Release, read-only Actions and Packages",
-);
-assert.match(
-  releaseRecoveryWorkflow,
-  /concurrency:\s*\r?\n\s+group: release-publication\s*\r?\n\s+queue: max\s*\r?\n\s+cancel-in-progress: false/,
-  "historical recovery must share the non-cancelling publication FIFO with every tag",
-);
-assert.match(
-  releaseRecoveryWorkflow,
-  /environment:\s*github-release-recovery/,
-  "the exact recovery must use its main-only protected environment",
-);
-assert.match(
-  releaseRecoveryWorkflow,
-  /Checkout trusted main recovery implementation[\s\S]*?persist-credentials: false[\s\S]*?ref: \$\{\{ github\.sha \}\}[\s\S]*?fetch-depth: 0/,
-  "recovery must execute only the immutable workflow SHA with no persisted Git credentials",
-);
-assert.doesNotMatch(
-  releaseRecoveryWorkflow,
-  /pull_request(?:_target)?:|push:|schedule:/,
-  "the privileged recovery must be manual-only and unreachable from untrusted PR events",
-);
-assert.match(
-  releaseRecoveryWorkflow,
-  /Remove GitHub Packages recovery credential file\s+if: always\(\)[\s\S]*?rm -f -- "\$\{RUNNER_TEMP\}\/cross-review-release-recovery\.npmrc"/,
-  "the temporary package-read credential must be removed even on failure",
-);
-
-const recoveryGithubCopy = releaseRecoveryScript.indexOf('github_token="$' + '{GH_TOKEN:-}"');
-const recoveryAdminCopy = releaseRecoveryScript.indexOf(
-  'immutability_token="$' + '{IMMUTABILITY_TOKEN:-}"',
-);
-const recoveryGithubUnset = releaseRecoveryScript.indexOf("unset GH_TOKEN");
-const recoveryAdminUnset = releaseRecoveryScript.indexOf("unset IMMUTABILITY_TOKEN");
-const recoveryFirstSubprocess = releaseRecoveryScript.indexOf('work_dir="$(mktemp -d');
-assert.ok(
-  recoveryGithubCopy >= 0 &&
-    recoveryAdminCopy > recoveryGithubCopy &&
-    recoveryGithubUnset > recoveryAdminCopy &&
-    recoveryAdminUnset > recoveryGithubUnset &&
-    recoveryFirstSubprocess > recoveryAdminUnset,
-  "both exported recovery tokens must become non-exported shell variables before any subprocess starts",
-);
-assert.equal(
-  (releaseRecoveryScript.match(/\$\{?GH_TOKEN/g) ?? []).length,
-  1,
-  "the exported GITHUB_TOKEN name may be read only once by the recovery script",
-);
-assert.equal(
-  (releaseRecoveryScript.match(/\$\{?IMMUTABILITY_TOKEN/g) ?? []).length,
-  1,
-  "the exported administrative token name may be read only once by the recovery script",
-);
-
-for (const exactRecoveryIdentity of [
-  'readonly operator_login="lcv-leo"',
-  'readonly operator_id="268063598"',
-  'readonly tag="v04.05.26"',
-  'readonly target_sha="2b8b9b086b4ca48544e42334e7ae625f006c88ae"',
-  'readonly release_id="358385263"',
-  'readonly source_run_id="29967505793"',
-  'readonly source_artifact_id="8548431216"',
-  'readonly source_artifact_archive_sha256="b0746ff47cdea0fea65ff32b6817a05551963336e983ab2b4ae5d333392fd51e"',
-  'readonly package_sha256="97ce84603d5d98654840b7ee6cf2c27e906cee883de6010e18351842869c9301"',
-  'readonly package_sri="sha512-i11a4PTnpmEk+30E1B/kziZlBgnVGHbUz/eY1kAspIEume+37KqNnW8dgIHOBOD+1g6XhOPTG3TjqgZBFHy/sg=="',
-  'readonly release_body_sha256="94c32cae66c26566ec0577d22a88229b7fd721ff9416490fb04e4df8dfd7c932"',
-  'readonly confirmation_phrase="RECOVER v04.05.26 RELEASE 358385263 FROM RUN 29967505793 ARTIFACT 8548431216"',
-]) {
-  assert.ok(
-    releaseRecoveryScript.includes(exactRecoveryIdentity),
-    `recovery must remain bound to exact reviewed evidence: ${exactRecoveryIdentity}`,
-  );
-}
-
-const recoveryJsonHelper = releaseRecoveryScript.match(/github_json_api\(\) \{[\s\S]*?^\}/m)?.[0];
-const recoveryBinaryHelper = releaseRecoveryScript.match(
-  /github_binary_api\(\) \{[\s\S]*?^\}/m,
-)?.[0];
-assert.ok(
-  recoveryJsonHelper && recoveryBinaryHelper,
-  "recovery must keep distinct JSON and binary API helpers",
-);
-assert.match(recoveryJsonHelper, /Accept: application\/vnd\.github\+json/);
-assert.doesNotMatch(recoveryJsonHelper, /application\/octet-stream/);
-assert.match(recoveryBinaryHelper, /Accept: application\/octet-stream/);
-assert.doesNotMatch(recoveryBinaryHelper, /application\/vnd\.github\+json/);
-assert.equal(
-  (releaseRecoveryScript.match(/github_binary_api --method GET/g) ?? []).length,
-  1,
-  "only release-asset byte downloads may use the octet-stream helper",
-);
-assert.match(
-  releaseRecoveryScript,
-  /github_json_api --method GET "repos\/\$repository\/actions\/artifacts\/\$source_artifact_id\/zip"/,
-  "the Actions artifact archive endpoint must retain its documented JSON media type",
-);
-
-for (const recoveryGate of [
-  "validate_commits initial-evidence",
-  "validate_immutable_policy initial-evidence",
-  "validate_source_evidence initial-evidence",
-  "verify_registry_integrity initial-evidence",
-  "validate_commits final-upload-boundary",
-  "validate_immutable_policy final-upload-boundary",
-  "validate_source_evidence final-upload-boundary",
-  "verify_registry_integrity final-upload-boundary",
-  "validate_commits final-publish-boundary",
-  "validate_immutable_policy final-publish-boundary",
-  "validate_source_evidence final-publish-boundary",
-  "verify_registry_integrity final-publish-boundary",
-  "validate_commits final-immutable",
-  "validate_immutable_policy final-immutable",
-  "validate_source_evidence final-immutable",
-  "verify_registry_integrity final-immutable",
-]) {
-  assert.ok(
-    releaseRecoveryScript.includes(recoveryGate),
-    `recovery must close every identity and registry TOCTOU boundary: ${recoveryGate}`,
-  );
-}
-for (const safetyContract of [
-  ".commit.verification.verified == true",
-  '.commit.verification.reason == "valid"',
-  "git status --porcelain=v1 --untracked-files=all",
-  "trusted recovery checkout is not byte-clean",
-  '.conclusion == "failure"',
-  "Publish to npmjs.com",
-  "Publish to GitHub Packages",
-  ".expired == false",
-  "sha256sum --check --strict",
-  "verify-file-sri",
-  "Package tarball contains unsafe path",
-  "LCV_AUTOMATION_TOKEN is required",
-  "enforced_by_owner",
-  "Release changed before upload; refusing overwrite or duplication",
-  "Release changed before publication PATCH",
-  'make_latest: "true"',
-  "assert-safe-gh-release-verifier",
-  "CVE-2026-48501",
-  'github_release verify "$tag"',
-  'github_release verify-asset "$tag"',
-]) {
-  assert.ok(
-    releaseRecoveryScript.includes(safetyContract),
-    `recovery must retain fail-closed contract: ${safetyContract}`,
-  );
-}
-assert.match(
-  releaseRecoveryScript,
-  /-H "Authorization: Bearer \$github_token"/,
-  "the one-time recovery upload must use GitHub's Bearer authorization scheme",
-);
-assert.match(
-  releaseRecoveryScript,
-  /github_release verify-asset "\$tag" "\$artifact_tarball"/,
-  "immutable asset attestation must verify the exact downloaded local asset path",
-);
-assert.equal(
-  (releaseRecoveryScript.match(/--request POST/g) ?? []).length,
-  1,
-  "recovery may contain exactly one guarded asset-creation operation",
-);
-assert.equal(
-  (releaseRecoveryScript.match(/--method PATCH/g) ?? []).length,
-  1,
-  "recovery may contain exactly one guarded draft-publication operation",
-);
-assert.match(
-  releaseRecoveryScript,
-  /immutability_json_api --method PATCH "repos\/\$repository\/releases\/\$release_id"/,
-  "the exact draft-publication transition must use the administrative token after GITHUB_TOKEN integration access is refused",
-);
-assert.doesNotMatch(
-  releaseRecoveryScript,
-  /--method DELETE|--request DELETE|gh release delete|gh release upload|--clobber|npm\s+publish|git\s+push|git\s+tag|git\s+reset/,
-  "recovery must never delete, overwrite, publish a package, or mutate Git identity/history",
-);
 assert.equal(
   (publishWorkflow.match(/verify_asset_bytes "\$asset_id"/g) ?? []).length,
   3,
@@ -3776,7 +3241,6 @@ printf '%s\n' "$*" >>"$MOCK_SLEEP_LOG"
 for (const codeScanningGate of [
   "security-events: read",
   "Wait for exact CodeQL analyses and require zero results",
-  'github_run list --repo "$GITHUB_REPOSITORY" --workflow codeql.yml --commit "$TARGET_SHA"',
   "code-scanning/analyses?per_page=100",
   "--paginate --slurp",
   "Accept: application/sarif+json",
@@ -3796,21 +3260,25 @@ const codeScanningGateBlock = autoTagWorkflow.match(
   /- name: Wait for exact CodeQL analyses and require zero results[\s\S]*?(?=\n\s+- name: Require triggered Dependabot updates to pass)/,
 )?.[0];
 assert.ok(codeScanningGateBlock, "auto-tag must retain an explicit code-scanning gate step");
-const configuredCodeqlLanguages = [
-  ...codeqlWorkflow.matchAll(/^\s+- language:\s*([^\s]+)\s*$/gm),
-].map((match) => match[1]);
-assert.deepEqual(
-  configuredCodeqlLanguages,
-  ["actions", "javascript-typescript", "python"],
-  "the CodeQL release-category contract must exactly match the committed analysis matrix",
-);
+// CodeQL runs through GitHub's default setup (Enterprise security configuration).
+const configuredCodeqlLanguages = ["actions", "javascript-typescript", "python"];
+// A configured language with no source in the tree fails default setup with
+// "CodeQL could not process any code", so its analysis is never published and
+// the release gates below would wait for a category that can never arrive.
+if (configuredCodeqlLanguages.includes("python")) {
+  const pythonProbe = await read("quality/code-quality-probe.py").catch(() => "");
+  assert.ok(
+    pythonProbe.trim().length > 0,
+    "quality/code-quality-probe.py must keep analyzable Python source while CodeQL default setup analyzes python",
+  );
+}
 for (const [gate, label] of [
   [codeScanningGateBlock, "auto-tag"],
   [publishPrerequisiteGateBlock, "publish"],
 ]) {
   assert.ok(
     gate.includes(
-      'required_codeql_categories=("/language:actions" "/language:javascript-typescript" "/language:python")',
+      `required_codeql_categories=(${configuredCodeqlLanguages.map((language) => `"/language:${language}"`).join(" ")})`,
     ),
     `${label} must require every category configured by the CodeQL matrix`,
   );
@@ -4316,7 +3784,8 @@ const directDependencies = new Map([
   ]),
 ]);
 function validateThirdPartyInventory(markdown) {
-  const rows = markdown
+  const npmSection = markdown.split("GitHub Actions used by the workflows")[0];
+  const rows = npmSection
     .split(/\r?\n/)
     .filter((line) => /^\|\s*[^-|\s][^|]*\|/.test(line))
     .slice(1)
@@ -4365,6 +3834,31 @@ function validateThirdPartyInventory(markdown) {
   );
 }
 validateThirdPartyInventory(thirdParty);
+const workflowDirectory = path.join(root, ".github/workflows");
+const workflowActions = new Set();
+for (const entry of await readdir(workflowDirectory)) {
+  if (!/\.ya?ml$/.test(entry)) continue;
+  const workflow = await readFile(path.join(workflowDirectory, entry), "utf8");
+  for (const match of workflow.matchAll(
+    /^\s+uses:\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}(?=[ \t]*(?:#.*)?$)/gm,
+  )) {
+    workflowActions.add(match[1]);
+  }
+}
+assert.ok(
+  workflowActions.size > 0,
+  "the workflows must pin at least one external Action by full-length SHA",
+);
+const actionSection = thirdParty.split("GitHub Actions used by the workflows")[1] ?? "";
+for (const action of workflowActions) {
+  const escapedAction = action.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  const actionRow = new RegExp("^\\|\\s*" + escapedAction + "\\s*\\|", "m");
+  assert.match(
+    actionSection,
+    actionRow,
+    `THIRDPARTY.md must list the GitHub Action ${action} by name, license and source`,
+  );
+}
 const anthropicRow = thirdParty
   .split(/\r?\n/)
   .find((line) => line.includes("| @anthropic-ai/sdk "));
@@ -4453,19 +3947,9 @@ for (const [document, label] of [
 }
 
 assert.match(
-  codeqlWorkflow,
-  /queries:\s*security-and-quality/,
-  "the committed Advanced CodeQL workflow must retain security-and-quality queries",
-);
-assert.doesNotMatch(
-  securityBaseline,
-  /Advanced Setup is intentionally not committed/,
-  "security documentation must not claim the committed CodeQL workflow is absent",
-);
-assert.match(
   serverSource,
-  /codeql_policy:\s*"Repository policy: committed Advanced CodeQL workflow/,
-  "server_info must report the repository's actual Advanced CodeQL policy",
+  /codeql_policy:\s*"Repository policy: CodeQL default setup applied by the Enterprise security configuration/,
+  "server_info must report the repository's actual CodeQL default-setup policy",
 );
 
 console.log("npm v12 release security regression: PASS");
