@@ -31,6 +31,7 @@ const [
   serverSource,
   dependabotConfig,
   pythonVersion,
+  docsNpmignore,
 ] = await Promise.all([
   read("package.json").then(JSON.parse),
   read("package-lock.json").then(JSON.parse),
@@ -47,6 +48,7 @@ const [
   read("src/mcp/server.ts"),
   read(".github/dependabot.yml"),
   read(".python-version"),
+  read("docs/.npmignore"),
 ]);
 
 const expectedAllowScripts = {
@@ -221,13 +223,14 @@ assert.match(
   /concurrency:\s*\r?\n\s+group:[^\n]*\r?\n\s+queue:\s*max\r?\n\s+cancel-in-progress:\s*false/,
   "publication must queue every pending release instead of replacing it",
 );
-// The tarball is built where no publishing identity exists, and the two
-// registry writers never install dependencies: they publish that artifact with
-// lifecycle scripts disabled. Each job is audited on its own.
+// Every check that reads the repository, the release or the registry runs in
+// the build job, where no publishing identity exists. The two writers only
+// publish the artifact it produced.
 const [, buildJob, npmjsJob, githubPackagesJob] = publishWorkflow.split(
   /\n {2}(?=build:|npmjs:|github-packages:)/,
 );
 assert.ok(buildJob && npmjsJob && githubPackagesJob, "every publishing job must be auditable");
+
 assert.doesNotMatch(
   buildJob,
   /id-token:\s*write/,
@@ -246,8 +249,40 @@ assert.match(
 assert.match(
   buildJob,
   /if:\s*\$\{\{\s*!github\.event\.release\.prerelease\s*\}\}/,
-  "a prerelease Release must stop the whole publication, which every writer depends on",
+  "a Release marked as a prerelease must stop the publication before anything is built",
 );
+// The three properties neither GitHub nor npm enforces on its own.
+for (const [pattern, contract] of [
+  [
+    /compare\/main\.\.\.\$GITHUB_SHA/,
+    "prove the released commit is part of main, where the required checks ran",
+  ],
+  [/identical \| behind\) ;;/, "accept only a commit identical to or already merged into main"],
+  [
+    /RELEASE_TAG" != "\$manifest_tag/,
+    "refuse a release tag that does not name the manifest version",
+  ],
+  [
+    /is a prerelease; this repository publishes only stable versions/,
+    "refuse a prerelease manifest, which would otherwise take the latest dist-tag",
+  ],
+  [
+    /published_latest="\$\(npm view "\$package_name" version/,
+    "read the version the registry already serves",
+  ],
+  [/grep -q 'E404'/, "treat only npm's explicit not-found as an unpublished package"],
+  [
+    /Could not read the published version of \$package_name; refusing to publish/,
+    "fail closed when the registry read fails, instead of skipping the downgrade guard",
+  ],
+  [
+    /refusing to move the latest dist-tag backward/,
+    "refuse a version older than the published latest",
+  ],
+]) {
+  assert.match(buildJob, pattern, `the build job must ${contract}`);
+}
+
 for (const [job, label] of [
   [npmjsJob, "the npmjs job"],
   [githubPackagesJob, "the GitHub Packages job"],
@@ -256,11 +291,14 @@ for (const [job, label] of [
   assert.match(job, /needs:[^\n]*build/, `${label} must publish the artifact the build job packed`);
   assert.doesNotMatch(
     job,
+    /actions\/checkout/,
+    `${label} must not check out the repository while it holds a publishing identity`,
+  );
+  assert.doesNotMatch(
+    job,
     /npm ci/,
     `${label} must not install dependencies while it holds a publishing identity`,
   );
-  // npm refuses to generate provenance for a package it treats as new or
-  // private, so both registries need the explicit public access.
   assert.match(
     job,
     /TARBALL: \$\{\{ needs\.build\.outputs\.tarball \}\}/,
@@ -289,48 +327,6 @@ assert.match(
   /^\s+registry-url:\s*https:\/\/npm\.pkg\.github\.com\/?\s*$/m,
   "the mirror job must select exactly GitHub Packages through setup-node",
 );
-// GitHub has no native rule binding a Release to the default branch.
-assert.match(
-  npmjsJob,
-  /compare\/main\.\.\.\$GITHUB_SHA/,
-  "publishing must prove the released commit is part of main, where the required checks ran",
-);
-assert.match(
-  npmjsJob,
-  /identical \| behind\) ;;/,
-  "only a commit identical to or already merged into main may be published",
-);
-assert.match(
-  npmjsJob,
-  /RELEASE_TAG" != "\$manifest_tag/,
-  "publishing must refuse a release tag that does not name the manifest version",
-);
-// `npm publish` moves `latest` to whatever it publishes, in any order.
-assert.match(
-  npmjsJob,
-  /published_latest="\$\(npm view "\$package_name" version/,
-  "publishing must read the version the registry already serves",
-);
-assert.match(
-  npmjsJob,
-  /grep -q 'E404'/,
-  "only npm's explicit not-found may mean the package was never published",
-);
-assert.match(
-  npmjsJob,
-  /Could not read the published version of \$package_name; refusing to publish/,
-  "a registry read failure must fail closed instead of skipping the downgrade guard",
-);
-assert.match(
-  npmjsJob,
-  /is a prerelease; this repository publishes only stable versions/,
-  "publishing must refuse a prerelease manifest, which would otherwise take the latest dist-tag",
-);
-assert.match(
-  npmjsJob,
-  /refusing to move the latest dist-tag backward/,
-  "publishing must refuse a version older than the published latest",
-);
 for (const forbidden of [
   ["NPM_TOKEN", "a long-lived npm publish token"],
   ["LCV_AUTOMATION_TOKEN", "a personal access token"],
@@ -345,6 +341,22 @@ assert.doesNotMatch(
   securityBaseline,
   /Package publishing requires the `NPM_TOKEN` secret/,
   "security documentation must not prescribe a deprecated long-lived npm publish token",
+);
+
+// --- packaging policy --------------------------------------------------------
+//
+// SECURITY.md states that the public artifact carries no internal field
+// report. `package.json` ships `docs/`, so the exclusion lives in
+// `docs/.npmignore` and nothing else enforces it.
+
+assert.ok(
+  (packageJson.files ?? []).includes("docs/"),
+  "the package must keep shipping docs/, which is what makes the report exclusion necessary",
+);
+assert.match(
+  docsNpmignore,
+  /^reports\/$/m,
+  "docs/.npmignore must keep internal field reports out of the published tarball",
 );
 
 // --- code scanning ----------------------------------------------------------
@@ -501,18 +513,61 @@ assert.ok(
   "the workflows must pin at least one external Action by full-length SHA",
 );
 const actionSection = thirdParty.split("GitHub Actions used by the workflows")[1] ?? "";
-// The inventory is checked in both directions: a missing row hides a component,
-// and a stale row claims one the workflows no longer use.
-const inventoriedActions = new Set(
-  [...actionSection.matchAll(/^\|\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)\s*\|/gm)].map(
-    (match) => match[1],
-  ),
-);
-assert.deepEqual(
-  [...inventoriedActions].sort(),
-  [...workflowActions].sort(),
-  "THIRDPARTY.md must list exactly the GitHub Actions the workflows use, by name, license and source",
-);
+// The inventory is checked in both directions and column by column: a missing
+// row hides a component, a stale row claims one the workflows no longer use,
+// and a name-only check would accept any license or source text.
+function validateActionInventory(section) {
+  const rows = [
+    ...section.matchAll(
+      /^\|\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$/gm,
+    ),
+  ];
+  const listed = new Set();
+  for (const [, action, license, source] of rows) {
+    assert.ok(!listed.has(action), `THIRDPARTY.md must contain ${action} exactly once`);
+    listed.add(action);
+    assert.match(
+      license,
+      /^[A-Za-z0-9][A-Za-z0-9.+-]*$/,
+      `THIRDPARTY.md must name a license identifier for ${action}, not free text`,
+    );
+    assert.equal(
+      source,
+      `https://github.com/${action}`,
+      `THIRDPARTY.md must identify the canonical source for ${action}`,
+    );
+  }
+  assert.deepEqual(
+    [...listed].sort(),
+    [...workflowActions].sort(),
+    "THIRDPARTY.md must list exactly the GitHub Actions the workflows use",
+  );
+}
+validateActionInventory(actionSection);
+// The guard is proven by mutation, like the npm inventory above it.
+for (const [mutation, expectedFailure] of [
+  [actionSection.replace(/^\| actions\/checkout .*$/m, ""), /exactly the GitHub Actions/],
+  [
+    actionSection.replace(
+      "https://github.com/actions/checkout",
+      "https://example.invalid/actions/checkout",
+    ),
+    /canonical source/,
+  ],
+  [
+    actionSection.replace(
+      "| MIT        | https://github.com/actions/checkout",
+      "| see the repo | https://github.com/actions/checkout",
+    ),
+    /license identifier/,
+  ],
+]) {
+  assert.throws(
+    () => validateActionInventory(mutation),
+    expectedFailure,
+    "the Actions inventory guard must reject a wrong name, license or source",
+  );
+}
 const anthropicRow = thirdParty
   .split(/\r?\n/)
   .find((line) => line.includes("| @anthropic-ai/sdk "));
