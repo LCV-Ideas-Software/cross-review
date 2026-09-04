@@ -123,11 +123,16 @@ Publication is triggered by a push to `main` that changes the manifest
 version, so the published commit is `main` by construction and the required
 checks already ran on it. Publishing is fail-closed on what neither GitHub nor
 npm proves on its own: the manifest version must be a plain three-part numeric
-version the `vXX.XX.XX` form can express, never a prerelease; a version whose
-tag already exists publishes nothing, because it was released before; and the
-version must be newer than the one the registry already serves, so `latest`
-cannot move backward. A tag or registry read that fails for any reason other
-than an explicit not-found refuses the publication. The Release is created
+version the `vXX.XX.XX` form can express, never a prerelease; only a push
+whose manifest version differs from the previous head's publishes, so a
+dependency merge never republishes an unchanged version; a version whose tag
+already exists publishes nothing, because it was recorded before; a version npm
+already serves with no tag is refused as a run that died after the npm write,
+to be resumed with `gh run rerun --failed`, never written again; and the
+version must be newer than the one npm already serves, so `latest` cannot
+move backward. A
+manifest, tag or registry read that fails for any reason other than an
+explicit not-found refuses the publication. The Release is created
 last, by the run's own token, as the record of a publication that already
 happened, so a registry failure never leaves an immutable Release behind. The Enterprise tag ruleset prohibits
 deletion and non-fast-forward updates without bypass, so a published ref cannot

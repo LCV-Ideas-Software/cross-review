@@ -44,8 +44,14 @@ The merge is the deliberate act. A pull request that bumps the version
 publishes when it lands, so a version that must not be published must not be
 merged. The manifest version has to be a plain three-part numeric version,
 never a prerelease: the workflow refuses anything else before deriving the
-`vXX.XX.XX` tag. A push that changes `package.json` without changing the
-version, such as a Dependabot merge, ends as a no-op that says so.
+`vXX.XX.XX` tag. The push that bumps the version is the push that
+publishes: the manifest version is compared with the one the previous head
+declared, so a push that changes `package.json` without changing the version,
+such as a Dependabot merge, ends as a no-op that says so. A run that dies
+after a registry write is resumed with GitHub's own recovery,
+`gh run rerun --failed <run-id>`, which reruns only the failed jobs and keeps
+the outputs of the ones that passed, so nothing is published twice; the
+workflow refuses to start over a version npm already serves and says so.
 
 The release checks inside `publish.yml` are business logic with no
 repository-owned regression, by the operator's decision: native scanners

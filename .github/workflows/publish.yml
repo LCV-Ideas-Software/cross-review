@@ -27,14 +27,21 @@ jobs:
   # here, where no publishing identity exists. Dependency-provided build tools
   # therefore never run in a job that could exchange the OIDC credential for a
   # registry token, and a refusal stops the publication before an artifact
-  # exists. A push that changed `package.json` without changing the version,
-  # which is what a Dependabot merge is, ends here as a no-op and says so.
+  # exists.
+  #
+  # The push that bumps the version is the push that publishes: the manifest
+  # version is compared with the one the previous head declared, so a push
+  # that touched `package.json` without changing the version, which is what a
+  # Dependabot merge is, ends here as a no-op and says so. A run that dies
+  # after a registry write is resumed with `gh run rerun --failed`, GitHub's
+  # own recovery: it reruns only the failed jobs and keeps the outputs of the
+  # ones that passed, so nothing is published twice.
   build:
     name: Decide and build the release tarball
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read # Read the pushed commit and the existing tags, nothing else.
+      contents: read # Read both manifests and the existing tags, nothing else.
     outputs:
       publish: ${{ steps.decide.outputs.publish }}
       tag: ${{ steps.decide.outputs.tag }}
@@ -52,19 +59,33 @@ jobs:
           check-latest: true
           package-manager-cache: false
 
-      # The manifest decides whether there is anything to publish. A version
-      # whose tag already exists was released before: nothing to do, and the
-      # run ends green saying so. A prerelease, a version the `vXX.XX.XX` form
-      # cannot express, or a version older than the one the registry serves
-      # is a refusal, and the run fails saying which.
+      # Every read fails closed: only an explicit not-found means "absent";
+      # any other failure refuses to decide. A prerelease, a version the
+      # `vXX.XX.XX` form cannot express, or a version npm already serves is a
+      # refusal, and the run fails saying which.
       - name: Decide whether this push publishes
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
+          errors="$RUNNER_TEMP/decide.err"
+
+          # Did this push change the version? `main` is protected against
+          # force-push, so the previous head always exists.
+          if ! before_version="$(gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$BEFORE_SHA" -H "Accept: application/vnd.github.raw" --jq '.version' 2>"$errors")"; then
+            cat "$errors" >&2
+            echo "::error::Could not read the manifest at the previous head $BEFORE_SHA; refusing to decide."
+            exit 1
+          fi
+          if [ "$before_version" = "$package_version" ]; then
+            echo "The manifest version is still $package_version: this push changed package.json without bumping the version, so it publishes nothing."
+            echo "publish=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           case "$package_version" in
             *-*)
@@ -72,7 +93,6 @@ jobs:
               exit 1
               ;;
           esac
-
           # SemVer also allows build metadata (`4.6.7+linux`), which carries no
           # hyphen. The tag below pads numeric components, so anything but a
           # plain three-part version stops here instead of producing a tag no
@@ -83,36 +103,37 @@ jobs:
           fi
           tag="v$(printf '%s' "$package_version" | awk -F. '{ printf "%02d.%02d.%02d", $1, $2, $3 }')"
 
-          # Fail closed: only GitHub's explicit not-found means the tag is
-          # absent. Any other failure refuses to decide.
-          ref_error="$RUNNER_TEMP/tag-ref.err"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>"$ref_error"; then
-            echo "Tag $tag already exists: $package_version was released before, so this push publishes nothing."
+          # An existing tag means a previous run finished: the Release is
+          # created last, so nothing is left to do.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>"$errors"; then
+            echo "Tag $tag already exists: $package_version was published and recorded before, so this run does nothing."
             echo "publish=false" >>"$GITHUB_OUTPUT"
             exit 0
-          elif grep -q 'HTTP 404' "$ref_error"; then
-            :
-          else
-            cat "$ref_error" >&2
+          elif ! grep -q 'HTTP 404' "$errors"; then
+            cat "$errors" >&2
             echo "::error::Could not read tag $tag; refusing to decide."
             exit 1
           fi
 
           # `npm publish` moves `latest` to whatever it publishes, in any order.
-          # Fail closed: only npm's explicit not-found means the package has
-          # never been published; every other failure refuses instead of
-          # silently allowing a downgrade.
-          registry_error="$RUNNER_TEMP/npm-view.err"
-          if published_latest="$(npm view "$package_name" version 2>"$registry_error")"; then
+          # Only npm's explicit not-found means the package was never
+          # published; every other failure refuses instead of allowing a
+          # downgrade. A version npm already serves with no tag is a run that
+          # died after the npm write: that is resumed, not repeated.
+          if published_latest="$(npm view "$package_name" version 2>"$errors")"; then
             :
-          elif grep -q 'E404' "$registry_error"; then
+          elif grep -q 'E404' "$errors"; then
             published_latest=""
           else
-            cat "$registry_error" >&2
+            cat "$errors" >&2
             echo "::error::Could not read the published version of $package_name; refusing to publish."
             exit 1
           fi
-          if [ -n "$published_latest" ] && [ "$published_latest" != "$package_version" ]; then
+          if [ "$published_latest" = "$package_version" ]; then
+            echo "::error::The registry already serves $package_version but tag $tag does not exist: a previous run died after that write. Resume it with 'gh run rerun --failed <run-id>'; do not start over."
+            exit 1
+          fi
+          if [ -n "$published_latest" ]; then
             newest="$(printf '%s\n%s\n' "$published_latest" "$package_version" | sort -V | tail -n 1)"
             if [ "$newest" != "$package_version" ]; then
               echo "::error::$package_version is older than the published latest ($published_latest); refusing to move the latest dist-tag backward."
