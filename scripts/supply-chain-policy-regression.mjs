@@ -290,6 +290,11 @@ assert.match(
 );
 assert.match(
   npmjsJob,
+  /is a prerelease; this repository publishes only stable versions/,
+  "publishing must refuse a prerelease manifest, which would otherwise take the latest dist-tag",
+);
+assert.match(
+  npmjsJob,
   /Could not read the published version of \$package_name; refusing to publish/,
   "a registry read failure must fail closed instead of skipping the downgrade guard",
 );
@@ -424,13 +429,22 @@ validateThirdPartyInventory(thirdParty);
 
 const workflowDirectory = path.join(root, ".github/workflows");
 const workflowActions = new Set();
+// Every external `uses:` must be accounted for. An entry this reader cannot
+// parse fails here instead of quietly escaping the legal inventory.
+const externalUses = /^\s+(?:"uses"|'uses'|uses)\s*:\s*(?!["']?[.$]\/)(\S.*?)\s*(?:#.*)?$/gm;
+const pinnedAction =
+  /^["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}["']?$/;
 for (const entry of await readdir(workflowDirectory)) {
   if (!/\.ya?ml$/.test(entry)) continue;
   const workflow = await readFile(path.join(workflowDirectory, entry), "utf8");
-  for (const match of workflow.matchAll(
-    /^\s+uses:\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}(?=[ \t]*(?:#.*)?$)/gm,
-  )) {
-    workflowActions.add(match[1]);
+  for (const match of workflow.matchAll(externalUses)) {
+    const reference = match[1];
+    const pinned = pinnedAction.exec(reference);
+    assert.ok(
+      pinned,
+      `${entry} must pin every external action by full-length SHA; found ${reference}`,
+    );
+    workflowActions.add(pinned[1]);
   }
 }
 assert.ok(

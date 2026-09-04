@@ -69,6 +69,16 @@ jobs:
           esac
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
+          # The organization display tag is vXX.XX.XX and both publish commands
+          # omit `--tag`, so a prerelease manifest would take `latest`. The
+          # GitHub prerelease flag is set by whoever creates the Release, which
+          # is not evidence about the manifest.
+          case "$package_version" in
+            *-*)
+              echo "::error::$package_version is a prerelease; this repository publishes only stable versions."
+              exit 1
+              ;;
+          esac
           manifest_tag="v$(node -p "require('./package.json').version.split('.').map((part) => part.padStart(2, '0')).join('.')")"
           if [ "$RELEASE_TAG" != "$manifest_tag" ]; then
             echo "::error::Release tag $RELEASE_TAG does not name the manifest version $manifest_tag."

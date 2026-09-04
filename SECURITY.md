@@ -117,20 +117,14 @@ preflight outcomes no longer remain stale-open. npm 12 still fails closed on
 dependency lifecycle changes; wildcard script permission and broad bypasses
 remain forbidden.
 
-Publishing is independently fail-closed even when invoked from a tag or manual
-dispatch: the tag must still equal the current `main` SHA, all applicable
-workflows must be green for that SHA and every CodeQL default-setup category
-must carry zero results for it. The documented `workflow_dispatch`
-bridge is retained only because a tag push made with `GITHUB_TOKEN` does not
-start a second workflow. It has no tag input: the actual event must be the
-protected `refs/tags/v*` ref (`github.ref`, `github.ref_type` and
-`github.ref_protected` are all checked), and tag, checkout and current `main`
-are revalidated after local tests and immediately before each external write.
-The active `v*` tag ruleset prohibits deletion and non-fast-forward updates
-without bypass, so the ref cannot be silently retargeted between those checks.
-After trusted OIDC publication, the workflow installs the exact registry
-version with scripts/Git/remote dependencies disabled and runs `npm audit
-signatures` to verify registry signatures and provenance attestations.
+Publishing is fail-closed on the three things neither GitHub nor npm proves on
+its own: the released commit must be part of `main`, where the required checks
+ran; the Release tag must name the manifest version; and that version must be
+newer than the one the registry already serves, so `latest` cannot move
+backward. A registry read that fails for any reason other than an explicit
+not-found refuses the publication. The Enterprise tag ruleset prohibits
+deletion and non-fast-forward updates without bypass, so a published ref cannot
+be silently retargeted.
 
 The 4.5.16 controls preserved here transport evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
