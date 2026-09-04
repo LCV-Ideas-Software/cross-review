@@ -3262,6 +3262,16 @@ const codeScanningGateBlock = autoTagWorkflow.match(
 assert.ok(codeScanningGateBlock, "auto-tag must retain an explicit code-scanning gate step");
 // CodeQL runs through GitHub's default setup (Enterprise security configuration).
 const configuredCodeqlLanguages = ["actions", "javascript-typescript", "python"];
+// A configured language with no source in the tree fails default setup with
+// "CodeQL could not process any code", so its analysis is never published and
+// the release gates below would wait for a category that can never arrive.
+if (configuredCodeqlLanguages.includes("python")) {
+  const pythonProbe = await read("quality/code-quality-probe.py").catch(() => "");
+  assert.ok(
+    pythonProbe.trim().length > 0,
+    "quality/code-quality-probe.py must keep analyzable Python source while CodeQL default setup analyzes python",
+  );
+}
 for (const [gate, label] of [
   [codeScanningGateBlock, "auto-tag"],
   [publishPrerequisiteGateBlock, "publish"],

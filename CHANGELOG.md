@@ -31,6 +31,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   (listing filtered by tool and branch) for up to fifteen minutes, keeping
   the zero-results rule per category.
   `server_info.codeql_policy` describes the default setup.
+  `quality/code-quality-probe.py` keeps analyzable Python source in the tree,
+  because the removed Dependabot config validator was the last `.py` file and
+  a configured language without source fails default setup; the release
+  regression fails fast if that marker ever disappears.
 - **Dependabot on the organization standard.** Weekly on Monday 06:00
   America/Sao_Paulo, one `minor-e-patch` group per ecosystem, seven-day
   cooldown (`actions/*` and `github/*` excluded for GitHub Actions),

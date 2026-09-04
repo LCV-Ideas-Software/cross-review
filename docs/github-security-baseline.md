@@ -10,7 +10,9 @@ Required repository settings after the remote is created:
 3. Keep Code Scanning on GitHub's CodeQL default setup, applied by the
    Enterprise security configuration (GitHub Actions, JavaScript/TypeScript
    and Python; extended query suite). The repository commits no CodeQL
-   workflow.
+   workflow. `quality/code-quality-probe.py` is an analysis-only marker that
+   keeps Python source in the tree: a configured language without source fails
+   default setup, and the release gates below require its analysis.
 4. Enable Code Quality.
 5. Enable Dependabot alerts.
 6. Enable Dependabot security updates.
