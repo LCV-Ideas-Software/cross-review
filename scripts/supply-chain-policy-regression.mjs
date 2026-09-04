@@ -357,10 +357,13 @@ function validateWriterJob(job, label) {
     [publishCommand],
     `${label} must run that publish command, complete and alone, beside the credential`,
   );
+  // The complete ordered list, not a deduplicated set: collapsing duplicates
+  // would accept a second `download-artifact` step, which is one more action
+  // running beside the credential.
   assert.deepEqual(
-    [...new Set(actionsOf(job))].sort(),
-    [...allowedWriterActions].sort(),
-    `${label} must run only the two GitHub-authored actions publishing requires`,
+    actionsOf(job),
+    allowedWriterActions,
+    `${label} must run only the two GitHub-authored actions publishing requires, once each`,
   );
 }
 for (const [job, label] of [
@@ -378,16 +381,25 @@ for (const [job, label] of [
     `${label} must take the artifact name through the environment, never interpolated into the shell`,
   );
 }
-// Proven by injection, in the YAML spellings a literal-key reader walks past.
-for (const [injected, description] of [
-  ['- "run": npm install attacker', "a double-quoted run key"],
-  ["- { run: npm install attacker }", "a flow-style run mapping"],
+// Proven by injection: the YAML spellings a literal-key reader walks past, and
+// a duplicate of an action the allowlist already admits.
+const withExtraStep = (step) => ({ ...npmjsJob, steps: [...stepsOf(npmjsJob), step] });
+for (const [mutated, description] of [
+  [withExtraStep(parseYaml('- "run": npm install attacker')[0]), "a double-quoted run key"],
+  [withExtraStep(parseYaml("- { run: npm install attacker }")[0]), "a flow-style run mapping"],
   [
-    '- "u\\u0073es": third-party/action@0000000000000000000000000000000000000000',
+    withExtraStep(
+      parseYaml('- "u\\u0073es": third-party/action@0000000000000000000000000000000000000000')[0],
+    ),
     "an escaped uses key",
   ],
+  [
+    withExtraStep(
+      stepsOf(npmjsJob).find((step) => step.uses?.startsWith("actions/download-artifact")),
+    ),
+    "a second copy of an action the allowlist admits",
+  ],
 ]) {
-  const mutated = { ...npmjsJob, steps: [...stepsOf(npmjsJob), parseYaml(injected)[0]] };
   assert.throws(
     () => validateWriterJob(mutated, "the npmjs job"),
     /must run/,
