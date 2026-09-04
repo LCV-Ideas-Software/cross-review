@@ -50,7 +50,13 @@ checked before it is typed, with native commands and nothing else:
    `gh api repos/LCV-Ideas-Software/cross-review/contents/package.json?ref=main -H 'Accept: application/vnd.github.raw' --jq .version`.
    It must be a plain three-part numeric version; anything else stops here.
 3. Derive the tag by padding each part to two digits (`4.6.6` is `v04.06.06`)
-   and create the Release against `main` explicitly:
+   and prove it does not exist yet:
+   `git ls-remote --tags origin refs/tags/v04.06.06` must print nothing.
+   `--target` only chooses the commit when `gh` creates the tag; an existing
+   tag is used as it is, and the Enterprise ruleset forbids deleting it, so a
+   stale tag with this name means the version has to be bumped again, never
+   released over.
+4. Create the Release against `main` explicitly:
 
 ```bash
 gh release create v04.06.06 --target main --generate-notes
