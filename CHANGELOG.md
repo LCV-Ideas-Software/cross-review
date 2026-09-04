@@ -43,6 +43,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
   dist-tag monotonicity proofs, npm OIDC boundary probes and the registry
   signature audit: each restated a guarantee the platform or npm already makes.
 
+### Security
+
+- Refreshes the lockfile so the transitive `qs` dependency moves from 6.15.2 to
+  6.16.0, closing GHSA-4mjr-xmp4-gh2g and GHSA-x5fp-wj9c-mxmx. `qs` reaches the
+  production tree through `@modelcontextprotocol/sdk` and `express`, whose range
+  `^6.14.0` already admits the fixed version, so no override is needed. The
+  three patch bumps `qs` requires (`es-object-atoms`, `hasown`, `side-channel`)
+  come with it; nothing else in the tree moves.
+
 ### Note
 
 The `v04.06.05` tag exists on `37a9dc1` and was never published: the machinery
