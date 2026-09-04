@@ -82,6 +82,16 @@ jobs:
               ;;
           esac
 
+          # SemVer also allows build metadata (`4.6.7+linux`), which carries no
+          # hyphen and would survive the guard above. The `vXX.XX.XX` tag below
+          # is derived by padding numeric components, so anything but a plain
+          # three-part version must stop here instead of producing a tag no
+          # Release can carry.
+          if ! printf '%s\n' "$package_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::$package_version is not a plain three-part numeric version; this repository publishes only vXX.XX.XX releases."
+            exit 1
+          fi
+
           manifest_tag="v$(node -p "require('./package.json').version.split('.').map((part) => part.padStart(2, '0')).join('.')")"
           if [ "$RELEASE_TAG" != "$manifest_tag" ]; then
             echo "::error::Release tag $RELEASE_TAG does not name the manifest version $manifest_tag."

@@ -23,13 +23,24 @@ standard `v00.00.00`; npm package versions remain SemVer.
   only because the previous release gate needed a push run per exact SHA;
   `zizmor.yml` and `scorecard.yml` are byte-identical to the organization copies
   again.
-- The workflow-policy regression becomes
-  `scripts/supply-chain-policy-regression.mjs`: it keeps the manifest, lockfile,
-  npm client, CI toolchain, CodeQL marker and legal-inventory contracts, and
-  drops the contracts that only described the removed machinery.
+- The repository-owned workflow-policy regression is gone, not rewritten. Its
+  contracts are owned by native, official mechanisms that already gate this
+  repository: zizmor audits workflow permissions, action pinning, tool pinning,
+  trusted publishing, template injection, cache poisoning and credential
+  persistence; CodeQL default setup analyzes the `actions` language; Dependency
+  Review, Dependabot and the Enterprise license rule own the dependency and
+  legal surface; the GitHub dependency graph is the live inventory; npm itself
+  enforces the `.npmrc` script policy and refuses a lockfile/manifest mismatch;
+  and npm Trusted Publishing authorizes the publication by repository, workflow
+  and environment. The release guards that remain are business logic and live in
+  `publish.yml` itself, protected by CODEOWNERS, required review and the
+  Enterprise rulesets.
 
 ### Removed
 
+- `scripts/npm-v12-release-security-regression.mjs` and its replacement: the
+  repository owns no hand-written policy engine, and no npm script or CI step
+  runs one.
 - `.github/workflows/auto-tag.yml` and the release scripts it drove:
   `release-policy.mjs`, `require-release-push-workflows.sh`,
   `require-dependabot-release-evidence.sh`, `verify-registry-dist.mjs`,

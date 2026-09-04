@@ -820,12 +820,15 @@ O gate de CI executa:
 - ESLint;
 - Biome;
 - TypeScript typecheck;
-- política npm 12 e encadeamento CI → tag;
+- política do cliente npm 12 com bootstrap verificado por SHA-512;
 - bootstrap do npm pinado por SHA-512 antes da execução;
 - smoke tests com stub confirmado.
 
-O gate de publicação executa `npm run check`, `npm test`, valida metadata e
-publica com provenance quando aplicável.
+O gate de publicação não repete lint nem a suíte de testes: esses portões são do
+CI, e a Release nasce de um commit que já passou por eles em `main`. Ele recusa a
+publicação quando o commit não pertence a `main`, quando a tag não nomeia a versão
+do manifesto, quando essa versão não é a que `main` declara ou quando ela é
+anterior à que o registro já serve; só então empacota e publica com proveniência.
 
 ## Changelog breve
 

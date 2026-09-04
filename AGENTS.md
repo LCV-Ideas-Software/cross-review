@@ -45,7 +45,9 @@ order, the agent performs the gesture:
 gh release create v00.00.00 --generate-notes
 ```
 
-The display tag mirrors `package.json` in the organization's `vXX.XX.XX` form.
+The display tag mirrors `package.json` in the organization's `vXX.XX.XX` form,
+so the manifest version has to be a plain three-part numeric version: the
+workflow refuses a prerelease or SemVer build metadata before deriving it.
 The operator keeps the decision; the agent keeps the keystrokes.
 
 ## Workspace Policy

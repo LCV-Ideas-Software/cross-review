@@ -119,7 +119,8 @@ remain forbidden.
 
 Publishing is fail-closed on the four things neither GitHub nor npm proves on
 its own: the released commit must be part of `main`, where the required checks
-ran; the Release tag must name the manifest version; that version must be the
+ran; the Release tag must name the manifest version, which has to be a plain
+three-part numeric version the `vXX.XX.XX` form can express; that version must be the
 one `main` declares now, so an older tag that was never released cannot be
 published after `main` moved past it; and it must be newer than the one the
 registry already serves, so `latest` cannot move backward. A registry read that fails for any reason other than an explicit
