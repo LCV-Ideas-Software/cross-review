@@ -17,7 +17,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   Publishing (OIDC) with `--provenance`, then to GitHub Packages with the
   workflow's own token. Only the writers hold `id-token: write`, so
   dependency-provided build tools never run beside the publishing identity.
-  The operator publishing a Release is the release gesture.
+  The operator publishing a Release is the release gesture. A Release marked
+  as a prerelease fails the run with an explicit error instead of skipping
+  the workflow, so a consumed `release: published` event never reads as a
+  completed no-op.
 - **Zizmor, Scorecard, Pages and CI return to the organization's concurrency.**
   The queued, non-cancelling deviation and the Pages path-filter removal existed
   only because the previous release gate needed a push run per exact SHA;

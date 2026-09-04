@@ -97,18 +97,20 @@ The advisory was published while the 4.5.28 release gate was running, so the
 immutable 4.5.28 tag was not published. v04.05.25 had resolved the three
 advisories known at that time: `body-parser` 2.3.0, nested `protobufjs` 7.6.5,
 and the earlier `brace-expansion` advisory with 5.0.7.
-The Scorecard/Code Scanning and Auto-tag gates remain fail-closed; no finding is
-suppressed. Its version-pinned `allowScripts` approval is likewise updated only
-to `protobufjs@7.6.5`; the cryptographic `npm audit signatures` gate remains mandatory. It
+At that release the Scorecard/Code Scanning and Auto-tag gates were fail-closed
+and no finding was suppressed; Auto-tag was removed in v04.06.06. Its version-pinned `allowScripts` approval is likewise updated only
+to `protobufjs@7.6.5`; the cryptographic `npm audit signatures` gate was mandatory then (removed in
+v04.06.06: npm verifies provenance itself at publication). It
 preserves v04.05.23 normalization of the one-item JSON array that npm v12 returns
 from `npm view --json`; v04.05.22 decoding of npm's published Sigstore DSSE
 envelope before binding SLSA provenance to the release workflow, protected tag,
 and immutable source commit; the v04.05.21 durable telemetry fixture; the v04.05.20 deterministic
 budget/cache fixture, the v04.05.19 release-gate hardening and the 4.5.18 runtime
-trust-boundary controls: the release gate does not weaken artifact verification;
-the post-publish audit
-uses an integrity-bound lock and `npm ci`, validates the installed package
-contract, then verifies npm registry signatures and provenance. The preceding
+trust-boundary controls: that release gate did not weaken artifact verification;
+its post-publish audit used an integrity-bound lock and `npm ci`, validated the
+installed package contract, then verified npm registry signatures and
+provenance. That machinery was removed in v04.06.06; no post-publish verifier
+exists in this repository. The preceding
 4.5.18 release extends the runtime trust boundary symmetrically to factual
 `NOT_READY` and `NEEDS_EVIDENCE` verdicts: missing or fabricated blocker
 evidence cannot remain a clean veto. Raw provider results are persisted as each

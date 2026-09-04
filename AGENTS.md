@@ -50,6 +50,12 @@ so the manifest version has to be a plain three-part numeric version: the
 workflow refuses a prerelease or SemVer build metadata before deriving it.
 The operator keeps the decision; the agent keeps the keystrokes.
 
+The release guards inside `publish.yml` are business logic with no
+repository-owned regression, by the operator's decision: native scanners
+(zizmor, CodeQL) own workflow security, and the guard script changes only
+through a reviewed pull request. The regression rule above does not apply to
+them.
+
 ## Workspace Policy
 
 Follow the workspace-root `AGENTS.md` directives of the private workspace that

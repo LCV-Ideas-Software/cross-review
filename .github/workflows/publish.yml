@@ -29,9 +29,6 @@ jobs:
     name: Build the release tarball
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # First of two independent prerelease guards: this one refuses a Release
-    # whose author marked it as a prerelease. The manifest is checked below.
-    if: ${{ !github.event.release.prerelease }}
     permissions:
       contents: read # Read the released tag, main's manifest and nothing else.
     outputs:
@@ -58,8 +55,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
           set -euo pipefail
+          # A Release its author marked as a prerelease is refused here, as a
+          # failed run, not through a job-level `if:`: a skipped workflow reads
+          # as a completed no-op, and the one-time `release: published` event
+          # is already spent by then.
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            echo "::error::Release $RELEASE_TAG is marked as a prerelease; this repository publishes only stable versions."
+            exit 1
+          fi
+
           comparison="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq '.status')"
           case "$comparison" in
             identical | behind) ;;
@@ -72,9 +79,9 @@ jobs:
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
 
-          # Second prerelease guard, on the manifest itself: the Release flag is
-          # set by whoever creates the Release and says nothing about the
-          # version being published.
+          # The manifest is checked as well: the Release flag above is set by
+          # whoever creates the Release and says nothing about the version
+          # being published.
           case "$package_version" in
             *-*)
               echo "::error::$package_version is a prerelease; this repository publishes only stable versions."
