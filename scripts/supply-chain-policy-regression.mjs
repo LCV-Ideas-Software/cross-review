@@ -221,32 +221,55 @@ assert.match(
   /concurrency:\s*\r?\n\s+group:[^\n]*\r?\n\s+queue:\s*max\r?\n\s+cancel-in-progress:\s*false/,
   "publication must queue every pending release instead of replacing it",
 );
-// Every publishing job is audited on its own: a contract satisfied by one job
-// must not excuse the other.
-const [, npmjsJob, githubPackagesJob] = publishWorkflow.split(/\n {2}(?=npmjs:|github-packages:)/);
+// The tarball is built where no publishing identity exists, and the two
+// registry writers never install dependencies: they publish that artifact with
+// lifecycle scripts disabled. Each job is audited on its own.
+const [, buildJob, npmjsJob, githubPackagesJob] = publishWorkflow.split(
+  /\n {2}(?=build:|npmjs:|github-packages:)/,
+);
+assert.ok(buildJob && npmjsJob && githubPackagesJob, "every publishing job must be auditable");
+assert.doesNotMatch(
+  buildJob,
+  /id-token:\s*write/,
+  "the build job must not hold the publishing identity while dependency build tools run",
+);
+assert.match(
+  buildJob,
+  /npm ci --ignore-scripts/,
+  "the build job must install dependencies without running their lifecycle scripts",
+);
+assert.match(
+  buildJob,
+  /npm pack --pack-destination/,
+  "the build job must pack the release tarball",
+);
+assert.match(
+  buildJob,
+  /if:\s*\$\{\{\s*!github\.event\.release\.prerelease\s*\}\}/,
+  "a prerelease Release must stop the whole publication, which every writer depends on",
+);
 for (const [job, label] of [
   [npmjsJob, "the npmjs job"],
   [githubPackagesJob, "the GitHub Packages job"],
 ]) {
-  assert.ok(job, `${label} must remain independently auditable`);
-  assert.match(
-    job,
-    /npm ci --ignore-scripts/,
-    `${label} must install dependencies without running their lifecycle scripts`,
-  );
   assert.match(job, /id-token:\s*write/, `${label} must request the OIDC credential`);
-  assert.match(job, /contents:\s*read/, `${label} must check out the released tag read-only`);
-  assert.match(
+  assert.match(job, /needs:[^\n]*build/, `${label} must publish the artifact the build job packed`);
+  assert.doesNotMatch(
     job,
-    /if:\s*\$\{\{\s*!github\.event\.release\.prerelease\s*\}\}/,
-    `${label} must refuse a prerelease, which would otherwise take the latest dist-tag`,
+    /npm ci/,
+    `${label} must not install dependencies while it holds a publishing identity`,
   );
   // npm refuses to generate provenance for a package it treats as new or
   // private, so both registries need the explicit public access.
   assert.match(
     job,
-    /npm publish --provenance --access public/,
-    `${label} must publish publicly with a provenance statement`,
+    /TARBALL: \$\{\{ needs\.build\.outputs\.tarball \}\}/,
+    `${label} must take the artifact name through the environment, never interpolated into the shell`,
+  );
+  assert.match(
+    job,
+    /npm publish "\$RUNNER_TEMP\/release\/\$TARBALL" --provenance --access public --ignore-scripts/,
+    `${label} must publish exactly that tarball, publicly, with provenance and without lifecycle scripts`,
   );
 }
 assert.match(
@@ -260,6 +283,11 @@ assert.match(
   npmjsJob,
   /^\s+registry-url:\s*https:\/\/registry\.npmjs\.org\/?\s*$/m,
   "the npmjs job must select exactly the public registry through setup-node",
+);
+assert.match(
+  githubPackagesJob,
+  /^\s+registry-url:\s*https:\/\/npm\.pkg\.github\.com\/?\s*$/m,
+  "the mirror job must select exactly GitHub Packages through setup-node",
 );
 // GitHub has no native rule binding a Release to the default branch.
 assert.match(
@@ -290,23 +318,18 @@ assert.match(
 );
 assert.match(
   npmjsJob,
-  /is a prerelease; this repository publishes only stable versions/,
-  "publishing must refuse a prerelease manifest, which would otherwise take the latest dist-tag",
-);
-assert.match(
-  npmjsJob,
   /Could not read the published version of \$package_name; refusing to publish/,
   "a registry read failure must fail closed instead of skipping the downgrade guard",
 );
 assert.match(
   npmjsJob,
-  /refusing to move the latest dist-tag backward/,
-  "publishing must refuse a version older than the published latest",
+  /is a prerelease; this repository publishes only stable versions/,
+  "publishing must refuse a prerelease manifest, which would otherwise take the latest dist-tag",
 );
 assert.match(
-  githubPackagesJob,
-  /^\s+registry-url:\s*https:\/\/npm\.pkg\.github\.com\/?\s*$/m,
-  "the mirror job must select exactly GitHub Packages through setup-node",
+  npmjsJob,
+  /refusing to move the latest dist-tag backward/,
+  "publishing must refuse a version older than the published latest",
 );
 for (const forbidden of [
   ["NPM_TOKEN", "a long-lived npm publish token"],
@@ -334,6 +357,18 @@ if (configuredCodeqlLanguages.includes("python")) {
   assert.ok(
     pythonProbe.trim().length > 0,
     "quality/code-quality-probe.py must keep analyzable Python source while CodeQL default setup analyzes python",
+  );
+  // The marker is active documentation: it must explain the reason that still
+  // holds, not a release gate this repository no longer has.
+  assert.match(
+    pythonProbe,
+    /required code-scanning\s+check on every pull request into `main`/,
+    "the Python marker must explain that it keeps the required code-scanning check green",
+  );
+  assert.doesNotMatch(
+    pythonProbe,
+    /auto-tag|release gates|release SHA/,
+    "the Python marker must not describe release machinery this repository removed",
   );
 }
 // Asserted in full: a prefix match would keep reporting a policy the
@@ -431,7 +466,8 @@ const workflowDirectory = path.join(root, ".github/workflows");
 const workflowActions = new Set();
 // Every external `uses:` must be accounted for. An entry this reader cannot
 // parse fails here instead of quietly escaping the legal inventory.
-const externalUses = /^\s+(?:"uses"|'uses'|uses)\s*:\s*(?!["']?[.$]\/)(\S.*?)\s*(?:#.*)?$/gm;
+const externalUses =
+  /^\s+(?:-\s+)?(?:"uses"|'uses'|uses)\s*:\s*(?!["']?[.$]\/)(\S.*?)\s*(?:#.*)?$/gm;
 const pinnedAction =
   /^["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}["']?$/;
 for (const entry of await readdir(workflowDirectory)) {
@@ -452,15 +488,18 @@ assert.ok(
   "the workflows must pin at least one external Action by full-length SHA",
 );
 const actionSection = thirdParty.split("GitHub Actions used by the workflows")[1] ?? "";
-for (const action of workflowActions) {
-  const escapedAction = action.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-  const actionRow = new RegExp("^\\|\\s*" + escapedAction + "\\s*\\|", "m");
-  assert.match(
-    actionSection,
-    actionRow,
-    `THIRDPARTY.md must list the GitHub Action ${action} by name, license and source`,
-  );
-}
+// The inventory is checked in both directions: a missing row hides a component,
+// and a stale row claims one the workflows no longer use.
+const inventoriedActions = new Set(
+  [...actionSection.matchAll(/^\|\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)\s*\|/gm)].map(
+    (match) => match[1],
+  ),
+);
+assert.deepEqual(
+  [...inventoriedActions].sort(),
+  [...workflowActions].sort(),
+  "THIRDPARTY.md must list exactly the GitHub Actions the workflows use, by name, license and source",
+);
 const anthropicRow = thirdParty
   .split(/\r?\n/)
   .find((line) => line.includes("| @anthropic-ai/sdk "));

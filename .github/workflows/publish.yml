@@ -20,18 +20,64 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  npmjs:
-    name: Publish to npmjs.com
+  # The tarball is built where no publishing identity exists. GitHub scopes the
+  # token per job, so dependency-provided build tools (tsc, esbuild) never run
+  # in a job that could exchange the OIDC credential for a registry token.
+  build:
+    name: Build the release tarball
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # `release: published` also fires for a prerelease, and `npm publish`
     # without `--tag` would move `latest` onto it.
     if: ${{ !github.event.release.prerelease }}
+    permissions:
+      contents: read # Check out the released tag.
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - name: Check out the released tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+
+      # No dependency lifecycle script runs; the package's own `prepack` still
+      # cleans and builds the tarball.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Pack the release tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          tarball="$(npm pack --pack-destination "$RUNNER_TEMP")"
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+          echo "Packed $tarball"
+
+      - name: Upload the release tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/${{ steps.pack.outputs.tarball }}
+          retention-days: 5
+          if-no-files-found: error
+
+  npmjs:
+    name: Publish to npmjs.com
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     # npm Trusted Publishing authorizes this exact repository, workflow and
     # environment, so the registry holds no long-lived publish token.
     environment: npm-production
     permissions:
-      contents: read # Check out the released tag.
+      contents: read # Read package.json for the release guard.
       id-token: write # OIDC credential for npm and the provenance statement.
     steps:
       - name: Check out the released tag
@@ -106,26 +152,28 @@ jobs:
           fi
           echo "Release $RELEASE_TAG is on main at $GITHUB_SHA, matches the manifest and is newer than ${published_latest:-no published version}."
 
-      # No dependency lifecycle script runs on the publishing path; the
-      # package's own `prepack` still cleans and builds the tarball.
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Download the release tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/release
 
-      # `prepack` cleans and builds, so the tarball is produced by npm's own
-      # lifecycle from the released tag.
+      # Publishing the packed tarball with scripts disabled keeps every
+      # dependency-provided binary out of this job's OIDC identity.
       - name: Publish to npmjs.com
-        run: npm publish --provenance --access public
+        env:
+          TARBALL: ${{ needs.build.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          npm publish "$RUNNER_TEMP/release/$TARBALL" --provenance --access public --ignore-scripts
 
   github-packages:
     name: Publish to GitHub Packages
-    needs: npmjs
+    needs: [build, npmjs]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # `release: published` also fires for a prerelease, and `npm publish`
-    # without `--tag` would move `latest` onto it.
-    if: ${{ !github.event.release.prerelease }}
     permissions:
-      contents: read # Check out the released tag.
+      contents: read # Read the repository configuration for npm.
       packages: write # Publish the package to GitHub Packages.
       id-token: write # Provenance statement for the mirrored package.
     steps:
@@ -142,14 +190,16 @@ jobs:
           package-manager-cache: false
           registry-url: https://npm.pkg.github.com
 
-      # No dependency lifecycle script runs on the publishing path; the
-      # package's own `prepack` still cleans and builds the tarball.
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Download the release tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/release
 
-      # `--access public` is required for provenance: npm refuses to generate a
-      # statement for a package it treats as new or private.
       - name: Publish to GitHub Packages
-        run: npm publish --provenance --access public
         env:
+          TARBALL: ${{ needs.build.outputs.tarball }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm publish "$RUNNER_TEMP/release/$TARBALL" --provenance --access public --ignore-scripts
