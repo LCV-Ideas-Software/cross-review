@@ -204,8 +204,15 @@ the rest of the file applies normally, and a boot notice — mirrored by
 `server_info.config_load.deprecated_keys_ignored` — names each ignored key with
 its card path, for example
 `model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000`.
-They can be removed at leisure; the next major version rejects them. Any other
-unknown key is rejected: the boot notice and
+Remove them when convenient and then restart or reload the MCP host (editing
+the file while the server runs sets `reload_required` and blocks paid calls
+with `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED` until the restart); the next major
+version rejects them. The matching `CostRateConfig` members, together with
+`TokenUsage.citation_tokens` and the `CostEstimate` line items `request_cost`,
+`citation_tokens_cost` and `deep_research_reasoning_tokens_cost`, stay on the
+shipped declarations as `@deprecated` optional members through 4.x and are
+still re-summed by `mergeUsage` / `mergeCost` for sessions persisted before
+v04.06.09; nothing produces them any more. Any other unknown key is rejected: the boot notice and
 `server_info.config_load.parse_error` read `schema_validation_failed` with an
 `unrecognized_keys` issue naming the key and the card path, the whole file is
 ignored, and paid calls stay blocked with `CROSS_REVIEW_CONFIG_FILE_INVALID`

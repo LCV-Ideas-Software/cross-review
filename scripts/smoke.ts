@@ -9125,8 +9125,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   }
   // PR #293 review (SemVer): a file that still carries the deprecated Sonar
   // rate-card keys applies in full, so its notice must say the keys were
-  // ignored, name each one with its card path, say they can be removed, and
-  // announce the next-major rejection; a file without them prints nothing.
+  // ignored, name each one with its card path, say to remove them and then
+  // restart the MCP host (an edit while running blocks paid calls with
+  // CROSS_REVIEW_CONFIG_RELOAD_REQUIRED until the restart), and announce the
+  // next-major rejection; a file without them prints nothing.
   const deprecatedKeyPaths = [
     'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
     'model_cost_rates.perplexity["sonar-deep-research"].citation_tokens_per_million',
@@ -9148,7 +9150,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "IGNORED",
     "the rest of the file applied normally",
     ...deprecatedKeyPaths,
-    "can be removed from the file at any time",
+    "restart or reload the MCP host",
+    "CROSS_REVIEW_CONFIG_RELOAD_REQUIRED",
     "REJECTED by the schema in the next major version",
   ]) {
     assert.ok(

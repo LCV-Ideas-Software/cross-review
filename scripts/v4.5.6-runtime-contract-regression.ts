@@ -1473,11 +1473,12 @@ const regressions: Regression[] = [
     name: "Perplexity prices only Agent API dimensions; retired Sonar ids fail closed",
     run: async () => {
       const base = offlineConfig();
-      // CROSREV-19 (#233): the legacy Sonar dimensions no longer exist on
-      // CostRateConfig / TokenUsage / CostEstimate. The fixtures below cast
-      // them back in so the regression proves the runtime IGNORES them
-      // everywhere they used to be read (each assertion was red before the
-      // removal: the fee was priced, the counters merged, the env read).
+      // CROSREV-19 (#233): the legacy Sonar dimensions are deprecated members
+      // of CostRateConfig / TokenUsage / CostEstimate through 4.x (PR #293
+      // review). The fixtures below prove the runtime never PRICES or READS
+      // them (each assertion was red before the removal: the fee was priced,
+      // the env read) while the aggregation helpers keep passing them through
+      // for sessions persisted by v3.0–v4.6.8.
       const legacyReasoningCard = {
         input_per_million: 2,
         output_per_million: 8,
@@ -1592,9 +1593,10 @@ const regressions: Regression[] = [
         { estimated: false, source: "unknown-rate" },
       );
 
-      // (2) mergeCost no longer re-sums the legacy line items persisted by
-      // v3.0–v4.5 sessions; the stored total_cost is what it adds up, so
-      // historical totals are unchanged while the removed keys stay absent.
+      // (2) mergeCost never produces the deprecated line items, but a session
+      // persisted by v3.0–v4.6.8 still carries them: they keep being re-summed
+      // through 4.x (PR #293 review) next to the stored total_cost, so
+      // historical breakdowns do not change inside a patch update.
       const legacyEstimate = {
         currency: "USD",
         input_cost: 1,
@@ -1613,12 +1615,65 @@ const regressions: Regression[] = [
           total: mergedLegacy.total_cost,
           searches: mergedLegacy.search_queries_cost,
           legacyKeys: legacyKeysOn(mergedLegacy),
+          request: mergedLegacy.request_cost,
+          citations: mergedLegacy.citation_tokens_cost,
+          reasoning: mergedLegacy.deep_research_reasoning_tokens_cost,
         },
-        { total: 6, searches: 1, legacyKeys: [] },
-        "mergeCost must keep stored totals and drop the legacy Sonar line items",
+        {
+          total: 6,
+          searches: 1,
+          legacyKeys: LEGACY_COST_KEYS,
+          request: 2,
+          citations: 2,
+          reasoning: 2,
+        },
+        "mergeCost must keep stored totals and re-sum the deprecated Sonar line items through 4.x",
+      );
+      const mergedFresh = mergeCost([
+        { currency: "USD", total_cost: 1, estimated: true, source: "configured-rate" },
+        { currency: "USD", total_cost: 2, estimated: true, source: "configured-rate" },
+      ]);
+      assert.deepEqual(
+        { total: mergedFresh.total_cost, legacyKeys: legacyKeysOn(mergedFresh) },
+        { total: 3, legacyKeys: [] },
+        "mergeCost must not invent the deprecated line items",
       );
 
-      // (3) mergeUsage drops citation_tokens and keeps the search semantics.
+      // (2b) The shipped declarations keep the deprecated members through 4.x
+      // (PR #293 review): these literals must compile WITHOUT a cast, and a
+      // consumer of dist/src/core/types.d.ts sees the same members.
+      const declaredLegacyUsage: TokenUsage = { citation_tokens: 1 };
+      const declaredLegacyCost: CostEstimate = {
+        currency: "USD",
+        estimated: true,
+        source: "configured-rate",
+        request_cost: 1,
+        citation_tokens_cost: 1,
+        deep_research_reasoning_tokens_cost: 1,
+      };
+      const declaredLegacyCard: CostRateConfig = {
+        input_per_million: 1,
+        output_per_million: 1,
+        request_fee_low_per_1000: 1,
+        request_fee_medium_per_1000: 1,
+        request_fee_high_per_1000: 1,
+        citation_tokens_per_million: 1,
+        deep_research_reasoning_tokens_per_million: 1,
+      };
+      assert.deepEqual(
+        [
+          Object.keys(declaredLegacyUsage),
+          legacyKeysOn(declaredLegacyCost),
+          Object.keys(declaredLegacyCard).filter((key) => LEGACY_DIMENSION_PATTERN.test(key))
+            .length,
+        ],
+        [["citation_tokens"], LEGACY_COST_KEYS, 5],
+        "the deprecated members must remain declared through 4.x",
+      );
+
+      // (3) mergeUsage keeps re-summing the deprecated citation_tokens counter
+      // (PR #293 review) and keeps the search semantics; a merge without it
+      // does not invent the key.
       const mergedSonarUsage = mergeUsage([
         {
           citation_tokens: 3,
@@ -1633,11 +1688,17 @@ const regressions: Regression[] = [
       ]);
       assert.deepEqual(
         {
-          hasCitationTokens: "citation_tokens" in mergedSonarUsage,
+          citationTokens: mergedSonarUsage.citation_tokens,
           searchQueries: mergedSonarUsage.num_search_queries,
           searchPerformed: mergedSonarUsage.search_performed,
         },
-        { hasCitationTokens: false, searchQueries: 7, searchPerformed: true },
+        { citationTokens: 7, searchQueries: 7, searchPerformed: true },
+        "mergeUsage must re-sum the deprecated citation_tokens counter through 4.x",
+      );
+      assert.equal(
+        "citation_tokens" in mergeUsage([{ num_search_queries: 1 }, { input_tokens: 2 }]),
+        false,
+        "mergeUsage must not invent citation_tokens",
       );
 
       // (4) missingFinancialControlVars: a retired primary or fallback pin
@@ -1897,7 +1958,8 @@ const regressions: Regression[] = [
         for (const fragment of [
           `central config "${configPath}"`,
           ...DEPRECATED_KEY_PATHS,
-          "can be removed",
+          "restart or reload the MCP host",
+          "CROSS_REVIEW_CONFIG_RELOAD_REQUIRED",
           "next major",
         ]) {
           assert.ok(

@@ -139,9 +139,17 @@ export interface TokenUsage {
   // web_search tool invocations the model issued during the request
   // (`usage.tool_calls_details` web-search counter on the Agent API since
   // v4.6.0) — separately billed at search_queries_per_1000. Absent for
-  // non-perplexity peers. CROSREV-19 (#233): the legacy Sonar
-  // `citation_tokens` counter was removed with the Sonar cost dimensions.
+  // non-perplexity peers.
   num_search_queries?: number | undefined;
+  /**
+   * @deprecated CROSREV-19 (#233): legacy Sonar API counter. No adapter has
+   * populated it since v04.06.00 (Agent API); it stays on the shipped
+   * declarations through
+   * 4.x so a consumer of `dist/src/core/types.d.ts` keeps compiling, and
+   * `mergeUsage` still sums it when a persisted session carries it. Removed in
+   * the next major version.
+   */
+  citation_tokens?: number | undefined;
   // v3.0.0: Perplexity API also returns its OWN per-call cost
   // breakdown (`usage.cost.total_cost` etc.) in USD. We capture it
   // here for telemetry/reconciliation, but the config-driven cost
@@ -191,11 +199,20 @@ export interface CostEstimate {
   // Agent API web_search tool invocations reported by the provider
   // (per-1000 rate on the model card) and ADDS to total_cost (separate
   // from input_cost which represents fresh non-cached input tokens).
-  // Absent for all non-perplexity peers. CROSREV-19 (#233): the legacy
-  // Sonar line items (request_cost, citation_tokens_cost,
-  // deep_research_reasoning_tokens_cost) were removed; sessions persisted
-  // before that keep them in meta.json as inert historical fields.
+  // Absent for all non-perplexity peers.
   search_queries_cost?: number | undefined;
+  /**
+   * @deprecated CROSREV-19 (#233): legacy Sonar API line items. `estimateCost`
+   * has not produced them since v04.06.09; they stay on the shipped
+   * declarations through 4.x so a consumer of `dist/src/core/types.d.ts`
+   * keeps compiling, and `mergeCost` still sums them when a session persisted
+   * by v3.0–v4.6.8 carries them. Removed in the next major version.
+   */
+  request_cost?: number | undefined;
+  /** @deprecated See `request_cost`. */
+  citation_tokens_cost?: number | undefined;
+  /** @deprecated See `request_cost`. */
+  deep_research_reasoning_tokens_cost?: number | undefined;
 }
 
 // v2.21.0 (caching): per-session manifest of every cached call. Persisted
@@ -1165,14 +1182,25 @@ export interface CostRateConfig {
   promo_cache_write_extended_per_million?: number | undefined;
   promo_expires_at?: string | undefined;
   threshold_tokens?: number | undefined;
-  // Perplexity Agent API web_search fee per 1000 invocations. CROSREV-19
-  // (#233): the legacy Sonar dimensions (request_fee_{low,medium,high}_per_1000,
-  // citation_tokens_per_million, deep_research_reasoning_tokens_per_million)
-  // were removed from this type and from the cost engine; the central-config
-  // schema in src/core/file-config.ts still tolerates those keys throughout
-  // 4.x (DEPRECATED_COST_RATE_KEYS: stripped before the card reaches this
-  // type, named by a boot notice, rejected in the next major).
+  // Perplexity Agent API web_search fee per 1000 invocations.
   search_queries_per_1000?: number | undefined;
+  /**
+   * @deprecated CROSREV-19 (#233): legacy Sonar API cost dimensions. The cost
+   * engine has not read them since v04.06.09 and the central-config loader
+   * strips them from every card (DEPRECATED_COST_RATE_KEYS in
+   * src/core/file-config.ts, named by a boot notice); they stay on the shipped
+   * declarations through 4.x so a consumer of `dist/src/core/types.d.ts`
+   * keeps compiling. Rejected by the schema in the next major version.
+   */
+  request_fee_low_per_1000?: number | undefined;
+  /** @deprecated See `request_fee_low_per_1000`. */
+  request_fee_medium_per_1000?: number | undefined;
+  /** @deprecated See `request_fee_low_per_1000`. */
+  request_fee_high_per_1000?: number | undefined;
+  /** @deprecated See `request_fee_low_per_1000`. */
+  citation_tokens_per_million?: number | undefined;
+  /** @deprecated See `request_fee_low_per_1000`. */
+  deep_research_reasoning_tokens_per_million?: number | undefined;
 }
 
 /** Retained even when incomplete so an unusable model card fails closed. */

@@ -198,6 +198,7 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
   let searchQueriesSeen = false;
   let searchPerformedSeen = false;
   let providerTotalSeen = false;
+  let citationTokensSeen = false;
   for (const item of items) {
     if (!item) continue;
     total.input_tokens = (total.input_tokens ?? 0) + (item.input_tokens ?? 0);
@@ -223,7 +224,15 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
         (total.provider_reported_total_cost_usd ?? 0) + item.provider_reported_total_cost_usd;
       providerTotalSeen = true;
     }
+    // CROSREV-19 (#233): `citation_tokens` is a deprecated Sonar counter no
+    // adapter emits any more; keep summing it while a persisted session
+    // carries it so historical aggregates do not change inside 4.x.
+    if (item.citation_tokens !== undefined) {
+      total.citation_tokens = (total.citation_tokens ?? 0) + item.citation_tokens;
+      citationTokensSeen = true;
+    }
   }
+  if (!citationTokensSeen) delete total.citation_tokens;
   if (!searchQueriesSeen) delete total.num_search_queries;
   if (!searchPerformedSeen) delete total.search_performed;
   if (!providerTotalSeen) delete total.provider_reported_total_cost_usd;
@@ -330,10 +339,15 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   // v3.0.0 (Perplexity 6th peer): accumulate the Perplexity web_search
   // line item so multi-call sessions show the full pricing breakdown in
   // session reports + the dashboard. It remains zero for sessions that
-  // don't include perplexity peer calls. CROSREV-19 (#233): the legacy
-  // Sonar line items are no longer re-summed; historical sessions keep
-  // their stored total_cost, which is what mergeCost adds up.
+  // don't include perplexity peer calls. CROSREV-19 (#233): the deprecated
+  // Sonar line items (request_cost, citation_tokens_cost,
+  // deep_research_reasoning_tokens_cost) are never produced any more, but a
+  // session persisted by v3.0–v4.6.8 still carries them; they keep being
+  // re-summed through 4.x so historical breakdowns do not change.
   let searchQueries = 0;
+  let requestFees = 0;
+  let citationTokens = 0;
+  let deepResearchReasoningTokens = 0;
   const tiers = new Set<NonNullable<CostEstimate["tier_used"]>>();
   for (const cost of costs) {
     if (cost?.total_cost == null) {
@@ -360,6 +374,11 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
       savingsUnknown = true;
     }
     if (cost?.search_queries_cost != null) searchQueries += cost.search_queries_cost;
+    if (cost?.request_cost != null) requestFees += cost.request_cost;
+    if (cost?.citation_tokens_cost != null) citationTokens += cost.citation_tokens_cost;
+    if (cost?.deep_research_reasoning_tokens_cost != null) {
+      deepResearchReasoningTokens += cost.deep_research_reasoning_tokens_cost;
+    }
     if (cost?.tier_used) tiers.add(cost.tier_used);
   }
   if (!known) {
@@ -378,6 +397,11 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   if (savingsKnown && savings > 0) merged.cache_savings_usd = savings;
   if (savingsUnknown) merged.cache_savings_unknown = true;
   if (searchQueries > 0) merged.search_queries_cost = searchQueries;
+  if (requestFees > 0) merged.request_cost = requestFees;
+  if (citationTokens > 0) merged.citation_tokens_cost = citationTokens;
+  if (deepResearchReasoningTokens > 0) {
+    merged.deep_research_reasoning_tokens_cost = deepResearchReasoningTokens;
+  }
   if (tiers.size === 1) merged.tier_used = [...tiers][0];
   return merged;
 }
