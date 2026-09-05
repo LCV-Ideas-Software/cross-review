@@ -25,6 +25,54 @@ const ATTACHMENT = {
   content: "src/index.ts:10: return verifiedValue;\nEXIT_CODE: 0",
 };
 
+// CROSREV-32 (GitHub #268): a gh-style single-line JSON attachment. The first
+// check name deliberately carries a lexicon word (`Run`), so at least one
+// GitHub URL in the attachment sits inside an instructional-looking clause
+// and would be dropped from the corpus by the assertive filter; that is what
+// pins the structural fix. Identifier-class tokens present in the corpus are
+// proof of existence regardless of the surrounding prose.
+const CHECKS_REPOSITORY_URL = "https://github.com/example-org/example-repo";
+const CHECK_NAMES = [
+  "Run tests",
+  "Lint",
+  "Typecheck",
+  "Build",
+  "Format",
+  "Biome",
+  "Smoke",
+  "Pack",
+  "CodeQL",
+  "Scorecard",
+  "Zizmor",
+  "Dependency review",
+  "Docs",
+];
+const CHECK_DETAILS_URLS = CHECK_NAMES.map(
+  (_, index) => `${CHECKS_REPOSITORY_URL}/actions/runs/1000000001/job/${2000000001 + index}`,
+);
+const CHECKS_ATTACHMENT = {
+  relative_path: "evidence/pr-checks.json",
+  sha256: "0123456789abcdef".repeat(4),
+  content: JSON.stringify({
+    statusCheckRollup: CHECK_NAMES.map((name, index) => ({
+      name,
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      detailsUrl: CHECK_DETAILS_URLS[index],
+    })),
+  }),
+};
+
+// The provider serialized the peer's JSON once more, so the persisted source
+// string keeps `\"` around the quoted fragment.
+function escapedChecksCitation(detailsUrl: string): string {
+  return [
+    `Attachment: ${CHECKS_ATTACHMENT.relative_path}`,
+    `sha256=${CHECKS_ATTACHMENT.sha256}`,
+    `Artifact quote: "\\"detailsUrl\\":\\"${detailsUrl}\\""`,
+  ].join("\n");
+}
+
 function peerResult(status: ReviewStatus, evidenceSources: string[]): PeerResult {
   return {
     peer: "claude",
@@ -69,6 +117,17 @@ function groundingInput() {
     callerSubmittedAttachments: [ATTACHMENT],
     requirePeerSubmittedCorroboration: false,
     runtimeFacts: RUNTIME_FACTS,
+  } satisfies Parameters<typeof groundReadyPeerEvidence>[1];
+}
+
+function checksGroundingInput() {
+  return {
+    ...groundingInput(),
+    attachmentRefs: [CHECKS_ATTACHMENT.relative_path],
+    evidenceAttachments: [
+      { relative_path: CHECKS_ATTACHMENT.relative_path, sha256: CHECKS_ATTACHMENT.sha256 },
+    ],
+    callerSubmittedAttachments: [CHECKS_ATTACHMENT],
   } satisfies Parameters<typeof groundReadyPeerEvidence>[1];
 }
 
@@ -168,6 +227,76 @@ const regressions: Regression[] = [
         "unrecognized checklist-like hex identifiers must remain subject to fabrication detection",
       );
       assert.equal(unknownChecklistGrounding.result.status, "NEEDS_EVIDENCE");
+    },
+  },
+  {
+    name: "GitHub URLs quoted from the attachment in provider-escaped form are not fabricated evidence",
+    run: () => {
+      assert.ok(
+        CHECK_DETAILS_URLS.length >= 13,
+        "the fixture mirrors the session shape: at least 13 correlated GitHub URLs",
+      );
+      const sources = CHECK_DETAILS_URLS.map(escapedChecksCitation);
+      const grounding = groundReadyPeerEvidence(
+        peerResult("READY", sources),
+        checksGroundingInput(),
+      );
+
+      assert.equal(
+        grounding.fabrication.suspicious_assertion_count,
+        0,
+        `a GitHub URL present in the attachment bytes is not a suspicious assertion, even when the provider escaped the quote and the attachment clause carries a lexicon word (sample=${JSON.stringify(
+          grounding.fabrication.suspicious_assertion_sample,
+        )})`,
+      );
+      assert.equal(
+        grounding.fabrication.fabricated,
+        false,
+        "correlated identifier-class sources must not trip the fabrication detector",
+      );
+      assert.deepEqual(grounding.unsupported_sources, []);
+      assert.equal(grounding.source_diagnostics.length, CHECK_DETAILS_URLS.length);
+      assert.ok(
+        grounding.source_diagnostics.every(
+          (diagnostic) =>
+            diagnostic.supported &&
+            diagnostic.attachment_custody_claimed &&
+            diagnostic.correlated_attachment === CHECKS_ATTACHMENT.relative_path,
+        ),
+        "every source must be supported and correlated to the same attachment",
+      );
+      assert.equal(
+        grounding.result.status,
+        "READY",
+        "a READY vote whose every source is correlated to the active attachment must remain definitive",
+      );
+    },
+  },
+  {
+    name: "a GitHub URL absent from the corpus still downgrades a READY vote as fabricated",
+    run: () => {
+      const inventedUrl = `${CHECKS_REPOSITORY_URL}/actions/runs/1000000001/job/2000009999`;
+      const grounding = groundReadyPeerEvidence(
+        peerResult("READY", [escapedChecksCitation(inventedUrl)]),
+        checksGroundingInput(),
+      );
+
+      assert.equal(
+        grounding.fabrication.fabricated,
+        true,
+        "a GitHub URL that no corpus tier contains remains a fabricated source",
+      );
+      assert.equal(grounding.result.status, "NEEDS_EVIDENCE");
+      assert.ok(
+        grounding.result.parser_warnings.includes("ready_evidence_sources_fabricated"),
+        "the downgrade must carry the fabricated-sources rule",
+      );
+      assert.ok(
+        (grounding.result.decision_transformations ?? []).some(
+          (transformation) => transformation.rule === "ready_evidence_sources_fabricated",
+        ),
+        "the decision transformation must record ready_evidence_sources_fabricated",
+      );
     },
   },
   {

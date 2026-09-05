@@ -30,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.06.07** (package `4.6.7`).
+**Status.** Stable. The current source/release target is **v04.06.08** (package `4.6.8`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -48,6 +48,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.06.08`**      | **Evidence custody fixes.** A provider-escaped GitHub URL quoted from the attachment no longer downgrades a READY vote; a relator may name a file the admitted unified diff materializes.                                                                                             |
 | **`v04.06.07`**      | **No manual gesture.** A push to `main` that changes the version publishes to npmjs.com and GitHub Packages and then records the Release with the run's own token.                                                                                                                    |
 | **`v04.06.06`**      | **Native release path.** The repository-owned tagging, dispatch and policy machinery leaves; publishing runs on a published GitHub Release with npm Trusted Publishing and provenance.                                                                                                |
 | **`v04.06.05`**      | **Native organization governance.** Actions lockfile, advanced CodeQL workflow, merge-queue triggers and the v04.05.26 recovery workflow leave; the canonical Dependabot auto-merge and the organization workflows enter; the release gates read the CodeQL default-setup analyses.   |
@@ -443,7 +444,10 @@ peer-submitted material, at least two independent non-author reviewers must use
 `confidence="verified"` and cite the attachment path, SHA-256 and correlated raw
 lines; one voter, inferred confidence or narrative repetition cannot converge.
 Relator output that invents operational evidence is rejected rather than
-propagated.
+propagated; a source that quotes an admitted attachment literally — a GitHub
+URL the provider escaped included — is not treated as invented, and a file
+whose post-image an admitted unified diff carries is not treated as
+unattached.
 
 `READY` is intentionally not free-form. Its `summary` must be exactly
 `No blocking objections remain.`, `caller_requests` and `follow_ups` must be

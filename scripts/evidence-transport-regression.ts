@@ -15,7 +15,7 @@ import {
 } from "../src/core/orchestrator.js";
 import { sessionReportMarkdown } from "../src/core/reports.js";
 import { extractChecklistCommands } from "../src/core/session-store.js";
-import type { PeerAdapter, PeerId, PeerResult } from "../src/core/types.js";
+import type { PeerAdapter, PeerId, PeerResult, RuntimeEvent } from "../src/core/types.js";
 import { StubAdapter } from "../src/peers/stub.js";
 
 // Regression coverage for the v4.5.0 evidence dead-end reported by a Codex
@@ -104,6 +104,61 @@ const GENERATED_EVIDENCE_PATH =
 const GENERATED_EVIDENCE_SHA = "43009998c876789fa9a74e04363f3109a932883212ebeae1fb14cc9f5aa84285";
 const GENERATED_EVIDENCE_CONTENT = 'STDOUT: package.json:3:  "version": "4.5.3",';
 const GENERATED_DIFF_LINE = "diff --git a/CHANGELOG.md b/CHANGELOG.md";
+// CROSREV-32 (GitHub #268): the caller's evidence is a unified diff whose
+// post-image materializes package.json; the relator later names that file.
+const POST_IMAGE_DIFF_EVIDENCE = [
+  "diff --git a/package.json b/package.json",
+  "index 0000000..1111111 100644",
+  "--- a/package.json",
+  "+++ b/package.json",
+  "@@ -1,5 +1,5 @@",
+  " {",
+  '   "name": "example-app",',
+  '-  "version": "1.2.3",',
+  '+  "version": "1.2.4",',
+  '   "private": true',
+  " }",
+].join("\n");
+
+// Round 1: the petitioner attaches the diff through `evidence`; the stub
+// marker keeps the panel non-terminal. Round 2: the selected relator continues
+// the same session with its own draft and no new evidence, exactly like the
+// legitimate relator continuation above, so the active caller attachment is
+// the only evidence custody the preflight can resolve against.
+async function relatorContinuationAfterDiffEvidence(prefix: string, relatorDraft: string) {
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(regressionConfig(prefix), (event) =>
+    events.push(event),
+  );
+  const session = await orchestrator.initSession(
+    "Codex-owned session for relator post-image path resolution.",
+    "codex",
+  );
+  const first = await orchestrator.askPeers({
+    session_id: session.session_id,
+    task: session.task,
+    draft: "Version bump candidate awaiting independent review. FORCE_NOT_READY",
+    evidence: POST_IMAGE_DIFF_EVIDENCE,
+    caller: "codex",
+    peers: ["claude", "gemini"],
+  });
+  assert.equal(
+    first.round.rejected.some((failure) => failure.failure_class === "evidence_preflight"),
+    false,
+    "the caller round carrying the unified diff must reach the reviewers",
+  );
+  assert.notEqual(first.session.outcome, "converged", "round 1 must leave the session open");
+  const second = await orchestrator.askPeers({
+    session_id: session.session_id,
+    task: session.task,
+    draft: relatorDraft,
+    petitioner: "codex",
+    caller: "claude",
+    lead_peer: "claude",
+    peers: ["gemini", "deepseek"],
+  });
+  return { events, second };
+}
 
 function readyPeer(
   peer: PeerId,
@@ -2866,6 +2921,72 @@ const regressions: Regression[] = [
         relatorInlineAttachments,
         [],
         "a relator-authored revision must not be promoted into caller-submitted evidence for the petitioner's session",
+      );
+    },
+  },
+  {
+    name: "askPeers relator continuation resolves a file the admitted unified-diff post-image materializes",
+    run: async () => {
+      const { events, second } = await relatorContinuationAfterDiffEvidence(
+        "relator-post-image-path",
+        [
+          "Relator revision after round 1.",
+          "Evidence: the admitted unified diff carries the package.json post-image verbatim, so no further artifact is required.",
+        ].join("\n"),
+      );
+
+      assert.equal(
+        second.round.rejected.some((failure) => failure.failure_class === "evidence_preflight"),
+        false,
+        `a file whose post-image the active attachment materializes is not an unattached evidence reference (rejected=${JSON.stringify(
+          second.round.rejected.map((failure) => failure.message),
+        )})`,
+      );
+      assert.equal(
+        events.some(
+          (event) => event.type === "session.evidence_preflight_failed" && event.round === 2,
+        ),
+        false,
+        "round 2 must not emit an evidence preflight failure",
+      );
+      assert.equal(second.round.peers.length, 2, "both reviewers must reach the paid stage");
+      assert.equal(
+        events.filter((event) => event.type === "peer.call.started" && event.round === 2).length,
+        2,
+        "the relator round must dispatch both configured reviewers",
+      );
+    },
+  },
+  {
+    name: "askPeers relator continuation still fails closed on an artifact absent from the active evidence",
+    run: async () => {
+      const { events, second } = await relatorContinuationAfterDiffEvidence(
+        "relator-missing-artifact",
+        [
+          "Relator revision after round 1.",
+          "Evidence: the admitted unified diff carries the package.json post-image verbatim; the failing transcript lives in missing.log.",
+        ].join("\n"),
+      );
+
+      assert.equal(
+        second.round.rejected.some((failure) => failure.failure_class === "evidence_preflight"),
+        true,
+        "a relator naming an artifact whose literal content was never supplied must be blocked before any paid call",
+      );
+      assert.equal(second.round.peers.length, 0, "no reviewer may reach the paid stage");
+      const failure = events.find(
+        (event) => event.type === "session.evidence_preflight_failed" && event.round === 2,
+      );
+      assert.ok(failure, "the round-2 evidence preflight failure must be emitted");
+      assert.deepEqual(
+        failure.data?.unattached_evidence_references,
+        ["missing.log"],
+        "only the genuinely missing artifact is reported; package.json resolves against the diff post-image",
+      );
+      assert.equal(
+        failure.data?.attachments_present,
+        true,
+        "the active caller attachment is present while the relator's reference is rejected",
       );
     },
   },

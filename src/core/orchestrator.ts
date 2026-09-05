@@ -586,7 +586,10 @@ const FABRICATED_ASSERTION_PATTERNS: Array<{ pattern: RegExp; label: string }> =
     label: "session_id_reference",
   },
   {
-    pattern: /https:\/\/github\.com\/[^\s)\]}>"']+/gi,
+    // RFC 3986 admits no backslash in a URI. A provider-escaped quote (`\"`)
+    // after the URL must end the token, otherwise the revision-side key
+    // carries a trailing backslash the attachment never had (#268).
+    pattern: /https:\/\/github\.com\/[^\s)\]}>"'\\]+/gi,
     label: "github_url_reference",
   },
   {
@@ -652,14 +655,35 @@ function assertiveMatches(pattern: RegExp, text: string): RegExpMatchArray[] {
   });
 }
 
+function allMatches(pattern: RegExp, text: string): RegExpMatchArray[] {
+  pattern.lastIndex = 0;
+  return [...text.matchAll(pattern)];
+}
+
 function fabricatedAssertionKey(label: string, match: string): string {
   return `${label}:${match.toLowerCase()}`;
 }
 
+// Identifier-class assertions. A GitHub URL or session id present anywhere in
+// the corpus proves the identifier exists — the same rationale the hex-token
+// check applies — so the corpus side collects them without the
+// assertive/instructional clause filter. That filter is a revision-side
+// safeguard: applied to the corpus, a gh-style single-line JSON attachment
+// lost every URL within 160 chars of a lexicon word such as `run` or
+// `example`, and a peer quoting one of them literally was downgraded as
+// fabricating (#268).
+const FABRICATED_IDENTIFIER_LABELS: ReadonlySet<string> = new Set([
+  "github_url_reference",
+  "session_id_reference",
+]);
+
 function collectFabricatedAssertionKeys(text: string): Set<string> {
   const keys = new Set<string>();
   for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
-    for (const match of assertiveMatches(pattern, text)) {
+    const matches = FABRICATED_IDENTIFIER_LABELS.has(label)
+      ? allMatches(pattern, text)
+      : assertiveMatches(pattern, text);
+    for (const match of matches) {
       keys.add(fabricatedAssertionKey(label, match[0]));
     }
   }
@@ -851,9 +875,26 @@ function citationPhraseCandidates(phrase: string): string[] {
   return decoded === undefined || decoded === phrase ? [phrase] : [phrase, decoded];
 }
 
-function unifiedDiffPostImageHunks(content: string): string[] {
+interface UnifiedDiffPostImage {
+  hunks: string[];
+  /**
+   * To-file paths (`+++ b/<path>`, leading `b/` dropped, `/dev/null` ignored)
+   * under which at least one post-image line was materialized. A
+   * deletion-only hunk produced with `-U0` has no post-image line, so its
+   * path is not admitted. The GNU tab-timestamp header suffix is not parsed.
+   */
+  paths: string[];
+}
+
+function unifiedDiffPostImage(content: string): UnifiedDiffPostImage {
   const hunks: string[] = [];
+  const paths = new Set<string>();
   let current: string[] | null = null;
+  let toFile: string | null = null;
+  // A `+++ ` line is a to-file header only when it follows the `--- ` from-file
+  // header, as the unified format pairs them. Inside a hunk, `+++ foo` is an
+  // added line whose content is `++ foo`, and must not rename the file.
+  let afterFromFile = false;
   const finishHunk = (): void => {
     if (current?.length) hunks.push(current.join("\n"));
     current = null;
@@ -862,19 +903,30 @@ function unifiedDiffPostImageHunks(content: string): string[] {
     if (/^@@(?:\s|$)/.test(line)) {
       finishHunk();
       current = [];
+      afterFromFile = false;
       continue;
     }
-    if (/^(?:diff --git |--- |\+\+\+ )/.test(line)) {
+    if (line.startsWith("--- ")) {
       finishHunk();
+      afterFromFile = true;
+      continue;
+    }
+    if (afterFromFile && line.startsWith("+++ ")) {
+      afterFromFile = false;
+      const header = line.slice(4).trim();
+      toFile = header === "/dev/null" ? null : header.replace(/^b\//, "");
+      continue;
+    }
+    afterFromFile = false;
+    if (line.startsWith("diff --git ")) {
+      finishHunk();
+      toFile = null;
       continue;
     }
     if (current === null) continue;
-    if (line.startsWith("+")) {
+    if (line.startsWith("+") || line.startsWith(" ")) {
       current.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith(" ")) {
-      current.push(line.slice(1));
+      if (toFile !== null) paths.add(toFile);
       continue;
     }
     if (line.startsWith("-") || line === "\\ No newline at end of file") continue;
@@ -883,7 +935,15 @@ function unifiedDiffPostImageHunks(content: string): string[] {
     finishHunk();
   }
   finishHunk();
-  return hunks;
+  return { hunks, paths: [...paths] };
+}
+
+function unifiedDiffPostImageHunks(content: string): string[] {
+  return unifiedDiffPostImage(content).hunks;
+}
+
+function unifiedDiffPostImagePaths(content: string): string[] {
+  return unifiedDiffPostImage(content).paths;
 }
 
 function unifiedDiffRemovedHunks(content: string): string[] {
@@ -2575,11 +2635,14 @@ export function evidencePreflight(params: {
   const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
   const operatorGrounded =
     claimMatched && assertions.length > 0 && operatorUncorroboratedClaims.length === 0;
+  const suppliedEvidenceText = `${params.structuredEvidence ?? ""}\n${params.attachedEvidenceText ?? ""}`;
   const unattachedEvidenceReferences = findUnattachedEvidenceReferences(referenceCorpus, [
     ...(params.attachedEvidenceRefs ?? []),
-    ...extractEmbeddedEvidenceRefs(
-      `${params.structuredEvidence ?? ""}\n${params.attachedEvidenceText ?? ""}`,
-    ),
+    ...extractEmbeddedEvidenceRefs(suppliedEvidenceText),
+    // A file whose post-image an admitted unified diff materializes was
+    // supplied literally; naming it is not a reference to a missing artifact
+    // (#268). It resolves by path or basename like any attachment name.
+    ...unifiedDiffPostImagePaths(suppliedEvidenceText),
   ]);
   if (unattachedEvidenceReferences.length > 0) {
     return {

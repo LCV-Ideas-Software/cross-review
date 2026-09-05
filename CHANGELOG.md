@@ -5,6 +5,28 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v04.06.08] — 05/09/2026
+
+### Fixed
+
+- **Correlated GitHub URLs no longer downgrade a READY vote** (CROSREV-32,
+  GitHub #268). The `github_url_reference` token stops at a backslash, so a
+  provider-escaped quote (`\"`) no longer leaves a trailing `\` the attachment
+  never had, and the corpus side now collects identifier-class tokens (GitHub
+  URLs, session ids) without the assertive/instructional clause filter — the
+  rationale already applied to hex tokens — so a gh-style single-line JSON
+  attachment whose repository or check names sit within 160 characters of a
+  lexicon word such as `run` or `example` keeps every URL it contains. A URL
+  absent from every corpus tier still trips `ready_evidence_sources_fabricated`.
+- **A relator may name a file the admitted diff already materializes**
+  (CROSREV-32, GitHub #268). The evidence preflight admits the to-file paths of
+  unified-diff post-images in the active evidence (`+++ b/<path>`, leading
+  `b/` dropped, `/dev/null` ignored), matched by path or basename under the
+  v4.3.9 rule, so naming `package.json` after the caller attached the diff no
+  longer blocks every reviewer with `unattached_evidence_references`. A
+  genuinely missing artifact still fails closed; a deletion-only `-U0` hunk
+  admits no path; the GNU tab-timestamp header suffix is not parsed.
+
 ## [v04.06.07] — 04/09/2026
 
 ### Changed

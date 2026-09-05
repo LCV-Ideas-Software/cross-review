@@ -134,6 +134,17 @@ artifact's literal content must also be supplied inline, in `evidence`, or as
 a session artifact. A bare filename is not proof. Otherwise the preflight
 blocks locally with `unattached_evidence_references`.
 
+A file whose post-image an admitted unified diff materializes counts as
+supplied. The recognizer reads each `+++` to-file header line (a leading `b/`
+is dropped; `/dev/null` names nothing) and admits the path once at least one
+post-image line — an added or context line — follows it. A reference resolves
+when its path or basename matches such a path, under the same v4.3.9 basename
+rule that governs attachment names, so a relator that names `package.json`
+after the caller attached the diff is not blocked. Two limits are deliberate:
+the GNU tab-timestamp header suffix is not parsed, and a deletion-only hunk
+produced with `-U0` yields no post-image line, so its path is not admitted and
+the file must be supplied another way.
+
 ## Minimum evidence format
 
 To pass the preflight, any authenticated caller may embed the corresponding raw
