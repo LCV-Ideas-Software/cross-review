@@ -240,6 +240,17 @@ Each qualifying vote must be verified and bind its citation to the persisted
 path, digest and literal values. Conflicting command records or any non-zero
 exit code block the claimed success even when nearby text says `passed`.
 
+Identifier-class tokens — GitHub URLs and session ids — are validated by
+presence in the corpus, like hex tokens, without the instructional-clause
+filter that guards the relator's own text: a URL quoted from an admitted
+attachment is not fabricated because the attachment's neighboring text
+contains a word such as `run` or `example`, nor because the provider escaped
+the quote. A URL absent from every corpus tier still trips
+`ready_evidence_sources_fabricated`. The evidence preflight treats a file
+materialized by the post-image of an admitted unified diff as supplied, so a
+relator that names it is not blocked, while a genuinely missing artifact still
+fails closed.
+
 The identity map contains six peer capabilities plus a separate `operator`
 capability. Operator-only tools require a verified operator token regardless of
 the permissive peer-token setting. A model token cannot be reused as operator,

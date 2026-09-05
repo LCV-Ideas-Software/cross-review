@@ -42,8 +42,8 @@ O produto é estável. O source/release target de referência reporta:
 | ----------------------------- | ---------------------------------- |
 | Nome                          | `cross-review`                     |
 | Publicador                    | `LCV Ideas & Software`             |
-| Versão preparada pelo source  | `v04.06.07`                        |
-| Data do source/release target | `04/09/2026`                       |
+| Versão preparada pelo source  | `v04.06.08`                        |
+| Data do source/release target | `05/09/2026`                       |
 | Pacote npm                    | `@lcv-ideas-software/cross-review` |
 | Transporte MCP                | `stdio`                            |
 | Execução CLI por peers        | desativada                         |
@@ -835,6 +835,7 @@ proveniência e cria a Release por último, com o token do próprio run.
 
 | Versão           | Data          | Destaque                                                                                                                                                                                                                                                                                                              |
 | ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v04.06.08`      | 05/09/2026    | Custódia de evidência: URL do GitHub citada em forma escapada não rebaixa voto READY; o relator pode nomear arquivo materializado como pós-imagem do diff admitido.                                                                                                                                                   |
 | `v04.06.07`      | 04/09/2026    | Publicação sem gesto manual: o push em `main` que muda a versão publica e o próprio run cria a Release por último; sai a guarda de ancestralidade.                                                                                                                                                                    |
 | `v04.06.06`      | 04/09/2026    | Publicação no modelo oficial do GitHub: Release publicada dispara o publish, com Trusted Publishing e proveniência; sai a máquina própria de tag, despacho e política.                                                                                                                                                |
 | `v04.06.05`      | 03/09/2026    | Governança nativa da organização: workflows e Dependabot no padrão da organização, CodeQL pelo default setup, pipeline de release lendo as análises do SHA exato, inventário legal com as GitHub Actions.                                                                                                             |

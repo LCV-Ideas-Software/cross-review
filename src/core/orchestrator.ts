@@ -586,7 +586,10 @@ const FABRICATED_ASSERTION_PATTERNS: Array<{ pattern: RegExp; label: string }> =
     label: "session_id_reference",
   },
   {
-    pattern: /https:\/\/github\.com\/[^\s)\]}>"']+/gi,
+    // RFC 3986 admits no backslash in a URI. A provider-escaped quote (`\"`)
+    // after the URL must end the token, otherwise the revision-side key
+    // carries a trailing backslash the attachment never had (#268).
+    pattern: /https:\/\/github\.com\/[^\s)\]}>"'\\]+/gi,
     label: "github_url_reference",
   },
   {
@@ -652,14 +655,35 @@ function assertiveMatches(pattern: RegExp, text: string): RegExpMatchArray[] {
   });
 }
 
+function allMatches(pattern: RegExp, text: string): RegExpMatchArray[] {
+  pattern.lastIndex = 0;
+  return [...text.matchAll(pattern)];
+}
+
 function fabricatedAssertionKey(label: string, match: string): string {
   return `${label}:${match.toLowerCase()}`;
 }
 
+// Identifier-class assertions. A GitHub URL or session id present anywhere in
+// the corpus proves the identifier exists — the same rationale the hex-token
+// check applies — so the corpus side collects them without the
+// assertive/instructional clause filter. That filter is a revision-side
+// safeguard: applied to the corpus, a gh-style single-line JSON attachment
+// lost every URL within 160 chars of a lexicon word such as `run` or
+// `example`, and a peer quoting one of them literally was downgraded as
+// fabricating (#268).
+const FABRICATED_IDENTIFIER_LABELS: ReadonlySet<string> = new Set([
+  "github_url_reference",
+  "session_id_reference",
+]);
+
 function collectFabricatedAssertionKeys(text: string): Set<string> {
   const keys = new Set<string>();
   for (const { pattern, label } of FABRICATED_ASSERTION_PATTERNS) {
-    for (const match of assertiveMatches(pattern, text)) {
+    const matches = FABRICATED_IDENTIFIER_LABELS.has(label)
+      ? allMatches(pattern, text)
+      : assertiveMatches(pattern, text);
+    for (const match of matches) {
       keys.add(fabricatedAssertionKey(label, match[0]));
     }
   }
@@ -851,39 +875,97 @@ function citationPhraseCandidates(phrase: string): string[] {
   return decoded === undefined || decoded === phrase ? [phrase] : [phrase, decoded];
 }
 
-function unifiedDiffPostImageHunks(content: string): string[] {
+interface UnifiedDiffPostImage {
+  hunks: string[];
+  /**
+   * To-file paths (`+++ b/<path>`, leading `b/` dropped, `/dev/null` ignored)
+   * under which at least one post-image line was materialized. A
+   * deletion-only hunk produced with `-U0` has no post-image line, so its
+   * path is not admitted. The GNU tab-timestamp header suffix is not parsed.
+   */
+  paths: string[];
+}
+
+function unifiedDiffPostImage(content: string): UnifiedDiffPostImage {
   const hunks: string[] = [];
+  const paths = new Set<string>();
   let current: string[] | null = null;
+  let toFile: string | null = null;
+  // Hunk extent comes from the `@@ -a[,b] +c[,d] @@` header (b and d default
+  // to 1): a `-` line consumes one old line, `+` one new line, ` ` one of
+  // each and `\ No newline at end of file` none. While either count is
+  // outstanding every such line is content, so a deleted `-- x` (serialized
+  // `--- x`) or an added `++ y` (serialized `+++ y`) can never be read as a
+  // from-/to-file header that renames the post-image. The hunk closes when
+  // both counts reach zero; only then are `diff --git`, `---`, `+++` and `@@`
+  // recognized again.
+  let oldRemaining = 0;
+  let newRemaining = 0;
+  // A `+++ ` line is a to-file header only when it follows the `--- ` from-file
+  // header, as the unified format pairs them.
+  let afterFromFile = false;
   const finishHunk = (): void => {
     if (current?.length) hunks.push(current.join("\n"));
     current = null;
+    oldRemaining = 0;
+    newRemaining = 0;
   };
   for (const line of content.replace(/\r\n?/g, "\n").split("\n")) {
-    if (/^@@(?:\s|$)/.test(line)) {
+    if (current !== null) {
+      const consumesOld = line.startsWith("-") || line.startsWith(" ");
+      const consumesNew = line.startsWith("+") || line.startsWith(" ");
+      const fits =
+        line === "\\ No newline at end of file" ||
+        ((consumesOld || consumesNew) &&
+          (!consumesOld || oldRemaining > 0) &&
+          (!consumesNew || newRemaining > 0));
+      if (fits) {
+        if (consumesOld) oldRemaining -= 1;
+        if (consumesNew) {
+          newRemaining -= 1;
+          current.push(line.slice(1));
+          if (toFile !== null) paths.add(toFile);
+        }
+        if (oldRemaining === 0 && newRemaining === 0) finishHunk();
+        continue;
+      }
+      // A line the open hunk cannot account for terminates it instead of
+      // being admitted as evidence. This keeps prose following a patch
+      // outside the post-image; the line is then read as a possible header.
       finishHunk();
+    }
+    const hunkHeader = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (hunkHeader) {
       current = [];
+      oldRemaining = hunkHeader[1] === undefined ? 1 : Number(hunkHeader[1]);
+      newRemaining = hunkHeader[2] === undefined ? 1 : Number(hunkHeader[2]);
+      afterFromFile = false;
+      if (oldRemaining === 0 && newRemaining === 0) finishHunk();
       continue;
     }
-    if (/^(?:diff --git |--- |\+\+\+ )/.test(line)) {
-      finishHunk();
+    if (line.startsWith("--- ")) {
+      afterFromFile = true;
       continue;
     }
-    if (current === null) continue;
-    if (line.startsWith("+")) {
-      current.push(line.slice(1));
+    if (afterFromFile && line.startsWith("+++ ")) {
+      afterFromFile = false;
+      const header = line.slice(4).trim();
+      toFile = header === "/dev/null" ? null : header.replace(/^b\//, "");
       continue;
     }
-    if (line.startsWith(" ")) {
-      current.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith("-") || line === "\\ No newline at end of file") continue;
-    // A non-diff line terminates the hunk instead of being admitted as
-    // evidence. This keeps prose following a patch outside the post-image.
-    finishHunk();
+    afterFromFile = false;
+    if (line.startsWith("diff --git ")) toFile = null;
   }
   finishHunk();
-  return hunks;
+  return { hunks, paths: [...paths] };
+}
+
+function unifiedDiffPostImageHunks(content: string): string[] {
+  return unifiedDiffPostImage(content).hunks;
+}
+
+function unifiedDiffPostImagePaths(content: string): string[] {
+  return unifiedDiffPostImage(content).paths;
 }
 
 function unifiedDiffRemovedHunks(content: string): string[] {
@@ -2533,10 +2615,11 @@ export function evidencePreflight(params: {
   // CHANGELOG.md value plus an unrelated `artifact` property).
   const referenceCorpus = claimText;
   const evidenceMarkerCorpus = `${claimText}\n${params.structuredEvidence ?? ""}`;
+  const inlineRawEvidence = extractInlineRawEvidence(claimText);
   const reviewableEvidenceText = [
     params.structuredEvidence ?? "",
     params.attachedEvidenceText ?? "",
-    extractInlineRawEvidence(claimText),
+    inlineRawEvidence,
   ]
     .filter((value) => value.trim().length > 0)
     .join("\n");
@@ -2545,7 +2628,7 @@ export function evidencePreflight(params: {
     callerIsOperator ? (params.structuredEvidence ?? "") : "",
     params.operatorVerifiedEvidenceText ??
       (callerIsOperator ? (params.attachedEvidenceText ?? "") : ""),
-    callerIsOperator ? extractInlineRawEvidence(claimText) : "",
+    callerIsOperator ? inlineRawEvidence : "",
   ]
     .filter((value) => value.trim().length > 0)
     .join("\n");
@@ -2575,11 +2658,29 @@ export function evidencePreflight(params: {
   const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
   const operatorGrounded =
     claimMatched && assertions.length > 0 && operatorUncorroboratedClaims.length === 0;
+  const suppliedEvidenceText = `${params.structuredEvidence ?? ""}\n${params.attachedEvidenceText ?? ""}`;
   const unattachedEvidenceReferences = findUnattachedEvidenceReferences(referenceCorpus, [
     ...(params.attachedEvidenceRefs ?? []),
-    ...extractEmbeddedEvidenceRefs(
-      `${params.structuredEvidence ?? ""}\n${params.attachedEvidenceText ?? ""}`,
-    ),
+    ...extractEmbeddedEvidenceRefs(suppliedEvidenceText),
+    // A file whose post-image an admitted unified diff materializes was
+    // supplied literally; naming it is not a reference to a missing artifact
+    // (#268). It resolves by path or basename like any attachment name.
+    ...unifiedDiffPostImagePaths(suppliedEvidenceText),
+    // A fenced diff carried by the draft itself is the same literal material.
+    // A caller-submitted round persists extractInlineRawEvidence(task + draft)
+    // as the caller-inline-raw-evidence attachment before its preflight runs,
+    // so there the block already reaches this recognizer through
+    // attachedEvidenceText; an internal relator continuation persists no
+    // inline block, and the standalone session_preflight_check persists
+    // nothing, so both rely on this call to admit a path a caller round
+    // admits. The inline text is scanned on its own so a hunk an
+    // attachment leaves open cannot swallow the inline headers.
+    // extractEmbeddedEvidenceRefs is deliberately not widened alongside: the
+    // inline extractor carries a BEGIN FILE block only when it sits inside a
+    // fence that also shows a diff or exit-code signal, so a round feeds it
+    // that material only in that narrow case, and admitting bookends from
+    // the draft is a separate decision from this parity fix.
+    ...unifiedDiffPostImagePaths(inlineRawEvidence),
   ]);
   if (unattachedEvidenceReferences.length > 0) {
     return {

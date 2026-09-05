@@ -15,7 +15,7 @@ import {
 } from "../src/core/orchestrator.js";
 import { sessionReportMarkdown } from "../src/core/reports.js";
 import { extractChecklistCommands } from "../src/core/session-store.js";
-import type { PeerAdapter, PeerId, PeerResult } from "../src/core/types.js";
+import type { PeerAdapter, PeerId, PeerResult, RuntimeEvent } from "../src/core/types.js";
 import { StubAdapter } from "../src/peers/stub.js";
 
 // Regression coverage for the v4.5.0 evidence dead-end reported by a Codex
@@ -104,6 +104,86 @@ const GENERATED_EVIDENCE_PATH =
 const GENERATED_EVIDENCE_SHA = "43009998c876789fa9a74e04363f3109a932883212ebeae1fb14cc9f5aa84285";
 const GENERATED_EVIDENCE_CONTENT = 'STDOUT: package.json:3:  "version": "4.5.3",';
 const GENERATED_DIFF_LINE = "diff --git a/CHANGELOG.md b/CHANGELOG.md";
+// CROSREV-32 (GitHub #268): the caller's evidence is a unified diff whose
+// post-image materializes package.json; the relator later names that file.
+const POST_IMAGE_DIFF_EVIDENCE = [
+  "diff --git a/package.json b/package.json",
+  "index 0000000..1111111 100644",
+  "--- a/package.json",
+  "+++ b/package.json",
+  "@@ -1,5 +1,5 @@",
+  " {",
+  '   "name": "example-app",',
+  '-  "version": "1.2.3",',
+  '+  "version": "1.2.4",',
+  '   "private": true',
+  " }",
+].join("\n");
+// The same file with hostile hunk content: a deleted line `-- gone` and an
+// added line `++ missing.log` serialize as `--- gone` / `+++ missing.log`.
+// A walker that ignores the `@@` line counts reads them as a from-/to-file
+// header pair and files the second hunk under a fabricated missing.log.
+const HOSTILE_HUNK_CONTENT_DIFF_EVIDENCE = [
+  "diff --git a/package.json b/package.json",
+  "index 0000000..1111111 100644",
+  "--- a/package.json",
+  "+++ b/package.json",
+  "@@ -1,5 +1,5 @@",
+  " {",
+  '   "name": "example-app",',
+  "--- gone",
+  "+++ missing.log",
+  '   "private": true',
+  " }",
+  "@@ -10,2 +10,2 @@",
+  '   "license": "UNLICENSED",',
+  '-  "version": "1.2.3",',
+  '+  "version": "1.2.4",',
+].join("\n");
+
+// Round 1: the petitioner attaches the diff through `evidence`; the stub
+// marker keeps the panel non-terminal. Round 2: the selected relator continues
+// the same session with its own draft and no new evidence, exactly like the
+// legitimate relator continuation above, so the active caller attachment is
+// the only evidence custody the preflight can resolve against.
+async function relatorContinuationAfterDiffEvidence(
+  prefix: string,
+  relatorDraft: string,
+  evidence = POST_IMAGE_DIFF_EVIDENCE,
+) {
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(regressionConfig(prefix), (event) =>
+    events.push(event),
+  );
+  const session = await orchestrator.initSession(
+    "Codex-owned session for relator post-image path resolution.",
+    "codex",
+  );
+  const first = await orchestrator.askPeers({
+    session_id: session.session_id,
+    task: session.task,
+    draft: "Version bump candidate awaiting independent review. FORCE_NOT_READY",
+    evidence,
+    caller: "codex",
+    peers: ["claude", "gemini"],
+  });
+  assert.equal(
+    first.round.rejected.some((failure) => failure.failure_class === "evidence_preflight"),
+    false,
+    "the caller round carrying the unified diff must reach the reviewers",
+  );
+  assert.notEqual(first.session.outcome, "converged", "round 1 must leave the session open");
+  const second = await orchestrator.askPeers({
+    session_id: session.session_id,
+    task: session.task,
+    draft: relatorDraft,
+    petitioner: "codex",
+    caller: "claude",
+    lead_peer: "claude",
+    peers: ["gemini", "deepseek"],
+  });
+  return { events, second };
+}
 
 function readyPeer(
   peer: PeerId,
@@ -2866,6 +2946,123 @@ const regressions: Regression[] = [
         relatorInlineAttachments,
         [],
         "a relator-authored revision must not be promoted into caller-submitted evidence for the petitioner's session",
+      );
+    },
+  },
+  {
+    name: "evidencePreflight admits a file whose post-image a fenced diff in the draft materializes",
+    run: () => {
+      // session_preflight_check receives the diff only through the draft; no
+      // round has persisted it as an attachment yet.
+      const result = evidencePreflight({
+        task: "Review the supplied patch.",
+        initialDraft: [
+          "Evidence source: package.json confirms the reviewed product metadata.",
+          "```diff",
+          POST_IMAGE_DIFF_EVIDENCE,
+          "```",
+        ].join("\n"),
+        caller: "codex",
+        attachmentsPresent: false,
+      });
+      assert.equal(result.pass, true, result.reason);
+      assert.deepEqual(
+        result.unattached_evidence_references,
+        [],
+        "a fenced diff supplied inline in the draft materializes its post-image paths the same way an attachment does",
+      );
+    },
+  },
+  {
+    name: "evidencePreflight still fails closed on an artifact the inline diff does not materialize",
+    run: () => {
+      const result = evidencePreflight({
+        task: "Review the supplied patch.",
+        initialDraft: [
+          "Evidence source: package.json confirms the reviewed product metadata; the failing transcript lives in missing.log.",
+          "```diff",
+          POST_IMAGE_DIFF_EVIDENCE,
+          "```",
+        ].join("\n"),
+        caller: "codex",
+        attachmentsPresent: false,
+      });
+      assert.equal(
+        result.pass,
+        false,
+        "naming an artifact the inline diff does not materialize must fail closed",
+      );
+      assert.deepEqual(
+        result.unattached_evidence_references,
+        ["missing.log"],
+        "only the genuinely missing artifact is reported; package.json resolves against the inline diff post-image",
+      );
+    },
+  },
+  {
+    name: "askPeers relator continuation resolves a file the admitted unified-diff post-image materializes",
+    run: async () => {
+      const { events, second } = await relatorContinuationAfterDiffEvidence(
+        "relator-post-image-path",
+        [
+          "Relator revision after round 1.",
+          "Evidence: the admitted unified diff carries the package.json post-image verbatim, so no further artifact is required.",
+        ].join("\n"),
+      );
+
+      assert.equal(
+        second.round.rejected.some((failure) => failure.failure_class === "evidence_preflight"),
+        false,
+        `a file whose post-image the active attachment materializes is not an unattached evidence reference (rejected=${JSON.stringify(
+          second.round.rejected.map((failure) => failure.message),
+        )})`,
+      );
+      assert.equal(
+        events.some(
+          (event) => event.type === "session.evidence_preflight_failed" && event.round === 2,
+        ),
+        false,
+        "round 2 must not emit an evidence preflight failure",
+      );
+      assert.equal(second.round.peers.length, 2, "both reviewers must reach the paid stage");
+      assert.equal(
+        events.filter((event) => event.type === "peer.call.started" && event.round === 2).length,
+        2,
+        "the relator round must dispatch both configured reviewers",
+      );
+    },
+  },
+  {
+    name: "askPeers relator continuation still fails closed on an artifact absent from the active evidence",
+    run: async () => {
+      const { events, second } = await relatorContinuationAfterDiffEvidence(
+        "relator-missing-artifact",
+        [
+          "Relator revision after round 1.",
+          "Evidence: the admitted unified diff carries the package.json post-image verbatim; the failing transcript lives in missing.log.",
+        ].join("\n"),
+        HOSTILE_HUNK_CONTENT_DIFF_EVIDENCE,
+      );
+
+      assert.equal(
+        second.round.rejected.some((failure) => failure.failure_class === "evidence_preflight"),
+        true,
+        "a relator naming an artifact whose literal content was never supplied must be blocked before any paid call",
+      );
+      assert.equal(second.round.peers.length, 0, "no reviewer may reach the paid stage");
+      const failure = events.find(
+        (event) => event.type === "session.evidence_preflight_failed" && event.round === 2,
+      );
+      assert.ok(failure, "the round-2 evidence preflight failure must be emitted");
+      assert.deepEqual(
+        failure.data?.unattached_evidence_references,
+        ["missing.log"],
+        "only the genuinely missing artifact is reported; package.json still resolves against the diff post-image while the `--- gone` / `+++ missing.log` hunk content admits no path",
+      );
+      assert.equal(
+        failure.data?.attachments_present,
+        true,
+        "the active caller attachment is present while the relator's reference is rejected",
       );
     },
   },
