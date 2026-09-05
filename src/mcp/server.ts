@@ -3542,10 +3542,14 @@ export async function main(): Promise<void> {
   // all revert to env/registry/defaults) and missingFinancialControlVars
   // only reports the generic CROSS_REVIEW_CONFIG_FILE_INVALID marker, so
   // print the detail (path + diagnostic) where the operator sees it instead
-  // of only inside server_info.config_load.parse_error.
+  // of only inside server_info.config_load.parse_error. The same slot names
+  // the deprecated Sonar rate-card keys a file that DID load still carries
+  // (accepted, stripped and ignored; see DEPRECATED_COST_RATE_KEYS).
   setTimeout(() => {
     const notice = centralConfigInvalidBootNotice(getFileConfigRuntimeStatus());
     if (notice) console.error(notice);
+    const deprecatedNotice = centralConfigDeprecatedKeysBootNotice(getFileConfigRuntimeStatus());
+    if (deprecatedNotice) console.error(deprecatedNotice);
   }, STARTUP_SWEEP_DELAY_MS);
 }
 
@@ -3574,6 +3578,27 @@ export function centralConfigInvalidBootNotice(
 ): string | null {
   if (!configLoad?.file_exists || !configLoad.parse_error) return null;
   return `[cross-review] notice: central config "${configLoad.path}" was IGNORED IN FULL (every value in it — models, budgets, rate cards, cache, evidence broker — fell back to env/registry/defaults) and paid calls stay blocked with CROSS_REVIEW_CONFIG_FILE_INVALID until the file is fixed and the MCP host restarted. Cause: ${configLoad.parse_error}`;
+}
+
+// CROSREV-19 (#233), PR #293 review: pure text builder for the deprecated
+// rate-card keys boot notice. The five legacy Sonar keys stay accepted by the
+// central-config schema throughout 4.x (a file valid under 4.6.8 must stay
+// valid after a patch update) but price nothing: applyFileConfigToEnv strips
+// them before the card reaches env or the cost engine and reports them in
+// `deprecated_keys_ignored`. Returns null when the file is absent, failed to
+// load, or carries none of them.
+export function centralConfigDeprecatedKeysBootNotice(
+  configLoad:
+    | {
+        path: string;
+        file_exists: boolean;
+        deprecated_keys_ignored?: readonly string[] | undefined;
+      }
+    | undefined,
+): string | null {
+  const ignored = configLoad?.deprecated_keys_ignored ?? [];
+  if (!configLoad?.file_exists || ignored.length === 0) return null;
+  return `[cross-review] notice: central config "${configLoad.path}" carries ${ignored.length} deprecated rate-card key(s) that were IGNORED — the legacy Sonar API cost dimensions price nothing since v04.06.09 and the rest of the file applied normally: ${ignored.join(", ")}. These keys can be removed from the file at any time and will be REJECTED by the schema in the next major version.`;
 }
 
 // v2.4.0 / cross-review R6 follow-up (CI failure 25199679588): guard

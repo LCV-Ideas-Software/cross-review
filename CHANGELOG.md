@@ -18,9 +18,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
   `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS`,
   `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` and
   `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION`, are
-  gone from the central-config schema (which stays strict), the config types,
-  the cost engine, the env mapping and every regression fixture.
-  `CostEstimate.request_cost`, `citation_tokens_cost` and
+  gone from the config types, the cost engine, the env mapping and every
+  regression fixture; the central-config schema keeps accepting the five keys
+  as deprecated no-ops (see Deprecated below), so no `config.json` that loaded
+  under v04.06.08 is rejected by this release. `CostEstimate.request_cost`,
+  `citation_tokens_cost` and
   `deep_research_reasoning_tokens_cost`, `TokenUsage.citation_tokens`, the
   `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED` marker and the
   Sonar branches of `estimateCost`, `addMissingPerplexityDimensions` and
@@ -43,32 +45,33 @@ standard `v00.00.00`; npm package versions remain SemVer.
   with the file path, the "ignored in full" consequence, the
   `CROSS_REVIEW_CONFIG_FILE_INVALID` marker and the zod diagnostic, in addition
   to `server_info.config_load.parse_error`.
+- A central `config.json` that still carries one of the deprecated Sonar
+  rate-card keys applies in full; the server prints a second boot notice in the
+  same slot naming each ignored key with its card path (for example
+  `model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000`),
+  and `server_info.config_load.deprecated_keys_ignored` lists them.
 - `estimatedPeerRoundCost` fails closed for every retired Perplexity id, not
   only `sonar-deep-research`, through the shared `isPerplexityAgentModel`
   predicate, so the round preflight and the evidence judge passes block before
   dispatch on a Sonar pin even when a rate card for it is retained.
 
-### Migration
+### Deprecated
 
-1. **Before upgrading**, delete
-   `model_cost_rates.perplexity["sonar-reasoning-pro"]` and
-   `model_cost_rates.perplexity["sonar-deep-research"]` (and any
-   `request_fee_*_per_1000`, `citation_tokens_per_million` or
-   `deep_research_reasoning_tokens_per_million` key) from the central
-   `config.json`. Both cards are inert under the `perplexity/kimi-k3` pin, and
-   the current schema accepts the file without them.
-2. Why before: an invalid central config is ignored **in full** — models,
-   budgets, reasoning effort, cache, evidence broker and every rate card revert
-   to env/registry/defaults, not only the Perplexity card — and paid calls stay
-   blocked with `CROSS_REVIEW_CONFIG_FILE_INVALID` until the file is fixed and
-   the MCP host restarted. After the upgrade the boot notice and
-   `server_info.config_load.parse_error` name the offending key and card path
-   (`unrecognized_keys`).
-3. Remove any `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_*`,
-   `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` or
-   `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION`
-   variable from the MCP host configuration or the Windows registry; they are
-   ignored.
+- The rate-card keys `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+  `request_fee_high_per_1000`, `citation_tokens_per_million` and
+  `deep_research_reasoning_tokens_per_million` are deprecated no-ops for the
+  rest of 4.x. **Nothing to do before upgrading**: a central `config.json` that
+  carries them — typically the retained
+  `model_cost_rates.perplexity["sonar-reasoning-pro"]` and
+  `model_cost_rates.perplexity["sonar-deep-research"]` cards — still applies in
+  full, the keys are stripped before anything is priced or flattened to env,
+  and the boot notice names each one. Remove them at leisure; their rejection
+  by the strict schema is scheduled for the next major version. The env
+  variables `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_*`,
+  `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` and
+  `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION` are
+  no longer read; remove them from the MCP host configuration or the Windows
+  registry at leisure as well.
 
 ## [v04.06.08] — 05/09/2026
 

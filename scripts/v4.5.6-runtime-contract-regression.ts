@@ -32,6 +32,10 @@ import type {
   PeerResult,
   TokenUsage,
 } from "../src/core/types.js";
+import {
+  centralConfigDeprecatedKeysBootNotice,
+  centralConfigInvalidBootNotice,
+} from "../src/mcp/server.js";
 import { AnthropicAdapter } from "../src/peers/anthropic.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { GeminiAdapter } from "../src/peers/gemini.js";
@@ -1697,20 +1701,34 @@ const regressions: Regression[] = [
         }
       }
 
-      // (6) Central config: the strict schema rejects a card that still
-      // carries a legacy key with zod's native unrecognized_keys issue, which
-      // names the key and the card path (before: the file applied cleanly).
+      // (6) Central config (PR #293 review, SemVer): the five deprecated Sonar
+      // keys stay ACCEPTED by the strict schema throughout 4.x — a file valid
+      // under 4.6.8 must not be rejected by a patch update. applyFileConfigToEnv
+      // strips them before the card is flattened or retained and names each
+      // one with its card path; any other unknown key is still rejected in
+      // full. Before this fix every "tolerated" assertion below was red: the
+      // file came back applied=false with zod's unrecognized_keys issue.
       const legacyDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-crosrev-19-"));
+      const crossReviewEnvSnapshot = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => name.startsWith("CROSS_REVIEW_")),
+      );
+      const crossReviewEnvNames = (): string[] =>
+        Object.keys(process.env).filter((name) => name.startsWith("CROSS_REVIEW_"));
       try {
+        // A tolerated file DOES write flattened values into process.env, so
+        // start from a bare CROSS_REVIEW_* environment (data dir only) and
+        // restore the host state afterwards.
+        for (const name of crossReviewEnvNames()) {
+          if (name !== "CROSS_REVIEW_DATA_DIR") delete process.env[name];
+        }
         const configPath = path.join(legacyDataDir, "config.json");
         const writeCentralConfig = (config: unknown): void => {
           fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
         };
-        // The file path is resolved from the data dir here; the process
-        // environment decides whether a flattened value is written, so
-        // nothing below can leak into it.
         const readEnvExceptOverride = (name: string): string | undefined =>
           name === "CROSS_REVIEW_CONFIG_FILE" ? undefined : process.env[name];
+        const legacyEnvNamesPresent = (): string[] =>
+          crossReviewEnvNames().filter((name) => LEGACY_DIMENSION_PATTERN.test(name));
         writeCentralConfig({
           model_cost_rates: {
             perplexity: {
@@ -1722,24 +1740,24 @@ const regressions: Regression[] = [
             },
           },
         });
-        const rejectedModelCard = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
-        assert.equal(rejectedModelCard.applied, false, "a Sonar model card must be rejected");
-        assert.ok(
-          rejectedModelCard.parse_error?.startsWith("schema_validation_failed:"),
-          `expected schema_validation_failed: ${rejectedModelCard.parse_error}`,
+        const toleratedModelCard = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
+        assert.deepEqual(
+          {
+            applied: toleratedModelCard.applied,
+            parseError: toleratedModelCard.parse_error,
+            ignored: toleratedModelCard.deprecated_keys_ignored,
+            card: toleratedModelCard.model_cost_rates?.perplexity?.["sonar-reasoning-pro"],
+          },
+          {
+            applied: true,
+            parseError: undefined,
+            ignored: [
+              'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
+            ],
+            card: { input_per_million: 1, output_per_million: 1 },
+          },
+          "a deprecated key on a model card must be tolerated, stripped and named with its path",
         );
-        for (const fragment of [
-          "unrecognized_keys",
-          "request_fee_low_per_1000",
-          "model_cost_rates",
-          "perplexity",
-          "sonar-reasoning-pro",
-        ]) {
-          assert.ok(
-            rejectedModelCard.parse_error?.includes(fragment),
-            `parse_error must name ${fragment}: ${rejectedModelCard.parse_error}`,
-          );
-        }
         writeCentralConfig({
           cost_rates: {
             perplexity: {
@@ -1749,35 +1767,68 @@ const regressions: Regression[] = [
             },
           },
         });
-        const rejectedPrimaryCard = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
-        assert.equal(rejectedPrimaryCard.applied, false, "a legacy primary card must be rejected");
+        const toleratedPrimaryCard = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
+        assert.deepEqual(
+          {
+            applied: toleratedPrimaryCard.applied,
+            ignored: toleratedPrimaryCard.deprecated_keys_ignored,
+            legacyEnv: legacyEnvNamesPresent(),
+          },
+          {
+            applied: true,
+            ignored: ["cost_rates.perplexity.citation_tokens_per_million"],
+            legacyEnv: [],
+          },
+          "a deprecated key on the primary card must be tolerated and never flattened to env",
+        );
+        // Only the five deprecated keys are tolerated: a genuinely unknown key
+        // still rejects the whole file with the schema-invalid diagnostic.
+        const kimiCard = {
+          input_per_million: 3,
+          output_per_million: 15,
+          cache_read_per_million: 0.3,
+          search_queries_per_1000: 2.5,
+        };
+        writeCentralConfig({
+          model_cost_rates: {
+            perplexity: { "perplexity/kimi-k3": { ...kimiCard, search_fee_per_1000: 2.5 } },
+          },
+        });
+        const rejectedUnknownKey = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
+        assert.equal(rejectedUnknownKey.applied, false, "an unknown card key must be rejected");
         for (const fragment of [
+          "schema_validation_failed:",
           "unrecognized_keys",
-          "citation_tokens_per_million",
-          "cost_rates",
+          "search_fee_per_1000",
+          "model_cost_rates",
           "perplexity",
+          "perplexity/kimi-k3",
         ]) {
           assert.ok(
-            rejectedPrimaryCard.parse_error?.includes(fragment),
-            `parse_error must name ${fragment}: ${rejectedPrimaryCard.parse_error}`,
+            rejectedUnknownKey.parse_error?.includes(fragment),
+            `parse_error must name ${fragment}: ${rejectedUnknownKey.parse_error}`,
           );
         }
+        assert.equal(
+          rejectedUnknownKey.deprecated_keys_ignored,
+          undefined,
+          "a rejected file reports no ignored deprecated keys",
+        );
 
         // (7) End to end on the operator surface: CROSS_REVIEW_CONFIG_FILE →
-        // loadConfig() → missingFinancialControlVars / server_info
-        // config_load. A central config still carrying the two Sonar cards is
-        // ignored in full and paid calls fail closed with the named marker;
-        // deleting the two cards (the documented pre-upgrade step) is enough
-        // for the same file to apply again.
+        // loadConfig() → missingFinancialControlVars / server_info config_load
+        // / boot notices. The operator's real 4.6.8 file shape — an Agent API
+        // pin plus the two retained Sonar cards carrying every deprecated key —
+        // applies in full: no CROSS_REVIEW_CONFIG_FILE_INVALID, the deprecated
+        // keys reach neither the loaded cards nor the env, and the deprecation
+        // boot notice names each of them with its path. A genuinely unknown
+        // key still fails closed with the schema-invalid boot notice.
         const legacyCentralConfig = {
+          models: { perplexity: "perplexity/kimi-k3" },
+          budget: { default_max_rounds: 4 },
           model_cost_rates: {
             perplexity: {
-              "perplexity/kimi-k3": {
-                input_per_million: 3,
-                output_per_million: 15,
-                cache_read_per_million: 0.3,
-                search_queries_per_1000: 2.5,
-              },
+              "perplexity/kimi-k3": kimiCard,
               "sonar-reasoning-pro": {
                 input_per_million: 2,
                 output_per_million: 8,
@@ -1795,64 +1846,140 @@ const regressions: Regression[] = [
             },
           },
         };
-        const crossReviewEnvSnapshot = Object.fromEntries(
-          Object.entries(process.env).filter(([name]) => name.startsWith("CROSS_REVIEW_")),
+        const DEPRECATED_KEY_PATHS = [
+          'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
+          'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_medium_per_1000',
+          'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_high_per_1000',
+          'model_cost_rates.perplexity["sonar-deep-research"].citation_tokens_per_million',
+          'model_cost_rates.perplexity["sonar-deep-research"].deep_research_reasoning_tokens_per_million',
+        ];
+        process.env.CROSS_REVIEW_CONFIG_FILE = configPath;
+        writeCentralConfig(legacyCentralConfig);
+        const legacyLoaded = loadConfig();
+        const legacyStatus = getFileConfigRuntimeStatus();
+        assert.ok(legacyStatus?.file_exists, "the temp central config must be seen");
+        assert.deepEqual(
+          {
+            applied: legacyStatus.applied,
+            parseError: legacyStatus.parse_error,
+            fieldsApplied: legacyStatus.fields_applied >= 1,
+            ignored: legacyStatus.deprecated_keys_ignored,
+          },
+          { applied: true, parseError: null, fieldsApplied: true, ignored: DEPRECATED_KEY_PATHS },
+          `a central config valid under 4.6.8 must apply in full: ${JSON.stringify(legacyStatus)}`,
         );
-        try {
-          process.env.CROSS_REVIEW_CONFIG_FILE = configPath;
-          writeCentralConfig(legacyCentralConfig);
-          const legacyLoaded = loadConfig();
-          const legacyStatus = getFileConfigRuntimeStatus();
-          assert.ok(legacyStatus?.file_exists, "the temp central config must be seen");
-          assert.equal(legacyStatus.applied, false, "a Sonar card must reject the whole file");
-          for (const fragment of [
-            "schema_validation_failed:",
-            "unrecognized_keys",
-            "request_fee_low_per_1000",
-            "citation_tokens_per_million",
-            "model_cost_rates",
-            "sonar-reasoning-pro",
-            "sonar-deep-research",
-          ]) {
-            assert.ok(
-              legacyStatus.parse_error?.includes(fragment),
-              `config_load.parse_error must name ${fragment}: ${legacyStatus.parse_error}`,
-            );
-          }
+        const loadedCards = legacyLoaded.model_cost_rates?.perplexity ?? {};
+        assert.deepEqual(
+          {
+            reasoning: loadedCards["sonar-reasoning-pro"],
+            deepResearch: loadedCards["sonar-deep-research"],
+            legacyEnv: legacyEnvNamesPresent(),
+          },
+          {
+            reasoning: { input_per_million: 2, output_per_million: 8 },
+            deepResearch: {
+              input_per_million: 2,
+              output_per_million: 8,
+              search_queries_per_1000: 5,
+            },
+            legacyEnv: [],
+          },
+          "deprecated keys must reach neither the loaded rate cards nor the env",
+        );
+        const legacyMissing = missingFinancialControlVars(legacyLoaded, ["perplexity"]);
+        assert.deepEqual(
+          legacyMissing.filter((item) => item.startsWith("CROSS_REVIEW_CONFIG_")),
+          [],
+          `a tolerated file must not block paid calls: ${legacyMissing.join(",")}`,
+        );
+        const deprecationNotice = centralConfigDeprecatedKeysBootNotice(legacyStatus);
+        assert.ok(deprecationNotice, "the boot notice must name the ignored deprecated keys");
+        for (const fragment of [
+          `central config "${configPath}"`,
+          ...DEPRECATED_KEY_PATHS,
+          "can be removed",
+          "next major",
+        ]) {
           assert.ok(
-            missingFinancialControlVars(legacyLoaded, ["perplexity"]).includes(
-              "CROSS_REVIEW_CONFIG_FILE_INVALID",
-            ),
-            "paid calls must fail closed with the named marker while the Sonar cards remain",
+            deprecationNotice.includes(fragment),
+            `deprecation boot notice must include ${fragment}: ${deprecationNotice}`,
           );
-          const {
-            "sonar-reasoning-pro": _retiredReasoning,
-            "sonar-deep-research": _retiredDeep,
-            ...agentCards
-          } = legacyCentralConfig.model_cost_rates.perplexity;
-          writeCentralConfig({ model_cost_rates: { perplexity: agentCards } });
-          const migratedLoaded = loadConfig();
-          const migratedStatus = getFileConfigRuntimeStatus();
-          assert.deepEqual(
-            { applied: migratedStatus?.applied, parseError: migratedStatus?.parse_error },
-            { applied: true, parseError: null },
-            "deleting the two Sonar cards must be enough for the file to apply",
-          );
-          const migratedMissing = missingFinancialControlVars(migratedLoaded, ["perplexity"]);
-          assert.deepEqual(
-            migratedMissing.filter((item) => item.startsWith("CROSS_REVIEW_CONFIG_")),
-            [],
-            `the migrated file must not block paid calls: ${migratedMissing.join(",")}`,
-          );
-        } finally {
-          for (const name of Object.keys(process.env)) {
-            if (name.startsWith("CROSS_REVIEW_")) delete process.env[name];
-          }
-          Object.assign(process.env, crossReviewEnvSnapshot);
-          // Restore the module-level file-config status to the host state.
-          loadConfig();
         }
+        assert.equal(
+          centralConfigInvalidBootNotice(legacyStatus),
+          null,
+          "a tolerated file must not print the schema-invalid boot notice",
+        );
+
+        writeCentralConfig({
+          ...legacyCentralConfig,
+          model_cost_rates: {
+            perplexity: {
+              ...legacyCentralConfig.model_cost_rates.perplexity,
+              "perplexity/kimi-k3": { ...kimiCard, search_fee_per_1000: 2.5 },
+            },
+          },
+        });
+        const unknownLoaded = loadConfig();
+        const unknownStatus = getFileConfigRuntimeStatus();
+        assert.equal(unknownStatus?.applied, false, "an unknown key must reject the whole file");
+        assert.ok(
+          missingFinancialControlVars(unknownLoaded, ["perplexity"]).includes(
+            "CROSS_REVIEW_CONFIG_FILE_INVALID",
+          ),
+          "paid calls must fail closed with the named marker while the unknown key remains",
+        );
+        const invalidNotice = centralConfigInvalidBootNotice(unknownStatus);
+        assert.ok(invalidNotice, "an unknown key must produce the schema-invalid boot notice");
+        for (const fragment of [
+          "IGNORED IN FULL",
+          "CROSS_REVIEW_CONFIG_FILE_INVALID",
+          "unrecognized_keys",
+          "search_fee_per_1000",
+        ]) {
+          assert.ok(
+            invalidNotice.includes(fragment),
+            `schema-invalid boot notice must include ${fragment}: ${invalidNotice}`,
+          );
+        }
+        assert.equal(
+          centralConfigDeprecatedKeysBootNotice(unknownStatus),
+          null,
+          "a rejected file has no ignored deprecated keys to announce",
+        );
+
+        // Removing the deprecated keys is optional; doing so silences the
+        // notice while the same file keeps applying.
+        writeCentralConfig({
+          ...legacyCentralConfig,
+          model_cost_rates: {
+            perplexity: {
+              "perplexity/kimi-k3": kimiCard,
+              "sonar-reasoning-pro": { input_per_million: 2, output_per_million: 8 },
+              "sonar-deep-research": {
+                input_per_million: 2,
+                output_per_million: 8,
+                search_queries_per_1000: 5,
+              },
+            },
+          },
+        });
+        loadConfig();
+        const cleanStatus = getFileConfigRuntimeStatus();
+        assert.deepEqual(
+          {
+            applied: cleanStatus?.applied,
+            ignored: cleanStatus?.deprecated_keys_ignored,
+            notice: centralConfigDeprecatedKeysBootNotice(cleanStatus),
+          },
+          { applied: true, ignored: [], notice: null },
+          "removing the deprecated keys must silence the notice and keep the file applying",
+        );
       } finally {
+        for (const name of crossReviewEnvNames()) delete process.env[name];
+        Object.assign(process.env, crossReviewEnvSnapshot);
+        // Restore the module-level file-config status to the host state.
+        loadConfig();
         fs.rmSync(legacyDataDir, { recursive: true, force: true });
       }
 

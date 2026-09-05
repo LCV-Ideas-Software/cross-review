@@ -33,6 +33,7 @@ import { PEERS } from "../src/core/types.js";
 import type { JobStatus } from "../src/mcp/server.js";
 import {
   assertSessionMutationAuthority,
+  centralConfigDeprecatedKeysBootNotice,
   centralConfigInvalidBootNotice,
   getCallerCandidatesFromClientInfo,
   hasTrustedPetitionerProvenance,
@@ -7113,8 +7114,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION, "8");
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS, "6");
     // CROSREV-19 (#233): the legacy Sonar suffixes are no longer emitted by
-    // the flatten map — a validated card cannot carry them any more, and a
-    // stray key cast in must not resurrect the env name.
+    // the flatten map — applyFileConfigToEnv strips the deprecated keys before
+    // flattening, and a stray key cast in must not resurrect the env name.
     const flatWithStrayLegacyKey = flattenFileConfigToEnvMap({
       cost_rates: {
         perplexity: {
@@ -9068,6 +9069,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       label: "centralConfigInvalidBootNotice",
       needle: "centralConfigInvalidBootNotice(getFileConfigRuntimeStatus())",
     },
+    // PR #293 review: the deprecated-keys notice shares the same slot.
+    {
+      label: "centralConfigDeprecatedKeysBootNotice",
+      needle: "centralConfigDeprecatedKeysBootNotice(getFileConfigRuntimeStatus())",
+    },
   ]) {
     const sweepIdx = bootPath.indexOf(needle);
     assert.ok(
@@ -9091,11 +9097,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // reports the generic CROSS_REVIEW_CONFIG_FILE_INVALID marker, so the boot
   // notice must carry the path, the "ignored in full" consequence, the
   // marker and the zod diagnostic; a clean or absent file prints nothing.
+  // (PR #293 review: the five deprecated Sonar keys are tolerated, so the
+  // pinned example uses a genuinely unknown key.)
   const invalidConfigNotice = centralConfigInvalidBootNotice({
     path: "C:\\placeholder\\config.json",
     file_exists: true,
     parse_error:
-      'schema_validation_failed: [ { "code": "unrecognized_keys", "keys": [ "request_fee_low_per_1000" ], "path": [ "model_cost_rates", "perplexity", "sonar-reasoning-pro" ] } ]',
+      'schema_validation_failed: [ { "code": "unrecognized_keys", "keys": [ "search_fee_per_1000" ], "path": [ "model_cost_rates", "perplexity", "perplexity/kimi-k3" ] } ]',
   });
   assert.ok(
     invalidConfigNotice,
@@ -9107,12 +9115,68 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "IGNORED IN FULL",
     "CROSS_REVIEW_CONFIG_FILE_INVALID",
     "unrecognized_keys",
-    "request_fee_low_per_1000",
-    "sonar-reasoning-pro",
+    "search_fee_per_1000",
+    "perplexity/kimi-k3",
   ]) {
     assert.ok(
       invalidConfigNotice.includes(fragment),
       `CROSREV-19: invalid central config boot notice must include ${JSON.stringify(fragment)}: ${invalidConfigNotice}`,
+    );
+  }
+  // PR #293 review (SemVer): a file that still carries the deprecated Sonar
+  // rate-card keys applies in full, so its notice must say the keys were
+  // ignored, name each one with its card path, say they can be removed, and
+  // announce the next-major rejection; a file without them prints nothing.
+  const deprecatedKeyPaths = [
+    'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
+    'model_cost_rates.perplexity["sonar-deep-research"].citation_tokens_per_million',
+    "cost_rates.perplexity.deep_research_reasoning_tokens_per_million",
+  ];
+  const deprecatedKeysNotice = centralConfigDeprecatedKeysBootNotice({
+    path: "C:\\placeholder\\config.json",
+    file_exists: true,
+    deprecated_keys_ignored: deprecatedKeyPaths,
+  });
+  assert.ok(
+    deprecatedKeysNotice,
+    "PR #293 review: deprecated rate-card keys must produce a boot notice",
+  );
+  for (const fragment of [
+    "[cross-review] notice:",
+    'central config "C:\\placeholder\\config.json"',
+    "3 deprecated rate-card key(s)",
+    "IGNORED",
+    "the rest of the file applied normally",
+    ...deprecatedKeyPaths,
+    "can be removed from the file at any time",
+    "REJECTED by the schema in the next major version",
+  ]) {
+    assert.ok(
+      deprecatedKeysNotice.includes(fragment),
+      `PR #293 review: deprecated keys boot notice must include ${JSON.stringify(fragment)}: ${deprecatedKeysNotice}`,
+    );
+  }
+  assert.ok(
+    !deprecatedKeysNotice.includes("IGNORED IN FULL") &&
+      !deprecatedKeysNotice.includes("CROSS_REVIEW_CONFIG_FILE_INVALID"),
+    `PR #293 review: the deprecation notice must not read like a rejection: ${deprecatedKeysNotice}`,
+  );
+  for (const [label, configLoad] of [
+    [
+      "a file without deprecated keys",
+      { path: "C:\\placeholder\\config.json", file_exists: true, deprecated_keys_ignored: [] },
+    ],
+    ["a rejected file", { path: "C:\\placeholder\\config.json", file_exists: true }],
+    [
+      "an absent file",
+      { path: "C:\\placeholder\\config.json", file_exists: false, deprecated_keys_ignored: [] },
+    ],
+    ["no load status", undefined],
+  ] as const) {
+    assert.equal(
+      centralConfigDeprecatedKeysBootNotice(configLoad),
+      null,
+      `PR #293 review: ${label} must not print the deprecation notice`,
     );
   }
   assert.equal(

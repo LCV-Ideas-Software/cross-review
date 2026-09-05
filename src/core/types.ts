@@ -1168,8 +1168,10 @@ export interface CostRateConfig {
   // Perplexity Agent API web_search fee per 1000 invocations. CROSREV-19
   // (#233): the legacy Sonar dimensions (request_fee_{low,medium,high}_per_1000,
   // citation_tokens_per_million, deep_research_reasoning_tokens_per_million)
-  // were removed; a central config card still carrying one of them is
-  // rejected by the strict schema in src/core/file-config.ts.
+  // were removed from this type and from the cost engine; the central-config
+  // schema in src/core/file-config.ts still tolerates those keys throughout
+  // 4.x (DEPRECATED_COST_RATE_KEYS: stripped before the card reaches this
+  // type, named by a boot notice, rejected in the next major).
   search_queries_per_1000?: number | undefined;
 }
 

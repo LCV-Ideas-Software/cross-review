@@ -124,7 +124,8 @@ per invocation (`2.5` per 1000) were re-verified on 04/09/2026 against the
 tool but no longer selects any fee tier: the legacy Sonar cost dimensions
 (per-request fee by context size, citation tokens, Deep Research reasoning
 tokens) were removed in CROSREV-19 (#233) because the runtime has dispatched
-no Sonar id since v4.6.0.
+no Sonar id since v4.6.0. The rate-card keys that carried them remain accepted
+as deprecated no-ops throughout 4.x (see below).
 
 Central `config.json` supports model-aware rate cards through
 `model_cost_rates`. This is the preferred shape when explicit operator
@@ -193,16 +194,28 @@ If both `cost_rates.<peer>` and `model_cost_rates.<peer>` are present, the
 model-specific entry for the configured peer model wins. Process environment
 and Windows registry rate variables still have higher precedence than the file.
 
-A central config card for a retired Sonar id, or any card carrying one of the
-removed keys (`request_fee_low_per_1000`, `request_fee_medium_per_1000`,
-`request_fee_high_per_1000`, `citation_tokens_per_million`,
-`deep_research_reasoning_tokens_per_million`), is rejected by the strict
-schema: the boot notice and `server_info.config_load.parse_error` read
-`schema_validation_failed` with an `unrecognized_keys` issue naming the key and
-the card path (for example `model_cost_rates` › `perplexity` ›
-`sonar-reasoning-pro`), the whole file is ignored, and paid calls stay blocked
-with `CROSS_REVIEW_CONFIG_FILE_INVALID` until the card is deleted and the MCP
-host restarted.
+The five legacy Sonar rate-card keys (`request_fee_low_per_1000`,
+`request_fee_medium_per_1000`, `request_fee_high_per_1000`,
+`citation_tokens_per_million`, `deep_research_reasoning_tokens_per_million`)
+are deprecated no-ops throughout 4.x. The strict schema still accepts them on
+any card (`cost_rates.<peer>` or `model_cost_rates.<peer>.<model>`); the loader
+strips them before the card is flattened to env or reaches the cost engine,
+the rest of the file applies normally, and a boot notice — mirrored by
+`server_info.config_load.deprecated_keys_ignored` — names each ignored key with
+its card path, for example
+`model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000`.
+They can be removed at leisure; the next major version rejects them. Any other
+unknown key is rejected: the boot notice and
+`server_info.config_load.parse_error` read `schema_validation_failed` with an
+`unrecognized_keys` issue naming the key and the card path, the whole file is
+ignored, and paid calls stay blocked with `CROSS_REVIEW_CONFIG_FILE_INVALID`
+until the key is removed and the MCP host restarted. A retained card for a
+retired Sonar id is not rejected by itself — `model_cost_rates` accepts any
+model name — and the retired id fails closed only when it is selected: as the
+Perplexity pin or a fallback, the financial preflight reports
+`CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID`; as the evidence
+judge, `estimatedPeerRoundCost` returns no estimate and the judge pass blocks
+before dispatch.
 
 Accounting always resolves the model actually sent by the adapter, including
 explicit overrides and fallbacks. A non-primary effective model must match a
