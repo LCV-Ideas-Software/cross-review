@@ -134,17 +134,13 @@ export interface TokenUsage {
   cache_write_tokens?: number | undefined;
   cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported" | undefined;
   cache_key_hash?: string | undefined;
-  // v3.0.0 (Perplexity 6th peer): Perplexity reports additional token
-  // categories and a search-query count alongside prompt/completion.
-  // `citation_tokens` is the number of tokens spent inlining the
-  // citation block (sonar-deep-research) — separately billed at
-  // citation_tokens_per_million. `num_search_queries` is the count of
-  // distinct web-search invocations the model issued during the
-  // request — separately billed at search_queries_per_1000 for
-  // sonar-deep-research and, since v4.6.0, for every Agent API model
-  // (`usage.tool_calls_details` web-search counter). Both are absent for
-  // non-perplexity peers.
-  citation_tokens?: number | undefined;
+  // v3.0.0 (Perplexity 6th peer): Perplexity reports a search-query count
+  // alongside prompt/completion. `num_search_queries` is the count of
+  // web_search tool invocations the model issued during the request
+  // (`usage.tool_calls_details` web-search counter on the Agent API since
+  // v4.6.0) — separately billed at search_queries_per_1000. Absent for
+  // non-perplexity peers. CROSREV-19 (#233): the legacy Sonar
+  // `citation_tokens` counter was removed with the Sonar cost dimensions.
   num_search_queries?: number | undefined;
   // v3.0.0: Perplexity API also returns its OWN per-call cost
   // breakdown (`usage.cost.total_cost` etc.) in USD. We capture it
@@ -155,11 +151,9 @@ export interface TokenUsage {
   // contract intact.
   provider_reported_total_cost_usd?: number | undefined;
   // Per-call signal that a Perplexity request declared the web_search
-  // tool (Agent API) or, on legacy Sonar ids, performed a web search.
-  // This is latency/search telemetry only: legacy Sonar request pricing
-  // is unchanged when disable_search=true, and Agent API search fees are
-  // priced from the reported invocation count, never from this flag.
-  // Set only by PerplexityAdapter; ignored by other peers.
+  // tool (Agent API). This is latency/search telemetry only: Agent API
+  // search fees are priced from the reported invocation count, never
+  // from this flag. Set only by PerplexityAdapter; ignored by other peers.
   search_performed?: boolean | undefined;
 }
 
@@ -192,18 +186,15 @@ export interface CostEstimate {
   // Possible values: "base" | "extended" | "promo" | "promo_extended".
   // Absent when source is "stub" or "unknown-rate".
   tier_used?: "base" | "extended" | "promo" | "promo_extended" | undefined;
-  // v3.0.0 (Perplexity 6th peer): Perplexity-specific cost line items.
-  // request_cost is the legacy Sonar per-1000-request fee scaled by
-  // search_context_size (low/medium/high). citation_tokens_cost and
-  // deep_research_reasoning_tokens_cost apply only to the
-  // `sonar-deep-research` model. search_queries_cost applies to
-  // `sonar-deep-research` search queries and, since v4.6.0, to Agent API
-  // web_search tool invocations (per-1000 rate on the model card). All
-  // four ADD to total_cost (separate from input_cost which represents
-  // fresh non-cached input tokens). Absent for all non-perplexity peers.
-  request_cost?: number | undefined;
-  citation_tokens_cost?: number | undefined;
-  deep_research_reasoning_tokens_cost?: number | undefined;
+  // v3.0.0 (Perplexity 6th peer) / v4.6.0 (Agent API): the only
+  // Perplexity-specific cost line item. search_queries_cost prices the
+  // Agent API web_search tool invocations reported by the provider
+  // (per-1000 rate on the model card) and ADDS to total_cost (separate
+  // from input_cost which represents fresh non-cached input tokens).
+  // Absent for all non-perplexity peers. CROSREV-19 (#233): the legacy
+  // Sonar line items (request_cost, citation_tokens_cost,
+  // deep_research_reasoning_tokens_cost) were removed; sessions persisted
+  // before that keep them in meta.json as inert historical fields.
   search_queries_cost?: number | undefined;
 }
 
@@ -1174,11 +1165,11 @@ export interface CostRateConfig {
   promo_cache_write_extended_per_million?: number | undefined;
   promo_expires_at?: string | undefined;
   threshold_tokens?: number | undefined;
-  request_fee_low_per_1000?: number | undefined;
-  request_fee_medium_per_1000?: number | undefined;
-  request_fee_high_per_1000?: number | undefined;
-  citation_tokens_per_million?: number | undefined;
-  deep_research_reasoning_tokens_per_million?: number | undefined;
+  // Perplexity Agent API web_search fee per 1000 invocations. CROSREV-19
+  // (#233): the legacy Sonar dimensions (request_fee_{low,medium,high}_per_1000,
+  // citation_tokens_per_million, deep_research_reasoning_tokens_per_million)
+  // were removed; a central config card still carrying one of them is
+  // rejected by the strict schema in src/core/file-config.ts.
   search_queries_per_1000?: number | undefined;
 }
 
@@ -1326,8 +1317,7 @@ export interface AppConfig {
   // the pre-dispatch estimate. `search_preflight_policy`
   // (CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY) decides whether that
   // residual is accepted (`estimate`, default) or whether paid rounds fail
-  // closed while the reviewer role can search (`fail_closed`, mirroring
-  // the Deep Research precedent).
+  // closed while the reviewer role can search (`fail_closed`).
   perplexity: {
     search_context_size: "low" | "medium" | "high";
     disable_search: boolean;

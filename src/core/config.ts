@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "4.6.8";
+export const VERSION = "4.6.9";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -41,14 +41,12 @@ const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
   // populates `CROSS_REVIEW_GROK_INPUT_USD_PER_MILLION` +
   // `CROSS_REVIEW_GROK_OUTPUT_USD_PER_MILLION`).
   grok: "CROSS_REVIEW_GROK",
-  // v3.0.0: Perplexity pricing via env. Legacy Sonar ids billed per-token
-  // (INPUT/OUTPUT) AND per-1000-requests where the fee scales with
-  // search_context_size (REQUEST_FEE_LOW/MEDIUM/HIGH); Sonar Deep
-  // Research additionally billed citation_tokens, reasoning_tokens and
-  // search_queries. v4.6.0 (Agent API): the canonical `perplexity/kimi-k3`
-  // card needs INPUT/OUTPUT (+ CACHE_READ) plus the per-invocation
-  // web_search fee as SEARCH_QUERIES_USD_PER_1000_REQUESTS; the request
-  // fee fields stay undefined for Agent API models.
+  // v3.0.0: Perplexity pricing via env. v4.6.0 (Agent API): the canonical
+  // `perplexity/kimi-k3` card needs INPUT/OUTPUT (+ CACHE_READ) plus the
+  // per-invocation web_search fee as SEARCH_QUERIES_USD_PER_1000_REQUESTS.
+  // CROSREV-19 (#233): the legacy Sonar suffixes (REQUEST_FEE_LOW/MEDIUM/
+  // HIGH_USD_PER_1000_REQUESTS, CITATION_TOKENS_USD_PER_MILLION,
+  // DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION) are no longer read.
   perplexity: "CROSS_REVIEW_PERPLEXITY",
 };
 
@@ -571,7 +569,7 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
   // policy decides how a hard-budget session treats that residual:
   // `estimate` (default) prices the declared estimate and reconciles the
   // exact count post-call; `fail_closed` blocks paid rounds while the
-  // reviewer role can search, mirroring the Deep Research precedent.
+  // reviewer role can search.
   const policyRaw = (envValue("CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY") ?? "")
     .trim()
     .toLowerCase();
@@ -780,9 +778,12 @@ function addMissingPerplexityDimensions(
   // v4.6.0: legacy Sonar Chat Completions ids cannot be dispatched by the
   // Agent API adapter. Flag them here so the paid orchestrator fails
   // closed with the migration cause before any attempt is priced.
-  const agentApiModel = isPerplexityAgentModel(normalizedModel);
-  if (!agentApiModel) {
+  // CROSREV-19 (#233): a retired id has no cost dimensions of its own any
+  // more (the Sonar request-fee and Deep Research branches were removed),
+  // so the migration marker is the whole diagnostic.
+  if (!isPerplexityAgentModel(normalizedModel)) {
     missing.add("CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID");
+    return;
   }
   const rate = resolveCostRate(config, "perplexity", effectiveModel);
   if (!rate) return;
@@ -797,47 +798,18 @@ function addMissingPerplexityDimensions(
     );
   };
 
-  if (agentApiModel) {
-    // Agent API: the web_search tool is billed per invocation. The rate is
-    // required whenever the reviewer role can declare the tool; a config
-    // that disables search never sends it, so no fee dimension applies.
-    if (searchApplies && !config.perplexity.disable_search) {
-      addField("search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS");
-      // The provider exposes no invocation cap, so the preflight envelope is
-      // an operator-declared estimate. Under the fail_closed policy that
-      // residual is not accepted: surface it exactly like Deep Research so
-      // the paid orchestrator refuses to dispatch until search is disabled
-      // or the policy is changed.
-      if (config.perplexity.search_preflight_policy === "fail_closed") {
-        missing.add("CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED");
-      }
-    }
-    return;
-  }
-
-  if (["sonar", "sonar-pro", "sonar-reasoning-pro"].includes(normalizedModel)) {
-    const size = config.perplexity.search_context_size;
-    if (size === "high") {
-      addField("request_fee_high_per_1000", "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS");
-    } else if (size === "medium") {
-      addField("request_fee_medium_per_1000", "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS");
-    } else {
-      addField("request_fee_low_per_1000", "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS");
-    }
-    return;
-  }
-
-  if (normalizedModel === "sonar-deep-research") {
-    addField("citation_tokens_per_million", "CITATION_TOKENS_USD_PER_MILLION");
-    addField(
-      "deep_research_reasoning_tokens_per_million",
-      "DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
-    );
+  // Agent API: the web_search tool is billed per invocation. The rate is
+  // required whenever the reviewer role can declare the tool; a config
+  // that disables search never sends it, so no fee dimension applies.
+  if (searchApplies && !config.perplexity.disable_search) {
     addField("search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS");
-    // These three dimensions are provider-controlled and have no documented
-    // pre-dispatch cap. A rate card makes post-call accounting exact, but it
-    // cannot make a hard cost preflight truthful.
-    missing.add("CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED");
+    // The provider exposes no invocation cap, so the preflight envelope is
+    // an operator-declared estimate. Under the fail_closed policy that
+    // residual is not accepted: surface it so the paid orchestrator refuses
+    // to dispatch until search is disabled or the policy is changed.
+    if (config.perplexity.search_preflight_policy === "fail_closed") {
+      missing.add("CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED");
+    }
   }
 }
 
@@ -884,11 +856,11 @@ export function missingFinancialControlVars(
     }
   }
 
-  // Perplexity has model-specific non-token dimensions. Apply the same
-  // fail-closed contract to the primary pin and every fallback: regular Sonar
-  // products require the active context-tier request fee, while Deep Research
-  // requires citation, reasoning and search-query rates. A complete
-  // input/output card alone is not a complete financial control for either.
+  // Perplexity has a model-specific non-token dimension (the Agent API
+  // web_search fee). Apply the same fail-closed contract to the primary pin
+  // and every fallback: a complete input/output card alone is not a complete
+  // financial control while the reviewer role can search, and a retired
+  // Sonar id is reported as the migration marker.
   if (peers.includes("perplexity")) {
     const effectiveModels = [
       config.models.perplexity,
@@ -949,22 +921,10 @@ function costRate(
     ["promo_cache_write_per_million", "PROMO_CACHE_WRITE_USD_PER_MILLION"],
     ["promo_cache_read_extended_per_million", "PROMO_CACHE_READ_EXTENDED_USD_PER_MILLION"],
     ["promo_cache_write_extended_per_million", "PROMO_CACHE_WRITE_EXTENDED_USD_PER_MILLION"],
-    // v3.0.0 (Perplexity 6th peer): Perplexity bills both per-token AND
-    // per-1000-requests where the request fee scales with
-    // `search_context_size`. Other peers' costRate calls leave these
-    // suffixes undefined; perplexity costRate (env prefix
-    // CROSS_REVIEW_PERPLEXITY) sets them when operator configures them.
-    ["request_fee_low_per_1000", "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS"],
-    ["request_fee_medium_per_1000", "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS"],
-    ["request_fee_high_per_1000", "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS"],
-    // v3.0.0 (Perplexity Sonar Deep Research): three distinct line
-    // items billed separately from input/output. Other Sonar models
-    // (sonar / sonar-pro / sonar-reasoning-pro) leave these undefined.
-    ["citation_tokens_per_million", "CITATION_TOKENS_USD_PER_MILLION"],
-    [
-      "deep_research_reasoning_tokens_per_million",
-      "DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
-    ],
+    // v3.0.0 (Perplexity 6th peer) / v4.6.0 (Agent API): the web_search
+    // tool fee per 1000 invocations. Other peers' costRate calls leave the
+    // suffix undefined; perplexity costRate (env prefix
+    // CROSS_REVIEW_PERPLEXITY) sets it when the operator configures it.
     ["search_queries_per_1000", "SEARCH_QUERIES_USD_PER_1000_REQUESTS"],
   ];
   for (const [key, suffix] of fields) {

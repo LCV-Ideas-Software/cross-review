@@ -93,17 +93,11 @@ const runtimeSmokeTransportOptions = {
       process.env.CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION ?? "1000",
     CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION:
       process.env.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION ?? "1000",
-    // Perplexity bills a context-tier fee for every request even when
-    // disable_search=true. Inject every tier so inherited context settings
-    // cannot make this runtime smoke fail financial preflight.
+    // The Agent API web_search fee applies only while search is enabled.
+    // Disable search so inherited context settings cannot make this runtime
+    // smoke fail financial preflight on a missing search-fee dimension.
     CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH:
       process.env.CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH ?? "1",
-    CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS:
-      process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS ?? "0",
-    CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS:
-      process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS ?? "0",
-    CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS:
-      process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS ?? "0",
   },
 };
 const transport = new StdioClientTransport(runtimeSmokeTransportOptions);

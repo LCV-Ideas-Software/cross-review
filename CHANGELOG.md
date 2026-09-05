@@ -5,6 +5,71 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v04.06.09] — 05/09/2026
+
+### Removed
+
+- **Legacy Sonar API cost dimensions** (CROSREV-19, issue #233). The rate-card
+  keys `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+  `request_fee_high_per_1000`, `citation_tokens_per_million` and
+  `deep_research_reasoning_tokens_per_million`, together with their env
+  suffixes `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS`,
+  `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS`,
+  `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS`,
+  `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` and
+  `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION`, are
+  gone from the central-config schema (which stays strict), the config types,
+  the cost engine, the env mapping and every regression fixture.
+  `CostEstimate.request_cost`, `citation_tokens_cost` and
+  `deep_research_reasoning_tokens_cost`, `TokenUsage.citation_tokens`, the
+  `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED` marker and the
+  Sonar branches of `estimateCost`, `addMissingPerplexityDimensions` and
+  `estimatedPeerRoundCost` go with them. cross-review has dispatched no Sonar
+  id since v4.6.0 (the adapter refuses them before any network call), so none
+  of these dimensions could be billed; Perplexity itself still serves and
+  prices Sonar until 27/09/2026. `search_queries_per_1000`
+  (`CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS`) stays as the
+  only non-token Perplexity dimension — the Agent API `web_search` tool at
+  `0.0025` per invocation, re-verified on 04/09/2026 together with the
+  `perplexity/kimi-k3` card (`3` / `15` / `0.30` per million) at
+  <https://docs.perplexity.ai/docs/agent-api/models>.
+  `CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` survives, because it still
+  shapes the `web_search` tool, but it no longer selects any fee tier.
+
+### Changed
+
+- A central `config.json` that fails schema validation is no longer silent:
+  the server prints a boot notice (same deferred slot as the Sonar-pin notice)
+  with the file path, the "ignored in full" consequence, the
+  `CROSS_REVIEW_CONFIG_FILE_INVALID` marker and the zod diagnostic, in addition
+  to `server_info.config_load.parse_error`.
+- `estimatedPeerRoundCost` fails closed for every retired Perplexity id, not
+  only `sonar-deep-research`, through the shared `isPerplexityAgentModel`
+  predicate, so the round preflight and the evidence judge passes block before
+  dispatch on a Sonar pin even when a rate card for it is retained.
+
+### Migration
+
+1. **Before upgrading**, delete
+   `model_cost_rates.perplexity["sonar-reasoning-pro"]` and
+   `model_cost_rates.perplexity["sonar-deep-research"]` (and any
+   `request_fee_*_per_1000`, `citation_tokens_per_million` or
+   `deep_research_reasoning_tokens_per_million` key) from the central
+   `config.json`. Both cards are inert under the `perplexity/kimi-k3` pin, and
+   the current schema accepts the file without them.
+2. Why before: an invalid central config is ignored **in full** — models,
+   budgets, reasoning effort, cache, evidence broker and every rate card revert
+   to env/registry/defaults, not only the Perplexity card — and paid calls stay
+   blocked with `CROSS_REVIEW_CONFIG_FILE_INVALID` until the file is fixed and
+   the MCP host restarted. After the upgrade the boot notice and
+   `server_info.config_load.parse_error` name the offending key and card path
+   (`unrecognized_keys`).
+3. Remove any `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_*`,
+   `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` or
+   `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION`
+   variable from the MCP host configuration or the Windows registry; they are
+   ignored.
+
 ## [v04.06.08] — 05/09/2026
 
 ### Fixed

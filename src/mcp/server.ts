@@ -3536,6 +3536,17 @@ export async function main(): Promise<void> {
       `[cross-review] notice: PerplexityAdapter — model="${perplexityModel}" is a Sonar Chat Completions id. Perplexity retires that API on 27/09/2026 and cross-review >= 4.6.0 speaks only the Agent API, so paid Perplexity calls will fail with perplexity_model_unsupported until CROSS_REVIEW_PERPLEXITY_MODEL (or central config models.perplexity) is set to a documented provider/model id such as perplexity/kimi-k3.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
+  // CROSREV-19 (#233): boot notice for a central config that failed to
+  // load. applyFileConfigToEnv ignores the WHOLE file on a read, JSON or
+  // schema failure (models, budgets, rate cards, cache, evidence broker...
+  // all revert to env/registry/defaults) and missingFinancialControlVars
+  // only reports the generic CROSS_REVIEW_CONFIG_FILE_INVALID marker, so
+  // print the detail (path + diagnostic) where the operator sees it instead
+  // of only inside server_info.config_load.parse_error.
+  setTimeout(() => {
+    const notice = centralConfigInvalidBootNotice(getFileConfigRuntimeStatus());
+    if (notice) console.error(notice);
+  }, STARTUP_SWEEP_DELAY_MS);
 }
 
 // v2.15.0: shadow copy of `peers/grok.ts:GROK_REASONING_EFFORT_MODELS`
@@ -3553,6 +3564,17 @@ const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
   // in sync per the "both lists must update together" contract above.
   "grok-4.3",
 ]);
+
+// CROSREV-19 (#233): pure text builder for the invalid-central-config boot
+// notice so the regression suite can pin it without booting the server.
+// Returns null when there is nothing to report (no file, or a file that
+// loaded cleanly).
+export function centralConfigInvalidBootNotice(
+  configLoad: { path: string; file_exists: boolean; parse_error: string | null } | undefined,
+): string | null {
+  if (!configLoad?.file_exists || !configLoad.parse_error) return null;
+  return `[cross-review] notice: central config "${configLoad.path}" was IGNORED IN FULL (every value in it — models, budgets, rate cards, cache, evidence broker — fell back to env/registry/defaults) and paid calls stay blocked with CROSS_REVIEW_CONFIG_FILE_INVALID until the file is fixed and the MCP host restarted. Cause: ${configLoad.parse_error}`;
+}
 
 // v2.4.0 / cross-review R6 follow-up (CI failure 25199679588): guard
 // main() so it only runs when this module is invoked as the entry point

@@ -30,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.06.08** (package `4.6.8`).
+**Status.** Stable. The current source/release target is **v04.06.09** (package `4.6.9`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -48,6 +48,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.06.09`**      | **Legacy Sonar dimensions removed.** The five Sonar-only rate-card keys leave the schema, cost engine and fixtures; a central config the schema rejects is now announced at boot.                                                                                                     |
 | **`v04.06.08`**      | **Evidence custody fixes.** A provider-escaped GitHub URL quoted from the attachment no longer downgrades a READY vote; a relator may name a file the admitted unified diff materializes.                                                                                             |
 | **`v04.06.07`**      | **No manual gesture.** A push to `main` that changes the version publishes to npmjs.com and GitHub Packages and then records the Release with the run's own token.                                                                                                                    |
 | **`v04.06.06`**      | **Native release path.** The repository-owned tagging, dispatch and policy machinery leaves; publishing runs on a published GitHub Release with npm Trusted Publishing and provenance.                                                                                                |

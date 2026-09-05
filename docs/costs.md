@@ -24,8 +24,13 @@ The server records token usage returned by providers. Paid review/generation too
 host can set `CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS`. The effective map is
 shown by `server_info` and is also used by cost preflight. A central-config
 value must be a positive integer; zero, negative or malformed values reject the
-file atomically and surface `CROSS_REVIEW_CONFIG_FILE_INVALID`. Invalid env or
-registry overrides are ignored in favor of the global fallback.
+file atomically and surface `CROSS_REVIEW_CONFIG_FILE_INVALID`. A rejected file
+is ignored in full — every value in it (models, budgets, rate cards, cache,
+evidence broker) falls back to env, registry or hardcoded defaults, not only
+the offending field — so the server prints a boot notice with the diagnostic
+and `server_info.config_load.parse_error` carries it until the file is fixed
+and the MCP host restarted. Invalid env or registry overrides are ignored in
+favor of the global fallback.
 
 `session_report` and `session_doctor` distinguish total session cost from the
 reviewer peer-call subtotal and the relator/lead generation subtotal. Historical
@@ -111,10 +116,15 @@ reported count. `CROSS_REVIEW_PERPLEXITY_SEARCH_PREFLIGHT_POLICY` selects how a
 hard-budget session treats that residual: `estimate` (default) accepts it;
 `fail_closed` reports `CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_PREFLIGHT_UNBOUNDED`
 whenever Perplexity can review with search enabled, so paid rounds refuse to
-start until search is disabled — the same mechanism the Deep Research card
-uses. Legacy Sonar cards (that API retires on 27/09/2026) keep the per-request
-fee semantics for offline accounting only; the runtime no longer dispatches
-those ids.
+start until search is disabled. The `perplexity/kimi-k3` card (`3` input, `15`
+output, `0.30` cached input per million) and the `web_search` fee of `0.0025`
+per invocation (`2.5` per 1000) were re-verified on 04/09/2026 against the
+[Agent API models page](https://docs.perplexity.ai/docs/agent-api/models).
+`CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` still shapes the `web_search`
+tool but no longer selects any fee tier: the legacy Sonar cost dimensions
+(per-request fee by context size, citation tokens, Deep Research reasoning
+tokens) were removed in CROSREV-19 (#233) because the runtime has dispatched
+no Sonar id since v4.6.0.
 
 Central `config.json` supports model-aware rate cards through
 `model_cost_rates`. This is the preferred shape when explicit operator
@@ -183,26 +193,28 @@ If both `cost_rates.<peer>` and `model_cost_rates.<peer>` are present, the
 model-specific entry for the configured peer model wins. Process environment
 and Windows registry rate variables still have higher precedence than the file.
 
+A central config card for a retired Sonar id, or any card carrying one of the
+removed keys (`request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+`request_fee_high_per_1000`, `citation_tokens_per_million`,
+`deep_research_reasoning_tokens_per_million`), is rejected by the strict
+schema: the boot notice and `server_info.config_load.parse_error` read
+`schema_validation_failed` with an `unrecognized_keys` issue naming the key and
+the card path (for example `model_cost_rates` › `perplexity` ›
+`sonar-reasoning-pro`), the whole file is ignored, and paid calls stay blocked
+with `CROSS_REVIEW_CONFIG_FILE_INVALID` until the card is deleted and the MCP
+host restarted.
+
 Accounting always resolves the model actually sent by the adapter, including
 explicit overrides and fallbacks. A non-primary effective model must match a
 retained model card (exact Perplexity model ids; documented family matching
 for other providers, selecting the longest matching prefix). If no applicable
 card exists, preflight and fallback fail closed with `unknown-rate`; the
 runtime never borrows the primary model's price. Agent API cards must include
-the web-search fee while search is enabled; legacy Sonar cards must include the
-active context-tier request fee, and Deep Research cards must include citation,
-reasoning and search-query dimensions, whether primary or fallback. Aggregated
-usage preserves those dimensions and provider totals across every billed
-attempt.
-
-`sonar-deep-research` is account-able after a response but not hard-budgetable
-before dispatch: the official API exposes no caller-controlled ceiling for
-citation tokens, separate reasoning tokens or search-query count. Therefore a
-Deep Research primary/fallback returns
-`CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED` and the paid
-orchestrator fails closed. Its retained card remains useful for exact post-call
-audit data and offline adapter regressions; it is not presented as a guaranteed
-preflight.
+the web-search fee while search is enabled, whether primary or fallback; a
+retired Sonar id as primary or fallback fails closed with
+`CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID` before anything
+is priced. Aggregated usage preserves the search dimension and provider totals
+across every billed attempt.
 
 Round preflight prices the complete reachable call graph: all configured retry
 attempts for the primary and each declared fallback, followed by the most
@@ -214,10 +226,9 @@ uses `max_attempts`, because prompt blocking may follow earlier transient
 failures. Recovery-local gates price only the adapter call they are about to
 dispatch.
 
-Perplexity citation-token and separate reasoning-token rates are exclusive to
-`sonar-deep-research`; `search_queries_per_1000` applies to Deep Research
-search queries and to Agent API web-search invocations. The cost engine checks
-the active model identity so stale keys cannot overcharge another model.
+`search_queries_per_1000` is the only non-token Perplexity dimension and
+applies to Agent API web-search invocations. The cost engine checks the active
+model identity so a card cannot bill a dimension the model does not have.
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_MAX_SESSION_COST_USD", "20", "User")

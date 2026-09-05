@@ -90,10 +90,13 @@ const PerPeerPositiveIntSchema = z
   .optional();
 
 // Per-peer cost-rate sub-schema. Mirrors AppConfig.cost_rates[peer]
-// from src/core/types.ts (18 optional fields). All numbers; operator
-// chooses which apply per provider (e.g., Anthropic has cache, Gemini
-// has threshold/extended, DeepSeek has promo, Perplexity has request
-// fees + 4th-dimension deep-research fields).
+// from src/core/types.ts. All numbers; operator chooses which apply per
+// provider (e.g., Anthropic has cache, Gemini has threshold/extended,
+// DeepSeek has promo, Perplexity has the web_search per-1000 fee).
+// CROSREV-19 (#233): the schema stays strict, so a card still carrying a
+// legacy Sonar key (request_fee_*_per_1000, citation_tokens_per_million,
+// deep_research_reasoning_tokens_per_million) is rejected with zod's
+// native `unrecognized_keys` issue naming the key and the card path.
 const CostRateEntrySchema = z
   .object({
     input_per_million: z.number().nonnegative().optional(),
@@ -114,11 +117,6 @@ const CostRateEntrySchema = z
     promo_cache_read_extended_per_million: z.number().nonnegative().optional(),
     promo_cache_write_extended_per_million: z.number().nonnegative().optional(),
     promo_expires_at_utc: z.string().optional(),
-    request_fee_low_per_1000: z.number().nonnegative().optional(),
-    request_fee_medium_per_1000: z.number().nonnegative().optional(),
-    request_fee_high_per_1000: z.number().nonnegative().optional(),
-    citation_tokens_per_million: z.number().nonnegative().optional(),
-    deep_research_reasoning_tokens_per_million: z.number().nonnegative().optional(),
     search_queries_per_1000: z.number().nonnegative().optional(),
   })
   .strict();
@@ -283,11 +281,6 @@ const COST_RATE_FIELD_TO_ENV_SUFFIX: Record<string, string> = {
   promo_cache_read_extended_per_million: "PROMO_CACHE_READ_EXTENDED_USD_PER_MILLION",
   promo_cache_write_extended_per_million: "PROMO_CACHE_WRITE_EXTENDED_USD_PER_MILLION",
   promo_expires_at_utc: "PROMO_EXPIRES_AT_UTC",
-  request_fee_low_per_1000: "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS",
-  request_fee_medium_per_1000: "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS",
-  request_fee_high_per_1000: "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS",
-  citation_tokens_per_million: "CITATION_TOKENS_USD_PER_MILLION",
-  deep_research_reasoning_tokens_per_million: "DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
   search_queries_per_1000: "SEARCH_QUERIES_USD_PER_1000_REQUESTS",
 };
 
