@@ -6,7 +6,7 @@ import { loadConfig } from "../src/core/config.js";
 import { truthfulnessPreflight } from "../src/core/orchestrator.js";
 import { sessionReportMarkdown } from "../src/core/reports.js";
 import { SessionStore } from "../src/core/session-store.js";
-import { parsePeerStatus } from "../src/core/status.js";
+import { parsePeerStatus, READY_CANONICAL_SUMMARY } from "../src/core/status.js";
 
 function evalTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cross-review-eval-${label}-`));
@@ -42,27 +42,79 @@ export const truthfulnessCases = [
     expectPass: false,
     expectIssueClass: "unsupported_historical_claim",
   },
+  // Issue #239 item 2: the claims live in the draft, judged as draft text.
+  // A routed occurrence is validated only by full-route equality against the
+  // configured pin routes (a native pin's route is its peer's own provider).
+  {
+    name: "ownerless routed occurrence under a foreign provider is blocked",
+    input: {
+      task: "Check the currently loaded cross-review runtime models.",
+      initialDraft:
+        "The currently loaded cross-review runtime routes its heavy-reasoning slot through `xai/gpt-5.6-sol`.",
+      runtimeFacts: { model_pins: { codex: "gpt-5.6-sol", perplexity: "perplexity/kimi-k3" } },
+      attachmentsPresent: false,
+    },
+    expectPass: false,
+    expectIssueClass: "runtime_contradiction",
+  },
+  {
+    name: "owned native claim under a foreign provider is blocked",
+    input: {
+      task: "Check the currently loaded cross-review runtime models.",
+      initialDraft: "The currently loaded cross-review runtime codex model is xai/gpt-5.6-sol.",
+      runtimeFacts: { model_pins: { codex: "gpt-5.6-sol", perplexity: "perplexity/kimi-k3" } },
+      attachmentsPresent: false,
+    },
+    expectPass: false,
+    expectIssueClass: "runtime_contradiction",
+  },
+  {
+    name: "routed pin under a foreign provider is blocked",
+    input: {
+      task: "Check the currently loaded cross-review runtime models.",
+      initialDraft:
+        "The currently loaded cross-review runtime routes its search slot through openai/kimi-k3.",
+      runtimeFacts: { model_pins: { codex: "gpt-5.6-sol", perplexity: "perplexity/kimi-k3" } },
+      attachmentsPresent: false,
+    },
+    expectPass: false,
+    expectIssueClass: "runtime_contradiction",
+  },
+  {
+    name: "configured routed pin asserted as its full route passes",
+    input: {
+      task: "Check the currently loaded cross-review runtime models.",
+      initialDraft:
+        "The currently loaded cross-review runtime routes its search slot through perplexity/kimi-k3.",
+      runtimeFacts: { model_pins: { codex: "gpt-5.6-sol", perplexity: "perplexity/kimi-k3" } },
+      attachmentsPresent: false,
+    },
+    expectPass: true,
+  },
 ] as const;
 
+// READY is a canonical envelope: any other `summary` is downgraded first as
+// `ready_noncanonical_summary`, so the evidence-source contract below is only
+// reachable with the canonical summary.
 export const parserCases = [
   {
-    name: "verified with empty evidence gets empty-evidence warning",
+    name: "verified with empty evidence is downgraded to NEEDS_EVIDENCE",
     text: JSON.stringify({
       status: "READY",
-      summary: "ok",
+      summary: READY_CANONICAL_SUMMARY,
       confidence: "verified",
       evidence_sources: [],
       caller_requests: [],
       follow_ups: [],
     }),
-    expectStatus: "READY",
-    expectWarning: "verified_without_evidence_sources",
+    expectStatus: "NEEDS_EVIDENCE",
+    expectWarnings: ["verified_without_evidence_sources", "ready_downgraded_to_needs_evidence"],
   },
   {
     name: "verified with attached evidence path is concrete",
     text: JSON.stringify({
       status: "READY",
-      summary: "ok",
+      summary: READY_CANONICAL_SUMMARY,
       confidence: "verified",
       evidence_sources: ["evidence/2026-06-05T00-00-00Z-raw-smoke.txt: npm test 42 passed"],
       caller_requests: [],
@@ -86,6 +138,7 @@ export const reportCases = [
 for (const testCase of truthfulnessCases) {
   const result = truthfulnessPreflight({
     task: testCase.input.task,
+    initialDraft: "initialDraft" in testCase.input ? testCase.input.initialDraft : undefined,
     runtimeFacts: testCase.input.runtimeFacts,
     attachmentsPresent: testCase.input.attachmentsPresent,
   });
@@ -98,8 +151,10 @@ for (const testCase of truthfulnessCases) {
 for (const testCase of parserCases) {
   const result = parsePeerStatus(testCase.text);
   assert.equal(result.status, testCase.expectStatus, testCase.name);
-  if ("expectWarning" in testCase) {
-    assert.ok(result.parser_warnings.includes(testCase.expectWarning), testCase.name);
+  if ("expectWarnings" in testCase) {
+    for (const warning of testCase.expectWarnings) {
+      assert.ok(result.parser_warnings.includes(warning), `${testCase.name}: ${warning}`);
+    }
   }
   if ("absentWarning" in testCase) {
     assert.ok(!result.parser_warnings.includes(testCase.absentWarning), testCase.name);

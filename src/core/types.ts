@@ -36,6 +36,19 @@
 // helper introduced in v2.27.1.
 export const PEERS = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const;
 export type PeerId = (typeof PEERS)[number];
+// The runtime's own provider name per peer, as each adapter reports it in its
+// `provider` field. A native model pin has no `provider/` prefix; the
+// truthfulness gate uses this map to form the route a native pin asserts
+// (`openai/gpt-…` for codex), so a routed claim naming another provider for
+// that model is judged by full-route equality, never by its model segment alone.
+export const PEER_PROVIDERS: Record<PeerId, string> = {
+  codex: "openai",
+  claude: "anthropic",
+  gemini: "google",
+  deepseek: "deepseek",
+  grok: "xai",
+  perplexity: "perplexity",
+};
 
 export const STATUSES = ["READY", "NOT_READY", "NEEDS_EVIDENCE"] as const;
 export type ReviewStatus = (typeof STATUSES)[number];

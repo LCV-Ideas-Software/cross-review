@@ -1002,6 +1002,10 @@ import type { PeerResult } from "../src/core/types.js";
     "The current cross-review runtime updated the Claude model to claude-mythos-5.",
     "The current cross-review runtime Claude model substituiu o anterior por claude-mythos-5.",
     "The current cross-review runtime Claude model atualizou o pin para claude-mythos-5.",
+    // Issue #239 item 1, literal phrases: a future CUTOFF (until/for now)
+    // asserts the present state; it is not a future-intent marker.
+    "The currently loaded cross-review runtime Codex model is gpt-5.5 until next release.",
+    "The current cross-review runtime Codex model is gpt-5.5 for now.",
   ]) {
     assert.equal(
       rt(currentLie, plainPins),
@@ -1009,6 +1013,14 @@ import type { PeerResult } from "../src/core/types.js";
       `a future/planning marker must not exempt the present-state lie: ${currentLie}`,
     );
   }
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime Codex model is gpt-5.6-sol until next release.",
+      plainPins,
+    ),
+    true,
+    "a future cutoff on the truthful current model must not fabricate a contradiction",
+  );
   assert.equal(
     rt(
       `The current cross-review runtime Claude model ${"planned ".repeat(2_000)}is claude-mythos-5.`,
@@ -1028,6 +1040,111 @@ import type { PeerResult } from "../src/core/types.js";
     attachmentsPresent: false,
   });
   assert.equal(wrappedTruth.pass, true, "a models/-wrapped Perplexity pin must normalize");
+
+  // Issue #239 item 2 (route view): a routed occurrence (`provider/model`)
+  // is validated ONLY by full-route equality against the pin routes - a
+  // routed pin's configured route, or `<peer provider>/<segment>` for a
+  // native pin (PEER_PROVIDERS). The model segment validates bare claims
+  // only, so a configured model under a foreign provider is a contradiction
+  // whether the occurrence is ownerless (S1) or owned by a native peer.
+  const ownerlessWrongRoute = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime models.",
+    initialDraft:
+      "The currently loaded cross-review runtime routes its heavy-reasoning slot through `xai/gpt-5.6-sol`.",
+    runtimeFacts: { model_pins: plainPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    ownerlessWrongRoute.pass,
+    false,
+    "an ownerless routed occurrence must be judged by its full route, not by its model segment",
+  );
+  assert.ok(
+    ownerlessWrongRoute.issue_classes.includes("runtime_contradiction"),
+    "a wrong route on a configured model is a runtime contradiction",
+  );
+  assert.ok(
+    ownerlessWrongRoute.contradictions.some((item: string) => item.includes("xai/gpt-5.6-sol")),
+    "the contradiction must name the full asserted route",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes its heavy-reasoning slot through xai/gpt-5.6-sol.",
+      plainPins,
+    ),
+    false,
+    "the wrong route contradicts without markdown code-span delimiters too",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime codex model is xai/gpt-5.6-sol.", plainPins),
+    false,
+    "a native claim owned by its peer must contradict when the provider is not the peer's own",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime codex model is openai/gpt-5.6-sol.", plainPins),
+    true,
+    "a native claim qualified by the peer's own provider is the pin's route and must pass",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime codex model is not openai/gpt-5.6-sol.",
+      plainPins,
+    ),
+    false,
+    "denying the native pin's own route denies the pin and must contradict",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes its search slot through openai/kimi-k3.",
+      plainPins,
+    ),
+    false,
+    "a routed pin's model under a foreign provider must contradict",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes its search slot through perplexity/kimi-k3.",
+      plainPins,
+    ),
+    true,
+    "the configured routed pin asserted as its full route must pass",
+  );
+  // The Gemini resource-name wrapper `models/` is stripped on the occurrence
+  // side exactly as normalizeModelPin strips it on the pin side, so a
+  // truthful `models/<segment>` draft is judged as the bare segment.
+  const previewPins = { ...modelPins, gemini: "gemini-3.1-pro-preview" };
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime gemini model is models/gemini-3.1-pro-preview.",
+      previewPins,
+    ),
+    true,
+    "a models/-wrapped truthful Gemini draft must not be read as a foreign route",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime gemini model is models/gemini-3.1-pro-preview.", {
+      ...modelPins,
+      gemini: "models/gemini-3.1-pro-preview",
+    }),
+    true,
+    "a models/-wrapped truthful Gemini draft must pass against a models/-wrapped pin too",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime gemini model is models/gemini-2.5-pro.",
+      previewPins,
+    ),
+    false,
+    "the models/ wrapper must not shield a wrong Gemini model",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime gemini model is google/gemini-3.1-pro-preview.",
+      previewPins,
+    ),
+    true,
+    "a native Gemini claim under its own provider is the pin's route and must pass",
+  );
 
   const singleOperationalLie = detectFabricatedEvidence(
     "Local validation completed with 42 passed, 0 failed.",

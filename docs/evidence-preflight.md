@@ -89,6 +89,21 @@ Semicolons start independent clauses; commas remain inside the occurrence span
 so genuine relative qualifiers such as `which it currently uses` and `que ele
 usa atualmente` still cancel a prospective exemption.
 
+A model occurrence is judged under the view it asserts. A bare id
+(`gpt-5.6-sol`) asserts a model segment and is compared with the configured
+pins' segments. A routed occurrence (`provider/model`) asserts its full route
+and is compared, by equality, only with the configured pins' routes: the
+configured route for a routed pin (`perplexity/kimi-k3`), and the peer's own
+provider for a native pin (`openai/`, `anthropic/`, `google/`, `deepseek/`,
+`xai/`, `perplexity/`). A configured model under another provider
+(`xai/gpt-5.6-sol`, `openai/kimi-k3`) is therefore a `runtime_contradiction`,
+whether the occurrence is ownerless or owned by a named peer claim; the model
+segment never validates a routed occurrence. The Gemini resource-name wrapper
+`models/` is not a provider: it is stripped on both sides, so
+`models/gemini-…` is judged as the bare segment. The rule is equality over the
+configured pins, not a lexicon: a truthful claim under a non-canonical provider
+spelling is restated, not argued.
+
 Mere keyword presence does **not** trip it. "I plan to write a patch"
 or "here is the test plan" is a design review with legitimately no diff
 — it passes.
@@ -380,7 +395,14 @@ The focused transport regression runs through:
 npm run evidence-transport-regression
 ```
 
-`npm test` runs all three focused checks before the broader `scripts/smoke.ts` suite
+The evaluation fixtures (truthfulness cases judged as draft text, status-parser
+cases and report cases) run through:
+
+```bash
+npm run eval:fixtures
+```
+
+`npm test` runs all four focused checks before the broader `scripts/smoke.ts` suite
 so evidence and truthfulness preflight behavior can be validated without
 searching the monolithic smoke harness.
 

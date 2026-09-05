@@ -264,7 +264,11 @@ additions as affirmative on both sides and uses finite English/Portuguese
 transition and relation frames over occurrence-specific clause spans. Only an
 explicit transition/selection target is prospective; planning vocabulary,
 continuative verbs and present qualifiers do not shield a current-state
-assertion, and a transition source remains a checked current value.
+assertion, and a transition source remains a checked current value. A routed
+occurrence (`provider/model`) is judged by full-route equality against the
+configured pin routes, where a native pin's route is its peer's own provider;
+the model segment validates only bare occurrences, so a configured model named
+under another provider contradicts.
 
 READY uses a canonical decision envelope rather than natural-language intent
 classification: `summary` is exactly `No blocking objections remain.`,

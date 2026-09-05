@@ -5,6 +5,43 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [Unreleased]
+
+### Fixed
+
+- **Routed model claims are judged by full-route equality** (issue #239,
+  item 2). The truthfulness preflight validated a `provider/model` occurrence
+  through its model segment, so a configured model named under a foreign
+  provider (`xai/gpt-5.6-sol` for the Codex pin, `openai/kimi-k3` for the
+  Perplexity route) passed, whether the occurrence was ownerless or owned by a
+  named peer claim. A routed occurrence now asserts its full route and is
+  compared only with the configured pin routes: the configured route for a
+  routed pin, and the peer's own provider (`PEER_PROVIDERS` in
+  `src/core/types.ts`: `openai/`, `anthropic/`, `google/`, `deepseek/`,
+  `xai/`, `perplexity/`) for a native pin; the model segment validates bare
+  occurrences only. The Gemini resource-name wrapper `models/` is stripped on
+  the occurrence side as it already was on the pin side, so a truthful
+  `models/gemini-…` draft is still judged as the bare segment. The change is
+  equality over the configured pins with no new lexicon. The literal phrases
+  of issue #239 item 1 (a future cutoff such as `until next release` or
+  `for now` asserts the present state, fixed in v04.06.03) are now pinned as
+  fixtures.
+- **`eval:fixtures` repaired and wired into `npm test`.** The harness failed
+  on `main`: its status-parser cases carried a non-canonical READY summary,
+  which the READY envelope contract downgrades first as
+  `ready_noncanonical_summary`, and the first case still expected a verified
+  `READY` with empty `evidence_sources` to stay `READY`. Both cases now use
+  the canonical summary; the empty-sources case expects `NEEDS_EVIDENCE` with
+  `verified_without_evidence_sources` and `ready_downgraded_to_needs_evidence`,
+  as the parser emits, and the concrete-source case stays `READY`. The item-2
+  cases above are judged as draft text, and `npm test` runs `eval:fixtures`
+  right after `truthfulness-preflight-smoke`.
+- Left out by operator decision (04/09/2026), consistent with the 24/08/2026
+  directive that declared the lexical boundary in code and closed lexicon
+  expansion: issue #239 item 3 (zero-occurrence fail-closed, which needs a new
+  noun list over prose), the whole-line non-assertive exemption recorded as
+  CROSREV-22 item 4, and any task-text exemption.
+
 ## [v04.06.07] — 04/09/2026
 
 ### Changed

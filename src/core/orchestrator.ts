@@ -51,6 +51,7 @@ import type {
 } from "./types.js";
 import {
   INDETERMINATE_SPEND_FAILURE_CLASSES,
+  PEER_PROVIDERS,
   PEERS,
   POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX,
 } from "./types.js";
@@ -3176,13 +3177,18 @@ export function truthfulnessPreflight(params: {
         if (seenTokenStarts.has(tokenStart)) return;
         seenTokenStarts.add(tokenStart);
         const token = canonicalModelText(normalizeVersionToken(tokenRaw));
+        // The Gemini resource-name wrapper `models/` is not a route provider.
+        // normalizeModelPin strips it on the pin side; the occurrence side
+        // strips it too, so `models/<segment>` is judged as the bare segment.
+        const routeProvider =
+          provider !== undefined && provider.toLowerCase() !== "models" ? provider : undefined;
         occurrences.push({
           matchStart,
           index: tokenStart,
           rawLength: tokenRaw.length,
           token,
-          route: provider
-            ? `${canonicalModelText(normalizeVersionToken(provider))}/${token}`
+          route: routeProvider
+            ? `${canonicalModelText(normalizeVersionToken(routeProvider))}/${token}`
             : undefined,
           negated: negatedBefore(matchStart),
           future: false,
@@ -3561,15 +3567,24 @@ export function truthfulnessPreflight(params: {
           !earlierFutureTargetInClause &&
           !presentContinuation;
       }
+      // A configured pin is visible under two views: its model segment (what a
+      // bare claim asserts) and its full route (what a `provider/model` claim
+      // asserts). A routed pin's route is the configured one; a native pin's
+      // route is its peer's own provider from PEER_PROVIDERS. Both views use the
+      // canonicalization recordOccurrence applies to the draft side.
+      const pinViewsFor = (pinPeer: PeerId, pin: string): { segment: string; route: string } => {
+        const segment = canonicalModelText(normalizeModelPin(pin));
+        const unwrapped = pin.replace(/^models\//i, "");
+        const route = unwrapped.includes("/")
+          ? canonicalModelText(normalizeVersionToken(unwrapped))
+          : `${PEER_PROVIDERS[pinPeer]}/${segment}`;
+        return { segment, route };
+      };
       for (const peer of PEERS) {
         const expectedModel = modelPins[peer];
         if (!expectedModel || !MODEL_CLAIM_ALIASES[peer].test(aliasBase)) continue;
-        const expected = canonicalModelText(normalizeModelPin(expectedModel));
-        const pinUnwrapped = expectedModel.replace(/^models\//i, "");
-        const routedPin = pinUnwrapped.includes("/")
-          ? canonicalModelText(normalizeVersionToken(pinUnwrapped))
-          : undefined;
-        const expectedSet = new Set([expected, ...(routedPin ? [routedPin] : [])]);
+        const { segment: expected, route: expectedRoute } = pinViewsFor(peer, expectedModel);
+        const expectedSet = new Set([expected, expectedRoute]);
         const pinFamily = routedPinFamilyByPeer.get(peer);
         const owned = occurrences.filter((occurrence) => {
           if (occurrence.future) return false;
@@ -3589,14 +3604,11 @@ export function truthfulnessPreflight(params: {
         if (!owned.length) continue;
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
-        // A routed occurrence owned by the routable Perplexity claim asserts
-        // its full route; a native claim asserts the model segment (the
-        // provider qualifier on a truthful native claim is decoration,
-        // while a wrong segment still contradicts).
+        // A routed occurrence asserts its full route for every peer: only the
+        // pin's own route (the configured route, or the peer's provider for a
+        // native pin) is truthful. A bare occurrence asserts the model segment.
         const viewOf = (occurrence: ModelOccurrence): string =>
-          peer === "perplexity" && occurrence.route !== undefined
-            ? occurrence.route
-            : occurrence.token;
+          occurrence.route ?? occurrence.token;
         const assertedViews: string[] = [];
         const nonCurrentViews: string[] = [];
         for (const occurrence of owned) {
@@ -3616,16 +3628,19 @@ export function truthfulnessPreflight(params: {
       // no configured pin is a runtime contradiction even when no clause
       // owner or peer alias claims it - the six pins are the complete truth
       // of this runtime, so a foreign "current model" value cannot be true.
+      // A routed occurrence (`provider/model`) is validated ONLY by full-route
+      // equality against the pin routes; the model segment validates only a
+      // bare occurrence, so a configured model under a foreign provider is a
+      // contradiction, not a match.
       // S3: future/planning phrasing is not a current-state assertion.
-      const allPinViews = new Set<string>();
+      const pinSegmentViews = new Set<string>();
+      const pinRouteViews = new Set<string>();
       for (const pinPeer of PEERS) {
         const pin = modelPins[pinPeer];
         if (!pin) continue;
-        allPinViews.add(canonicalModelText(normalizeModelPin(pin)));
-        const unwrapped = pin.replace(/^models\//i, "");
-        if (unwrapped.includes("/")) {
-          allPinViews.add(canonicalModelText(normalizeVersionToken(unwrapped)));
-        }
+        const views = pinViewsFor(pinPeer, pin);
+        pinSegmentViews.add(views.segment);
+        pinRouteViews.add(views.route);
       }
       let affirmativelyValidated = false;
       let currentOccurrenceCount = 0;
@@ -3634,8 +3649,11 @@ export function truthfulnessPreflight(params: {
         if (occurrence.future) continue;
         currentOccurrenceCount += 1;
         if (occurrence.negated) continue;
-        const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
-        if (views.some((view) => allPinViews.has(view))) {
+        const validated =
+          occurrence.route !== undefined
+            ? pinRouteViews.has(occurrence.route)
+            : pinSegmentViews.has(occurrence.token);
+        if (validated) {
           affirmativelyValidated = true;
           continue;
         }
