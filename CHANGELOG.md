@@ -5,7 +5,25 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
-## [v04.06.09] — 05/09/2026
+## [v05.00.00] — 05/09/2026
+
+### Breaking
+
+- **`estimateCost` no longer prices the legacy Sonar dimensions.** A rate card
+  that still carries `request_fee_low|medium|high_per_1000`,
+  `citation_tokens_per_million` or
+  `deep_research_reasoning_tokens_per_million`, applied to a persisted Sonar
+  usage record, now yields token and `web_search` costs only: the per-request
+  fee, the citation tokens and the Deep Research reasoning tokens are not
+  billed and the matching `CostEstimate` line items are never produced.
+  Offline accounting of records persisted by v3.0–v4.6.8 must rely on their
+  stored `total_cost`, which `mergeCost` still adds up. The package ships
+  `dist/src/core/cost.js` without an `exports` map, so the exported
+  `estimateCost` is part of the published surface and the change is a major
+  version, not a patch (PR #293 review, round 3). Nothing else in this
+  release breaks: the central config, the exported types and the aggregation
+  helpers keep accepting and passing through the deprecated keys (see
+  Deprecated below).
 
 ### Removed
 

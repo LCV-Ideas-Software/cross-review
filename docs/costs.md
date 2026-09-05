@@ -212,7 +212,7 @@ version rejects them. The matching `CostRateConfig` members, together with
 `citation_tokens_cost` and `deep_research_reasoning_tokens_cost`, stay on the
 shipped declarations as `@deprecated` optional members through 4.x and are
 still re-summed by `mergeUsage` / `mergeCost` for sessions persisted before
-v04.06.09; nothing produces them any more. Any other unknown key is rejected: the boot notice and
+v05.00.00; nothing produces them any more. Any other unknown key is rejected: the boot notice and
 `server_info.config_load.parse_error` read `schema_validation_failed` with an
 `unrecognized_keys` issue naming the key and the card path, the whole file is
 ignored, and paid calls stay blocked with `CROSS_REVIEW_CONFIG_FILE_INVALID`

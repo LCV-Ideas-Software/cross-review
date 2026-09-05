@@ -203,7 +203,7 @@ export interface CostEstimate {
   search_queries_cost?: number | undefined;
   /**
    * @deprecated CROSREV-19 (#233): legacy Sonar API line items. `estimateCost`
-   * has not produced them since v04.06.09; they stay on the shipped
+   * has not produced them since v05.00.00; they stay on the shipped
    * declarations through 4.x so a consumer of `dist/src/core/types.d.ts`
    * keeps compiling, and `mergeCost` still sums them when a session persisted
    * by v3.0–v4.6.8 carries them. Removed in the next major version.
@@ -1186,7 +1186,7 @@ export interface CostRateConfig {
   search_queries_per_1000?: number | undefined;
   /**
    * @deprecated CROSREV-19 (#233): legacy Sonar API cost dimensions. The cost
-   * engine has not read them since v04.06.09 and the central-config loader
+   * engine has not read them since v05.00.00 and the central-config loader
    * strips them from every card (DEPRECATED_COST_RATE_KEYS in
    * src/core/file-config.ts, named by a boot notice); they stay on the shipped
    * declarations through 4.x so a consumer of `dist/src/core/types.d.ts`
