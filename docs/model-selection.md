@@ -97,7 +97,12 @@ family is not already a peer — Claude, GPT, Gemini, Grok and DeepSeek are also
 available there but would duplicate an existing peer. Legacy unprefixed Sonar
 ids are rejected before any network call with `perplexity_model_unsupported`,
 and the financial preflight reports
-`CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID`.
+`CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID`. The Sonar-only
+cost dimensions (per-request fee by search context size, citation tokens, Deep
+Research reasoning tokens) are no longer priced; the rate-card keys that carried
+them are deprecated no-ops a central config may still contain (a boot notice
+names them; rejection is scheduled for v06.00.00), see
+[docs/costs.md](costs.md).
 
 Web search is a declared tool: the reviewer role sends
 `tools: [{ type: "web_search", search_context_size }]` with the wire-enforced

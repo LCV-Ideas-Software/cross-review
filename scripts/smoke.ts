@@ -33,6 +33,8 @@ import { PEERS } from "../src/core/types.js";
 import type { JobStatus } from "../src/mcp/server.js";
 import {
   assertSessionMutationAuthority,
+  centralConfigDeprecatedKeysBootNotice,
+  centralConfigInvalidBootNotice,
   getCallerCandidatesFromClientInfo,
   hasTrustedPetitionerProvenance,
   lockCallerPeerSelection,
@@ -80,15 +82,13 @@ process.env.CROSS_REVIEW_OPENAI_FALLBACK_MODELS = "stub-codex-fallback";
 // `perplexity/kimi-k3` pin bills web_search invocations per call; the
 // `missingFinancialControlVars` check rejects paid calls unless the
 // per-1000-searches fee is set while search is enabled, so the smoke
-// pre-populates it (the legacy Sonar low-tier request fee stays seeded
-// for the retained legacy accounting regressions). The stub adapter never
-// actually charges, but the financial-controls preflight runs against
-// the configured rate cards regardless of stub mode.
+// pre-populates it. The stub adapter never actually charges, but the
+// financial-controls preflight runs against the configured rate cards
+// regardless of stub mode.
 for (const provider of ["OPENAI", "ANTHROPIC", "GEMINI", "DEEPSEEK", "GROK", "PERPLEXITY"]) {
   process.env[`CROSS_REVIEW_${provider}_INPUT_USD_PER_MILLION`] ??= "1000";
   process.env[`CROSS_REVIEW_${provider}_OUTPUT_USD_PER_MILLION`] ??= "1000";
 }
-process.env.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS ??= "1000";
 process.env.CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS ??= "1000";
 process.env.CROSS_REVIEW_MAX_SESSION_COST_USD ??= "1000";
 process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD ??= "1000";
@@ -6283,10 +6283,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v4.6.0 provider-doc refresh — Agent API search accounting. The web_search
-// tool is billed per invocation reported by the provider; there is no
-// per-request fee. Post-call accounting therefore follows
-// `num_search_queries` (exact), never the `search_performed` telemetry flag,
-// and the legacy Sonar request fee never leaks onto an Agent API model.
+// tool is billed per invocation reported by the provider and is the only
+// non-token Perplexity dimension (CROSREV-19 / #233 removed the legacy Sonar
+// request fee). Post-call accounting therefore follows `num_search_queries`
+// (exact), never the `search_performed` telemetry flag, and a cost estimate
+// carries no `request_cost` line item at all.
 {
   const { estimateCost } = await import("../src/core/cost.js");
   const cfg = loadConfig();
@@ -6299,7 +6300,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     search_performed: true,
   });
   assert.equal(reviewerCost.search_queries_cost, 3, "3 invocations × $1000/1000 = $3");
-  assert.equal(reviewerCost.request_cost, undefined, "Agent API models have no request fee");
+  assert.equal("request_cost" in reviewerCost, false, "Agent API models have no request fee");
   // Scenario B: relator call (no tool declared) accrues no search cost.
   const relatorCost = estimateCost(cfg, "perplexity", {
     input_tokens: 100,
@@ -6307,7 +6308,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     search_performed: false,
   });
   assert.equal(relatorCost.search_queries_cost, undefined);
-  assert.equal(relatorCost.request_cost, undefined);
+  assert.equal("request_cost" in relatorCost, false);
   // Scenario C: the telemetry flag alone never bills — a reviewer whose tool
   // was declared but never invoked pays only tokens.
   const idleReviewerCost = estimateCost(cfg, "perplexity", {
@@ -7105,13 +7106,35 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         perplexity: {
           input_per_million: 2,
           output_per_million: 8,
-          request_fee_low_per_1000: 6,
+          search_queries_per_1000: 6,
         },
       },
     });
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION, "2");
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION, "8");
-    assert.equal(flat.CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS, "6");
+    assert.equal(flat.CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS, "6");
+    // CROSREV-19 (#233): the legacy Sonar suffixes are no longer emitted by
+    // the flatten map — applyFileConfigToEnv strips the deprecated keys before
+    // flattening, and a stray key cast in must not resurrect the env name.
+    const flatWithStrayLegacyKey = flattenFileConfigToEnvMap({
+      cost_rates: {
+        perplexity: {
+          input_per_million: 2,
+          output_per_million: 8,
+          ...({ request_fee_low_per_1000: 6 } as Record<string, number>),
+        },
+      },
+    });
+    assert.equal(
+      Object.keys(flatWithStrayLegacyKey).some(
+        (key) =>
+          key.includes("REQUEST_FEE") ||
+          key.includes("CITATION_TOKENS") ||
+          key.includes("DEEP_RESEARCH"),
+      ),
+      false,
+      `CROSREV-19: legacy Sonar env suffixes must not be emitted: ${Object.keys(flatWithStrayLegacyKey).join(",")}`,
+    );
     const claudeModelRatesConfig = {
       models: { claude: "claude-fable-5" },
       cost_rates: {
@@ -9040,6 +9063,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     },
     { label: "abortStaleSessions", needle: "store.abortStaleSessions(" },
     { label: "pruneOldSessions", needle: "store.pruneOldSessions(" },
+    // CROSREV-19 (#233): the invalid-central-config notice is a boot
+    // notice like the Sonar-pin one and must be deferred the same way.
+    {
+      label: "centralConfigInvalidBootNotice",
+      needle: "centralConfigInvalidBootNotice(getFileConfigRuntimeStatus())",
+    },
+    // PR #293 review: the deprecated-keys notice shares the same slot.
+    {
+      label: "centralConfigDeprecatedKeysBootNotice",
+      needle: "centralConfigDeprecatedKeysBootNotice(getFileConfigRuntimeStatus())",
+    },
   ]) {
     const sweepIdx = bootPath.indexOf(needle);
     assert.ok(
@@ -9057,6 +9091,116 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       `v2.27.1 / startup_sweeps_use_setTimeout: ${label} call site must sit inside a setTimeout(() => { ... }) block`,
     );
   }
+  // CROSREV-19 (#233): the notice text itself. A central config that fails
+  // schema validation is ignored IN FULL (applyFileConfigToEnv returns
+  // applied=false before flattening anything), and the paid gate only
+  // reports the generic CROSS_REVIEW_CONFIG_FILE_INVALID marker, so the boot
+  // notice must carry the path, the "ignored in full" consequence, the
+  // marker and the zod diagnostic; a clean or absent file prints nothing.
+  // (PR #293 review: the five deprecated Sonar keys are tolerated, so the
+  // pinned example uses a genuinely unknown key.)
+  const invalidConfigNotice = centralConfigInvalidBootNotice({
+    path: "C:\\placeholder\\config.json",
+    file_exists: true,
+    parse_error:
+      'schema_validation_failed: [ { "code": "unrecognized_keys", "keys": [ "search_fee_per_1000" ], "path": [ "model_cost_rates", "perplexity", "perplexity/kimi-k3" ] } ]',
+  });
+  assert.ok(
+    invalidConfigNotice,
+    "CROSREV-19: an invalid central config must produce a boot notice",
+  );
+  for (const fragment of [
+    "[cross-review] notice:",
+    'central config "C:\\placeholder\\config.json"',
+    "IGNORED IN FULL",
+    "CROSS_REVIEW_CONFIG_FILE_INVALID",
+    "unrecognized_keys",
+    "search_fee_per_1000",
+    "perplexity/kimi-k3",
+  ]) {
+    assert.ok(
+      invalidConfigNotice.includes(fragment),
+      `CROSREV-19: invalid central config boot notice must include ${JSON.stringify(fragment)}: ${invalidConfigNotice}`,
+    );
+  }
+  // PR #293 review (SemVer): a file that still carries the deprecated Sonar
+  // rate-card keys applies in full, so its notice must say the keys were
+  // ignored, name each one with its card path, say to remove them and then
+  // restart the MCP host (an edit while running blocks paid calls with
+  // CROSS_REVIEW_CONFIG_RELOAD_REQUIRED until the restart), and announce the
+  // next-major rejection; a file without them prints nothing.
+  const deprecatedKeyPaths = [
+    'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
+    'model_cost_rates.perplexity["sonar-deep-research"].citation_tokens_per_million',
+    "cost_rates.perplexity.deep_research_reasoning_tokens_per_million",
+  ];
+  const deprecatedKeysNotice = centralConfigDeprecatedKeysBootNotice({
+    path: "C:\\placeholder\\config.json",
+    file_exists: true,
+    deprecated_keys_ignored: deprecatedKeyPaths,
+  });
+  assert.ok(
+    deprecatedKeysNotice,
+    "PR #293 review: deprecated rate-card keys must produce a boot notice",
+  );
+  for (const fragment of [
+    "[cross-review] notice:",
+    'central config "C:\\placeholder\\config.json"',
+    "3 deprecated rate-card key(s)",
+    "IGNORED",
+    "the rest of the file applied normally",
+    ...deprecatedKeyPaths,
+    "restart or reload the MCP host",
+    "CROSS_REVIEW_CONFIG_RELOAD_REQUIRED",
+    "REJECTED by the schema in the next major version",
+  ]) {
+    assert.ok(
+      deprecatedKeysNotice.includes(fragment),
+      `PR #293 review: deprecated keys boot notice must include ${JSON.stringify(fragment)}: ${deprecatedKeysNotice}`,
+    );
+  }
+  assert.ok(
+    !deprecatedKeysNotice.includes("IGNORED IN FULL") &&
+      !deprecatedKeysNotice.includes("CROSS_REVIEW_CONFIG_FILE_INVALID"),
+    `PR #293 review: the deprecation notice must not read like a rejection: ${deprecatedKeysNotice}`,
+  );
+  for (const [label, configLoad] of [
+    [
+      "a file without deprecated keys",
+      { path: "C:\\placeholder\\config.json", file_exists: true, deprecated_keys_ignored: [] },
+    ],
+    ["a rejected file", { path: "C:\\placeholder\\config.json", file_exists: true }],
+    [
+      "an absent file",
+      { path: "C:\\placeholder\\config.json", file_exists: false, deprecated_keys_ignored: [] },
+    ],
+    ["no load status", undefined],
+  ] as const) {
+    assert.equal(
+      centralConfigDeprecatedKeysBootNotice(configLoad),
+      null,
+      `PR #293 review: ${label} must not print the deprecation notice`,
+    );
+  }
+  assert.equal(
+    centralConfigInvalidBootNotice({
+      path: "C:\\placeholder\\config.json",
+      file_exists: true,
+      parse_error: null,
+    }),
+    null,
+    "CROSREV-19: a central config that loaded cleanly must not print the notice",
+  );
+  assert.equal(
+    centralConfigInvalidBootNotice({
+      path: "C:\\placeholder\\config.json",
+      file_exists: false,
+      parse_error: null,
+    }),
+    null,
+    "CROSREV-19: an absent central config must not print the notice",
+  );
+  assert.equal(centralConfigInvalidBootNotice(undefined), null);
   console.log("[smoke] startup_sweeps_use_setTimeout_test: PASS");
 }
 

@@ -47,9 +47,6 @@ function regressionConfig(label: string): AppConfig {
         output_per_million: 0,
         // v4.6.0: the canonical Agent API pin bills web_search per invocation.
         search_queries_per_1000: 0,
-        request_fee_low_per_1000: 0,
-        request_fee_medium_per_1000: 0,
-        request_fee_high_per_1000: 0,
       },
     },
     budget: {
@@ -302,6 +299,69 @@ const regressions: Regression[] = [
         {
           ok: (after.totals.usage.total_tokens ?? 0) > before,
           message: `judge tokens were omitted from totals (${before} -> ${after.totals.usage.total_tokens ?? 0})`,
+        },
+      ]);
+    },
+  },
+  {
+    name: "retired Perplexity judge pins block both judge passes before dispatch",
+    run: async () => {
+      // CROSREV-19 (#233): the evidence judge passes price the judge with
+      // its explicit adapter model through estimatedPeerRoundCost. A retired
+      // Sonar pin with a retained rate card used to be priced there (and
+      // then failed at the adapter); now the estimate is null, so both
+      // passes block before any dispatch with the budget_blocked event.
+      const baseConfig = regressionConfig("retired-judge");
+      const config: AppConfig = {
+        ...baseConfig,
+        models: { ...baseConfig.models, perplexity: "sonar-reasoning-pro" },
+      };
+      const events: RuntimeEvent[] = [];
+      const orchestrator = new CrossReviewOrchestrator(config, (event) => {
+        events.push(event);
+      });
+      const session = await orchestrator.store.init("v4.5.4 retired judge", "operator", []);
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
+        { peer: "gemini", ask: "Provide the exact fixture evidence." },
+      ]);
+      await assert.rejects(
+        orchestrator.runEvidenceChecklistJudgeConsensusPass({
+          session_id: session.session_id,
+          judge_peers: ["claude", "grok", "perplexity"],
+          draft: "FORCE_JUDGE_SATISFIED",
+          mode: "shadow",
+        }),
+        /evidence_judge_budget_preflight/,
+        "consensus pass must block before dispatch on a retired Perplexity judge",
+      );
+      await assert.rejects(
+        orchestrator.runEvidenceChecklistJudgePass({
+          session_id: session.session_id,
+          judge_peer: "perplexity",
+          draft: "FORCE_JUDGE_SATISFIED",
+          mode: "shadow",
+        }),
+        /evidence_judge_budget_preflight/,
+        "single judge pass must block before dispatch on a retired Perplexity judge",
+      );
+      const blocked = events.filter(
+        (event) => event.type === "session.evidence_judge_pass.budget_blocked",
+      );
+      const decisions = events.filter((event) =>
+        event.type.startsWith("session.evidence_judge_pass.shadow_decision"),
+      );
+      expectAll([
+        {
+          ok: blocked.length === 2,
+          message: `expected two budget_blocked events, observed ${blocked.length}`,
+        },
+        {
+          ok: blocked.every((event) => eventData(event).estimated_extra_cost_usd === null),
+          message: "budget_blocked must carry a null estimate for the retired judge pin",
+        },
+        {
+          ok: decisions.length === 0,
+          message: `no judge decision may be produced for a retired pin, observed ${decisions.length}`,
         },
       ]);
     },

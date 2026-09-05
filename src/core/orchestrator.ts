@@ -4299,6 +4299,9 @@ function usageShowsProviderWork(usage: TokenUsage | undefined): boolean {
     usage.reasoning_tokens,
     usage.cache_read_tokens,
     usage.cache_write_tokens,
+    // CROSREV-19 (#233), PR #293 review: the deprecated Sonar counter is still
+    // evidence of provider work for records persisted by v3.0–v4.6.8 (kept
+    // through 5.x, removed in v06.00.00 together with the member).
     usage.citation_tokens,
     usage.num_search_queries,
   ].some((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
@@ -4408,10 +4411,11 @@ export function estimatedPeerRoundCost(
     let highestEnvelope = 0;
     let primaryEnvelope = 0;
     for (const pricedModel of pricedModels) {
-      if (
-        peer === "perplexity" &&
-        pricedModel.trim().replace(/^models\//i, "") === "sonar-deep-research"
-      ) {
+      // CROSREV-19 (#233): any retired Perplexity id (Sonar Chat
+      // Completions) fails closed before it is priced — the adapter cannot
+      // dispatch it and its cost dimensions no longer exist. Shared
+      // predicate with the adapter guard and missingFinancialControlVars.
+      if (peer === "perplexity" && !isPerplexityAgentModel(pricedModel)) {
         return undefined;
       }
       // v4.6.0: Perplexity Agent API reviewer requests declare the

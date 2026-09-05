@@ -195,10 +195,10 @@ export function selectRate(
 
 export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
   const total: TokenUsage = {};
-  let citationTokensSeen = false;
   let searchQueriesSeen = false;
   let searchPerformedSeen = false;
   let providerTotalSeen = false;
+  let citationTokensSeen = false;
   for (const item of items) {
     if (!item) continue;
     total.input_tokens = (total.input_tokens ?? 0) + (item.input_tokens ?? 0);
@@ -211,10 +211,6 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
     // cache scopes or modes).
     total.cache_read_tokens = (total.cache_read_tokens ?? 0) + (item.cache_read_tokens ?? 0);
     total.cache_write_tokens = (total.cache_write_tokens ?? 0) + (item.cache_write_tokens ?? 0);
-    if (item.citation_tokens !== undefined) {
-      total.citation_tokens = (total.citation_tokens ?? 0) + item.citation_tokens;
-      citationTokensSeen = true;
-    }
     if (item.num_search_queries !== undefined) {
       total.num_search_queries = (total.num_search_queries ?? 0) + item.num_search_queries;
       searchQueriesSeen = true;
@@ -227,6 +223,13 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
       total.provider_reported_total_cost_usd =
         (total.provider_reported_total_cost_usd ?? 0) + item.provider_reported_total_cost_usd;
       providerTotalSeen = true;
+    }
+    // CROSREV-19 (#233): `citation_tokens` is a deprecated Sonar counter no
+    // adapter emits any more; keep summing it while a persisted session
+    // carries it so historical aggregates do not change inside 5.x.
+    if (item.citation_tokens !== undefined) {
+      total.citation_tokens = (total.citation_tokens ?? 0) + item.citation_tokens;
+      citationTokensSeen = true;
     }
   }
   if (!citationTokensSeen) delete total.citation_tokens;
@@ -270,80 +273,26 @@ export function estimateCost(
   const cacheWriteCost = cacheWriteSel
     ? (cacheWriteTokens / 1_000_000) * cacheWriteSel.rate_per_million
     : 0;
-  // v3.0.0 (Perplexity 6th peer): additional cost dimensions —
-  // (1) per-1000-requests fee scaled by search_context_size (legacy Sonar
-  //     ids only),
-  // (2) citation_tokens (sonar-deep-research only),
-  // (3) deep_research_reasoning_tokens (sonar-deep-research only),
-  // (4) search_queries per-1000 fee: sonar-deep-research search queries
-  //     AND, since v4.6.0, Agent API web_search tool invocations reported
-  //     in `usage.tool_calls_details` (surfaced as num_search_queries).
-  // All are zero for non-perplexity peers (their cost_rates entry never
-  // defines these fields) and each is gated on the effective model
-  // identity so a stale card can never bill a dimension the model does
-  // not have. Sonar's request fee is charged regardless of whether
-  // `disable_search` prevents a web lookup; that flag changes latency,
-  // not the per-request price.
-  let requestCost = 0;
-  let citationTokensCost = 0;
-  let deepResearchReasoningTokensCost = 0;
+  // v3.0.0 (Perplexity 6th peer) / v4.6.0 (Agent API): the single
+  // Perplexity-specific cost dimension is the web_search tool fee, billed
+  // per invocation reported in `usage.tool_calls_details` (surfaced as
+  // num_search_queries) at search_queries_per_1000. It is zero for
+  // non-perplexity peers (their cost_rates entry never defines the field)
+  // and gated on the effective model identity so a stale card can never
+  // bill a dimension the model does not have. The `search_performed`
+  // usage flag is observability only; the fee follows the reported count.
+  // CROSREV-19 (#233): the legacy Sonar dimensions (per-request fee by
+  // search_context_size, citation tokens, Deep Research reasoning tokens)
+  // were removed — the adapter has dispatched no Sonar id since v4.6.0.
   let searchQueriesCost = 0;
-  // v4.5.0 docs correction: Perplexity charges the context-tier request
-  // fee even when search_performed=false. Keep that usage flag as
-  // observability only; never use it to suppress billed cost.
   const normalizedEffectiveModel = normalizeModelId(effectiveModel ?? config.models?.[peer] ?? "");
-  const perplexityRequestFeeModels = new Set(["sonar", "sonar-pro", "sonar-reasoning-pro"]);
-  if (peer === "perplexity" && perplexityRequestFeeModels.has(normalizedEffectiveModel)) {
-    const size = config.perplexity?.search_context_size ?? "low";
-    const requestFeePer1000 =
-      size === "high"
-        ? rate.request_fee_high_per_1000
-        : size === "medium"
-          ? rate.request_fee_medium_per_1000
-          : rate.request_fee_low_per_1000;
-    if (typeof requestFeePer1000 === "number" && requestFeePer1000 > 0) {
-      requestCost = requestFeePer1000 / 1000;
-    }
-  }
-  if (peer === "perplexity" && normalizedEffectiveModel === "sonar-deep-research") {
-    const citationTokens = usage.citation_tokens ?? 0;
-    if (citationTokens > 0 && typeof rate.citation_tokens_per_million === "number") {
-      citationTokensCost = (citationTokens / 1_000_000) * rate.citation_tokens_per_million;
-    }
-    // sonar-deep-research bills reasoning_tokens at a separate rate from
-    // output. Model identity is an explicit gate: stale or overly broad rate
-    // cards must never make Reasoning Pro inherit Deep Research dimensions.
-    const reasoningTokens = usage.reasoning_tokens ?? 0;
-    if (
-      reasoningTokens > 0 &&
-      typeof rate.deep_research_reasoning_tokens_per_million === "number"
-    ) {
-      deepResearchReasoningTokensCost =
-        (reasoningTokens / 1_000_000) * rate.deep_research_reasoning_tokens_per_million;
-    }
-    const numSearchQueries = usage.num_search_queries ?? 0;
-    if (numSearchQueries > 0 && typeof rate.search_queries_per_1000 === "number") {
-      searchQueriesCost = (numSearchQueries / 1000) * rate.search_queries_per_1000;
-    }
-  }
-  // v4.6.0: Agent API models pay the web_search tool per invocation. The
-  // adapter reports the invocation count as num_search_queries; the
-  // preflight supplies the declared estimate. No request fee applies.
   if (peer === "perplexity" && isPerplexityAgentModel(normalizedEffectiveModel)) {
     const numSearchQueries = usage.num_search_queries ?? 0;
     if (numSearchQueries > 0 && typeof rate.search_queries_per_1000 === "number") {
       searchQueriesCost = (numSearchQueries / 1000) * rate.search_queries_per_1000;
     }
   }
-  const total =
-    inputCost +
-    outputCost +
-    cacheReadCost +
-    cacheWriteCost +
-    requestCost +
-    citationTokensCost +
-    deepResearchReasoningTokensCost +
-    searchQueriesCost;
+  const total = inputCost + outputCost + cacheReadCost + cacheWriteCost + searchQueriesCost;
   const base: CostEstimate = {
     currency: "USD",
     input_cost: inputCost,
@@ -354,11 +303,6 @@ export function estimateCost(
   };
   if (cacheReadCost > 0) base.cache_read_cost = cacheReadCost;
   if (cacheWriteCost > 0) base.cache_write_cost = cacheWriteCost;
-  if (requestCost > 0) base.request_cost = requestCost;
-  if (citationTokensCost > 0) base.citation_tokens_cost = citationTokensCost;
-  if (deepResearchReasoningTokensCost > 0) {
-    base.deep_research_reasoning_tokens_cost = deepResearchReasoningTokensCost;
-  }
   if (searchQueriesCost > 0) base.search_queries_cost = searchQueriesCost;
   // Surface the selected tier (priority: extended/promo over base) for
   // FinOps audit. When categories disagree (rare; only when promo or
@@ -392,14 +336,18 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   let savings = 0;
   let savingsKnown = false;
   let savingsUnknown = false;
-  // v3.0.0 (Perplexity 6th peer): accumulate the four Perplexity-specific
-  // line items so multi-call sessions show the full pricing breakdown
-  // in session reports + the dashboard. These remain zero for sessions
-  // that don't include perplexity peer calls.
-  let request = 0;
+  // v3.0.0 (Perplexity 6th peer): accumulate the Perplexity web_search
+  // line item so multi-call sessions show the full pricing breakdown in
+  // session reports + the dashboard. It remains zero for sessions that
+  // don't include perplexity peer calls. CROSREV-19 (#233): the deprecated
+  // Sonar line items (request_cost, citation_tokens_cost,
+  // deep_research_reasoning_tokens_cost) are never produced any more, but a
+  // session persisted by v3.0–v4.6.8 still carries them; they keep being
+  // re-summed through 5.x so historical breakdowns do not change.
+  let searchQueries = 0;
+  let requestFees = 0;
   let citationTokens = 0;
   let deepResearchReasoningTokens = 0;
-  let searchQueries = 0;
   const tiers = new Set<NonNullable<CostEstimate["tier_used"]>>();
   for (const cost of costs) {
     if (cost?.total_cost == null) {
@@ -425,12 +373,12 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
     if (cost?.cache_savings_unknown) {
       savingsUnknown = true;
     }
-    if (cost?.request_cost != null) request += cost.request_cost;
+    if (cost?.search_queries_cost != null) searchQueries += cost.search_queries_cost;
+    if (cost?.request_cost != null) requestFees += cost.request_cost;
     if (cost?.citation_tokens_cost != null) citationTokens += cost.citation_tokens_cost;
     if (cost?.deep_research_reasoning_tokens_cost != null) {
       deepResearchReasoningTokens += cost.deep_research_reasoning_tokens_cost;
     }
-    if (cost?.search_queries_cost != null) searchQueries += cost.search_queries_cost;
     if (cost?.tier_used) tiers.add(cost.tier_used);
   }
   if (!known) {
@@ -448,12 +396,12 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   if (cacheWrite > 0) merged.cache_write_cost = cacheWrite;
   if (savingsKnown && savings > 0) merged.cache_savings_usd = savings;
   if (savingsUnknown) merged.cache_savings_unknown = true;
-  if (request > 0) merged.request_cost = request;
+  if (searchQueries > 0) merged.search_queries_cost = searchQueries;
+  if (requestFees > 0) merged.request_cost = requestFees;
   if (citationTokens > 0) merged.citation_tokens_cost = citationTokens;
   if (deepResearchReasoningTokens > 0) {
     merged.deep_research_reasoning_tokens_cost = deepResearchReasoningTokens;
   }
-  if (searchQueries > 0) merged.search_queries_cost = searchQueries;
   if (tiers.size === 1) merged.tier_used = [...tiers][0];
   return merged;
 }

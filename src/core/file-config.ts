@@ -89,11 +89,30 @@ const PerPeerPositiveIntSchema = z
   .strict()
   .optional();
 
+// CROSREV-19 (#233), PR #293 review: the five legacy Sonar rate-card keys
+// are DEPRECATED for the whole of 5.x, not removed from the schema. A
+// central config that was valid under 4.6.8 must stay valid after the
+// upgrade, so the strict schema still accepts exactly these keys (any other
+// unknown key is still rejected); applyFileConfigToEnv strips them before
+// the card is flattened to env or retained for the cost engine, and lists
+// each one with its card path so the boot notice can name it. They are
+// scheduled for rejection in v06.00.00.
+export const DEPRECATED_COST_RATE_KEYS = [
+  "request_fee_low_per_1000",
+  "request_fee_medium_per_1000",
+  "request_fee_high_per_1000",
+  "citation_tokens_per_million",
+  "deep_research_reasoning_tokens_per_million",
+] as const;
+
 // Per-peer cost-rate sub-schema. Mirrors AppConfig.cost_rates[peer]
-// from src/core/types.ts (18 optional fields). All numbers; operator
-// chooses which apply per provider (e.g., Anthropic has cache, Gemini
-// has threshold/extended, DeepSeek has promo, Perplexity has request
-// fees + 4th-dimension deep-research fields).
+// from src/core/types.ts. All numbers; operator chooses which apply per
+// provider (e.g., Anthropic has cache, Gemini has threshold/extended,
+// DeepSeek has promo, Perplexity has the web_search per-1000 fee).
+// CROSREV-19 (#233): the schema stays strict, so a card carrying an
+// unknown key is rejected with zod's native `unrecognized_keys` issue
+// naming the key and the card path; the DEPRECATED_COST_RATE_KEYS above
+// are the one tolerated exception (accepted, then stripped and ignored).
 const CostRateEntrySchema = z
   .object({
     input_per_million: z.number().nonnegative().optional(),
@@ -114,14 +133,42 @@ const CostRateEntrySchema = z
     promo_cache_read_extended_per_million: z.number().nonnegative().optional(),
     promo_cache_write_extended_per_million: z.number().nonnegative().optional(),
     promo_expires_at_utc: z.string().optional(),
+    search_queries_per_1000: z.number().nonnegative().optional(),
+    // Deprecated (see DEPRECATED_COST_RATE_KEYS): same validators as 4.6.8
+    // so a previously valid file stays valid; the values are never priced.
     request_fee_low_per_1000: z.number().nonnegative().optional(),
     request_fee_medium_per_1000: z.number().nonnegative().optional(),
     request_fee_high_per_1000: z.number().nonnegative().optional(),
     citation_tokens_per_million: z.number().nonnegative().optional(),
     deep_research_reasoning_tokens_per_million: z.number().nonnegative().optional(),
-    search_queries_per_1000: z.number().nonnegative().optional(),
   })
   .strict();
+
+// Remove the deprecated Sonar keys from every validated card IN PLACE and
+// return each removed key as `<card path>.<key>` (for example
+// `model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000`
+// or `cost_rates.perplexity.citation_tokens_per_million`). Runs before the
+// config is flattened to env and before the model cards are retained for
+// the cost engine, so a deprecated key can reach neither.
+function stripDeprecatedCostRateKeys(config: FileConfig): string[] {
+  const ignored: string[] = [];
+  const strip = (card: Record<string, unknown>, cardPath: string): void => {
+    for (const key of DEPRECATED_COST_RATE_KEYS) {
+      if (!(key in card)) continue;
+      delete card[key];
+      ignored.push(`${cardPath}.${key}`);
+    }
+  };
+  for (const [peer, card] of Object.entries(config.cost_rates ?? {})) {
+    if (card) strip(card, `cost_rates.${peer}`);
+  }
+  for (const [peer, cards] of Object.entries(config.model_cost_rates ?? {})) {
+    for (const [model, card] of Object.entries(cards ?? {})) {
+      strip(card, `model_cost_rates.${peer}[${JSON.stringify(model)}]`);
+    }
+  }
+  return ignored;
+}
 
 const PerPeerCostRatesSchema = z
   .object(perPeerOptionalShape(CostRateEntrySchema))
@@ -283,11 +330,6 @@ const COST_RATE_FIELD_TO_ENV_SUFFIX: Record<string, string> = {
   promo_cache_read_extended_per_million: "PROMO_CACHE_READ_EXTENDED_USD_PER_MILLION",
   promo_cache_write_extended_per_million: "PROMO_CACHE_WRITE_EXTENDED_USD_PER_MILLION",
   promo_expires_at_utc: "PROMO_EXPIRES_AT_UTC",
-  request_fee_low_per_1000: "REQUEST_FEE_LOW_USD_PER_1000_REQUESTS",
-  request_fee_medium_per_1000: "REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS",
-  request_fee_high_per_1000: "REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS",
-  citation_tokens_per_million: "CITATION_TOKENS_USD_PER_MILLION",
-  deep_research_reasoning_tokens_per_million: "DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
   search_queries_per_1000: "SEARCH_QUERIES_USD_PER_1000_REQUESTS",
 };
 
@@ -576,6 +618,12 @@ export interface ApplyFileConfigResult {
   parse_error?: string | undefined;
   /** Validated cards retained for runtime fallback/model-override pricing. */
   model_cost_rates?: FileConfig["model_cost_rates"] | undefined;
+  /**
+   * CROSREV-19 (#233): deprecated Sonar rate-card keys (as `<card path>.<key>`)
+   * that were accepted by the schema, stripped and ignored. Present only when
+   * the file applied; empty when it carried none.
+   */
+  deprecated_keys_ignored?: string[] | undefined;
 }
 
 export interface ConfigFileFingerprint {
@@ -685,6 +733,7 @@ export function applyFileConfigToEnv(
       parse_error: `schema_validation_failed: ${validated.error.message}`,
     };
   }
+  const deprecatedKeysIgnored = stripDeprecatedCostRateKeys(validated.data);
   const envMap = flattenFileConfigToEnvMap(validated.data, envValue);
   let applied = 0;
   let overridden = 0;
@@ -710,5 +759,6 @@ export function applyFileConfigToEnv(
     loaded_mtime_ms: loadedMtimeMs,
     loaded_sha256: loadedSha256,
     model_cost_rates: validated.data.model_cost_rates,
+    deprecated_keys_ignored: deprecatedKeysIgnored,
   };
 }

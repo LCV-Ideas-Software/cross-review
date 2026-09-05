@@ -205,6 +205,35 @@ const regressions: Regression[] = [
     },
   },
   {
+    name: "legacy-sonar-citation-only-reported-attempt-still-blocks-generation",
+    run: async () => {
+      // CROSREV-19 (#233), PR #293 review: a record persisted by v3.0–v4.6.8
+      // whose terminal attempt reported only the deprecated Sonar
+      // `citation_tokens` counter (no other token counter, no cost) is still
+      // evidence of provider work, so its missing cost keeps blocking paid
+      // work instead of settling as zero spend.
+      const harness = await generationHarness("legacy-citation-only");
+      await harness.orchestrator.store.recordPeerFailureAccounting(
+        harness.sessionId,
+        1,
+        {
+          ...terminalCapacityFailure(),
+          peer: "perplexity",
+          message: "fixture: legacy Sonar attempt that reported citation tokens and no cost",
+          billing_status: "reported",
+          usage: { citation_tokens: 3 },
+        },
+        "legacy-citation-only",
+      );
+      await assert.rejects(() => runGeneration(harness), /generation_budget_preflight/);
+      assert.equal(
+        harness.calls(),
+        0,
+        "generation dispatched despite a citation-only legacy record with unknown cost",
+      );
+    },
+  },
+  {
     name: "interrupted-attempt-sentinel-still-blocks-generation",
     run: async () => {
       const harness = await generationHarness("interrupted-blocks");

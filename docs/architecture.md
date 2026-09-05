@@ -211,8 +211,9 @@ The selected model and selection evidence are persisted in the session capabilit
 
 Central `config.json`, process environment and Windows user environment are
 read once during MCP process startup. `server_info.config_load` exposes the
-load result, path, parse error, applied/overridden field counts, loaded and
-current mtime/SHA-256, `live_reload_supported=false`, and `reload_required`.
+load result, path, parse error, applied/overridden field counts, the ignored
+deprecated rate-card keys (`deprecated_keys_ignored`), loaded and current
+mtime/SHA-256, `live_reload_supported=false`, and `reload_required`.
 Paid calls fail closed when the file was invalid at load or its current hash no
 longer matches the loaded snapshot. Editing the file therefore requires an MCP
 host/window restart or reload; opening a new tool call is not a live reload.

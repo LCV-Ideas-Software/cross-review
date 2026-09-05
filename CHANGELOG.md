@@ -5,6 +5,105 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v05.00.00] — 05/09/2026
+
+### Breaking
+
+- **`estimateCost` no longer prices the legacy Sonar dimensions.** A rate card
+  that still carries `request_fee_low|medium|high_per_1000`,
+  `citation_tokens_per_million` or
+  `deep_research_reasoning_tokens_per_million`, applied to a persisted Sonar
+  usage record, now yields token and `web_search` costs only: the per-request
+  fee, the citation tokens and the Deep Research reasoning tokens are not
+  billed and the matching `CostEstimate` line items are never produced.
+  Offline accounting of records persisted by v3.0–v4.6.8 must rely on their
+  stored `total_cost`, which `mergeCost` still adds up. The package ships
+  `dist/src/core/cost.js` without an `exports` map, so the exported
+  `estimateCost` is part of the published surface and the change is a major
+  version, not a patch (PR #293 review, round 3). Nothing else in this
+  release breaks: the central config, the exported types and the aggregation
+  helpers keep accepting and passing through the deprecated keys (see
+  Deprecated below).
+
+### Removed
+
+- **Legacy Sonar API cost dimensions** (CROSREV-19, issue #233). The rate-card
+  keys `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+  `request_fee_high_per_1000`, `citation_tokens_per_million` and
+  `deep_research_reasoning_tokens_per_million`, together with their env
+  suffixes `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS`,
+  `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS`,
+  `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS`,
+  `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` and
+  `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION`, are
+  gone from the cost engine and the env mapping, and the regression fixtures
+  now prove they are ignored and passed through; the central-config schema
+  keeps accepting the five keys as deprecated no-ops and the exported types
+  keep them as `@deprecated` optional members (see Deprecated below), so no `config.json` that loaded under v04.06.08 is
+  rejected by this release and no consumer of the shipped declarations stops
+  compiling. The `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED`
+  marker and the Sonar branches of `estimateCost`,
+  `addMissingPerplexityDimensions` and `estimatedPeerRoundCost` go with them;
+  `CostEstimate.request_cost`, `citation_tokens_cost`,
+  `deep_research_reasoning_tokens_cost` and `TokenUsage.citation_tokens` are
+  never produced any more but stay declared and re-summed (see Deprecated). cross-review has dispatched no Sonar
+  id since v4.6.0 (the adapter refuses them before any network call), so none
+  of these dimensions could be billed; Perplexity itself still serves and
+  prices Sonar until 27/09/2026. `search_queries_per_1000`
+  (`CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS`) stays as the
+  only non-token Perplexity dimension — the Agent API `web_search` tool at
+  `0.0025` per invocation, re-verified on 04/09/2026 together with the
+  `perplexity/kimi-k3` card (`3` / `15` / `0.30` per million) at
+  <https://docs.perplexity.ai/docs/agent-api/models>.
+  `CROSS_REVIEW_PERPLEXITY_SEARCH_CONTEXT_SIZE` survives, because it still
+  shapes the `web_search` tool, but it no longer selects any fee tier.
+
+### Changed
+
+- A central `config.json` that fails schema validation is no longer silent:
+  the server prints a boot notice (same deferred slot as the Sonar-pin notice)
+  with the file path, the "ignored in full" consequence, the
+  `CROSS_REVIEW_CONFIG_FILE_INVALID` marker and the zod diagnostic, in addition
+  to `server_info.config_load.parse_error`.
+- A central `config.json` that still carries one of the deprecated Sonar
+  rate-card keys applies in full; the server prints a second boot notice in the
+  same slot naming each ignored key with its card path (for example
+  `model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000`),
+  and `server_info.config_load.deprecated_keys_ignored` lists them.
+- `estimatedPeerRoundCost` fails closed for every retired Perplexity id, not
+  only `sonar-deep-research`, through the shared `isPerplexityAgentModel`
+  predicate, so the round preflight and the evidence judge passes block before
+  dispatch on a Sonar pin even when a rate card for it is retained.
+
+### Deprecated
+
+- The rate-card keys `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+  `request_fee_high_per_1000`, `citation_tokens_per_million` and
+  `deep_research_reasoning_tokens_per_million` are deprecated no-ops for the
+  whole of 5.x. **Nothing to do before upgrading**: a central `config.json` that
+  carries them — typically the retained
+  `model_cost_rates.perplexity["sonar-reasoning-pro"]` and
+  `model_cost_rates.perplexity["sonar-deep-research"]` cards — still applies in
+  full, the keys are stripped before anything is priced or flattened to env,
+  and the boot notice names each one. Remove them when convenient and then
+  restart or reload the MCP host — editing the file while the server runs
+  changes its SHA, sets `reload_required` and blocks paid calls with
+  `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED` until the restart; their rejection by
+  the strict schema is scheduled for v06.00.00. The env variables
+  `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_*`,
+  `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` and
+  `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION` are
+  no longer read; remove them from the MCP host configuration or the Windows
+  registry at leisure as well.
+- The exported members `TokenUsage.citation_tokens`,
+  `CostEstimate.request_cost`, `CostEstimate.citation_tokens_cost`,
+  `CostEstimate.deep_research_reasoning_tokens_cost` and the five rate-card
+  keys on `CostRateConfig` stay on the shipped declarations
+  (`dist/src/core/types.d.ts`) as `@deprecated` optional members for the whole
+  of 5.x, and `mergeUsage` / `mergeCost` keep re-summing them when a session
+  persisted by v3.0–v4.6.8 carries them; no adapter or estimate produces them
+  any more. Removed in v06.00.00.
+
 ## [v04.06.08] — 05/09/2026
 
 ### Fixed

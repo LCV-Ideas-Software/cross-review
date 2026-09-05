@@ -3,9 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { loadConfig, missingFinancialControlVars } from "../src/core/config.js";
-import { estimateCost, mergeUsage } from "../src/core/cost.js";
-import { FileConfigSchema, flattenFileConfigToEnvMap } from "../src/core/file-config.js";
+import {
+  getFileConfigRuntimeStatus,
+  loadConfig,
+  missingFinancialControlVars,
+} from "../src/core/config.js";
+import { estimateCost, mergeCost, mergeUsage } from "../src/core/cost.js";
+import {
+  applyFileConfigToEnv,
+  FileConfigSchema,
+  flattenFileConfigToEnvMap,
+} from "../src/core/file-config.js";
 import {
   CrossReviewOrchestrator,
   estimatedPeerRoundCost,
@@ -16,7 +24,18 @@ import {
 import { maxOutputTokensForPeer } from "../src/core/output-budget.js";
 import { SessionStore } from "../src/core/session-store.js";
 import { parsePeerStatus, statusJsonSchema } from "../src/core/status.js";
-import type { AppConfig, PeerCallContext, PeerResult } from "../src/core/types.js";
+import type {
+  AppConfig,
+  CostEstimate,
+  CostRateConfig,
+  PeerCallContext,
+  PeerResult,
+  TokenUsage,
+} from "../src/core/types.js";
+import {
+  centralConfigDeprecatedKeysBootNotice,
+  centralConfigInvalidBootNotice,
+} from "../src/mcp/server.js";
 import { AnthropicAdapter } from "../src/peers/anthropic.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { GeminiAdapter } from "../src/peers/gemini.js";
@@ -1451,91 +1470,117 @@ const regressions: Regression[] = [
     },
   },
   {
-    name: "Perplexity deep-research-only dimensions cannot overcharge Reasoning Pro",
+    name: "Perplexity prices only Agent API dimensions; retired Sonar ids fail closed",
     run: async () => {
       const base = offlineConfig();
-      const reasoningRate = {
+      // CROSREV-19 (#233): the legacy Sonar dimensions are deprecated members
+      // of CostRateConfig / TokenUsage / CostEstimate through 5.x (PR #293
+      // review). The fixtures below prove the runtime never PRICES or READS
+      // them (each assertion was red before the removal: the fee was priced,
+      // the env read) while the aggregation helpers keep passing them through
+      // for sessions persisted by v3.0–v4.6.8.
+      const legacyReasoningCard = {
         input_per_million: 2,
         output_per_million: 8,
         request_fee_low_per_1000: 6,
-      };
-      const deepResearchRate = {
+      } as unknown as CostRateConfig;
+      const legacyDeepResearchCard = {
         input_per_million: 2,
         output_per_million: 8,
         citation_tokens_per_million: 2,
         deep_research_reasoning_tokens_per_million: 3,
         search_queries_per_1000: 5,
-      };
-      const usage = {
-        input_tokens: 100,
-        output_tokens: 200,
-        reasoning_tokens: 50,
-        citation_tokens: 20,
-        num_search_queries: 3,
-        search_performed: true,
-      };
-      const reasoningPro = estimateCost(
-        {
-          ...base,
-          models: { ...base.models, perplexity: "sonar-reasoning-pro" },
-          cost_rates: { ...base.cost_rates, perplexity: reasoningRate },
-        },
-        "perplexity",
-        usage,
-      );
-      const deepResearch = estimateCost(
-        {
-          ...base,
-          models: { ...base.models, perplexity: "sonar-deep-research" },
-          cost_rates: { ...base.cost_rates, perplexity: deepResearchRate },
-        },
-        "perplexity",
-        usage,
-      );
-      assert.ok(Math.abs((reasoningPro.total_cost ?? 0) - 0.0078) < 1e-12);
-      assert.equal(reasoningPro.request_cost, 0.006);
-      assert.equal(reasoningPro.citation_tokens_cost, undefined);
-      assert.equal(reasoningPro.deep_research_reasoning_tokens_cost, undefined);
-      assert.equal(reasoningPro.search_queries_cost, undefined);
-      assert.ok(Math.abs((deepResearch.total_cost ?? 0) - 0.01699) < 1e-12);
-      assert.equal(deepResearch.request_cost, undefined);
-      assert.equal(deepResearch.citation_tokens_cost, 0.00004);
-      assert.equal(deepResearch.deep_research_reasoning_tokens_cost, 0.00015000000000000001);
-      assert.equal(deepResearch.search_queries_cost, 0.015);
+      } as unknown as CostRateConfig;
+      const legacySonarCard = {
+        input_per_million: 1,
+        output_per_million: 1,
+        request_fee_low_per_1000: 5,
+      } as unknown as CostRateConfig;
+      const LEGACY_COST_KEYS = [
+        "request_cost",
+        "citation_tokens_cost",
+        "deep_research_reasoning_tokens_cost",
+      ];
+      const legacyKeysOn = (value: object): string[] =>
+        Object.keys(value).filter((key) => LEGACY_COST_KEYS.includes(key));
+      const LEGACY_DIMENSION_PATTERN =
+        /request_fee|citation_tokens|deep_research|REQUEST_FEE|CITATION_TOKENS|DEEP_RESEARCH/;
 
+      // Sonar-pinned fixture: the primary is a retired id and every legacy
+      // card is retained, exactly like a central config that predates the
+      // Agent API migration.
       const modelAwareConfig = {
         ...base,
         models: { ...base.models, perplexity: "sonar-reasoning-pro" },
-        cost_rates: { ...base.cost_rates, perplexity: reasoningRate },
+        cost_rates: { ...base.cost_rates, perplexity: legacyReasoningCard },
         model_cost_rates: {
           perplexity: {
-            sonar: {
-              input_per_million: 1,
-              output_per_million: 1,
-              request_fee_low_per_1000: 5,
-            },
-            "sonar-reasoning-pro": reasoningRate,
-            "sonar-deep-research": deepResearchRate,
+            sonar: legacySonarCard,
+            "sonar-reasoning-pro": legacyReasoningCard,
+            "sonar-deep-research": legacyDeepResearchCard,
           },
         },
       } as AppConfig;
+
+      // (1) estimateCost prices tokens only. A retained Sonar card's
+      // per-request fee (5 per 1000 requests on the low tier) is never
+      // added — before the removal this call returned 2.005 with
+      // request_cost 0.005.
       const sonarOverride = estimateCost(
         modelAwareConfig,
         "perplexity",
         { input_tokens: 1_000_000, output_tokens: 1_000_000 },
         "sonar",
       );
+      assert.deepEqual(
+        { total: sonarOverride.total_cost, legacyKeys: legacyKeysOn(sonarOverride) },
+        { total: 2, legacyKeys: [] },
+        "a retained Sonar card must price tokens only — no per-request fee line item",
+      );
+      // The Deep Research card's citation / reasoning / search dimensions
+      // are ignored as well (before: 20 = 2 + 8 + 2 + 3 + 5; now the two
+      // token rates only). A retired id is not an Agent API model, so the
+      // web_search fee does not apply either.
+      const legacyUsage = {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        citation_tokens: 1_000_000,
+        reasoning_tokens: 1_000_000,
+        num_search_queries: 1_000,
+      } as unknown as TokenUsage;
       const deepResearchOverride = estimateCost(
         modelAwareConfig,
         "perplexity",
-        {
-          input_tokens: 1_000_000,
-          output_tokens: 1_000_000,
-          citation_tokens: 1_000_000,
-          reasoning_tokens: 1_000_000,
-          num_search_queries: 1_000,
-        },
+        legacyUsage,
         "sonar-deep-research",
+      );
+      assert.deepEqual(
+        {
+          total: deepResearchOverride.total_cost,
+          searches: deepResearchOverride.search_queries_cost,
+          legacyKeys: legacyKeysOn(deepResearchOverride),
+        },
+        { total: 10, searches: undefined, legacyKeys: [] },
+        "Deep Research dimensions must not be priced any more",
+      );
+      // Primary Sonar pin with every legacy counter in usage: tokens only
+      // (100 × 2 + 200 × 8 per million = 0.0018; before: 0.0078 with the
+      // 0.006 request fee).
+      const reasoningPro = estimateCost(modelAwareConfig, "perplexity", {
+        input_tokens: 100,
+        output_tokens: 200,
+        reasoning_tokens: 50,
+        citation_tokens: 20,
+        num_search_queries: 3,
+        search_performed: true,
+      } as unknown as TokenUsage);
+      assert.ok(
+        Math.abs((reasoningPro.total_cost ?? 0) - 0.0018) < 1e-12,
+        `Sonar primary must price tokens only: ${reasoningPro.total_cost}`,
+      );
+      assert.deepEqual(
+        { legacyKeys: legacyKeysOn(reasoningPro), searches: reasoningPro.search_queries_cost },
+        { legacyKeys: [], searches: undefined },
       );
       const unknownOverride = estimateCost(
         modelAwareConfig,
@@ -1544,131 +1589,102 @@ const regressions: Regression[] = [
         "sonar-unknown",
       );
       assert.deepEqual(
-        {
-          sonar: {
-            total: sonarOverride.total_cost,
-            request: sonarOverride.request_cost,
-          },
-          deepResearch: {
-            total: deepResearchOverride.total_cost,
-            request: deepResearchOverride.request_cost,
-            citation: deepResearchOverride.citation_tokens_cost,
-            reasoning: deepResearchOverride.deep_research_reasoning_tokens_cost,
-            searches: deepResearchOverride.search_queries_cost,
-          },
-          unknown: {
-            estimated: unknownOverride.estimated,
-            source: unknownOverride.source,
-          },
-        },
-        {
-          sonar: { total: 2.005, request: 0.005 },
-          deepResearch: {
-            total: 20,
-            request: undefined,
-            citation: 2,
-            reasoning: 3,
-            searches: 5,
-          },
-          unknown: { estimated: false, source: "unknown-rate" },
-        },
+        { estimated: unknownOverride.estimated, source: unknownOverride.source },
+        { estimated: false, source: "unknown-rate" },
       );
 
-      const missingSonarFallbackFee = missingFinancialControlVars(
+      // (2) mergeCost never produces the deprecated line items, but a session
+      // persisted by v3.0–v4.6.8 still carries them: they keep being re-summed
+      // through 5.x (PR #293 review) next to the stored total_cost, so
+      // historical breakdowns do not change inside a patch update.
+      const legacyEstimate = {
+        currency: "USD",
+        input_cost: 1,
+        output_cost: 1,
+        total_cost: 3,
+        estimated: true,
+        source: "configured-rate",
+        request_cost: 1,
+        citation_tokens_cost: 1,
+        deep_research_reasoning_tokens_cost: 1,
+        search_queries_cost: 0.5,
+      } as unknown as CostEstimate;
+      const mergedLegacy = mergeCost([legacyEstimate, legacyEstimate]);
+      assert.deepEqual(
         {
-          ...modelAwareConfig,
-          models: { ...modelAwareConfig.models, perplexity: "sonar-deep-research" },
-          cost_rates: { ...modelAwareConfig.cost_rates, perplexity: deepResearchRate },
-          fallback_models: { ...modelAwareConfig.fallback_models, perplexity: ["sonar"] },
-          model_cost_rates: {
-            perplexity: {
-              "sonar-deep-research": deepResearchRate,
-              sonar: { input_per_million: 1, output_per_million: 1 },
-            },
-          },
+          total: mergedLegacy.total_cost,
+          searches: mergedLegacy.search_queries_cost,
+          legacyKeys: legacyKeysOn(mergedLegacy),
+          request: mergedLegacy.request_cost,
+          citations: mergedLegacy.citation_tokens_cost,
+          reasoning: mergedLegacy.deep_research_reasoning_tokens_cost,
         },
-        ["perplexity"],
+        {
+          total: 6,
+          searches: 1,
+          legacyKeys: LEGACY_COST_KEYS,
+          request: 2,
+          citations: 2,
+          reasoning: 2,
+        },
+        "mergeCost must keep stored totals and re-sum the deprecated Sonar line items through 5.x",
       );
-      assert.ok(
-        missingSonarFallbackFee.some((item) => item.includes("request_fee_low_per_1000")),
-        `Sonar fallback without its request fee must fail closed: ${missingSonarFallbackFee.join(",")}`,
+      const mergedFresh = mergeCost([
+        { currency: "USD", total_cost: 1, estimated: true, source: "configured-rate" },
+        { currency: "USD", total_cost: 2, estimated: true, source: "configured-rate" },
+      ]);
+      assert.deepEqual(
+        { total: mergedFresh.total_cost, legacyKeys: legacyKeysOn(mergedFresh) },
+        { total: 3, legacyKeys: [] },
+        "mergeCost must not invent the deprecated line items",
       );
 
-      const missingDeepResearchDimensions = missingFinancialControlVars(
-        {
-          ...modelAwareConfig,
-          fallback_models: {
-            ...modelAwareConfig.fallback_models,
-            perplexity: ["sonar-deep-research"],
-          },
-          model_cost_rates: {
-            perplexity: {
-              "sonar-reasoning-pro": reasoningRate,
-              "sonar-deep-research": { input_per_million: 2, output_per_million: 8 },
-            },
-          },
-        },
-        ["perplexity"],
-      );
-      for (const field of [
-        "citation_tokens_per_million",
-        "deep_research_reasoning_tokens_per_million",
-        "search_queries_per_1000",
-      ]) {
-        assert.ok(
-          missingDeepResearchDimensions.some((item) => item.includes(field)),
-          `Deep Research fallback must require ${field}: ${missingDeepResearchDimensions.join(",")}`,
-        );
-      }
-
-      const missingPrimaryDeepResearchDimensions = missingFinancialControlVars(
-        {
-          ...modelAwareConfig,
-          models: { ...modelAwareConfig.models, perplexity: "sonar-deep-research" },
-          cost_rates: {
-            ...modelAwareConfig.cost_rates,
-            perplexity: { input_per_million: 2, output_per_million: 8 },
-          },
-          fallback_models: { ...modelAwareConfig.fallback_models, perplexity: [] },
-          model_cost_rates: {
-            perplexity: {
-              "sonar-deep-research": { input_per_million: 2, output_per_million: 8 },
-            },
-          },
-        },
-        ["perplexity"],
-      );
-      for (const suffix of [
-        "CITATION_TOKENS_USD_PER_MILLION",
-        "DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
-        "SEARCH_QUERIES_USD_PER_1000_REQUESTS",
-      ]) {
-        assert.ok(
-          missingPrimaryDeepResearchDimensions.includes(`CROSS_REVIEW_PERPLEXITY_${suffix}`),
-          `primary Deep Research must require ${suffix}: ${missingPrimaryDeepResearchDimensions.join(",")}`,
-        );
-      }
-      const completeDeepResearchConfig: AppConfig = {
-        ...modelAwareConfig,
-        models: { ...modelAwareConfig.models, perplexity: "sonar-deep-research" },
-        cost_rates: { ...modelAwareConfig.cost_rates, perplexity: deepResearchRate },
-        fallback_models: { ...modelAwareConfig.fallback_models, perplexity: [] },
+      // (2b) The shipped declarations keep the deprecated members through 5.x
+      // (PR #293 review): these literals must compile WITHOUT a cast, and a
+      // consumer of dist/src/core/types.d.ts sees the same members.
+      const declaredLegacyUsage: TokenUsage = { citation_tokens: 1 };
+      const declaredLegacyCost: CostEstimate = {
+        currency: "USD",
+        estimated: true,
+        source: "configured-rate",
+        request_cost: 1,
+        citation_tokens_cost: 1,
+        deep_research_reasoning_tokens_cost: 1,
       };
-      assert.ok(
-        missingFinancialControlVars(completeDeepResearchConfig, ["perplexity"]).includes(
-          "CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_PREFLIGHT_UNBOUNDED",
-        ),
-        "Deep Research must disclose that provider-controlled cost dimensions cannot be hard-preflighted",
-      );
-      assert.equal(
-        estimatedPeerRoundCost(completeDeepResearchConfig, ["perplexity"], "fixture"),
-        undefined,
-        "Deep Research must fail closed because citation/reasoning/search volume is provider-controlled",
+      const declaredLegacyCard: CostRateConfig = {
+        input_per_million: 1,
+        output_per_million: 1,
+        request_fee_low_per_1000: 1,
+        request_fee_medium_per_1000: 1,
+        request_fee_high_per_1000: 1,
+        citation_tokens_per_million: 1,
+        deep_research_reasoning_tokens_per_million: 1,
+      };
+      assert.deepEqual(
+        [
+          Object.keys(declaredLegacyUsage),
+          legacyKeysOn(declaredLegacyCost),
+          Object.keys(declaredLegacyCard).filter((key) => LEGACY_DIMENSION_PATTERN.test(key))
+            .length,
+        ],
+        [["citation_tokens"], LEGACY_COST_KEYS, 5],
+        "the deprecated members must remain declared through 5.x",
       );
 
+      // (3) mergeUsage keeps re-summing the deprecated citation_tokens counter
+      // (PR #293 review) and keeps the search semantics; a merge without it
+      // does not invent the key.
       const mergedSonarUsage = mergeUsage([
-        { citation_tokens: 3, num_search_queries: 2, search_performed: true },
-        { citation_tokens: 4, num_search_queries: 5, search_performed: false },
+        {
+          citation_tokens: 3,
+          num_search_queries: 2,
+          search_performed: true,
+        } as unknown as TokenUsage,
+        {
+          citation_tokens: 4,
+          num_search_queries: 5,
+          search_performed: false,
+        } as unknown as TokenUsage,
       ]);
       assert.deepEqual(
         {
@@ -1677,6 +1693,370 @@ const regressions: Regression[] = [
           searchPerformed: mergedSonarUsage.search_performed,
         },
         { citationTokens: 7, searchQueries: 7, searchPerformed: true },
+        "mergeUsage must re-sum the deprecated citation_tokens counter through 5.x",
+      );
+      assert.equal(
+        "citation_tokens" in mergeUsage([{ num_search_queries: 1 }, { input_tokens: 2 }]),
+        false,
+        "mergeUsage must not invent citation_tokens",
+      );
+
+      // (4) missingFinancialControlVars: a retired primary or fallback pin
+      // reports the migration marker and nothing else about Sonar — no
+      // request-fee, citation, reasoning or DEEP_RESEARCH_PREFLIGHT items,
+      // even with the complete legacy cards retained.
+      const retiredPinsConfig = {
+        ...modelAwareConfig,
+        models: { ...modelAwareConfig.models, perplexity: "sonar-deep-research" },
+        cost_rates: { ...modelAwareConfig.cost_rates, perplexity: legacyDeepResearchCard },
+        fallback_models: { ...modelAwareConfig.fallback_models, perplexity: ["sonar"] },
+      } as AppConfig;
+      const retiredPinsMissing = missingFinancialControlVars(retiredPinsConfig, ["perplexity"]);
+      assert.ok(
+        retiredPinsMissing.includes("CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID"),
+        `retired pins must report the migration marker: ${retiredPinsMissing.join(",")}`,
+      );
+      assert.deepEqual(
+        retiredPinsMissing.filter((item) => LEGACY_DIMENSION_PATTERN.test(item)),
+        [],
+        `no legacy Sonar dimension may be demanded any more: ${retiredPinsMissing.join(",")}`,
+      );
+
+      // (5) The legacy env suffixes are no longer read into the Perplexity
+      // rate card (before: costRate() copied every one of them).
+      const legacyEnvNames = [
+        "CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_LOW_USD_PER_1000_REQUESTS",
+        "CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_MEDIUM_USD_PER_1000_REQUESTS",
+        "CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_HIGH_USD_PER_1000_REQUESTS",
+        "CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION",
+        "CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION",
+      ];
+      const rateEnvNames = [
+        ...legacyEnvNames,
+        "CROSS_REVIEW_PERPLEXITY_INPUT_USD_PER_MILLION",
+        "CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION",
+        "CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS",
+      ];
+      const previousRateEnv = Object.fromEntries(
+        rateEnvNames.map((name) => [name, process.env[name]]),
+      );
+      try {
+        for (const name of rateEnvNames) process.env[name] = "1";
+        const envCard = loadConfig().cost_rates.perplexity;
+        assert.ok(envCard, "INPUT/OUTPUT env must still build the Perplexity card");
+        assert.deepEqual(
+          {
+            input: envCard.input_per_million,
+            output: envCard.output_per_million,
+            searches: envCard.search_queries_per_1000,
+            legacyKeys: Object.keys(envCard).filter((key) => LEGACY_DIMENSION_PATTERN.test(key)),
+          },
+          { input: 1, output: 1, searches: 1, legacyKeys: [] },
+          `legacy env suffixes must be ignored: ${Object.keys(envCard).join(",")}`,
+        );
+      } finally {
+        for (const name of rateEnvNames) {
+          const previous = previousRateEnv[name];
+          if (previous === undefined) delete process.env[name];
+          else process.env[name] = previous;
+        }
+      }
+
+      // (6) Central config (PR #293 review, SemVer): the five deprecated Sonar
+      // keys stay ACCEPTED by the strict schema throughout 5.x — a file valid
+      // under 4.6.8 must not be rejected by a patch update. applyFileConfigToEnv
+      // strips them before the card is flattened or retained and names each
+      // one with its card path; any other unknown key is still rejected in
+      // full. Before this fix every "tolerated" assertion below was red: the
+      // file came back applied=false with zod's unrecognized_keys issue.
+      const legacyDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-crosrev-19-"));
+      const crossReviewEnvSnapshot = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => name.startsWith("CROSS_REVIEW_")),
+      );
+      const crossReviewEnvNames = (): string[] =>
+        Object.keys(process.env).filter((name) => name.startsWith("CROSS_REVIEW_"));
+      try {
+        // A tolerated file DOES write flattened values into process.env, so
+        // start from a bare CROSS_REVIEW_* environment (data dir only) and
+        // restore the host state afterwards.
+        for (const name of crossReviewEnvNames()) {
+          if (name !== "CROSS_REVIEW_DATA_DIR") delete process.env[name];
+        }
+        const configPath = path.join(legacyDataDir, "config.json");
+        const writeCentralConfig = (config: unknown): void => {
+          fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+        };
+        const readEnvExceptOverride = (name: string): string | undefined =>
+          name === "CROSS_REVIEW_CONFIG_FILE" ? undefined : process.env[name];
+        const legacyEnvNamesPresent = (): string[] =>
+          crossReviewEnvNames().filter((name) => LEGACY_DIMENSION_PATTERN.test(name));
+        writeCentralConfig({
+          model_cost_rates: {
+            perplexity: {
+              "sonar-reasoning-pro": {
+                input_per_million: 1,
+                output_per_million: 1,
+                request_fee_low_per_1000: 5,
+              },
+            },
+          },
+        });
+        const toleratedModelCard = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
+        assert.deepEqual(
+          {
+            applied: toleratedModelCard.applied,
+            parseError: toleratedModelCard.parse_error,
+            ignored: toleratedModelCard.deprecated_keys_ignored,
+            card: toleratedModelCard.model_cost_rates?.perplexity?.["sonar-reasoning-pro"],
+          },
+          {
+            applied: true,
+            parseError: undefined,
+            ignored: [
+              'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
+            ],
+            card: { input_per_million: 1, output_per_million: 1 },
+          },
+          "a deprecated key on a model card must be tolerated, stripped and named with its path",
+        );
+        writeCentralConfig({
+          cost_rates: {
+            perplexity: {
+              input_per_million: 1,
+              output_per_million: 1,
+              citation_tokens_per_million: 2,
+            },
+          },
+        });
+        const toleratedPrimaryCard = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
+        assert.deepEqual(
+          {
+            applied: toleratedPrimaryCard.applied,
+            ignored: toleratedPrimaryCard.deprecated_keys_ignored,
+            legacyEnv: legacyEnvNamesPresent(),
+          },
+          {
+            applied: true,
+            ignored: ["cost_rates.perplexity.citation_tokens_per_million"],
+            legacyEnv: [],
+          },
+          "a deprecated key on the primary card must be tolerated and never flattened to env",
+        );
+        // Only the five deprecated keys are tolerated: a genuinely unknown key
+        // still rejects the whole file with the schema-invalid diagnostic.
+        const kimiCard = {
+          input_per_million: 3,
+          output_per_million: 15,
+          cache_read_per_million: 0.3,
+          search_queries_per_1000: 2.5,
+        };
+        writeCentralConfig({
+          model_cost_rates: {
+            perplexity: { "perplexity/kimi-k3": { ...kimiCard, search_fee_per_1000: 2.5 } },
+          },
+        });
+        const rejectedUnknownKey = applyFileConfigToEnv(legacyDataDir, readEnvExceptOverride);
+        assert.equal(rejectedUnknownKey.applied, false, "an unknown card key must be rejected");
+        for (const fragment of [
+          "schema_validation_failed:",
+          "unrecognized_keys",
+          "search_fee_per_1000",
+          "model_cost_rates",
+          "perplexity",
+          "perplexity/kimi-k3",
+        ]) {
+          assert.ok(
+            rejectedUnknownKey.parse_error?.includes(fragment),
+            `parse_error must name ${fragment}: ${rejectedUnknownKey.parse_error}`,
+          );
+        }
+        assert.equal(
+          rejectedUnknownKey.deprecated_keys_ignored,
+          undefined,
+          "a rejected file reports no ignored deprecated keys",
+        );
+
+        // (7) End to end on the operator surface: CROSS_REVIEW_CONFIG_FILE →
+        // loadConfig() → missingFinancialControlVars / server_info config_load
+        // / boot notices. The operator's real 4.6.8 file shape — an Agent API
+        // pin plus the two retained Sonar cards carrying every deprecated key —
+        // applies in full: no CROSS_REVIEW_CONFIG_FILE_INVALID, the deprecated
+        // keys reach neither the loaded cards nor the env, and the deprecation
+        // boot notice names each of them with its path. A genuinely unknown
+        // key still fails closed with the schema-invalid boot notice.
+        const legacyCentralConfig = {
+          models: { perplexity: "perplexity/kimi-k3" },
+          budget: { default_max_rounds: 4 },
+          model_cost_rates: {
+            perplexity: {
+              "perplexity/kimi-k3": kimiCard,
+              "sonar-reasoning-pro": {
+                input_per_million: 2,
+                output_per_million: 8,
+                request_fee_low_per_1000: 6,
+                request_fee_medium_per_1000: 10,
+                request_fee_high_per_1000: 14,
+              },
+              "sonar-deep-research": {
+                input_per_million: 2,
+                output_per_million: 8,
+                citation_tokens_per_million: 2,
+                deep_research_reasoning_tokens_per_million: 3,
+                search_queries_per_1000: 5,
+              },
+            },
+          },
+        };
+        const DEPRECATED_KEY_PATHS = [
+          'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
+          'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_medium_per_1000',
+          'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_high_per_1000',
+          'model_cost_rates.perplexity["sonar-deep-research"].citation_tokens_per_million',
+          'model_cost_rates.perplexity["sonar-deep-research"].deep_research_reasoning_tokens_per_million',
+        ];
+        process.env.CROSS_REVIEW_CONFIG_FILE = configPath;
+        writeCentralConfig(legacyCentralConfig);
+        const legacyLoaded = loadConfig();
+        const legacyStatus = getFileConfigRuntimeStatus();
+        assert.ok(legacyStatus?.file_exists, "the temp central config must be seen");
+        assert.deepEqual(
+          {
+            applied: legacyStatus.applied,
+            parseError: legacyStatus.parse_error,
+            fieldsApplied: legacyStatus.fields_applied >= 1,
+            ignored: legacyStatus.deprecated_keys_ignored,
+          },
+          { applied: true, parseError: null, fieldsApplied: true, ignored: DEPRECATED_KEY_PATHS },
+          `a central config valid under 4.6.8 must apply in full: ${JSON.stringify(legacyStatus)}`,
+        );
+        const loadedCards = legacyLoaded.model_cost_rates?.perplexity ?? {};
+        assert.deepEqual(
+          {
+            reasoning: loadedCards["sonar-reasoning-pro"],
+            deepResearch: loadedCards["sonar-deep-research"],
+            legacyEnv: legacyEnvNamesPresent(),
+          },
+          {
+            reasoning: { input_per_million: 2, output_per_million: 8 },
+            deepResearch: {
+              input_per_million: 2,
+              output_per_million: 8,
+              search_queries_per_1000: 5,
+            },
+            legacyEnv: [],
+          },
+          "deprecated keys must reach neither the loaded rate cards nor the env",
+        );
+        const legacyMissing = missingFinancialControlVars(legacyLoaded, ["perplexity"]);
+        assert.deepEqual(
+          legacyMissing.filter((item) => item.startsWith("CROSS_REVIEW_CONFIG_")),
+          [],
+          `a tolerated file must not block paid calls: ${legacyMissing.join(",")}`,
+        );
+        const deprecationNotice = centralConfigDeprecatedKeysBootNotice(legacyStatus);
+        assert.ok(deprecationNotice, "the boot notice must name the ignored deprecated keys");
+        for (const fragment of [
+          `central config "${configPath}"`,
+          ...DEPRECATED_KEY_PATHS,
+          "restart or reload the MCP host",
+          "CROSS_REVIEW_CONFIG_RELOAD_REQUIRED",
+          "next major",
+        ]) {
+          assert.ok(
+            deprecationNotice.includes(fragment),
+            `deprecation boot notice must include ${fragment}: ${deprecationNotice}`,
+          );
+        }
+        assert.equal(
+          centralConfigInvalidBootNotice(legacyStatus),
+          null,
+          "a tolerated file must not print the schema-invalid boot notice",
+        );
+
+        writeCentralConfig({
+          ...legacyCentralConfig,
+          model_cost_rates: {
+            perplexity: {
+              ...legacyCentralConfig.model_cost_rates.perplexity,
+              "perplexity/kimi-k3": { ...kimiCard, search_fee_per_1000: 2.5 },
+            },
+          },
+        });
+        const unknownLoaded = loadConfig();
+        const unknownStatus = getFileConfigRuntimeStatus();
+        assert.equal(unknownStatus?.applied, false, "an unknown key must reject the whole file");
+        assert.ok(
+          missingFinancialControlVars(unknownLoaded, ["perplexity"]).includes(
+            "CROSS_REVIEW_CONFIG_FILE_INVALID",
+          ),
+          "paid calls must fail closed with the named marker while the unknown key remains",
+        );
+        const invalidNotice = centralConfigInvalidBootNotice(unknownStatus);
+        assert.ok(invalidNotice, "an unknown key must produce the schema-invalid boot notice");
+        for (const fragment of [
+          "IGNORED IN FULL",
+          "CROSS_REVIEW_CONFIG_FILE_INVALID",
+          "unrecognized_keys",
+          "search_fee_per_1000",
+        ]) {
+          assert.ok(
+            invalidNotice.includes(fragment),
+            `schema-invalid boot notice must include ${fragment}: ${invalidNotice}`,
+          );
+        }
+        assert.equal(
+          centralConfigDeprecatedKeysBootNotice(unknownStatus),
+          null,
+          "a rejected file has no ignored deprecated keys to announce",
+        );
+
+        // Removing the deprecated keys is optional; doing so silences the
+        // notice while the same file keeps applying.
+        writeCentralConfig({
+          ...legacyCentralConfig,
+          model_cost_rates: {
+            perplexity: {
+              "perplexity/kimi-k3": kimiCard,
+              "sonar-reasoning-pro": { input_per_million: 2, output_per_million: 8 },
+              "sonar-deep-research": {
+                input_per_million: 2,
+                output_per_million: 8,
+                search_queries_per_1000: 5,
+              },
+            },
+          },
+        });
+        loadConfig();
+        const cleanStatus = getFileConfigRuntimeStatus();
+        assert.deepEqual(
+          {
+            applied: cleanStatus?.applied,
+            ignored: cleanStatus?.deprecated_keys_ignored,
+            notice: centralConfigDeprecatedKeysBootNotice(cleanStatus),
+          },
+          { applied: true, ignored: [], notice: null },
+          "removing the deprecated keys must silence the notice and keep the file applying",
+        );
+      } finally {
+        for (const name of crossReviewEnvNames()) delete process.env[name];
+        Object.assign(process.env, crossReviewEnvSnapshot);
+        // Restore the module-level file-config status to the host state.
+        loadConfig();
+        fs.rmSync(legacyDataDir, { recursive: true, force: true });
+      }
+
+      // (8) Round preflight: any retired Perplexity id fails closed before it
+      // is priced, as primary (before: sonar-reasoning-pro was priced from its
+      // retained card) and as fallback in an otherwise Agent API chain.
+      assert.equal(
+        estimatedPeerRoundCost(modelAwareConfig, ["perplexity"], "fixture"),
+        undefined,
+        "a retired Sonar primary must fail closed even with a retained card",
+      );
+      assert.equal(
+        estimatedPeerRoundCost(retiredPinsConfig, ["perplexity"], "fixture"),
+        undefined,
+        "a retired Deep Research primary must fail closed",
       );
 
       // v4.6.0: legacy Sonar ids are rejected before any network call.
@@ -1745,9 +2125,7 @@ const regressions: Regression[] = [
           searches: agentResult.usage?.num_search_queries,
           providerTotal: agentResult.usage?.provider_reported_total_cost_usd,
           total: Number((agentResult.cost.total_cost ?? 0).toFixed(6)),
-          request: agentResult.cost.request_cost,
-          citation: agentResult.cost.citation_tokens_cost,
-          reasoning: agentResult.cost.deep_research_reasoning_tokens_cost,
+          legacyKeys: legacyKeysOn(agentResult.cost),
           searchCost: agentResult.cost.search_queries_cost,
         },
         {
@@ -1757,9 +2135,7 @@ const regressions: Regression[] = [
           searches: 1_000,
           providerTotal: 19.96,
           total: 19.96,
-          request: undefined,
-          citation: undefined,
-          reasoning: undefined,
+          legacyKeys: [],
           searchCost: 2.5,
         },
       );
@@ -1890,10 +2266,62 @@ const regressions: Regression[] = [
         "the reviewer envelope must exceed the generation envelope by the declared search fee",
       );
 
+      // CROSREV-19 (#233): the explicit-effective-model path is the one the
+      // evidence judge passes (consensus and single) and relator generation
+      // use. A retired Perplexity id with a retained card must yield no
+      // estimate there as well, for both roles, so those passes block before
+      // dispatch instead of pricing a model the adapter cannot send.
+      const retiredCardConfig = {
+        ...agentConfig,
+        model_cost_rates: { perplexity: { "sonar-reasoning-pro": legacyReasoningCard } },
+      } as AppConfig;
+      for (const role of ["generation", "review"] as const) {
+        assert.equal(
+          estimatedPeerRoundCost(
+            retiredCardConfig,
+            ["perplexity"],
+            "fixture",
+            { perplexity: "sonar-reasoning-pro" },
+            { request_role: role, max_output_tokens_by_peer: { perplexity: 64 } },
+          ),
+          undefined,
+          `an explicit retired Perplexity model must not be priced for the ${role} role`,
+        );
+      }
+      assert.equal(
+        estimatedPeerRoundCost(
+          {
+            ...retiredCardConfig,
+            fallback_models: {
+              ...retiredCardConfig.fallback_models,
+              perplexity: ["sonar-reasoning-pro"],
+            },
+          } as AppConfig,
+          ["perplexity"],
+          "fixture",
+        ),
+        undefined,
+        "a retired Sonar fallback must fail the whole chain closed",
+      );
+
+      // Worst-case retry envelope on an all-Agent-API chain: the primary pin
+      // plus a fallback card of its own, with search disabled so no
+      // web_search estimate is added to either envelope.
+      const fallbackCard = {
+        input_per_million: 4,
+        output_per_million: 20,
+        cache_read_per_million: 0.4,
+        search_queries_per_1000: 2.5,
+      };
       const retryConfig: AppConfig = {
-        ...modelAwareConfig,
-        retry: { ...modelAwareConfig.retry, max_attempts: 3 },
-        fallback_models: { ...modelAwareConfig.fallback_models, perplexity: ["sonar"] },
+        ...agentConfig,
+        retry: { ...agentConfig.retry, max_attempts: 3 },
+        perplexity: { ...agentConfig.perplexity, disable_search: true },
+        fallback_models: {
+          ...agentConfig.fallback_models,
+          perplexity: ["perplexity/fixture-fallback"],
+        },
+        model_cost_rates: { perplexity: { "perplexity/fixture-fallback": fallbackCard } },
       };
       const prompt = "four";
       const usageEnvelope = {
@@ -1904,13 +2332,13 @@ const regressions: Regression[] = [
         retryConfig,
         "perplexity",
         usageEnvelope,
-        "sonar-reasoning-pro",
+        "perplexity/kimi-k3",
       ).total_cost;
       const fallbackEnvelope = estimateCost(
         retryConfig,
         "perplexity",
         usageEnvelope,
-        "sonar",
+        "perplexity/fixture-fallback",
       ).total_cost;
       assert.ok(primaryEnvelope != null && fallbackEnvelope != null);
       const fallbackThenFormat =

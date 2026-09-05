@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 05/09/2026: `4.6.8`. O registro pode ficar
+> Estado do source/release target em 05/09/2026: `5.0.0`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -631,6 +631,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v05.00.00`      | Versão maior: `estimateCost` deixa de precificar as dimensões Sonar legadas; as chaves seguem aceitas pelo schema como obsoletas e ignoradas, nomeadas no boot; config central rejeitada pelo schema passa a ser avisada no boot.                                                                                     |
 | `v04.06.08`      | Custódia de evidência: URL do GitHub citada em forma escapada não rebaixa voto READY; o relator pode nomear arquivo materializado como pós-imagem do diff admitido.                                                                                                                                                   |
 | `v04.06.07`      | Publicação sem gesto manual: o push em `main` que muda a versão publica e o próprio run cria a Release por último; sai a guarda de ancestralidade.                                                                                                                                                                    |
 | `v04.06.06`      | Publicação no modelo oficial do GitHub: Release publicada dispara o publish, com Trusted Publishing e proveniência; sai a máquina própria de tag, despacho e política.                                                                                                                                                |

@@ -3536,6 +3536,21 @@ export async function main(): Promise<void> {
       `[cross-review] notice: PerplexityAdapter — model="${perplexityModel}" is a Sonar Chat Completions id. Perplexity retires that API on 27/09/2026 and cross-review >= 4.6.0 speaks only the Agent API, so paid Perplexity calls will fail with perplexity_model_unsupported until CROSS_REVIEW_PERPLEXITY_MODEL (or central config models.perplexity) is set to a documented provider/model id such as perplexity/kimi-k3.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
+  // CROSREV-19 (#233): boot notice for a central config that failed to
+  // load. applyFileConfigToEnv ignores the WHOLE file on a read, JSON or
+  // schema failure (models, budgets, rate cards, cache, evidence broker...
+  // all revert to env/registry/defaults) and missingFinancialControlVars
+  // only reports the generic CROSS_REVIEW_CONFIG_FILE_INVALID marker, so
+  // print the detail (path + diagnostic) where the operator sees it instead
+  // of only inside server_info.config_load.parse_error. The same slot names
+  // the deprecated Sonar rate-card keys a file that DID load still carries
+  // (accepted, stripped and ignored; see DEPRECATED_COST_RATE_KEYS).
+  setTimeout(() => {
+    const notice = centralConfigInvalidBootNotice(getFileConfigRuntimeStatus());
+    if (notice) console.error(notice);
+    const deprecatedNotice = centralConfigDeprecatedKeysBootNotice(getFileConfigRuntimeStatus());
+    if (deprecatedNotice) console.error(deprecatedNotice);
+  }, STARTUP_SWEEP_DELAY_MS);
 }
 
 // v2.15.0: shadow copy of `peers/grok.ts:GROK_REASONING_EFFORT_MODELS`
@@ -3553,6 +3568,38 @@ const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
   // in sync per the "both lists must update together" contract above.
   "grok-4.3",
 ]);
+
+// CROSREV-19 (#233): pure text builder for the invalid-central-config boot
+// notice so the regression suite can pin it without booting the server.
+// Returns null when there is nothing to report (no file, or a file that
+// loaded cleanly).
+export function centralConfigInvalidBootNotice(
+  configLoad: { path: string; file_exists: boolean; parse_error: string | null } | undefined,
+): string | null {
+  if (!configLoad?.file_exists || !configLoad.parse_error) return null;
+  return `[cross-review] notice: central config "${configLoad.path}" was IGNORED IN FULL (every value in it — models, budgets, rate cards, cache, evidence broker — fell back to env/registry/defaults) and paid calls stay blocked with CROSS_REVIEW_CONFIG_FILE_INVALID until the file is fixed and the MCP host restarted. Cause: ${configLoad.parse_error}`;
+}
+
+// CROSREV-19 (#233), PR #293 review: pure text builder for the deprecated
+// rate-card keys boot notice. The five legacy Sonar keys stay accepted by the
+// central-config schema throughout 5.x (a file valid under 4.6.8 must stay
+// valid after the upgrade) but price nothing: applyFileConfigToEnv strips
+// them before the card reaches env or the cost engine and reports them in
+// `deprecated_keys_ignored`. Returns null when the file is absent, failed to
+// load, or carries none of them.
+export function centralConfigDeprecatedKeysBootNotice(
+  configLoad:
+    | {
+        path: string;
+        file_exists: boolean;
+        deprecated_keys_ignored?: readonly string[] | undefined;
+      }
+    | undefined,
+): string | null {
+  const ignored = configLoad?.deprecated_keys_ignored ?? [];
+  if (!configLoad?.file_exists || ignored.length === 0) return null;
+  return `[cross-review] notice: central config "${configLoad.path}" carries ${ignored.length} deprecated rate-card key(s) that were IGNORED — the legacy Sonar API cost dimensions price nothing since v05.00.00 and the rest of the file applied normally: ${ignored.join(", ")}. Remove them when convenient and then restart or reload the MCP host: editing the file while this server runs changes its SHA, sets reload_required and blocks paid calls with CROSS_REVIEW_CONFIG_RELOAD_REQUIRED until the restart. They will be REJECTED by the schema in the next major version (v06.00.00).`;
+}
 
 // v2.4.0 / cross-review R6 follow-up (CI failure 25199679588): guard
 // main() so it only runs when this module is invoked as the entry point
