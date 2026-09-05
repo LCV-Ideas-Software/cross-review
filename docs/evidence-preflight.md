@@ -143,7 +143,11 @@ rule that governs attachment names, so a relator that names `package.json`
 after the caller attached the diff is not blocked. Two limits are deliberate:
 the GNU tab-timestamp header suffix is not parsed, and a deletion-only hunk
 produced with `-U0` yields no post-image line, so its path is not admitted and
-the file must be supplied another way.
+the file must be supplied another way. Hunk boundaries follow the line counts
+of the `@@ -a,b +c,d @@` header, so diff content beginning with `--` or `++`
+(serialized `---`/`+++` inside a hunk) never becomes a file header, and a
+fenced diff supplied inline in the draft materializes its post-image paths the
+same way an attachment does.
 
 ## Minimum evidence format
 

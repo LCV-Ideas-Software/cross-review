@@ -25,7 +25,13 @@ standard `v00.00.00`; npm package versions remain SemVer.
   v4.3.9 rule, so naming `package.json` after the caller attached the diff no
   longer blocks every reviewer with `unattached_evidence_references`. A
   genuinely missing artifact still fails closed; a deletion-only `-U0` hunk
-  admits no path; the GNU tab-timestamp header suffix is not parsed.
+  admits no path; the GNU tab-timestamp header suffix is not parsed. Hunk
+  boundaries follow the `@@` line counts, so a deleted `-- x` or added `++ y`
+  line inside a hunk (serialized `--- x`/`+++ y`) is content, never a file
+  header that could admit a fabricated path; and `session_preflight_check`
+  hands a fenced diff supplied inline in the draft to the same post-image
+  recognizer, so the pre-check agrees with the round, which persists that
+  block as an attachment before its own preflight runs.
 
 ## [v04.06.07] — 04/09/2026
 
