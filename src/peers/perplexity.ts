@@ -87,7 +87,7 @@ export const PERPLEXITY_SONAR_SUNSET_DATE = "27/09/2026";
 export const PERPLEXITY_AGENT_MODELS_DOCS = "https://docs.perplexity.ai/docs/agent-api/models";
 
 // Agent API model ids are `provider/model` (e.g. `perplexity/kimi-k3`,
-// `openai/gpt-5.6-sol`). Anything without the provider segment is a
+// `openai/gpt-6-astra`). Anything without the provider segment is a
 // legacy Sonar Chat Completions id, which this adapter no longer speaks.
 // The single implementation lives in core/cost.ts so the adapter, the cost
 // layer, the financial preflight and the server boot notice can never

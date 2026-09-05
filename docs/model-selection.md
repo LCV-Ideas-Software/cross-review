@@ -43,8 +43,8 @@ env-var per host — a deliberate decision, never a silent downgrade.
 
 | Peer             | Pin                      | Override env-var                |
 | ---------------- | ------------------------ | ------------------------------- |
-| OpenAI/Codex     | `gpt-5.6-sol`            | `CROSS_REVIEW_OPENAI_MODEL`     |
-| Anthropic/Claude | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| OpenAI/Codex     | `gpt-6-astra`            | `CROSS_REVIEW_OPENAI_MODEL`     |
+| Anthropic/Claude | `claude-fable-5-1`       | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | Google/Gemini    | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | DeepSeek         | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
 | xAI/Grok         | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
@@ -53,16 +53,24 @@ env-var per host — a deliberate decision, never a silent downgrade.
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
 
-Claude Fable 5 (`claude-fable-5`) is the canonical Anthropic production model.
-The adapter omits the explicit `thinking` field because Fable applies adaptive
-thinking automatically; `output_config.effort` remains the depth control.
-Fable refusals are successful API responses with `stop_reason="refusal"`; the
-runtime discards partial refusal output and records a non-skippable
-`provider_refusal`. A refusal before output is zero-cost even though Anthropic
-can report input usage; a mid-stream refusal is billed for the input and output
-already generated. Anthropic documents 30-day retention and no zero data
-retention option for Fable, so operators must accept that posture before using
-the peer.
+Claude Fable 5.1 (`claude-fable-5-1`, released 01/09/2026) is the canonical
+Anthropic production model. The adapter omits the explicit `thinking` field
+because adaptive thinking is always on (`thinking` enabled or disabled returns
+400); `output_config.effort` remains the depth control. Fable 5.1 rejects
+forced tool use (`tool_choice` `any`/`tool` return 400), assistant prefill and
+non-default sampling; the adapter never sends `tool_choice`, `tools`, prefill,
+`temperature`, `top_p` or `top_k`. Its calls are single-turn (one user
+message, no replayed assistant turns or thinking blocks), so the preserved
+thinking / append-only history rules do not apply. Fable refusals are
+successful API responses with `stop_reason="refusal"`; the runtime discards
+partial refusal output and records a non-skippable `provider_refusal`. A
+refusal before output is zero-cost even though Anthropic can report input
+usage; a mid-stream refusal is billed for the input and output already
+generated. Anthropic documents 30-day retention, no zero data retention option
+and no Priority Tier for Fable 5.1, so operators must accept that posture
+before using the peer. The pin is priced only by a rate card stored under its
+exact id (`model_cost_rates.claude["claude-fable-5-1"]`); the previous Fable
+generation card is never borrowed by prefix.
 
 Claude Opus 5 (`claude-opus-5`) is a supported explicit operator override. It
 does not enter the canonical priority list and is never selected as an
@@ -122,18 +130,20 @@ explicitly want a minimal round-trip without tools.
 
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
-- OpenAI/Codex: `gpt-5.6-sol` through the Responses API. The API accepts
-  `reasoning.effort=max`; cross-review accepts the Codex product/CLI term
-  `ultra` only as a config compatibility alias and normalizes it to `max`
-  before the request. The shared legacy `minimal` setting is normalized to
-  GPT-5.6's lowest active API effort, `low`; it is never sent literally.
-  Explicit model overrides are also family-aware: GPT-5.5/5.4/5.2 accept
-  through `xhigh` (`minimal` → `low`, `max`/`ultra` → `xhigh`); GPT-5.1
-  accepts through `high` (`minimal` → `low`, higher shared values → `high`);
-  original GPT-5 accepts `minimal` through `high` (`none` → `minimal`, higher
-  shared values → `high`).
-- Anthropic/Claude: Fable 5 omits the explicit `thinking` object because
-  adaptive thinking is automatic. Opus 5 uses explicit adaptive thinking with
+- OpenAI/Codex: `gpt-6-astra` through the Responses API. The API accepts
+  `reasoning.effort` at `low`, `medium`, `high`, `xhigh` and `max`;
+  cross-review accepts the Codex product/CLI term `ultra` only as a config
+  compatibility alias and normalizes it to `max` before the request. GPT-6
+  Astra rejects `none`, so the shared `none` and legacy `minimal` settings are
+  both normalized to `low` (the official migration guide's starting point);
+  neither is ever sent literally. Explicit model overrides are also
+  family-aware: GPT-5.6 accepts `none` through `max` (`minimal` → `low`,
+  `ultra` → `max`); GPT-5.5/5.4/5.2 accept through `xhigh` (`minimal` →
+  `low`, `max`/`ultra` → `xhigh`); GPT-5.1 accepts through `high` (`minimal`
+  → `low`, higher shared values → `high`); original GPT-5 accepts `minimal`
+  through `high` (`none` → `minimal`, higher shared values → `high`).
+- Anthropic/Claude: Fable 5.1 omits the explicit `thinking` object because
+  adaptive thinking is always on. Opus 5 uses explicit adaptive thinking with
   display omitted. Both use `output_config.effort` for depth.
 - Google/Gemini: the configured shared effort maps to native `LOW`, `MEDIUM`,
   or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
@@ -154,19 +164,19 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
 
 The alias is accepted consistently by central `config.json`, environment
 variables and per-call overrides. It is never a provider payload value:
-OpenAI GPT-5.6, Anthropic, DeepSeek and Perplexity (Kimi K3) receive `max`;
+OpenAI GPT-6 Astra, Anthropic, DeepSeek and Perplexity (Kimi K3) receive `max`;
 Grok 4.6 receives `xhigh`; Gemini maps the configured setting to its native
 thinking enum.
 When an operator explicitly selects an older GPT-5 family, the OpenAI adapter
-uses that family's documented ceiling rather than blindly sending GPT-5.6's
-enum.
+uses that family's documented ceiling rather than blindly sending GPT-6
+Astra's enum.
 
 ## Per-peer output budgets
 
 The legacy `max_output_tokens` value remains the fallback. Use
 `max_output_tokens_by_peer` when official reasoning guidance or model ceilings
-differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
-64,000 for Claude Fable 5 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
+differ. The maintained central configuration uses 25,000 for GPT-6 Astra,
+64,000 for Claude Fable 5.1 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
 four peers. These
 values follow the official OpenAI allocation guidance and Anthropic task-budget
 minimum without assuming an undocumented Grok 4.6 ceiling. `server_info`
@@ -175,9 +185,11 @@ preflight.
 
 ## Official provider references
 
-- OpenAI: [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- OpenAI: [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
   and [latest-model guide](https://developers.openai.com/api/docs/guides/latest-model).
-- Anthropic: [Fable 5 introduction](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5),
+- Anthropic: [Fable 5.1 overview](https://platform.claude.com/docs/en/models/fable-5-1/overview),
+  [what's new in Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1),
+  [Fable 5.1 migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migration-guide),
   [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5),
   [Opus 5 migration guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide),
   [effort](https://platform.claude.com/docs/en/build-with-claude/effort),

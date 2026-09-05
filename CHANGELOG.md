@@ -5,6 +5,122 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [Unreleased]
+
+### Changed
+
+- **Canonical pins move to GPT-6 Astra and Claude Fable 5.1.** The OpenAI peer
+  pins `gpt-6-astra` (operator order of 04/09/2026; Responses API, 1,050,000
+  context, 128,000 max output, `reasoning.effort` `low`..`max`) and the Claude
+  peer pins `claude-fable-5-1` (issue #271 / CROSREV-34; released 01/09/2026,
+  1M context, 128K max output, adaptive thinking always on, cache reads at
+  0.025x input). `gpt-5.6-sol` and `claude-fable-5` are removed from the
+  defaults, the model-selection priorities, the fixtures, the docs and the tool
+  descriptions; neither is retained as a rollback override. A rollback is an
+  explicit `CROSS_REVIEW_OPENAI_MODEL` / `CROSS_REVIEW_ANTHROPIC_MODEL` override
+  plus a rate card under that exact id; because the retired ids are no longer
+  supported overrides, model selection then keeps the configured id and
+  reports `confidence: "unknown"` in `server_info.model_selection`, which is
+  informational and expected, not a downgrade.
+- **GPT-6 Astra effort mapping and wire contract.** Astra rejects
+  `reasoning.effort=none`, so the OpenAI adapter maps `none` and `minimal` to
+  `low` and `ultra` to `max` for the `gpt-6` family (older GPT-5.x families keep
+  their own ceilings). The GPT-5.6-only gates (`prompt_cache_options`
+  `implicit`/`30m`, never `prompt_cache_retention`; the single effort-reduction
+  recovery from `max_output_tokens`) now cover GPT-5.6 and later. The body never
+  sends `temperature`, `top_p` or `top_logprobs`, which the Astra migration
+  guide removes. `text.verbosity` and `store` are unchanged from the Sol body:
+  the Responses create reference fetched on 04/09/2026 documents
+  `text.verbosity` (`low`/`medium`/`high`, default `medium`) and `store` with
+  no model restriction, and the latest-model guide's Astra unsupported list is
+  exactly `temperature`, `top_p` and `top_logprobs` (plus `logprobs` on Chat
+  Completions and `message.output_text.logprobs` in `include`, neither of
+  which this adapter sends); the first paid readback round after the
+  operator's config flip remains the wire proof for those two fields.
+  Recovery events name the configured model id instead of a hard-coded
+  "GPT-5.6 Sol" / "Claude Fable 5" string.
+- **Claude Fable 5.1 contract audit.** The adapter already omits `thinking`,
+  never sends `tool_choice` (forced tool use returns 400 on Fable 5.1), `tools`,
+  assistant prefill or non-default sampling, and its calls are single-turn, so
+  the preserved-thinking / append-only history rules do not apply. The
+  regression suite now asserts that body on the captured wire payload, the
+  512-token cache minimum, the `max_tokens` recovery predicate and the
+  refusal fixtures under `claude-fable-5-1`. Priority Tier is not available for
+  Fable 5.1; the adapter never sets a service tier.
+- **Pricing hard block: exact rate card for the primary pin.** The configured
+  primary pin is priced only by a `model_cost_rates` card stored under its
+  exact id (or the flattened `CROSS_REVIEW_<PROVIDER>_*_USD_PER_MILLION`
+  variables). Longest-prefix family matching no longer applies to the primary
+  pin in `selectConfiguredModelRate` (central-config flattening) or
+  `resolveCostRate`; it is retained only for effective models that differ from
+  the pin, i.e. the explicitly configured `fallback_models` ids (every adapter
+  prices its configured model id, so no provider-reported id reaches the
+  lookup). Flipping `models.claude` to `claude-fable-5-1` with only a
+  `claude-fable-5` card now fails closed and `missingFinancialControlVars`
+  names `CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION` and
+  `CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION`; the exact card passes.
+- **Truthfulness preflight.** The retired `claude-fable-5` id is a strict
+  prefix of the new pin; a draft asserting it against `claude-fable-5-1` is
+  pinned as a contradiction, and the routed `openai/gpt-6-astra` catalog form is
+  covered for the Perplexity path. The `ask_peers` reasoning-effort description
+  is asserted from the live MCP `listTools()` schema, not from source text.
+- `docs/costs.md` refreshed against the official OpenAI and Anthropic pricing
+  pages on 04/09/2026 (GPT-6 Astra 10/50, cached 1, cache write 12.5, long
+  context above 272K input tokens at 20/75, cached 2, cache write 25, no
+  promotional pricing; Claude Fable 5.1 10/50, cache read 0.25, cache write
+  12.5 for 5m or 20 for 1h).
+
+### Migration
+
+Central `config.json` (operator-owned) must change in ONE atomic edit, then be
+validated as JSON, before the upgraded package is started. With the
+exact-card rule an upgrade that flips the models without their cards fails
+closed: `missingFinancialControlVars` names
+`CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION`,
+`CROSS_REVIEW_OPENAI_OUTPUT_USD_PER_MILLION`,
+`CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION` and
+`CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION`, and no paid round starts.
+
+Add under `model_cost_rates.codex`:
+
+```json
+"gpt-6-astra": {
+  "input_per_million": 10,
+  "output_per_million": 50,
+  "cache_read_per_million": 1,
+  "cache_write_per_million": 12.5,
+  "threshold_tokens": 272000,
+  "input_extended_per_million": 20,
+  "output_extended_per_million": 75,
+  "cache_read_extended_per_million": 2,
+  "cache_write_extended_per_million": 25
+}
+```
+
+Add under `model_cost_rates.claude` (`cache_write_per_million` is the `1h`
+tier matching `cache.ttl_anthropic = "1h"`; use `12.5` for a `5m` TTL):
+
+```json
+"claude-fable-5-1": {
+  "input_per_million": 10,
+  "output_per_million": 50,
+  "cache_read_per_million": 0.25,
+  "cache_write_per_million": 20
+}
+```
+
+Flip the two pins in the same edit:
+
+```json
+"models": {
+  "codex": "gpt-6-astra",
+  "claude": "claude-fable-5-1"
+}
+```
+
+Then read back `server_info` (models and version) and `probe_peers`
+(`available=true` for `codex` and `claude`) before the first paid round.
+
 ## [v05.00.00] — 05/09/2026
 
 ### Breaking

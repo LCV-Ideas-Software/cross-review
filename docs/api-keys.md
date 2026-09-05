@@ -46,9 +46,9 @@ Use overrides only when you intentionally want to deviate from the canonical
 no-fallback pins.
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-6-astra", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5-1", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_REASONING_EFFORT", "high", "User")
@@ -79,13 +79,14 @@ The equivalent central-config key is `max_output_tokens_by_peer`. OpenAI's
 value follows its `xhigh`/`max` task-budget minimum. `server_info` reports the
 effective value for all six peers.
 
-The canonical Claude Fable 5 rate variables are:
+The canonical Claude Fable 5.1 rate variables are (cache read is 0.025x the
+input rate; cache write is the `1h` tier, use `12.5` for a `5m` TTL):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5-1", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION", "10", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION", "50", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION", "1", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION", "0.25", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION", "20", "User")
 ```
 
@@ -103,28 +104,36 @@ together. These values use the maintained `1h` Anthropic cache TTL:
 When using central `config.json`, prefer a model-keyed entry under
 `model_cost_rates.claude` instead of changing Anthropic rate variables by hand.
 The runtime chooses the active rate card after honoring any explicit
-environment/registry model override.
+environment/registry model override, and only a card stored under the exact
+model id counts: the previous Fable generation card never prices
+`claude-fable-5-1`, so a model flip without its exact card fails closed in the
+financial preflight.
 
-Fable 5 and Opus 5 can return successful responses with
+Fable 5.1 and Opus 5 can return successful responses with
 `stop_reason="refusal"`. The runtime records those as `provider_refusal` and
 discards partial refusal output.
 Anthropic does not charge a refusal that occurs before output, even when the
 response reports input usage; a mid-stream refusal is billable for input and
 generated output, and the ledger distinguishes the two cases.
-Fable's request omits the explicit `thinking` field because adaptive thinking
-is automatic. Opus 5 sends explicit adaptive thinking with display omitted.
-Anthropic documents Fable 5 as a 30-day-retention model with no zero data
-retention option, so enable it only when that posture is acceptable.
+Fable 5.1's request omits the explicit `thinking` field because adaptive
+thinking is always on; it never sends `tool_choice` (forced tool use returns
+400 on Fable 5.1), prefill or non-default sampling, and it is single-turn.
+Opus 5 sends explicit adaptive thinking with display omitted. Anthropic
+documents Fable 5.1 as a 30-day-retention model with no zero data retention
+option and no Priority Tier, so enable it only when that posture is
+acceptable.
 
 `ultra` is a Codex product/CLI mode, not a literal OpenAI Responses API
 `reasoning.effort`. Cross-review accepts `reasoning_effort.codex="ultra"` as a
 compatibility alias so an otherwise valid central config is not rejected
 atomically, and the OpenAI adapter sends the official `max` value to
-`gpt-5.6-sol`. The other adapters likewise clamp the alias to their strongest
-documented value; no provider receives the string `ultra` on the wire.
-Explicit older OpenAI overrides are normalized by family as well: GPT-5.5,
-5.4 and 5.2 cap at `xhigh`; GPT-5.1 and original GPT-5 cap at `high`, with
-`minimal`/`none` translated where those literals are unsupported.
+`gpt-6-astra`. GPT-6 Astra rejects `reasoning.effort=none`, so `none` and
+`minimal` are both sent as `low`. The other adapters likewise clamp the alias
+to their strongest documented value; no provider receives the string `ultra`
+on the wire. Explicit older OpenAI overrides are normalized by family as
+well: GPT-5.6 keeps `none` through `max`; GPT-5.5, 5.4 and 5.2 cap at
+`xhigh`; GPT-5.1 and original GPT-5 cap at `high`, with `minimal`/`none`
+translated where those literals are unsupported.
 
 Environment variables and central `config.json` are snapshotted at MCP process
 startup. After changing either source, reload/restart the editor or MCP host and

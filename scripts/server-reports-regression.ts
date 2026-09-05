@@ -59,7 +59,7 @@ function checklistItem(
 const peerWithRequests = {
   peer: "claude",
   provider: "anthropic",
-  model: "claude-fable-5",
+  model: "claude-fable-5-1",
   status: "NOT_READY",
   structured: {
     status: "NOT_READY",
@@ -151,7 +151,7 @@ check("pending paid reservations keep accounting incomplete", () => {
           id: "format-recovery-pending",
           peer: "claude",
           provider: "anthropic",
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           label: "format-recovery",
           started_at: now,
         },
@@ -162,7 +162,7 @@ check("pending paid reservations keep accounting incomplete", () => {
         id: "judge-pending",
         peer: "codex",
         provider: "openai",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-astra",
         label: "judge-evidence-1",
         started_at: now,
         round: 1,
@@ -188,7 +188,7 @@ check("in-flight generation keeps accounting incomplete", () => {
     generation_in_flight: {
       peer: "codex",
       provider: "openai",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-astra",
       label: "lead-generation",
       round: 1,
       started_at: now,

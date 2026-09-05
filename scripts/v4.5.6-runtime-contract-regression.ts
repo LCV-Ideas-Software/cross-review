@@ -445,8 +445,11 @@ const regressions: Regression[] = [
       };
       const parsed = FileConfigSchema.safeParse(fileCandidate);
       const flattened = flattenFileConfigToEnvMap(fileCandidate as never);
-      const familyFlattened = flattenFileConfigToEnvMap({
-        models: { claude: "claude-fable-5-preview" },
+      // v4.7.0 pricing hard block: the configured pin is priced only by a card
+      // under its exact id. A family card (even the longest prefix) must not
+      // be flattened for a pin that has no exact card.
+      const familyOnlyFlattened = flattenFileConfigToEnvMap({
+        models: { claude: "claude-fable-5-1" },
         model_cost_rates: {
           claude: {
             "claude-fable": { input_per_million: 1, output_per_million: 2 },
@@ -455,9 +458,23 @@ const regressions: Regression[] = [
         },
       } as never);
       assert.equal(
-        familyFlattened.CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION,
+        familyOnlyFlattened.CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION,
+        undefined,
+        "central-config flattening must not price claude-fable-5-1 with a claude-fable-5 family card",
+      );
+      const exactFlattened = flattenFileConfigToEnvMap({
+        models: { claude: "claude-fable-5-1" },
+        model_cost_rates: {
+          claude: {
+            "claude-fable-5": { input_per_million: 1, output_per_million: 2 },
+            "claude-fable-5-1": { input_per_million: 10, output_per_million: 50 },
+          },
+        },
+      } as never);
+      assert.equal(
+        exactFlattened.CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION,
         "10",
-        "central-config flattening must choose the longest matching model family",
+        "central-config flattening must choose the exact-id model card",
       );
 
       const budgetEnvNames = [
@@ -691,6 +708,9 @@ const regressions: Regression[] = [
       });
       const config: AppConfig = {
         ...base,
+        // v4.7.0: pin the canonical GPT-6 Astra id explicitly so the family
+        // gate under test does not depend on the operator's central config.
+        models: { ...base.models, codex: "gpt-6-astra" },
         streaming: { ...base.streaming, include_text: true },
         cost_rates: {
           ...base.cost_rates,
@@ -749,6 +769,11 @@ const regressions: Regression[] = [
         else process.env.CROSS_REVIEW_TOKEN_DELTA_VERBOSE = previousVerbose;
       }
       const recovery = emitted.find((event) => event.type === "peer.output_limit_recovery.started");
+      assert.equal(
+        (recovery as unknown as { message?: string } | undefined)?.message,
+        "gpt-6-astra hit max_output_tokens; retrying once at medium effort with prior billing retained.",
+        "the recovery event must name the configured GPT-6 Astra pin, not a hard-coded older model",
+      );
       const staleDelta = emitted.find(
         (event) => event.type === "peer.token.delta" && event.data?.delta === "partial",
       );
@@ -1151,7 +1176,7 @@ const regressions: Regression[] = [
                 context: callContext,
                 peer: "codex",
                 provider: "openai",
-                model: "gpt-5.6-sol",
+                model: "gpt-6-astra",
                 phase: "review",
               },
             ),

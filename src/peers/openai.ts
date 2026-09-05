@@ -163,7 +163,8 @@ function usageFromOpenAI(usage: OpenAIUsage | null | undefined): TokenUsage | un
     usage.input_tokens_details?.cache_write_tokens ??
     0;
   const providerInput = usage.input_tokens ?? 0;
-  // Provider input totals include cached reads and GPT-5.6 cache writes.
+  // Provider input totals include cached reads and, on GPT-5.6 and later
+  // (GPT-6 Astra included), the separately reported cache writes.
   // The canonical TokenUsage contract stores mutually exclusive buckets so
   // cost.ts can price each token exactly once.
   const freshInput = Math.max(0, providerInput - cached - cacheWrite);
@@ -206,9 +207,21 @@ function isGpt56Family(model: string): boolean {
   return /^gpt-5\.6(?:-|$)/i.test(model);
 }
 
+// v4.7.0: GPT-6 Astra (`gpt-6-astra`) is the canonical pin.
+function isGpt6Family(model: string): boolean {
+  return /^gpt-6(?:-|$)/i.test(model);
+}
+
+// GPT-5.6 and later share the request-wide `prompt_cache_options` contract
+// and the documented single effort-reduction recovery from max_output_tokens.
+function isGpt56OrLater(model: string): boolean {
+  return isGpt56Family(model) || isGpt6Family(model);
+}
+
 function openAIReasoningFamily(
   model: string,
-): "gpt-5.6" | "gpt-5.5-5.2" | "gpt-5.1" | "gpt-5" | "other" {
+): "gpt-6" | "gpt-5.6" | "gpt-5.5-5.2" | "gpt-5.1" | "gpt-5" | "other" {
+  if (isGpt6Family(model)) return "gpt-6";
   if (isGpt56Family(model)) return "gpt-5.6";
   if (/^gpt-5\.(?:5|4|2)(?:-|$)/i.test(model)) return "gpt-5.5-5.2";
   if (/^gpt-5\.1(?:-|$)/i.test(model)) return "gpt-5.1";
@@ -222,6 +235,12 @@ function openAIEffort(
 ): OpenAIReasoningEffort {
   const effort = value ?? "xhigh";
   switch (openAIReasoningFamily(model)) {
+    case "gpt-6":
+      // GPT-6 Astra: low|medium|high|xhigh|max. Astra rejects `none`; the
+      // official migration guide says to start at `low` for `none`/`minimal`.
+      if (effort === "none" || effort === "minimal") return "low";
+      if (effort === "ultra") return "max";
+      return effort;
     case "gpt-5.6":
       // GPT-5.6: none|low|medium|high|xhigh|max.
       if (effort === "minimal") return "low";
@@ -252,7 +271,7 @@ function openAIEffort(
 
 function promptCacheFields(config: AppConfig, model: string, cacheKey: string) {
   if (!config.cache.enabled) return {};
-  if (isGpt56Family(model)) {
+  if (isGpt56OrLater(model)) {
     return {
       prompt_cache_key: cacheKey,
       prompt_cache_options: {
@@ -343,7 +362,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
     if (currentUsage) accumulatedUsage.push(currentUsage);
     if (currentCost) accumulatedCosts.push(currentCost);
     const canReduceEffort =
-      isGpt56Family(this.model) &&
+      isGpt56OrLater(this.model) &&
       (requestedEffort === "high" || requestedEffort === "xhigh" || requestedEffort === "max");
     const retryable =
       !recoveryAlreadyTriggered && canReduceEffort && attempt < this.config.retry.max_attempts;
@@ -357,7 +376,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
       round: context.round,
       peer: this.id,
       message: retryable
-        ? "GPT-5.6 Sol hit max_output_tokens; retrying once at medium effort with prior billing retained."
+        ? `${this.model} hit max_output_tokens; retrying once at medium effort with prior billing retained.`
         : "OpenAI output remained truncated or had no safe controlled recovery path.",
       data: {
         provider: this.provider,
@@ -521,8 +540,10 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
           // OpenAI Responses API uses max_output_tokens, not Chat Completions max_tokens.
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          // GPT-5.6 replaced prompt_cache_retention with request-wide
-          // prompt_cache_options; older families keep the legacy policy.
+          // GPT-5.6 and later (GPT-6 Astra) replaced prompt_cache_retention
+          // with request-wide prompt_cache_options; older families keep the
+          // legacy policy. The Astra migration guide removes temperature,
+          // top_p and top_logprobs; this body has never sent them.
           ...promptCacheFields(this.config, this.model, cacheKey),
         };
         if (this.shouldStreamTokens(context)) {

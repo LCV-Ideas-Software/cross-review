@@ -813,7 +813,7 @@ for (const task of [
 const readyPeer: PeerResult = {
   peer: "claude",
   provider: "anthropic",
-  model: "claude-fable-5",
+  model: "claude-fable-5-1",
   status: "READY",
   structured: {
     status: "READY",

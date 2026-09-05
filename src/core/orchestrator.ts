@@ -3124,7 +3124,7 @@ export function truthfulnessPreflight(params: {
       // the clause, then nearest alias before it anywhere on the line.
       // Alias detection runs on a masked copy of the line: URLs, quoted
       // strings, path-like segments and the model occurrences themselves
-      // are blanked so an alias embedded in a token ("claude-fable-5"), a
+      // are blanked so an alias embedded in a token ("claude-fable-5-1"), a
       // path ("src/gemini/...") or a quoted log line never steals a clause.
       // Tokens and pins are canonicalized (underscores to hyphens, embedded
       // version "v" dropped) so cosmetic variants of the pinned id do not

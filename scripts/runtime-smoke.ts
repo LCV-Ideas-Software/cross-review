@@ -314,6 +314,34 @@ try {
         `${starterName}.evidence must advertise automatic durable transport without operator intervention`,
       );
     }
+    // v4.7.0: the reasoning_effort_overrides description is asserted from the
+    // live MCP schema (not a source regex, per the T2#10 source-contract lock)
+    // and must describe the GPT-6 Astra mapping: `ultra` -> max and
+    // `none`/`minimal` -> low, with no stale GPT-5.6 reference.
+    {
+      type ToolSchemaWithProperties = {
+        properties?: Record<string, { description?: string }>;
+      };
+      const askPeers = listedTools.tools.find((tool) => tool.name === "ask_peers");
+      const askPeersSchema = askPeers?.inputSchema as ToolSchemaWithProperties | undefined;
+      const overridesDescription =
+        askPeersSchema?.properties?.reasoning_effort_overrides?.description ?? "";
+      assert.match(
+        overridesDescription,
+        /`ultra` becomes max on GPT-6 Astra/,
+        "ask_peers.reasoning_effort_overrides must document ultra -> max on GPT-6 Astra",
+      );
+      assert.match(
+        overridesDescription,
+        /`none` and `minimal` become low on GPT-6 Astra/,
+        "ask_peers.reasoning_effort_overrides must document none/minimal -> low on GPT-6 Astra",
+      );
+      assert.doesNotMatch(
+        overridesDescription,
+        /GPT-5\.6/,
+        "ask_peers.reasoning_effort_overrides must not name the retired GPT-5.6 pin",
+      );
+    }
     const peerSession = (await callToolWithClient(codexClient, "session_init", {
       task: "Runtime peer preflight: completed implementation with 74 passed.",
       caller: "codex",

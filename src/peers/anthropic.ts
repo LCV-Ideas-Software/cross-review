@@ -10,11 +10,12 @@
 //   3. TTL chosen via config.cache.ttl.anthropic (5m or 1h).
 //   4. Parse cache_creation_input_tokens / cache_read_input_tokens
 //      from response.usage and surface via TokenUsage.cache_*.
-//   5. Empirical guidance: Anthropic Opus 4.7 needs the cached block
-//      to be at least 4 KiTokens; smaller prefixes will still emit
-//      cache_control headers but Anthropic may not actually create a
-//      cache entry. We emit an info-level warning when the system
-//      prompt is suspiciously short, but do NOT block the call.
+//   5. Documented minima are model-aware (anthropicCacheMinTokens): 512
+//      tokens for the Claude Fable 5.x and Opus 5 families, 1,024 for Opus 4.8,
+//      4,096 for older models. Smaller prefixes still emit cache_control
+//      headers but Anthropic may not actually create a cache entry. We
+//      emit an info-level warning when the system prompt is suspiciously
+//      short, but do NOT block the call.
 // v2.27.1 (cold-start hardening): SDK ctor lazy-loaded via dynamic
 // import inside `client()` so the @anthropic-ai/sdk module tree is not
 // pulled at server boot. Type-only import preserves all annotations.
@@ -229,9 +230,11 @@ function anthropicThinking(): { type: "adaptive"; display: "omitted" } {
 function anthropicThinkingFields(
   model: string,
 ): Record<string, never> | { thinking: ReturnType<typeof anthropicThinking> } {
-  // Fable 5 runs adaptive thinking whenever the field is unset. Anthropic's
-  // official Opus 4.8 -> Fable 5 migration removes the thinking field and
-  // uses output_config.effort as the depth control.
+  // Claude Fable 5.x (the canonical claude-fable-5-1 pin included) runs
+  // adaptive thinking whenever the field is unset; `thinking: enabled` with
+  // budget_tokens and `thinking: disabled` both return 400. Anthropic's
+  // official migration removes the thinking field and uses
+  // output_config.effort as the depth control.
   if (/^claude-fable-5(?:-|$)/i.test(model)) return {};
   return { thinking: anthropicThinking() };
 }
@@ -261,8 +264,8 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
     if (message.stop_reason !== "refusal") return;
     const usage = usageFromAnthropic(message.usage);
     const estimatedCost = usage ? estimateCost(this.config, this.id, usage, this.model) : undefined;
-    // Anthropic documents the same two refusal billing paths for Fable 5 and
-    // Opus 5. A refusal before any output is not charged even though usage can
+    // Anthropic documents the same two refusal billing paths for Fable 5.1
+    // and Opus 5. A refusal before any output is not charged even though usage can
     // report input tokens; a mid-stream refusal is charged for input and
     // generated output. Treat provider-reported output tokens as the
     // observable discriminator.
@@ -337,13 +340,13 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
       !recoveryAlreadyTriggered &&
       attempt < this.config.retry.max_attempts;
     const terminalMessage = retryable
-      ? "Claude Fable 5 hit max_tokens; retrying once at medium effort with prior usage retained."
+      ? `${this.model} hit max_tokens; retrying once at medium effort with prior usage retained.`
       : recoveryAlreadyTriggered
         ? "Anthropic output remained truncated after the controlled max_tokens recovery."
         : !fableRecoveryEligible
           ? "Anthropic output hit max_tokens; no model-specific effort recovery is documented for this model."
           : !effortReductionAvailable
-            ? `Claude Fable 5 hit max_tokens at ${requestedEffort} effort; retry suppressed because medium would not reduce effort.`
+            ? `${this.model} hit max_tokens at ${requestedEffort} effort; retry suppressed because medium would not reduce effort.`
             : "Anthropic output hit max_tokens after the configured retry budget was exhausted.";
     const cost = accumulatedCosts.length > 0 ? mergeCost(accumulatedCosts) : undefined;
     context.emit({

@@ -266,7 +266,7 @@ import type { PeerResult } from "../src/core/types.js";
       status: "READY",
       summary: "No blocking objections remain.",
       confidence: "verified",
-      evidence_sources: ['server_info: {"version":"4.5.0","models":{"claude":"claude-fable-5"}}'],
+      evidence_sources: ['server_info: {"version":"4.5.0","models":{"claude":"claude-fable-5-1"}}'],
       caller_requests: [],
       follow_ups: [],
     }),
@@ -308,8 +308,8 @@ import type { PeerResult } from "../src/core/types.js";
   const readyPeer = (source: string): PeerResult => ({
     peer: "claude",
     provider: "anthropic",
-    model: "claude-fable-5",
-    model_reported: "claude-fable-5",
+    model: "claude-fable-5-1",
+    model_reported: "claude-fable-5-1",
     model_match: true,
     status: "READY",
     structured: {
@@ -378,7 +378,7 @@ import type { PeerResult } from "../src/core/types.js";
   const warnedReady: PeerResult = {
     peer: "claude",
     provider: "anthropic",
-    model: "claude-fable-5",
+    model: "claude-fable-5-1",
     status: "READY",
     structured: {
       status: "READY",
@@ -402,8 +402,8 @@ import type { PeerResult } from "../src/core/types.js";
   );
 
   const modelPins = {
-    codex: "gpt-5.6-sol",
-    claude: "claude-fable-5",
+    codex: "gpt-6-astra",
+    claude: "claude-fable-5-1",
     gemini: "gemini-3.1-pro",
     deepseek: "deepseek-v4-pro",
     grok: "grok-4.6",
@@ -439,6 +439,67 @@ import type { PeerResult } from "../src/core/types.js";
     });
     assert.equal(matching.pass, true, `matching ${peer} model pin must pass`);
   }
+
+  // v4.7.0 / issue #271: the retired Claude pin is a strict PREFIX of the new
+  // one. A draft asserting `claude-fable-5` against the `claude-fable-5-1` pin
+  // is a contradiction, never a prefix hit, and the pin token is captured
+  // whole (never split into `claude-fable-5` plus a fragment).
+  const stalePrefixLie = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime claude model.",
+    initialDraft: "The currently loaded cross-review runtime claude model is claude-fable-5.",
+    runtimeFacts: { model_pins: modelPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    stalePrefixLie.pass,
+    false,
+    "v4.7.0 / truthfulness: the retired claude-fable-5 pin must contradict the claude-fable-5-1 pin (stale prefix, not a family hit)",
+  );
+  assert.ok(stalePrefixLie.issue_classes.includes("runtime_contradiction"));
+  const wholePinTruth = truthfulnessPreflight({
+    task: "Check the currently loaded cross-review runtime claude model.",
+    initialDraft: "The currently loaded cross-review runtime claude model is claude-fable-5-1.",
+    runtimeFacts: { model_pins: modelPins },
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    wholePinTruth.pass,
+    true,
+    "v4.7.0 / truthfulness: the whole claude-fable-5-1 token must match the pin",
+  );
+  // Routed catalog form of the new OpenAI pin on the Perplexity Agent API.
+  const astraRoutedPins = { ...modelPins, perplexity: "openai/gpt-6-astra" } as const;
+  assert.equal(
+    truthfulnessPreflight({
+      task: "Check the currently loaded cross-review runtime perplexity model.",
+      initialDraft:
+        "The currently loaded cross-review runtime perplexity model is openai/gpt-6-astra.",
+      runtimeFacts: { model_pins: astraRoutedPins },
+      attachmentsPresent: false,
+    }).pass,
+    true,
+    "v4.7.0 / truthfulness: a truthful routed openai/gpt-6-astra Perplexity pin must pass",
+  );
+  assert.equal(
+    truthfulnessPreflight({
+      task: "Check the currently loaded cross-review runtime perplexity model.",
+      initialDraft: "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5.",
+      runtimeFacts: { model_pins: astraRoutedPins },
+      attachmentsPresent: false,
+    }).pass,
+    false,
+    "v4.7.0 / truthfulness: a wrong routed model must still contradict the openai/gpt-6-astra pin",
+  );
+  assert.equal(
+    truthfulnessPreflight({
+      task: "Check the currently loaded cross-review runtime codex model.",
+      initialDraft: "The currently loaded cross-review runtime codex model is gpt-6-astra.",
+      runtimeFacts: { model_pins: astraRoutedPins },
+      attachmentsPresent: false,
+    }).pass,
+    true,
+    "v4.7.0 / truthfulness: the native codex claim keeps matching its own gpt-6-astra pin next to the routed Perplexity pin",
+  );
 
   // Codex review of PR #234 (head b0b681d): a Perplexity pin routed to another
   // family through the Agent API is attributed to the Perplexity claim, never to
@@ -532,7 +593,7 @@ import type { PeerResult } from "../src/core/types.js";
   const identicalRouteTwoClaimsTruth = truthfulnessPreflight({
     task: "Check the currently loaded cross-review runtime models.",
     initialDraft:
-      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5 and the currently loaded codex model is gpt-5.6-sol.",
+      "The currently loaded cross-review runtime perplexity model is openai/gpt-5.5 and the currently loaded codex model is gpt-6-astra.",
     runtimeFacts: { model_pins: routedPins },
     attachmentsPresent: false,
   });
@@ -613,7 +674,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The currently loaded cross-review runtime confirms the codex peer is not currently gpt-5.5 and pins it to gpt-5.6-sol.",
+      "The currently loaded cross-review runtime confirms the codex peer is not currently gpt-5.5 and pins it to gpt-6-astra.",
       plainPins,
     ),
     true,
@@ -645,7 +706,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The currently loaded cross-review runtime pins claude-fable-5 and serves gpt-5.6-sol to the Codex peer.",
+      "The currently loaded cross-review runtime pins claude-fable-5-1 and serves gpt-6-astra to the Codex peer.",
       plainPins,
     ),
     true,
@@ -653,7 +714,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "Per the notes in src/gemini/routing.md, the currently loaded cross-review runtime serves gpt-5.6-sol to the Codex peer.",
+      "Per the notes in src/gemini/routing.md, the currently loaded cross-review runtime serves gpt-6-astra to the Codex peer.",
       plainPins,
     ),
     true,
@@ -666,7 +727,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "In the currently loaded cross-review runtime, openai/gpt-5.6-sol serves the Codex peer, and the Perplexity peer is pinned to zeta/llama-4.1.",
+      "In the currently loaded cross-review runtime, openai/gpt-6-astra serves the Codex peer, and the Perplexity peer is pinned to zeta/llama-4.1.",
       genericPins,
     ),
     true,
@@ -682,7 +743,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The Codex peer in the currently loaded cross-review runtime is running gpt_5.6_sol.",
+      "The Codex peer in the currently loaded cross-review runtime is running gpt_6_astra.",
       plainPins,
     ),
     true,
@@ -792,7 +853,7 @@ import type { PeerResult } from "../src/core/types.js";
   // `not` must not misclassify the first value as a denial.
   assert.equal(
     rt(
-      "The current cross-review runtime Claude model is not only claude-mythos-5 but also claude-fable-5.",
+      "The current cross-review runtime Claude model is not only claude-mythos-5 but also claude-fable-5-1.",
       plainPins,
     ),
     false,
@@ -800,7 +861,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The current cross-review runtime Claude model não é só claude-mythos-5, mas também claude-fable-5.",
+      "The current cross-review runtime Claude model não é só claude-mythos-5, mas também claude-fable-5-1.",
       plainPins,
     ),
     false,
@@ -808,7 +869,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The current cross-review runtime Claude model is not only claude-fable-5 but also claude-mythos-5.",
+      "The current cross-review runtime Claude model is not only claude-fable-5-1 but also claude-mythos-5.",
       plainPins,
     ),
     false,
@@ -816,31 +877,31 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The current cross-review runtime Claude model is not only claude-fable-5 but also claude-fable-5.",
+      "The current cross-review runtime Claude model is not only claude-fable-5-1 but also claude-fable-5-1.",
       plainPins,
     ),
     true,
     "an additive construction containing only the configured model must not fabricate a contradiction",
   );
   for (const additiveLie of [
-    "The current cross-review runtime Claude model is not just claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not merely claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not exclusively claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not simply claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not limited to claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not limited to claude-mythos-5 in config.ts but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not limited to claude-mythos-5 as of v1.2 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not restricted to claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not confined to claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not purely claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not limited to claude-mythos-5 in this one specific runtime but also claude-fable-5.",
-    "The current cross-review runtime Claude model is not claude-mythos-5 alone but also claude-fable-5.",
-    "The current cross-review runtime Claude model não é apenas claude-mythos-5, mas também claude-fable-5.",
-    "The current cross-review runtime Claude model não é somente claude-mythos-5, mas também claude-fable-5.",
-    "The current cross-review runtime Claude model não é exclusivamente claude-mythos-5, mas também claude-fable-5.",
-    "The current cross-review runtime Claude model não é unicamente claude-mythos-5, mas também claude-fable-5.",
-    "The current cross-review runtime Claude model não está restrito a claude-mythos-5, mas também claude-fable-5.",
-    "The current cross-review runtime Claude model não está limitado a claude-mythos-5 neste runtime específico e documentado, mas também claude-fable-5.",
+    "The current cross-review runtime Claude model is not just claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not merely claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not exclusively claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not simply claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 in config.ts but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 as of v1.2 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not restricted to claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not confined to claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not purely claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not limited to claude-mythos-5 in this one specific runtime but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not claude-mythos-5 alone but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model não é apenas claude-mythos-5, mas também claude-fable-5-1.",
+    "The current cross-review runtime Claude model não é somente claude-mythos-5, mas também claude-fable-5-1.",
+    "The current cross-review runtime Claude model não é exclusivamente claude-mythos-5, mas também claude-fable-5-1.",
+    "The current cross-review runtime Claude model não é unicamente claude-mythos-5, mas também claude-fable-5-1.",
+    "The current cross-review runtime Claude model não está restrito a claude-mythos-5, mas também claude-fable-5-1.",
+    "The current cross-review runtime Claude model não está limitado a claude-mythos-5 neste runtime específico e documentado, mas também claude-fable-5-1.",
   ]) {
     assert.equal(
       rt(additiveLie, plainPins),
@@ -850,7 +911,7 @@ import type { PeerResult } from "../src/core/types.js";
   }
   assert.equal(
     rt(
-      "The current cross-review runtime Claude model does not run claude-mythos-5 but is not only claude-fable-5 but also documented.",
+      "The current cross-review runtime Claude model does not run claude-mythos-5 but is not only claude-fable-5-1 but also documented.",
       plainPins,
     ),
     true,
@@ -858,16 +919,16 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The current cross-review runtime Claude model does not run claude-mythos-5 but also does not run claude-mythos-6; it runs claude-fable-5.",
+      "The current cross-review runtime Claude model does not run claude-mythos-5 but also does not run claude-mythos-6; it runs claude-fable-5-1.",
       plainPins,
     ),
     true,
     "explicit negation on both sides of a contrast must not fabricate an affirmative model claim",
   );
   for (const genuineNegation of [
-    "The current cross-review runtime Claude model is not claude-mythos-5 and also is claude-fable-5.",
-    "The current cross-review runtime Claude model is not only not claude-mythos-5 but also claude-fable-5.",
-    "The current cross-review runtime Claude model não é claude-mythos-5 e também é claude-fable-5.",
+    "The current cross-review runtime Claude model is not claude-mythos-5 and also is claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not only not claude-mythos-5 but also claude-fable-5-1.",
+    "The current cross-review runtime Claude model não é claude-mythos-5 e também é claude-fable-5-1.",
   ]) {
     assert.equal(
       rt(genuineNegation, plainPins),
@@ -876,8 +937,8 @@ import type { PeerResult } from "../src/core/types.js";
     );
   }
   for (const unrelatedAdditiveClause of [
-    "The current cross-review runtime Claude model is not claude-mythos-5, and the documentation not only describes the override but also mentions claude-fable-5.",
-    "The current cross-review runtime Claude model is not claude-mythos-5, because the docs are stale but also mention claude-fable-5.",
+    "The current cross-review runtime Claude model is not claude-mythos-5, and the documentation not only describes the override but also mentions claude-fable-5-1.",
+    "The current cross-review runtime Claude model is not claude-mythos-5, because the docs are stale but also mention claude-fable-5-1.",
   ]) {
     assert.equal(
       rt(unrelatedAdditiveClause, plainPins),
@@ -904,7 +965,7 @@ import type { PeerResult } from "../src/core/types.js";
     "The cross-review runtime plans to adopt the new Claude model claude-mythos-5, which will be enabled next quarter.",
     "The cross-review runtime plans to adopt claude-mythos-5 after the current Claude model is retired.",
     "The cross-review runtime will migrate Claude to claude-mythos-5 when the current model is deprecated.",
-    "The cross-review runtime plans to adopt claude-mythos-5 while the current Claude model remains claude-fable-5.",
+    "The cross-review runtime plans to adopt claude-mythos-5 while the current Claude model remains claude-fable-5-1.",
     "The cross-review runtime plans to adopt claude-mythos-5 while the current runtime remains stable.",
     "The cross-review runtime plans to adopt claude-mythos-5 after the current peer review is complete.",
     "The cross-review runtime plans to adopt claude-mythos-5; the current model-selection documentation is complete.",
@@ -932,7 +993,7 @@ import type { PeerResult } from "../src/core/types.js";
   }
   assert.equal(
     rt(
-      "The cross-review runtime will switch Claude from claude-fable-5 to claude-mythos-5.",
+      "The cross-review runtime will switch Claude from claude-fable-5-1 to claude-mythos-5.",
       plainPins,
     ),
     true,
@@ -940,7 +1001,7 @@ import type { PeerResult } from "../src/core/types.js";
   );
   assert.equal(
     rt(
-      "The cross-review runtime will switch Claude from claude-mythos-5 to claude-fable-5.",
+      "The cross-review runtime will switch Claude from claude-mythos-5 to claude-fable-5-1.",
       plainPins,
     ),
     false,
@@ -1164,8 +1225,8 @@ import type { PeerResult } from "../src/core/types.js";
   const lazyRuntimeMetadataReady = (source: string): PeerResult => ({
     peer: "claude",
     provider: "anthropic",
-    model: "claude-fable-5",
-    model_reported: "claude-fable-5",
+    model: "claude-fable-5-1",
+    model_reported: "claude-fable-5-1",
     model_match: true,
     status: "READY",
     structured: {
@@ -1183,14 +1244,14 @@ import type { PeerResult } from "../src/core/types.js";
     parser_warnings: [],
     decision_quality: "clean",
   });
-  for (const source of ['{"model":"claude-fable-5"}', '{"version":"4.5.0"}']) {
+  for (const source of ['{"model":"claude-fable-5-1"}', '{"version":"4.5.0"}']) {
     const grounded = groundReadyPeerEvidence(lazyRuntimeMetadataReady(source), {
       artifactText: "Arbitrary artifact text with a severe authorization defect.",
       attachedEvidenceText: "",
       attachmentRefs: [],
       runtimeFacts: {
         runtime_version: "4.5.0",
-        model_pins: { claude: "claude-fable-5" },
+        model_pins: { claude: "claude-fable-5-1" },
       },
     });
     assert.equal(

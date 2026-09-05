@@ -557,7 +557,7 @@ const regressions: Regression[] = [
       await orchestrator.store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         label: "lead-generation",
         round: 1,
         started_at: new Date().toISOString(),

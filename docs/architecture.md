@@ -181,7 +181,7 @@ sanitized review prompt. This retry does not bypass provider policy: if the
 compact context is insufficient, the peer must return `NEEDS_EVIDENCE` or the
 session remains blocked for operator action.
 
-Claude Fable 5 and Opus 5 refusals are different from transport errors:
+Claude Fable 5.1 and Opus 5 refusals are different from transport errors:
 Anthropic returns HTTP 200 with `stop_reason="refusal"` and optional
 `stop_details`. The Anthropic adapter treats this as a non-skippable
 `provider_refusal`, emits a
@@ -309,18 +309,24 @@ operating-system account's trust boundary.
 
 The peer adapters use the strongest official reasoning controls available for each provider because cross-review is correctness-oriented:
 
-- OpenAI runs `gpt-5.6-sol` through the Responses API. Its strongest official
+- OpenAI runs `gpt-6-astra` through the Responses API. Its strongest official
   API value is `reasoning.effort=max`. The shared config also accepts `ultra`
   as an operator-facing compatibility alias and normalizes it to `max`; the
-  alias is never transmitted to OpenAI. Explicit GPT-5.5/5.4/5.2 overrides
+  alias is never transmitted to OpenAI. GPT-6 Astra rejects `none`, so `none`
+  and `minimal` are sent as `low`. The request never carries `temperature`,
+  `top_p` or `top_logprobs` and uses `prompt_cache_options` (`implicit`,
+  `30m`). Explicit GPT-5.6 overrides keep `none` through `max`, GPT-5.5/5.4/5.2
   cap at `xhigh`, GPT-5.1 and original GPT-5 cap at `high`, and unsupported
   lower literals are translated to the nearest available family value.
-- Anthropic runs canonical `claude-fable-5`. The request omits the explicit
-  `thinking` field because adaptive thinking is automatic and controls depth
-  with `output_config.effort`. The supported explicit `claude-opus-5` override
-  sends adaptive thinking with display omitted and the same effort control;
-  it is never selected as a fallback. Fable has 30-day/no-ZDR retention
-  semantics.
+- Anthropic runs canonical `claude-fable-5-1`. The request omits the explicit
+  `thinking` field because adaptive thinking is always on and controls depth
+  with `output_config.effort`. It never sends `tool_choice` (Fable 5.1 rejects
+  forced tool use), `tools`, assistant prefill or non-default sampling, and it
+  is single-turn, so the preserved-thinking history binding is inapplicable.
+  The supported explicit `claude-opus-5` override sends adaptive thinking with
+  display omitted and the same effort control; it is never selected as a
+  fallback. Fable 5.1 has 30-day/no-ZDR retention semantics and no Priority
+  Tier.
 - Gemini maps the shared configured effort to the pinned Gemini 3.x model's
   native `LOW`, `MEDIUM`, or `HIGH` thinking level.
 - DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows
@@ -335,10 +341,10 @@ The peer adapters use the strongest official reasoning controls available for ea
 
 The internal `ReasoningEffort` scale therefore includes the compatibility
 alias `ultra`, but adapters own the provider-specific normalization boundary:
-OpenAI GPT-5.6, Anthropic, DeepSeek and Perplexity use `max`; Grok 4.6 uses
-`xhigh`; Gemini maps the shared setting to its native `ThinkingLevel` enum and
-receives no shared effort string. Older explicit OpenAI model overrides use their own
-family-specific effort enum instead of the GPT-5.6 enum.
+OpenAI GPT-6 Astra, Anthropic, DeepSeek and Perplexity use `max`; Grok 4.6
+uses `xhigh`; Gemini maps the shared setting to its native `ThinkingLevel` enum
+and receives no shared effort string. Older explicit OpenAI model overrides use
+their own family-specific effort enum instead of the GPT-6 Astra enum.
 
 ## Provider Structured-Output Boundaries
 
@@ -370,7 +376,7 @@ contract.
 Terminal output remains fail-closed. The runtime performs exactly one
 controlled same-model recovery for OpenAI `response.incomplete` with
 `incomplete_details.reason=max_output_tokens` and Gemini `MAX_TOKENS` when the
-original effort can be reduced. Claude Fable 5 `max_tokens` receives the same
+original effort can be reduced. Claude Fable 5.1 `max_tokens` receives the same
 single recovery only from `high`/`xhigh`/`max`; `low` and `medium` do not retry,
 because medium would increase or repeat effort. The second request keeps the
 same prompt and output ceiling, records discarded partial streaming output,

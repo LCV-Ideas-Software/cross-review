@@ -88,7 +88,7 @@ function seedPersistedGenerationDispatch(
     generation_in_flight: {
       peer: "claude",
       provider: "anthropic",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
       label: "initial/background generation",
       round: 0,
       started_at: started,
@@ -366,7 +366,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         await store.markBackgroundGenerationInFlight(session.session_id, {
           peer: "claude",
           provider: "anthropic",
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           label: "initial/background generation",
           round: 0,
           started_at: new Date().toISOString(),
@@ -782,7 +782,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         await store.reservePendingProviderCall(session.session_id, {
           peer: "claude",
           provider: "anthropic",
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           label: "evidence_judge/single",
           round: 1,
           call_kind: "evidence_judge",
@@ -867,7 +867,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         await store.reserveInFlightProviderCall(session.session_id, 1, {
           peer: "claude",
           provider: "anthropic",
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           label: "format-recovery",
         });
         const beforeSweep = store.read(session.session_id);
@@ -928,7 +928,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           generation_in_flight: {
             peer: "claude",
             provider: "anthropic",
-            model: "claude-fable-5",
+            model: "claude-fable-5-1",
             label: "initial-draft-failure",
             round: 0,
             started_at: startedAt,
@@ -945,7 +945,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           generation_in_flight: {
             peer: "claude",
             provider: "anthropic",
-            model: "claude-fable-5",
+            model: "claude-fable-5-1",
             label: "initial-draft-failure",
             round: 0,
             started_at: startedAt,

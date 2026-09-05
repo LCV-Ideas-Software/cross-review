@@ -56,6 +56,17 @@ function completeRate(card: ModelCostRateConfig | undefined): CostRateConfig | u
  * A different model (for example an explicit fallback adapter) must have its
  * own retained central-config card; borrowing the primary model's rates would
  * make a budget preflight look authoritative while pricing the wrong product.
+ *
+ * v4.7.0 pricing hard block: the configured primary pin (`effective ===
+ * configured`) is priced ONLY by the flattened env card or by a
+ * `model_cost_rates` card stored under its exact id. Longest-prefix family
+ * matching is retained solely for effective models that differ from the
+ * primary pin, i.e. the explicitly configured `fallback_models[peer]` ids
+ * (every adapter prices its configured model id, so no provider-reported id
+ * reaches this lookup). It never lets a new primary pin borrow an older
+ * family card, so flipping `models.claude` to a new Fable generation with
+ * only the previous generation's card returns undefined and the financial
+ * preflight fails closed naming the missing input/output keys.
  */
 export function resolveCostRate(
   config: AppConfig,
@@ -67,7 +78,8 @@ export function resolveCostRate(
   if (!effectiveModel && !configuredModel) return primaryRate;
   const effective = normalizeModelId(effectiveModel ?? configuredModel ?? "");
   const configured = normalizeModelId(configuredModel ?? "");
-  if (effective === configured && primaryRate) return primaryRate;
+  const isPrimaryPin = effective === configured;
+  if (isPrimaryPin && primaryRate) return primaryRate;
 
   const cards = config.model_cost_rates?.[peer];
   if (cards) {
@@ -78,9 +90,11 @@ export function resolveCostRate(
     if (exactRate) return exactRate;
     if (exact) return undefined;
 
-    // Perplexity's documented Sonar ids are distinct billable products:
-    // `sonar` is never a family card for `sonar-*`.
-    if (peer !== "perplexity") {
+    // Family matching applies only to non-primary effective models (the
+    // explicitly configured fallback ids). Perplexity's documented
+    // Sonar ids are distinct billable products: `sonar` is never a family
+    // card for `sonar-*`.
+    if (!isPrimaryPin && peer !== "perplexity") {
       const familyMatches = Object.entries(cards)
         .filter(([family]) => effective.startsWith(`${normalizeModelId(family)}-`))
         .sort(([left], [right]) => normalizeModelId(right).length - normalizeModelId(left).length);
@@ -88,14 +102,8 @@ export function resolveCostRate(
     }
   }
 
-  // No explicit override: a constructed config that only retained a model
-  // card may still price its primary pin. Effective overrides fail closed.
-  if (effective === configured) {
-    const primaryCard = cards
-      ? Object.entries(cards).find(([model]) => normalizeModelId(model) === configured)?.[1]
-      : undefined;
-    return completeRate(primaryCard);
-  }
+  // The primary pin without a flattened env card and without an exact model
+  // card has no price: fail closed. Effective overrides fail closed too.
   return undefined;
 }
 

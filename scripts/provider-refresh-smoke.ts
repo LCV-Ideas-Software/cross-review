@@ -25,8 +25,23 @@ process.env.GEMINI_API_KEY = "test-gemini-key";
 process.env.CROSS_REVIEW_DATA_DIR = fs.mkdtempSync(
   path.join(os.tmpdir(), "cross-review-provider-refresh-"),
 );
+// v4.7.0: this suite reads the hard-coded defaults, not the operator's
+// central config (the temp data dir above has no config.json). Drop any
+// process-level model override so the default-pin assertion is hermetic.
+delete process.env.CROSS_REVIEW_OPENAI_MODEL;
+delete process.env.CROSS_REVIEW_ANTHROPIC_MODEL;
 
 const config = loadConfig();
+assert.equal(
+  config.models.codex,
+  "gpt-6-astra",
+  "v4.7.0: the default OpenAI pin must be gpt-6-astra when no central config or env override is present",
+);
+assert.equal(
+  config.models.claude,
+  "claude-fable-5-1",
+  "v4.7.0: the default Anthropic pin must be claude-fable-5-1 when no central config or env override is present",
+);
 
 const OPENAI_READY = JSON.stringify({
   status: "READY",
@@ -140,7 +155,23 @@ async function captureGrokReasoningEffort(
     expected: Record<ReasoningEffort, string>;
   }> = [
     {
-      models: ["gpt-5.6-sol"],
+      // v4.7.0 canonical pin: GPT-6 Astra rejects `none`; the official
+      // migration guide starts `none`/`minimal` at `low`.
+      models: ["gpt-6-astra"],
+      expected: {
+        none: "low",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+        ultra: "max",
+      },
+    },
+    {
+      // Retained GPT-5.6 family mapping for explicit operator overrides.
+      models: ["gpt-5.6"],
       expected: {
         none: "none",
         minimal: "low",
@@ -239,15 +270,33 @@ async function captureGrokReasoningEffort(
 }
 
 {
-  const sol = selectFromCandidates("codex", [{ id: "gpt-5.6-sol", source: "api" }], "gpt-5.6-sol");
-  assert.equal(sol.selected, "gpt-5.6-sol");
-  assert.equal(sol.confidence, "verified");
+  // v4.7.0: the canonical OpenAI pin is GPT-6 Astra. The selector keeps the
+  // configured pin visible (confidence "unknown", never a downgrade) when the
+  // Models API does not list it.
+  const astra = selectFromCandidates(
+    "codex",
+    [{ id: "gpt-6-astra", source: "api" }],
+    "gpt-6-astra",
+  );
+  assert.equal(astra.selected, "gpt-6-astra");
+  assert.equal(astra.confidence, "verified");
+  const astraUnavailable = selectFromCandidates(
+    "codex",
+    [{ id: "gpt-5.5", source: "api" }],
+    "gpt-6-astra",
+  );
+  assert.equal(astraUnavailable.selected, "gpt-6-astra");
+  assert.equal(
+    astraUnavailable.confidence,
+    "unknown",
+    "A missing canonical GPT-6 Astra pin must fail visibly instead of silently downgrading.",
+  );
 }
 
 {
   const adapter = new OpenAIAdapter({
     ...config,
-    models: { ...config.models, codex: "gpt-5.6-sol" },
+    models: { ...config.models, codex: "gpt-6-astra" },
     reasoning_effort: { ...config.reasoning_effort, codex: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -267,7 +316,7 @@ async function captureGrokReasoningEffort(
         return {
           status: "completed",
           output_text: "revised fixture",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-astra",
           usage: {
             input_tokens: 100,
             output_tokens: 20,
@@ -284,10 +333,11 @@ async function captureGrokReasoningEffort(
     task: "provider refresh smoke",
     emit: () => undefined,
   });
+  assert.equal(capturedPayload?.model, "gpt-6-astra");
   assert.equal(
     generated.usage?.cache_write_tokens,
     60,
-    "GPT-5.6 usage must preserve cache_write_tokens for accurate 1.25x cache-write billing.",
+    "GPT-6 Astra usage must preserve cache_write_tokens for accurate 1.25x cache-write billing.",
   );
   assert.equal(
     generated.usage?.input_tokens,
@@ -297,31 +347,45 @@ async function captureGrokReasoningEffort(
   assert.deepEqual(
     capturedPayload?.reasoning,
     { effort: "max" },
-    "GPT-5.6 Sol must normalize ultra to the official Responses API reasoning.effort=max value.",
+    "GPT-6 Astra must normalize ultra to the official Responses API reasoning.effort=max value.",
   );
   assert.deepEqual(
     capturedPayload?.prompt_cache_options,
     { mode: "implicit", ttl: "30m" },
-    "GPT-5.6 Sol must use the current prompt_cache_options contract.",
+    "GPT-6 Astra must use the current prompt_cache_options contract.",
   );
   assert.equal(
     Object.hasOwn(capturedPayload ?? {}, "prompt_cache_retention"),
     false,
-    "GPT-5.6 Sol must not send the retired prompt_cache_retention field.",
+    "GPT-6 Astra must not send the retired prompt_cache_retention field.",
   );
+  assert.equal(
+    capturedPayload?.service_tier,
+    "default",
+    "GPT-6 Astra requests must pin the standard service tier the rate card is priced on.",
+  );
+  for (const removedSamplingField of ["temperature", "top_p", "top_logprobs"]) {
+    assert.equal(
+      Object.hasOwn(capturedPayload ?? {}, removedSamplingField),
+      false,
+      `GPT-6 Astra migration removes ${removedSamplingField}; the request must not send it.`,
+    );
+  }
 
-  await adapter.generate("Revise this fixture with minimal internal effort.", {
-    session_id: "550e8400-e29b-41d4-a716-446655440001",
-    round: 1,
-    task: "provider refresh smoke",
-    reasoning_effort_override: "minimal",
-    emit: () => undefined,
-  });
-  assert.deepEqual(
-    capturedPayload?.reasoning,
-    { effort: "low" },
-    "GPT-5.6 Sol must normalize the shared minimal setting to its lowest active API effort, low.",
-  );
+  for (const lowestEffort of ["none", "minimal"] as const) {
+    await adapter.generate("Revise this fixture with minimal internal effort.", {
+      session_id: "550e8400-e29b-41d4-a716-446655440001",
+      round: 1,
+      task: "provider refresh smoke",
+      reasoning_effort_override: lowestEffort,
+      emit: () => undefined,
+    });
+    assert.deepEqual(
+      capturedPayload?.reasoning,
+      { effort: "low" },
+      `GPT-6 Astra rejects reasoning.effort=none; the shared ${lowestEffort} setting must normalize to low.`,
+    );
+  }
 }
 
 {
@@ -655,10 +719,10 @@ function capturePerplexityProbe(
 {
   const claude = selectFromCandidates(
     "claude",
-    [{ id: "claude-fable-5", source: "api" }],
-    "claude-fable-5",
+    [{ id: "claude-fable-5-1", source: "api" }],
+    "claude-fable-5-1",
   );
-  assert.equal(claude.selected, "claude-fable-5");
+  assert.equal(claude.selected, "claude-fable-5-1");
   assert.equal(claude.confidence, "verified");
 }
 
@@ -666,7 +730,7 @@ function capturePerplexityProbe(
   const opus5 = selectFromCandidates(
     "claude",
     [
-      { id: "claude-fable-5", source: "api" },
+      { id: "claude-fable-5-1", source: "api" },
       { id: "claude-opus-5", source: "api" },
     ],
     "claude-opus-5",
@@ -684,22 +748,26 @@ function capturePerplexityProbe(
     "claude",
     [
       { id: "claude-opus-4-8", source: "api" },
-      { id: "claude-fable-5", source: "api" },
+      { id: "claude-fable-5-1", source: "api" },
     ],
-    "claude-fable-5",
+    "claude-fable-5-1",
   );
-  assert.equal(fable.selected, "claude-fable-5");
+  assert.equal(fable.selected, "claude-fable-5-1");
   assert.equal(
     fable.confidence,
     "verified",
-    "Claude Fable 5 must remain selected when the operator pinned it and the provider API lists both Fable and the canonical Opus pin.",
+    "Claude Fable 5.1 must remain selected when the operator pinned it and the provider API lists both Fable and the supported Opus override.",
   );
 }
 
 {
+  // v4.7.0 / issue #271: the full Claude Fable 5.1 incompatibility audit on
+  // the captured wire body. Fable 5.1 returns 400 for `thinking` enabled or
+  // disabled, forced tool use (`tool_choice` any/tool), assistant prefill
+  // and non-default sampling; the single-turn body never sends any of them.
   const adapter = new AnthropicAdapter({
     ...config,
-    models: { ...config.models, claude: "claude-fable-5" },
+    models: { ...config.models, claude: "claude-fable-5-1" },
     reasoning_effort: { ...config.reasoning_effort, claude: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -717,29 +785,64 @@ function capturePerplexityProbe(
       create: async (payload) => {
         capturedPayload = payload;
         return {
-          content: [{ type: "text", text: "revised fixture" }],
-          model: "claude-fable-5",
+          content: [{ type: "text", text: OPENAI_READY }],
+          model: "claude-fable-5-1",
           stop_reason: "end_turn",
           usage: { input_tokens: 100, output_tokens: 20 },
         };
       },
     },
   });
+  const auditFable51Body = (phase: "call" | "generate"): void => {
+    assert.equal(capturedPayload?.model, "claude-fable-5-1", `${phase}: model pin`);
+    for (const rejectedField of [
+      "thinking",
+      "tool_choice",
+      "tools",
+      "temperature",
+      "top_p",
+      "top_k",
+    ]) {
+      assert.equal(
+        Object.hasOwn(capturedPayload ?? {}, rejectedField),
+        false,
+        `${phase}: Claude Fable 5.1 request must not send ${rejectedField}.`,
+      );
+    }
+    const messages = capturedPayload?.messages as Array<{ role?: unknown }> | undefined;
+    assert.equal(messages?.length, 1, `${phase}: the body is single-turn`);
+    assert.equal(
+      messages?.[0]?.role,
+      "user",
+      `${phase}: no assistant prefill and no replayed history (Fable 5.1 rejects prefill and binds thinking blocks to an append-only history)`,
+    );
+  };
   await adapter.generate("Revise this fixture.", {
     session_id: "550e8400-e29b-41d4-a716-446655440004",
     round: 1,
     task: "provider refresh smoke",
     emit: () => undefined,
   });
-  assert.equal(
-    Object.hasOwn(capturedPayload ?? {}, "thinking"),
-    false,
-    "Claude Fable 5 adaptive thinking is always on; the migration contract omits thinking.",
-  );
+  auditFable51Body("generate");
   assert.deepEqual(
     capturedPayload?.output_config,
     { effort: "max" },
     "Claude must normalize the ultra alias to its strongest official output_config.effort value.",
+  );
+  await adapter.call("Review this fixture.", {
+    session_id: "550e8400-e29b-41d4-a716-446655440004",
+    round: 1,
+    task: "provider refresh smoke",
+    emit: () => undefined,
+  });
+  auditFable51Body("call");
+  type AnthropicOutputConfigLike = { effort?: unknown; format?: { type?: unknown } };
+  const callOutputConfig = capturedPayload?.output_config as AnthropicOutputConfigLike | undefined;
+  assert.equal(callOutputConfig?.effort, "max");
+  assert.equal(
+    callOutputConfig?.format?.type,
+    "json_schema",
+    "the review call keeps structured outputs (never forced tool use) for the status schema",
   );
 }
 
@@ -792,7 +895,7 @@ function capturePerplexityProbe(
   }
 }
 
-assert.equal(anthropicCacheMinTokens("claude-fable-5"), 512);
+assert.equal(anthropicCacheMinTokens("claude-fable-5-1"), 512);
 assert.equal(anthropicCacheMinTokens("claude-opus-5"), 512);
 assert.equal(anthropicCacheMinTokens("claude-opus-4-8"), 1_024);
 assert.equal(anthropicCacheMinTokens("claude-unknown"), 4_096);
@@ -807,9 +910,9 @@ assert.equal(
   const unavailableFable = selectFromCandidates(
     "claude",
     [{ id: "claude-opus-4-8", source: "api" }],
-    "claude-fable-5",
+    "claude-fable-5-1",
   );
-  assert.equal(unavailableFable.selected, "claude-fable-5");
+  assert.equal(unavailableFable.selected, "claude-fable-5-1");
   assert.equal(
     unavailableFable.confidence,
     "unknown",
@@ -818,7 +921,7 @@ assert.equal(
 }
 
 {
-  const refusal = Object.assign(new Error("Claude Fable 5 refused the request."), {
+  const refusal = Object.assign(new Error("Claude Fable 5.1 refused the request."), {
     code: "anthropic_refusal",
     stop_reason: "refusal",
     stop_details: { type: "refusal", category: "cyber", explanation: "fixture" },
@@ -827,7 +930,7 @@ assert.equal(
   const failure = classifyProviderError(
     "claude",
     "anthropic",
-    "claude-fable-5",
+    "claude-fable-5-1",
     refusal,
     1,
     Date.now(),
@@ -841,7 +944,7 @@ assert.equal(
   const attachedFailure: PeerFailure = {
     peer: "claude",
     provider: "anthropic",
-    model: "claude-fable-5",
+    model: "claude-fable-5-1",
     failure_class: "timeout",
     message: "Preserved retry metadata from the retry layer.",
     retryable: true,
@@ -857,7 +960,7 @@ assert.equal(
   const failure = classifyProviderError(
     "claude",
     "anthropic",
-    "claude-fable-5",
+    "claude-fable-5-1",
     error,
     1,
     Date.now(),
@@ -945,7 +1048,7 @@ assert.equal(
 {
   const adapter = new AnthropicAdapter({
     ...config,
-    models: { ...config.models, claude: "claude-fable-5" },
+    models: { ...config.models, claude: "claude-fable-5-1" },
     cost_rates: {
       ...config.cost_rates,
       claude: { input_per_million: 10, output_per_million: 50 },
@@ -969,7 +1072,7 @@ assert.equal(
     messages: {
       create: async () => ({
         content: [{ type: "text", text: "partial refusal output" }],
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         stop_reason: "refusal",
         stop_details: { type: "refusal", category: "cyber" },
         usage: { input_tokens: 412, output_tokens: 5 },
@@ -1072,9 +1175,9 @@ assert.equal(
 {
   const configSource = fs.readFileSync("src/core/config.ts", "utf8");
   const modelSelectionSource = fs.readFileSync("src/peers/model-selection.ts", "utf8");
-  assert.ok(configSource.includes('codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.6-sol"'));
+  assert.ok(configSource.includes('codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-6-astra"'));
   assert.ok(
-    configSource.includes('claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5"'),
+    configSource.includes('claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5-1"'),
   );
   assert.ok(
     configSource.includes(
@@ -1103,8 +1206,8 @@ assert.equal(
       'perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max")',
     ),
   );
-  assert.ok(modelSelectionSource.includes('codex: ["gpt-5.6-sol"]'));
-  assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5"]'));
+  assert.ok(modelSelectionSource.includes('codex: ["gpt-6-astra"]'));
+  assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5-1"]'));
   assert.ok(modelSelectionSource.includes('gemini: ["gemini-3.1-pro-preview"]'));
   assert.ok(modelSelectionSource.includes('grok: ["grok-4.6"]'));
   assert.ok(modelSelectionSource.includes('perplexity: ["perplexity/kimi-k3"]'));

@@ -397,8 +397,11 @@ export function loadConfig(): AppConfig {
       include_text: boolEnv("CROSS_REVIEW_STREAM_TEXT", false),
     },
     models: {
-      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.6-sol",
-      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5",
+      // v4.7.0: GPT-6 Astra (operator order 04/09/2026) and Claude Fable 5.1
+      // (issue #271) are the canonical pins. The runtime prices each pin only
+      // through a rate card under its exact id (see resolveCostRate).
+      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-6-astra",
+      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5-1",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
       // v4.6.0 (provider-doc refresh 2026-08-23): Grok 4.6 is xAI's
@@ -424,7 +427,8 @@ export function loadConfig(): AppConfig {
       perplexity: listEnv("CROSS_REVIEW_PERPLEXITY_FALLBACK_MODELS"),
     },
     reasoning_effort: {
-      // Sol and Fable both document `max` on their API surfaces. Central
+      // Astra and Fable 5.1 both document `max` on their API surfaces. Astra
+      // rejects `none`, which the OpenAI adapter maps to `low`. Central
       // config and env inputs also accept `ultra` as an operator-facing
       // compatibility alias; each adapter normalizes it before transmission.
       codex: reasoningEffort("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max"),

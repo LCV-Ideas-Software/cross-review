@@ -443,7 +443,7 @@ const regressions: Regression[] = [
         {
           peer: "claude",
           provider: "anthropic",
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           available: true,
           auth_present: true,
           latency_ms: 7,

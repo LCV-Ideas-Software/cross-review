@@ -34,9 +34,14 @@ const DOCS = {
 // explicit per-host env override (CROSS_REVIEW_<PROVIDER>_MODEL).
 // Pre-v3.7.2 codex/claude/grok kept multi-entry same-provider chains and
 // gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
+// v4.7.0 (operator order 04/09/2026 + issue #271): gpt-6-astra and
+// claude-fable-5-1 replace the previous OpenAI and Anthropic pins outright.
+// The previous pins are not retained as overrides; a rollback is an explicit
+// operator env override plus its own exact rate card, and selection then
+// keeps that configured id with confidence "unknown" (informational).
 const PRIORITY: Record<PeerId, string[]> = {
-  codex: ["gpt-5.6-sol"],
-  claude: ["claude-fable-5"],
+  codex: ["gpt-6-astra"],
+  claude: ["claude-fable-5-1"],
   gemini: ["gemini-3.1-pro-preview"],
   deepseek: ["deepseek-v4-pro"],
   // grok-4.6 (xAI, August 2026): the recommended frontier reasoning model
@@ -52,7 +57,7 @@ const PRIORITY: Record<PeerId, string[]> = {
 
 const SUPPORTED_MODEL_OVERRIDES: Partial<Record<PeerId, string[]>> = {
   // Preserve Opus as an explicit compatibility option for operators whose
-  // Anthropic organization cannot accept Fable 5's 30-day retention. Opus 5
+  // Anthropic organization cannot accept Fable 5.1's 30-day retention. Opus 5
   // is a fixed, dateless model id rather than an evergreen alias.
   claude: ["claude-opus-5", "claude-opus-4-8"],
 };

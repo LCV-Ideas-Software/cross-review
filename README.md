@@ -256,9 +256,9 @@ Model selection and runtime behaviour can be controlled with environment
 variables. Example overrides (PowerShell):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-6-astra", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5-1", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
@@ -271,25 +271,34 @@ variables. Example overrides (PowerShell):
 `ultra` is a Codex product/CLI execution mode, not a literal OpenAI Responses
 API `reasoning.effort`. Cross-review nevertheless accepts it in central config,
 environment variables and per-call overrides as a compatibility alias, then
-normalizes it inside each provider adapter. For `gpt-5.6-sol`, the wire value is
+normalizes it inside each provider adapter. For `gpt-6-astra`, the wire value is
 the official `max`; `ultra` is never sent to the Responses API. Using `max`
-directly remains equivalent and makes the API value explicit. The shared
-legacy value `minimal` is likewise translated to GPT-5.6's lowest active API
-effort, `low`. Explicit older-model overrides use a family-aware compatibility
-matrix: GPT-5.5/5.4/5.2 map `minimal` to `low` and `max`/`ultra` to `xhigh`;
-GPT-5.1 maps `minimal` to `low` and `xhigh`/`max`/`ultra` to `high`; original
-GPT-5 maps `none` to `minimal` and `xhigh`/`max`/`ultra` to `high`. Supported
-native values pass through unchanged.
+directly remains equivalent and makes the API value explicit. GPT-6 Astra
+rejects `reasoning.effort=none`, so the shared `none` and legacy `minimal`
+values are both normalized to Astra's lowest documented effort, `low`, per the
+official migration guide. The request never carries `temperature`, `top_p` or
+`top_logprobs` (removed for Astra) and uses `prompt_cache_options`
+(`implicit`, `30m`). Explicit older-model overrides use a family-aware
+compatibility matrix: GPT-5.6 keeps `none` and maps `minimal` to `low` and
+`ultra` to `max`; GPT-5.5/5.4/5.2 map `minimal` to `low` and `max`/`ultra` to
+`xhigh`; GPT-5.1 maps `minimal` to `low` and `xhigh`/`max`/`ultra` to `high`;
+original GPT-5 maps `none` to `minimal` and `xhigh`/`max`/`ultra` to `high`.
+Supported native values pass through unchanged.
 
-Claude Fable 5 is the canonical Anthropic pin. Its request deliberately omits
-the explicit `thinking` field: Fable applies adaptive thinking automatically,
-while `output_config.effort` controls depth. Anthropic documents a 30-day data
-retention posture and no zero-data-retention option for this model. A response
-with `stop_reason="refusal"` is recorded as `provider_refusal`, and partial
-refusal output is not accepted as a review.
+Claude Fable 5.1 (`claude-fable-5-1`) is the canonical Anthropic pin. Its
+request deliberately omits the explicit `thinking` field: adaptive thinking is
+always on (`thinking` enabled or disabled returns 400), while
+`output_config.effort` controls depth. The request never sends `tool_choice`
+(Fable 5.1 rejects forced tool use), `tools`, assistant prefill or non-default
+`temperature`/`top_p`/`top_k`, and it is single-turn, so the preserved-thinking
+append-only history rules do not apply. Anthropic documents a 30-day data
+retention posture, no zero-data-retention option and no Priority Tier for this
+model; cache reads cost 0.025x the input rate (USD 0.25 per million). A
+response with `stop_reason="refusal"` is recorded as `provider_refusal`, and
+partial refusal output is not accepted as a review.
 
 Claude Opus 5 (`claude-opus-5`) is a first-class explicit override, not a
-fallback and not an automatic replacement for Fable 5. The adapter sends
+fallback and not an automatic replacement for Fable 5.1. The adapter sends
 adaptive thinking with omitted thinking text and supports
 `low`/`medium`/`high`/`xhigh`/`max` effort. The maintained 64,000-token Claude
 output budget is Anthropic's recommended starting point for `xhigh` or `max`;

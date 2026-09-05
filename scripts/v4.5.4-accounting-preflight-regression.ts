@@ -229,7 +229,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         {
           peer: "claude",
           provider: "anthropic",
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           available: true,
           auth_present: true,
           latency_ms: 1,
@@ -242,7 +242,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       await store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         label: "initial/background generation",
         round: 0,
         started_at: new Date().toISOString(),
@@ -303,7 +303,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       await mark.call(store, session.session_id, {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         label: "initial-draft-failure",
         round: 0,
         started_at: new Date().toISOString(),
@@ -326,7 +326,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         generation_in_flight: {
           peer: "claude",
           provider: "anthropic",
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           label: "initial-draft-failure",
           round: 0,
           started_at: new Date().toISOString(),
@@ -354,7 +354,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       await store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         label: "initial-draft-failure",
         round: 0,
         started_at: new Date().toISOString(),
@@ -363,7 +363,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const generation: GenerationResult = {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         text: "settled generation",
         raw: {},
         latency_ms: 1,
@@ -386,7 +386,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       await store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         label: "initial-draft-failure",
         round: 0,
         started_at: new Date().toISOString(),
@@ -395,7 +395,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const failure: PeerFailure = {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         failure_class: "provider_error",
         message: "provider returned an accounted failure",
         retryable: false,
@@ -430,7 +430,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       await store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         label: "initial-draft-failure",
         round: 0,
         started_at: new Date().toISOString(),
@@ -450,7 +450,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
             {
               peer: "claude",
               provider: "anthropic",
-              model: "claude-fable-5",
+              model: "claude-fable-5-1",
               text: "provider returned after cancellation settled",
               raw: {},
               latency_ms: 1,
@@ -478,7 +478,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       await store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         label: "initial-draft-failure",
         round: 0,
         started_at: new Date().toISOString(),
@@ -498,7 +498,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
             {
               peer: "claude",
               provider: "anthropic",
-              model: "claude-fable-5",
+              model: "claude-fable-5-1",
               failure_class: "provider_error",
               message: "provider failed after cancellation settled",
               retryable: false,
@@ -527,7 +527,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           store.markBackgroundGenerationInFlight(session.session_id, {
             peer: "claude",
             provider: "anthropic",
-            model: "claude-fable-5",
+            model: "claude-fable-5-1",
             label: "initial-draft-failure",
             round: 0,
             started_at: new Date().toISOString(),

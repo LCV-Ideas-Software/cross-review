@@ -118,7 +118,7 @@ const ReasoningEffortOverridesSchema = z
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-5.6, Kimi K3 via Perplexity and DeepSeek, and xhigh on Grok 4.6; older GPT-5 families use their own ceilings).",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-6 Astra, Claude Fable 5.1, Kimi K3 via Perplexity and DeepSeek, and xhigh on Grok 4.6; `none` and `minimal` become low on GPT-6 Astra, which rejects `none`; older GPT-5 families use their own ceilings).",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the

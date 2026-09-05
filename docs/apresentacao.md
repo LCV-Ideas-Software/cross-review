@@ -318,25 +318,28 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 
 | Par          | Modelo canônico          |
 | ------------ | ------------------------ |
-| OpenAI/Codex | `gpt-5.6-sol`            |
-| Anthropic    | `claude-fable-5`         |
+| OpenAI/Codex | `gpt-6-astra`            |
+| Anthropic    | `claude-fable-5-1`       |
 | Google       | `gemini-3.1-pro-preview` |
 | DeepSeek     | `deepseek-v4-pro`        |
 | xAI/Grok     | `grok-4.6`               |
 | Perplexity   | `perplexity/kimi-k3`     |
 
-No Fable 5, o adaptador omite o campo explícito `thinking`, pois o raciocínio
-adaptativo é automático, e usa `output_config.effort` para a profundidade. A
-retenção documentada é de 30 dias, sem opção ZDR. No GPT-5.6 Sol, `ultra` é um
+No Fable 5.1, o adaptador omite o campo explícito `thinking`, pois o raciocínio
+adaptativo é sempre ativo, e usa `output_config.effort` para a profundidade;
+nunca envia `tool_choice`, prefill ou sampling não padrão. A retenção
+documentada é de 30 dias, sem opção ZDR. No GPT-6 Astra, `ultra` é um
 modo do produto Codex, não um `reasoning.effort` literal da Responses API; o
-cross-review aceita esse alias na configuração e envia `max` à API. O Grok 4.6
+cross-review aceita esse alias na configuração e envia `max` à API, e traduz
+`none`/`minimal` para `low`, pois o Astra rejeita `none`. O Grok 4.6
 aceita `low`/`medium`/`high`/`xhigh` e recebe `xhigh` quando o alias é usado; o
 Perplexity (`perplexity/kimi-k3`) recebe `max`.
 Overrides explícitos para famílias OpenAI anteriores são normalizados ao enum
-da família: teto `xhigh` em GPT-5.5/5.4/5.2 e `high` em GPT-5.1/GPT-5.
+da família: `none` a `max` em GPT-5.6, teto `xhigh` em GPT-5.5/5.4/5.2 e
+`high` em GPT-5.1/GPT-5.
 
 O `claude-opus-5` também é suportado como override explícito, sem substituir o
-Fable 5 canônico e sem criar fallback automático. Seu request usa pensamento
+Fable 5.1 canônico e sem criar fallback automático. Seu request usa pensamento
 adaptativo com exibição omitida, `output_config.effort` e o rate card próprio
 de US$ 5/MTok de entrada e US$ 25/MTok de saída.
 
@@ -382,7 +385,7 @@ Perplexity, cuja Agent API reporta `cache_read_input_tokens`), `explicit`
 o cliente consegue influenciar. Ele não pode obrigar Gemini ou DeepSeek a
 desativar o cache implícito/automático administrado pelo serviço.
 
-GPT-5.6 Sol usa `prompt_cache_options` em modo implícito com TTL de 30 minutos
+GPT-6 Astra usa `prompt_cache_options` em modo implícito com TTL de 30 minutos
 e contabiliza leitura e escrita de cache separadamente. Grok 4.6 usa
 `prompt_cache_key`, com retenção administrada pela xAI e sem inferir tokens de
 escrita.
@@ -569,7 +572,7 @@ Use as variáveis de substituição apenas quando quiser fixar um modelo
 diferente do canônico:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-6-astra", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
 ```
 

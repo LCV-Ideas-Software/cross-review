@@ -18,14 +18,14 @@ This document describes:
 
 ## Per-provider behavior matrix
 
-| Peer (Provider)           | Cache mode | Default participation | Threshold       | TTL surface                                     | Telemetry source                                                      |
-| ------------------------- | ---------- | --------------------- | --------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
-| `codex` (OpenAI)          | `auto`     | on                    | ~1k tokens      | Sol: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
-| `claude` (Anthropic)      | `explicit` | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)               | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
-| `gemini` (Google)         | `implicit` | on                    | service-managed | n/a                                             | `usageMetadata.cachedContentTokenCount`                               |
-| `deepseek` (DeepSeek)     | `auto`     | on                    | service-managed | n/a                                             | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
-| `grok` (xAI)              | `auto`     | on                    | service-managed | `prompt_cache_key`; no client TTL               | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
-| `perplexity` (Perplexity) | `auto`     | on                    | service-managed | n/a                                             | Agent API `usage.input_tokens_details.cache_read_input_tokens`        |
+| Peer (Provider)           | Cache mode | Default participation | Threshold       | TTL surface                                       | Telemetry source                                                      |
+| ------------------------- | ---------- | --------------------- | --------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
+| `codex` (OpenAI)          | `auto`     | on                    | ~1k tokens      | Astra: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
+| `claude` (Anthropic)      | `explicit` | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)                 | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
+| `gemini` (Google)         | `implicit` | on                    | service-managed | n/a                                               | `usageMetadata.cachedContentTokenCount`                               |
+| `deepseek` (DeepSeek)     | `auto`     | on                    | service-managed | n/a                                               | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
+| `grok` (xAI)              | `auto`     | on                    | service-managed | `prompt_cache_key`; no client TTL                 | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
+| `perplexity` (Perplexity) | `auto`     | on                    | service-managed | n/a                                               | Agent API `usage.input_tokens_details.cache_read_input_tokens`        |
 
 `mode` values follow the canonical `TokenUsage.cache_provider_mode` enum:
 
@@ -76,7 +76,7 @@ Rate cards live in `config.cost_rates`, loaded from environment variables or the
 
 Adapters surface provider-reported cache counts via
 `TokenUsage.cache_read_tokens` and, only when the provider exposes a
-creation/miss counter, `TokenUsage.cache_write_tokens`. GPT-5.6 Sol exposes a
+creation/miss counter, `TokenUsage.cache_write_tokens`. GPT-6 Astra exposes a
 cache-write field and cross-review prices it separately; Grok exposes cached
 reads but no write counter, so the runtime never infers writes from
 `input_tokens - cached_tokens`. The orchestrator emits
@@ -129,7 +129,7 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
 ```
 
 - **Anthropic** accepts `5m` and `1h` per the SDK. Values other than `5m`/`1h` are ignored with a stderr notice and the default is used.
-- **OpenAI GPT-5.6 Sol** uses the current request-wide
+- **OpenAI GPT-6 Astra** uses the current request-wide
   `prompt_cache_options={mode:"implicit", ttl:"30m"}` surface. The legacy
   `CROSS_REVIEW_CACHE_TTL_OPENAI` mapping applies only to older explicitly
   overridden model families that still use `prompt_cache_retention`.
@@ -154,15 +154,15 @@ Anthropic supports up to 4 breakpoints per request; we reserve 3 for future addi
 
 ## Empirical guidance
 
-| Provider/model     | Practical minimum cached prefix | Notes                                                                                    |
-| ------------------ | ------------------------------- | ---------------------------------------------------------------------------------------- |
-| OpenAI             | ≥ 1024 tokens                   | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers. |
-| Anthropic Fable 5  | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
-| Anthropic Opus 5   | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
-| Anthropic Opus 4.8 | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                       |
-| Gemini             | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                     |
-| DeepSeek           | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                      |
-| Grok               | service-managed                 | Grok 4.6 uses `prompt_cache_key`; xAI manages retention.                                 |
+| Provider/model      | Practical minimum cached prefix | Notes                                                                                    |
+| ------------------- | ------------------------------- | ---------------------------------------------------------------------------------------- |
+| OpenAI              | ≥ 1024 tokens                   | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers. |
+| Anthropic Fable 5.1 | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice; cache reads are 0.025x input.      |
+| Anthropic Opus 5    | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
+| Anthropic Opus 4.8  | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                       |
+| Gemini              | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                     |
+| DeepSeek            | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                      |
+| Grok                | service-managed                 | Grok 4.6 uses `prompt_cache_key`; xAI manages retention.                                 |
 
 ## Reference URLs
 

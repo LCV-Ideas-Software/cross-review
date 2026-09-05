@@ -21,8 +21,8 @@ function fixtureConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ...base,
     stub: false,
     models: {
-      codex: "gpt-5.6-sol",
-      claude: "claude-fable-5",
+      codex: "gpt-6-astra",
+      claude: "claude-fable-5-1",
       gemini: "gemini-3.1-pro-preview",
       deepseek: "deepseek-v4-pro",
       grok: "grok-4.6",
@@ -105,7 +105,7 @@ const regressions: Regression[] = [
         judgeContext("codex"),
       );
 
-      assert.equal(payload?.model, "gpt-5.6-sol");
+      assert.equal(payload?.model, "gpt-6-astra");
       assert.equal(payload?.max_output_tokens, 2_048);
       assert.equal(
         payload?.service_tier,
@@ -141,13 +141,13 @@ const regressions: Regression[] = [
         judgeContext("claude"),
       );
 
-      assert.equal(payload?.model, "claude-fable-5");
+      assert.equal(payload?.model, "claude-fable-5-1");
       assert.equal(payload?.max_tokens, 2_048);
       assert.deepEqual(payload?.output_config, { effort: "medium" });
       assert.equal(
         Object.hasOwn(payload ?? {}, "thinking"),
         false,
-        "Fable 5 uses adaptive thinking by default; the official migration omits thinking",
+        "Fable 5.1 uses adaptive thinking by default; the official migration omits thinking",
       );
       assert.equal(Object.hasOwn(payload ?? {}, "max_output_tokens"), false);
     },

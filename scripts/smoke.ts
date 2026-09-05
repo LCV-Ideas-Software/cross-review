@@ -391,8 +391,8 @@ for (const deprecatedOrWeakModel of [
 // every peer is pinned to a SINGLE canonical model in PRIORITY. The
 // "must remain" list is therefore exactly the 6 lone canonical pins.
 for (const canonicalPin of [
-  "gpt-5.6-sol",
-  "claude-fable-5",
+  "gpt-6-astra",
+  "claude-fable-5-1",
   "gemini-3.1-pro-preview",
   "deepseek-v4-pro",
   "grok-4.6",
@@ -800,7 +800,7 @@ const fencedReady = parsePeerStatus(
       status: "READY",
       summary: "No blocking objections remain.",
       confidence: "verified",
-      evidence_sources: ['server_info: {"version":"4.5.0","models":{"claude":"claude-fable-5"}}'],
+      evidence_sources: ['server_info: {"version":"4.5.0","models":{"claude":"claude-fable-5-1"}}'],
       caller_requests: [],
       follow_ups: [],
     }),
@@ -5985,6 +5985,67 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     [],
     `missingFinancialControlVars must be empty for full peer set (got ${JSON.stringify(missingForGrok)}; cost_rates=${JSON.stringify(cfgWithDir.cost_rates)})`,
   );
+  // v4.7.0 pricing hard block (operator decision 04/09/2026): the primary
+  // pin needs a rate card under its EXACT id. Flipping models.claude to
+  // claude-fable-5-1 with only a claude-fable-5 card must fail closed and name
+  // the missing keys; the exact card makes the same preflight pass.
+  {
+    const staleFamilyCard = {
+      input_per_million: 10,
+      output_per_million: 50,
+      cache_read_per_million: 1,
+      cache_write_per_million: 20,
+    };
+    const fable51Flip = {
+      ...cfgWithDir,
+      models: { ...cfgWithDir.models, claude: "claude-fable-5-1" },
+      cost_rates: { ...cfgWithDir.cost_rates, claude: undefined },
+      model_cost_rates: {
+        ...cfgWithDir.model_cost_rates,
+        claude: { "claude-fable-5": staleFamilyCard },
+      },
+    };
+    const missingForStaleCard = missingFinancialControlVars(fable51Flip, ["claude"]);
+    assert.deepStrictEqual(
+      missingForStaleCard,
+      [
+        "CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION",
+        "CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION",
+      ],
+      `v4.7.0 / pricing hard block: models.claude=claude-fable-5-1 with only a claude-fable-5 card must fail closed naming the exact keys (got ${JSON.stringify(missingForStaleCard)})`,
+    );
+    const fable51Exact = {
+      ...fable51Flip,
+      model_cost_rates: {
+        ...fable51Flip.model_cost_rates,
+        claude: {
+          "claude-fable-5": staleFamilyCard,
+          "claude-fable-5-1": { ...staleFamilyCard, cache_read_per_million: 0.25 },
+        },
+      },
+    };
+    const missingForExactCard = missingFinancialControlVars(fable51Exact, ["claude"]);
+    assert.deepStrictEqual(
+      missingForExactCard,
+      [],
+      `v4.7.0 / pricing hard block: the exact claude-fable-5-1 card must satisfy the preflight (got ${JSON.stringify(missingForExactCard)})`,
+    );
+    const astraFlip = {
+      ...cfgWithDir,
+      models: { ...cfgWithDir.models, codex: "gpt-6-astra" },
+      cost_rates: { ...cfgWithDir.cost_rates, codex: undefined },
+      model_cost_rates: {
+        ...cfgWithDir.model_cost_rates,
+        // A `gpt-6` family card shares the prefix but is not the exact id.
+        codex: { "gpt-6": { input_per_million: 10, output_per_million: 50 } },
+      },
+    };
+    assert.deepStrictEqual(
+      missingFinancialControlVars(astraFlip, ["codex"]),
+      ["CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION", "CROSS_REVIEW_OPENAI_OUTPUT_USD_PER_MILLION"],
+      "v4.7.0 / pricing hard block: models.codex=gpt-6-astra with only a gpt-6 family card must fail closed naming the exact keys",
+    );
+  }
   const gOrch = new CrossReviewOrchestrator(cfgWithDir, () => {});
   const gResult = await gOrch.askPeers({
     task: "Grok integration smoke",
@@ -6211,7 +6272,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(clampEffortForPerplexity("max"), "max");
   assert.equal(clampEffortForPerplexity("ultra"), "max");
   assert.equal(clampEffortForPerplexity(undefined), "max");
-  for (const id of ["perplexity/kimi-k3", "openai/gpt-5.6-sol", "perplexity/sonar"]) {
+  for (const id of ["perplexity/kimi-k3", "openai/gpt-6-astra", "perplexity/sonar"]) {
     assert.equal(isPerplexityAgentModel(id), true, `${id} is an Agent API id`);
   }
   for (const id of ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research", ""]) {
@@ -7136,7 +7197,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       `CROSREV-19: legacy Sonar env suffixes must not be emitted: ${Object.keys(flatWithStrayLegacyKey).join(",")}`,
     );
     const claudeModelRatesConfig = {
-      models: { claude: "claude-fable-5" },
+      models: { claude: "claude-fable-5-1" },
       cost_rates: {
         claude: {
           input_per_million: 5,
@@ -7159,10 +7220,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
             cache_read_per_million: 0.5,
             cache_write_per_million: 10,
           },
-          "claude-fable-5": {
+          "claude-fable-5-1": {
             input_per_million: 10,
             output_per_million: 50,
-            cache_read_per_million: 1,
+            cache_read_per_million: 0.25,
             cache_write_per_million: 20,
           },
         },
@@ -7172,23 +7233,45 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION,
       "10",
-      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 input pricing when models.claude=claude-fable-5",
+      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5.1 input pricing when models.claude=claude-fable-5-1",
     );
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION,
       "50",
-      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 output pricing when models.claude=claude-fable-5",
+      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5.1 output pricing when models.claude=claude-fable-5-1",
     );
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION,
-      "1",
-      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 cache-read pricing when models.claude=claude-fable-5",
+      "0.25",
+      "v4.7.0 / central config: model_cost_rates must choose the official Claude Fable 5.1 cache-read price (0.025x input) when models.claude=claude-fable-5-1",
     );
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION,
       "20",
-      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5 1h cache-write pricing when models.claude=claude-fable-5",
+      "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5.1 1h cache-write pricing when models.claude=claude-fable-5-1",
     );
+    // v4.7.0 pricing hard block: a pin without a card under its EXACT id
+    // flattens nothing, even when an older family card shares the prefix.
+    const staleFamilyOnlyFlat = flattenFileConfigToEnvMap({
+      models: { claude: "claude-fable-5-1" },
+      model_cost_rates: {
+        claude: {
+          "claude-fable-5": {
+            input_per_million: 10,
+            output_per_million: 50,
+            cache_read_per_million: 1,
+            cache_write_per_million: 20,
+          },
+        },
+      },
+    });
+    for (const suffix of ["INPUT", "OUTPUT", "CACHE_READ", "CACHE_WRITE"]) {
+      assert.equal(
+        staleFamilyOnlyFlat[`CROSS_REVIEW_ANTHROPIC_${suffix}_USD_PER_MILLION`],
+        undefined,
+        `v4.7.0 / pricing hard block: models.claude=claude-fable-5-1 must not inherit the claude-fable-5 ${suffix} rate by family prefix`,
+      );
+    }
     const claudeOverrideFlat = flattenFileConfigToEnvMap(claudeModelRatesConfig, (name: string) =>
       name === "CROSS_REVIEW_ANTHROPIC_MODEL" ? "claude-opus-5" : undefined,
     );
@@ -10095,8 +10178,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
   }
   for (const [peer, pin] of [
-    ["codex", "gpt-5.6-sol"],
-    ["claude", "claude-fable-5"],
+    ["codex", "gpt-6-astra"],
+    ["claude", "claude-fable-5-1"],
     ["gemini", "gemini-3.1-pro-preview"],
     ["deepseek", "deepseek-v4-pro"],
     ["grok", "grok-4.6"],

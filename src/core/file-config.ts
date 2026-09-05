@@ -350,10 +350,17 @@ function normalizeModelId(model: string): string {
   return model.trim().replace(/^models\//i, "");
 }
 
+// v4.7.0 pricing hard block: the configured primary pin is priced only by
+// a rate card stored under its EXACT id (after `models/` normalization).
+// Longest-prefix family matching used to let a new pin (`claude-fable-5-1`)
+// inherit the previous generation's family card silently, which is the "wrong
+// price card dispatched" case the financial preflight exists to refuse. With
+// no exact card nothing is flattened, `cost_rates[peer]` stays unset and
+// `missingFinancialControlVars` names `<PREFIX>_INPUT_USD_PER_MILLION` /
+// `<PREFIX>_OUTPUT_USD_PER_MILLION`.
 function selectConfiguredModelRate(
   ratesByModel: Record<string, Record<string, unknown>>,
   configuredModel: string | undefined,
-  peer?: PeerId,
 ): Record<string, unknown> | undefined {
   if (!configuredModel) return undefined;
   const normalized = normalizeModelId(configuredModel);
@@ -361,14 +368,7 @@ function selectConfiguredModelRate(
   for (const [model, rate] of Object.entries(ratesByModel)) {
     if (normalizeModelId(model) === normalized) return rate;
   }
-  // Every documented Perplexity Sonar id is a distinct billable product.
-  // In particular, a `sonar` card must never capture `sonar-pro` or
-  // `sonar-reasoning-pro` merely because their ids share a prefix.
-  if (peer === "perplexity") return undefined;
-  const familyMatches = Object.entries(ratesByModel)
-    .filter(([modelFamily]) => normalized.startsWith(`${normalizeModelId(modelFamily)}-`))
-    .sort(([left], [right]) => normalizeModelId(right).length - normalizeModelId(left).length);
-  return familyMatches[0]?.[1];
+  return undefined;
 }
 
 // Flatten the structured FileConfig into a flat map of env-var-name →
@@ -447,7 +447,7 @@ export function flattenFileConfigToEnvMap(
       if (!ratesByModel) continue;
       const prefix = PEER_TO_ENV_PREFIX[peer];
       const configuredModel = envValue?.(`${prefix}_MODEL`) ?? config.models?.[peer];
-      const modelRate = selectConfiguredModelRate(ratesByModel, configuredModel, peer);
+      const modelRate = selectConfiguredModelRate(ratesByModel, configuredModel);
       if (!modelRate) continue;
       flattenCostRate(out, prefix, modelRate);
     }

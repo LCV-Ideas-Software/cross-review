@@ -550,12 +550,15 @@ async function assertBilledTerminalRejection(
   await assertTerminalRejection(() => adapter.call("fixture", context()));
 }
 
-// Claude Fable 5 gets exactly one controlled recovery from max_tokens. The
+// Claude Fable 5.1 gets exactly one controlled recovery from max_tokens. The
 // second call lowers effort and the successful result retains billable usage
 // from both provider responses.
 {
   const recoveryConfig = {
     ...config,
+    // v4.7.0: pin the canonical Fable 5.1 id explicitly so the recovery
+    // predicate under test does not depend on the operator's central config.
+    models: { ...config.models, claude: "claude-fable-5-1" },
     retry: { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 },
     reasoning_effort: { ...config.reasoning_effort, claude: "max" as const },
     cost_rates: {
@@ -595,18 +598,24 @@ async function assertBilledTerminalRejection(
   assert.equal(result.usage?.input_tokens, 17);
   assert.equal(result.usage?.output_tokens, 25);
   assert.equal(result.usage?.total_tokens, 42);
-  assert.ok(
-    ctx.events.some((event) => event.type === "peer.max_tokens_recovery.started"),
-    "controlled max_tokens recovery must be observable",
+  const recoveryStarted = ctx.events.find(
+    (event) => event.type === "peer.max_tokens_recovery.started",
+  );
+  assert.ok(recoveryStarted, "controlled max_tokens recovery must be observable");
+  assert.equal(
+    recoveryStarted?.message,
+    "claude-fable-5-1 hit max_tokens; retrying once at medium effort with prior usage retained.",
+    "the recovery event must name the configured Claude Fable 5.1 pin, not a hard-coded older model",
   );
 }
 
 // A max_tokens response is recoverable only when MEDIUM is a genuine effort
 // reduction. LOW/MEDIUM requests must never be repeated at the same or a
-// higher effort merely because the model is Fable 5.
+// higher effort merely because the model is Fable 5.1.
 for (const requestedEffort of ["low", "medium"] as const) {
   const noReductionConfig = {
     ...config,
+    models: { ...config.models, claude: "claude-fable-5-1" },
     retry: { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 },
     reasoning_effort: { ...config.reasoning_effort, claude: requestedEffort },
   };
