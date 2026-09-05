@@ -5,7 +5,7 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
-## [Unreleased]
+## [v05.01.00] — 05/09/2026
 
 ### Changed
 

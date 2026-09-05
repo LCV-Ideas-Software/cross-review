@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 05/09/2026: `5.0.0`. O registro pode ficar
+> Estado do source/release target em 05/09/2026: `5.1.0`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -634,6 +634,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v05.01.00`      | Pins de ponta atualizados: Claude Fable 5.1 e GPT-6 Astra viram os peers padrão, o pin primário exige cartão de preço de id exato, e `gpt-5.6-sol` / `claude-fable-5` são varridos.                                                                                                                                   |
 | `v05.00.00`      | Versão maior: `estimateCost` deixa de precificar as dimensões Sonar legadas; as chaves seguem aceitas pelo schema como obsoletas e ignoradas, nomeadas no boot; config central rejeitada pelo schema passa a ser avisada no boot.                                                                                     |
 | `v04.06.08`      | Custódia de evidência: URL do GitHub citada em forma escapada não rebaixa voto READY; o relator pode nomear arquivo materializado como pós-imagem do diff admitido.                                                                                                                                                   |
 | `v04.06.07`      | Publicação sem gesto manual: o push em `main` que muda a versão publica e o próprio run cria a Release por último; sai a guarda de ancestralidade.                                                                                                                                                                    |
