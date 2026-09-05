@@ -30,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v04.06.06** (package `4.6.6`).
+**Status.** Stable. The current source/release target is **v04.06.07** (package `4.6.7`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -48,6 +48,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v04.06.07`**      | **No manual gesture.** A push to `main` that changes the version publishes to npmjs.com and GitHub Packages and then records the Release with the run's own token.                                                                                                                    |
 | **`v04.06.06`**      | **Native release path.** The repository-owned tagging, dispatch and policy machinery leaves; publishing runs on a published GitHub Release with npm Trusted Publishing and provenance.                                                                                                |
 | **`v04.06.05`**      | **Native organization governance.** Actions lockfile, advanced CodeQL workflow, merge-queue triggers and the v04.05.26 recovery workflow leave; the canonical Dependabot auto-merge and the organization workflows enter; the release gates read the CodeQL default-setup analyses.   |
 | **`v04.06.04`**      | Makes evidence conflict correlation linear and argv-exact, and makes future/current model parsing clause-aware through finite English/Portuguese frames, including `replace … with`, `update … to`, Portuguese present qualifiers, and semicolon isolation.                           |

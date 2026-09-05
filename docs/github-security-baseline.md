@@ -43,14 +43,13 @@ authorized. The workflow grants `id-token: write`, uses a GitHub-hosted runner,
 disables package-manager caches, installs dependencies without running their
 lifecycle scripts, and publishes with `--provenance`.
 
-Publication follows GitHub's documented model: a Release is published and
-`publish.yml` runs on the `release: published` event with that tag already
-checked out. Publishing is a deliberate act, never automatic: the operator
-gives the order and Claude performs the gesture immediately after the merge
-with `gh release create <tag> --generate-notes`, so the repository carries no
-tagging or dispatch automation. The repository owns no tagging, dispatch or policy
-machinery, and the release is immutable because the owner enforces immutable
-releases for the organization, not because a workflow re-reads that setting.
+Publication follows GitHub's documented model with no manual gesture:
+`publish.yml` runs on a push to `main` that changes the manifest version,
+publishes, and then creates the Release with the run's own token, last, as the
+record of the publication. The merge is the deliberate act. The repository owns
+no tagging, dispatch or policy machinery and holds no publishing secret, and
+the release is immutable because the owner enforces immutable releases for the
+organization, not because a workflow re-reads that setting.
 The Enterprise tag ruleset has no bypass and blocks deletion and
 non-fast-forward update. The published tag ships
 `@lcv-ideas-software/cross-review` to npmjs.com and GitHub Packages. The
