@@ -390,7 +390,6 @@ these environment variables before running real sessions (example):
 - `session_evidence_judge_consensus_pass`
 - `session_judgment_precision_report`
 - `contest_verdict`
-- `escalate_to_operator`
 - `regenerate_caller_tokens`
 - `session_sweep`
 - `session_finalize`
@@ -487,8 +486,8 @@ inspect the artifact and cite the decisive raw value, but must not replace a
 review with a full-file, full-log, or provider-output dump. A bare filename,
 digest, generic assurance, or empty code fence cannot sustain `READY`.
 
-Only the human operator may call the optional `session_attach_evidence`
-authority-promotion surface or mutate terminal state and security
+Only the operator capability token may call the optional `session_attach_evidence`
+authority-promotion surface or mutate evidence dispositions and security
 configuration. This tool is never required for an ordinary AI-initiated
 review: the runtime tool descriptions and rejected-call remediation direct AI
 callers to the automatically persisted `evidence` field. Each new attachment
@@ -497,6 +496,13 @@ durable custody event, and is re-hashed on every read.
 Tampering fails closed. Peer-attributed material remains reviewable but cannot
 grant operator authority; a generic attachment does not by itself prove an
 unrelated claim.
+
+Terminal closure is different. The runtime alone seals `converged`; the
+persisted session petitioner (or the operator token) closes its own
+non-terminal session as `aborted` through `session_finalize`; `max-rounds`
+is written only by the runtime or the idle sweep; and sessions left open by a
+dead petitioner are aborted by the boot-time stale sweep after 24 hours. No
+tool escalates to a human: the MCP surface has no such actor.
 
 An evidence requester may automatically withdraw only its own earlier ask after
 a strictly grounded `READY/verified` recheck. That transition is recorded as
@@ -519,9 +525,10 @@ Administrators; on POSIX it verifies owner-only mode `0600`. This blocks direct
 read access inherited by model-sandbox groups, but it is not isolation from
 another process running as the same unrestricted OS user.
 
-`session_cancel_job` and `contest_verdict` accept only the explicitly persisted
-session petitioner with its peer token, or the dedicated operator. Legacy
-sessions without an explicit petitioner require the operator token.
+`session_cancel_job`, `contest_verdict` and `session_finalize` accept only the
+explicitly persisted session petitioner with its peer token, or the dedicated
+operator. Legacy sessions without an explicit petitioner require the operator
+token.
 
 ## Repository conventions
 

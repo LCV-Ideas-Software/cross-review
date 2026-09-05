@@ -229,8 +229,9 @@ evidence alternatives such as file/line versus diff and diff versus grep, while
 keeping explicit conjunctions, execution claims and named release documents
 fail-closed. Direct review-round prompts include every unresolved ID
 automatically, so this routing requires no operator or caller-side reconstruction.
-The same operator-only gate covers evidence-checklist mutations, terminal-state
-mutations and security configuration.
+The same operator-only gate covers evidence-checklist mutations and security
+configuration; terminal closure of a session belongs to its persisted
+petitioner (`aborted`) or to the runtime (`converged`, `max-rounds`).
 
 Every new attachment records `attached_by`, `origin`, `attached_at`, UTF-8
 `bytes`, `sha256`, and `integrity_version`, and persists a

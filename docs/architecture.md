@@ -260,8 +260,9 @@ useful audit trails.
 If a provider still rejects a prompt as moderated or safety-blocked, the
 orchestrator records the failure class and retries once with a compact,
 sanitized review prompt. This retry does not bypass provider policy: if the
-compact context is insufficient, the peer must return `NEEDS_EVIDENCE` or the
-session remains blocked for operator action.
+compact context is insufficient, the peer must return `NEEDS_EVIDENCE` and the
+session stays blocked until the petitioner resubmits corrected material in a
+new round or closes the session.
 
 Claude Fable 5 and Opus 5 refusals are different from transport errors:
 Anthropic returns HTTP 200 with `stop_reason="refusal"` and optional
@@ -309,8 +310,12 @@ caller-evidence snapshot. Superseded snapshots remain forensic history but are
 excluded from current preflight/prompt/grounding, preventing retry poisoning,
 stale-success replay and oldest-first prompt starvation. Evidence filenames
 include UUID entropy so concurrent same-label writes cannot collide.
-Optional authority promotion plus evidence/checklist, terminal-state, and
-security mutations remain operator-only MCP operations. A new evidence artifact
+Optional authority promotion plus evidence/checklist and security mutations
+remain operator-only MCP operations. Terminal state is runtime-owned for
+`converged` and `max-rounds`; `aborted` may be written by the persisted
+petitioner through `session_finalize`; a failed background job records
+`background_job_failed` as a blocked, resumable state; and the boot-time sweep
+aborts sessions idle for 24 hours. A new evidence artifact
 stores `attached_by`, `origin`, `attached_at`, UTF-8 byte count and SHA-256 and
 emits `session.evidence_attached`. Every read recomputes bytes and digest;
 missing or altered current-format evidence fails closed. Peer-attributed

@@ -682,9 +682,9 @@ export function durableSessionCancellationWon(
 /**
  * A background rejection may arrive after the routine has already persisted
  * its terminal snapshot. In that case the process-local catch handler must not
- * append an automatic operator escalation or rewrite the sealed meta/report.
+ * record a background-job failure or rewrite the sealed meta/report.
  */
-export function shouldEscalateBackgroundJobFailure(
+export function shouldRecordBackgroundJobFailure(
   session: DurableSessionState | undefined,
 ): boolean {
   return Boolean(session && !session.outcome);
@@ -1245,7 +1245,7 @@ function verifyOperatorToolCallerIdentity(
     const error = new Error(
       site === "session_attach_evidence"
         ? `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface; received caller='${caller}'. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`
-        : `operator_authority_required: ${site} mutates authoritative evidence, terminal state, or security configuration and may only be called by the human operator; received caller='${caller}'.`,
+        : `operator_authority_required: ${site} mutates evidence dispositions, cross-session housekeeping, or security configuration and requires the distinct operator capability token in CROSS_REVIEW_CALLER_TOKEN; received caller='${caller}'.`,
     );
     runtime.emit({
       type: "session.operator_authority_blocked",
@@ -1304,7 +1304,7 @@ export function assertSessionMutationAuthority(
   }
   if (caller !== sessionOwner) {
     throw new Error(
-      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}' or the human operator; received caller='${caller}'.`,
+      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}' or the operator capability token; received caller='${caller}'.`,
     );
   }
 }
@@ -1552,11 +1552,11 @@ async function startJob(
       try {
         if (cancellationWon) {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
-        } else if (shouldEscalateBackgroundJobFailure(persisted)) {
+        } else if (shouldRecordBackgroundJobFailure(persisted)) {
           await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
-          await runtime.orchestrator.store.escalateToOperator(sessionId, {
-            reason: `Background job failed: ${safeErrorMessage(error)}`,
-            severity: "critical",
+          await runtime.orchestrator.store.recordBackgroundJobFailure(sessionId, {
+            job_id: job.job_id,
+            error: safeErrorMessage(error),
           });
         }
       } catch (cleanupError) {
@@ -2472,8 +2472,9 @@ export async function main(): Promise<void> {
       // caller until the 24h sweep aborted them. This flag is true when
       // the session has no terminal `outcome` AND its health is stale or
       // blocked AND there is no running job — i.e. it is sitting
-      // un-finalized with nothing in flight and needs the caller/operator
-      // workflow to continue, contest, cancel, or finalize it.
+      // un-finalized with nothing in flight; only the persisted petitioner
+      // moves it, with corrected material in a new round or an `aborted`
+      // close through session_finalize.
       const hasRunningJob = jobs.some((job) => job.status === "running");
       const healthState = session.convergence_health?.state;
       const needsAttention =
@@ -2496,7 +2497,9 @@ export async function main(): Promise<void> {
       if (needsAttention) {
         notices.push(
           `needs_attention: this session is non-terminal (outcome=null), health=${healthState}, and has no ` +
-            `running job — finalize, contest, continue, or cancel it. The 24h stale-session sweep is only a backstop.`,
+            `running job. As the persisted petitioner (pass your own \`caller\`), either resubmit corrected ` +
+            `material in a new round on this session_id or close it with session_finalize(outcome=aborted); ` +
+            `retrying unchanged material replays the same failure. The boot-time stale sweep aborts it only after 24h idle.`,
         );
       }
       const payload = sessionPollPayload(session, localJobs, detail, notices);
@@ -3100,14 +3103,14 @@ export async function main(): Promise<void> {
   // formally contest a final verdict, opening a new deliberation cycle
   // within the same autos. The original session is preserved (append-
   // only); a new session is initialized with a structural reference
-  // back. Petitioner NOT_READY (contesta) → use this tool. Petitioner READY
-  // (acata) → notify the human operator, whose dedicated console finalizes.
+  // back. Petitioner NOT_READY → use this tool. Petitioner READY → nothing
+  // to do: the runtime already sealed `converged`.
   registerTool(
     "contest_verdict",
     {
       title: "Contest Verdict",
       description:
-        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token. Petitioner READY (acata) → notify the human operator so the dedicated console can finalize; petitioner NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
+        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner (pass `caller` explicitly as that peer identity), or the operator token. Petitioner READY → nothing to do: the runtime already sealed `converged`; petitioner NOT_READY → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(4_000),
@@ -3227,41 +3230,6 @@ export async function main(): Promise<void> {
   );
 
   registerTool(
-    "escalate_to_operator",
-    {
-      title: "Escalate To Operator",
-      description:
-        "Record a durable operator escalation for sessions that require human judgment or external intervention. The reason accepts at most 1,000 characters.",
-      inputSchema: z.object({
-        session_id: SessionIdSchema,
-        reason: z.string().min(1).max(1000),
-        severity: z.enum(["info", "warning", "critical"]).default("warning"),
-        caller: CallerSchema.default("operator"),
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    async ({ session_id, reason, severity, caller, response_format }) => {
-      verifyToolCallerIdentity(
-        runtime,
-        "escalate_to_operator",
-        caller,
-        server.server.getClientVersion(),
-        session_id,
-      );
-      return textResult(
-        await runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
-        response_format,
-      );
-    },
-  );
-
-  registerTool(
     "session_sweep",
     {
       title: "Sweep Idle Sessions",
@@ -3333,10 +3301,10 @@ export async function main(): Promise<void> {
     {
       title: "Finalize Session",
       description:
-        "Operator-only: mark a durable session as converged, aborted or max-rounds with an optional reason of at most 200 characters. Requires the dedicated operator capability token from a separate human-console host.",
+        "Close a non-terminal durable session as `aborted` with an optional reason of at most 200 characters. Requires the verified capability token of the persisted session petitioner or the operator token: a peer host must pass `caller` explicitly as its own identity, because the schema default caller=operator is refused from a peer host as identity forgery. `converged` is sealed only by the runtime, when the petitioner and every required peer are READY and every evidence gate passes; `max-rounds` is written only by the runtime or the idle sweep.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
-        outcome: z.enum(["converged", "aborted", "max-rounds"]),
+        outcome: z.enum(["aborted"]),
         reason: z.string().max(200).optional(),
         caller: CallerSchema.default("operator"),
         response_format: ResponseFormatSchema,
@@ -3349,7 +3317,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, outcome, reason, caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
+      verifySessionMutationAuthority(
         runtime,
         "session_finalize",
         caller,
@@ -3431,8 +3399,8 @@ export async function main(): Promise<void> {
       }
     })();
   }, STARTUP_SWEEP_DELAY_MS);
-  // v2.5.0: companion to clearStaleInFlight — abort sessions that the
-  // dedicated operator console never finalized. Runs AFTER the in_flight sweep (deferred via
+  // v2.5.0: companion to clearStaleInFlight — abort sessions that their
+  // petitioner never closed. Runs AFTER the in_flight sweep (deferred via
   // setTimeout, same delay so order is preserved by registration order)
   // so a session whose in_flight got cleared this same boot is
   // immediately eligible for staleness review.

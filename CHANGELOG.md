@@ -5,6 +5,53 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [Unreleased]
+
+### Changed
+
+- **`session_finalize` is petitioner-scoped and accepts only `aborted`.** The
+  tool now uses the same session-mutation authority as `session_cancel_job`
+  and `contest_verdict`: the persisted session petitioner, verified by its own
+  capability token, or the operator token. The `outcome` schema narrows to
+  exactly `aborted`; `converged` is sealed only by the runtime (the store's
+  `session_finalize_outcome_mismatch` invariant stays as defense in depth) and
+  `max-rounds` is written only by the runtime or the idle sweep. The
+  description tells peer hosts to pass `caller` explicitly, because the schema
+  default `caller=operator` is refused from a peer host as identity forgery.
+  An aborted session keeps its non-converged rounds and the petitioner's
+  reason as an append-only audit trail, so an abort never hides a `NOT_READY`.
+- **Background-job failure settles without an escalation.** A rejected
+  background job now records `background_job_failed: job <id> failed: <error>`
+  as a blocked, resumable health state (a converged session keeps
+  `converged`) through `SessionStore.recordBackgroundJobFailure`; the
+  `shouldEscalateBackgroundJobFailure` predicate is renamed
+  `shouldRecordBackgroundJobFailure`. That detail, the `needs_attention`
+  notice and the `contest_verdict` description name the petitioner's two real
+  exits, resubmitting corrected material in a new round or closing the session
+  as `aborted`, and warn that retrying unchanged material replays the same
+  failure; none of them directs an agent to a human or a console. The generic
+  `operator_authority_required` and `session_owner_mismatch` messages describe
+  the operator capability token instead of a human operator.
+- The operator capability token remains real for the evidence, housekeeping
+  and security surfaces (`session_attach_evidence`, checklist and judge
+  mutations, `session_sweep`, `session_recover_interrupted`, `session_doctor`
+  repair, `regenerate_caller_tokens`); their token-placement guidance is
+  unchanged by this entry.
+- Motivation: issue #288 (twin of #287, Linear CROSREV-40). The motivating
+  session `3feefc04` was written by runtime 4.6.3; its refused close and its
+  automatic escalation were verified on this tree's unchanged code paths for
+  those sites. After this change the honest disposition of such a session is
+  `session_finalize(outcome=aborted)` by its petitioner.
+
+### Removed
+
+- The `escalate_to_operator` MCP tool, the `OperatorEscalation` type and the
+  `SessionMeta.operator_escalations` field. No reader consumed the field;
+  legacy `meta.json` files keep the key harmlessly, since the shape validator
+  never checked it. The dated field report
+  `docs/reports/2026-07-11-cross-review-4.5.x-field-report.md` still names the
+  tool as history and is left untouched.
+
 ## [v06.00.00] — 08/09/2026
 
 ### Breaking
@@ -309,6 +356,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
   hands a fenced diff supplied inline in the draft to the same post-image
   recognizer, so the pre-check agrees with the round, which persists that
   block as an attachment before its own preflight runs.
+||||||| parent of b90c314 (wip: CROSREV-40 verified implementation on bc7a93f, to be rebased onto main after 5.1.0)
 
 ## [v04.06.07] — 04/09/2026
 

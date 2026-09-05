@@ -755,12 +755,6 @@ export interface GenerationArtifact {
   indeterminate_spend_attempts?: number | undefined;
 }
 
-export interface OperatorEscalation {
-  ts: string;
-  reason: string;
-  severity: "info" | "warning" | "critical";
-}
-
 export interface PreflightCheckRecord {
   ts: string;
   gate: "evidence" | "truthfulness";
@@ -1050,7 +1044,6 @@ export interface SessionMeta {
   // evidence checklist item (auto + operator). Newest entries appended.
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;
   generation_files?: GenerationArtifact[] | undefined;
-  operator_escalations?: OperatorEscalation[] | undefined;
   preflight_checks?: PreflightCheckRecord[] | undefined;
   control?: SessionControl | undefined;
   fallback_events?: FallbackEvent[] | undefined;
