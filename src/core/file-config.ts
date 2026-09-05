@@ -90,13 +90,13 @@ const PerPeerPositiveIntSchema = z
   .optional();
 
 // CROSREV-19 (#233), PR #293 review: the five legacy Sonar rate-card keys
-// are DEPRECATED for the rest of 4.x, not removed from the schema. A
-// central config that was valid under 4.6.8 must stay valid after a patch
-// update, so the strict schema still accepts exactly these keys (any other
+// are DEPRECATED for the whole of 5.x, not removed from the schema. A
+// central config that was valid under 4.6.8 must stay valid after the
+// upgrade, so the strict schema still accepts exactly these keys (any other
 // unknown key is still rejected); applyFileConfigToEnv strips them before
 // the card is flattened to env or retained for the cost engine, and lists
 // each one with its card path so the boot notice can name it. They are
-// scheduled for rejection in the next major version.
+// scheduled for rejection in v06.00.00.
 export const DEPRECATED_COST_RATE_KEYS = [
   "request_fee_low_per_1000",
   "request_fee_medium_per_1000",

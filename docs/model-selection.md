@@ -101,7 +101,7 @@ and the financial preflight reports
 cost dimensions (per-request fee by search context size, citation tokens, Deep
 Research reasoning tokens) are no longer priced; the rate-card keys that carried
 them are deprecated no-ops a central config may still contain (a boot notice
-names them; rejection is scheduled for the next major), see
+names them; rejection is scheduled for v06.00.00), see
 [docs/costs.md](costs.md).
 
 Web search is a declared tool: the reviewer role sends

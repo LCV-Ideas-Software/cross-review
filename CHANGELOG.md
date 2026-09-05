@@ -80,7 +80,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
 - The rate-card keys `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
   `request_fee_high_per_1000`, `citation_tokens_per_million` and
   `deep_research_reasoning_tokens_per_million` are deprecated no-ops for the
-  rest of 4.x. **Nothing to do before upgrading**: a central `config.json` that
+  whole of 5.x. **Nothing to do before upgrading**: a central `config.json` that
   carries them — typically the retained
   `model_cost_rates.perplexity["sonar-reasoning-pro"]` and
   `model_cost_rates.perplexity["sonar-deep-research"]` cards — still applies in
@@ -89,7 +89,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
   restart or reload the MCP host — editing the file while the server runs
   changes its SHA, sets `reload_required` and blocks paid calls with
   `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED` until the restart; their rejection by
-  the strict schema is scheduled for the next major version. The env variables
+  the strict schema is scheduled for v06.00.00. The env variables
   `CROSS_REVIEW_PERPLEXITY_REQUEST_FEE_*`,
   `CROSS_REVIEW_PERPLEXITY_CITATION_TOKENS_USD_PER_MILLION` and
   `CROSS_REVIEW_PERPLEXITY_DEEP_RESEARCH_REASONING_TOKENS_USD_PER_MILLION` are
@@ -99,10 +99,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   `CostEstimate.request_cost`, `CostEstimate.citation_tokens_cost`,
   `CostEstimate.deep_research_reasoning_tokens_cost` and the five rate-card
   keys on `CostRateConfig` stay on the shipped declarations
-  (`dist/src/core/types.d.ts`) as `@deprecated` optional members for the rest
-  of 4.x, and `mergeUsage` / `mergeCost` keep re-summing them when a session
+  (`dist/src/core/types.d.ts`) as `@deprecated` optional members for the whole
+  of 5.x, and `mergeUsage` / `mergeCost` keep re-summing them when a session
   persisted by v3.0–v4.6.8 carries them; no adapter or estimate produces them
-  any more. Removed in the next major version.
+  any more. Removed in v06.00.00.
 
 ## [v04.06.08] — 05/09/2026
 

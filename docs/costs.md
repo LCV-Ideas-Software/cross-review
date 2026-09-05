@@ -125,7 +125,7 @@ tool but no longer selects any fee tier: the legacy Sonar cost dimensions
 (per-request fee by context size, citation tokens, Deep Research reasoning
 tokens) were removed in CROSREV-19 (#233) because the runtime has dispatched
 no Sonar id since v4.6.0. The rate-card keys that carried them remain accepted
-as deprecated no-ops throughout 4.x (see below).
+as deprecated no-ops throughout 5.x (see below).
 
 Central `config.json` supports model-aware rate cards through
 `model_cost_rates`. This is the preferred shape when explicit operator
@@ -197,7 +197,7 @@ and Windows registry rate variables still have higher precedence than the file.
 The five legacy Sonar rate-card keys (`request_fee_low_per_1000`,
 `request_fee_medium_per_1000`, `request_fee_high_per_1000`,
 `citation_tokens_per_million`, `deep_research_reasoning_tokens_per_million`)
-are deprecated no-ops throughout 4.x. The strict schema still accepts them on
+are deprecated no-ops throughout 5.x. The strict schema still accepts them on
 any card (`cost_rates.<peer>` or `model_cost_rates.<peer>.<model>`); the loader
 strips them before the card is flattened to env or reaches the cost engine,
 the rest of the file applies normally, and a boot notice — mirrored by
@@ -206,11 +206,10 @@ its card path, for example
 `model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000`.
 Remove them when convenient and then restart or reload the MCP host (editing
 the file while the server runs sets `reload_required` and blocks paid calls
-with `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED` until the restart); the next major
-version rejects them. The matching `CostRateConfig` members, together with
+with `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED` until the restart); v06.00.00 rejects them. The matching `CostRateConfig` members, together with
 `TokenUsage.citation_tokens` and the `CostEstimate` line items `request_cost`,
 `citation_tokens_cost` and `deep_research_reasoning_tokens_cost`, stay on the
-shipped declarations as `@deprecated` optional members through 4.x and are
+shipped declarations as `@deprecated` optional members through 5.x and are
 still re-summed by `mergeUsage` / `mergeCost` for sessions persisted before
 v05.00.00; nothing produces them any more. Any other unknown key is rejected: the boot notice and
 `server_info.config_load.parse_error` read `schema_validation_failed` with an

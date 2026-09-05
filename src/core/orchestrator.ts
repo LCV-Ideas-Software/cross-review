@@ -4299,6 +4299,10 @@ function usageShowsProviderWork(usage: TokenUsage | undefined): boolean {
     usage.reasoning_tokens,
     usage.cache_read_tokens,
     usage.cache_write_tokens,
+    // CROSREV-19 (#233), PR #293 review: the deprecated Sonar counter is still
+    // evidence of provider work for records persisted by v3.0–v4.6.8 (kept
+    // through 5.x, removed in v06.00.00 together with the member).
+    usage.citation_tokens,
     usage.num_search_queries,
   ].some((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
 }

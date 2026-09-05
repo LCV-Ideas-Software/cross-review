@@ -144,10 +144,9 @@ export interface TokenUsage {
   /**
    * @deprecated CROSREV-19 (#233): legacy Sonar API counter. No adapter has
    * populated it since v04.06.00 (Agent API); it stays on the shipped
-   * declarations through
-   * 4.x so a consumer of `dist/src/core/types.d.ts` keeps compiling, and
-   * `mergeUsage` still sums it when a persisted session carries it. Removed in
-   * the next major version.
+   * declarations through 5.x so a consumer of `dist/src/core/types.d.ts` keeps
+   * compiling, and `mergeUsage` still sums it when a persisted session carries
+   * it. Removed in v06.00.00.
    */
   citation_tokens?: number | undefined;
   // v3.0.0: Perplexity API also returns its OWN per-call cost
@@ -204,9 +203,9 @@ export interface CostEstimate {
   /**
    * @deprecated CROSREV-19 (#233): legacy Sonar API line items. `estimateCost`
    * has not produced them since v05.00.00; they stay on the shipped
-   * declarations through 4.x so a consumer of `dist/src/core/types.d.ts`
+   * declarations through 5.x so a consumer of `dist/src/core/types.d.ts`
    * keeps compiling, and `mergeCost` still sums them when a session persisted
-   * by v3.0–v4.6.8 carries them. Removed in the next major version.
+   * by v3.0–v4.6.8 carries them. Removed in v06.00.00.
    */
   request_cost?: number | undefined;
   /** @deprecated See `request_cost`. */
@@ -1189,8 +1188,8 @@ export interface CostRateConfig {
    * engine has not read them since v05.00.00 and the central-config loader
    * strips them from every card (DEPRECATED_COST_RATE_KEYS in
    * src/core/file-config.ts, named by a boot notice); they stay on the shipped
-   * declarations through 4.x so a consumer of `dist/src/core/types.d.ts`
-   * keeps compiling. Rejected by the schema in the next major version.
+   * declarations through 5.x so a consumer of `dist/src/core/types.d.ts`
+   * keeps compiling. Rejected by the schema in v06.00.00.
    */
   request_fee_low_per_1000?: number | undefined;
   /** @deprecated See `request_fee_low_per_1000`. */

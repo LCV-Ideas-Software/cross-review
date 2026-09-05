@@ -1474,7 +1474,7 @@ const regressions: Regression[] = [
     run: async () => {
       const base = offlineConfig();
       // CROSREV-19 (#233): the legacy Sonar dimensions are deprecated members
-      // of CostRateConfig / TokenUsage / CostEstimate through 4.x (PR #293
+      // of CostRateConfig / TokenUsage / CostEstimate through 5.x (PR #293
       // review). The fixtures below prove the runtime never PRICES or READS
       // them (each assertion was red before the removal: the fee was priced,
       // the env read) while the aggregation helpers keep passing them through
@@ -1595,7 +1595,7 @@ const regressions: Regression[] = [
 
       // (2) mergeCost never produces the deprecated line items, but a session
       // persisted by v3.0–v4.6.8 still carries them: they keep being re-summed
-      // through 4.x (PR #293 review) next to the stored total_cost, so
+      // through 5.x (PR #293 review) next to the stored total_cost, so
       // historical breakdowns do not change inside a patch update.
       const legacyEstimate = {
         currency: "USD",
@@ -1627,7 +1627,7 @@ const regressions: Regression[] = [
           citations: 2,
           reasoning: 2,
         },
-        "mergeCost must keep stored totals and re-sum the deprecated Sonar line items through 4.x",
+        "mergeCost must keep stored totals and re-sum the deprecated Sonar line items through 5.x",
       );
       const mergedFresh = mergeCost([
         { currency: "USD", total_cost: 1, estimated: true, source: "configured-rate" },
@@ -1639,7 +1639,7 @@ const regressions: Regression[] = [
         "mergeCost must not invent the deprecated line items",
       );
 
-      // (2b) The shipped declarations keep the deprecated members through 4.x
+      // (2b) The shipped declarations keep the deprecated members through 5.x
       // (PR #293 review): these literals must compile WITHOUT a cast, and a
       // consumer of dist/src/core/types.d.ts sees the same members.
       const declaredLegacyUsage: TokenUsage = { citation_tokens: 1 };
@@ -1668,7 +1668,7 @@ const regressions: Regression[] = [
             .length,
         ],
         [["citation_tokens"], LEGACY_COST_KEYS, 5],
-        "the deprecated members must remain declared through 4.x",
+        "the deprecated members must remain declared through 5.x",
       );
 
       // (3) mergeUsage keeps re-summing the deprecated citation_tokens counter
@@ -1693,7 +1693,7 @@ const regressions: Regression[] = [
           searchPerformed: mergedSonarUsage.search_performed,
         },
         { citationTokens: 7, searchQueries: 7, searchPerformed: true },
-        "mergeUsage must re-sum the deprecated citation_tokens counter through 4.x",
+        "mergeUsage must re-sum the deprecated citation_tokens counter through 5.x",
       );
       assert.equal(
         "citation_tokens" in mergeUsage([{ num_search_queries: 1 }, { input_tokens: 2 }]),
@@ -1763,7 +1763,7 @@ const regressions: Regression[] = [
       }
 
       // (6) Central config (PR #293 review, SemVer): the five deprecated Sonar
-      // keys stay ACCEPTED by the strict schema throughout 4.x — a file valid
+      // keys stay ACCEPTED by the strict schema throughout 5.x — a file valid
       // under 4.6.8 must not be rejected by a patch update. applyFileConfigToEnv
       // strips them before the card is flattened or retained and names each
       // one with its card path; any other unknown key is still rejected in

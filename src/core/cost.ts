@@ -226,7 +226,7 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
     }
     // CROSREV-19 (#233): `citation_tokens` is a deprecated Sonar counter no
     // adapter emits any more; keep summing it while a persisted session
-    // carries it so historical aggregates do not change inside 4.x.
+    // carries it so historical aggregates do not change inside 5.x.
     if (item.citation_tokens !== undefined) {
       total.citation_tokens = (total.citation_tokens ?? 0) + item.citation_tokens;
       citationTokensSeen = true;
@@ -343,7 +343,7 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
   // Sonar line items (request_cost, citation_tokens_cost,
   // deep_research_reasoning_tokens_cost) are never produced any more, but a
   // session persisted by v3.0–v4.6.8 still carries them; they keep being
-  // re-summed through 4.x so historical breakdowns do not change.
+  // re-summed through 5.x so historical breakdowns do not change.
   let searchQueries = 0;
   let requestFees = 0;
   let citationTokens = 0;
