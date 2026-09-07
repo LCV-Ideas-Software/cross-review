@@ -57,7 +57,7 @@ function completeRate(card: ModelCostRateConfig | undefined): CostRateConfig | u
  * own retained central-config card; borrowing the primary model's rates would
  * make a budget preflight look authoritative while pricing the wrong product.
  *
- * v4.7.0 pricing hard block: the configured primary pin (`effective ===
+ * v05.01.00 pricing hard block: the configured primary pin (`effective ===
  * configured`) is priced ONLY by the flattened env card or by a
  * `model_cost_rates` card stored under its exact id. Longest-prefix family
  * matching is retained solely for effective models that differ from the

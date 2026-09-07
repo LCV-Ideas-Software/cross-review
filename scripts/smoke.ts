@@ -5985,7 +5985,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     [],
     `missingFinancialControlVars must be empty for full peer set (got ${JSON.stringify(missingForGrok)}; cost_rates=${JSON.stringify(cfgWithDir.cost_rates)})`,
   );
-  // v4.7.0 pricing hard block (operator decision 04/09/2026): the primary
+  // v05.01.00 pricing hard block (operator decision 04/09/2026): the primary
   // pin needs a rate card under its EXACT id. Flipping models.claude to
   // claude-fable-5-1 with only a claude-fable-5 card must fail closed and name
   // the missing keys; the exact card makes the same preflight pass.
@@ -6012,7 +6012,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         "CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION",
         "CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION",
       ],
-      `v4.7.0 / pricing hard block: models.claude=claude-fable-5-1 with only a claude-fable-5 card must fail closed naming the exact keys (got ${JSON.stringify(missingForStaleCard)})`,
+      `v05.01.00 / pricing hard block: models.claude=claude-fable-5-1 with only a claude-fable-5 card must fail closed naming the exact keys (got ${JSON.stringify(missingForStaleCard)})`,
     );
     const fable51Exact = {
       ...fable51Flip,
@@ -6028,7 +6028,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.deepStrictEqual(
       missingForExactCard,
       [],
-      `v4.7.0 / pricing hard block: the exact claude-fable-5-1 card must satisfy the preflight (got ${JSON.stringify(missingForExactCard)})`,
+      `v05.01.00 / pricing hard block: the exact claude-fable-5-1 card must satisfy the preflight (got ${JSON.stringify(missingForExactCard)})`,
     );
     const astraFlip = {
       ...cfgWithDir,
@@ -6043,7 +6043,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.deepStrictEqual(
       missingFinancialControlVars(astraFlip, ["codex"]),
       ["CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION", "CROSS_REVIEW_OPENAI_OUTPUT_USD_PER_MILLION"],
-      "v4.7.0 / pricing hard block: models.codex=gpt-6-astra with only a gpt-6 family card must fail closed naming the exact keys",
+      "v05.01.00 / pricing hard block: models.codex=gpt-6-astra with only a gpt-6 family card must fail closed naming the exact keys",
     );
   }
   const gOrch = new CrossReviewOrchestrator(cfgWithDir, () => {});
@@ -7243,14 +7243,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION,
       "0.25",
-      "v4.7.0 / central config: model_cost_rates must choose the official Claude Fable 5.1 cache-read price (0.025x input) when models.claude=claude-fable-5-1",
+      "v05.01.00 / central config: model_cost_rates must choose the official Claude Fable 5.1 cache-read price (0.025x input) when models.claude=claude-fable-5-1",
     );
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION,
       "20",
       "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5.1 1h cache-write pricing when models.claude=claude-fable-5-1",
     );
-    // v4.7.0 pricing hard block: a pin without a card under its EXACT id
+    // v05.01.00 pricing hard block: a pin without a card under its EXACT id
     // flattens nothing, even when an older family card shares the prefix.
     const staleFamilyOnlyFlat = flattenFileConfigToEnvMap({
       models: { claude: "claude-fable-5-1" },
@@ -7269,7 +7269,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       assert.equal(
         staleFamilyOnlyFlat[`CROSS_REVIEW_ANTHROPIC_${suffix}_USD_PER_MILLION`],
         undefined,
-        `v4.7.0 / pricing hard block: models.claude=claude-fable-5-1 must not inherit the claude-fable-5 ${suffix} rate by family prefix`,
+        `v05.01.00 / pricing hard block: models.claude=claude-fable-5-1 must not inherit the claude-fable-5 ${suffix} rate by family prefix`,
       );
     }
     const claudeOverrideFlat = flattenFileConfigToEnvMap(claudeModelRatesConfig, (name: string) =>

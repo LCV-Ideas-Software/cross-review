@@ -440,7 +440,7 @@ import type { PeerResult } from "../src/core/types.js";
     assert.equal(matching.pass, true, `matching ${peer} model pin must pass`);
   }
 
-  // v4.7.0 / issue #271: the retired Claude pin is a strict PREFIX of the new
+  // v05.01.00 / issue #271: the retired Claude pin is a strict PREFIX of the new
   // one. A draft asserting `claude-fable-5` against the `claude-fable-5-1` pin
   // is a contradiction, never a prefix hit, and the pin token is captured
   // whole (never split into `claude-fable-5` plus a fragment).
@@ -453,7 +453,7 @@ import type { PeerResult } from "../src/core/types.js";
   assert.equal(
     stalePrefixLie.pass,
     false,
-    "v4.7.0 / truthfulness: the retired claude-fable-5 pin must contradict the claude-fable-5-1 pin (stale prefix, not a family hit)",
+    "v05.01.00 / truthfulness: the retired claude-fable-5 pin must contradict the claude-fable-5-1 pin (stale prefix, not a family hit)",
   );
   assert.ok(stalePrefixLie.issue_classes.includes("runtime_contradiction"));
   const wholePinTruth = truthfulnessPreflight({
@@ -465,7 +465,7 @@ import type { PeerResult } from "../src/core/types.js";
   assert.equal(
     wholePinTruth.pass,
     true,
-    "v4.7.0 / truthfulness: the whole claude-fable-5-1 token must match the pin",
+    "v05.01.00 / truthfulness: the whole claude-fable-5-1 token must match the pin",
   );
   // Routed catalog form of the new OpenAI pin on the Perplexity Agent API.
   const astraRoutedPins = { ...modelPins, perplexity: "openai/gpt-6-astra" } as const;
@@ -478,7 +478,7 @@ import type { PeerResult } from "../src/core/types.js";
       attachmentsPresent: false,
     }).pass,
     true,
-    "v4.7.0 / truthfulness: a truthful routed openai/gpt-6-astra Perplexity pin must pass",
+    "v05.01.00 / truthfulness: a truthful routed openai/gpt-6-astra Perplexity pin must pass",
   );
   assert.equal(
     truthfulnessPreflight({
@@ -488,7 +488,7 @@ import type { PeerResult } from "../src/core/types.js";
       attachmentsPresent: false,
     }).pass,
     false,
-    "v4.7.0 / truthfulness: a wrong routed model must still contradict the openai/gpt-6-astra pin",
+    "v05.01.00 / truthfulness: a wrong routed model must still contradict the openai/gpt-6-astra pin",
   );
   assert.equal(
     truthfulnessPreflight({
@@ -498,7 +498,7 @@ import type { PeerResult } from "../src/core/types.js";
       attachmentsPresent: false,
     }).pass,
     true,
-    "v4.7.0 / truthfulness: the native codex claim keeps matching its own gpt-6-astra pin next to the routed Perplexity pin",
+    "v05.01.00 / truthfulness: the native codex claim keeps matching its own gpt-6-astra pin next to the routed Perplexity pin",
   );
 
   // Codex review of PR #234 (head b0b681d): a Perplexity pin routed to another

@@ -25,7 +25,7 @@ process.env.GEMINI_API_KEY = "test-gemini-key";
 process.env.CROSS_REVIEW_DATA_DIR = fs.mkdtempSync(
   path.join(os.tmpdir(), "cross-review-provider-refresh-"),
 );
-// v4.7.0: this suite reads the hard-coded defaults, not the operator's
+// v05.01.00: this suite reads the hard-coded defaults, not the operator's
 // central config (the temp data dir above has no config.json). Drop any
 // process-level model override so the default-pin assertion is hermetic.
 delete process.env.CROSS_REVIEW_OPENAI_MODEL;
@@ -35,12 +35,12 @@ const config = loadConfig();
 assert.equal(
   config.models.codex,
   "gpt-6-astra",
-  "v4.7.0: the default OpenAI pin must be gpt-6-astra when no central config or env override is present",
+  "v05.01.00: the default OpenAI pin must be gpt-6-astra when no central config or env override is present",
 );
 assert.equal(
   config.models.claude,
   "claude-fable-5-1",
-  "v4.7.0: the default Anthropic pin must be claude-fable-5-1 when no central config or env override is present",
+  "v05.01.00: the default Anthropic pin must be claude-fable-5-1 when no central config or env override is present",
 );
 
 const OPENAI_READY = JSON.stringify({
@@ -155,7 +155,7 @@ async function captureGrokReasoningEffort(
     expected: Record<ReasoningEffort, string>;
   }> = [
     {
-      // v4.7.0 canonical pin: GPT-6 Astra rejects `none`; the official
+      // v05.01.00 canonical pin: GPT-6 Astra rejects `none`; the official
       // migration guide starts `none`/`minimal` at `low`.
       models: ["gpt-6-astra"],
       expected: {
@@ -270,7 +270,7 @@ async function captureGrokReasoningEffort(
 }
 
 {
-  // v4.7.0: the canonical OpenAI pin is GPT-6 Astra. The selector keeps the
+  // v05.01.00: the canonical OpenAI pin is GPT-6 Astra. The selector keeps the
   // configured pin visible (confidence "unknown", never a downgrade) when the
   // Models API does not list it.
   const astra = selectFromCandidates(
@@ -761,7 +761,7 @@ function capturePerplexityProbe(
 }
 
 {
-  // v4.7.0 / issue #271: the full Claude Fable 5.1 incompatibility audit on
+  // v05.01.00 / issue #271: the full Claude Fable 5.1 incompatibility audit on
   // the captured wire body. Fable 5.1 returns 400 for `thinking` enabled or
   // disabled, forced tool use (`tool_choice` any/tool), assistant prefill
   // and non-default sampling; the single-turn body never sends any of them.

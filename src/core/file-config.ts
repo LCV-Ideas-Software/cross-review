@@ -350,7 +350,7 @@ function normalizeModelId(model: string): string {
   return model.trim().replace(/^models\//i, "");
 }
 
-// v4.7.0 pricing hard block: the configured primary pin is priced only by
+// v05.01.00 pricing hard block: the configured primary pin is priced only by
 // a rate card stored under its EXACT id (after `models/` normalization).
 // Longest-prefix family matching used to let a new pin (`claude-fable-5-1`)
 // inherit the previous generation's family card silently, which is the "wrong

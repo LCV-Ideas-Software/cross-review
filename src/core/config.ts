@@ -397,7 +397,7 @@ export function loadConfig(): AppConfig {
       include_text: boolEnv("CROSS_REVIEW_STREAM_TEXT", false),
     },
     models: {
-      // v4.7.0: GPT-6 Astra (operator order 04/09/2026) and Claude Fable 5.1
+      // v05.01.00: GPT-6 Astra (operator order 04/09/2026) and Claude Fable 5.1
       // (issue #271) are the canonical pins. The runtime prices each pin only
       // through a rate card under its exact id (see resolveCostRate).
       codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-6-astra",

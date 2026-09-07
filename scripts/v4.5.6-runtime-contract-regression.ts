@@ -445,7 +445,7 @@ const regressions: Regression[] = [
       };
       const parsed = FileConfigSchema.safeParse(fileCandidate);
       const flattened = flattenFileConfigToEnvMap(fileCandidate as never);
-      // v4.7.0 pricing hard block: the configured pin is priced only by a card
+      // v05.01.00 pricing hard block: the configured pin is priced only by a card
       // under its exact id. A family card (even the longest prefix) must not
       // be flattened for a pin that has no exact card.
       const familyOnlyFlattened = flattenFileConfigToEnvMap({
@@ -708,7 +708,7 @@ const regressions: Regression[] = [
       });
       const config: AppConfig = {
         ...base,
-        // v4.7.0: pin the canonical GPT-6 Astra id explicitly so the family
+        // v05.01.00: pin the canonical GPT-6 Astra id explicitly so the family
         // gate under test does not depend on the operator's central config.
         models: { ...base.models, codex: "gpt-6-astra" },
         streaming: { ...base.streaming, include_text: true },
