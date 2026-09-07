@@ -556,7 +556,7 @@ async function assertBilledTerminalRejection(
 {
   const recoveryConfig = {
     ...config,
-    // v05.01.00: pin the canonical Fable 5.1 id explicitly so the recovery
+    // v06.00.00: pin the canonical Fable 5.1 id explicitly so the recovery
     // predicate under test does not depend on the operator's central config.
     models: { ...config.models, claude: "claude-fable-5-1" },
     retry: { ...config.retry, max_attempts: 2, base_delay_ms: 1, max_delay_ms: 1 },

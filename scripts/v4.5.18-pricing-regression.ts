@@ -31,7 +31,7 @@ assert.deepEqual(selectRate(grok45OfficialRate, "cache_read", 200_001), {
   tier_used: "extended",
 });
 
-// v05.01.00: official GPT-6 Astra card (developers.openai.com/api/docs/models/gpt-6-astra
+// v06.00.00: official GPT-6 Astra card (developers.openai.com/api/docs/models/gpt-6-astra
 // for the 272K threshold; developers.openai.com/api/docs/pricing for the
 // absolute long-context rates). No promotional pricing exists for Astra.
 const gpt6AstraOfficialRate: CostRateConfig = {
@@ -61,7 +61,7 @@ for (const [category, base, extended] of [
   });
 }
 
-// v05.01.00: official Claude Fable 5.1 card (platform.claude.com, what's new in
+// v06.00.00: official Claude Fable 5.1 card (platform.claude.com, what's new in
 // Fable 5.1). Cache reads are 0.025x base input; cache writes are $12.50 (5m)
 // or $20 (1h). The rate schema carries one cache_write field, so the card
 // prices the write tier that matches the configured cache.ttl_anthropic.

@@ -143,8 +143,9 @@ per invocation (`2.5` per 1000) were re-verified on 04/09/2026 against the
 tool but no longer selects any fee tier: the legacy Sonar cost dimensions
 (per-request fee by context size, citation tokens, Deep Research reasoning
 tokens) were removed in CROSREV-19 (#233) because the runtime has dispatched
-no Sonar id since v4.6.0. The rate-card keys that carried them remain accepted
-as deprecated no-ops throughout 5.x (see below).
+no Sonar id since v4.6.0. The rate-card keys that carried them were deprecated
+no-ops during 5.x and are rejected by the strict schema since v06.00.00 (see
+below).
 
 Central `config.json` supports model-aware rate cards through
 `model_cost_rates`. This is the preferred shape when explicit operator
@@ -213,27 +214,22 @@ If both `cost_rates.<peer>` and `model_cost_rates.<peer>` are present, the
 model-specific entry for the configured peer model wins. Process environment
 and Windows registry rate variables still have higher precedence than the file.
 
-The five legacy Sonar rate-card keys (`request_fee_low_per_1000`,
-`request_fee_medium_per_1000`, `request_fee_high_per_1000`,
-`citation_tokens_per_million`, `deep_research_reasoning_tokens_per_million`)
-are deprecated no-ops throughout 5.x. The strict schema still accepts them on
-any card (`cost_rates.<peer>` or `model_cost_rates.<peer>.<model>`); the loader
-strips them before the card is flattened to env or reaches the cost engine,
-the rest of the file applies normally, and a boot notice — mirrored by
-`server_info.config_load.deprecated_keys_ignored` — names each ignored key with
-its card path, for example
-`model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000`.
-Remove them when convenient and then restart or reload the MCP host (editing
-the file while the server runs sets `reload_required` and blocks paid calls
-with `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED` until the restart); v06.00.00 rejects them. The matching `CostRateConfig` members, together with
+Since v06.00.00 the strict schema rejects the five legacy Sonar rate-card keys
+(`request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+`request_fee_high_per_1000`, `citation_tokens_per_million`,
+`deep_research_reasoning_tokens_per_million`) on any card (`cost_rates.<peer>`
+or `model_cost_rates.<peer>.<model>`) exactly like any other unknown key: the
+boot notice and `server_info.config_load.parse_error` read
+`schema_validation_failed` with an `unrecognized_keys` issue naming the key and
+the card path, the whole file is ignored, and paid calls stay blocked with
+`CROSS_REVIEW_CONFIG_FILE_INVALID`. During 5.x they were deprecated no-ops
+(accepted, stripped and named at boot); the matching `CostRateConfig` members,
 `TokenUsage.citation_tokens` and the `CostEstimate` line items `request_cost`,
-`citation_tokens_cost` and `deep_research_reasoning_tokens_cost`, stay on the
-shipped declarations as `@deprecated` optional members through 5.x and are
-still re-summed by `mergeUsage` / `mergeCost` for sessions persisted before
-v05.00.00; nothing produces them any more. Any other unknown key is rejected: the boot notice and
-`server_info.config_load.parse_error` read `schema_validation_failed` with an
-`unrecognized_keys` issue naming the key and the card path, the whole file is
-ignored, and paid calls stay blocked with `CROSS_REVIEW_CONFIG_FILE_INVALID`
+`citation_tokens_cost` and `deep_research_reasoning_tokens_cost` left the
+shipped declarations in v06.00.00 as scheduled, together with the `mergeUsage` /
+`mergeCost` passthrough; sessions persisted before v05.00.00 keep their stored
+`total_cost`. Any other unknown key is rejected the same way, and paid calls
+stay blocked with `CROSS_REVIEW_CONFIG_FILE_INVALID`
 until the key is removed and the MCP host restarted. A retained card for a
 retired Sonar id is not rejected by itself — `model_cost_rates` accepts any
 model name — and the retired id fails closed only when it is selected: as the

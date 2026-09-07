@@ -207,7 +207,7 @@ function isGpt56Family(model: string): boolean {
   return /^gpt-5\.6(?:-|$)/i.test(model);
 }
 
-// v05.01.00: GPT-6 Astra (`gpt-6-astra`) is the canonical pin.
+// v06.00.00: GPT-6 Astra (`gpt-6-astra`) is the canonical pin.
 function isGpt6Family(model: string): boolean {
   return /^gpt-6(?:-|$)/i.test(model);
 }

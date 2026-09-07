@@ -34,7 +34,7 @@ const DOCS = {
 // explicit per-host env override (CROSS_REVIEW_<PROVIDER>_MODEL).
 // Pre-v3.7.2 codex/claude/grok kept multi-entry same-provider chains and
 // gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
-// v05.01.00 (operator order 04/09/2026 + issue #271): gpt-6-astra and
+// v06.00.00 (operator order 04/09/2026 + issue #271): gpt-6-astra and
 // claude-fable-5-1 replace the previous OpenAI and Anthropic pins outright.
 // The previous pins are not retained as overrides; a rollback is an explicit
 // operator env override plus its own exact rate card, and selection then

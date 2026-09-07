@@ -314,7 +314,7 @@ try {
         `${starterName}.evidence must advertise automatic durable transport without operator intervention`,
       );
     }
-    // v05.01.00: the reasoning_effort_overrides description is asserted from the
+    // v06.00.00: the reasoning_effort_overrides description is asserted from the
     // live MCP schema (not a source regex, per the T2#10 source-contract lock)
     // and must describe the GPT-6 Astra mapping: `ultra` -> max and
     // `none`/`minimal` -> low, with no stale GPT-5.6 reference.

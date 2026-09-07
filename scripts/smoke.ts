@@ -33,7 +33,6 @@ import { PEERS } from "../src/core/types.js";
 import type { JobStatus } from "../src/mcp/server.js";
 import {
   assertSessionMutationAuthority,
-  centralConfigDeprecatedKeysBootNotice,
   centralConfigInvalidBootNotice,
   getCallerCandidatesFromClientInfo,
   hasTrustedPetitionerProvenance,
@@ -5985,9 +5984,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     [],
     `missingFinancialControlVars must be empty for full peer set (got ${JSON.stringify(missingForGrok)}; cost_rates=${JSON.stringify(cfgWithDir.cost_rates)})`,
   );
-  // v05.01.00 pricing hard block (operator decision 04/09/2026): the primary
-  // pin needs a rate card under its EXACT id. Flipping models.claude to
-  // claude-fable-5-1 with only a claude-fable-5 card must fail closed and name
+  // v06.00.00 pricing hard block (operator decision 04/09/2026): the primary
+  // pin needs a rate card under its EXACT id (synthetic family, no retired
+  // id literal: PR review SWEEP-1). Flipping models.claude to
+  // claude-fable-9-1 with only a claude-fable-9 family card must fail closed and name
   // the missing keys; the exact card makes the same preflight pass.
   {
     const staleFamilyCard = {
@@ -5998,11 +5998,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     };
     const fable51Flip = {
       ...cfgWithDir,
-      models: { ...cfgWithDir.models, claude: "claude-fable-5-1" },
+      models: { ...cfgWithDir.models, claude: "claude-fable-9-1" },
       cost_rates: { ...cfgWithDir.cost_rates, claude: undefined },
       model_cost_rates: {
         ...cfgWithDir.model_cost_rates,
-        claude: { "claude-fable-5": staleFamilyCard },
+        claude: { "claude-fable-9": staleFamilyCard },
       },
     };
     const missingForStaleCard = missingFinancialControlVars(fable51Flip, ["claude"]);
@@ -6012,15 +6012,15 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         "CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION",
         "CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION",
       ],
-      `v05.01.00 / pricing hard block: models.claude=claude-fable-5-1 with only a claude-fable-5 card must fail closed naming the exact keys (got ${JSON.stringify(missingForStaleCard)})`,
+      `v06.00.00 / pricing hard block: models.claude=claude-fable-9-1 with only a claude-fable-9 family card must fail closed naming the exact keys (got ${JSON.stringify(missingForStaleCard)})`,
     );
     const fable51Exact = {
       ...fable51Flip,
       model_cost_rates: {
         ...fable51Flip.model_cost_rates,
         claude: {
-          "claude-fable-5": staleFamilyCard,
-          "claude-fable-5-1": { ...staleFamilyCard, cache_read_per_million: 0.25 },
+          "claude-fable-9": staleFamilyCard,
+          "claude-fable-9-1": { ...staleFamilyCard, cache_read_per_million: 0.25 },
         },
       },
     };
@@ -6028,7 +6028,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.deepStrictEqual(
       missingForExactCard,
       [],
-      `v05.01.00 / pricing hard block: the exact claude-fable-5-1 card must satisfy the preflight (got ${JSON.stringify(missingForExactCard)})`,
+      `v06.00.00 / pricing hard block: the exact claude-fable-9-1 card must satisfy the preflight (got ${JSON.stringify(missingForExactCard)})`,
     );
     const astraFlip = {
       ...cfgWithDir,
@@ -6043,7 +6043,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.deepStrictEqual(
       missingFinancialControlVars(astraFlip, ["codex"]),
       ["CROSS_REVIEW_OPENAI_INPUT_USD_PER_MILLION", "CROSS_REVIEW_OPENAI_OUTPUT_USD_PER_MILLION"],
-      "v05.01.00 / pricing hard block: models.codex=gpt-6-astra with only a gpt-6 family card must fail closed naming the exact keys",
+      "v06.00.00 / pricing hard block: models.codex=gpt-6-astra with only a gpt-6 family card must fail closed naming the exact keys",
     );
   }
   const gOrch = new CrossReviewOrchestrator(cfgWithDir, () => {});
@@ -7175,8 +7175,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_OUTPUT_USD_PER_MILLION, "8");
     assert.equal(flat.CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS, "6");
     // CROSREV-19 (#233): the legacy Sonar suffixes are no longer emitted by
-    // the flatten map — applyFileConfigToEnv strips the deprecated keys before
-    // flattening, and a stray key cast in must not resurrect the env name.
+    // the flatten map — a validated card cannot carry them any more, and a
+    // stray key cast in must not resurrect the env name.
     const flatWithStrayLegacyKey = flattenFileConfigToEnvMap({
       cost_rates: {
         perplexity: {
@@ -7243,20 +7243,20 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION,
       "0.25",
-      "v05.01.00 / central config: model_cost_rates must choose the official Claude Fable 5.1 cache-read price (0.025x input) when models.claude=claude-fable-5-1",
+      "v06.00.00 / central config: model_cost_rates must choose the official Claude Fable 5.1 cache-read price (0.025x input) when models.claude=claude-fable-5-1",
     );
     assert.equal(
       claudeModelFlat.CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION,
       "20",
       "v4.4.4 / central config: model_cost_rates must choose Claude Fable 5.1 1h cache-write pricing when models.claude=claude-fable-5-1",
     );
-    // v05.01.00 pricing hard block: a pin without a card under its EXACT id
+    // v06.00.00 pricing hard block: a pin without a card under its EXACT id
     // flattens nothing, even when an older family card shares the prefix.
     const staleFamilyOnlyFlat = flattenFileConfigToEnvMap({
-      models: { claude: "claude-fable-5-1" },
+      models: { claude: "claude-fable-9-1" },
       model_cost_rates: {
         claude: {
-          "claude-fable-5": {
+          "claude-fable-9": {
             input_per_million: 10,
             output_per_million: 50,
             cache_read_per_million: 1,
@@ -7269,7 +7269,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       assert.equal(
         staleFamilyOnlyFlat[`CROSS_REVIEW_ANTHROPIC_${suffix}_USD_PER_MILLION`],
         undefined,
-        `v05.01.00 / pricing hard block: models.claude=claude-fable-5-1 must not inherit the claude-fable-5 ${suffix} rate by family prefix`,
+        `v06.00.00 / pricing hard block: models.claude=claude-fable-9-1 must not inherit the claude-fable-9 ${suffix} rate by family prefix (synthetic family)`,
       );
     }
     const claudeOverrideFlat = flattenFileConfigToEnvMap(claudeModelRatesConfig, (name: string) =>
@@ -9152,11 +9152,6 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       label: "centralConfigInvalidBootNotice",
       needle: "centralConfigInvalidBootNotice(getFileConfigRuntimeStatus())",
     },
-    // PR #293 review: the deprecated-keys notice shares the same slot.
-    {
-      label: "centralConfigDeprecatedKeysBootNotice",
-      needle: "centralConfigDeprecatedKeysBootNotice(getFileConfigRuntimeStatus())",
-    },
   ]) {
     const sweepIdx = bootPath.indexOf(needle);
     assert.ok(
@@ -9180,13 +9175,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // reports the generic CROSS_REVIEW_CONFIG_FILE_INVALID marker, so the boot
   // notice must carry the path, the "ignored in full" consequence, the
   // marker and the zod diagnostic; a clean or absent file prints nothing.
-  // (PR #293 review: the five deprecated Sonar keys are tolerated, so the
-  // pinned example uses a genuinely unknown key.)
   const invalidConfigNotice = centralConfigInvalidBootNotice({
     path: "C:\\placeholder\\config.json",
     file_exists: true,
     parse_error:
-      'schema_validation_failed: [ { "code": "unrecognized_keys", "keys": [ "search_fee_per_1000" ], "path": [ "model_cost_rates", "perplexity", "perplexity/kimi-k3" ] } ]',
+      'schema_validation_failed: [ { "code": "unrecognized_keys", "keys": [ "request_fee_low_per_1000" ], "path": [ "model_cost_rates", "perplexity", "sonar-reasoning-pro" ] } ]',
   });
   assert.ok(
     invalidConfigNotice,
@@ -9198,71 +9191,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "IGNORED IN FULL",
     "CROSS_REVIEW_CONFIG_FILE_INVALID",
     "unrecognized_keys",
-    "search_fee_per_1000",
-    "perplexity/kimi-k3",
+    "request_fee_low_per_1000",
+    "sonar-reasoning-pro",
   ]) {
     assert.ok(
       invalidConfigNotice.includes(fragment),
       `CROSREV-19: invalid central config boot notice must include ${JSON.stringify(fragment)}: ${invalidConfigNotice}`,
-    );
-  }
-  // PR #293 review (SemVer): a file that still carries the deprecated Sonar
-  // rate-card keys applies in full, so its notice must say the keys were
-  // ignored, name each one with its card path, say to remove them and then
-  // restart the MCP host (an edit while running blocks paid calls with
-  // CROSS_REVIEW_CONFIG_RELOAD_REQUIRED until the restart), and announce the
-  // next-major rejection; a file without them prints nothing.
-  const deprecatedKeyPaths = [
-    'model_cost_rates.perplexity["sonar-reasoning-pro"].request_fee_low_per_1000',
-    'model_cost_rates.perplexity["sonar-deep-research"].citation_tokens_per_million',
-    "cost_rates.perplexity.deep_research_reasoning_tokens_per_million",
-  ];
-  const deprecatedKeysNotice = centralConfigDeprecatedKeysBootNotice({
-    path: "C:\\placeholder\\config.json",
-    file_exists: true,
-    deprecated_keys_ignored: deprecatedKeyPaths,
-  });
-  assert.ok(
-    deprecatedKeysNotice,
-    "PR #293 review: deprecated rate-card keys must produce a boot notice",
-  );
-  for (const fragment of [
-    "[cross-review] notice:",
-    'central config "C:\\placeholder\\config.json"',
-    "3 deprecated rate-card key(s)",
-    "IGNORED",
-    "the rest of the file applied normally",
-    ...deprecatedKeyPaths,
-    "restart or reload the MCP host",
-    "CROSS_REVIEW_CONFIG_RELOAD_REQUIRED",
-    "REJECTED by the schema in the next major version",
-  ]) {
-    assert.ok(
-      deprecatedKeysNotice.includes(fragment),
-      `PR #293 review: deprecated keys boot notice must include ${JSON.stringify(fragment)}: ${deprecatedKeysNotice}`,
-    );
-  }
-  assert.ok(
-    !deprecatedKeysNotice.includes("IGNORED IN FULL") &&
-      !deprecatedKeysNotice.includes("CROSS_REVIEW_CONFIG_FILE_INVALID"),
-    `PR #293 review: the deprecation notice must not read like a rejection: ${deprecatedKeysNotice}`,
-  );
-  for (const [label, configLoad] of [
-    [
-      "a file without deprecated keys",
-      { path: "C:\\placeholder\\config.json", file_exists: true, deprecated_keys_ignored: [] },
-    ],
-    ["a rejected file", { path: "C:\\placeholder\\config.json", file_exists: true }],
-    [
-      "an absent file",
-      { path: "C:\\placeholder\\config.json", file_exists: false, deprecated_keys_ignored: [] },
-    ],
-    ["no load status", undefined],
-  ] as const) {
-    assert.equal(
-      centralConfigDeprecatedKeysBootNotice(configLoad),
-      null,
-      `PR #293 review: ${label} must not print the deprecation notice`,
     );
   }
   assert.equal(

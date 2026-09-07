@@ -5,7 +5,53 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
-## [v05.01.00] — 05/09/2026
+## [v06.00.00] — 07/09/2026
+
+### Breaking
+
+- **Pricing hard block: exact rate card for the primary pin.** The configured
+  primary pin is priced only by a `model_cost_rates` card stored under its
+  exact id (or the flattened `CROSS_REVIEW_<PROVIDER>_*_USD_PER_MILLION`
+  variables). Longest-prefix family matching no longer applies to the primary
+  pin in `selectConfiguredModelRate` (central-config flattening) or
+  `resolveCostRate`; it is retained only for effective models that differ from
+  the pin, i.e. the explicitly configured `fallback_models` ids (every adapter
+  prices its configured model id, so no provider-reported id reaches the
+  lookup). A central config that priced its primary through a family card
+  (for example a `gpt-6` card for the `gpt-6-astra` pin, or the previous
+  generation's `claude-fable-5` card for `claude-fable-5-1`) now fails closed
+  and `missingFinancialControlVars` names
+  `CROSS_REVIEW_<PROVIDER>_INPUT_USD_PER_MILLION` and
+  `CROSS_REVIEW_<PROVIDER>_OUTPUT_USD_PER_MILLION`; add the exact card. This
+  is the change that makes the release a major: the operator's fleet pins
+  exact model ids and prices them with exact cards, and the family shortcut
+  was the "wrong price card dispatched" case the financial preflight exists
+  to refuse.
+
+### Removed
+
+- **The legacy Sonar API rate-card keys, as scheduled in v05.00.00.**
+  `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+  `request_fee_high_per_1000`, `citation_tokens_per_million` and
+  `deep_research_reasoning_tokens_per_million` are rejected by the strict
+  central-config schema again, like any other unknown key: the boot notice
+  and `server_info.config_load.parse_error` name the key and the card path,
+  the whole file is ignored and paid calls stay blocked with
+  `CROSS_REVIEW_CONFIG_FILE_INVALID` until the key is removed and the MCP host
+  restarted. The 5.x deprecation machinery goes with them: the
+  `DEPRECATED_COST_RATE_KEYS` tolerance and its boot notice,
+  `server_info.config_load.deprecated_keys_ignored`, the `@deprecated`
+  members `TokenUsage.citation_tokens`, `CostEstimate.request_cost`,
+  `citation_tokens_cost`, `deep_research_reasoning_tokens_cost` and the five
+  `CostRateConfig` keys on the shipped declarations, the `mergeUsage` /
+  `mergeCost` passthrough of those fields and the `citation_tokens` clause of
+  the provider-work predicate (a persisted attempt that reported only
+  `citation_tokens`, no other counter and no cost, is no longer treated as
+  evidence of provider work). Sessions persisted by v3.0–v4.6.8 keep their
+  stored `total_cost`, which `mergeCost` still adds up. Before installing,
+  remove any Sonar card or key from `config.json` (the regenerated central
+  config shipped with this release carries the exact cards for the new pins
+  and no Sonar entry).
 
 ### Changed
 
@@ -47,18 +93,6 @@ standard `v00.00.00`; npm package versions remain SemVer.
   512-token cache minimum, the `max_tokens` recovery predicate and the
   refusal fixtures under `claude-fable-5-1`. Priority Tier is not available for
   Fable 5.1; the adapter never sets a service tier.
-- **Pricing hard block: exact rate card for the primary pin.** The configured
-  primary pin is priced only by a `model_cost_rates` card stored under its
-  exact id (or the flattened `CROSS_REVIEW_<PROVIDER>_*_USD_PER_MILLION`
-  variables). Longest-prefix family matching no longer applies to the primary
-  pin in `selectConfiguredModelRate` (central-config flattening) or
-  `resolveCostRate`; it is retained only for effective models that differ from
-  the pin, i.e. the explicitly configured `fallback_models` ids (every adapter
-  prices its configured model id, so no provider-reported id reaches the
-  lookup). Flipping `models.claude` to `claude-fable-5-1` with only a
-  `claude-fable-5` card now fails closed and `missingFinancialControlVars`
-  names `CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION` and
-  `CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION`; the exact card passes.
 - **Truthfulness preflight.** The retired `claude-fable-5` id is a strict
   prefix of the new pin; a draft asserting it against `claude-fable-5-1` is
   pinned as a contradiction, and the routed `openai/gpt-6-astra` catalog form is

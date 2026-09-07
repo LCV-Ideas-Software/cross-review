@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "5.1.0";
+export const VERSION = "6.0.0";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -397,7 +397,7 @@ export function loadConfig(): AppConfig {
       include_text: boolEnv("CROSS_REVIEW_STREAM_TEXT", false),
     },
     models: {
-      // v05.01.00: GPT-6 Astra (operator order 04/09/2026) and Claude Fable 5.1
+      // v06.00.00: GPT-6 Astra (operator order 04/09/2026) and Claude Fable 5.1
       // (issue #271) are the canonical pins. The runtime prices each pin only
       // through a rate card under its exact id (see resolveCostRate).
       codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-6-astra",
