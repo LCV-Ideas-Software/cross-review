@@ -40,7 +40,7 @@ const PeerSchema = z.enum(PEERS);
 // function-declaration validator rejects that shape. A flat enum is
 // runtime-equivalent (same accepted values, same TS inferred type) and
 // produces a clean single `enum` in the wire JSON Schema.
-const CallerSchema = z.enum([...PEERS, "operator"] as const);
+const CallerSchema = z.enum(PEERS);
 const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
 const SessionListOutcomeFilterSchema = z
   .enum(["all", "open", "converged", "aborted", "max-rounds"])
@@ -422,32 +422,11 @@ export interface CallerIdentityResult {
 // All paths attach identity_metadata with a best-effort parent-process
 // snapshot for forensics (Option C / Hybrid per design memory).
 export function verifyCallerIdentity(
-  declaredCaller: PeerId | "operator",
+  declaredCaller: PeerId,
   clientInfo: ClientInfo,
 ): CallerIdentityResult {
   const identity_metadata = getParentProcessSnapshot();
   const candidates = getCallerCandidatesFromClientInfo(clientInfo);
-  if (declaredCaller === "operator") {
-    if (candidates.length > 0) {
-      throw new Error(
-        `identity_forgery_blocked: caller='operator' is not permitted from an agent-identified host. clientInfo.name='${clientInfo?.name}' resolves to ${candidates.join(", ")}; declare the actual peer identity (and present its token when required).`,
-      );
-    }
-    const tokenResult = verifyTokenForCaller("operator", HOST_TOKENS_RECORD, {
-      failure: HOST_TOKENS_LOAD_FAILURE,
-    });
-    if (!tokenResult.verified) {
-      throw new Error(
-        "operator_authority_required: caller='operator' requires the dedicated operator capability token in CROSS_REVIEW_CALLER_TOKEN. Use a separate human-console MCP host; never place this token in a model host.",
-      );
-    }
-    return {
-      identity_verified: true,
-      verification_method: "token",
-      client_info_name: clientInfo?.name ?? null,
-      identity_metadata,
-    };
-  }
   if (candidates.length >= 2) {
     throw new Error(
       `identity_forgery_blocked: clientInfo.name='${clientInfo?.name}' matches multiple agents (${candidates.join(", ")}); cannot validate declared caller='${declaredCaller}' against an ambiguous client. Pass the request from a host whose clientInfo.name resolves to a single agent.`,
@@ -501,7 +480,7 @@ export function lockCallerPeerSelection<
   T extends {
     peers?: PeerId[] | undefined;
     lead_peer?: PeerId | undefined;
-    caller?: PeerId | "operator" | undefined;
+    caller?: PeerId | undefined;
     session_id?: string | undefined;
   },
 >(
@@ -523,11 +502,9 @@ export function lockCallerPeerSelection<
     enabledPeers?: readonly PeerId[] | undefined;
   },
 ): T {
-  const caller: PeerId | "operator" = input.caller ?? "operator";
-  // peers panel: locked for ALL callers (including operator). The
-  // server-configured `peer_enabled` set is the only knob; operators
-  // tune via env vars, not via per-call overrides that callers can
-  // exploit.
+  // peers panel: locked for every caller. The server-configured
+  // `peer_enabled` set is the only knob; it is tuned by environment
+  // variable, not by per-call overrides that callers could exploit.
   const callerSuppliedPeers = Array.isArray(input.peers) ? [...input.peers] : undefined;
   // v3.7.5 (A2): treat caller-supplied panel as an OVERRIDE only when
   // it differs from the enabled set. Sorted set-equality (case-sensitive
@@ -540,10 +517,10 @@ export function lockCallerPeerSelection<
     callerSuppliedPeers.length === ctx.enabledPeers.length &&
     [...callerSuppliedPeers].sort().join("|") === [...ctx.enabledPeers].sort().join("|");
   const peerPanelOverridden = callerSuppliedPeers !== undefined && !callerPanelMatchesEnabled;
-  // lead_peer: locked for peer callers (forces lottery so callers cannot
-  // pin a sympathetic relator). Operator caller may pin lead_peer for
-  // legitimate testing.
-  const leadPeerOverridden = caller !== "operator" && input.lead_peer !== undefined;
+  // lead_peer: locked for every caller, which forces the lottery so no
+  // caller can pin a sympathetic relator. The exemption this once carried
+  // belonged to an identity that does not exist.
+  const leadPeerOverridden = input.lead_peer !== undefined;
 
   if (peerPanelOverridden || leadPeerOverridden) {
     ctx.emit({
@@ -586,7 +563,7 @@ export function buildResponseNotices<
   T extends {
     peers?: PeerId[] | undefined;
     lead_peer?: PeerId | undefined;
-    caller?: PeerId | "operator" | undefined;
+    caller?: PeerId | undefined;
   },
 >(
   originalInput: T,
@@ -596,7 +573,6 @@ export function buildResponseNotices<
   const notices: string[] = [];
   // B4 — peer-selection lock notice. If the caller supplied `peers` or
   // (as a peer caller) `lead_peer`, the v3.3.0 lock stripped it.
-  const caller: PeerId | "operator" = originalInput.caller ?? "operator";
   const suppliedPeers = Array.isArray(originalInput.peers) ? originalInput.peers : undefined;
   const suppliedPeersMatchEnabled =
     enabledPeers !== undefined &&
@@ -605,7 +581,7 @@ export function buildResponseNotices<
     [...suppliedPeers].sort().join("|") === [...enabledPeers].sort().join("|");
   const triedPeers =
     suppliedPeers !== undefined && suppliedPeers.length > 0 && !suppliedPeersMatchEnabled;
-  const triedLeadPeer = caller !== "operator" && originalInput.lead_peer !== undefined;
+  const triedLeadPeer = originalInput.lead_peer !== undefined;
   if (triedPeers || triedLeadPeer) {
     notices.push(
       `peer_selection_lock: your ${triedPeers ? "`peers` panel" : "`lead_peer` pin"} was ignored — ` +
@@ -1647,7 +1623,7 @@ export async function main(): Promise<void> {
       description:
         "Return runtime information for the API-only Cross Review MCP server, including version, data directory and active security mode.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1770,7 +1746,7 @@ export async function main(): Promise<void> {
       description:
         "Return the stable cross-review runtime capability contract and active tool list.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1800,7 +1776,7 @@ export async function main(): Promise<void> {
       description:
         "Query official provider APIs to discover available models for the current API keys, select the highest-capability documented model, and verify provider reachability.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1823,7 +1799,7 @@ export async function main(): Promise<void> {
       inputSchema: z.object({
         task: z.string().min(1).describe("Original task or artifact being reviewed."),
         review_focus: ReviewFocusSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1913,7 +1889,7 @@ export async function main(): Promise<void> {
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
         evidence: AutomaticCallerEvidenceSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
@@ -1984,7 +1960,7 @@ export async function main(): Promise<void> {
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
         evidence: AutomaticCallerEvidenceSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
@@ -2072,7 +2048,7 @@ export async function main(): Promise<void> {
         lead_peer: PeerSchema.optional(),
         // v2.11.0: caller identifies the petitioner for the lottery.
         // Default "operator" preserves v2.10.0 behavior (no exclusion).
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         peers: z
           .array(PeerSchema)
           .min(0)
@@ -2166,7 +2142,7 @@ export async function main(): Promise<void> {
         review_focus: ReviewFocusSchema,
         initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         lead_peer: PeerSchema.optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         peers: z
           .array(PeerSchema)
           .min(0)
@@ -2283,7 +2259,7 @@ export async function main(): Promise<void> {
         session_id: SessionIdSchema,
         job_id: SessionIdSchema.optional(),
         reason: z.string().min(1).max(300).default("requester_requested"),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2401,7 +2377,7 @@ export async function main(): Promise<void> {
       description:
         "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2573,7 +2549,7 @@ export async function main(): Promise<void> {
         // terminal not_resurfaced historical inventory. Defaults false
         // so findings stay action-oriented while totals remain complete.
         include_terminal_findings: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2724,7 +2700,7 @@ export async function main(): Promise<void> {
     task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
     draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
     evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-    caller: CallerSchema.default("operator"),
+    caller: CallerSchema,
     response_format: ResponseFormatSchema,
   });
   const savedSessionPreflightHandler =
@@ -2839,7 +2815,7 @@ export async function main(): Promise<void> {
         content: z.string().min(1).max(2_000_000),
         content_type: z.string().min(1).max(120).default("text/plain"),
         extension: z.string().min(1).max(16).default("txt"),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2886,7 +2862,7 @@ export async function main(): Promise<void> {
           .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
         status: z.enum(["open", "satisfied", "deferred", "rejected"]),
         note: z.string().min(1).max(2000).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2942,7 +2918,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4000).optional(),
         shadow_mode: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3018,7 +2994,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4_000).optional(),
         shadow_mode: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3116,7 +3092,7 @@ export async function main(): Promise<void> {
         reason: z.string().min(1).max(4_000),
         new_task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         new_initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         new_caller: CallerSchema.optional(),
         response_format: ResponseFormatSchema,
       }),
@@ -3175,7 +3151,7 @@ export async function main(): Promise<void> {
       description:
         "Rotate the seven caller capability tokens (six peer identities plus a distinct operator). Requires the current dedicated operator token. The response exposes fingerprints only. Distribute each peer token only to its matching model host; keep the operator token exclusively in a separate human-console MCP host. Never place the operator token in Codex, Claude, Gemini, DeepSeek, Grok or Perplexity host configuration.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3247,7 +3223,7 @@ export async function main(): Promise<void> {
         // `corrupt_min_age_days` (default 30 days).
         prune_corrupt: z.boolean().default(false),
         corrupt_min_age_days: z.number().int().min(1).max(365).default(30),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3306,7 +3282,7 @@ export async function main(): Promise<void> {
         session_id: SessionIdSchema,
         outcome: z.enum(["aborted"]),
         reason: z.string().max(200).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
