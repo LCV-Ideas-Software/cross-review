@@ -49,7 +49,7 @@
 //    but rely on the config-driven cost for budget decisions
 //    (operator-controlled rates remain authoritative).
 //
-// 6. LONG RUNS GO THROUGH BACKGROUND MODE (v5.1.0, issue #296). Perplexity
+// 6. LONG RUNS GO THROUGH BACKGROUND MODE (v6.0.0, issue #296). Perplexity
 //    severs a synchronous Agent API request at ~300 s — reproduced four
 //    times across three sessions (300618, 300596, 300596 and 300576 ms,
 //    message "terminated") while our own retry timeout was 1 800 000 ms, and
@@ -122,7 +122,7 @@ export const PERPLEXITY_BASE_URL = "https://api.perplexity.ai/v1";
 export const PERPLEXITY_SONAR_SUNSET_DATE = "27/09/2026";
 export const PERPLEXITY_AGENT_MODELS_DOCS = "https://docs.perplexity.ai/docs/agent-api/models";
 
-// v5.1.0 (issue #296): background-mode retrieval. The documented endpoint is
+// v6.0.0 (issue #296): background-mode retrieval. The documented endpoint is
 // `GET /v1/agent/{id}` — the Agent API's own path, not the OpenAI-compatible
 // `/v1/responses` alias the SDK's typed helpers would use — so the poll goes
 // through the SDK's raw request surface at the client base URL.
@@ -173,7 +173,7 @@ function backgroundRetrievalHttpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
-// v5.1.0 (issue #296): a background run survives transport trouble, so a
+// v6.0.0 (issue #296): a background run survives transport trouble, so a
 // failed retrieval must not throw the run away while the deadline still has
 // budget — the run itself is untouched by anything that happens to the
 // retrieval, and this classifier plus the poll loop are the only retry the
@@ -420,7 +420,7 @@ type PerplexityAgentPayload = PerplexityAgentOptions & {
   instructions: string;
   input: Array<{ role: "user"; content: string }>;
   max_output_tokens: number;
-  // v5.1.0: the background path needs a retrievable response, so the two
+  // v6.0.0: the background path needs a retrievable response, so the two
   // long roles send `true`; the probe keeps `false` (see header note 6).
   store: boolean;
   background?: boolean;
@@ -632,7 +632,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     );
   }
 
-  // v5.1.0 (issue #296): ask the provider to stop a background run this
+  // v6.0.0 (issue #296): ask the provider to stop a background run this
   // adapter is abandoning. Without it a cancelled or timed-out run keeps
   // executing, keeps billing (with the reviewer's `web_search` tool active)
   // and stays retained, after the operator already cancelled the session.
@@ -660,7 +660,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     }
   }
 
-  // v5.1.0 (issue #296): retrieve a background run until it reaches a
+  // v6.0.0 (issue #296): retrieve a background run until it reaches a
   // terminal status. `deadline` is anchored before the create — a stream
   // that burned most of the budget before the provider severed it must not
   // hand the poll loop a fresh one. Every wait is cancellable through
@@ -882,7 +882,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     let responseCompleted = false;
     let responseRefused = false;
     let events = 0;
-    // v5.1.0 (issue #296): the provider severs a long connection at ~300 s.
+    // v6.0.0 (issue #296): the provider severs a long connection at ~300 s.
     // `terminalRejected` separates a rejection this adapter raised from the
     // event loop (a failed/cancelled/incomplete terminal, which is the
     // answer and must propagate) from a transport error raised by the
@@ -974,7 +974,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       }
       severedError = error;
     }
-    // v5.1.0 (issue #296): the stream ended without a terminal event. The
+    // v6.0.0 (issue #296): the stream ended without a terminal event. The
     // request declared `background: true`, so the run survived the severed
     // connection: discard the provisional deltas and retrieve the terminal
     // object at the documented `GET /v1/agent/{id}` instead of failing the
@@ -1116,7 +1116,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           },
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          // v5.1.0 (issue #296): a reviewer request is a multi-minute run,
+          // v6.0.0 (issue #296): a reviewer request is a multi-minute run,
           // which the provider severs at ~300 s unless it runs in the
           // background; a background response must be stored to be
           // retrievable (header note 6).
@@ -1199,7 +1199,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           input: [{ role: "user", content: userPrompt(prompt) }],
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          // v5.1.0 (issue #296): same background contract as the reviewer
+          // v6.0.0 (issue #296): same background contract as the reviewer
           // path — a relator draft is just as long, and the provider cut is
           // time-based, not payload-based.
           store: true,

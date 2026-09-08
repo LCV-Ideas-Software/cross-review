@@ -5,7 +5,41 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
-## [v05.01.00] — 07/09/2026
+## [v06.00.00] — 08/09/2026
+
+### Breaking
+
+- **The legacy Sonar rate-card keys are rejected again, as v05.00.00
+  scheduled.** `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+  `request_fee_high_per_1000`, `citation_tokens_per_million` and
+  `deep_research_reasoning_tokens_per_million` are refused by the strict
+  central-config schema on any card, exactly like any other unknown key: the
+  boot notice and `server_info.config_load.parse_error` name the key and the
+  card path, the whole file is ignored, and paid calls stay blocked with
+  `CROSS_REVIEW_CONFIG_FILE_INVALID` until the key is removed and the MCP host
+  restarted. Remove any Sonar card or key from `config.json` before upgrading.
+- **The deprecated members leave the shipped declarations.**
+  `TokenUsage.citation_tokens`, `CostEstimate.request_cost`,
+  `CostEstimate.citation_tokens_cost`,
+  `CostEstimate.deep_research_reasoning_tokens_cost` and the five legacy keys
+  on `CostRateConfig` are gone from `dist/src/core/types.d.ts`. A consumer that
+  references them stops compiling; the package declares no `exports` map and
+  ships the whole compiled tree, so those declarations were public contract.
+
+### Removed
+
+- **The 5.x tolerance machinery, in full.** The tolerated-key list and its
+  boot notice, `server_info.config_load.deprecated_keys_ignored`, the
+  `mergeUsage` / `mergeCost` passthrough of the deprecated fields and the
+  `citation_tokens` clause of the provider-work predicate are removed. A
+  persisted attempt that reported only `citation_tokens`, no other counter and
+  no cost, is therefore no longer treated as evidence of provider work.
+  Sessions persisted by v3.0–v4.6.8 keep their stored `total_cost`, which
+  `mergeCost` still adds up. The removal was performed mechanically, by
+  reverse-applying the change set that had introduced the tolerance, so that
+  nothing shipped alongside it was lost — in particular the boot notice for a
+  rejected central configuration, which belongs to v05.00.00 and is still
+  wired into startup.
 
 ### Added
 

@@ -30,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v05.01.00** (package `5.1.0`).
+**Status.** Stable. The current source/release target is **v06.00.00** (package `6.0.0`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -48,7 +48,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`v05.01.00`**      | Minor: the Perplexity reviewer and relator run in Agent API background mode (`background: true` plus `GET /v1/agent/{id}`) because the provider severs a synchronous request at ~300 s; those two long requests now send `store: true`, so Perplexity retains them (issue #296).      |
+| **`v06.00.00`**      | Minor: the Perplexity reviewer and relator run in Agent API background mode (`background: true` plus `GET /v1/agent/{id}`) because the provider severs a synchronous request at ~300 s; those two long requests now send `store: true`, so Perplexity retains them (issue #296).      |
 | **`v05.00.00`**      | **Major: legacy Sonar dimensions removed.** `estimateCost` no longer prices them; the five Sonar-only rate-card keys stay accepted by the schema as deprecated no-ops named at boot; a central config the schema rejects is now announced at boot.                                    |
 | **`v04.06.08`**      | **Evidence custody fixes.** A provider-escaped GitHub URL quoted from the attachment no longer downgrades a READY vote; a relator may name a file the admitted unified diff materializes.                                                                                             |
 | **`v04.06.07`**      | **No manual gesture.** A push to `main` that changes the version publishes to npmjs.com and GitHub Packages and then records the Release with the run's own token.                                                                                                                    |

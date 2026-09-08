@@ -109,7 +109,7 @@ seconds. The cut was reproduced four times across three sessions (300618,
 300596, 300596 and 300576 ms, provider message `terminated`) while
 `CROSS_REVIEW_TIMEOUT_MS` was 1,800,000 ms, and shrinking the payload from 128
 KB to 85 KB did not move it. The provider documents no maximum request
-duration; it documents the remedy instead. Since v5.1.0 the two long
+duration; it documents the remedy instead. Since v6.0.0 the two long
 Perplexity roles — reviewer (`call`) and relator (`generate`) — create their
 request with `background: true` and follow it with `GET /v1/agent/{id}`, the
 documented Agent API retrieval path, until the provider reports a terminal
@@ -294,7 +294,7 @@ The selected model and selection evidence are persisted in the session capabilit
 Central `config.json`, process environment and Windows user environment are
 read once during MCP process startup. `server_info.config_load` exposes the
 load result, path, parse error, applied/overridden field counts, the ignored
-deprecated rate-card keys (`deprecated_keys_ignored`), loaded and current
+loaded and current
 mtime/SHA-256, `live_reload_supported=false`, and `reload_required`.
 Paid calls fail closed when the file was invalid at load or its current hash no
 longer matches the loaded snapshot. Editing the file therefore requires an MCP

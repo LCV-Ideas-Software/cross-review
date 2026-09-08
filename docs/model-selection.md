@@ -100,8 +100,8 @@ and the financial preflight reports
 `CROSS_REVIEW_PERPLEXITY_MODEL_SONAR_RETIRED_USE_AGENT_API_ID`. The Sonar-only
 cost dimensions (per-request fee by search context size, citation tokens, Deep
 Research reasoning tokens) are no longer priced; the rate-card keys that carried
-them are deprecated no-ops a central config may still contain (a boot notice
-names them; rejection is scheduled for v06.00.00), see
+them are rejected by the strict central-config schema since v06.00.00 (they
+were deprecated no-ops during 5.x), see
 [docs/costs.md](costs.md).
 
 Web search is a declared tool: the reviewer role sends

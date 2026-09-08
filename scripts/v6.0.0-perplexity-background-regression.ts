@@ -1,4 +1,4 @@
-// v5.1.0 — Perplexity Agent API background mode (issue #296).
+// v6.0.0 — Perplexity Agent API background mode (issue #296).
 //
 // The provider severs a synchronous Agent API request at ~300 s
 // (300618/300596/300596/300576 ms observed across three sessions, message
@@ -188,7 +188,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     [],
     "a run that reached a terminal status must not be cancelled",
   );
-  console.log("[v5.1.0-perplexity-background] payload_declares_background: PASS");
+  console.log("[v6.0.0-perplexity-background] payload_declares_background: PASS");
 }
 
 // (2) A pending create is polled on the documented retrieval endpoint
@@ -218,7 +218,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     ["/agent/resp_bg_poll", "/agent/resp_bg_poll"],
     "polling must use the documented Agent API retrieval path GET /v1/agent/{id}",
   );
-  console.log("[v5.1.0-perplexity-background] polls_until_terminal: PASS");
+  console.log("[v6.0.0-perplexity-background] polls_until_terminal: PASS");
 }
 
 // (3) A non-terminal status is never an answer, even when the pending
@@ -247,7 +247,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
   const result = await adapter.generate("fixture", context());
   assert.equal(result.text, READY, "a non-terminal poll must never be promoted to an answer");
   assert.equal(calls.getPaths.length, 2);
-  console.log("[v5.1.0-perplexity-background] non_terminal_is_never_an_answer: PASS");
+  console.log("[v6.0.0-perplexity-background] non_terminal_is_never_an_answer: PASS");
 }
 
 // (4) Cancellation through `context.signal` stops the polling loop: no
@@ -288,7 +288,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     Date.now() - started < 900,
     "cancellation must interrupt the poll interval instead of waiting it out",
   );
-  console.log("[v5.1.0-perplexity-background] cancellation_stops_polling: PASS");
+  console.log("[v6.0.0-perplexity-background] cancellation_stops_polling: PASS");
 }
 
 // (5) The overall deadline is `config.retry.timeout_ms`; the poll loop must
@@ -321,7 +321,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     ["/agent/resp_bg_deadline/cancel"],
     "a run the deadline abandons must be asked to stop, not left running and billing",
   );
-  console.log("[v5.1.0-perplexity-background] overall_deadline_honoured: PASS");
+  console.log("[v6.0.0-perplexity-background] overall_deadline_honoured: PASS");
 }
 
 // (6) The reproduction of issue #296: the provider severs the streaming
@@ -362,7 +362,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     ctx.events.some((event) => event.type === "peer.token.discarded"),
     "the provisional deltas of a severed stream must be discarded, never committed",
   );
-  console.log("[v5.1.0-perplexity-background] severed_stream_resumes_by_retrieval: PASS");
+  console.log("[v6.0.0-perplexity-background] severed_stream_resumes_by_retrieval: PASS");
 }
 
 // (7) The deadline is anchored before the create, not at the severance:
@@ -398,7 +398,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     elapsed < 1400,
     `the poll deadline must be anchored at the create, not at the severance (elapsed ${elapsed} ms)`,
   );
-  console.log("[v5.1.0-perplexity-background] deadline_anchored_at_create: PASS");
+  console.log("[v6.0.0-perplexity-background] deadline_anchored_at_create: PASS");
 }
 
 // (8) The probe is a short call and does not have the problem: it stays
@@ -429,7 +429,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     "the probe is a short synchronous call and must not declare background mode",
   );
   assert.deepEqual(calls.getPaths, []);
-  console.log("[v5.1.0-perplexity-background] probe_path_unchanged: PASS");
+  console.log("[v6.0.0-perplexity-background] probe_path_unchanged: PASS");
 }
 
 // (9) A background run outlives transport trouble, so a failed retrieval must
@@ -469,7 +469,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     [],
     "a run that was retrieved to a terminal status must not be cancelled",
   );
-  console.log("[v5.1.0-perplexity-background] transient_retrieval_failures_tolerated: PASS");
+  console.log("[v6.0.0-perplexity-background] transient_retrieval_failures_tolerated: PASS");
 }
 
 // (10) Tolerance is not blindness. A non-transient retrieval status — 404 is
@@ -505,7 +505,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     `a non-transient status must not wait out the deadline (${elapsed} ms)`,
   );
   assert.deepEqual(calls.postPaths, ["/agent/resp_bg_404/cancel"]);
-  console.log("[v5.1.0-perplexity-background] non_transient_retrieval_escapes: PASS");
+  console.log("[v6.0.0-perplexity-background] non_transient_retrieval_escapes: PASS");
 }
 
 // (11) The same abandonment happens when the caller cancels while the streamed
@@ -546,7 +546,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     ["/agent/resp_bg_stream_abort/cancel"],
     "a cancellation during the stream must also stop the surviving background run",
   );
-  console.log("[v5.1.0-perplexity-background] stream_cancellation_stops_the_run: PASS");
+  console.log("[v6.0.0-perplexity-background] stream_cancellation_stops_the_run: PASS");
 }
 
 // (12) The deadline is a bound only if a single retrieval cannot outlive it.
@@ -612,7 +612,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     ["/agent/resp_bg_hung/cancel"],
     "a run the deadline abandons must be asked to stop, even when the retrieval hung",
   );
-  console.log("[v5.1.0-perplexity-background] hung_retrieval_cannot_outlive_the_deadline: PASS");
+  console.log("[v6.0.0-perplexity-background] hung_retrieval_cannot_outlive_the_deadline: PASS");
 }
 
-console.log("[v5.1.0-perplexity-background] ALL CASES PASS");
+console.log("[v6.0.0-perplexity-background] ALL CASES PASS");

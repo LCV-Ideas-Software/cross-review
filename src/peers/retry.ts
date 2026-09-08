@@ -144,7 +144,7 @@ function cancellationError(signal: AbortSignal): Error {
   return error;
 }
 
-// Exported for the Perplexity background-mode poll loop (v5.1.0), which
+// Exported for the Perplexity background-mode poll loop (v6.0.0), which
 // waits between retrievals with the same cancellation semantics the retry
 // backoff uses: an aborted signal rejects immediately with an AbortError
 // the shared classifier reads as `cancelled`.
