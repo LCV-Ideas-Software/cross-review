@@ -960,8 +960,8 @@ function completedResponse(model: string, text: string): Record<string, unknown>
 // the create. The path that reaches it: a transient 5xx retrieval keeps the
 // loop polling until the deadline, and the poll-timeout message EMBEDS that
 // retrieval error's text, so `GATEWAY_5XX_RE` matches and the whole closure is
-// classified retryable. Measured by the peer panel of session 3d95ee4f before
-// this fix was written.
+// classified retryable. Confirmed by a peer panel against the pre-fix tree; the
+// session identifier stays out of the repository by policy.
 {
   const retrying: AppConfig = {
     ...withTimeout(1_500),
