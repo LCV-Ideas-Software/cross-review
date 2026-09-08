@@ -19,7 +19,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/core/config.js";
-import type { AppConfig, PeerCallContext, RuntimeEvent } from "../src/core/types.js";
+import { isSkippableFailure } from "../src/core/convergence.js";
+import type { AppConfig, PeerCallContext, PeerFailure, RuntimeEvent } from "../src/core/types.js";
 import { PerplexityAdapter } from "../src/peers/perplexity.js";
 
 process.env.PERPLEXITY_API_KEY = "fixture-perplexity-key";
@@ -734,6 +735,153 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     );
   }
   console.log("[v6.0.0-perplexity-background] creates_pin_no_sdk_retries: PASS");
+}
+
+// (15) `maxRetries: 0` disarms only the SDK. `withRetry` wraps the WHOLE
+// closure, creates included, so a create failure the classifier calls
+// retryable made the adapter re-POST it — up to max_attempts stored, billable
+// background runs, of which at most one id is ever observed. The Agent API
+// publishes six endpoints, none of which lists runs, and no idempotency
+// header, so the extra runs can never be found or stopped: they bill to
+// completion with the reviewer's web_search tool active.
+//
+// The stop cannot be spelled `retryable: false`. Two other readers depend on
+// that field meaning "would the provider succeed if asked again":
+// `isSkippableFailure` uses it to leave a provider error `skipped` rather than
+// `rejected` — flipping it would silently BLOCK convergence — and the
+// orchestrator reads the same field for fallback eligibility. So the
+// classification is asserted unchanged here, and only the retry loop is
+// stopped, through `safe_to_repeat`.
+{
+  const retrying: AppConfig = {
+    ...config,
+    retry: { ...config.retry, max_attempts: 3, base_delay_ms: 1, max_delay_ms: 1 },
+  };
+  const adapter = new PerplexityAdapter(retrying);
+  const calls = recorder();
+  setClient(
+    adapter,
+    recordingClient(
+      calls,
+      async () => {
+        throw httpError(502, "Bad gateway");
+      },
+      async () => {
+        throw new Error("a failed create must not be polled");
+      },
+    ),
+  );
+  await assert.rejects(
+    () => adapter.call("fixture", context()),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure, "the failure must reach the orchestrator classified");
+      assert.equal(
+        failure.retryable,
+        true,
+        "the provider classification is untouched: a 502 is still a retryable provider error",
+      );
+      assert.equal(
+        isSkippableFailure(failure),
+        true,
+        "convergence must still be reachable — a create that cannot repeat is not a rejection",
+      );
+      assert.equal(
+        failure.safe_to_repeat,
+        false,
+        "only the retry loop learns the attempt has an un-repeatable side effect",
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    calls.createOptions.length,
+    1,
+    "an ambiguous create failure must not be re-POSTed: the first run may already exist and is unreachable",
+  );
+
+  // The narrow half of the same contract: a 4xx is the provider REJECTING the
+  // request before storing anything, so the ordinary rate-limit retry must
+  // survive intact. Widening the mark to every create failure would trade one
+  // hazard for a worse one.
+  const rateLimited = new PerplexityAdapter(retrying);
+  const rateLimitedCalls = recorder();
+  setClient(
+    rateLimited,
+    recordingClient(
+      rateLimitedCalls,
+      async () => {
+        throw httpError(429, "Too many requests");
+      },
+      async () => {
+        throw new Error("a failed create must not be polled");
+      },
+    ),
+  );
+  await assert.rejects(
+    () => rateLimited.call("fixture", context()),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure);
+      assert.equal(
+        failure.safe_to_repeat,
+        undefined,
+        "a rejected request stored nothing, so it carries no repeat hazard",
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    rateLimitedCalls.createOptions.length,
+    retrying.retry.max_attempts,
+    "a rate-limited create must still be retried the configured number of times",
+  );
+  console.log("[v6.0.0-perplexity-background] outer_retry_does_not_duplicate_creates: PASS");
+}
+
+// (16) A transport cut that lands AFTER `response.completed` severs a
+// connection whose answer is already complete in hand. openai 7.8.0 rejects
+// the iterator when the socket dies before `data: [DONE]` (a live server
+// closing there raises `TypeError: terminated`), and that rejection used to be
+// rethrown unconditionally — failing the round on a finished, billed answer.
+// The retrieval that repairs an ordinary severed stream cannot help: it is
+// guarded by `!responseCompleted`, so on this path nothing recovers the run.
+// Nor may the run be cancelled: it is already terminal, and the documented
+// cancel answers 400 against a terminal run.
+{
+  const adapter = new PerplexityAdapter(config);
+  const calls = recorder();
+  async function* completedThenSevered(): AsyncGenerator<Record<string, unknown>> {
+    yield { type: "response.created", response: { id: "resp_bg_done", status: "queued" } };
+    yield { type: "response.output_text.delta", delta: READY };
+    yield { type: "response.completed", response: completedResponse(adapter.model, READY) };
+    // No `data: [DONE]`: the socket dies with the answer already delivered.
+    throw new Error("terminated");
+  }
+  setClient(
+    adapter,
+    recordingClient(
+      calls,
+      async () => completedThenSevered(),
+      async () => {
+        throw new Error("a completed stream must not be polled");
+      },
+    ),
+  );
+  const result = await adapter.call("fixture", context({ stream: true }));
+  assert.equal(
+    JSON.parse(result.text).status,
+    "READY",
+    "the answer that already arrived must be the answer returned",
+  );
+  assert.equal(
+    (result.raw as { stream_severed?: unknown }).stream_severed,
+    true,
+    "the record must still report the cut rather than claim an unbroken stream",
+  );
+  assert.deepEqual(calls.getPaths, [], "a completed run has nothing left to retrieve");
+  assert.deepEqual(calls.postPaths, [], "a terminal run must not be cancelled: that answers 400");
+  console.log("[v6.0.0-perplexity-background] completed_then_severed_keeps_the_answer: PASS");
 }
 
 console.log("[v6.0.0-perplexity-background] ALL CASES PASS");

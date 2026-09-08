@@ -286,7 +286,14 @@ export async function withRetry<T>(
           attempts: attempt,
         });
       }
-      if (!last.retryable || attempt >= config.retry.max_attempts) {
+      // `safe_to_repeat === false` stops the loop even when the provider
+      // error is retryable: re-running the closure would repeat a side effect
+      // this adapter cannot reconcile (see PeerFailure.safe_to_repeat).
+      if (
+        !last.retryable ||
+        last.safe_to_repeat === false ||
+        attempt >= config.retry.max_attempts
+      ) {
         throw attachPeerFailure(
           error,
           mergeRetryBillingIntoFailure(last, priorRetryBilling, priorTrySpend),

@@ -144,6 +144,42 @@ class PerplexityStreamExit extends Error {
   }
 }
 
+// v6.0.0 (issue #296): every Agent API create is a POST that STORES a billable
+// background run. The API publishes no idempotency header and no endpoint that
+// lists runs, so a create whose outcome never came back can never be
+// reconciled: the run may exist, bill, and hold an id nothing will ever cancel.
+// `maxRetries: 0` disarms the SDK layer, but `withRetry` re-executes the whole
+// closure and a retryable classification there re-POSTs the create. The retry
+// loop is stopped through `PeerFailure.safe_to_repeat`, never through
+// `retryable`, which convergence and the fallback chain also read.
+const PERPLEXITY_CREATE_ORPHAN_RISK = Symbol.for("cross_review.perplexity.create_orphan_risk");
+
+function hasCreateOrphanRisk(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as Record<symbol, unknown>)[PERPLEXITY_CREATE_ORPHAN_RISK] === true
+  );
+}
+
+// A 4xx is the provider REJECTING the request before it stored anything, so
+// repeating it is safe — that keeps the ordinary 429 retry intact. A 5xx is
+// ambiguous, and an error carrying no status at all means no response arrived,
+// which is the worst case: the POST may have been accepted in full. Both are
+// marked. The mark is a symbol, so it never reaches a serialized record.
+async function createAgentRun<T>(create: () => Promise<T>): Promise<T> {
+  try {
+    return await create();
+  } catch (error) {
+    const status: unknown = (error as { status?: unknown } | null | undefined)?.status;
+    const rejectedWithoutStoring = typeof status === "number" && status >= 400 && status < 500;
+    if (!rejectedWithoutStoring && typeof error === "object" && error !== null) {
+      (error as Record<symbol, unknown>)[PERPLEXITY_CREATE_ORPHAN_RISK] = true;
+    }
+    throw error;
+  }
+}
+
 // Tag a terminal-origin rejection AFTER the billing layer has annotated it.
 // `withTerminalBilling` attaches `usage`, `cost` and `accounted_attempts` to
 // the error object it rethrows, so tagging inside the callback would decorate
@@ -763,19 +799,21 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
   ): Promise<{ response: AgentResponse; polls: number; retrieveErrors: number }> {
     const deadline = Date.now() + this.config.retry.timeout_ms;
     const backgroundClient = await this.client();
-    const created = (await backgroundClient.responses.create(
-      payload as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
-      {
-        signal: context.signal,
-        // The SDK sends no `Idempotency-Key`, so an automatic retry of a POST
-        // the provider accepted but whose response was lost would start a
-        // SECOND stored, billable background run whose id this adapter never
-        // sees and `cancelBackgroundRun` can never reach. One attempt only;
-        // `timeout` bounds a SINGLE attempt, not the call, and the retry
-        // authority is `withRetry`, not the SDK.
-        maxRetries: 0,
-        timeout: this.config.retry.timeout_ms,
-      },
+    const created = (await createAgentRun(() =>
+      backgroundClient.responses.create(
+        payload as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+        {
+          signal: context.signal,
+          // The SDK sends no `Idempotency-Key`, so an automatic retry of a POST
+          // the provider accepted but whose response was lost would start a
+          // SECOND stored, billable background run whose id this adapter never
+          // sees and `cancelBackgroundRun` can never reach. One attempt only;
+          // `timeout` bounds a SINGLE attempt, not the call, and the retry
+          // authority is `withRetry`, not the SDK.
+          maxRetries: 0,
+          timeout: this.config.retry.timeout_ms,
+        },
+      ),
     )) as unknown as AgentResponse;
     if (!isPerplexityBackgroundPending(created.status))
       return { response: created, polls: 0, retrieveErrors: 0 };
@@ -903,13 +941,15 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
   }> {
     const deadline = Date.now() + this.config.retry.timeout_ms;
     const streamClient = await this.client();
-    const stream = await streamClient.responses.create(
-      { ...payload, stream: true } as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
-      // Same contract as the background create: this payload also declares
-      // `background: true` and `store: true`, so a retried POST orphans a
-      // billable run exactly the same way. `stream: true` buys no exemption —
-      // the SDK decides retries before it ever parses the response body.
-      { signal: context.signal, maxRetries: 0, timeout: this.config.retry.timeout_ms },
+    const stream = await createAgentRun(() =>
+      streamClient.responses.create(
+        { ...payload, stream: true } as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
+        // Same contract as the background create: this payload also declares
+        // `background: true` and `store: true`, so a retried POST orphans a
+        // billable run exactly the same way. `stream: true` buys no exemption —
+        // the SDK decides retries before it ever parses the response body.
+        { signal: context.signal, maxRetries: 0, timeout: this.config.retry.timeout_ms },
+      ),
     );
     const stream_buffer = new StreamBuffer(this.id);
     const tokenStream = this.createTokenEventBuffer(
@@ -1019,7 +1059,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       // loop settles at every non-terminal exit — so both earn the same
       // best-effort stop before the failure propagates.
       if (error instanceof PerplexityStreamExit || context.signal?.aborted) {
-        if (requestId) {
+        // `response.completed` already arrived: the run is terminal at the
+        // provider, so there is nothing left to stop and the documented
+        // cancel answers 400 against it. Only a run still executing earns the
+        // best-effort stop.
+        if (requestId && !responseCompleted) {
           await this.cancelBackgroundRun(streamClient, perplexityBackgroundRetrievePath(requestId));
         }
         throw error instanceof PerplexityStreamExit ? error.original : error;
@@ -1082,7 +1126,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         },
       };
     }
-    if (severedError !== undefined) throw severedError;
+    // A cut that lands after `response.completed` severs a connection whose
+    // answer is already complete in hand: the retrieval above only runs while
+    // the terminal object is still missing, so failing here would discard a
+    // finished, billed answer over a socket that no longer mattered.
+    if (severedError !== undefined && !responseCompleted) throw severedError;
     withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
       assertResponsesStreamCompleted(responseCompleted, {
         context,
@@ -1123,7 +1171,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         background: true,
         background_polls: 0,
         background_retrieve_errors: 0,
-        stream_severed: false,
+        stream_severed: severedError !== undefined,
         provider: this.provider,
         events,
         model: modelReported,
@@ -1223,7 +1271,19 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) => {
         this.discardTokenEventBuffer(context, "review", attempt);
-        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+        const failure = classifyProviderError(
+          this.id,
+          this.provider,
+          this.model,
+          error,
+          attempt,
+          started,
+        );
+        // The classification stays exactly as every other peer reports it —
+        // `retryable` still drives convergence and the fallback chain. Only
+        // the retry loop learns that repeating THIS attempt would re-POST a
+        // create whose run may already exist and can never be reached.
+        return hasCreateOrphanRisk(error) ? { ...failure, safe_to_repeat: false } : failure;
       },
       { signal: context.signal },
     );
@@ -1305,7 +1365,19 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       },
       (error, attempt) => {
         this.discardTokenEventBuffer(context, "generation", attempt);
-        return classifyProviderError(this.id, this.provider, this.model, error, attempt, started);
+        const failure = classifyProviderError(
+          this.id,
+          this.provider,
+          this.model,
+          error,
+          attempt,
+          started,
+        );
+        // The classification stays exactly as every other peer reports it —
+        // `retryable` still drives convergence and the fallback chain. Only
+        // the retry loop learns that repeating THIS attempt would re-POST a
+        // create whose run may already exist and can never be reached.
+        return hasCreateOrphanRisk(error) ? { ...failure, safe_to_repeat: false } : failure;
       },
       { signal: context.signal },
     );

@@ -365,6 +365,20 @@ export interface PeerFailure {
     | "unknown";
   message: string;
   retryable: boolean;
+  /**
+   * v6.0.0 (issue #296): whether re-executing the attempt that produced this
+   * failure is safe, which is NOT what `retryable` answers. `retryable` means
+   * "would the provider succeed if asked again", and two other readers depend
+   * on exactly that meaning: `isSkippableFailure` uses it to decide whether a
+   * provider error leaves the peer `skipped` (convergence still reachable) or
+   * `rejected` (convergence blocked), and the orchestrator uses it to decide
+   * fallback eligibility. An adapter whose attempt has an un-repeatable side
+   * effect — a POST that stores a billable run behind an id the failed call
+   * never saw — must stop the retry loop WITHOUT changing either of those
+   * decisions, so it sets this instead. Absent means safe to repeat: no
+   * adapter but Perplexity sets it, and `withRetry` treats absent as safe.
+   */
+  safe_to_repeat?: boolean | undefined;
   // prettier-ignore
   recovery_hint?:
     | "wait_and_retry"

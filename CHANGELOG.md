@@ -123,6 +123,34 @@ standard `v00.00.00`; npm package versions remain SemVer.
   `background: true` and `store: true`, so `stream: true` bought the streaming
   create no exemption. The retry authority is `withRetry`, which accounts for
   what it spends; the SDK's was invisible to it.
+- **Nor by the outer retry loop: `PeerFailure.safe_to_repeat`.** Pinning
+  `maxRetries: 0` disarms only the SDK. `withRetry` wraps the whole closure,
+  creates included, so a create failure the classifier calls retryable was
+  re-POSTed — up to `CROSS_REVIEW_RETRY_ATTEMPTS` stored, billable background
+  runs, of which at most one id is ever observed. Measured against real
+  sockets: 500, 502, 503, 504 and 429 all took that branch. The Agent API
+  publishes six endpoints, none of which lists runs, and no idempotency
+  header, so the extra runs can never be found or stopped. The stop could not
+  be spelled `retryable: false`: `isSkippableFailure` reads that field to
+  leave a provider error `skipped` rather than `rejected`, so flipping it
+  would have silently blocked convergence, and the orchestrator reads the same
+  field for fallback eligibility. `PeerFailure.safe_to_repeat` is the missing
+  concept — "is it safe to run this closure again", as distinct from "would
+  the provider succeed if asked again" — read only by `withRetry` and optional,
+  so no other adapter changes behaviour. Perplexity sets it on any create
+  failure that is not a 4xx: a rejected request stored nothing, so the ordinary
+  rate-limit retry survives intact.
+- **A cut after `response.completed` no longer discards the answer.** The
+  severed-stream repair is guarded by `!responseCompleted`, so a transport
+  rejection arriving once the terminal event was already in hand recovered
+  nothing and was rethrown, failing the round on a finished, billed answer.
+  openai 7.8.0 rejects the iterator when the socket dies before `data: [DONE]`
+  — a live server closing there raises `TypeError: terminated` — so the window
+  is reachable on a real wire, not only in a fixture. That run is also terminal
+  at the provider, so the best-effort cancel that a live abandoned run earns is
+  now suppressed on this path: the documented cancel answers 400 against a
+  terminal run. The record stops claiming an unbroken stream: `stream_severed`
+  reports the cut.
 
 ### Changed
 
