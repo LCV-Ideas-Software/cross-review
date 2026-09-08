@@ -29,7 +29,9 @@ type PollPayload = {
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v4516-poll-cancel-"));
 const configPath = path.join(dataDir, "config.json");
-const operatorToken = "07".repeat(32);
+// v07.00.00: the record holds one capability per peer; the caller declares
+// "claude" and presents claude's own token.
+const callerToken = "02".repeat(32);
 const failures: string[] = [];
 let serverStderr = "";
 
@@ -46,7 +48,6 @@ fs.writeFileSync(
       deepseek: "04".repeat(32),
       grok: "05".repeat(32),
       perplexity: "06".repeat(32),
-      operator: operatorToken,
     },
   }),
   "utf8",
@@ -64,7 +65,7 @@ const serverEnvironment = {
   ...rateEnvironment,
   CROSS_REVIEW_DATA_DIR: dataDir,
   CROSS_REVIEW_CONFIG_FILE: configPath,
-  CROSS_REVIEW_CALLER_TOKEN: operatorToken,
+  CROSS_REVIEW_CALLER_TOKEN: callerToken,
   CROSS_REVIEW_REQUIRE_TOKEN: "true",
   CROSS_REVIEW_STUB: "1",
   CROSS_REVIEW_STUB_CONFIRMED: "1",

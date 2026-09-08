@@ -146,24 +146,30 @@ assert.equal(
   true,
   "v4.5.1 / evidence_preflight: authenticated peer raw material must pass transport admission",
 );
-assert.equal(peerSubmittedStructuredEvidence.operator_grounded, false);
 assert.equal(peerSubmittedStructuredEvidence.evidence_authority, "caller_submitted_unverified");
 
-const peerCanUseOperatorCustodiedAttachment = evidencePreflight({
+// v07.00.00 contract change: this case fed `operatorVerifiedEvidenceText` and
+// asserted the result was promoted to "operator_verified". Both the parameter
+// and the tier are gone — they described bytes admitted by a human operator
+// through a channel that never existed. The same attachment now carries the
+// one provenance an attachment can have.
+const peerAttachedEvidence = evidencePreflight({
   task: "Review my patch - 99 passed.",
   initialDraft: "no markers here",
   caller: "claude",
   attachedEvidenceText: "Tests 99 passed, 0 failed\nEXIT_CODE: 0",
-  operatorVerifiedEvidenceText: "Tests 99 passed, 0 failed\nEXIT_CODE: 0",
   attachmentsPresent: true,
 });
 assert.equal(
-  peerCanUseOperatorCustodiedAttachment.pass,
+  peerAttachedEvidence.pass,
   true,
-  "v4.5.0 / evidence_preflight: a peer may rely on content already admitted through operator-only attachment custody",
+  "v4.5.0 / evidence_preflight: a peer may rely on content it attached durably",
 );
-assert.equal(peerCanUseOperatorCustodiedAttachment.operator_grounded, true);
-assert.equal(peerCanUseOperatorCustodiedAttachment.evidence_authority, "operator_verified");
+assert.equal(
+  peerAttachedEvidence.evidence_authority,
+  "caller_submitted_unverified",
+  "v07.00.00: there is no tier above caller-submitted",
+);
 
 const commandRecord = evidencePreflight({
   task: "Review completed work: npm run lint passed and git diff --check is clean.",

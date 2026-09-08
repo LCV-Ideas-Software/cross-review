@@ -384,9 +384,8 @@ these environment variables before running real sessions (example):
 - `session_check_convergence`
 - `session_preflight_check`
 - `session_truthfulness_preflight_check`
-- `session_attach_evidence` — optional operator-only authority promotion; AI
-  callers use the automatic `evidence` field on review starters
-- `session_evidence_checklist_update`
+- `session_attach_evidence` — optional durable attachment channel; AI callers
+  normally use the automatic `evidence` field on review starters
 - `session_evidence_judge_pass`
 - `session_evidence_judge_consensus_pass`
 - `session_judgment_precision_report`
@@ -442,8 +441,8 @@ workflow and authorization assertions, test/build/hash claims, concrete source
 correspondence, unresolved evidence asks, model attestation, and structured
 status completeness. Authenticated caller evidence supplied inline or through
 the `evidence` field is persisted with an integrity digest and transported to
-every reviewer as `PEER-SUBMITTED / UNVERIFIED`; no manual operator attachment
-is required. Each external submission atomically supersedes the active caller
+every reviewer as `CALLER-SUBMITTED / UNVERIFIED`, which is the only
+provenance an attachment can carry. Each external submission atomically supersedes the active caller
 snapshot while preserving prior manifests for audit, so retries cannot inherit
 old failures or replay old successes. Every `READY` vote must cite sources traceable to the reviewed
 artifact or admitted evidence. When operational claims depend only on
@@ -487,19 +486,18 @@ inspect the artifact and cite the decisive raw value, but must not replace a
 review with a full-file, full-log, or provider-output dump. A bare filename,
 digest, generic assurance, or empty code fence cannot sustain `READY`.
 
-Only the operator capability token may call the optional `session_attach_evidence`
-authority-promotion surface or mutate evidence dispositions and security
-configuration. This tool is never required for an ordinary AI-initiated
-review: the runtime tool descriptions and rejected-call remediation direct AI
-callers to the automatically persisted `evidence` field. Each new attachment
-records the verified caller, origin, timestamp, byte count and SHA-256, emits a
-durable custody event, and is re-hashed on every read.
-Tampering fails closed. Peer-attributed material remains reviewable but cannot
-grant operator authority; a generic attachment does not by itself prove an
+`session_attach_evidence` is an optional durable attachment channel, open to
+any authenticated peer. It is never required for an ordinary review: the
+runtime directs callers to the automatically persisted `evidence` field, and
+the attachment carries exactly the same provenance either way. Each new
+attachment records the verified caller, origin, timestamp, byte count and
+SHA-256, emits a durable custody event, and is re-hashed on every read.
+Tampering fails closed. There is no tier above caller-submitted, so no
+attachment promotes itself: a generic attachment does not by itself prove an
 unrelated claim.
 
 Terminal closure is different. The runtime alone seals `converged`; the
-persisted session petitioner (or the operator token) closes its own
+persisted session petitioner closes its own
 non-terminal session as `aborted` through `session_finalize`; `max-rounds`
 is written only by the runtime or the idle sweep; and sessions left open by a
 dead petitioner are aborted by the boot-time stale sweep after 24 hours. No
@@ -508,18 +506,18 @@ tool escalates to a human: the MCP surface has no such actor.
 An evidence requester may automatically withdraw only its own earlier ask after
 a strictly grounded `READY/verified` recheck. That transition is recorded as
 `requester_reverified`; silence remains `not_resurfaced`, and no peer can close
-another peer's ask or an operator-terminal item.
+another peer's ask or a terminal item.
 
-On an existing session, review starters require the persisted petitioner token
-or the dedicated operator token. Evidence is attributed to the authenticated
-invoker rather than inherited from the session owner, so a peer cannot turn its
-submission into `operator_verified` by continuing an operator-owned session.
+On an existing session, review starters require the persisted petitioner
+token. Evidence is attributed to the authenticated invoker rather than
+inherited from the session owner, so a peer cannot inherit another caller's
+provenance by continuing its session.
 
-Caller identity uses seven distinct local capabilities: one for each peer and
-one for `operator`. Operator tools require the operator token even when token
-enforcement for peers is otherwise permissive. Keep that token only in a
-dedicated human-console MCP host—placing it in a model host grants that model
-operator authority. `host-tokens.json` contains secrets and assumes the local
+Caller identity uses six distinct local capabilities, one per peer. A seventh
+existed for an `operator` identity whose token was meant to live in a separate
+human console; that host does not exist, because the whole surface is MCP and
+is exercised by agents, so the capability bound a secret to nobody and is gone.
+`host-tokens.json` contains secrets and assumes the local
 OS account/data directory is trusted. The runtime now removes inherited NTFS
 ACLs from this file on Windows and grants only the current user, SYSTEM and
 Administrators; on POSIX it verifies owner-only mode `0600`. This blocks direct
@@ -527,9 +525,9 @@ read access inherited by model-sandbox groups, but it is not isolation from
 another process running as the same unrestricted OS user.
 
 `session_cancel_job`, `contest_verdict` and `session_finalize` accept only the
-explicitly persisted session petitioner with its peer token, or the dedicated
-operator. Legacy sessions without an explicit petitioner require the operator
-token.
+explicitly persisted session petitioner with its peer token. A legacy session
+without an explicit petitioner yields no derivable owner and is refused; the
+idle sweep closes it after 24 hours.
 
 ## Repository conventions
 

@@ -20,8 +20,7 @@ cross-review is an **API-only orchestrator**. The preflight:
 
 The runtime packages authenticated caller material for transport: raw inline
 blocks and the `evidence` field are persisted with caller identity, SHA-256
-and byte count, then included verbatim in reviewer prompts. No manual operator
-attachment is required.
+and byte count, then included verbatim in reviewer prompts.
 
 Each authenticated external submission is a complete snapshot. Its immutable
 manifest becomes the sole active automatic caller-evidence bundle; older
@@ -95,10 +94,11 @@ or "here is the test plan" is a design review with legitimately no diff
 
 Authenticated peer material may satisfy the transport/admission gate when it
 contains value-corresponding raw output. It is labeled
-`PEER-SUBMITTED / UNVERIFIED`: reviewers may inspect and cite the exact bytes,
-but must not claim they independently executed the command. Optional operator
-material is labeled `OPERATOR-VERIFIED`; it is a higher authority tier, not a
-routine prerequisite for review or convergence.
+`CALLER-SUBMITTED / UNVERIFIED`: reviewers may inspect and cite the exact
+bytes, but must not claim they independently executed the command. There is no
+tier above this one. A second label, `OPERATOR-VERIFIED`, existed for bytes
+admitted by a human operator; since no operator can reach this server, no
+caller could ever obtain it, and it is gone.
 
 The persisted evidence channel is also the single-artifact surface (v4.5.44,
 issue #216): a request for a full or unfiltered artifact — such as the
@@ -212,13 +212,14 @@ filesystem paths.
 
 ## Attachment custody and authority
 
-`session_attach_evidence` remains an optional operator-only authority
-surface; normal reviews do not require it. AI peers, including Claude, cannot
-promote their own bytes into operator authority or arbitrarily close evidence
-items. A peer may withdraw only an earlier ask that it authored, and only after
+`session_attach_evidence` remains an optional out-of-band attachment channel;
+normal reviews do not require it, and it promotes nothing — the artifact
+carries the same provenance as material sent through the `evidence` field. No
+peer can raise its own bytes to a higher tier, because none exists, or
+arbitrarily close evidence items. A peer may withdraw only an earlier ask that it authored, and only after
 its strictly grounded `READY/verified` recheck; the runtime records
 `address_method=requester_reverified`. Silence stays `not_resurfaced`, and asks
-from other peers or terminal operator dispositions are untouched.
+from other peers or terminal dispositions are untouched.
 `Checklist-Item` identifies which ask is being revisited but is never proof by
 itself; the cited bytes must still answer a concrete value, command or
 verifiable semantic anchor from that ask.
@@ -228,10 +229,12 @@ different ask from the same peer. The matcher recognizes common natural-language
 evidence alternatives such as file/line versus diff and diff versus grep, while
 keeping explicit conjunctions, execution claims and named release documents
 fail-closed. Direct review-round prompts include every unresolved ID
-automatically, so this routing requires no operator or caller-side reconstruction.
-The same operator-only gate covers evidence-checklist mutations and security
-configuration; terminal closure of a session belongs to its persisted
-petitioner (`aborted`) or to the runtime (`converged`, `max-rounds`).
+automatically, so this routing requires no caller-side reconstruction.
+Evidence-checklist mutation and token rotation used to sit behind an
+operator-only gate; both tools are gone, because opening them to peers would
+have let a peer close its own ask or rotate every host's token. Terminal
+closure of a session belongs to its persisted petitioner (`aborted`) or to the
+runtime (`converged`, `max-rounds`).
 
 Every new attachment records `attached_by`, `origin`, `attached_at`, UTF-8
 `bytes`, `sha256`, and `integrity_version`, and persists a
@@ -242,16 +245,14 @@ continues without treating the file as evidence. Pre-custody attachments remain
 readable for historical compatibility but are labeled
 `provenance_status=legacy_unverified` and are not provenance-grade.
 
-Operator authority is not inferred from `caller="operator"` or `clientInfo`.
-It requires the seventh, dedicated operator capability from
-`host-tokens.json`. Keep this token only in a separate human-console MCP host.
-The six model-host tokens cannot call operator mutation tools. Judge passes are
-operator-only, use distinct judges, and reject a peer ruling on its own ask.
+Caller identity is never inferred from the `caller` argument alone or from
+`clientInfo`: it is bound to the peer capability in `host-tokens.json`, one per
+peer. Judge passes use distinct judges and reject a peer ruling on its own ask.
 
-Existing-session review starters also enforce petitioner/operator authority.
-The evidence submitter is always the authenticated invoker; it is never inferred
-from the session owner. A peer therefore cannot continue an operator-owned
-session and have its bytes mislabeled as `operator_verified`.
+Existing-session review starters enforce petitioner authority. The evidence
+submitter is always the authenticated invoker; it is never inherited from the
+session owner, so a peer cannot continue another caller's session and have its
+bytes attributed to that caller.
 
 ## Opt-out
 
@@ -274,8 +275,8 @@ operator decision, not a peer-requested workaround.
   of leaving a zero-round session stale-open;
 - direct `ask_peers` records a local rejected round and leaves that explicitly
   iterative session open for the caller's corrected next round;
-- in either route, the authenticated caller can correct the material without
-  requiring an operator to attach, approve, delete or rewrite evidence;
+- in either route, the authenticated caller corrects the material itself;
+  nothing waits on another party;
 - event emitted: `session.evidence_preflight_failed` with
   `completed_work_claim_matched`, `evidence_marker_found`,
   `structured_evidence_supplied`, `attachments_present`, and
@@ -284,8 +285,7 @@ operator decision, not a peer-requested workaround.
 
 Re-submit value-corresponding raw evidence inline or through `evidence` using
 the same authenticated peer. A loop starter creates a corrected durable
-session; a direct session can accept its corrected next round. No operator
-intervention is required.
+session; a direct session can accept its corrected next round.
 
 ## Truthfulness preflight (v4.2.x)
 
@@ -300,8 +300,7 @@ workflow/deploy claim needs matching workflow/run identity and outcome evidence;
 a model/runtime assertion is compared with live runtime facts; hashes and test
 counts must occur in the provenance corpus. Negated or instructional examples
 are not misclassified as completed work. Every `READY` decision must cite a
-source traceable to the reviewed artifact, authenticated caller evidence, or
-optional operator evidence. Workflow/deploy/authorization self-attestation may
+source traceable to the reviewed artifact or to authenticated caller evidence. Workflow/deploy/authorization self-attestation may
 enter review when its raw values correspond, but remains marked for strict
 independent-panel corroboration; `confidence="inferred"` cannot satisfy that
 gate. Runtime metadata may corroborate a matching runtime claim but never
@@ -311,16 +310,15 @@ requests, open/not-resurfaced asks, or fabricated relator output cannot
 converge.
 
 A submission with no completed-work claim is authority-neutral. It may pass as
-a design review, but receives `evidence_authority="none"`; absence of a claim or
-evidence is never labeled `operator_verified`.
+a design review, but receives `evidence_authority="none"`: absence of a claim
+or of evidence never carries authority.
 
 When it trips on caller input, an automated unanimous loop preserves the
 rejected draft and evidence, then finalizes the session with
 `outcome="aborted"` and
 `outcome_reason="needs_truthfulness_preflight"`. Direct `ask_peers` records the
 local rejection and remains available for a corrected next round. In either
-case the authenticated caller can submit corrected material without operator
-action. Unsafe lead-generated output also aborts the automated loop. The event
+case the authenticated caller submits corrected material itself. Unsafe lead-generated output also aborts the automated loop. The event
 `session.truthfulness_preflight_failed` includes:
 
 - `issue_classes` — one or more of `runtime_contradiction`,

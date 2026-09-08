@@ -166,7 +166,7 @@ const AutomaticCallerEvidenceSchema = z
   .max(SCHEMA_INITIAL_DRAFT_MAX_CHARS)
   .optional()
   .describe(
-    "Raw evidence from the authenticated AI caller. It is persisted automatically as durable, SHA-256-addressed caller_submitted_unverified material and transported to reviewers; no manual operator attachment is required. Do not call session_attach_evidence for this routine path.",
+    "Raw evidence from the authenticated AI caller. It is persisted automatically as durable, SHA-256-addressed caller_submitted_unverified material and transported to reviewers. This is the routine path; `session_attach_evidence` attaches the same material out of band and grants it no additional provenance.",
   );
 
 function markdownEscape(value: string): string {
@@ -1663,8 +1663,6 @@ export async function main(): Promise<void> {
             generated_at: getHostTokensRecord()?.generated_at ?? null,
             hard_enforce: isHardEnforceMode(),
             agents: getHostTokensRecord() ? [...PEERS] : [],
-            operator_capability_loaded: Boolean(getHostTokensRecord()?.map.operator),
-            operator_capability_required: true,
             identities: getHostTokensRecord() ? Object.keys(getHostTokensRecord()?.map ?? {}) : [],
           },
           codeql_policy:
@@ -2693,10 +2691,10 @@ export async function main(): Promise<void> {
             truthfulness?.structured_evidence_supplied ??
             evidenceResult?.structured_evidence_supplied ??
             false,
-          attachments_present:
-            result.reviewable_attachment_count > 0 || result.operator_verified_attachment_count > 0,
+          // v07.00.00: one count, because one tier. The disjunct and the second
+          // field reported a promoted tier that no caller could reach.
+          attachments_present: result.reviewable_attachment_count > 0,
           attached_evidence_count: result.reviewable_attachment_count,
-          operator_verified_evidence_count: result.operator_verified_attachment_count,
           evidence_files: session.evidence_files ?? [],
           source_marker_found: truthfulness?.source_marker_found ?? false,
           runtime_facts_available: truthfulness?.runtime_facts_available ?? true,
@@ -2744,7 +2742,7 @@ export async function main(): Promise<void> {
     {
       title: "Promote Operator Evidence (Optional)",
       description:
-        "Optional operator-only authority promotion; AI callers must not use this tool. No human operator action is required for ordinary reviews: pass raw proof through the `evidence` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, and the runtime persists it durably as caller_submitted_unverified material.",
+        "Attach one durable evidence artifact to an existing session, out of band from a review round. Any authenticated peer may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         label: z.string().min(1).max(120),
@@ -2788,7 +2786,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Pass",
       description:
-        "Operator-authorized LLM satisfied-detection for the Evidence Broker. Requires the dedicated operator capability token. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment; a peer can never judge its own evidence ask. The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal operator statuses and already-addressed items are never touched. Optional shadow_mode records non-mutating decisions.",
+        "LLM satisfied-detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment; a peer can never judge its own evidence ask. The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal statuses and already-addressed items are never touched. Optional shadow_mode records non-mutating decisions.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         judge_peer: PeerSchema,
@@ -2861,7 +2859,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Consensus Pass",
       description:
-        "Operator-authorized multi-peer evidence judgment. Requires the dedicated operator capability token and at least two distinct enabled judge peers. A peer is forbidden from ruling on its own evidence ask; any self-judge member makes that item's consensus fail closed. Active mode promotes only unanimous verified-satisfied judgments with non-empty rationales and zero parser warnings; shadow mode never mutates state.",
+        "Multi-peer evidence judgment. Requires at least two distinct enabled judge peers. A peer is forbidden from ruling on its own evidence ask; any self-judge member makes that item's consensus fail closed. Active mode promotes only unanimous verified-satisfied judgments with non-empty rationales and zero parser warnings; shadow mode never mutates state.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         // v3.7.0 (AUDIT-3): .max(PEERS.length) — same stale-`.max(5)`

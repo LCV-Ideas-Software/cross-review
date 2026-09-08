@@ -26,7 +26,7 @@ quando as condições de unanimidade são satisfeitas.
 
 Na prática, ele funciona como uma banca técnica automatizada:
 
-1. um agente, operador ou host MCP apresenta uma tarefa e um rascunho;
+1. um agente ou host MCP apresenta uma tarefa e um rascunho;
 2. o servidor chama pares como Codex/OpenAI, Claude/Anthropic, Gemini/Google,
    DeepSeek, Grok/xAI e Perplexity;
 3. cada par devolve uma decisão em formato padronizado: `READY`, `NOT_READY` ou
@@ -68,7 +68,7 @@ Ele não é um chat comum. Também não é um agente que sai lendo o computador,
 rodando comandos ou corrigindo arquivos sozinho. O `cross-review` é um
 orquestrador API-only: ele chama APIs de provedores de IA, mantém sessões
 duráveis e controla o processo de deliberação. A coleta de evidências continua
-sendo responsabilidade do agente ou operador que submete o caso.
+sendo responsabilidade do agente que submete o caso.
 
 ## O problema que ele resolve
 
@@ -89,7 +89,7 @@ documentação, release ou mudanças operacionais.
 | Conceito               | Significado                                                                                                                       |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | MCP                    | Model Context Protocol. É o protocolo usado para expor ferramentas a hosts como Codex, Claude Code e outros clientes compatíveis. |
-| Caller                 | Quem submete a tarefa ao `cross-review`. Pode ser `operator` ou um dos agentes reconhecidos.                                      |
+| Caller                 | Quem submete a tarefa ao `cross-review`. É um dos agentes reconhecidos.                                                           |
 | Peer                   | Modelo participante da revisão, por exemplo `codex`, `claude`, `gemini`, `deepseek`, `grok` ou `perplexity`.                      |
 | Relator ou `lead_peer` | Par que sintetiza ou revisa o artefato em fluxos iterativos. Quando há relator, ele não deve ser confundido com voto comum.       |
 | Sessão                 | Registro durável de uma deliberação, com metadados, rodadas, eventos, anexos, custos e status final.                              |
@@ -133,7 +133,7 @@ O fluxo mais comum é:
 
 Quando o fluxo é iterativo, o relator pode gerar uma versão revisada do artefato
 e a sessão continua até unanimidade, limite de rodadas, cancelamento, orçamento
-ou intervenção do operador.
+ou intervenção externa.
 
 ## Regra de unanimidade
 
@@ -239,38 +239,37 @@ não existam no enum da família escolhida.
 
 A superfície MCP da release expõe as seguintes ferramentas:
 
-| Ferramenta                              | Uso principal                                                                                                 |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `server_info`                           | Inspeciona versão, configuração carregada/hash/reload, budget, peers e segurança ativa.                       |
-| `runtime_capabilities`                  | Retorna contrato de capacidades e lista de ferramentas.                                                       |
-| `probe_peers`                           | Consulta provedores para verificar reachability e modelos disponíveis.                                        |
-| `session_init`                          | Cria uma sessão durável sem chamar reviewers.                                                                 |
-| `session_list`                          | Lista sessões de forma paginada e resumida.                                                                   |
-| `session_read`                          | Lê o `meta.json` completo de uma sessão.                                                                      |
-| `ask_peers`                             | Executa uma rodada real de revisão.                                                                           |
-| `session_start_round`                   | Inicia rodada em background e devolve `session_id`/`job_id`.                                                  |
-| `run_until_unanimous`                   | Gera/revisa até unanimidade, limite de rodadas ou bloqueio.                                                   |
-| `session_start_unanimous`               | Versão background do fluxo até unanimidade.                                                                   |
-| `session_cancel_job`                    | Cancela job ativo ou devolve de modo idempotente o estado terminal/final já persistido.                       |
-| `session_recover_interrupted`           | Recupera sessões interrompidas.                                                                               |
-| `session_poll`                          | Consulta resumo limitado por padrão; `detail="full"` habilita a visão forense completa.                       |
-| `session_events`                        | Lê eventos duráveis da sessão.                                                                                |
-| `session_metrics`                       | Retorna métricas agregadas ou de uma sessão.                                                                  |
-| `session_doctor`                        | Audita sessões abertas, travadas ou inconsistentes; histórico terminal fica em totals por padrão.             |
-| `session_report`                        | Gera relatório Markdown de uma sessão.                                                                        |
-| `session_peer_reliability_report`       | Agrega sinais de confiabilidade por peer sem alterar seleção ou estado de sessão.                             |
-| `session_check_convergence`             | Retorna estado de convergência durável sem chamar provedores.                                                 |
-| `session_preflight_check`               | Executa os mesmos gates de evidência e veracidade da rodada real sem chamar provedores.                       |
-| `session_truthfulness_preflight_check`  | Alias legado do preflight combinado.                                                                          |
-| `session_attach_evidence`               | Promoção opcional de autoridade exclusiva do operador; agentes usam `evidence`, persistido automaticamente.   |
-| `session_evidence_checklist_update`     | Atualiza status de itens de evidência.                                                                        |
-| `session_evidence_judge_pass`           | Usa um peer como juiz de evidência em modo controlado.                                                        |
-| `session_evidence_judge_consensus_pass` | Juízo de evidência por consenso entre peers.                                                                  |
-| `session_judgment_precision_report`     | Mede precisão/recall/F1 dos julgamentos shadow.                                                               |
-| `contest_verdict`                       | Contesta verdict final e abre novo ciclo com cadeia de custódia.                                              |
-| `regenerate_caller_tokens`              | Rotaciona tokens locais de identidade por host.                                                               |
-| `session_sweep`                         | Finaliza sessões inativas e limpa históricos conforme política.                                               |
-| `session_finalize`                      | Encerra a própria sessão não terminal como `aborted` (peticionário ou operador); `converged` só pelo runtime. |
+| Ferramenta                              | Uso principal                                                                                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `server_info`                           | Inspeciona versão, configuração carregada/hash/reload, budget, peers e segurança ativa.                                                    |
+| `runtime_capabilities`                  | Retorna contrato de capacidades e lista de ferramentas.                                                                                    |
+| `probe_peers`                           | Consulta provedores para verificar reachability e modelos disponíveis.                                                                     |
+| `session_init`                          | Cria uma sessão durável sem chamar reviewers.                                                                                              |
+| `session_list`                          | Lista sessões de forma paginada e resumida.                                                                                                |
+| `session_read`                          | Lê o `meta.json` completo de uma sessão.                                                                                                   |
+| `ask_peers`                             | Executa uma rodada real de revisão.                                                                                                        |
+| `session_start_round`                   | Inicia rodada em background e devolve `session_id`/`job_id`.                                                                               |
+| `run_until_unanimous`                   | Gera/revisa até unanimidade, limite de rodadas ou bloqueio.                                                                                |
+| `session_start_unanimous`               | Versão background do fluxo até unanimidade.                                                                                                |
+| `session_cancel_job`                    | Cancela job ativo ou devolve de modo idempotente o estado terminal/final já persistido.                                                    |
+| `session_recover_interrupted`           | Recupera sessões interrompidas.                                                                                                            |
+| `session_poll`                          | Consulta resumo limitado por padrão; `detail="full"` habilita a visão forense completa.                                                    |
+| `session_events`                        | Lê eventos duráveis da sessão.                                                                                                             |
+| `session_metrics`                       | Retorna métricas agregadas ou de uma sessão.                                                                                               |
+| `session_doctor`                        | Audita sessões abertas, travadas ou inconsistentes; histórico terminal fica em totals por padrão.                                          |
+| `session_report`                        | Gera relatório Markdown de uma sessão.                                                                                                     |
+| `session_peer_reliability_report`       | Agrega sinais de confiabilidade por peer sem alterar seleção ou estado de sessão.                                                          |
+| `session_check_convergence`             | Retorna estado de convergência durável sem chamar provedores.                                                                              |
+| `session_preflight_check`               | Executa os mesmos gates de evidência e veracidade da rodada real sem chamar provedores.                                                    |
+| `session_truthfulness_preflight_check`  | Alias legado do preflight combinado.                                                                                                       |
+| `session_attach_evidence`               | Canal opcional de anexo fora de rodada, aberto a qualquer peer e sem promoção alguma; agentes usam `evidence`, persistido automaticamente. |
+| `session_evidence_checklist_update`     | Atualiza status de itens de evidência.                                                                                                     |
+| `session_evidence_judge_pass`           | Usa um peer como juiz de evidência em modo controlado.                                                                                     |
+| `session_evidence_judge_consensus_pass` | Juízo de evidência por consenso entre peers.                                                                                               |
+| `session_judgment_precision_report`     | Mede precisão/recall/F1 dos julgamentos shadow.                                                                                            |
+| `contest_verdict`                       | Contesta verdict final e abre novo ciclo com cadeia de custódia.                                                                           |
+| `session_sweep`                         | Finaliza sessões inativas e limpa históricos conforme política.                                                                            |
+| `session_finalize`                      | Encerra a própria sessão não terminal como `aborted` (peticionário persistido); `converged` só pelo runtime.                               |
 
 ## Modos de trabalho
 
@@ -571,7 +570,7 @@ Arquivos típicos por sessão:
 - `meta.json`: estado durável da sessão;
 - `events.ndjson`: eventos incrementais;
 - evidências do caller persistidas automaticamente e anexos opcionais do
-  operador;
+  próprio caller;
 - `session-report.md`, quando gerado por `session_report`;
 - manifestos de cache, quando aplicável.
 
@@ -585,15 +584,15 @@ e cadeia de custódia:
 - `.env` com segredos reais é explicitamente desaconselhado;
 - `server_info` expõe readiness, peers habilitados e estado de tokens sem expor
   segredos;
-- sete capability tokens vinculam hosts às seis identidades de agente e a uma
-  identidade `operator` separada;
-- `operator` exige seu próprio token mesmo quando enforcement de peer é
-  permissivo; esse segredo só pode existir num console humano dedicado;
+- seis capability tokens vinculam hosts às seis identidades de agente; havia um
+  sétimo, para uma identidade `operator` cujo token deveria morar num console
+  humano separado — esse host não existe, porque toda a superfície é MCP e é
+  exercida por agentes, então o segredo não se ligava a ninguém e saiu junto
+  com as ferramentas que o exigiam;
 - evidência inline/estruturada de caller autenticado é persistida e transportada
-  automaticamente como `caller_submitted_unverified`; somente a promoção de
-  autoridade e as mutações de checklist e segurança são exclusivas da
-  capability `operator`; o fechamento da própria sessão como `aborted` cabe ao
-  peticionário persistido (ou ao token `operator`);
+  automaticamente como `caller_submitted_unverified`, que é a única procedência
+  que um anexo carrega; o fechamento da própria sessão como `aborted` cabe ao
+  peticionário persistido;
 - cada artefato registra caller, origem, horário, bytes e SHA-256, emite evento
   durável e tem sua integridade recalculada a cada leitura;
 - artefatos adulterados falham fechados; material de peer entra no corpus com
@@ -700,11 +699,12 @@ mesmo tempo como caller, relator e peer votante na mesma sessão. O conjunto de
 peers é controlado pelo servidor e pode ser travado por configuração para evitar
 que o caller escolha uma banca conveniente.
 
-Tokens de caller reforçam essa separação. Cada peer recebe apenas seu token. O
-sétimo token, `operator`, é sempre obrigatório nas ferramentas privilegiadas,
-independentemente de `CROSS_REVIEW_REQUIRE_TOKEN`, e nunca deve ser colocado em
-host de modelo. A rotação é feita por `regenerate_caller_tokens`; a
-redistribuição é uma operação sensível.
+Tokens de caller reforçam essa separação. Cada peer recebe apenas seu token.
+Havia um sétimo, `operator`, exigido pelas ferramentas privilegiadas e destinado
+a um console humano dedicado. Esse console nunca existiu — toda a superfície é
+MCP e é exercida por agentes —, então o token não se ligava a host nenhum e saiu
+junto com as ferramentas que o pediam. A geração acontece no boot; distribuir
+os arquivos é ato humano no disco, fora do MCP.
 
 ### Evidência e preflight
 
@@ -721,9 +721,9 @@ Evidências aceitáveis incluem:
 - hashes;
 - evidência inline ou no campo `evidence`, persistida automaticamente com
   caller, bytes e SHA-256;
-- anexos opcionais promovidos pelo operador via `session_attach_evidence`; essa
-  superfície privilegiada não participa do fluxo normal de agentes, que usam o
-  campo `evidence` com persistência automática;
+- anexos opcionais via `session_attach_evidence`, abertos a qualquer peer e sem
+  promoção alguma: o artefato carrega a mesma procedência do campo `evidence`,
+  que segue sendo o caminho normal;
 - logs relevantes.
 
 Um anexo genérico não prova uma alegação não relacionada. Claims de runtime,
@@ -738,9 +738,8 @@ e não provam revisão do artefato; caso contrário, o voto é rebaixado para
 `NEEDS_EVIDENCE`. Status estruturado incompleto, autorrevisão, model mismatch,
 READY truncado/contraditório, evidência aberta/não ressurgida e fabricação do
 relator não convergem. Um peer pode retirar somente a própria ask depois de uma
-revalidação estrita, sem fechar pedido alheio ou estado terminal. Só o operador
-autenticado pode promover evidência para autoridade de operador ou dar disposição
-autoritativa terminal.
+revalidação estrita, sem fechar pedido alheio ou estado terminal. Não existe
+promoção de evidência: não há degrau acima de `caller_submitted_unverified`.
 
 Para revisões sérias, empacote evidência antes de chamar peers. O servidor não
 deve ser tratado como coletor de repo, shell ou CI.

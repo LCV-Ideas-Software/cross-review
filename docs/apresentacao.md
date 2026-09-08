@@ -188,7 +188,7 @@ correspondente, o loop unânime é preservado e finalizado como
 `aborted / needs_truthfulness_preflight`; uma rodada direta registra o bloqueio
 local e pode receber a correção seguinte. O próprio agente autenticado pode
 corrigir a evidência inline ou no campo `evidence`, usar o preflight local para
-conferência e continuar sem pedir anexo manual ao operador.
+conferência e continuar sozinho.
 
 Esses controles não aceitam a palavra de um agente como prova. Todo voto
 `READY` precisa citar fonte rastreável ao artefato ou à evidência transportada.
@@ -201,12 +201,10 @@ caso contrário, o voto é rebaixado para `NEEDS_EVIDENCE`. Alegações de
 workflow, deploy, hashes, testes e autorização precisam coincidir com valores
 presentes na evidência, e itens `open` ou `not_resurfaced` impedem a
 convergência. O autor de uma ask pode retirar somente a própria exigência após
-revalidação estrita (`requester_reverified`); silêncio não a fecha. Só um host
-com a capability `operator` separada pode atribuir autoridade de operador;
-tokens de peers não servem como operador. O fechamento terminal é diferente: o
-runtime sela `converged` sozinho, e o peticionário persistido da sessão (ou o
-token `operator`) encerra a própria sessão não terminal como `aborted` via
-`session_finalize`. Cada anexo
+revalidação estrita (`requester_reverified`); silêncio não a fecha. Não existe promoção de autoridade: um anexo carrega
+sempre a procedência de quem o enviou. O fechamento terminal é diferente: o
+runtime sela `converged` sozinho, e o peticionário persistido da sessão encerra
+a própria sessão não terminal como `aborted` via `session_finalize`. Cada anexo
 novo registra autor, origem, horário, bytes e SHA-256; a leitura recalcula
 a integridade e falha fechada se houver adulteração. Anexos legados ficam
 marcados como `legacy_unverified` e ficam fora do corpus confiável.
@@ -420,7 +418,7 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_list` — lista sessões (paginada, resumida por padrão).
 - `session_read` — lê uma sessão completa.
 - `session_finalize` — encerra a própria sessão não terminal como `aborted`
-  (peticionário persistido ou operador); `converged` e `max-rounds` são
+  (peticionário persistido); `converged` e `max-rounds` são
   gravados só pelo runtime.
 - `session_recover_interrupted` — recupera sessões interrompidas.
 - `session_sweep` — faz a varredura/limpeza de sessões.
@@ -462,9 +460,9 @@ um cancelamento tardio retorna `job_already_terminal` ou
 
 **Evidência**
 
-- `session_attach_evidence` — promoção opcional de autoridade, exclusiva do
-  operador; agentes usam `evidence`, persistido automaticamente.
-- `session_evidence_checklist_update` — atualiza a checklist de evidência.
+- `session_attach_evidence` — canal opcional de anexo fora de rodada, aberto a
+  qualquer peer e sem promoção alguma; agentes usam `evidence`, persistido
+  automaticamente.
 - `session_evidence_judge_pass` — passada de juiz de evidência.
 - `session_evidence_judge_consensus_pass` — passada de juiz por consenso.
 - `session_judgment_precision_report` — relatório de precisão de julgamento.

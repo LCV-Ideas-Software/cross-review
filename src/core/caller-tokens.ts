@@ -138,8 +138,14 @@ export function getTokenFileRecoveryGuidance(context: TokenFileRecoveryContext):
   return "The caller-token record failed for a non-permission I/O or unknown reason. Stop the MCP host and inspect the configured local storage without exposing its path or contents; restore a known-good protected regular file or correct the storage/configuration error, then restart and verify caller_tokens.loaded=true with server_info. Do not apply an ACL replacement unless the failure is confirmed as the documented permission-recovery case.";
 }
 
-export type CallerIdentity = PeerId | "operator";
-export const CALLER_IDENTITIES: readonly CallerIdentity[] = [...PEERS, "operator"];
+// v07.00.00: the record holds one capability per PEER. It used to hold a
+// seventh, for an "operator" identity whose token was meant to live in a
+// separate human console — a host that does not exist, because the whole
+// surface is MCP and is exercised by agents. Generating that token bound a
+// secret to nobody and, worse, any host holding it declared a caller the
+// server no longer admits.
+export type CallerIdentity = PeerId;
+export const CALLER_IDENTITIES: readonly CallerIdentity[] = PEERS;
 export type HostTokensMap = Record<CallerIdentity, string>;
 
 export interface HostTokensRecord {
@@ -783,19 +789,14 @@ export function loadHostTokens(
       seen.add(normalizedToken);
       map[identity] = normalizedToken;
     }
-    const storedOperatorToken = tokensIn.operator;
-    const operatorToken =
-      typeof storedOperatorToken === "string" &&
-      storedOperatorToken.length === TOKEN_HEX_LENGTH &&
-      /^[0-9a-f]+$/i.test(storedOperatorToken) &&
-      !seen.has(storedOperatorToken.toLowerCase())
-        ? storedOperatorToken.toLowerCase()
-        : crypto.randomBytes(TOKEN_BYTES).toString("hex");
-    if (seen.has(operatorToken)) return failHostTokensLoad(diagnostics, "invalid_content");
-    seen.add(operatorToken);
-    map.operator = operatorToken;
-
-    if ((parsed as { version?: number }).version !== 2 || storedOperatorToken !== operatorToken) {
+    // v07.00.00: a record written before this release carries a seventh token
+    // for the "operator" identity. It is dropped rather than migrated: the
+    // identity is not admissible any more, so the secret binds to no host and
+    // a host still presenting it would declare a caller the server refuses.
+    // The file is rewritten without it, which also retires the
+    // `operator_token_added_at` marker of the migration that first added it.
+    const droppedOperatorToken = typeof tokensIn.operator === "string";
+    if ((parsed as { version?: number }).version !== 2 || droppedOperatorToken) {
       rewriteOpenedTokensFile(
         fd,
         JSON.stringify(
@@ -805,7 +806,6 @@ export function loadHostTokens(
               typeof (parsed as { generated_at?: unknown }).generated_at === "string"
                 ? (parsed as { generated_at: string }).generated_at
                 : new Date().toISOString(),
-            operator_token_added_at: new Date().toISOString(),
             tokens: map,
           },
           null,
@@ -946,7 +946,7 @@ export function verifyTokenForCaller(
   const identity = resolveAgentForToken(presented, tokensRecord.map);
   if (!identity) {
     throw new Error(
-      "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN does not match any known agent's secret in host-tokens.json. Either the token is stale (regenerate via regenerate_caller_tokens) or the host-tokens.json file has been rotated without re-distributing the new value.",
+      "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN does not match any known agent's secret in host-tokens.json. Either the token is stale (the record was rotated at boot) or the host-tokens.json file has been rotated without re-distributing the new value.",
     );
   }
   if (identity !== declaredCaller) {

@@ -1118,26 +1118,33 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "peer-submitted workflow evidence must be admitted but remain subject to strict independent panel corroboration",
   );
-  assert.equal(peerSubmittedWorkflow.operator_grounded, false);
 
-  const peerUsesCustodiedWorkflowEvidence = truthfulnessPreflight({
+  // v07.00.00 contract change: this case fed `operatorVerifiedEvidenceText`
+  // and asserted the workflow claim was grounded without independent review.
+  // That parameter carried the operator-verified tier, which no caller could
+  // populate — the orchestrator always passed it empty — so on every real
+  // call this claim already required corroboration. The fixture now states
+  // what actually happens.
+  const peerAttachesWorkflowEvidence = truthfulnessPreflight({
     task: "Summarize deployment closure.",
     initialDraft: "I triggered the deployment and confirmed the remote deployment succeeded.",
     caller: "claude",
     attachmentsPresent: true,
     attachedEvidenceText:
       "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
-    operatorVerifiedEvidenceText:
-      "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
     runtimeFacts: { runtime_version: "4.5.0" },
   });
   assert.equal(
-    peerUsesCustodiedWorkflowEvidence.pass,
+    peerAttachesWorkflowEvidence.pass,
     true,
-    "v4.5.0 / truthfulness: a peer may rely on operator-custodied attached evidence",
+    "a peer may rely on evidence it attached durably",
   );
-  assert.equal(peerUsesCustodiedWorkflowEvidence.independent_review_required, false);
-  assert.equal(peerUsesCustodiedWorkflowEvidence.operator_grounded, true);
+  assert.equal(
+    peerAttachesWorkflowEvidence.independent_review_required,
+    true,
+    "v07.00.00: a workflow claim stays subject to independent corroboration; no tier exempts it",
+  );
+  assert.equal(peerAttachesWorkflowEvidence.caller_grounded, false);
 
   const orchestratorSource = fs.readFileSync(
     new URL("../src/core/orchestrator.ts", import.meta.url),

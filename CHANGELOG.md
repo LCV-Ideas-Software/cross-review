@@ -12,12 +12,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
 - **`session_finalize` is petitioner-scoped and accepts only `aborted`.** The
   tool now uses the same session-mutation authority as `session_cancel_job`
   and `contest_verdict`: the persisted session petitioner, verified by its own
-  capability token, or the operator token. The `outcome` schema narrows to
+  capability token. The `outcome` schema narrows to
   exactly `aborted`; `converged` is sealed only by the runtime (the store's
   `session_finalize_outcome_mismatch` invariant stays as defense in depth) and
   `max-rounds` is written only by the runtime or the idle sweep. The
-  description tells peer hosts to pass `caller` explicitly, because the schema
-  default `caller=operator` is refused from a peer host as identity forgery.
+  description tells peer hosts to pass `caller` explicitly.
   An aborted session keeps its non-converged rounds and the petitioner's
   reason as an append-only audit trail, so an abort never hides a `NOT_READY`.
 - **Background-job failure settles without an escalation.** A rejected
@@ -30,13 +29,42 @@ standard `v00.00.00`; npm package versions remain SemVer.
   exits, resubmitting corrected material in a new round or closing the session
   as `aborted`, and warn that retrying unchanged material replays the same
   failure; none of them directs an agent to a human or a console. The generic
-  `operator_authority_required` and `session_owner_mismatch` messages describe
-  the operator capability token instead of a human operator.
-- The operator capability token remains real for the evidence, housekeeping
-  and security surfaces (`session_attach_evidence`, checklist and judge
-  mutations, `session_sweep`, `session_recover_interrupted`, `session_doctor`
-  repair, `regenerate_caller_tokens`); their token-placement guidance is
-  unchanged by this entry.
+  `session_owner_mismatch` message describes the petitioner's own token.
+- **The operator identity is gone, and with it every gate that demanded it.**
+  `CallerSchema` no longer admits `"operator"`, the twenty
+  `.default("operator")` registrations lose their default so `caller` carries
+  the identity of the agent actually calling (it is now required), and the
+  operator branch of the identity resolver goes with its demand for a token
+  held by a human console that does not exist. `verifyOperatorToolCallerIdentity`
+  is deleted; its six legitimate call sites fall back to ordinary identity
+  verification, which ungates `session_attach_evidence`. The operator bypass
+  inside `assertSessionMutationAuthority` is deleted too, and that TIGHTENS the
+  gate: every authoritative mutation now requires the persisted petitioner's
+  own verified token, with no identity able to step over it.
+- **`host-tokens.json` holds six capabilities, not seven.** The seventh bound a
+  secret to a host that never existed. A record written before this release is
+  rewritten on load without that entry, and without the
+  `operator_token_added_at` marker of the migration that first added it; every
+  peer token is preserved untouched. `server_info` drops
+  `operator_capability_loaded` and `operator_capability_required` rather than
+  reporting them as `false`, because a false flag still describes a concept
+  that is gone.
+- **One provenance tier.** `operator_verified` is no longer produced, including
+  when reading custody attached before this release: those bytes on disk are
+  not rewritten, but the tier they claim can no longer be earned, so they read
+  as `caller_submitted_unverified`. The reviewer prompt loses its
+  `## Attached Evidence (OPERATOR-VERIFIED)` section and the surviving one is
+  renamed `## Attached Evidence (CALLER-SUBMITTED, UNVERIFIED)`. This changes
+  no behaviour on any real round: the promoted corpora were fed by a filter on
+  `attached_by === "operator"`, and no caller could ever carry that
+  attribution, so they were already empty every time. `EvidencePreflightResult`
+  loses `operator_grounded` and `operator_uncorroborated_operational_claims`;
+  `TruthfulnessPreflightResult.operator_grounded` is renamed `caller_grounded`,
+  which is what it always measured.
+- A session whose persisted `petitioner` is `"operator"` yields no derivable
+  owner and takes the `session_owner_unverified` path. The persisted type still
+  admits the value on purpose: it describes bytes on disk, and narrowing it
+  would make those files fail to parse.
 - Motivation: issue #288 (twin of #287, Linear CROSREV-40). The motivating
   session `3feefc04` was written by runtime 4.6.3; its refused close and its
   automatic escalation were verified on this tree's unchanged code paths for
@@ -45,6 +73,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### Removed
 
+- **`session_evidence_checklist_update` and `regenerate_caller_tokens`, in
+  full.** Both were gated on operator authority, and ungating either would drop
+  a real property rather than remove a phantom. The checklist tool hardcoded
+  `by: "operator"`, and a terminal status set that way is immune to peer
+  resurfacing: opened to peers, a peer could mark its own evidence ask
+  satisfied, permanently, defeating the Evidence Broker. Token rotation
+  rewrites every host's capability at once and breaks every other host until
+  the file is redistributed by hand — a human act on disk, outside MCP, so the
+  tool had no valid caller. Boot-time generation stays.
 - The `escalate_to_operator` MCP tool, the `OperatorEscalation` type and the
   `SessionMeta.operator_escalations` field. No reader consumed the field;
   legacy `meta.json` files keep the key harmlessly, since the shape validator

@@ -5300,7 +5300,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const initial = await aeOrch.askPeers({
     task: "Cross-review attachment inline test",
     draft: "Initial draft body — peers should see attachments below.",
-    caller: "operator",
+    caller: "codex",
     caller_status: "NOT_READY",
     peers: ["claude"],
   });
@@ -5311,21 +5311,21 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     label: "gates-output",
     content: "EXIT 0 typecheck\nEXIT 0 lint\nEXIT 0 build\nEXIT 0 smoke 41/41 PASS\n",
     extension: "log",
-    attached_by: "operator",
+    attached_by: "codex",
     origin: "runtime_generated",
   });
   await aeOrch.store.attachEvidence(sessionId, {
     label: "diff-stat",
     content: " path/to/file.ts | +12/-3\n 1 file changed, 12 insertions, 3 deletions\n",
     extension: "txt",
-    attached_by: "operator",
+    attached_by: "codex",
     origin: "runtime_generated",
   });
   await aeOrch.askPeers({
     session_id: sessionId,
     task: "Cross-review attachment inline test",
     draft: "Revised draft body for R2 with attachments now present.",
-    caller: "operator",
+    caller: "codex",
     caller_status: "NOT_READY",
     peers: ["claude"],
   });
@@ -5744,7 +5744,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const initial = await cvOrch.askPeers({
     task: "Contest test original task",
     draft: "Original draft body.",
-    caller: "operator",
+    caller: "codex",
     caller_status: "NOT_READY",
     peers: ["claude"],
   });
@@ -7499,19 +7499,18 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(map, "tokens map present");
   if (!map) throw new Error("tokens map missing");
   // v3.0.0: perplexity added to the canonical agent roster.
-  for (const identity of [
-    "codex",
-    "claude",
-    "gemini",
-    "deepseek",
-    "grok",
-    "perplexity",
-    "operator",
-  ] as const) {
+  for (const identity of ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const) {
     assert.match(map[identity], /^[0-9a-f]{64}$/, `${identity} token is 64-char lowercase hex`);
   }
   const distinct = new Set(Object.values(map));
-  assert.equal(distinct.size, 7, "all 7 identity tokens are distinct");
+  // v07.00.00: six, not seven. The seventh bound a secret to an "operator"
+  // host that never existed.
+  assert.equal(distinct.size, 6, "all 6 peer tokens are distinct");
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(map, "operator"),
+    false,
+    "v07.00.00: the record MUST NOT carry an operator capability",
+  );
   if (process.platform === "win32") {
     const explicitEveryoneAcl = spawnSync("icacls.exe", [isolatedPath, "/grant", "*S-1-1-0:(R)"], {
       encoding: "utf8",
@@ -7602,7 +7601,23 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   process.env.CROSS_REVIEW_TOKENS_FILE = legacyPath;
   const migrated = f1.loadHostTokens(tmpRoot);
-  assert.ok(migrated?.map.operator, "legacy token file migration must add operator capability");
+  // v07.00.00 contract change: this case used to assert that loading a legacy
+  // record ADDED an operator capability. Loading now DROPS it — the identity is
+  // not admissible, so the secret binds to no host, and a host still presenting
+  // it would declare a caller the server refuses.
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(migrated?.map ?? {}, "operator"),
+    false,
+    "v07.00.00: loading a legacy record MUST drop the operator capability",
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(
+      JSON.parse(fs.readFileSync(legacyPath, "utf8")).tokens,
+      "operator",
+    ),
+    false,
+    "v07.00.00: the rewritten file on disk MUST NOT keep the operator token",
+  );
   for (const peer of ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const) {
     assert.equal(migrated?.map[peer], map[peer], `migration must preserve ${peer} token`);
   }

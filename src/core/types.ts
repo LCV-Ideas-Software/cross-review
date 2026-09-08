@@ -484,6 +484,13 @@ export interface InFlightRound {
 export interface ConvergenceScope {
   // Petitioner/impetrante: the caller that submitted the case. This is
   // the canonical actor for the self-review prohibition.
+  //
+  // v07.00.00: the union deliberately still admits "operator" even though no
+  // caller can present that identity any more. This type describes bytes
+  // PERSISTED on disk, and sessions written before this release carry it. The
+  // records are not rewritten; instead the value yields no derivable owner at
+  // the authority check, so such a session takes the `session_owner_unverified`
+  // path. Narrowing this union would make those files fail to parse.
   petitioner?: PeerId | "operator" | undefined;
   caller: PeerId | "operator";
   // Actor currently presenting the draft/status for this round. In

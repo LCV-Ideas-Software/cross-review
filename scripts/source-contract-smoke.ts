@@ -177,7 +177,6 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "session_evidence_judge_pass",
     "session_evidence_judge_consensus_pass",
     "contest_verdict",
-    "regenerate_caller_tokens",
     "session_finalize",
   ]) {
     const toolStart = serverSrc.indexOf(`registerTool(\n    "${toolName}"`);
@@ -187,9 +186,17 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
         ? serverSrc.slice(toolStart, nextToolStart >= 0 ? nextToolStart : serverSrc.length)
         : undefined;
     assert.ok(handlerBlock, `v4.3.2 / identity: smoke must find ${toolName} handler block.`);
+    // v07.00.00: the inverse contract. `caller` used to default to "operator",
+    // which made a principal with no channel to this server the implicit caller
+    // of every tool. It is now declared by the agent actually calling, and the
+    // default must never come back.
     assert.ok(
-      /caller:\s*CallerSchema\.default\("operator"\)/.test(handlerBlock ?? ""),
-      `v4.3.2 / identity: ${toolName} must expose caller with operator default.`,
+      /caller:\s*CallerSchema,/.test(handlerBlock ?? ""),
+      `v07.00.00 / identity: ${toolName} must require an explicit peer caller.`,
+    );
+    assert.ok(
+      !/CallerSchema\.default\(/.test(handlerBlock ?? ""),
+      `v07.00.00 / identity: ${toolName} must not default \`caller\` to any identity.`,
     );
     assert.ok(
       /verify(?:OperatorToolCallerIdentity|ToolCallerIdentity|SessionMutationAuthority)\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
@@ -198,11 +205,15 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
       `v4.3.2 / identity: ${toolName} must verify caller identity before side effects.`,
     );
     if (toolName.startsWith("session_evidence_judge_")) {
+      // v07.00.00: this used to demand operator authority. The gate protected
+      // nothing a judge pass actually needs: what keeps a judgment honest is
+      // that a peer may never rule on its own evidence ask, and that the
+      // consensus pass needs two distinct judges. Both are enforced in the
+      // orchestrator, independently of who called the tool, so the contract
+      // now pins those instead of an identity nobody could present.
       assert.ok(
-        /verifyOperatorToolCallerIdentity\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
-          handlerBlock ?? "",
-        ),
-        `v4.5.0 / identity: ${toolName} active mutation must require operator authority.`,
+        !/verifyOperatorToolCallerIdentity/.test(handlerBlock ?? ""),
+        `v07.00.00 / identity: ${toolName} must not demand operator authority.`,
       );
     }
   }
@@ -216,7 +227,9 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     const nextMatch = toolRegistrations[index + 1];
     const handlerBlock = serverSrc.slice(match.index ?? 0, nextMatch?.index ?? serverSrc.length);
     if (!/readOnlyHint:\s*false/.test(handlerBlock)) continue;
-    const hasCallerSchema = /caller:\s*CallerSchema\.default\("operator"\)/.test(handlerBlock);
+    // v07.00.00: `caller` no longer carries a default, so the shape to detect
+    // is the bare schema. A mutating tool must still expose the field.
+    const hasCallerSchema = /caller:\s*CallerSchema,/.test(handlerBlock);
     const hasIdentityVerification =
       /verify(?:OperatorToolCallerIdentity|ToolCallerIdentity|SessionMutationAuthority)\(\s*runtime,\s*"[^"]+",\s*(?:caller|input\.caller),\s*server\.server\.getClientVersion\(\)/.test(
         handlerBlock,
@@ -234,20 +247,20 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00: `regenerate_caller_tokens` is gone, so the three assertions that
+  // policed how it exposed secrets have nothing to police. The property they
+  // protected — no plaintext token ever leaves through an MCP response — is
+  // now structural: no tool reads or returns the token map at all.
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
+    !serverSrc.includes("regenerate_caller_tokens"),
+    "v07.00.00 / caller_tokens: the token-rotation tool must not come back; rotation is a boot-time act on disk, outside MCP.",
+  );
+  assert.ok(
     !/tokens:\s*generated\.map/.test(serverSrc),
-    "v4.3.2 / caller_tokens: regenerate_caller_tokens must not return plaintext generated.map in the MCP response.",
+    "v07.00.00 / caller_tokens: no MCP response may carry the plaintext token map.",
   );
-  assert.ok(
-    serverSrc.includes("token_fingerprints"),
-    "v4.3.2 / caller_tokens: regenerate_caller_tokens response must expose token fingerprints instead of secrets.",
-  );
-  assert.ok(
-    !/Returns the new map so the operator can copy/.test(serverSrc),
-    "v4.3.2 / caller_tokens: tool description must not instruct hosts to expose copied plaintext tokens via MCP response.",
-  );
-  console.log("[source-contract-smoke] regenerate_caller_tokens_no_plaintext_response_test: PASS");
+  console.log("[source-contract-smoke] no_token_rotation_over_mcp_test: PASS");
 }
 
 {

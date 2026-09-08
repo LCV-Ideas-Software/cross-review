@@ -5,10 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
-import {
-  reviewableEvidenceAttachments,
-  trustedEvidenceAttachments,
-} from "../src/core/orchestrator.js";
+import { reviewableEvidenceAttachments } from "../src/core/orchestrator.js";
 import { SessionStore } from "../src/core/session-store.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
@@ -54,11 +51,10 @@ assert.equal(resolved[0]?.origin, "caller_submitted");
 assert.equal(resolved[0]?.provenance_status, "verified");
 assert.equal(resolved[0]?.authority_status, "caller_submitted_unverified");
 assert.equal(reviewableEvidenceAttachments(resolved).length, 1);
-assert.deepEqual(
-  trustedEvidenceAttachments(resolved),
-  [],
-  "a digest-verified attachment attributed to a peer is auditable but cannot become trusted proof",
-);
+// v07.00.00: there is no trusted corpus to be excluded from. A digest-verified
+// attachment attributed to a peer is auditable and caller-submitted, which is
+// now the only provenance any attachment can have.
+assert.equal(resolved[0]?.authority_status, "caller_submitted_unverified");
 
 const attachedEvent = store
   .readEvents(session.session_id)
@@ -170,28 +166,29 @@ assert.equal(legacyResolved[0]?.provenance_status, "legacy_unverified");
 assert.equal(legacyResolved[0]?.authority_status, "legacy_unverified");
 assert.equal(legacyResolved[0]?.sha256, undefined);
 assert.equal(legacyResolved[0]?.attached_by, undefined);
-assert.deepEqual(
-  trustedEvidenceAttachments(legacyResolved),
-  [],
-  "legacy attachments remain readable for audit but must never enter the trusted evidence corpus",
-);
+// Legacy attachments stay readable for audit and keep their own marker.
+assert.equal(legacyResolved[0]?.authority_status, "legacy_unverified");
 
-const operatorSession = await store.init("Operator evidence trust", "operator", []);
-await store.attachEvidence(operatorSession.session_id, {
-  label: "operator-proof",
-  content: "operator-custodied proof",
-  attached_by: "operator",
+// v07.00.00 contract change: this case used to attach evidence AS the operator
+// and assert it was promoted to "operator_verified". That attribution named a
+// caller with no channel to this server, so the tier was never reachable in a
+// real session. Attaching through the same surface as a peer now yields the
+// one provenance that exists.
+const promotionSession = await store.init("Attachment provenance", "claude", []);
+await store.attachEvidence(promotionSession.session_id, {
+  label: "peer-proof",
+  content: "peer-custodied proof",
+  attached_by: "claude",
   origin: "session_attach_evidence",
 });
-const operatorResolved = store.readEvidenceAttachments(operatorSession.session_id, 10_000);
-assert.equal(operatorResolved[0]?.authority_status, "operator_verified");
+const promotionResolved = store.readEvidenceAttachments(promotionSession.session_id, 10_000);
 assert.equal(
-  trustedEvidenceAttachments(operatorResolved).length,
-  1,
-  "only current, integrity-checked operator custody may enter the trusted evidence corpus",
+  promotionResolved[0]?.authority_status,
+  "caller_submitted_unverified",
+  "v07.00.00: session_attach_evidence promotes nothing; there is no tier above caller-submitted",
 );
 
-const finalizedSession = await store.init("Finalized evidence rejection", "operator", []);
+const finalizedSession = await store.init("Finalized evidence rejection", "claude", []);
 await store.finalize(finalizedSession.session_id, "aborted", "smoke-finalized");
 const filesBeforeRejectedAttach = fs.readdirSync(store.sessionDir(finalizedSession.session_id));
 await assert.rejects(

@@ -52,7 +52,7 @@ v04.05.36 preserves fail-closed path, SHA-256, literal-contiguity and
 fabrication checks while correcting false-negative JSON quote extraction. It
 also keeps authenticated caller evidence in full decision retries and accepts
 documented terminal Perplexity aggregate content only when streamed deltas
-contain no usable post-reasoning text. No operator evidence promotion or raw
+contain no usable post-reasoning text. No evidence promotion or raw
 chain-of-thought persistence is introduced.
 
 v04.05.35 keeps the public npm artifact free of internal field reports, binds
@@ -141,12 +141,12 @@ be silently retargeted.
 The 4.5.16 controls preserved here transport evidence submitted
 by authenticated callers automatically into the review session. Peer-submitted
 evidence is hashed, attributed, reverified on every read and clearly marked as
-unverified; no manual operator attachment is required for admission or
+unverified, which is the only provenance an attachment carries; nothing further is required for admission or
 convergence. It also makes raw, parsed and normalized verdicts auditable;
 prevents one attachment from grounding another attachment's quote; excludes an
 ask author from its own judge panel; and records paid, failed, skipped,
 cancelled and interrupted attempts without claiming complete cost
-reconciliation when coverage is unknown. Operator-only mutations still require
+reconciliation when coverage is unknown. Privileged mutations still require
 a distinct capability token, incomplete or unhealthy provider terminal states
 fail closed, and unsupported operational claims, model-pin contradictions and
 unresolved evidence cannot converge.
@@ -159,10 +159,10 @@ responses neutralize HTML from caller, peer and persisted strings before
 rendering. Compact background-job status is persisted under the contained
 session directory so sibling/restarted hosts can report terminal state, but
 that operational record grants no additional mutation authority:
-`session_cancel_job` still requires the petitioner capability or operator
+`session_cancel_job` still requires the petitioner capability
 token, and a late request is an idempotent no-op with a compact `final_state`.
 `session_finalize` accepts only `aborted`, and only from the persisted
-petitioner's capability token or the operator token; `converged` cannot be
+petitioner's capability token; `converged` cannot be
 written through MCP.
 
 Requester reverification is item-scoped: when citations carry checklist IDs,
@@ -186,7 +186,7 @@ Every review round acquires its durable reservation before evidence or broker
 mutation. Its journal restores checklist/history when an unappended round is
 interrupted and appends an explicit compensation event; an appended converged
 round keeps the reservation until terminal finalization, preventing concurrent
-operator changes from reopening the checklist between those transitions.
+concurrent changes from reopening the checklist between those transitions.
 
 Code scanning runs through GitHub's CodeQL default setup and its analyses
 gate every pull request into `main` through the Enterprise ruleset and the
@@ -215,7 +215,7 @@ Server-authored parser and grounding remediation is kept in the durable
 decision-transformation audit trail, never represented as a peer-authored
 evidence request. This prevents an internal format correction from creating an
 anchorless checklist item that no later grounded vote can close. Genuine peer
-requests, strict ask-to-evidence correlation, operator authority and unresolved
+requests, strict ask-to-evidence correlation and unresolved
 evidence blocking remain unchanged.
 
 When an active legacy session is resumed, old checklist entries are removed
@@ -241,14 +241,14 @@ records, inferred confidence and narrative-only citations fail closed.
 
 Evidence attribution is bound to the authenticated invoker, never copied from a
 session's persisted petitioner. Existing-session review starters require the
-petitioner's capability or the dedicated operator capability, preventing a peer
-from continuing an operator-owned session and acquiring operator evidence
+petitioner's capability, preventing a peer
+from continuing another caller's session and inheriting its evidence
 authority.
 
 Routine AI evidence never requires human attachment. The four review starters
 persist their `evidence` field automatically as integrity-checked
 `caller_submitted_unverified` material. `session_attach_evidence` is only an
-optional operator authority-promotion surface; its runtime contract and
+optional durable attachment channel; its runtime contract and
 rejection message redirect model callers to the automatic path rather than
 requesting human intervention.
 Invalid session metadata is quarantined rather than trusted by list/doctor
@@ -268,11 +268,11 @@ built source installation.
 READY is a canonical envelope, not a free-form natural-language classification:
 its summary is fixed, requests/follow-ups are empty and outside prose is
 rejected. Session cancellation, verdict contestation and closing a session as
-`aborted` require the explicit petitioner token or the operator token;
-ambiguous legacy ownership is operator-only.
+`aborted` require the explicit petitioner token; ambiguous legacy ownership
+yields no derivable owner and is closed only by the idle sweep.
 
 The capability token authenticates the MCP host, not a model's internal intent
-or amount of cognitive effort. The operator token must never be placed in a
+or amount of cognitive effort. The caller capability token must never be placed in a
 model host. The local token file is plaintext and therefore assumes processes
 with read access to the cross-review data directory are trusted. The runtime
 fails closed unless it can enforce owner-only mode on POSIX or a protected

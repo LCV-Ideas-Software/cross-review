@@ -17,16 +17,17 @@ Restart any terminal, editor, app or MCP host after changing these variables.
 
 ## Cross-review caller capabilities
 
-`host-tokens.json` contains seven local caller capabilities: six peer tokens
-and a distinct `operator` token. Put each peer token only in its matching MCP
-host as `CROSS_REVIEW_CALLER_TOKEN`. The operator token is mandatory for
-optional `session_attach_evidence` authority promotion, judge/checklist
-mutation, sweep and token rotation; keep it only in a dedicated
-human-console host. Never put it in a model host. Routine AI evidence does not
-use this token or require a human: the authenticated peer sends raw proof in
+`host-tokens.json` contains six local caller capabilities, one per peer. Put
+each token only in its matching MCP host as `CROSS_REVIEW_CALLER_TOKEN`. A
+seventh capability existed for an `operator` identity whose token was meant to
+live in a separate human console; that host does not exist — the whole surface
+is MCP, exercised by agents — so the capability bound a secret to nobody and is
+gone, together with the tools that demanded it. Routine AI evidence needs no
+token beyond the peer's own: the authenticated peer sends raw proof in
 the `evidence` field of a review starter, and the runtime persists it
-automatically as `caller_submitted_unverified`. Legacy six-token files are
-migrated in place without rotating the existing peer tokens.
+automatically as `caller_submitted_unverified`. A record written before v07.00.00 carries the
+seventh token; loading it rewrites the file without that entry and leaves every
+peer token untouched.
 
 The runtime refuses an insecure token file: POSIX permissions must remain
 owner-only (`0600`), and Windows inheritance is removed so only the current
@@ -39,7 +40,7 @@ to participate as outbound review adapters; their provider API keys are enough.
 Distribute a peer capability token only when a local MCP client actually acts
 under that peer identity. Cancellation, verdict contestation and closing your
 own non-terminal session (`session_finalize` as `aborted`) additionally require
-the persisted petitioner's peer token (or the operator token).
+the persisted petitioner's peer token.
 
 ## Optional Model Overrides
 

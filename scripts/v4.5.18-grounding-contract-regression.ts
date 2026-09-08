@@ -421,7 +421,7 @@ const regressions: Regression[] = [
         [attachment],
       );
 
-      assert.match(prompt, /## Peer-Submitted Evidence \(UNVERIFIED\)/);
+      assert.match(prompt, /## Attached Evidence \(CALLER-SUBMITTED, UNVERIFIED\)/);
       assert.ok(prompt.includes(attachment.relative_path));
       assert.match(prompt, /PROOF_ACTIVE_ATTACHMENT: sha256 bytes survived recovery/);
       assert.match(prompt, new RegExp(attachment.sha256));

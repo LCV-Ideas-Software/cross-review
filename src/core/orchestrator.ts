@@ -121,15 +121,6 @@ const LEGACY_RUNTIME_REMEDIATION_RULES = [
   },
 ] as const;
 
-export function trustedEvidenceAttachments(
-  attachments: readonly ResolvedEvidenceAttachment[],
-): ResolvedEvidenceAttachment[] {
-  return attachments.filter(
-    (attachment) =>
-      attachment.provenance_status === "verified" && attachment.attached_by === "operator",
-  );
-}
-
 // Reviewable evidence has a verified integrity envelope, but may still have
 // been submitted by an untrusted model caller. It is safe to transport to the
 // independent reviewers; it is not equivalent to operator authority.
@@ -142,9 +133,12 @@ export function reviewableEvidenceAttachments(
 export function callerSubmittedEvidenceAttachments(
   attachments: readonly ResolvedEvidenceAttachment[],
 ): ResolvedEvidenceAttachment[] {
-  return reviewableEvidenceAttachments(attachments).filter(
-    (attachment) => attachment.attached_by !== "operator",
-  );
+  // v07.00.00: every reviewable attachment is caller-submitted. This used to
+  // exclude attachments attributed to "operator", which were then shown under
+  // a separate promoted heading. Nothing carries that attribution any more, so
+  // keeping the filter would silently drop material persisted before this
+  // release instead of showing it for what it is.
+  return reviewableEvidenceAttachments(attachments);
 }
 
 export interface RunUntilUnanimousInput {
@@ -240,14 +234,14 @@ export function sessionContractDirectives(): string[] {
     "1) R1 evidence-upfront: the caller draft MUST embed concrete evidence inline (file paths with line numbers, grep output, diff hunks, SHA-256 hashes, log excerpts). Do NOT defer evidence to a later round. NEEDS_EVIDENCE on R1 is a defect of the draft, not of the peer. Bulky artifacts (a full base→head diff, complete suite output) belong in the `evidence` field (up to 200K chars): it is persisted under SHA-256 custody and delivered to peers verbatim; a draft that cites such an artifact by label/path plus sha256 satisfies R1 for that material. Do NOT paste bulky artifacts into the draft body — the draft budget is far smaller than the evidence channel.",
     "2) Anti-verbosity (applies especially to Claude — historically the worst offender for verbosity in this protocol): keep the verdict surface short and dense. A long verdict is a defect, not thoroughness. Detail belongs in `evidence_sources`, never in `summary`.",
     "3) Compactness symmetry: the caller's draft is reviewed material; it should obey the same compactness budget peers do. Pad the evidence list, not the prose.",
-    "4) Automatic finalization: as soon as caller + every required peer reach READY and all evidence gates pass, the runtime MUST persist `outcome: converged` and the durable report itself. Callers and peers must never require a manual attachment, notification, or finalization step for an ordinary review. Leaving a unanimous-READY session in `outcome: null` is a runtime defect.",
+    "4) Automatic finalization: as soon as caller + every required peer reach READY and all evidence gates pass, the runtime MUST persist `outcome: converged` and the durable report itself. Callers and peers must never require a manual attachment, notification, or finalization step: no human takes part in this protocol. Leaving a unanimous-READY session in `outcome: null` is a runtime defect.",
     // v3.4.0 — proportionality guidance. Observed in sess 0003b2fe
     // (2026-05-12, Perplexity reviewer): for a small config/script
     // change validated only by static scans, Perplexity demanded a
     // duplicate operator attachment of the same rg output the caller had
     // supplied inline. This wastes rounds without improving safety.
-    "5) Proportionality: scale evidence demands to change risk. For pure config/script/text changes validated by static scans (rg/grep, JSON parse, git diff --check), supply the literal scan output inline or in the evidence field. For changes with runtime effect (build, test, deploy, migration, network call), always demand raw output. If the supplied proof is suspect, ask the authenticated caller to correct and resubmit it through those same automatic channels; never require a manual operator attachment for an ordinary review. When in doubt, prefer asking for evidence over assuming.",
-    "6) Peer-evidence corroboration: peer-submitted operational evidence is reviewable but UNVERIFIED. A READY vote that relies on it MUST use `confidence: verified` and cite the persisted attachment path, its SHA-256, and verbatim raw lines that value-correlate every operational assertion. When withdrawing a prior evidence ask, also cite its `Checklist-Item` id. Narrative-only citations and inferred confidence cannot support READY. At least two independent non-author reviewers must satisfy this contract; no manual operator attachment is required.",
+    "5) Proportionality: scale evidence demands to change risk. For pure config/script/text changes validated by static scans (rg/grep, JSON parse, git diff --check), supply the literal scan output inline or in the evidence field. For changes with runtime effect (build, test, deploy, migration, network call), always demand raw output. If the supplied proof is suspect, ask the authenticated caller to correct and resubmit it through those same automatic channels; never demand a human gesture: there is none in this protocol. When in doubt, prefer asking for evidence over assuming.",
+    "6) Peer-evidence corroboration: peer-submitted operational evidence is reviewable but UNVERIFIED. A READY vote that relies on it MUST use `confidence: verified` and cite the persisted attachment path, its SHA-256, and verbatim raw lines that value-correlate every operational assertion. When withdrawing a prior evidence ask, also cite its `Checklist-Item` id. Narrative-only citations and inferred confidence cannot support READY. At least two independent non-author reviewers must satisfy this contract.",
     "7) Blocking-evidence relevance: every factual NOT_READY summary MUST name the concrete `path:line` it alleges and cite the same `path:line` in an evidence_sources item with a verbatim raw quote. A real but unrelated quote cannot support a blocking verdict; request evidence instead.",
     // v4.5.44 (#216): the contract and the draft ceiling were calibrated
     // independently — peers demanded the full unfiltered diff as one
@@ -352,7 +346,6 @@ function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
 // peer context budgets.
 function attachedEvidenceBlock(attachments: ResolvedEvidenceAttachment[]): string[] {
   if (!attachments.length) return [];
-  const operatorVerified = trustedEvidenceAttachments(attachments);
   const callerSubmitted = callerSubmittedEvidenceAttachments(attachments);
   const lines: string[] = [];
   const appendArtifacts = (
@@ -378,14 +371,13 @@ function attachedEvidenceBlock(attachments: ResolvedEvidenceAttachment[]): strin
       );
     }
   };
+  // v07.00.00: one tier. The section above this one announced bytes admitted
+  // by "the authenticated human operator" — a principal with no channel to
+  // this server, so the tier was unreachable and the heading promised a
+  // provenance nobody could supply.
   appendArtifacts(
-    "## Attached Evidence (OPERATOR-VERIFIED)",
-    "The authenticated human operator admitted these exact persisted bytes. This optional higher-trust tier is never required for an ordinary review; integrity is rechecked before every use.",
-    operatorVerified,
-  );
-  appendArtifacts(
-    "## Peer-Submitted Evidence (UNVERIFIED)",
-    "The authenticated peer caller submitted these exact persisted bytes for independent review. Their integrity, caller identity and hash are recorded, but they are NOT promoted to operator-verified authority. Inspect them as review material and do not claim independent execution that the bytes do not prove.",
+    "## Attached Evidence (CALLER-SUBMITTED, UNVERIFIED)",
+    "The authenticated peer caller submitted these exact persisted bytes for independent review. Their integrity, caller identity and hash are recorded, and that is the whole of their provenance: no tier above this one exists. Inspect them as review material and do not claim independent execution that the bytes do not prove.",
     callerSubmitted,
   );
   return lines;
@@ -2592,9 +2584,7 @@ export interface EvidencePreflightResult {
   attachments_present: boolean;
   unattached_evidence_references: string[];
   uncorroborated_operational_claims: string[];
-  operator_uncorroborated_operational_claims: string[];
-  operator_grounded: boolean;
-  evidence_authority: "none" | "caller_submitted_unverified" | "operator_verified";
+  evidence_authority: "none" | "caller_submitted_unverified";
 }
 
 export function evidencePreflight(params: {
@@ -2623,18 +2613,8 @@ export function evidencePreflight(params: {
   ]
     .filter((value) => value.trim().length > 0)
     .join("\n");
-  const callerIsOperator = params.caller === undefined || params.caller === "operator";
-  const operatorEvidenceText = [
-    callerIsOperator ? (params.structuredEvidence ?? "") : "",
-    params.operatorVerifiedEvidenceText ??
-      (callerIsOperator ? (params.attachedEvidenceText ?? "") : ""),
-    callerIsOperator ? inlineRawEvidence : "",
-  ]
-    .filter((value) => value.trim().length > 0)
-    .join("\n");
   const assertions = extractEvidenceOperationalAssertions(claimText);
   const reviewableConflictIndex = buildEvidenceConflictIndex(reviewableEvidenceText);
-  const operatorConflictIndex = buildEvidenceConflictIndex(operatorEvidenceText);
   const uncorroboratedClaims = assertions
     .filter(
       (assertion) =>
@@ -2645,19 +2625,7 @@ export function evidencePreflight(params: {
         ),
     )
     .map((assertion) => assertion.display);
-  const operatorUncorroboratedClaims = assertions
-    .filter(
-      (assertion) =>
-        !evidenceCorroboratesOperationalAssertion(
-          assertion,
-          operatorEvidenceText,
-          operatorConflictIndex,
-        ),
-    )
-    .map((assertion) => assertion.display);
   const claimMatched = assertions.length > 0 || hasAssertiveCompletedWorkClaim(claimText);
-  const operatorGrounded =
-    claimMatched && assertions.length > 0 && operatorUncorroboratedClaims.length === 0;
   const suppliedEvidenceText = `${params.structuredEvidence ?? ""}\n${params.attachedEvidenceText ?? ""}`;
   const unattachedEvidenceReferences = findUnattachedEvidenceReferences(referenceCorpus, [
     ...(params.attachedEvidenceRefs ?? []),
@@ -2694,44 +2662,32 @@ export function evidencePreflight(params: {
       attachments_present: params.attachmentsPresent,
       unattached_evidence_references: unattachedEvidenceReferences,
       uncorroborated_operational_claims: uncorroboratedClaims,
-      operator_uncorroborated_operational_claims: operatorUncorroboratedClaims,
-      operator_grounded: operatorGrounded,
-      evidence_authority: operatorGrounded
-        ? "operator_verified"
-        : claimMatched && reviewableEvidenceText.trim()
-          ? "caller_submitted_unverified"
-          : "none",
+      evidence_authority:
+        claimMatched && reviewableEvidenceText.trim() ? "caller_submitted_unverified" : "none",
     };
   }
   const evidenceFound = reviewableEvidenceText.trim().length > 0;
   const pass = !claimMatched || (assertions.length > 0 && uncorroboratedClaims.length === 0);
-  // No claim is neutral, not operator verification. Authority exists only
-  // when concrete operational assertions are actually corroborated by the
-  // operator tier; vacuous truth must never manufacture custody.
-  const evidenceAuthority: EvidencePreflightResult["evidence_authority"] = operatorGrounded
-    ? "operator_verified"
-    : pass && claimMatched
-      ? "caller_submitted_unverified"
-      : "none";
+  // No claim is neutral: vacuous truth must never manufacture custody. The
+  // branch above this one promoted a claim to "operator_verified" when it was
+  // corroborated by the operator tier — a tier no caller could populate.
+  const evidenceAuthority: EvidencePreflightResult["evidence_authority"] =
+    pass && claimMatched ? "caller_submitted_unverified" : "none";
   return {
     pass,
     reason: pass
       ? claimMatched
-        ? operatorGrounded
-          ? "completed-work claims are value-correlated with operator-verified raw evidence"
-          : "completed-work claims are value-correlated with caller-submitted raw material; admitted for independent review but not promoted to operator-verified custody"
+        ? "completed-work claims are value-correlated with caller-submitted raw material, which is the only provenance an attachment can carry"
         : "no completed-work claim detected — nothing to preflight"
       : `task/draft claims completed operational work without value-corresponding evidence: ${
           uncorroboratedClaims.join(", ") || "unclassified completed-work claim"
-        }; supply raw matching output inline or via the evidence field; use operator attachment custody only when privileged verification is required`,
+        }; supply raw matching output inline or via the evidence field`,
     completed_work_claim_matched: claimMatched,
     evidence_marker_found: evidenceFound,
     structured_evidence_supplied: structuredEvidenceSupplied,
     attachments_present: params.attachmentsPresent,
     unattached_evidence_references: [],
     uncorroborated_operational_claims: uncorroboratedClaims,
-    operator_uncorroborated_operational_claims: operatorUncorroboratedClaims,
-    operator_grounded: operatorGrounded,
     evidence_authority: evidenceAuthority,
   };
 }
@@ -2755,7 +2711,7 @@ export interface TruthfulnessPreflightResult {
   source_marker_found: boolean;
   runtime_facts_available: boolean;
   fabrication_prone_claim_matched: boolean;
-  operator_grounded: boolean;
+  caller_grounded: boolean;
   independent_review_required: boolean;
 }
 
@@ -2773,7 +2729,6 @@ export interface CombinedSessionPreflightResult {
     result: TruthfulnessPreflightResult | null;
   };
   reviewable_attachment_count: number;
-  operator_verified_attachment_count: number;
 }
 
 export type TruthfulnessIssueClass =
@@ -3841,7 +3796,10 @@ export function truthfulnessPreflight(params: {
 
   const pass = contradictions.length === 0 && unsupportedClaims.length === 0;
   if (!pass) independentReviewRequired = false;
-  const operatorGrounded = pass && !independentReviewRequired;
+  // v07.00.00: renamed from `operator_grounded`. It never meant a human had
+  // vouched for anything — it means the caller's own material carried the
+  // claims without independent review being required.
+  const callerGrounded = pass && !independentReviewRequired;
   const detail = [...contradictions, ...unsupportedClaims].join("; ");
   const evidenceState =
     `attachments_present=${params.attachmentsPresent}; ` +
@@ -3871,7 +3829,7 @@ export function truthfulnessPreflight(params: {
     source_marker_found: sourceMarkerFound,
     runtime_facts_available: runtimeFactsAvailable,
     fabrication_prone_claim_matched: fabricationProneClaimMatched,
-    operator_grounded: operatorGrounded,
+    caller_grounded: callerGrounded,
     independent_review_required: independentReviewRequired,
   };
 }
@@ -4892,7 +4850,6 @@ export class CrossReviewOrchestrator {
     caller: PeerId | "operator";
   }): CombinedSessionPreflightResult {
     const reviewableAttachments = this.safeReadEvidenceAttachments(params.sessionId);
-    const trustedAttachments = trustedEvidenceAttachments(reviewableAttachments);
     const evidenceResult = this.config.evidence_preflight_enabled
       ? evidencePreflight({
           task: params.task,
@@ -4901,9 +4858,6 @@ export class CrossReviewOrchestrator {
           caller: params.caller,
           attachmentsPresent: reviewableAttachments.length > 0,
           attachedEvidenceText: reviewableAttachments
-            .map((attachment) => attachment.content)
-            .join("\n"),
-          operatorVerifiedEvidenceText: trustedAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
           attachedEvidenceRefs: reviewableAttachments.flatMap((attachment) => [
@@ -4920,9 +4874,6 @@ export class CrossReviewOrchestrator {
           caller: params.caller,
           attachmentsPresent: reviewableAttachments.length > 0,
           attachedEvidenceText: reviewableAttachments
-            .map((attachment) => attachment.content)
-            .join("\n"),
-          operatorVerifiedEvidenceText: trustedAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
@@ -4945,7 +4896,6 @@ export class CrossReviewOrchestrator {
         result: truthfulnessResult,
       },
       reviewable_attachment_count: reviewableAttachments.length,
-      operator_verified_attachment_count: trustedAttachments.length,
     };
   }
 
@@ -6971,9 +6921,6 @@ export class CrossReviewOrchestrator {
         caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
-        operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
-          .map((attachment) => attachment.content)
-          .join("\n"),
         attachedEvidenceRefs: attachments.flatMap((attachment) => [
           attachment.label,
           attachment.relative_path,
@@ -7024,7 +6971,6 @@ export class CrossReviewOrchestrator {
             attachments_present: preflight.attachments_present,
             unattached_evidence_references: preflight.unattached_evidence_references,
             uncorroborated_operational_claims: preflight.uncorroborated_operational_claims,
-            operator_grounded: preflight.operator_grounded,
             evidence_authority: preflight.evidence_authority,
           },
         });
@@ -7040,9 +6986,6 @@ export class CrossReviewOrchestrator {
         caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
-        operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
-          .map((attachment) => attachment.content)
-          .join("\n"),
         runtimeFacts: runtimeTruthFacts(this.config),
       });
       await this.recordPreflightChecked(
@@ -7596,13 +7539,14 @@ export class CrossReviewOrchestrator {
           }
         }
         if ((!this.config.stub || this.injectedAdapterFactory) && peerResult.status !== null) {
-          const trustedAttachments = trustedEvidenceAttachments(attachments);
           const submittedAttachments = callerSubmittedEvidenceAttachments(attachments);
           const grounding = groundReadyPeerEvidence(peerResult, {
             artifactText: `${session.task}\n${input.draft}`,
-            attachedEvidenceText: trustedAttachments
-              .map((attachment) => attachment.content)
-              .join("\n"),
+            // v07.00.00: this corpus carried the operator-verified tier, which
+            // no caller could ever populate, so it was empty on every real
+            // round. It is empty explicitly now; corroboration runs on the
+            // caller-submitted attachments passed below, as it already did.
+            attachedEvidenceText: "",
             evidenceAttachments: attachments,
             callerSubmittedAttachments: submittedAttachments,
             requirePeerSubmittedCorroboration:
@@ -7747,8 +7691,7 @@ export class CrossReviewOrchestrator {
       {
         required:
           (roundEvidencePreflight?.pass === true &&
-            roundEvidencePreflight.completed_work_claim_matched &&
-            !roundEvidencePreflight.operator_grounded) ||
+            roundEvidencePreflight.completed_work_claim_matched) ||
           roundTruthfulnessPreflight?.independent_review_required === true,
         corroborating_peers: [...peerEvidenceCorroborators],
       },
@@ -8328,9 +8271,6 @@ export class CrossReviewOrchestrator {
           caller: callerForLottery,
           attachmentsPresent: initAttachments.length > 0,
           attachedEvidenceText: initAttachments.map((attachment) => attachment.content).join("\n"),
-          operatorVerifiedEvidenceText: trustedEvidenceAttachments(initAttachments)
-            .map((attachment) => attachment.content)
-            .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
         await this.recordPreflightChecked(
@@ -8372,9 +8312,9 @@ export class CrossReviewOrchestrator {
       const initialFabricationResult =
         !initialEmptyText && !initialDriftDetected
           ? detectFabricatedEvidence(initGeneration.text, {
-              provenanceCorpus: trustedEvidenceAttachments(initAttachments)
-                .map((attachment) => attachment.content)
-                .join("\n"),
+              // Same as above: the promoted tier was unreachable, so this
+              // corpus was always empty.
+              provenanceCorpus: "",
               priorDraftCorpus: callerSubmittedEvidenceAttachments(initAttachments)
                 .map((attachment) => attachment.content)
                 .join("\n"),
@@ -8547,9 +8487,6 @@ export class CrossReviewOrchestrator {
           caller: callerForLottery,
           attachmentsPresent: attachedEvidence.length > 0,
           attachedEvidenceText: attachedEvidence.map((attachment) => attachment.content).join("\n"),
-          operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachedEvidence)
-            .map((attachment) => attachment.content)
-            .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
         await this.recordPreflightChecked(
@@ -8594,10 +8531,10 @@ export class CrossReviewOrchestrator {
       let fabricationResult: FabricationDetectionResult | null = null;
       let metaAuditResult: MetaAuditDetectionResult | null = null;
       if (!emptyText && !driftDetected) {
-        const trustedAttachedEvidence = trustedEvidenceAttachments(attachedEvidence);
         const submittedAttachedEvidence = callerSubmittedEvidenceAttachments(attachedEvidence);
         fabricationResult = detectFabricatedEvidence(generation.text, {
-          provenanceCorpus: trustedAttachedEvidence.map((a) => a.content).join("\n"),
+          // The promoted tier was unreachable, so this corpus was always empty.
+          provenanceCorpus: "",
           // v3.7.4: the prior artifact (the draft the relator is
           // revising) is its own corpus tier — assertions preserved
           // from it are not fabrication. The task narrative stays
@@ -9079,9 +9016,6 @@ export class CrossReviewOrchestrator {
         attachedEvidenceText: truthfulnessAttachments
           .map((attachment) => attachment.content)
           .join("\n"),
-        operatorVerifiedEvidenceText: trustedEvidenceAttachments(truthfulnessAttachments)
-          .map((attachment) => attachment.content)
-          .join("\n"),
         runtimeFacts: runtimeTruthFacts(this.config),
       });
       await this.recordPreflightChecked(
@@ -9148,9 +9082,6 @@ export class CrossReviewOrchestrator {
         caller: callerForLottery,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
-        operatorVerifiedEvidenceText: trustedEvidenceAttachments(attachments)
-          .map((attachment) => attachment.content)
-          .join("\n"),
         attachedEvidenceRefs: attachments.flatMap((attachment) => [
           attachment.label,
           attachment.relative_path,
@@ -9188,7 +9119,6 @@ export class CrossReviewOrchestrator {
             attachments_present: preflight.attachments_present,
             unattached_evidence_references: preflight.unattached_evidence_references,
             uncorroborated_operational_claims: preflight.uncorroborated_operational_claims,
-            operator_grounded: preflight.operator_grounded,
             evidence_authority: preflight.evidence_authority,
           },
         });
@@ -9313,9 +9243,6 @@ export class CrossReviewOrchestrator {
           attachedEvidenceText: initialAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
-          operatorVerifiedEvidenceText: trustedEvidenceAttachments(initialAttachments)
-            .map((attachment) => attachment.content)
-            .join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
         });
         await this.recordPreflightChecked(
@@ -9381,10 +9308,10 @@ export class CrossReviewOrchestrator {
         initialAttachments =
           initialAttachments ??
           this.safeReadEvidenceAttachments(session.session_id, callerSubmissionId);
-        const trustedInitialAttachments = trustedEvidenceAttachments(initialAttachments);
         const submittedInitialAttachments = callerSubmittedEvidenceAttachments(initialAttachments);
         initialFabricationResult = detectFabricatedEvidence(generation.text, {
-          provenanceCorpus: trustedInitialAttachments.map((a) => a.content).join("\n"),
+          // The promoted tier was unreachable, so this corpus was always empty.
+          provenanceCorpus: "",
           priorDraftCorpus: submittedInitialAttachments
             .map((attachment) => attachment.content)
             .join("\n"),
@@ -9650,9 +9577,6 @@ export class CrossReviewOrchestrator {
             attachedEvidenceText: truthfulnessAttachments
               .map((attachment) => attachment.content)
               .join("\n"),
-            operatorVerifiedEvidenceText: trustedEvidenceAttachments(truthfulnessAttachments)
-              .map((attachment) => attachment.content)
-              .join("\n"),
             runtimeFacts: runtimeTruthFacts(this.config),
           });
           await this.recordPreflightChecked(
@@ -9750,7 +9674,6 @@ export class CrossReviewOrchestrator {
             session.session_id,
             callerSubmissionId,
           );
-          const trustedAttachmentsForCheck = trustedEvidenceAttachments(attachmentsForCheck);
           const submittedAttachmentsForCheck =
             callerSubmittedEvidenceAttachments(attachmentsForCheck);
           // Three-tier corpus (v2.24.0 two-tier per Codex R1 blocker
@@ -9762,7 +9685,8 @@ export class CrossReviewOrchestrator {
           // union since IDs/paths/SHAs are commonly referenced as
           // identifiers without being claimed as command-output evidence.
           fabricationResult = detectFabricatedEvidence(generation.text, {
-            provenanceCorpus: trustedAttachmentsForCheck.map((a) => a.content).join("\n"),
+            // The promoted tier was unreachable, so this corpus was always empty.
+            provenanceCorpus: "",
             priorDraftCorpus: `${draft}\n${submittedAttachmentsForCheck
               .map((attachment) => attachment.content)
               .join("\n")}`,

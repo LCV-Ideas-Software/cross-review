@@ -1936,10 +1936,7 @@ const regressions: Regression[] = [
           [],
         );
         const gated = blockConvergenceForPeerSubmittedEvidencePanel(base, {
-          required:
-            preflight.pass &&
-            preflight.completed_work_claim_matched &&
-            !preflight.operator_grounded,
+          required: preflight.pass && preflight.completed_work_claim_matched,
           corroborating_peers: [
             ...(claude.peer_submitted_evidence_corroborated ? (["claude"] as PeerId[]) : []),
             ...(gemini.peer_submitted_evidence_corroborated ? (["gemini"] as PeerId[]) : []),
@@ -2314,16 +2311,14 @@ const regressions: Regression[] = [
         {
           pass: result.pass,
           completed_work_claim_matched: result.completed_work_claim_matched,
-          operator_grounded: result.operator_grounded,
           evidence_authority: result.evidence_authority,
         },
         {
           pass: true,
           completed_work_claim_matched: false,
-          operator_grounded: false,
           evidence_authority: "none",
         },
-        "absence of a claim/evidence is neutral and must never be labeled operator_verified",
+        "absence of a claim/evidence is neutral and must never carry evidence authority",
       );
     },
   },
@@ -2342,14 +2337,12 @@ const regressions: Regression[] = [
           pass: result.pass,
           completed_work_claim_matched: result.completed_work_claim_matched,
           unattached_evidence_references: result.unattached_evidence_references,
-          operator_grounded: result.operator_grounded,
           evidence_authority: result.evidence_authority,
         },
         {
           pass: false,
           completed_work_claim_matched: false,
           unattached_evidence_references: ["design-context.log"],
-          operator_grounded: false,
           evidence_authority: "none",
         },
         "an unrelated narrative and missing design reference are not evidence authority when no completed-work claim exists",

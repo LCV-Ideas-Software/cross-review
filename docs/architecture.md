@@ -201,8 +201,8 @@ Evidence checklist state is also surfaced in reports. `not_resurfaced` means an
 ask was not repeated in a later round; it is not a verified satisfaction signal.
 If the ready/unanimity gate is otherwise satisfied while checklist items remain
 `open` or `not_resurfaced`, convergence is blocked. Non-resurfacing is not proof
-that the requested evidence was supplied. An explicit operator disposition, an
-independent judge, or a strictly grounded `READY/verified` recheck by the same
+that the requested evidence was supplied. An independent judge, or a strictly
+grounded `READY/verified` recheck by the same
 peer that opened the ask can close it; the latter is persisted as
 `requester_reverified` and cannot affect another peer's or a terminal item.
 
@@ -234,7 +234,7 @@ Decision quality is tracked per peer:
 always block unanimity until resolved.
 
 Every `READY` vote requires concrete evidence sources traceable to the artifact,
-authenticated caller evidence or optional operator-verified attachments. If an
+authenticated caller evidence. If an
 operational claim depends only on peer-submitted evidence, `inferred` is not
 enough: at least two independent reviewers must return `READY/verified` with the
 persisted path, SHA-256 and value-corresponding raw quote.
@@ -304,14 +304,13 @@ host/window restart or reload; opening a new tool call is not a live reload.
 ## Evidence Integrity and Anti-deception
 
 Authenticated caller evidence is automatically persisted, integrity-hashed and
-transported as reviewable material; no manual operator action is required.
+transported as reviewable material; nothing further is required.
 An append-only submission manifest selects exactly one active automatic
 caller-evidence snapshot. Superseded snapshots remain forensic history but are
 excluded from current preflight/prompt/grounding, preventing retry poisoning,
 stale-success replay and oldest-first prompt starvation. Evidence filenames
 include UUID entropy so concurrent same-label writes cannot collide.
-Optional authority promotion plus evidence/checklist and security mutations
-remain operator-only MCP operations. Terminal state is runtime-owned for
+Terminal state is runtime-owned for
 `converged` and `max-rounds`; `aborted` may be written by the persisted
 petitioner through `session_finalize`; a failed background job records
 `background_job_failed` as a blocked, resumable state; and the boot-time sweep
@@ -339,11 +338,11 @@ materialized by the post-image of an admitted unified diff as supplied, so a
 relator that names it is not blocked, while a genuinely missing artifact still
 fails closed.
 
-The identity map contains six peer capabilities plus a separate `operator`
-capability. Operator-only tools require a verified operator token regardless of
-the permissive peer-token setting. A model token cannot be reused as operator,
-and evidence judges cannot rule on their own asks. The operator token belongs
-only in a dedicated human-console host. The plaintext token map is protected
+The identity map contains six peer capabilities, one per peer. A seventh
+existed for an `operator` identity whose token was meant to live in a separate
+human console; that host does not exist, so the capability bound a secret to
+nobody and is gone with the tools that demanded it. Evidence judges cannot rule
+on their own asks. The plaintext token map is protected
 with owner-only POSIX permissions or a non-inherited Windows DACL; this removes
 model-sandbox group access but is not a boundary between unrestricted processes
 sharing one OS identity.
@@ -370,8 +369,8 @@ classification: `summary` is exactly `No blocking objections remain.`,
 `caller_requests`/`follow_ups` are empty, and external narrative is forbidden.
 All explanatory detail stays in grounded `evidence_sources`. Cancellation and
 verdict contestation additionally require the explicit persisted petitioner
-token or the operator token; ambiguous legacy ownership fails closed to the
-operator.
+token; ambiguous legacy ownership yields no derivable owner and fails closed,
+closed only by the idle sweep.
 
 The canonical attachment citation is one string array item, in this exact
 order: `Attachment: <persisted-path>`, `sha256=<64 lowercase hex>`, then
