@@ -140,16 +140,16 @@ export class LeadPeerCannotFitDraftError extends Error {
 }
 
 // Refuses a NAMED relator whose ceiling does not hold the draft. Used on the
-// paths that do not draw — an explicit `lead_peer`, and the operator-caller
-// default — where there is nothing to redraw and the honest outcome is a
-// refusal that names the peer, its ceiling and the two levers.
+// one path that does not draw — an explicit `lead_peer` — where there is
+// nothing to redraw and the honest outcome is a refusal that names the peer,
+// its ceiling and the two levers.
 export function assertLeadPeerFitsDraft(leadPeer: PeerId, fit: RelatorOutputFit | undefined): void {
   if (!fit || relatorFitsDraft(fit, leadPeer)) return;
   throw new LeadPeerCannotFitDraftError(leadPeer, fit.ceiling_tokens(leadPeer), fit.draft_chars);
 }
 
 export interface RelatorAssignment {
-  caller: PeerId | "operator";
+  caller: PeerId;
   candidate_pool: PeerId[];
   assigned: PeerId;
   // Peers dropped from the draw because their output ceiling does not
@@ -195,14 +195,15 @@ export class LeadPeerNotInSessionError extends Error {
 // supplied, the pool is `sessionPeers \ {caller}` (so the lottery only
 // considers peers actually participating in the session). When omitted,
 // falls back to the global `PEERS \ {caller}` for back-compat with callers
-// that only know the caller. When `caller === "operator"`, no exclusion
-// applies — operator is human-in-the-loop, not a reviewer.
-export function relatorCandidatePool(
-  caller: PeerId | "operator",
-  sessionPeers?: readonly PeerId[],
-): PeerId[] {
+// that only know the caller.
+//
+// v07.00.00: a branch here used to return the pool UNFILTERED when the caller
+// was "operator" — leaving the petitioner eligible to be drawn as relator on
+// its own petition, which is the exact failure the lottery exists to prevent.
+// It was reachable while the orchestrator still defaulted a missing caller to
+// that identity. Every caller is a peer now, so the recusal is unconditional.
+export function relatorCandidatePool(caller: PeerId, sessionPeers?: readonly PeerId[]): PeerId[] {
   const source: readonly PeerId[] = sessionPeers ?? PEERS;
-  if (caller === "operator") return [...source];
   return source.filter((peer) => peer !== caller);
 }
 
@@ -218,7 +219,7 @@ export function relatorCandidatePool(
 // from `no_eligible_relator` (which means there was nobody to draw from at
 // all). Both throw before any peer call, so a refusal costs nothing.
 export function assignRelator(
-  caller: PeerId | "operator",
+  caller: PeerId,
   sessionPeers?: readonly PeerId[],
   rng?: RelatorRng,
   fit?: RelatorOutputFit,
@@ -260,11 +261,14 @@ export function assignRelator(
 // relator). When `sessionPeers` is omitted, only the self-review check
 // runs (back-compat).
 export function assertLeadPeerNotCaller(
-  caller: PeerId | "operator",
+  caller: PeerId,
   leadPeer: PeerId,
   sessionPeers?: readonly PeerId[],
 ): void {
-  if (caller !== "operator" && leadPeer === caller) {
+  // v07.00.00: this used to read `caller !== "operator" && leadPeer === caller`,
+  // so an operator caller could name ANY lead_peer, including itself. The
+  // no-self-review gate now has no exemption to skip.
+  if (leadPeer === caller) {
     throw new CallerCannotBeLeadPeerError(caller);
   }
   if (sessionPeers && sessionPeers.length > 0 && !sessionPeers.includes(leadPeer)) {
@@ -277,7 +281,7 @@ export function assertLeadPeerNotCaller(
 // session peers are known) and returns it tagged `entropy_source: "explicit"`.
 // When omitted, runs the lottery against the (caller, sessionPeers) pair.
 export function resolveLeadPeer(
-  caller: PeerId | "operator",
+  caller: PeerId,
   leadPeer: PeerId | undefined,
   sessionPeers?: readonly PeerId[],
   fit?: RelatorOutputFit,

@@ -137,7 +137,6 @@ assert.equal(
 const peerSubmittedStructuredEvidence = evidencePreflight({
   task: "Review my patch - 99 passed.",
   initialDraft: "no markers here",
-  caller: "claude",
   structuredEvidence: "Tests 99 passed, 0 failed\nEXIT_CODE: 0",
   attachmentsPresent: false,
 });
@@ -156,7 +155,6 @@ assert.equal(peerSubmittedStructuredEvidence.evidence_authority, "caller_submitt
 const peerAttachedEvidence = evidencePreflight({
   task: "Review my patch - 99 passed.",
   initialDraft: "no markers here",
-  caller: "claude",
   attachedEvidenceText: "Tests 99 passed, 0 failed\nEXIT_CODE: 0",
   attachmentsPresent: true,
 });
@@ -175,7 +173,6 @@ const commandRecord = evidencePreflight({
   task: "Review completed work: npm run lint passed and git diff --check is clean.",
   initialDraft:
     "COMMAND: npm run lint\nEXIT_CODE: 0\nSTDOUT:\nNo lint errors\n\nCOMMAND: git diff --check\nEXIT_CODE: 0\nSTDOUT: <empty>",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(commandRecord.pass, true, "COMMAND/EXIT_CODE blocks must remain correlated");
@@ -184,7 +181,6 @@ const gitWorkingDirectoryCommandRecord = evidencePreflight({
   task: "Review completed work: git diff --check is clean.",
   initialDraft:
     "COMMAND: git -C astrologo-app diff --check\nEXIT_CODE: 0\nSTDOUT: <empty>\nSTDERR: <empty>",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -242,7 +238,6 @@ for (const [label, record] of [
   const result = evidencePreflight({
     task: "Review completed work: git diff --check is clean.",
     initialDraft: record,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(result.pass, false, `${label} must not prove git diff --check is clean`);
@@ -252,7 +247,6 @@ const crossCommandFalsePositive = evidencePreflight({
   task: "Review completed work: npm run lint passed.",
   initialDraft:
     "COMMAND: npm run lint\nEXIT_CODE: 1\nSTDOUT: lint failed\n\nCOMMAND: npm test\nEXIT_CODE: 0\nTests 4 passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -265,7 +259,6 @@ const nonZeroExitDominatesSuccessWords = evidencePreflight({
   task: "Review completed work: npm run test passed and the tests passed.",
   initialDraft:
     "COMMAND: npm run test\nEXIT_CODE: 1\nSTDOUT:\nTests 74 passed, 1 failed\nThe runner printed a success summary before exiting with failure.",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -278,7 +271,6 @@ const conflictingRunsOfSameCommand = evidencePreflight({
   task: "Review completed work: npm run lint passed.",
   initialDraft:
     "COMMAND: npm run lint\nEXIT_CODE: 0\nSTDOUT: lint passed\n\nCOMMAND: npm run lint\nEXIT_CODE: 1\nSTDOUT: lint failed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -290,7 +282,6 @@ assert.equal(
 const incompatiblePassedFailedCounts = evidencePreflight({
   task: "Review completed work: the tests passed; 99 passed.",
   initialDraft: "COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 99 passed, 1 failed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -316,7 +307,6 @@ for (const [label, records] of [
   const conflictingCountRuns = evidencePreflight({
     task: "Review completed work: npm test completed with 88 passed.",
     structuredEvidence: records,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -330,7 +320,6 @@ const normalizedSameCommandCountConflict = evidencePreflight({
   task: "Review completed work: npm test completed with 88 passed.",
   structuredEvidence:
     "COMMAND: NPM   TEST\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed\n\n$ npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -363,7 +352,6 @@ for (const disguisedGreenCommand of [
   const disguisedSameCommandConflict = evidencePreflight({
     task: "Review completed work: npm test completed with 88 passed.",
     structuredEvidence: `COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${disguisedGreenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -385,7 +373,6 @@ for (const [redCommand, greenCommand] of [
   const explicitlyDifferentCommands = evidencePreflight({
     task: "Review completed work: the selected green suite completed with 88 passed.",
     structuredEvidence: `COMMAND: ${redCommand}\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${greenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -405,7 +392,6 @@ for (const [label, redCommand, greenCommand] of [
   const distinctGenericCommands = evidencePreflight({
     task: "Review completed work: the selected generic command completed with 88 passed.",
     structuredEvidence: `COMMAND: ${redCommand}\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${greenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -423,7 +409,6 @@ for (const equivalentGenericCommand of [
   const equivalentGenericCommandsConflict = evidencePreflight({
     task: "Review completed work: the selected generic command completed with 88 passed.",
     structuredEvidence: `COMMAND: node runner.js "red case"\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${equivalentGenericCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -461,7 +446,6 @@ assert.deepEqual(conflictIndexAtTwoThousand, {
 const twoThousandRecordConflict = evidencePreflight({
   task: "Review completed work: the shared command completed with 88 passed.",
   structuredEvidence: conflictCorpus(2_000),
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -482,7 +466,6 @@ const repeatedZeroExitCodesRemainSuccessful = evidencePreflight({
   task: "Review completed work: the generic test runner completed with 1 passed.",
   structuredEvidence:
     "COMMAND: node test-runner.js\nEXIT_CODE: 0\nEXIT_CODE: 0\nSTDOUT:\nTests 1 passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -495,7 +478,6 @@ const wrappedSameCommandArgumentsConflict = evidencePreflight({
   task: "Review completed work: the selected suite completed with 88 passed.",
   structuredEvidence:
     "COMMAND: npm test -- tests/foo.test.ts\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: npm.exe run test -- tests/foo.test.ts\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -514,7 +496,6 @@ for (const cosmeticNpmCommand of [
   const cosmeticOptionConflict = evidencePreflight({
     task: "Review completed work: npm test completed with 88 passed.",
     structuredEvidence: `COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${cosmeticNpmCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -532,7 +513,6 @@ for (const ambiguousNpmOptionCommand of [
   const unknownOptionConflict = evidencePreflight({
     task: "Review completed work: npm test completed with 88 passed.",
     structuredEvidence: `COMMAND: npm test\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${ambiguousNpmOptionCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -552,7 +532,6 @@ for (const [redCommand, greenCommand] of [
   const equivalentContextConflict = evidencePreflight({
     task: "Review completed work: the selected suite completed with 88 passed.",
     structuredEvidence: `COMMAND: ${redCommand}\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed\n\nCOMMAND: ${greenCommand}\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed`,
-    caller: "codex",
     attachmentsPresent: false,
   });
   assert.equal(
@@ -566,7 +545,6 @@ const unframedFailureCannotProveIndependence = evidencePreflight({
   task: "Review completed work: npm test completed with 88 passed.",
   structuredEvidence:
     "Tests 1 failed\nEXIT_CODE: 1\n\nCOMMAND: npm test\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -582,7 +560,6 @@ const narrativePreambleBeforeCommandFrame = evidencePreflight({
   task: "Review completed work: npm run check passed.",
   structuredEvidence:
     "The report says npm run check passed.\n\nCOMMAND: npm run check\nEXIT_CODE: 0\nSTDOUT:\nChecks passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -594,7 +571,6 @@ const unidentifiedFailureBeforeCommandFrame = evidencePreflight({
   task: "Review completed work: npm run check passed.",
   structuredEvidence:
     "An unidentified check failed.\nEXIT_CODE: 1\n\nCOMMAND: npm run check\nEXIT_CODE: 0\nSTDOUT:\nChecks passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -608,7 +584,6 @@ assert.equal(
 const unframedTestCount = evidencePreflight({
   task: "Review completed work: 88 passed.",
   structuredEvidence: "node test-runner.js\nEXIT_CODE: 0\n88 passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -619,7 +594,6 @@ assert.equal(
 const framedTestCount = evidencePreflight({
   task: "Review completed work: 88 passed.",
   structuredEvidence: "COMMAND: node test-runner.js\nEXIT_CODE: 0\n88 passed",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -659,7 +633,6 @@ const honestRedCount = evidencePreflight({
   task: "TDD proof: the new regression fails against main - 1 failed.",
   initialDraft:
     "COMMAND: npx vitest run notification-regression\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed (1)",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -681,7 +654,6 @@ const redRecordDoesNotPoisonGreen = evidencePreflight({
   task: "Review: full suite green with 88 passed; the new regression shows 1 failed against main.",
   initialDraft:
     "COMMAND: npm run smoke\nEXIT_CODE: 0\nSTDOUT:\nTests 88 passed\n\nCOMMAND: npx vitest run red-proof\nEXIT_CODE: 1\nSTDOUT:\nTests 1 failed (1)",
-  caller: "codex",
   attachmentsPresent: false,
 });
 assert.equal(
@@ -869,7 +841,6 @@ for (const status of ["addressed", "satisfied", "deferred", "rejected"] as const
 const genericCiSuccess = evidencePreflight({
   task: "Review the completed implementation.",
   initialDraft: "The CI completed without errors and every check succeeded.",
-  caller: "claude",
   attachmentsPresent: false,
 });
 assert.equal(

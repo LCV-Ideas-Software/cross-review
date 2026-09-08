@@ -51,7 +51,7 @@ const regressions: Regression[] = [
     name: "session persists a redacted effective-config snapshot and digest",
     run: async () => {
       const orchestrator = new CrossReviewOrchestrator(fixtureConfig("config-snapshot"), () => {});
-      const session = await orchestrator.store.init("config snapshot", "operator", []);
+      const session = await orchestrator.store.init("config snapshot", "codex", []);
       const meta = orchestrator.store.read(session.session_id) as unknown as {
         effective_config_snapshot?: Record<string, unknown>;
         effective_config_sha256?: string;
@@ -96,7 +96,7 @@ const regressions: Regression[] = [
         fixtureConfig("consensus-taxonomy"),
         (event) => events.push(event),
       );
-      const session = await orchestrator.store.init("consensus taxonomy", "operator", []);
+      const session = await orchestrator.store.init("consensus taxonomy", "deepseek", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "codex", ask: "Provide the exact fixture evidence." },
       ]);
@@ -145,7 +145,7 @@ const regressions: Regression[] = [
         fixtureConfig("consensus-active-attribution"),
         (event) => events.push(event),
       );
-      const session = await orchestrator.store.init("consensus active attribution", "operator", []);
+      const session = await orchestrator.store.init("consensus active attribution", "deepseek", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "codex", ask: "Provide the exact fixture evidence." },
       ]);

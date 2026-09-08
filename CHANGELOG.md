@@ -100,6 +100,46 @@ standard `v00.00.00`; npm package versions remain SemVer.
   degrades to off for a session persisted before this release, whose petitioner
   is not a peer; that is deliberate, and cheaper than a shared bucket.
 
+- **The authority branches that exempted the retired identity are gone, and the
+  hole they served was the default, not the branch.** A peer that simply
+  omitted `caller` used to acquire an identity that skipped auto-recusal and
+  skipped the no-self-review guard, and — through a whole second
+  relator-selection path — skipped `lead_peer` validation entirely, so the
+  petitioner could be named relator on its own petition. `caller` is now
+  required and is a peer on both internal inputs, so omitting it is a compile
+  error rather than a silent exemption; `store.init`, `initSession` and
+  `contestVerdict` open peer-owned sessions only. The relator lottery has no
+  exemption left: the recusal is unconditional and every peer is refused when
+  it nominates itself.
+  A session persisted before this release can still name `"operator"` as its
+  petitioner. Such a record has no peer owner, so **both** round entry points
+  refuse it rather than let the acting peer adopt it — adopting it would hand
+  any peer another principal's session. The first draft of this change did
+  adopt it, and the regression that exists for exactly that privilege
+  confusion caught it.
+  The operator-verified corpus inside `truthfulnessPreflight` and the two dead
+  parameters on `evidencePreflight` are gone with the tier. No call site ever
+  supplied `operatorVerifiedEvidenceText`, and each corroboration predicate
+  returns false on an empty corpus, so the four tests against it were constants
+  for every peer caller; the rule they encoded is now written directly —
+  caller-submitted corroboration always requires independent panel
+  corroboration. Behaviour is unchanged for every peer caller and **tightens**
+  only for the retired identity, which is the point of the release. Verified by
+  re-arming the corpus and watching the existing assertion go red, not by
+  reading the code.
+  `authority_status` drops its `operator_verified` member on both computed
+  shapes; neither is parsed from disk, so the legacy-parse doctrine that keeps
+  `SessionMeta.caller` wide does not apply to them.
+
+- **Opus is out of the model set** (operator directive, restated 08/09/2026:
+  cross-review runs the top model of each provider). The
+  `SUPPORTED_MODEL_OVERRIDES` list that blessed `claude-opus-5` and
+  `claude-opus-4-8` is removed, and the canonical pin per peer is now the whole
+  admissible set. This is not a block: `CROSS_REVIEW_<PROVIDER>_MODEL` is the
+  deployment owner's own lever and is still honoured, but a non-flagship pin
+  now reports `confidence: "unknown"` instead of `"verified"`, so the deviation
+  is visible at the configuration rather than at a mid-round provider 404.
+
 ### Removed
 
 - **`session_evidence_checklist_update` and `regenerate_caller_tokens`, in

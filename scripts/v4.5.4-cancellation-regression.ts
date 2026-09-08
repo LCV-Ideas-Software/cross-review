@@ -186,9 +186,12 @@ const regressions: Regression[] = [
       const result = await orchestrator.runUntilUnanimous({
         task: "v4.5.4 regression: max_rounds must be a hard caller ceiling.",
         initial_draft: "FORCE_NEEDS_EVIDENCE",
-        caller: "operator",
+        // v07.00.00: the acting caller must BE the session owner (the retired
+        // identity used to be exempt from that check), and it stays outside its
+        // own reviewer panel.
+        caller: "gemini",
         lead_peer: "codex",
-        peers: ["claude"],
+        peers: ["claude", "codex"],
         max_rounds: 1,
       });
       const meta = orchestrator.store.read(result.session.session_id);
@@ -226,7 +229,10 @@ const regressions: Regression[] = [
         await orchestrator.askPeers({
           task: "v4.5.4 regression: cancellation blocks format recovery.",
           draft: "ordinary draft",
-          caller: "operator",
+          // v07.00.00: the acting caller must BE the session owner (the retired
+          // identity used to be exempt from that check), and it stays outside its
+          // own reviewer panel.
+          caller: "codex",
           peers: ["claude"],
         });
       } finally {
@@ -265,7 +271,10 @@ const regressions: Regression[] = [
         await orchestrator.askPeers({
           task: "v4.5.4 regression: cancellation blocks fallback.",
           draft: "ordinary draft",
-          caller: "operator",
+          // v07.00.00: the acting caller must BE the session owner (the retired
+          // identity used to be exempt from that check), and it stays outside its
+          // own reviewer panel.
+          caller: "codex",
           peers: ["claude"],
         });
       } finally {
@@ -294,7 +303,10 @@ const regressions: Regression[] = [
       await orchestrator.askPeers({
         task: "v4.5.4 regression: cancellation blocks evidence judges.",
         draft: "FORCE_NEEDS_EVIDENCE",
-        caller: "operator",
+        // v07.00.00: the acting caller must BE the session owner (the retired
+        // identity used to be exempt from that check), and it stays outside its
+        // own reviewer panel.
+        caller: "codex",
         // The judge is Claude. Gemini's independent ask ensures this exercises
         // a real judge dispatch rather than the self_judgment_forbidden skip.
         peers: ["claude", "gemini"],
@@ -328,9 +340,12 @@ const regressions: Regression[] = [
       const result = await orchestrator.runUntilUnanimous({
         task: "v4.5.4 regression: cancellation blocks auto-grant and relator.",
         initial_draft: "FORCE_NEEDS_EVIDENCE",
-        caller: "operator",
+        // v07.00.00: the acting caller must BE the session owner (the retired
+        // identity used to be exempt from that check), and it stays outside its
+        // own reviewer panel.
+        caller: "gemini",
         lead_peer: "codex",
-        peers: ["claude"],
+        peers: ["claude", "codex"],
         max_rounds: 1,
       });
       const afterCancellation = observed.slice(cancellationPersistedAt);
@@ -355,9 +370,12 @@ const regressions: Regression[] = [
       const result = await orchestrator.runUntilUnanimous({
         task: "v4.5.4 regression: terminal report must be current automatically.",
         initial_draft: "FORCE_NOT_READY",
-        caller: "operator",
+        // v07.00.00: the acting caller must BE the session owner (the retired
+        // identity used to be exempt from that check), and it stays outside its
+        // own reviewer panel.
+        caller: "gemini",
         lead_peer: "codex",
-        peers: ["claude"],
+        peers: ["claude", "codex"],
         max_rounds: 1,
       });
       await orchestrator.store.flushPendingEvents();
@@ -379,14 +397,14 @@ const regressions: Regression[] = [
     name: "mark-cancelled-accounts-an-interrupted-in-flight-round",
     run: async () => {
       const store = new SessionStore(testConfig("cancelled-in-flight-accounting"));
-      const session = await store.init("cancelled in-flight accounting", "operator", []);
+      const session = await store.init("cancelled in-flight accounting", "codex", []);
       await store.markInFlight(session.session_id, {
         round: 1,
         peers: ["claude", "gemini"],
         started_at: new Date().toISOString(),
         scope: {
-          petitioner: "operator",
-          caller: "operator",
+          petitioner: "codex",
+          caller: "codex",
           acting_peer: "operator",
           caller_status: "READY",
           expected_peers: ["claude", "gemini"],
@@ -413,7 +431,7 @@ const regressions: Regression[] = [
       const badOrders: string[][] = [];
       for (let iteration = 0; iteration < 12; iteration += 1) {
         const store = new SessionStore(testConfig(`event-order-${iteration}`));
-        const session = await store.init(`event order ${iteration}`, "operator", []);
+        const session = await store.init(`event order ${iteration}`, "codex", []);
         const pending = ["A", "B", "C"].map((message) =>
           store.appendEvent({
             type: "session.regression_event",
@@ -451,14 +469,14 @@ const regressions: Regression[] = [
       ];
       const focus = "Preserve this exact contest review focus.";
       const seedDraft = "# Contested successor seed\n\nPreserve this draft verbatim.";
-      const original = await store.init("original contested task", "operator", snapshot, focus);
+      const original = await store.init("original contested task", "codex", snapshot, focus);
       await store.finalize(original.session_id, "max-rounds", "regression_fixture");
       const contested = await store.contestVerdict({
         session_id: original.session_id,
         reason: "Open a successor without dropping the autos.",
         new_task: "successor task",
         new_initial_draft: seedDraft,
-        new_caller: "operator",
+        new_caller: "codex",
       });
       const successor = store.read(contested.new_session_id);
       assert.deepEqual(successor.capability_snapshot, snapshot);

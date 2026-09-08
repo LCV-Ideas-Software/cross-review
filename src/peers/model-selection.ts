@@ -50,15 +50,14 @@ const PRIORITY: Record<PeerId, string[]> = {
   perplexity: ["perplexity/kimi-k3"],
 };
 
-const SUPPORTED_MODEL_OVERRIDES: Partial<Record<PeerId, string[]>> = {
-  // Preserve Opus as an explicit compatibility option for operators whose
-  // Anthropic organization cannot accept Fable 5's 30-day retention. Opus 5
-  // is a fixed, dateless model id rather than an evergreen alias.
-  claude: ["claude-opus-5", "claude-opus-4-8"],
-};
-
+// v07.00.00 (operator directive, restated 08/09/2026): cross-review runs the
+// TOP model of each provider and nothing else. The Opus entries that used to
+// sit here were a second-tier compatibility escape hatch, and an escape hatch
+// from the flagship is exactly what the directive forbids. There is no
+// supported-override list any more: the canonical pin per peer is the whole
+// admissible set.
 function supportedModels(peer: PeerId): string[] {
-  return [...PRIORITY[peer], ...(SUPPORTED_MODEL_OVERRIDES[peer] ?? [])];
+  return [...PRIORITY[peer]];
 }
 
 function isSupportedModel(peer: PeerId, model: string): boolean {

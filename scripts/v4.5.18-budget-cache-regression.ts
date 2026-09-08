@@ -88,7 +88,7 @@ function judgment(peer: PeerId = "claude"): EvidenceAskJudgment {
 
 async function seededJudge(label: string) {
   const orchestrator = new CrossReviewOrchestrator(fixtureConfig(label), () => {});
-  const session = await orchestrator.store.init(`v4.5.18 ${label}`, "operator", []);
+  const session = await orchestrator.store.init(`v4.5.18 ${label}`, "codex", []);
   await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
     { peer: "gemini", ask: "Provide exact raw test output." },
   ]);
@@ -152,8 +152,8 @@ const regressions: Regression[] = [
         peers: ["gemini"],
         started_at: new Date().toISOString(),
         scope: {
-          petitioner: "operator",
-          caller: "operator",
+          petitioner: "codex",
+          caller: "codex",
           acting_peer: "operator",
           caller_status: "READY",
           expected_peers: ["gemini"],
@@ -242,7 +242,7 @@ const regressions: Regression[] = [
     run: async () => {
       const config = fixtureConfig("generation-budget-outcome");
       const orchestrator = new CrossReviewOrchestrator(config, () => {});
-      const session = await orchestrator.store.init("v4.5.18 generation budget", "operator", []);
+      const session = await orchestrator.store.init("v4.5.18 generation budget", "codex", []);
       await orchestrator.store.setSessionTraceability(session.session_id, {
         requested_max_rounds: 1,
         effective_max_rounds: 1,
@@ -299,7 +299,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config, () => {});
       const session = await orchestrator.store.init(
         "v4.5.18 unknown generation budget",
-        "operator",
+        "codex",
         [],
       );
       await orchestrator.store.recordPeerFailureAccounting(
@@ -520,7 +520,7 @@ const regressions: Regression[] = [
       );
       const session = await orchestrator.initSession(
         "Persist a normal generation before cache telemetry.",
-        "operator",
+        "codex",
       );
       let observedCacheLabel: string | undefined;
       const harness = orchestrator as unknown as {
@@ -542,7 +542,10 @@ const regressions: Regression[] = [
           orchestrator.runUntilUnanimous({
             session_id: session.session_id,
             task: session.task,
-            caller: "operator",
+            // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+            // OUTSIDE this panel keeps the reviewer set identical to what the case
+            // was written against, instead of silently shrinking it.
+            caller: "codex",
             lead_peer: "claude",
             peers: ["claude", "gemini"],
             max_rounds: 1,

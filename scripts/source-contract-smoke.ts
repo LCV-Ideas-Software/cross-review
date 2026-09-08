@@ -264,6 +264,36 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00: a session persisted before the operator identity was retired can
+  // still name "operator" as its petitioner. Such a record has no peer owner,
+  // so BOTH round entry points must refuse it rather than let the acting peer
+  // adopt it — adoption would hand any peer another principal's session, the
+  // privilege confusion the owner check exists to prevent.
+  const orchestratorSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+  const refusals = orchestratorSrc.match(/session_owner_unverified/g) ?? [];
+  assert.ok(
+    refusals.length >= 2,
+    "v07.00.00 / authority: askPeers and runUntilUnanimous must both refuse a session whose persisted petitioner is not a peer",
+  );
+  // Strip line comments first. The sentence that records the removal names
+  // what was removed, and a gate that cannot tell an obituary from an offer
+  // fires on its own explanation — this one did, on the first run.
+  const orchestratorCode = orchestratorSrc
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  assert.ok(
+    !/callerForLottery === "operator"/.test(orchestratorCode) &&
+      !/effectivePetitioner === "operator"/.test(orchestratorCode),
+    "v07.00.00 / authority: no auto-recusal branch may exempt the retired identity",
+  );
+  console.log("[source-contract-smoke] retired_identity_has_no_authority_branch_test: PASS");
+}
+
+{
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
     serverSrc.includes('process.on("SIGTERM"') && serverSrc.includes('process.on("SIGINT"'),

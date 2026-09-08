@@ -100,7 +100,10 @@ async function blockedPreflightFixture(kind: PreflightKind, label: string) {
   const result = await orchestrator.runUntilUnanimous({
     task: taskFixture(kind),
     initial_draft: draft,
-    caller: "operator",
+    // v07.00.00: the acting caller must BE the session owner (the retired
+    // identity used to be exempt from that check), and it stays outside its
+    // own reviewer panel.
+    caller: "gemini",
     lead_peer: "codex",
     peers: ["codex", "claude"],
     max_rounds: 1,
@@ -220,13 +223,16 @@ const regressions: Regression[] = [
       );
       const session = await orchestrator.initSession(
         "Persist each provider response before the all-peer barrier.",
-        "operator",
+        "codex",
       );
       const roundPromise = orchestrator.askPeers({
         session_id: session.session_id,
         task: session.task,
         draft: "Static implementation candidate for a durability-only regression.",
-        caller: "operator",
+        // v07.00.00: the acting caller must BE the session owner (the retired
+        // identity used to be exempt from that check), and it stays outside its
+        // own reviewer panel.
+        caller: "codex",
         peers: ["claude", "gemini"],
       });
 
@@ -304,7 +310,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config);
       const session = await orchestrator.store.init(
         "Partially priced settlement contract.",
-        "operator",
+        "claude",
         [],
       );
       await orchestrator.store.markInFlight(session.session_id, {
@@ -312,8 +318,8 @@ const regressions: Regression[] = [
         peers: ["codex"],
         started_at: new Date().toISOString(),
         scope: {
-          petitioner: "operator",
-          caller: "operator",
+          petitioner: "claude",
+          caller: "claude",
           acting_peer: "operator",
           caller_status: "READY",
           expected_peers: ["codex"],
@@ -349,7 +355,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config);
       const session = await orchestrator.store.init(
         "Account for a recovery call interrupted after dispatch.",
-        "operator",
+        "claude",
         [],
       );
       await orchestrator.store.markInFlight(session.session_id, {
@@ -357,8 +363,8 @@ const regressions: Regression[] = [
         peers: ["codex"],
         started_at: new Date().toISOString(),
         scope: {
-          petitioner: "operator",
-          caller: "operator",
+          petitioner: "claude",
+          caller: "claude",
           acting_peer: "operator",
           caller_status: "READY",
           expected_peers: ["codex"],
@@ -405,7 +411,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config);
       const session = await orchestrator.store.init(
         "Account for an evidence-judge call interrupted after dispatch.",
-        "operator",
+        "codex",
         [],
       );
       await orchestrator.store.reservePendingProviderCall(session.session_id, {
@@ -448,7 +454,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config);
       const session = await orchestrator.store.init(
         "Do not reconcile a still-running evidence judge.",
-        "operator",
+        "codex",
         [],
       );
       await orchestrator.store.reservePendingProviderCall(session.session_id, {
@@ -479,7 +485,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config);
       const session = await orchestrator.store.init(
         "Automatically reconcile a judge call after host death.",
-        "operator",
+        "codex",
         [],
       );
       await orchestrator.store.reservePendingProviderCall(session.session_id, {
@@ -530,9 +536,12 @@ const regressions: Regression[] = [
         () => {},
         () => adapters,
       );
+      // v07.00.00: the instrumented adapter below is codex, so codex must be
+      // the REVIEWER. The session is therefore owned by another peer — the
+      // owner is recused from its own panel.
       const session = await orchestrator.store.init(
         "Persist every paid format-recovery call.",
-        "operator",
+        "claude",
         [],
       );
       const originalCall = adapters.codex.call.bind(adapters.codex);
@@ -572,7 +581,7 @@ const regressions: Regression[] = [
             session_id: session.session_id,
             task: session.task,
             draft: "FORCE_BAD_FORMAT",
-            caller: "operator",
+            caller: "claude",
             peers: ["codex"],
           }),
         /simulated_crash_after_format_recovery/,
@@ -600,7 +609,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config);
       const session = await orchestrator.initSession(
         "Seal an appended unanimous round after a host crash.",
-        "operator",
+        "gemini",
       );
       const originalFinalize = orchestrator.store.finalize.bind(orchestrator.store);
       orchestrator.store.finalize = async () => {
@@ -612,7 +621,10 @@ const regressions: Regression[] = [
             session_id: session.session_id,
             task: session.task,
             draft: "Stable fixture draft.",
-            caller: "operator",
+            // v07.00.00: the acting caller must BE the session owner (the retired
+            // identity used to be exempt from that check), and it stays outside its
+            // own reviewer panel.
+            caller: "gemini",
             peers: ["codex", "claude"],
           }),
         /simulated_crash_between_append_and_finalize/,

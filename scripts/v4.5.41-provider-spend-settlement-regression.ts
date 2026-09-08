@@ -89,7 +89,7 @@ interface GenerationHarness {
 
 async function generationHarness(label: string): Promise<GenerationHarness> {
   const orchestrator = new CrossReviewOrchestrator(fixtureConfig(label), () => {});
-  const session = await orchestrator.store.init(`v4.5.41 ${label}`, "operator", []);
+  const session = await orchestrator.store.init(`v4.5.41 ${label}`, "codex", []);
   let calls = 0;
   const adapter: PeerAdapter = {
     ...orchestrator.adapters.claude,
@@ -640,7 +640,7 @@ const regressions: Regression[] = [
     name: "evidence-judge-pass-proceeds-after-terminal-provider-error-without-usage",
     run: async () => {
       const orchestrator = new CrossReviewOrchestrator(fixtureConfig("judge-proceeds"), () => {});
-      const session = await orchestrator.store.init("v4.5.41 judge-proceeds", "operator", []);
+      const session = await orchestrator.store.init("v4.5.41 judge-proceeds", "codex", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "gemini", ask: "Provide exact raw test output." },
       ]);

@@ -158,7 +158,7 @@ const regressions: Regression[] = [
         () => {},
         () => adapters,
       );
-      const session = await orchestrator.store.init("Judge context contract", "operator", []);
+      const session = await orchestrator.store.init("Judge context contract", "gemini", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "perplexity", ask: "Provide the exact raw command output." },
       ]);
@@ -210,7 +210,7 @@ const regressions: Regression[] = [
         () => {},
         () => adapters,
       );
-      const session = await orchestrator.store.init("Judge peer cap contract", "operator", []);
+      const session = await orchestrator.store.init("Judge peer cap contract", "codex", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "claude", ask: "Provide the exact raw command output." },
       ]);
@@ -260,7 +260,10 @@ const regressions: Regression[] = [
       const first = await orchestrator.askPeers({
         task: "Autowire must resolve a historical evidence request.",
         draft: "FORCE_NEEDS_EVIDENCE",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against, instead of silently shrinking it.
+        caller: "gemini",
         peers: ["claude", "codex"],
       });
       const claudeItem = first.session.evidence_checklist?.find((item) => item.peer === "claude");
@@ -270,7 +273,10 @@ const regressions: Regression[] = [
         session_id: first.session.session_id,
         task: "Autowire must resolve a historical evidence request.",
         draft: "The revised implementation contains the requested evidence.",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against, instead of silently shrinking it.
+        caller: "gemini",
         peers: ["claude", "codex"],
       });
 
@@ -326,7 +332,10 @@ const regressions: Regression[] = [
       const first = await orchestrator.askPeers({
         task: "A repeated request is still current evidence work.",
         draft: "Stable fixture draft.",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against, instead of silently shrinking it.
+        caller: "gemini",
         peers: ["claude", "codex"],
       });
       const item = first.session.evidence_checklist?.find(
@@ -338,7 +347,10 @@ const regressions: Regression[] = [
         session_id: first.session.session_id,
         task: "A repeated request is still current evidence work.",
         draft: "Stable fixture draft.",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against, instead of silently shrinking it.
+        caller: "gemini",
         peers: ["claude", "codex"],
       });
 
@@ -367,7 +379,7 @@ const regressions: Regression[] = [
         () => {},
         () => adapters,
       );
-      const session = await orchestrator.store.init("Consensus unresolved ask", "operator", []);
+      const session = await orchestrator.store.init("Consensus unresolved ask", "claude", []);
       const checklist = await orchestrator.store.appendEvidenceChecklistItems(
         session.session_id,
         1,
@@ -405,7 +417,7 @@ const regressions: Regression[] = [
     run: async () => {
       const config = fixtureConfig("grounding-request");
       const orchestrator = new CrossReviewOrchestrator(config, () => {});
-      const session = await orchestrator.store.init("Grounding request contract", "operator", []);
+      const session = await orchestrator.store.init("Grounding request contract", "codex", []);
       const rawNotReady: PeerResult = {
         peer: "claude",
         provider: "fixture-claude",
@@ -506,7 +518,7 @@ const regressions: Regression[] = [
         (event) => events.push(event.type),
         () => adapters,
       );
-      const session = await orchestrator.store.init("Unknown paid-round cost", "operator", []);
+      const session = await orchestrator.store.init("Unknown paid-round cost", "gemini", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 0, [
         { peer: "gemini", ask },
       ]);
@@ -515,7 +527,10 @@ const regressions: Regression[] = [
         session_id: session.session_id,
         task: session.task,
         draft: "Stable fixture draft.",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against, instead of silently shrinking it.
+        caller: "gemini",
         peers: ["codex", "claude", "perplexity"],
       });
 
@@ -546,11 +561,7 @@ const regressions: Regression[] = [
         (event) => events.push(event.type),
         () => adapters,
       );
-      const session = await orchestrator.store.init(
-        "Generation cost is not settled",
-        "operator",
-        [],
-      );
+      const session = await orchestrator.store.init("Generation cost is not settled", "codex", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "claude", ask: "Provide the exact raw command output." },
       ]);
@@ -606,7 +617,7 @@ const regressions: Regression[] = [
         },
       }));
       const orchestrator = new CrossReviewOrchestrator(config, () => {});
-      const session = await orchestrator.store.init("Config reproducibility", "operator", []);
+      const session = await orchestrator.store.init("Config reproducibility", "codex", []);
       const snapshot = orchestrator.store.read(session.session_id).effective_config_snapshot;
 
       assert.ok(snapshot, "effective_config_snapshot is absent");

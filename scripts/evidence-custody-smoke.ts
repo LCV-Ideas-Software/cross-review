@@ -14,7 +14,7 @@ process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-evidence-custody-"));
 const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
 
-const session = await store.init("Evidence custody smoke", "operator", []);
+const session = await store.init("Evidence custody smoke", "codex", []);
 const content = "evidencia persistida com bytes UTF-8: foguete 🚀";
 const expectedBytes = Buffer.byteLength(content, "utf8");
 const expectedSha256 = crypto.createHash("sha256").update(content, "utf8").digest("hex");
@@ -77,7 +77,7 @@ assert.deepEqual(attachedEvent.data, {
 // tick. Otherwise later writes replace earlier bytes while metadata retains
 // each original digest, and the custody reader fails with an integrity
 // mismatch.
-const collisionSession = await store.init("Concurrent evidence path collision", "operator", []);
+const collisionSession = await store.init("Concurrent evidence path collision", "codex", []);
 const realDate = globalThis.Date;
 const fixedEpoch = realDate.parse("2026-07-11T12:34:56.789Z");
 class FixedDate extends realDate {
@@ -137,7 +137,7 @@ assert.throws(
   "a changed attachment must fail closed instead of entering peer prompts",
 );
 
-const legacySession = await store.init("Legacy evidence compatibility", "operator", []);
+const legacySession = await store.init("Legacy evidence compatibility", "codex", []);
 const legacyRelativePath = "evidence/legacy.txt";
 const legacyAbsolutePath = path.join(
   store.sessionDir(legacySession.session_id),
@@ -217,7 +217,7 @@ assert.equal(
 // close ONLY its own prior asks after returning a strictly grounded
 // READY/verified verdict. This is a runtime transition, not an operator
 // mutation. Mere silence remains `not_resurfaced` and must not be promoted.
-const silentSession = await store.init("Requester silence stays unresolved", "operator", []);
+const silentSession = await store.init("Requester silence stays unresolved", "codex", []);
 await store.appendEvidenceChecklistItems(silentSession.session_id, 1, [
   { peer: "perplexity", ask: "Provide the raw release gate output." },
 ]);
@@ -232,7 +232,7 @@ assert.equal(
   "silence alone must remain not_resurfaced; it is not requester reverification",
 );
 
-const requesterSession = await store.init("Requester reverification lifecycle", "operator", []);
+const requesterSession = await store.init("Requester reverification lifecycle", "codex", []);
 const claudeOldAsk = "Provide raw output proving 74 passing tests.";
 const claudeOpenAsk = "Provide the exact successful command exit code.";
 const codexOpenAsk = "Provide the changed-file diff.";
@@ -334,7 +334,7 @@ for (const fixture of terminalAsks) {
   );
 }
 
-const immutableTerminal = await store.init("Terminal immutability", "operator", []);
+const immutableTerminal = await store.init("Terminal immutability", "codex", []);
 const firstTerminal = await store.finalize(immutableTerminal.session_id, "aborted", "first");
 const idempotentTerminal = await store.finalize(immutableTerminal.session_id, "aborted", "first");
 assert.deepEqual(idempotentTerminal, firstTerminal, "exact terminal replay must be idempotent");

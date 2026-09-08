@@ -167,7 +167,7 @@ async function legacySessionStopsBeforeDispatch(): Promise<void> {
   );
   const initialized = await orchestrator.store.init(
     "Legacy 142-item Evidence Broker amplification fixture.",
-    "operator",
+    "claude",
     [],
   );
   const meta = orchestrator.store.read(initialized.session_id);
@@ -183,7 +183,7 @@ async function legacySessionStopsBeforeDispatch(): Promise<void> {
     session_id: initialized.session_id,
     task: meta.task,
     draft: "A subsequent draft must not trigger another amplified provider round.",
-    caller: "operator",
+    caller: "claude",
     peers: ["codex", "gemini"],
   });
 
@@ -236,7 +236,7 @@ async function overLimitRoundIsDurableAndAtomic(): Promise<void> {
   const result = await orchestrator.askPeers({
     task: "A single peer returns nine distinct Evidence Broker requests.",
     draft: "Fixture draft.",
-    caller: "operator",
+    caller: "claude",
     peers: ["codex", "gemini"],
   });
 
@@ -266,7 +266,7 @@ async function overLimitRoundIsDurableAndAtomic(): Promise<void> {
       session_id: result.session.session_id,
       task: "A single peer returns nine distinct Evidence Broker requests.",
       draft: "A later draft.",
-      caller: "operator",
+      caller: "claude",
       peers: ["codex", "gemini"],
     }),
     /session_already_finalized/,
@@ -277,7 +277,7 @@ async function overLimitRoundIsDurableAndAtomic(): Promise<void> {
 async function dedupeAndGlobalLimitsAreAtomic(): Promise<void> {
   const config = fixtureConfig("admission");
   const store = new SessionStore(config);
-  const dedupeSession = await store.init("Exact same-owner dedupe fixture.", "operator", []);
+  const dedupeSession = await store.init("Exact same-owner dedupe fixture.", "claude", []);
   const repeated = Array.from({ length: 30 }, () => ({
     peer: "codex" as const,
     ask: "Provide the exact raw test transcript.",
@@ -289,7 +289,7 @@ async function dedupeAndGlobalLimitsAreAtomic(): Promise<void> {
   );
   assert.equal(deduplicated.length, 1, "exact same-owner duplicates were not collapsed");
 
-  const roundSession = await store.init("Per-round admission fixture.", "operator", []);
+  const roundSession = await store.init("Per-round admission fixture.", "codex", []);
   const twentyFive = Array.from({ length: 25 }, (_, index) => ({
     peer: PEERS[Math.floor(index / 8)] ?? "codex",
     ask: `Round blocker ${index + 1}: provide raw evidence.`,
@@ -312,7 +312,7 @@ async function dedupeAndGlobalLimitsAreAtomic(): Promise<void> {
     "a rejected per-round batch was partially committed",
   );
 
-  const globalSession = await store.init("Global admission fixture.", "operator", []);
+  const globalSession = await store.init("Global admission fixture.", "codex", []);
   const batch = (offset: number, count: number) =>
     Array.from({ length: count }, (_, index) => ({
       peer: PEERS[Math.floor(index / 8)] ?? "codex",

@@ -192,7 +192,7 @@ try {
     ...loadConfig(),
     data_dir: path.join(dataDir, "store-race"),
   });
-  const raceSession = await raceStore.init("Atomic cancellation regression.", "operator", []);
+  const raceSession = await raceStore.init("Atomic cancellation regression.", "codex", []);
   const raceJobId = "33333333-3333-4333-8333-333333333333";
   await raceStore.markBackgroundJobRunning(raceSession.session_id, {
     job_id: raceJobId,
@@ -219,7 +219,7 @@ try {
     "late cancellation recreated an orphan cancel_requested control",
   );
 
-  const ownerRaceSession = await raceStore.init("Concurrent owner regression.", "operator", []);
+  const ownerRaceSession = await raceStore.init("Concurrent owner regression.", "codex", []);
   const ownerA = "44444444-4444-4444-8444-444444444444";
   const ownerB = "55555555-5555-4555-8555-555555555555";
   await raceStore.markBackgroundJobRunning(ownerRaceSession.session_id, {
@@ -241,11 +241,7 @@ try {
     "a concurrent background start overwrote the first durable owner",
   );
 
-  const recoveredSession = await raceStore.init(
-    "Recovered job history regression.",
-    "operator",
-    [],
-  );
+  const recoveredSession = await raceStore.init("Recovered job history regression.", "codex", []);
   const recoveredJobId = "66666666-6666-4666-8666-666666666666";
   await raceStore.markBackgroundJobRunning(recoveredSession.session_id, {
     job_id: recoveredJobId,

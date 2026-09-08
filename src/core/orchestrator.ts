@@ -19,7 +19,6 @@ import {
 } from "./cost.js";
 import { maxOutputTokensForPeer } from "./output-budget.js";
 import {
-  assertLeadPeerFitsDraft,
   assertLeadPeerNotCaller,
   type RelatorOutputFit,
   resolveLeadPeer,
@@ -72,8 +71,12 @@ export interface AskPeersInput {
   // Petitioner/impetrante that submitted the case. Internal callers such
   // as runUntilUnanimous use this to keep the original caller distinct
   // from the relator currently presenting a revised draft.
-  petitioner?: PeerId | "operator" | undefined;
-  caller?: PeerId | "operator" | undefined;
+  petitioner?: PeerId | undefined;
+  // v07.00.00: required, and a peer. It used to be optional and to default to
+  // "operator", and that default was the actual hole: a peer that simply
+  // omitted `caller` acquired an identity exempt from auto-recusal and from
+  // the no-self-review guard. Omitting it is now a compile error.
+  caller: PeerId;
   lead_peer?: PeerId | undefined;
   caller_status?: ReviewStatus | undefined;
   peers?: PeerId[] | undefined;
@@ -166,13 +169,12 @@ export interface RunUntilUnanimousInput {
   // for routine cross-reviews without editing 6 MCP configs. Falls back
   // to `config.reasoning_effort[peer_id]` when peer has no override here.
   reasoning_effort_overrides?: Partial<Record<PeerId, ReasoningEffort | undefined>> | undefined;
-  // v2.11.0: caller identifies the petitioner (peer or operator) for the
-  // relator-lottery + self-review prohibition. Defaults to "operator" when
-  // omitted, which preserves v2.10.0 behavior (no exclusion). When caller
-  // is one of the four peer ids, the orchestrator (a) rejects an explicit
-  // lead_peer === caller and (b) runs the lottery to pick a non-caller
-  // relator when lead_peer is omitted.
-  caller?: PeerId | "operator" | undefined;
+  // v2.11.0: caller identifies the petitioner for the relator lottery and the
+  // self-review prohibition: the orchestrator (a) rejects an explicit
+  // lead_peer === caller and (b) draws a non-caller relator when lead_peer is
+  // omitted. v07.00.00: required, and a peer — see the note on the askPeers
+  // input above for why the old "operator" default was the hole itself.
+  caller: PeerId;
   // v2.13.0: ship vs review intent. `ship` (default) means initial_draft
   // is the artifact under refinement — lead_peer produces a NEW REVISED
   // VERSION as prose, NOT a structured peer-review response. `review`
@@ -2597,8 +2599,6 @@ export function evidencePreflight(params: {
   initialDraft?: string | undefined;
   structuredEvidence?: string | undefined;
   attachedEvidenceText?: string | undefined;
-  operatorVerifiedEvidenceText?: string | undefined;
-  caller?: PeerId | "operator" | undefined;
   attachmentsPresent: boolean;
   attachedEvidenceRefs?: string[] | undefined;
 }): EvidencePreflightResult {
@@ -3018,8 +3018,6 @@ export function truthfulnessPreflight(params: {
   initialDraft?: string | undefined;
   structuredEvidence?: string | undefined;
   attachedEvidenceText?: string | undefined;
-  operatorVerifiedEvidenceText?: string | undefined;
-  caller?: PeerId | "operator" | undefined;
   attachmentsPresent: boolean;
   runtimeFacts?: TruthfulnessRuntimeFacts | undefined;
 }): TruthfulnessPreflightResult {
@@ -3028,14 +3026,17 @@ export function truthfulnessPreflight(params: {
   const suppliedEvidence = `${params.structuredEvidence ?? ""}\n${
     params.attachedEvidenceText ?? ""
   }\n${extractInlineRawEvidence(corpus)}`;
-  const callerIsOperator = params.caller === undefined || params.caller === "operator";
-  const operatorEvidence = [
-    callerIsOperator ? (params.structuredEvidence ?? "") : "",
-    params.operatorVerifiedEvidenceText ?? "",
-    callerIsOperator ? extractInlineRawEvidence(corpus) : "",
-  ]
-    .filter((value) => value.trim().length > 0)
-    .join("\n");
+  // v07.00.00: a second corpus used to sit here — the operator-verified tier.
+  // A claim corroborated by it needed no independent review; a claim
+  // corroborated only by caller-submitted material did. The tier is gone, and
+  // nothing could populate it even before it went (no call site ever supplied
+  // `operatorVerifiedEvidenceText`), so the four tests against it were
+  // constants: each corroboration predicate returns false on an empty corpus,
+  // and none of the two patterns matches the empty string. The rule that
+  // survives is the one the collapse implies and is written out directly
+  // below: caller-submitted corroboration ALWAYS requires independent panel
+  // corroboration. Behaviour is unchanged for every peer caller; it only
+  // tightens for the retired identity, which is the point of the release.
   const lines = splitTruthfulnessLines(corpus);
   const runtimeVersion = params.runtimeFacts?.runtime_version;
   const releaseDate = params.runtimeFacts?.release_date;
@@ -3062,7 +3063,7 @@ export function truthfulnessPreflight(params: {
         unsupportedClaims.push(
           `fabrication-prone operational claim lacks value-corresponding provenance evidence: ${line.slice(0, 240)}`,
         );
-      } else if (!operationalClaimCorroborated(line, operatorEvidence)) {
+      } else {
         independentReviewRequired = true;
       }
     }
@@ -3734,7 +3735,7 @@ export function truthfulnessPreflight(params: {
         unsupportedClaims.push(
           `current operational-state claim lacks a correlated raw status record: ${line.slice(0, 240)}`,
         );
-      } else if (!operationalStateClaimCorroborated(line, operatorEvidence)) {
+      } else {
         independentReviewRequired = true;
       }
     }
@@ -3746,7 +3747,7 @@ export function truthfulnessPreflight(params: {
         unsupportedClaims.push(
           `historical runtime timing claim lacks raw workflow/run/session-start snapshot provenance: ${line.slice(0, 240)}`,
         );
-      } else if (!historicalEvidenceHasSnapshotTiming(operatorEvidence)) {
+      } else {
         independentReviewRequired = true;
       }
     }
@@ -3789,11 +3790,7 @@ export function truthfulnessPreflight(params: {
         unsupportedClaims.push(
           `current-state claim lacks runtime facts or source marker: ${line.slice(0, 240)}`,
         );
-      } else if (
-        !runtimeFactsAvailable &&
-        sourceMarkerFound &&
-        !TRUTHFULNESS_SOURCE_MARKER_PATTERN.test(operatorEvidence)
-      ) {
+      } else if (!runtimeFactsAvailable && sourceMarkerFound) {
         independentReviewRequired = true;
       }
     }
@@ -4875,7 +4872,6 @@ export class CrossReviewOrchestrator {
           task: params.task,
           initialDraft: params.draft,
           structuredEvidence: params.evidence,
-          caller: params.caller,
           attachmentsPresent: reviewableAttachments.length > 0,
           attachedEvidenceText: reviewableAttachments
             .map((attachment) => attachment.content)
@@ -4891,7 +4887,6 @@ export class CrossReviewOrchestrator {
           task: params.task,
           initialDraft: params.draft,
           structuredEvidence: params.evidence,
-          caller: params.caller,
           attachmentsPresent: reviewableAttachments.length > 0,
           attachedEvidenceText: reviewableAttachments
             .map((attachment) => attachment.content)
@@ -6036,11 +6031,7 @@ export class CrossReviewOrchestrator {
     };
   }
 
-  async initSession(
-    task: string,
-    caller: PeerId | "operator" = "operator",
-    reviewFocus?: string,
-  ): Promise<SessionMeta> {
+  async initSession(task: string, caller: PeerId, reviewFocus?: string): Promise<SessionMeta> {
     const snapshot = await this.probeAll();
     const normalizedReviewFocus = normalizeReviewFocus(reviewFocus, this.config);
     const meta = await this.store.init(task, caller, snapshot, normalizedReviewFocus);
@@ -6734,19 +6725,23 @@ export class CrossReviewOrchestrator {
         `session_petitioner_mismatch: existing session ${existingSession?.session_id} belongs to petitioner '${persistedPetitioner}'; internal petitioner override '${input.petitioner}' is forbidden`,
       );
     }
-    const effectivePetitioner: PeerId | "operator" =
+    // v07.00.00: a session persisted before the operator identity was retired
+    // can still name "operator" as its petitioner. Such a record has no peer
+    // owner, so no peer may start a round on it — the same refusal as in
+    // runUntilUnanimous and at the MCP authority gate.
+    if (persistedPetitioner === "operator") {
+      throw new Error(
+        `session_owner_unverified: session ${existingSession?.session_id} was persisted with a petitioner that is not a peer, so no caller can be authorized to start or mutate its review round`,
+      );
+    }
+    const effectivePetitioner: PeerId =
       persistedPetitioner ?? input.petitioner ?? requestedPetitioner;
     const internalRelatorContinuation =
       existingSession !== undefined &&
       input.petitioner !== undefined &&
       input.lead_peer === actingPeer &&
       input.petitioner === persistedPetitioner;
-    if (
-      existingSession &&
-      actingPeer !== "operator" &&
-      actingPeer !== effectivePetitioner &&
-      !internalRelatorContinuation
-    ) {
+    if (existingSession && actingPeer !== effectivePetitioner && !internalRelatorContinuation) {
       throw new Error(
         `session_owner_mismatch: existing session ${existingSession.session_id} belongs to petitioner '${effectivePetitioner}'; caller '${actingPeer}' cannot start or mutate its review round`,
       );
@@ -6755,10 +6750,7 @@ export class CrossReviewOrchestrator {
     // a reviewer on their own petition. Direct ask_peers has no relator
     // unless the caller explicitly supplies one through the internal API,
     // but it still must auto-recuse the petitioner from the reviewer set.
-    const selectedPeers =
-      effectivePetitioner === "operator"
-        ? enabledRequestedPeers
-        : enabledRequestedPeers.filter((peer) => peer !== effectivePetitioner);
+    const selectedPeers = enabledRequestedPeers.filter((peer) => peer !== effectivePetitioner);
     if (input.lead_peer !== undefined) {
       assertLeadPeerNotCaller(effectivePetitioner, input.lead_peer);
     }
@@ -6778,7 +6770,7 @@ export class CrossReviewOrchestrator {
             normalizeReviewFocus(input.review_focus, this.config),
           )
         : await this.initSession(input.task, effectivePetitioner, input.review_focus);
-    if (input.evidence?.trim() && actingPeer !== "operator" && actingPeer !== effectivePetitioner) {
+    if (input.evidence?.trim() && actingPeer !== effectivePetitioner) {
       throw new Error(
         `caller_evidence_submission_forbidden: acting peer ${actingPeer} cannot inject structured evidence into petitioner ${effectivePetitioner}'s session`,
       );
@@ -6946,7 +6938,6 @@ export class CrossReviewOrchestrator {
         task: input.task,
         initialDraft: input.draft,
         structuredEvidence: input.evidence,
-        caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
         attachedEvidenceRefs: attachments.flatMap((attachment) => [
@@ -7011,7 +7002,6 @@ export class CrossReviewOrchestrator {
         task: input.task,
         initialDraft: input.draft,
         structuredEvidence: input.evidence,
-        caller: actingPeer,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
         runtimeFacts: runtimeTruthFacts(this.config),
@@ -8296,7 +8286,6 @@ export class CrossReviewOrchestrator {
           task: input.task,
           initialDraft: initGeneration.text,
           structuredEvidence: input.evidence,
-          caller: callerForLottery,
           attachmentsPresent: initAttachments.length > 0,
           attachedEvidenceText: initAttachments.map((attachment) => attachment.content).join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
@@ -8512,7 +8501,6 @@ export class CrossReviewOrchestrator {
           task: input.task,
           initialDraft: generation.text,
           structuredEvidence: input.evidence,
-          caller: callerForLottery,
           attachmentsPresent: attachedEvidence.length > 0,
           attachedEvidenceText: attachedEvidence.map((attachment) => attachment.content).join("\n"),
           runtimeFacts: runtimeTruthFacts(this.config),
@@ -8852,10 +8840,24 @@ export class CrossReviewOrchestrator {
     // `input.caller ?? "operator"`, identical to pre-v3.7.2.
     if (input.session_id) this.store.assertNotFinalized(input.session_id);
     const existingSession = input.session_id ? this.store.read(input.session_id) : undefined;
-    const actingCaller: PeerId | "operator" = input.caller ?? "operator";
-    const callerForLottery: PeerId | "operator" =
-      existingSession?.convergence_scope?.petitioner ?? existingSession?.caller ?? actingCaller;
-    if (existingSession && actingCaller !== "operator" && actingCaller !== callerForLottery) {
+    // v07.00.00: `caller` is required and is a peer, so `actingCaller` no
+    // longer falls back to an identity that skipped the checks below.
+    const actingCaller: PeerId = input.caller;
+    const persistedOwner = existingSession
+      ? (existingSession.convergence_scope?.petitioner ?? existingSession.caller)
+      : undefined;
+    // A session persisted before this release can still name "operator" as its
+    // petitioner. That record has NO peer owner, so no peer may continue it:
+    // adopting it would let any peer take over another principal's session,
+    // which is the privilege confusion the owner check exists to prevent. The
+    // MCP authority gate refuses such a record for the same reason.
+    if (persistedOwner === "operator") {
+      throw new Error(
+        `session_owner_unverified: session ${existingSession?.session_id} was persisted with a petitioner that is not a peer, so no caller can be authorized to continue it`,
+      );
+    }
+    const callerForLottery: PeerId = persistedOwner ?? actingCaller;
+    if (existingSession && actingCaller !== callerForLottery) {
       throw new Error(
         `session_owner_mismatch: existing session ${existingSession.session_id} belongs to petitioner '${callerForLottery}'; caller '${actingCaller}' cannot continue it`,
       );
@@ -8880,12 +8882,13 @@ export class CrossReviewOrchestrator {
       throw new PeerDisabledError(input.lead_peer);
     }
     const enabledRequestedPeers = requestedPeers.filter((peer) => this.config.peer_enabled[peer]);
-    // Auto-recusal: drop the caller from the reviewer pool when caller is
-    // a peer id. Operator caller is left as-is (operator is not a peer).
-    const sessionPeers: PeerId[] =
-      callerForLottery === "operator"
-        ? enabledRequestedPeers
-        : enabledRequestedPeers.filter((peer) => peer !== callerForLottery);
+    // Auto-recusal: the petitioner never sits in its own reviewer pool.
+    // v07.00.00: this was a ternary that left the pool UNFILTERED for an
+    // "operator" caller, so a petitioner that omitted `caller` voted on its
+    // own petition.
+    const sessionPeers: PeerId[] = enabledRequestedPeers.filter(
+      (peer) => peer !== callerForLottery,
+    );
 
     // v07.00.00 (CROSREV-43, #295): the relator seat is constrained by the
     // output ceiling of the peer that occupies it, because the relator is the
@@ -8906,61 +8909,43 @@ export class CrossReviewOrchestrator {
             draft_chars: Math.min(input.initial_draft.length, this.config.prompt.max_draft_chars),
             ceiling_tokens: (peer) => maxOutputTokensForPeer(this.config, peer),
           };
-    let leadPeer: PeerId;
-    if (callerForLottery === "operator") {
-      // Pre-v2.11.0 behavior preserved for operator callers.
-      if (input.lead_peer !== undefined) {
-        leadPeer = input.lead_peer;
-      } else {
-        // v3.7.0 (AUDIT-2, Codex super-audit 2026-05-14): the operator
-        // default relator must respect peer_enabled. Pre-v3.7.0 this was
-        // hardcoded "codex" — so with CROSS_REVIEW_PEER_CODEX=off an
-        // operator-caller with no lead_peer still got codex as relator,
-        // a disabled peer back in the loop. Prefer codex when enabled
-        // (back-compat), else the first enabled session peer.
-        const fallbackLeadPeer = this.config.peer_enabled.codex ? "codex" : sessionPeers[0];
-        if (!fallbackLeadPeer) {
-          throw new InsufficientEnabledPeersError(enabledPeersFromConfig(this.config));
-        }
-        leadPeer = fallbackLeadPeer;
-      }
-      // The operator branch names its relator instead of drawing one (an
-      // explicit lead_peer, or the codex-first default), so there is no draw
-      // to refuse and no second candidate to fall back to. It is refused with
-      // the peer, its ceiling and the two levers named.
-      assertLeadPeerFitsDraft(leadPeer, relatorOutputFit);
-    } else {
-      // v2.11.0 fix: pass sessionPeers so the lottery picks ONLY from
-      // peers participating in this session, never a non-participating
-      // global peer. assertLeadPeerNotCaller (called inside resolveLeadPeer
-      // when lead_peer is explicit) also validates lead_peer ∈ sessionPeers.
-      const resolution = resolveLeadPeer(
-        callerForLottery,
-        input.lead_peer,
-        sessionPeers,
-        relatorOutputFit,
-      );
-      leadPeer = resolution.assignment.assigned;
-      if (resolution.kind === "lottery") {
-        const ceilingExclusions = resolution.assignment.excluded_for_output_ceiling ?? [];
-        const ceilingNote = ceilingExclusions.length
-          ? ` Refused for output ceiling vs a ${ceilingExclusions[0]?.draft_chars}-character draft: ${ceilingExclusions
-              .map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`)
-              .join(", ")}.`
-          : "";
-        this.emit({
-          type: "session.relator_assigned",
-          message: `Relator lottery: caller=${callerForLottery} → assigned=${leadPeer} (excluded from pool: ${callerForLottery}).${ceilingNote}`,
-          data: {
-            caller: callerForLottery,
-            candidate_pool: resolution.assignment.candidate_pool,
-            assigned: leadPeer,
-            entropy_source: resolution.assignment.entropy_source,
-            kind: "lottery",
-            excluded_for_output_ceiling: ceilingExclusions,
-          },
-        });
-      }
+    // v07.00.00: a whole second relator-selection path used to sit here, taken
+    // when `callerForLottery === "operator"`. It named a relator instead of
+    // drawing one — an explicit lead_peer, else codex-if-enabled, else the
+    // first enabled peer — and, paired with the unfiltered pool above, it let
+    // a petitioner that omitted `caller` be named relator on its own petition.
+    // Every caller is a peer, so the draw is the only path.
+    //
+    // v2.11.0: sessionPeers is passed so the draw picks ONLY from peers
+    // participating in this session, never a non-participating global peer.
+    // assertLeadPeerNotCaller (inside resolveLeadPeer when lead_peer is
+    // explicit) also validates lead_peer ∈ sessionPeers.
+    const resolution = resolveLeadPeer(
+      callerForLottery,
+      input.lead_peer,
+      sessionPeers,
+      relatorOutputFit,
+    );
+    const leadPeer: PeerId = resolution.assignment.assigned;
+    if (resolution.kind === "lottery") {
+      const ceilingExclusions = resolution.assignment.excluded_for_output_ceiling ?? [];
+      const ceilingNote = ceilingExclusions.length
+        ? ` Refused for output ceiling vs a ${ceilingExclusions[0]?.draft_chars}-character draft: ${ceilingExclusions
+            .map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`)
+            .join(", ")}.`
+        : "";
+      this.emit({
+        type: "session.relator_assigned",
+        message: `Relator lottery: caller=${callerForLottery} → assigned=${leadPeer} (excluded from pool: ${callerForLottery}).${ceilingNote}`,
+        data: {
+          caller: callerForLottery,
+          candidate_pool: resolution.assignment.candidate_pool,
+          assigned: leadPeer,
+          entropy_source: resolution.assignment.entropy_source,
+          kind: "lottery",
+          excluded_for_output_ceiling: ceilingExclusions,
+        },
+      });
     }
     const baseMaxRounds = input.until_stopped
       ? Number.MAX_SAFE_INTEGER
@@ -9075,7 +9060,6 @@ export class CrossReviewOrchestrator {
         task: input.task,
         initialDraft: draft,
         structuredEvidence: input.evidence,
-        caller: callerForLottery,
         attachmentsPresent: truthfulnessAttachments.length > 0,
         attachedEvidenceText: truthfulnessAttachments
           .map((attachment) => attachment.content)
@@ -9143,7 +9127,6 @@ export class CrossReviewOrchestrator {
         task: input.task,
         initialDraft: draft,
         structuredEvidence: input.evidence,
-        caller: callerForLottery,
         attachmentsPresent: attachments.length > 0,
         attachedEvidenceText: attachments.map((attachment) => attachment.content).join("\n"),
         attachedEvidenceRefs: attachments.flatMap((attachment) => [
@@ -9302,7 +9285,6 @@ export class CrossReviewOrchestrator {
           task: input.task,
           initialDraft: generation.text,
           structuredEvidence: input.evidence,
-          caller: callerForLottery,
           attachmentsPresent,
           attachedEvidenceText: initialAttachments
             .map((attachment) => attachment.content)
@@ -9636,7 +9618,6 @@ export class CrossReviewOrchestrator {
             task: input.task,
             initialDraft: generation.text,
             structuredEvidence: input.evidence,
-            caller: callerForLottery,
             attachmentsPresent: truthfulnessAttachments.length > 0,
             attachedEvidenceText: truthfulnessAttachments
               .map((attachment) => attachment.content)

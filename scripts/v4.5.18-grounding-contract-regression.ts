@@ -534,7 +534,6 @@ const regressions: Regression[] = [
           "F MEDIUM regression risk — caminho ativo Pages->Workers usa Service Bindings.",
         structuredEvidence:
           'wrangler.jsonc:12: "services": [{ "binding": "API", "service": "astrologo-api" }]',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -552,7 +551,6 @@ const regressions: Regression[] = [
       const realServiceState = truthfulnessPreflight({
         task: "Review the operational status.",
         initialDraft: "The current service is healthy.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });

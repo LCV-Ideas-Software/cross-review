@@ -103,7 +103,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const cfg = config("preflight");
       const observed: RuntimeEvent[] = [];
       const orchestrator = new CrossReviewOrchestrator(cfg, (event) => observed.push(event));
-      const session = await orchestrator.store.init("Review a static note.", "operator", []);
+      const session = await orchestrator.store.init("Review a static note.", "codex", []);
       const explicit = orchestrator.checkSessionPreflights({
         sessionId: session.session_id,
         task: session.task,
@@ -117,7 +117,10 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         session_id: session.session_id,
         task: session.task,
         draft: "Static implementation note with no operational claim.",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against.
+        caller: "codex",
         peers: ["claude"],
       });
       assert.equal(
@@ -140,7 +143,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "accounting-v2-refuses-reconciliation-when-any-attempt-is-unpriced",
     run: async () => {
       const store = new SessionStore(config("coverage"));
-      const session = await store.init("Accounting coverage fixture", "operator", []);
+      const session = await store.init("Accounting coverage fixture", "codex", []);
       const failure: PeerFailure = {
         peer: "gemini",
         provider: "fixture",
@@ -185,7 +188,9 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           blocking_details: ["fixture"],
         },
         convergence_scope: {
-          caller: "operator",
+          // v07.00.00: the session above is opened by `codex`, and the store
+          // invariant requires the persisted scope to name the same owner.
+          caller: "codex",
           caller_status: "READY",
           expected_peers: ["claude", "gemini"],
           reviewer_peers: ["claude", "gemini"],
@@ -206,7 +211,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "legacy-session-can-never-retroclaim-complete-accounting",
     run: async () => {
       const store = new SessionStore(config("legacy"));
-      const session = await store.init("Legacy accounting fixture", "operator", []);
+      const session = await store.init("Legacy accounting fixture", "codex", []);
       const meta = store.read(session.session_id);
       delete meta.accounting_schema_version;
       meta.totals.cost = {
@@ -225,7 +230,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "dead-pre-round-background-owner-records-a-conservative-generation-attempt",
     run: async () => {
       const store = new SessionStore(config("pre-round-generation-ghost"));
-      const session = await store.init("Pre-round background generation ghost", "operator", [
+      const session = await store.init("Pre-round background generation ghost", "codex", [
         {
           peer: "claude",
           provider: "anthropic",
@@ -268,7 +273,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "pre-dispatch-cancellation-remains-fully-reconciled",
     run: async () => {
       const store = new SessionStore(config("pre-dispatch-cancel"));
-      const session = await store.init("Pre-dispatch cancellation", "operator", []);
+      const session = await store.init("Pre-dispatch cancellation", "codex", []);
       const jobId = "55555555-5555-4555-8555-555555555555";
       await store.markBackgroundJobRunning(session.session_id, {
         job_id: jobId,
@@ -287,7 +292,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "synchronous-generation-dispatch-marker-does-not-depend-on-background-control",
     run: async () => {
       const store = new SessionStore(config("sync-generation-marker"));
-      const session = await store.init("Synchronous paid generation", "operator", []);
+      const session = await store.init("Synchronous paid generation", "codex", []);
       const mark = store.markBackgroundGenerationInFlight as unknown as (
         sessionId: string,
         generation: {
@@ -320,7 +325,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "dead-synchronous-generation-marker-is-recovered-and-accounted",
     run: async () => {
       const store = new SessionStore(config("sync-generation-recovery"));
-      const session = await store.init("Dead synchronous generation", "operator", []);
+      const session = await store.init("Dead synchronous generation", "codex", []);
       const meta = store.read(session.session_id);
       Object.assign(meta, {
         generation_in_flight: {
@@ -350,7 +355,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "generation-result-and-marker-settlement-are-one-durable-transition",
     run: async () => {
       const store = new SessionStore(config("generation-marker-success"));
-      const session = await store.init("Generation marker success settlement", "operator", []);
+      const session = await store.init("Generation marker success settlement", "codex", []);
       await store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
@@ -382,7 +387,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "generation-failure-and-marker-settlement-are-one-durable-transition",
     run: async () => {
       const store = new SessionStore(config("generation-marker-failure"));
-      const session = await store.init("Generation marker failure settlement", "operator", []);
+      const session = await store.init("Generation marker failure settlement", "codex", []);
       await store.markBackgroundGenerationInFlight(session.session_id, {
         peer: "claude",
         provider: "anthropic",
@@ -421,7 +426,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "late-generation-success-cannot-rewrite-a-cancelled-terminal-snapshot",
     run: async () => {
       const store = new SessionStore(config("late-generation-success"));
-      const session = await store.init("Late generation success", "operator", []);
+      const session = await store.init("Late generation success", "codex", []);
       const jobId = "66666666-6666-4666-8666-666666666666";
       await store.markBackgroundJobRunning(session.session_id, {
         job_id: jobId,
@@ -469,7 +474,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "late-generation-failure-cannot-rewrite-a-cancelled-terminal-snapshot",
     run: async () => {
       const store = new SessionStore(config("late-generation-failure"));
-      const session = await store.init("Late generation failure", "operator", []);
+      const session = await store.init("Late generation failure", "codex", []);
       const jobId = "77777777-7777-4777-8777-777777777777";
       await store.markBackgroundJobRunning(session.session_id, {
         job_id: jobId,
@@ -519,7 +524,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "finalize-winning-before-generation-marker-prevents-provider-dispatch",
     run: async () => {
       const store = new SessionStore(config("finalize-before-generation-marker"));
-      const session = await store.init("Finalize before generation marker", "operator", []);
+      const session = await store.init("Finalize before generation marker", "codex", []);
       await store.finalize(session.session_id, "aborted", "operator_requested");
 
       await assert.rejects(
@@ -567,7 +572,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     name: "repeated-generation-labels-preserve-distinct-raw-artifacts",
     run: async () => {
       const store = new SessionStore(config("unique-artifacts"));
-      const session = await store.init("Unique artifact fixture", "operator", []);
+      const session = await store.init("Unique artifact fixture", "codex", []);
       const generation: GenerationResult = {
         peer: "claude",
         provider: "fixture",
@@ -624,12 +629,15 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       };
       try {
         const orchestrator = new CrossReviewOrchestrator(cfg);
-        const session = await orchestrator.store.init("Skipped ledger fixture", "operator", []);
+        const session = await orchestrator.store.init("Skipped ledger fixture", "codex", []);
         await orchestrator.askPeers({
           session_id: session.session_id,
           task: session.task,
           draft: "Static implementation note with no operational claim.",
-          caller: "operator",
+          // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+          // OUTSIDE this panel keeps the reviewer set identical to what the case
+          // was written against.
+          caller: "codex",
           peers: ["claude"],
         });
 
@@ -690,7 +698,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         const orchestrator = new CrossReviewOrchestrator(cfg);
         const session = await orchestrator.store.init(
           "Compose a static fixture note.",
-          "operator",
+          "codex",
           [],
         );
         await assert.rejects(
@@ -698,7 +706,10 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
             orchestrator.runUntilUnanimous({
               session_id: session.session_id,
               task: session.task,
-              caller: "operator",
+              // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+              // OUTSIDE this panel keeps the reviewer set identical to what the case
+              // was written against.
+              caller: "codex",
               lead_peer: "claude",
               peers: ["claude", "gemini"],
               max_rounds: 1,
@@ -740,7 +751,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       };
       try {
         const orchestrator = new CrossReviewOrchestrator(cfg);
-        const session = await orchestrator.store.init("Persisted ceiling fixture", "operator", []);
+        const session = await orchestrator.store.init("Persisted ceiling fixture", "codex", []);
         await orchestrator.store.setSessionTraceability(session.session_id, {
           requested_max_rounds: 1,
           effective_max_rounds: 1,
@@ -752,7 +763,10 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           session_id: session.session_id,
           task: session.task,
           draft: "Static implementation note with no operational claim.",
-          caller: "operator",
+          // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+          // OUTSIDE this panel keeps the reviewer set identical to what the case
+          // was written against.
+          caller: "codex",
           peers: ["claude"],
         });
         assert.equal(calls, 0);
@@ -780,13 +794,16 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       };
       try {
         const orchestrator = new CrossReviewOrchestrator(cfg);
-        const session = await orchestrator.store.init("Lead budget fixture", "operator", []);
+        const session = await orchestrator.store.init("Lead budget fixture", "codex", []);
         await assert.rejects(
           () =>
             orchestrator.runUntilUnanimous({
               session_id: session.session_id,
               task: session.task,
-              caller: "operator",
+              // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+              // OUTSIDE this panel keeps the reviewer set identical to what the case
+              // was written against.
+              caller: "codex",
               lead_peer: "claude",
               peers: ["claude", "gemini"],
               max_rounds: 1,

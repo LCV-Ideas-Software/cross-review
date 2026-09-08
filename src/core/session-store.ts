@@ -1521,9 +1521,12 @@ export class SessionStore {
     }
   }
 
+  // v07.00.00: a NEW session is always opened by a peer. The persisted
+  // `SessionMeta.caller` union still admits "operator" so records written
+  // before this release still parse, but nothing may create one any more.
   async init(
     task: string,
-    caller: PeerId | "operator",
+    caller: PeerId,
     snapshot: PeerProbeResult[],
     reviewFocus?: string,
   ): Promise<SessionMeta> {
@@ -4561,14 +4564,16 @@ export class SessionStore {
     reason: string;
     new_task: string;
     new_initial_draft?: string | undefined;
-    new_caller?: PeerId | "operator" | undefined;
+    // v07.00.00: the contesting caller is the MCP `caller`, which admits only
+    // peers, and the successor session it opens is peer-owned like any other.
+    new_caller?: PeerId | undefined;
   }): Promise<{ contested_meta: SessionMeta; new_session_id: string }> {
     if (!params.new_caller) {
       throw new Error(
         "new_caller_required: contestVerdict requires an explicitly authenticated new session caller.",
       );
     }
-    const newCaller: PeerId | "operator" = params.new_caller;
+    const newCaller: PeerId = params.new_caller;
     let newSessionId: string | undefined;
     // Validation, successor creation and original stamping are serialized by
     // the original session lock. Before this boundary two concurrent contests

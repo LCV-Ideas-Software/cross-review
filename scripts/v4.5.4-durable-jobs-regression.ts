@@ -165,14 +165,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const config = { ...loadConfig(), data_dir: dataDir };
       const ownerStore = new SessionStore(config);
       const siblingStore = new SessionStore(config);
-      const session = await ownerStore.init("durable cancellation regression", "operator", []);
+      const session = await ownerStore.init("durable cancellation regression", "codex", []);
       await ownerStore.markInFlight(session.session_id, {
         round: 1,
         peers: ["claude"],
         started_at: new Date().toISOString(),
         scope: {
-          petitioner: "operator",
-          caller: "operator",
+          petitioner: "codex",
+          caller: "codex",
           acting_peer: "operator",
           caller_status: "READY",
           expected_peers: ["claude"],
@@ -225,7 +225,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       try {
         const ownerStore = new SessionStore({ ...loadConfig(), data_dir: dataDir });
         const siblingStore = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await ownerStore.init("background start cancellation race", "operator", []);
+        const session = await ownerStore.init("background start cancellation race", "codex", []);
         const job: LocalJob = {
           job_id: jobId,
           kind: "ask_peers",
@@ -285,7 +285,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-job-mismatch-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("durable cancellation job identity", "operator", []);
+        const session = await store.init("durable cancellation job identity", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: process.pid,
@@ -319,14 +319,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-recovery-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("live sibling recovery guard", "operator", []);
+        const session = await store.init("live sibling recovery guard", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: new Date().toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],
@@ -358,7 +358,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-dead-owner-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("dead owner before durable round", "operator", []);
+        const session = await store.init("dead owner before durable round", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: 2_147_483_647,
@@ -398,7 +398,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("startup generation recovery", "operator", []);
+        const session = await store.init("startup generation recovery", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: 2_147_483_647,
@@ -451,7 +451,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         const childPid = child.pid;
         assert.ok(childPid);
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("recycled pid recovery", "operator", []);
+        const session = await store.init("recycled pid recovery", "codex", []);
         const markerStartedAt = new Date(Date.now() - 60_000).toISOString();
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
@@ -527,11 +527,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init(
-          "dead cancelled owner before durable round",
-          "operator",
-          [],
-        );
+        const session = await store.init("dead cancelled owner before durable round", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: 2_147_483_647,
@@ -554,7 +550,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-terminal-clear-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("terminal background clear", "operator", []);
+        const session = await store.init("terminal background clear", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: process.pid,
@@ -582,7 +578,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
 
-        const terminalSession = await store.init("terminal orphan job", "operator", []);
+        const terminalSession = await store.init("terminal orphan job", "codex", []);
         await store.markBackgroundJobRunning(terminalSession.session_id, {
           job_id: jobId,
           owner_pid: 2_147_483_647,
@@ -614,7 +610,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           "failed",
         );
 
-        const orphanSession = await store.init("orphan job without control", "operator", []);
+        const orphanSession = await store.init("orphan job without control", "codex", []);
         await store.writeBackgroundJobStatus({
           job_id: jobId,
           kind: "ask_peers",
@@ -623,7 +619,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           started_at: new Date(Date.now() - 60_000).toISOString(),
         });
 
-        const activeSession = await store.init("active local job", "operator", []);
+        const activeSession = await store.init("active local job", "codex", []);
         await store.markBackgroundJobRunning(activeSession.session_id, {
           job_id: jobId,
           owner_pid: process.pid,
@@ -672,14 +668,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           processStartTimeMs: (pid: number) => number | undefined;
         };
         processIdentityStore.processStartTimeMs = () => Date.now() - 60 * 60 * 1000;
-        const session = await store.init("live owner stale timestamp", "operator", []);
+        const session = await store.init("live owner stale timestamp", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],
@@ -708,15 +704,15 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("coherent stale sweep", "operator", []);
+        const session = await store.init("coherent stale sweep", "codex", []);
         const startedAt = new Date(Date.now() - 31 * 60 * 1000).toISOString();
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: startedAt,
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],
@@ -765,14 +761,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("live evidence judge stale timestamp", "operator", []);
+        const session = await store.init("live evidence judge stale timestamp", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],
@@ -815,14 +811,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           processStartTimeMs: (pid: number) => number | undefined;
         };
         processIdentityStore.processStartTimeMs = () => Date.now() - 60 * 60 * 1000;
-        const session = await store.init("live primary review stale timestamp", "operator", []);
+        const session = await store.init("live primary review stale timestamp", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],
@@ -850,14 +846,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("live format recovery stale timestamp", "operator", []);
+        const session = await store.init("live format recovery stale timestamp", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],
@@ -971,14 +967,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-ledger-recovery-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("interrupted billing recovery", "operator", []);
+        const session = await store.init("interrupted billing recovery", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude", "gemini"],
           started_at: new Date().toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude", "gemini"],
@@ -1010,14 +1006,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-ledger-sweep-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("stale billing sweep", "operator", []);
+        const session = await store.init("stale billing sweep", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 2,
           peers: ["claude", "gemini"],
           started_at: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude", "gemini"],
@@ -1043,14 +1039,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-finalize-guard-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("finalize in-flight guard", "operator", []);
+        const session = await store.init("finalize in-flight guard", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: new Date().toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],
@@ -1077,7 +1073,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("generation finalize guard", "operator", []);
+        const session = await store.init("generation finalize guard", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: process.pid,
@@ -1104,7 +1100,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("generation sweep guard", "operator", []);
+        const session = await store.init("generation sweep guard", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: process.pid,
@@ -1131,7 +1127,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-zero-dispatch-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("cancel before background run", "operator", []);
+        const session = await store.init("cancel before background run", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: process.pid,
@@ -1153,7 +1149,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-cancel-finalize-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("cancel versus converged finalize", "operator", []);
+        const session = await store.init("cancel versus converged finalize", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: jobId,
           owner_pid: process.pid,
@@ -1182,7 +1178,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
             blocking_details: [],
           },
           convergence_scope: {
-            caller: "operator",
+            caller: "codex",
             caller_status: "READY",
             expected_peers: [],
             reviewer_peers: [],
@@ -1218,7 +1214,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("terminal failure immutability", "operator", []);
+        const session = await store.init("terminal failure immutability", "codex", []);
         assert.equal(typeof api.shouldRecordBackgroundJobFailure, "function");
         assert.equal(api.shouldRecordBackgroundJobFailure?.(store.read(session.session_id)), true);
         const recorded = await store.recordBackgroundJobFailure(session.session_id, {
@@ -1260,14 +1256,14 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-idle-guard-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("idle in-flight guard", "operator", []);
+        const session = await store.init("idle in-flight guard", "codex", []);
         await store.markInFlight(session.session_id, {
           round: 1,
           peers: ["claude"],
           started_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
           scope: {
-            petitioner: "operator",
-            caller: "operator",
+            petitioner: "codex",
+            caller: "codex",
             acting_peer: "operator",
             caller_status: "READY",
             expected_peers: ["claude"],

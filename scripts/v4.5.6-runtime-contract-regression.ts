@@ -1216,7 +1216,7 @@ const regressions: Regression[] = [
           };
           const session = await orchestrator.store.init(
             "Safety terminal must fail closed.",
-            "operator",
+            "codex",
             [],
           );
           const callContext = {
@@ -1347,7 +1347,7 @@ const regressions: Regression[] = [
           });
           const session = await orchestrator.store.init(
             "Gemini prompt block must use sanitized recovery.",
-            "operator",
+            "codex",
             [],
           );
           const callContext = {
@@ -2309,7 +2309,6 @@ const regressions: Regression[] = [
         initialDraft: "Evidence source: package.json confirms the reviewed product metadata.",
         structuredEvidence: undefined,
         attachedEvidenceText: evidence,
-        caller: "codex",
         attachmentsPresent: true,
         attachedEvidenceRefs: [EVIDENCE_PATH],
       });
@@ -2323,7 +2322,6 @@ const regressions: Regression[] = [
       const product = truthfulnessPreflight({
         task: "Review a model migration in the submitted application.",
         initialDraft: "The current reviewed-product model is gemini-3.5-flash.",
-        caller: "codex",
         attachmentsPresent: true,
         attachedEvidenceText: "product_model=gemini-3.5-flash",
         runtimeFacts: { model_pins: { gemini: "gemini-3.1-pro-preview" } },
@@ -2338,7 +2336,6 @@ const regressions: Regression[] = [
         const application = truthfulnessPreflight({
           task: "Review the submitted application's reviewer configuration.",
           initialDraft: applicationClaim,
-          caller: "codex",
           attachmentsPresent: true,
           attachedEvidenceText: "application reviewer model=gemini-3.5-flash",
           runtimeFacts: { model_pins: { gemini: "gemini-3.1-pro-preview" } },
@@ -2357,7 +2354,6 @@ const regressions: Regression[] = [
         const application = truthfulnessPreflight({
           task: "Review the submitted application's release metadata.",
           initialDraft: applicationVersionClaim,
-          caller: "codex",
           attachmentsPresent: true,
           attachedEvidenceText: applicationVersionClaim,
           runtimeFacts: { runtime_version: "4.5.6", release_date: "2026-07-12" },
@@ -2372,7 +2368,6 @@ const regressions: Regression[] = [
       const runtime = truthfulnessPreflight({
         task: "Audit the cross-review runtime.",
         initialDraft: "The current cross-review runtime Gemini peer model is gemini-3.5-flash.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { model_pins: { gemini: "gemini-3.1-pro-preview" } },
       });
@@ -2382,7 +2377,6 @@ const regressions: Regression[] = [
       const runtimeVersion = truthfulnessPreflight({
         task: "Audit the cross-review runtime.",
         initialDraft: "The current cross-review runtime version is 4.5.5.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.6" },
       });
@@ -2392,7 +2386,6 @@ const regressions: Regression[] = [
       const runtimeAndToolVersions = truthfulnessPreflight({
         task: "Audit the cross-review runtime and its package manager.",
         initialDraft: "The current cross-review runtime version is 4.5.6 and npm 12.0.1 is loaded.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.6" },
       });
@@ -2406,7 +2399,6 @@ const regressions: Regression[] = [
         task: "Audit the cross-review runtime.",
         initialDraft:
           "The current cross-review model_pin for Gemini is gemini-3.5-flash, not gemini-3.1-pro-preview.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { model_pins: { gemini: "gemini-3.1-pro-preview" } },
       });
@@ -2417,7 +2409,6 @@ const regressions: Regression[] = [
         task: "Audit the cross-review runtime.",
         initialDraft:
           "The current cross-review model_pin for Gemini is gemini-3.1-pro-preview, not gemini-3.5-flash.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { model_pins: { gemini: "gemini-3.1-pro-preview" } },
       });
@@ -2435,7 +2426,6 @@ const regressions: Regression[] = [
         const contradiction = truthfulnessPreflight({
           task: "Audit the cross-review runtime.",
           initialDraft: falseRuntimeClaim,
-          caller: "codex",
           attachmentsPresent: false,
           runtimeFacts: { runtime_version: "4.5.6" },
         });
@@ -2455,7 +2445,6 @@ const regressions: Regression[] = [
         const contradiction = truthfulnessPreflight({
           task: "Audit the cross-review runtime.",
           initialDraft: falsePinClaim,
-          caller: "codex",
           attachmentsPresent: false,
           runtimeFacts: { model_pins: { gemini: "gemini-3.1-pro-preview" } },
         });
@@ -2471,7 +2460,6 @@ const regressions: Regression[] = [
         task: "Audit the cross-review runtime and package manager.",
         initialDraft:
           "The current cross-review runtime version is 4.5.6 and npm version 12.0.1 is loaded.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.6" },
       });
@@ -2488,7 +2476,7 @@ const regressions: Regression[] = [
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v456-terminal-"));
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("terminal control regression", "operator", []);
+        const session = await store.init("terminal control regression", "codex", []);
         await store.markBackgroundJobRunning(session.session_id, {
           job_id: "550e8400-e29b-41d4-a716-446655440457",
           owner_pid: process.pid,

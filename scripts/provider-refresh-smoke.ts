@@ -747,6 +747,14 @@ function capturePerplexityProbe(
 }
 
 {
+  // v07.00.00 (operator directive, restated 08/09/2026): cross-review runs the
+  // TOP model of each provider. This case asserted the opposite — that Opus 5
+  // was a first-class supported override — so it is flipped to the property
+  // that now holds: a non-flagship pin is still honoured, because the env
+  // override is the operator's own lever outside MCP, but the repository no
+  // longer blesses it. `confidence` drops from "verified" to "unknown" here
+  // because the pin is not canonical, which is what makes the deviation
+  // visible at the configuration instead of at a mid-round provider 404.
   const opus5 = selectFromCandidates(
     "claude",
     [
@@ -758,8 +766,8 @@ function capturePerplexityProbe(
   assert.equal(opus5.selected, "claude-opus-5");
   assert.equal(
     opus5.confidence,
-    "verified",
-    "Claude Opus 5 must be a first-class supported operator override when the Models API lists it.",
+    "unknown",
+    "a non-flagship pin must be honoured but never reported as a verified supported model",
   );
 }
 

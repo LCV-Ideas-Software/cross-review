@@ -598,7 +598,9 @@ export interface ResolvedEvidenceAttachment {
   // Integrity and authority are deliberately separate. `verified` above
   // means the persisted bytes still match their custody digest; it does not
   // mean a human operator vouched for caller-supplied content.
-  authority_status: "operator_verified" | "caller_submitted_unverified" | "legacy_unverified";
+  // v07.00.00: computed on read, never parsed from disk, so the retired
+  // "operator_verified" member is dead rather than legacy-bearing.
+  authority_status: "caller_submitted_unverified" | "legacy_unverified";
   content_type?: string | undefined;
   sha256?: string | undefined;
   attached_by?: PeerId | "operator" | undefined;
@@ -971,7 +973,8 @@ export interface RuntimeEventDataByType {
     attached_by: PeerId | "operator";
     attached_at: string;
     origin: EvidenceAttachmentOrigin;
-    authority_status?: "operator_verified" | "caller_submitted_unverified" | undefined;
+    // v07.00.00: the emitter hardcodes the surviving value.
+    authority_status?: "caller_submitted_unverified" | undefined;
   };
   "session.caller_evidence_submission_activated": {
     submission_id: string;

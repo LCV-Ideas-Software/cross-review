@@ -1102,7 +1102,6 @@ import type { PeerResult } from "../src/core/types.js";
   const peerSubmittedWorkflow = truthfulnessPreflight({
     task: "Summarize deployment closure.",
     initialDraft: "I triggered the deployment and confirmed the remote deployment succeeded.",
-    caller: "claude",
     structuredEvidence:
       "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
     attachmentsPresent: false,
@@ -1128,7 +1127,6 @@ import type { PeerResult } from "../src/core/types.js";
   const peerAttachesWorkflowEvidence = truthfulnessPreflight({
     task: "Summarize deployment closure.",
     initialDraft: "I triggered the deployment and confirmed the remote deployment succeeded.",
-    caller: "claude",
     attachmentsPresent: true,
     attachedEvidenceText:
       "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
