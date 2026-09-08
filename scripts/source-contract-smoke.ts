@@ -178,7 +178,6 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "session_evidence_judge_consensus_pass",
     "contest_verdict",
     "regenerate_caller_tokens",
-    "escalate_to_operator",
     "session_finalize",
   ]) {
     const toolStart = serverSrc.indexOf(`registerTool(\n    "${toolName}"`);

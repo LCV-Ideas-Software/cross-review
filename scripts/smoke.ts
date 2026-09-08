@@ -1200,11 +1200,47 @@ assert.equal(
   true,
 );
 
-const escalated = await orchestrator.store.escalateToOperator(result.session.session_id, {
-  reason: "smoke operator escalation",
-  severity: "info",
-});
-assert.equal(escalated.operator_escalations?.at(-1)?.severity, "info");
+// A late background-job failure on a converged session keeps the converged
+// health state; on an open session it records a blocked, petitioner-resumable
+// state. Neither writes an operator escalation: no such actor exists.
+const convergedFailureRecord = await orchestrator.store.recordBackgroundJobFailure(
+  result.session.session_id,
+  { job_id: "smoke-job-converged", error: "smoke background failure" },
+);
+assert.equal(convergedFailureRecord.outcome, "converged");
+assert.equal(convergedFailureRecord.convergence_health?.state, "converged");
+assert.match(
+  convergedFailureRecord.convergence_health?.detail ?? "",
+  /^background_job_failed: job smoke-job-converged failed: smoke background failure\./,
+);
+const failedJobSession = await orchestrator.store.init(
+  "background job failure smoke session",
+  "operator",
+  probes,
+);
+const failedJobRecord = await orchestrator.store.recordBackgroundJobFailure(
+  failedJobSession.session_id,
+  { job_id: "smoke-job-open", error: "invalid request" },
+);
+assert.equal(failedJobRecord.outcome, undefined);
+assert.equal(failedJobRecord.convergence_health?.state, "blocked");
+const failedJobDetail = failedJobRecord.convergence_health?.detail ?? "";
+assert.match(
+  failedJobDetail,
+  /^background_job_failed: job smoke-job-open failed: invalid request\. /,
+);
+assert.match(failedJobDetail, /session_finalize\(outcome=aborted\)/);
+assert.doesNotMatch(failedJobDetail, /human|console|escalat/i);
+for (const sessionId of [result.session.session_id, failedJobSession.session_id]) {
+  const rawMeta = JSON.parse(
+    fs.readFileSync(orchestrator.store.metaPath(sessionId), "utf8"),
+  ) as Record<string, unknown>;
+  assert.equal(
+    "operator_escalations" in rawMeta,
+    false,
+    "a background-job failure must not persist an operator_escalations record",
+  );
+}
 
 const fresh = await orchestrator.store.init("fresh unfinished smoke session", "operator", probes);
 assert.equal(SWEEP_MIN_IDLE_MS, 24 * 60 * 60 * 1000);

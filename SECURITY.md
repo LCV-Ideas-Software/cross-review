@@ -161,6 +161,9 @@ session directory so sibling/restarted hosts can report terminal state, but
 that operational record grants no additional mutation authority:
 `session_cancel_job` still requires the petitioner capability or operator
 token, and a late request is an idempotent no-op with a compact `final_state`.
+`session_finalize` accepts only `aborted`, and only from the persisted
+petitioner's capability token or the operator token; `converged` cannot be
+written through MCP.
 
 Requester reverification is item-scoped: when citations carry checklist IDs,
 the broker evaluates the sources routed to that item plus separate generic
@@ -264,9 +267,9 @@ built source installation.
 
 READY is a canonical envelope, not a free-form natural-language classification:
 its summary is fixed, requests/follow-ups are empty and outside prose is
-rejected. Session cancellation and verdict contestation require the explicit
-petitioner token or the operator token; ambiguous legacy ownership is
-operator-only.
+rejected. Session cancellation, verdict contestation and closing a session as
+`aborted` require the explicit petitioner token or the operator token;
+ambiguous legacy ownership is operator-only.
 
 The capability token authenticates the MCP host, not a model's internal intent
 or amount of cognitive effort. The operator token must never be placed in a

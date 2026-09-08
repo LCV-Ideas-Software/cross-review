@@ -479,7 +479,6 @@ const regressions: Regression[] = [
       const contracts = [
         { tool: "session_cancel_job", max: 300 },
         { tool: "contest_verdict", max: 4_000 },
-        { tool: "escalate_to_operator", max: 1_000 },
         { tool: "session_sweep", max: 200 },
         { tool: "session_finalize", max: 200 },
       ];

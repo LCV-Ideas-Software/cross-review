@@ -202,8 +202,11 @@ workflow, deploy, hashes, testes e autorização precisam coincidir com valores
 presentes na evidência, e itens `open` ou `not_resurfaced` impedem a
 convergência. O autor de uma ask pode retirar somente a própria exigência após
 revalidação estrita (`requester_reverified`); silêncio não a fecha. Só um host
-humano com capability `operator` separada pode atribuir autoridade de operador
-ou dar disposição terminal; tokens de peers não servem como operador. Cada anexo
+com a capability `operator` separada pode atribuir autoridade de operador;
+tokens de peers não servem como operador. O fechamento terminal é diferente: o
+runtime sela `converged` sozinho, e o peticionário persistido da sessão (ou o
+token `operator`) encerra a própria sessão não terminal como `aborted` via
+`session_finalize`. Cada anexo
 novo registra autor, origem, horário, bytes e SHA-256; a leitura recalcula
 a integridade e falha fechada se houver adulteração. Anexos legados ficam
 marcados como `legacy_unverified` e ficam fora do corpus confiável.
@@ -416,7 +419,9 @@ O servidor expõe 30 ferramentas. Agrupadas por finalidade:
 - `session_init` — abre uma sessão.
 - `session_list` — lista sessões (paginada, resumida por padrão).
 - `session_read` — lê uma sessão completa.
-- `session_finalize` — finaliza uma sessão.
+- `session_finalize` — encerra a própria sessão não terminal como `aborted`
+  (peticionário persistido ou operador); `converged` e `max-rounds` são
+  gravados só pelo runtime.
 - `session_recover_interrupted` — recupera sessões interrompidas.
 - `session_sweep` — faz a varredura/limpeza de sessões.
 
@@ -464,10 +469,9 @@ um cancelamento tardio retorna `job_already_terminal` ou
 - `session_evidence_judge_consensus_pass` — passada de juiz por consenso.
 - `session_judgment_precision_report` — relatório de precisão de julgamento.
 
-**Governança e escalonamento**
+**Governança**
 
 - `contest_verdict` — contesta um veredito.
-- `escalate_to_operator` — escala uma decisão ao operador humano.
 - `regenerate_caller_tokens` — regenera os tokens de capacidade de quem
   chama.
 

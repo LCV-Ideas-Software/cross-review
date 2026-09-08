@@ -4855,21 +4855,21 @@ export class SessionStore {
     return { path: meta.path, meta: meta.meta };
   }
 
-  async escalateToOperator(
+  // A background job that rejected leaves the session blocked but resumable:
+  // the persisted petitioner either resubmits corrected material in a new
+  // round or closes the session as `aborted` through session_finalize. No
+  // other actor exists on the MCP surface, so nothing is "escalated".
+  async recordBackgroundJobFailure(
     sessionId: string,
-    params: { reason: string; severity: "info" | "warning" | "critical" },
+    params: { job_id: string; error: string },
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
-      meta.operator_escalations = [
-        ...(meta.operator_escalations ?? []),
-        { ts: now(), reason: params.reason, severity: params.severity },
-      ];
       const transitionedAt = now();
       meta.convergence_health = transitionHealth(
         meta,
         meta.outcome === "converged" ? "converged" : "blocked",
-        `Operator escalation requested: ${params.reason}`,
+        `background_job_failed: job ${params.job_id} failed: ${params.error}. As the persisted petitioner, resubmit corrected material in a new round on this session_id or close it with session_finalize(outcome=aborted); retrying unchanged material replays the same failure.`,
         transitionedAt,
       );
       meta.updated_at = transitionedAt;
@@ -5326,16 +5326,15 @@ export class SessionStore {
   // v2.5.0: abort sessions that were never finalized.
   //
   // Empirical analysis of 253 historical sessions surfaced 22 in-progress
-  // orphans where every peer had reached READY but the dedicated operator
-  // console never invoked `session_finalize`. Those sessions stayed at `outcome:
+  // orphans where every peer had reached READY but nothing ever invoked
+  // `session_finalize`. Those sessions stayed at `outcome:
   // undefined` indefinitely, polluting `session_list` and stealing rows
   // from `session_recover_interrupted` consumers that interpret a missing
   // outcome as "still running".
   //
-  // The session-start contract (orchestrator.ts > sessionContractDirectives
-  // rule 4) now requires the caller to notify the human operator; this boot
-  // sweep cleans up cases where the operator console never finalized after
-  // that notification. It is a companion to `clearStaleInFlight`, with a
+  // Sessions left non-terminal by a dead petitioner are aborted here, at
+  // boot, once they have been idle for CROSS_REVIEW_STALE_HOURS (default
+  // 24h). It is a companion to `clearStaleInFlight`, with a
   // longer threshold because the failure mode is "host died after a
   // session ran", not "host died mid-round".
   //

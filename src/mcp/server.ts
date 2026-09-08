@@ -40,7 +40,7 @@ const PeerSchema = z.enum(PEERS);
 // function-declaration validator rejects that shape. A flat enum is
 // runtime-equivalent (same accepted values, same TS inferred type) and
 // produces a clean single `enum` in the wire JSON Schema.
-const CallerSchema = z.enum([...PEERS, "operator"] as const);
+const CallerSchema = z.enum(PEERS);
 const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
 const SessionListOutcomeFilterSchema = z
   .enum(["all", "open", "converged", "aborted", "max-rounds"])
@@ -422,32 +422,11 @@ export interface CallerIdentityResult {
 // All paths attach identity_metadata with a best-effort parent-process
 // snapshot for forensics (Option C / Hybrid per design memory).
 export function verifyCallerIdentity(
-  declaredCaller: PeerId | "operator",
+  declaredCaller: PeerId,
   clientInfo: ClientInfo,
 ): CallerIdentityResult {
   const identity_metadata = getParentProcessSnapshot();
   const candidates = getCallerCandidatesFromClientInfo(clientInfo);
-  if (declaredCaller === "operator") {
-    if (candidates.length > 0) {
-      throw new Error(
-        `identity_forgery_blocked: caller='operator' is not permitted from an agent-identified host. clientInfo.name='${clientInfo?.name}' resolves to ${candidates.join(", ")}; declare the actual peer identity (and present its token when required).`,
-      );
-    }
-    const tokenResult = verifyTokenForCaller("operator", HOST_TOKENS_RECORD, {
-      failure: HOST_TOKENS_LOAD_FAILURE,
-    });
-    if (!tokenResult.verified) {
-      throw new Error(
-        "operator_authority_required: caller='operator' requires the dedicated operator capability token in CROSS_REVIEW_CALLER_TOKEN. Use a separate human-console MCP host; never place this token in a model host.",
-      );
-    }
-    return {
-      identity_verified: true,
-      verification_method: "token",
-      client_info_name: clientInfo?.name ?? null,
-      identity_metadata,
-    };
-  }
   if (candidates.length >= 2) {
     throw new Error(
       `identity_forgery_blocked: clientInfo.name='${clientInfo?.name}' matches multiple agents (${candidates.join(", ")}); cannot validate declared caller='${declaredCaller}' against an ambiguous client. Pass the request from a host whose clientInfo.name resolves to a single agent.`,
@@ -501,7 +480,7 @@ export function lockCallerPeerSelection<
   T extends {
     peers?: PeerId[] | undefined;
     lead_peer?: PeerId | undefined;
-    caller?: PeerId | "operator" | undefined;
+    caller?: PeerId | undefined;
     session_id?: string | undefined;
   },
 >(
@@ -523,11 +502,9 @@ export function lockCallerPeerSelection<
     enabledPeers?: readonly PeerId[] | undefined;
   },
 ): T {
-  const caller: PeerId | "operator" = input.caller ?? "operator";
-  // peers panel: locked for ALL callers (including operator). The
-  // server-configured `peer_enabled` set is the only knob; operators
-  // tune via env vars, not via per-call overrides that callers can
-  // exploit.
+  // peers panel: locked for every caller. The server-configured
+  // `peer_enabled` set is the only knob; it is tuned by environment
+  // variable, not by per-call overrides that callers could exploit.
   const callerSuppliedPeers = Array.isArray(input.peers) ? [...input.peers] : undefined;
   // v3.7.5 (A2): treat caller-supplied panel as an OVERRIDE only when
   // it differs from the enabled set. Sorted set-equality (case-sensitive
@@ -540,10 +517,10 @@ export function lockCallerPeerSelection<
     callerSuppliedPeers.length === ctx.enabledPeers.length &&
     [...callerSuppliedPeers].sort().join("|") === [...ctx.enabledPeers].sort().join("|");
   const peerPanelOverridden = callerSuppliedPeers !== undefined && !callerPanelMatchesEnabled;
-  // lead_peer: locked for peer callers (forces lottery so callers cannot
-  // pin a sympathetic relator). Operator caller may pin lead_peer for
-  // legitimate testing.
-  const leadPeerOverridden = caller !== "operator" && input.lead_peer !== undefined;
+  // lead_peer: locked for every caller, which forces the lottery so no
+  // caller can pin a sympathetic relator. The exemption this once carried
+  // belonged to an identity that does not exist.
+  const leadPeerOverridden = input.lead_peer !== undefined;
 
   if (peerPanelOverridden || leadPeerOverridden) {
     ctx.emit({
@@ -586,7 +563,7 @@ export function buildResponseNotices<
   T extends {
     peers?: PeerId[] | undefined;
     lead_peer?: PeerId | undefined;
-    caller?: PeerId | "operator" | undefined;
+    caller?: PeerId | undefined;
   },
 >(
   originalInput: T,
@@ -596,7 +573,6 @@ export function buildResponseNotices<
   const notices: string[] = [];
   // B4 — peer-selection lock notice. If the caller supplied `peers` or
   // (as a peer caller) `lead_peer`, the v3.3.0 lock stripped it.
-  const caller: PeerId | "operator" = originalInput.caller ?? "operator";
   const suppliedPeers = Array.isArray(originalInput.peers) ? originalInput.peers : undefined;
   const suppliedPeersMatchEnabled =
     enabledPeers !== undefined &&
@@ -605,7 +581,7 @@ export function buildResponseNotices<
     [...suppliedPeers].sort().join("|") === [...enabledPeers].sort().join("|");
   const triedPeers =
     suppliedPeers !== undefined && suppliedPeers.length > 0 && !suppliedPeersMatchEnabled;
-  const triedLeadPeer = caller !== "operator" && originalInput.lead_peer !== undefined;
+  const triedLeadPeer = originalInput.lead_peer !== undefined;
   if (triedPeers || triedLeadPeer) {
     notices.push(
       `peer_selection_lock: your ${triedPeers ? "`peers` panel" : "`lead_peer` pin"} was ignored — ` +
@@ -682,9 +658,9 @@ export function durableSessionCancellationWon(
 /**
  * A background rejection may arrive after the routine has already persisted
  * its terminal snapshot. In that case the process-local catch handler must not
- * append an automatic operator escalation or rewrite the sealed meta/report.
+ * record a background-job failure or rewrite the sealed meta/report.
  */
-export function shouldEscalateBackgroundJobFailure(
+export function shouldRecordBackgroundJobFailure(
   session: DurableSessionState | undefined,
 ): boolean {
   return Boolean(session && !session.outcome);
@@ -1245,7 +1221,7 @@ function verifyOperatorToolCallerIdentity(
     const error = new Error(
       site === "session_attach_evidence"
         ? `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface; received caller='${caller}'. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`
-        : `operator_authority_required: ${site} mutates authoritative evidence, terminal state, or security configuration and may only be called by the human operator; received caller='${caller}'.`,
+        : `operator_authority_required: ${site} mutates evidence dispositions, cross-session housekeeping, or security configuration and requires the distinct operator capability token in CROSS_REVIEW_CALLER_TOKEN; received caller='${caller}'.`,
     );
     runtime.emit({
       type: "session.operator_authority_blocked",
@@ -1304,7 +1280,7 @@ export function assertSessionMutationAuthority(
   }
   if (caller !== sessionOwner) {
     throw new Error(
-      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}' or the human operator; received caller='${caller}'.`,
+      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}' or the operator capability token; received caller='${caller}'.`,
     );
   }
 }
@@ -1552,11 +1528,11 @@ async function startJob(
       try {
         if (cancellationWon) {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
-        } else if (shouldEscalateBackgroundJobFailure(persisted)) {
+        } else if (shouldRecordBackgroundJobFailure(persisted)) {
           await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
-          await runtime.orchestrator.store.escalateToOperator(sessionId, {
-            reason: `Background job failed: ${safeErrorMessage(error)}`,
-            severity: "critical",
+          await runtime.orchestrator.store.recordBackgroundJobFailure(sessionId, {
+            job_id: job.job_id,
+            error: safeErrorMessage(error),
           });
         }
       } catch (cleanupError) {
@@ -1647,7 +1623,7 @@ export async function main(): Promise<void> {
       description:
         "Return runtime information for the API-only Cross Review MCP server, including version, data directory and active security mode.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1770,7 +1746,7 @@ export async function main(): Promise<void> {
       description:
         "Return the stable cross-review runtime capability contract and active tool list.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1800,7 +1776,7 @@ export async function main(): Promise<void> {
       description:
         "Query official provider APIs to discover available models for the current API keys, select the highest-capability documented model, and verify provider reachability.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1823,7 +1799,7 @@ export async function main(): Promise<void> {
       inputSchema: z.object({
         task: z.string().min(1).describe("Original task or artifact being reviewed."),
         review_focus: ReviewFocusSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1913,7 +1889,7 @@ export async function main(): Promise<void> {
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
         evidence: AutomaticCallerEvidenceSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
@@ -1984,7 +1960,7 @@ export async function main(): Promise<void> {
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
         evidence: AutomaticCallerEvidenceSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
@@ -2072,7 +2048,7 @@ export async function main(): Promise<void> {
         lead_peer: PeerSchema.optional(),
         // v2.11.0: caller identifies the petitioner for the lottery.
         // Default "operator" preserves v2.10.0 behavior (no exclusion).
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         peers: z
           .array(PeerSchema)
           .min(0)
@@ -2166,7 +2142,7 @@ export async function main(): Promise<void> {
         review_focus: ReviewFocusSchema,
         initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         lead_peer: PeerSchema.optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         peers: z
           .array(PeerSchema)
           .min(0)
@@ -2283,7 +2259,7 @@ export async function main(): Promise<void> {
         session_id: SessionIdSchema,
         job_id: SessionIdSchema.optional(),
         reason: z.string().min(1).max(300).default("requester_requested"),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2401,7 +2377,7 @@ export async function main(): Promise<void> {
       description:
         "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2472,8 +2448,9 @@ export async function main(): Promise<void> {
       // caller until the 24h sweep aborted them. This flag is true when
       // the session has no terminal `outcome` AND its health is stale or
       // blocked AND there is no running job — i.e. it is sitting
-      // un-finalized with nothing in flight and needs the caller/operator
-      // workflow to continue, contest, cancel, or finalize it.
+      // un-finalized with nothing in flight; only the persisted petitioner
+      // moves it, with corrected material in a new round or an `aborted`
+      // close through session_finalize.
       const hasRunningJob = jobs.some((job) => job.status === "running");
       const healthState = session.convergence_health?.state;
       const needsAttention =
@@ -2496,7 +2473,9 @@ export async function main(): Promise<void> {
       if (needsAttention) {
         notices.push(
           `needs_attention: this session is non-terminal (outcome=null), health=${healthState}, and has no ` +
-            `running job — finalize, contest, continue, or cancel it. The 24h stale-session sweep is only a backstop.`,
+            `running job. As the persisted petitioner (pass your own \`caller\`), either resubmit corrected ` +
+            `material in a new round on this session_id or close it with session_finalize(outcome=aborted); ` +
+            `retrying unchanged material replays the same failure. The boot-time stale sweep aborts it only after 24h idle.`,
         );
       }
       const payload = sessionPollPayload(session, localJobs, detail, notices);
@@ -2570,7 +2549,7 @@ export async function main(): Promise<void> {
         // terminal not_resurfaced historical inventory. Defaults false
         // so findings stay action-oriented while totals remain complete.
         include_terminal_findings: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2721,7 +2700,7 @@ export async function main(): Promise<void> {
     task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
     draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
     evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-    caller: CallerSchema.default("operator"),
+    caller: CallerSchema,
     response_format: ResponseFormatSchema,
   });
   const savedSessionPreflightHandler =
@@ -2836,7 +2815,7 @@ export async function main(): Promise<void> {
         content: z.string().min(1).max(2_000_000),
         content_type: z.string().min(1).max(120).default("text/plain"),
         extension: z.string().min(1).max(16).default("txt"),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2883,7 +2862,7 @@ export async function main(): Promise<void> {
           .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
         status: z.enum(["open", "satisfied", "deferred", "rejected"]),
         note: z.string().min(1).max(2000).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2939,7 +2918,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4000).optional(),
         shadow_mode: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3015,7 +2994,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4_000).optional(),
         shadow_mode: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3100,20 +3079,20 @@ export async function main(): Promise<void> {
   // formally contest a final verdict, opening a new deliberation cycle
   // within the same autos. The original session is preserved (append-
   // only); a new session is initialized with a structural reference
-  // back. Petitioner NOT_READY (contesta) → use this tool. Petitioner READY
-  // (acata) → notify the human operator, whose dedicated console finalizes.
+  // back. Petitioner NOT_READY → use this tool. Petitioner READY → nothing
+  // to do: the runtime already sealed `converged`.
   registerTool(
     "contest_verdict",
     {
       title: "Contest Verdict",
       description:
-        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token. Petitioner READY (acata) → notify the human operator so the dedicated console can finalize; petitioner NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
+        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner (pass `caller` explicitly as that peer identity), or the operator token. Petitioner READY → nothing to do: the runtime already sealed `converged`; petitioner NOT_READY → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(4_000),
         new_task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         new_initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         new_caller: CallerSchema.optional(),
         response_format: ResponseFormatSchema,
       }),
@@ -3172,7 +3151,7 @@ export async function main(): Promise<void> {
       description:
         "Rotate the seven caller capability tokens (six peer identities plus a distinct operator). Requires the current dedicated operator token. The response exposes fingerprints only. Distribute each peer token only to its matching model host; keep the operator token exclusively in a separate human-console MCP host. Never place the operator token in Codex, Claude, Gemini, DeepSeek, Grok or Perplexity host configuration.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3227,41 +3206,6 @@ export async function main(): Promise<void> {
   );
 
   registerTool(
-    "escalate_to_operator",
-    {
-      title: "Escalate To Operator",
-      description:
-        "Record a durable operator escalation for sessions that require human judgment or external intervention. The reason accepts at most 1,000 characters.",
-      inputSchema: z.object({
-        session_id: SessionIdSchema,
-        reason: z.string().min(1).max(1000),
-        severity: z.enum(["info", "warning", "critical"]).default("warning"),
-        caller: CallerSchema.default("operator"),
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    async ({ session_id, reason, severity, caller, response_format }) => {
-      verifyToolCallerIdentity(
-        runtime,
-        "escalate_to_operator",
-        caller,
-        server.server.getClientVersion(),
-        session_id,
-      );
-      return textResult(
-        await runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
-        response_format,
-      );
-    },
-  );
-
-  registerTool(
     "session_sweep",
     {
       title: "Sweep Idle Sessions",
@@ -3279,7 +3223,7 @@ export async function main(): Promise<void> {
         // `corrupt_min_age_days` (default 30 days).
         prune_corrupt: z.boolean().default(false),
         corrupt_min_age_days: z.number().int().min(1).max(365).default(30),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3333,12 +3277,12 @@ export async function main(): Promise<void> {
     {
       title: "Finalize Session",
       description:
-        "Operator-only: mark a durable session as converged, aborted or max-rounds with an optional reason of at most 200 characters. Requires the dedicated operator capability token from a separate human-console host.",
+        "Close a non-terminal durable session as `aborted` with an optional reason of at most 200 characters. Requires the verified capability token of the persisted session petitioner or the operator token: a peer host must pass `caller` explicitly as its own identity, because the schema default caller=operator is refused from a peer host as identity forgery. `converged` is sealed only by the runtime, when the petitioner and every required peer are READY and every evidence gate passes; `max-rounds` is written only by the runtime or the idle sweep.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
-        outcome: z.enum(["converged", "aborted", "max-rounds"]),
+        outcome: z.enum(["aborted"]),
         reason: z.string().max(200).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3349,7 +3293,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, outcome, reason, caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
+      verifySessionMutationAuthority(
         runtime,
         "session_finalize",
         caller,
@@ -3431,8 +3375,8 @@ export async function main(): Promise<void> {
       }
     })();
   }, STARTUP_SWEEP_DELAY_MS);
-  // v2.5.0: companion to clearStaleInFlight — abort sessions that the
-  // dedicated operator console never finalized. Runs AFTER the in_flight sweep (deferred via
+  // v2.5.0: companion to clearStaleInFlight — abort sessions that their
+  // petitioner never closed. Runs AFTER the in_flight sweep (deferred via
   // setTimeout, same delay so order is preserved by registration order)
   // so a session whose in_flight got cleared this same boot is
   // immediately eligible for staleness review.

@@ -54,7 +54,7 @@ type LocalJob = {
 type DurableJobsApi = {
   durableSessionExecutionActive?: (session: DurableState) => boolean;
   durableSessionCancellationWon?: (session: DurableState, signalAborted?: boolean) => boolean;
-  shouldEscalateBackgroundJobFailure?: (session: DurableState | undefined) => boolean;
+  shouldRecordBackgroundJobFailure?: (session: DurableState | undefined) => boolean;
   watchDurableCancellation?: (
     job: LocalJob,
     controller: AbortController,
@@ -1211,29 +1211,42 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     },
   },
   {
-    name: "terminal-background-failure-does-not-request-operator-escalation",
+    name: "background-failure-blocks-open-session-without-escalation-and-leaves-terminal-sessions-sealed",
     run: async () => {
       const dataDir = fs.mkdtempSync(
-        path.join(os.tmpdir(), "cross-review-v454-terminal-escalate-"),
+        path.join(os.tmpdir(), "cross-review-v454-background-failure-"),
       );
       try {
         const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
-        const session = await store.init("terminal escalation immutability", "operator", []);
-        assert.equal(typeof api.shouldEscalateBackgroundJobFailure, "function");
-        assert.equal(
-          api.shouldEscalateBackgroundJobFailure?.(store.read(session.session_id)),
-          true,
+        const session = await store.init("terminal failure immutability", "operator", []);
+        assert.equal(typeof api.shouldRecordBackgroundJobFailure, "function");
+        assert.equal(api.shouldRecordBackgroundJobFailure?.(store.read(session.session_id)), true);
+        const recorded = await store.recordBackgroundJobFailure(session.session_id, {
+          job_id: "job-open",
+          error: "invalid request",
+        });
+        assert.equal(recorded.outcome, undefined);
+        assert.equal(recorded.convergence_health?.state, "blocked");
+        assert.match(
+          recorded.convergence_health?.detail ?? "",
+          /^background_job_failed: job job-open failed: invalid request\. /,
         );
+        assert.match(
+          recorded.convergence_health?.detail ?? "",
+          /session_finalize\(outcome=aborted\)/,
+        );
+        assert.doesNotMatch(recorded.convergence_health?.detail ?? "", /human|console|escalat/i);
+        const rawMeta = JSON.parse(
+          fs.readFileSync(store.metaPath(session.session_id), "utf8"),
+        ) as Record<string, unknown>;
+        assert.equal("operator_escalations" in rawMeta, false);
         await store.finalize(session.session_id, "max-rounds", "generation_budget_preflight");
         const reportPath = path.join(store.sessionDir(session.session_id), "session-report.md");
         const metaBefore = fs.readFileSync(store.metaPath(session.session_id), "utf8");
         const reportBefore = fs.readFileSync(reportPath, "utf8");
 
-        assert.equal(
-          api.shouldEscalateBackgroundJobFailure?.(store.read(session.session_id)),
-          false,
-        );
-        assert.equal(api.shouldEscalateBackgroundJobFailure?.(undefined), false);
+        assert.equal(api.shouldRecordBackgroundJobFailure?.(store.read(session.session_id)), false);
+        assert.equal(api.shouldRecordBackgroundJobFailure?.(undefined), false);
         assert.equal(fs.readFileSync(store.metaPath(session.session_id), "utf8"), metaBefore);
         assert.equal(fs.readFileSync(reportPath, "utf8"), reportBefore);
       } finally {

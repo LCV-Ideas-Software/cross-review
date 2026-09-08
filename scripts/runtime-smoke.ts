@@ -11,6 +11,7 @@ const runtimeSmokeDataDir =
   fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-runtime-smoke-"));
 const runtimeSmokeConfigPath = path.join(runtimeSmokeDataDir, "config.json");
 const runtimeSmokeCodexToken = "01".repeat(32);
+const runtimeSmokeClaudeToken = "02".repeat(32);
 const runtimeSmokeOperatorToken = "07".repeat(32);
 fs.writeFileSync(
   runtimeSmokeConfigPath,
@@ -25,7 +26,7 @@ fs.writeFileSync(
       generated_at: "2026-07-10T00:00:00.000Z",
       tokens: {
         codex: runtimeSmokeCodexToken,
-        claude: "02".repeat(32),
+        claude: runtimeSmokeClaudeToken,
         gemini: "03".repeat(32),
         deepseek: "04".repeat(32),
         grok: "05".repeat(32),
@@ -291,6 +292,33 @@ try {
   try {
     await codexClient.connect(codexTransport);
     const listedTools = await codexClient.listTools();
+    // crosrev-40: no MCP actor can "escalate to an operator"; the tool is gone
+    // and session closure belongs to the persisted petitioner.
+    assert.equal(
+      listedTools.tools.some((tool) => tool.name === "escalate_to_operator"),
+      false,
+      "escalate_to_operator must not be registered",
+    );
+    assert.equal(listedTools.tools.length, 30, "runtime must register exactly 30 tools");
+    const finalizeTool = listedTools.tools.find((tool) => tool.name === "session_finalize");
+    assert.ok(finalizeTool?.description, "runtime must expose session_finalize with a description");
+    const contestTool = listedTools.tools.find((tool) => tool.name === "contest_verdict");
+    assert.ok(contestTool?.description, "runtime must expose contest_verdict with a description");
+    for (const [name, description] of [
+      ["session_finalize", finalizeTool.description],
+      ["contest_verdict", contestTool.description],
+    ] as const) {
+      assert.doesNotMatch(
+        description,
+        /human operator|dedicated console|operator console|human-console/i,
+        `${name} must not direct an agent to a human or console that cannot act on the MCP surface`,
+      );
+    }
+    assert.match(
+      finalizeTool.description,
+      /persisted session petitioner[\s\S]*pass `caller` explicitly/i,
+      "session_finalize must tell peer hosts to pass their own caller identity",
+    );
     const attachEvidenceTool = listedTools.tools.find(
       (tool) => tool.name === "session_attach_evidence",
     );
@@ -461,6 +489,95 @@ try {
         });
       }
     }
+
+    // crosrev-40: the persisted petitioner closes its own non-terminal
+    // session as `aborted` with its own token; the schema refuses every
+    // other outcome before the handler runs, and a different peer is
+    // refused by the session owner ACL.
+    const petitionerSession = (await callToolWithClient(codexClient, "session_init", {
+      task: "Runtime petitioner closure: relator generation failed.",
+      caller: "codex",
+      response_format: "json",
+    })) as { session_id: string };
+    // @modelcontextprotocol/sdk 1.30.0 validates the input schema before the
+    // handler and converts the resulting InvalidParams (-32602) McpError into
+    // an isError tool result whose text carries that code; callToolWithClient
+    // surfaces it as a thrown Error(text).
+    let convergedSchemaRejection = "";
+    try {
+      await callToolWithClient(codexClient, "session_finalize", {
+        session_id: petitionerSession.session_id,
+        outcome: "converged",
+        reason: "self-sealed verdict",
+        caller: "codex",
+        response_format: "json",
+      });
+    } catch (error) {
+      convergedSchemaRejection = error instanceof Error ? error.message : String(error);
+    }
+    assert.match(
+      convergedSchemaRejection,
+      /^MCP error -32602: Input validation error: Invalid arguments for tool session_finalize/,
+      "session_finalize(outcome=converged) must be refused as InvalidParams by the tool input schema",
+    );
+    assert.doesNotMatch(
+      convergedSchemaRejection,
+      /session_finalize_outcome_mismatch|session_owner|session_already_finalized/,
+      "the converged refusal must come from input validation, before the handler and the store invariant",
+    );
+    const claudeTransport = new StdioClientTransport({
+      ...runtimeSmokeTransportOptions,
+      env: {
+        ...runtimeSmokeTransportOptions.env,
+        CROSS_REVIEW_CALLER_TOKEN: runtimeSmokeClaudeToken,
+      },
+    });
+    const claudeClient = new Client({ name: "claude", version: "0.0.0" });
+    let otherPeerFinalizeRejection = "";
+    try {
+      await claudeClient.connect(claudeTransport);
+      try {
+        await callToolWithClient(claudeClient, "session_finalize", {
+          session_id: petitionerSession.session_id,
+          outcome: "aborted",
+          reason: "not my session",
+          caller: "claude",
+          response_format: "json",
+        });
+      } catch (error) {
+        otherPeerFinalizeRejection = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      await claudeClient.close();
+    }
+    assert.match(
+      otherPeerFinalizeRejection,
+      /session_owner_mismatch/,
+      "a token-verified peer that is not the persisted petitioner must not close the session",
+    );
+    const petitionerClosed = (await callToolWithClient(codexClient, "session_finalize", {
+      session_id: petitionerSession.session_id,
+      outcome: "aborted",
+      reason: "relator_generation_failed",
+      caller: "codex",
+      response_format: "json",
+    })) as { outcome?: string; outcome_reason?: string };
+    assert.equal(petitionerClosed.outcome, "aborted");
+    assert.equal(petitionerClosed.outcome_reason, "relator_generation_failed");
+    const petitionerClosedState = (await callToolWithClient(codexClient, "session_poll", {
+      session_id: petitionerSession.session_id,
+      response_format: "json",
+    })) as PollState & { needs_attention?: boolean };
+    assert.equal(petitionerClosedState.outcome, "aborted");
+    assert.equal(petitionerClosedState.needs_attention, false);
+    const petitionerClosedEvents = (await callToolWithClient(codexClient, "session_events", {
+      session_id: petitionerSession.session_id,
+      response_format: "json",
+    })) as { events?: Array<{ type: string }> };
+    assert.ok(
+      petitionerClosedEvents.events?.some((event) => event.type === "session.finalized"),
+      "the petitioner's close must persist a session.finalized event",
+    );
   } finally {
     await codexClient.close();
   }
@@ -556,15 +673,26 @@ try {
       response_format: "json",
     });
   } catch (error) {
-    peerFinalizeBlocked = /operator_authority_required|identity_forgery_blocked/.test(
-      String(error),
-    );
+    peerFinalizeBlocked = /identity_forgery_blocked/.test(String(error));
   }
   assert.equal(
     peerFinalizeBlocked,
     true,
-    "A peer must not be able to mutate terminal session state through session_finalize.",
+    "An operator-token host declaring a peer caller must be refused as identity forgery by session_finalize.",
   );
+  const operatorClosableSession = (await callTool("session_init", {
+    task: "Runtime smoke: operator token still closes a session it petitioned.",
+    review_focus: "runtime/operator-finalize",
+    response_format: "json",
+  })) as { session_id: string };
+  const operatorClosed = (await callTool("session_finalize", {
+    session_id: operatorClosableSession.session_id,
+    outcome: "aborted",
+    reason: "operator_closed",
+    response_format: "json",
+  })) as { outcome?: string; outcome_reason?: string };
+  assert.equal(operatorClosed.outcome, "aborted");
+  assert.equal(operatorClosed.outcome_reason, "operator_closed");
   const noJobCancelResult = (await callTool("session_cancel_job", {
     session_id: noJobSession.session_id,
     reason: "runtime_smoke_no_active_job",
