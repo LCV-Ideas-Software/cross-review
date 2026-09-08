@@ -80,6 +80,10 @@ type Recorder = {
   // part of the contract the poll loop's deadline depends on, so they are
   // recorded rather than discarded (case 12).
   getOptions: RequestOptions[];
+  // The per-request options of each create. Both create sites pin
+  // `maxRetries: 0` so an accepted-but-lost POST cannot start a second stored,
+  // billable background run whose id is never observed (case 14).
+  createOptions: RequestOptions[];
   postPaths: string[];
 };
 
@@ -90,8 +94,9 @@ function recordingClient(
 ): unknown {
   return {
     responses: {
-      create: async (payload: StubPayload) => {
+      create: async (payload: StubPayload, options: RequestOptions) => {
         recorder.payloads.push(payload);
+        recorder.createOptions.push(options);
         return create(payload);
       },
     },
@@ -111,7 +116,7 @@ function recordingClient(
 }
 
 function recorder(): Recorder {
-  return { payloads: [], getPaths: [], getOptions: [], postPaths: [] };
+  return { payloads: [], getPaths: [], getOptions: [], createOptions: [], postPaths: [] };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -613,6 +618,122 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     "a run the deadline abandons must be asked to stop, even when the retrieval hung",
   );
   console.log("[v6.0.0-perplexity-background] hung_retrieval_cannot_outlive_the_deadline: PASS");
+}
+
+// (13) A failure of OUR OWN event pipeline is not a terminal answer. The
+// adapter used to mark every throw raised inside the loop body as a terminal
+// rejection, so a local failure — the StreamBuffer ceiling, a token sink, a
+// hostile event object — took the "that run is already over" branch and the
+// surviving background run was never asked to stop. It kept executing and
+// billing with the reviewer's web_search tool active. The run is alive on this
+// path, so it earns the same best-effort cancel the poll loop performs at every
+// non-terminal exit; and it must NOT be polled, because retrieving the terminal
+// object would swallow the local failure and answer with it.
+{
+  const adapter = new PerplexityAdapter(config);
+  const calls = recorder();
+  async function* localFailureMidStream(): AsyncGenerator<Record<string, unknown>> {
+    yield { type: "response.created", response: { id: "resp_bg_local", status: "queued" } };
+    yield {
+      type: "response.output_text.delta",
+      response: { id: "resp_bg_local", status: "in_progress" },
+      get delta(): string {
+        throw new Error("local event pipeline failure");
+      },
+    };
+  }
+  setClient(
+    adapter,
+    recordingClient(
+      calls,
+      async () => localFailureMidStream(),
+      async () => {
+        throw new Error("a local failure must not be answered by a retrieval");
+      },
+    ),
+  );
+  await assert.rejects(
+    () => adapter.call("fixture", context({ stream: true })),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        (error as Error).message,
+        "local event pipeline failure",
+        "the local failure must propagate unwrapped, keeping its identity and billing metadata",
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(
+    calls.postPaths,
+    ["/agent/resp_bg_local/cancel"],
+    "a local pipeline failure abandons a live background run, so it must be asked to stop",
+  );
+  assert.deepEqual(calls.getPaths, [], "a local failure must not be resolved by polling");
+  console.log("[v6.0.0-perplexity-background] local_failure_stops_the_run: PASS");
+}
+
+// (14) Neither create may be retried by the SDK. `timeout` bounds a SINGLE
+// attempt, so the SDK default of two retries lets a create eat three times
+// CROSS_REVIEW_TIMEOUT_MS before the poll loop looks at its own deadline; and
+// the SDK sends no `Idempotency-Key`, so a POST the provider accepted but whose
+// response was lost is repeated, starting a SECOND stored, billable background
+// run whose id this adapter never sees and `cancelBackgroundRun` can never
+// reach. The retry authority is `withRetry`, not the SDK.
+{
+  const background = new PerplexityAdapter(config);
+  const backgroundCalls = recorder();
+  setClient(
+    background,
+    recordingClient(
+      backgroundCalls,
+      async () => completedResponse(background.model, READY),
+      async () => {
+        throw new Error("a terminal create must not be polled");
+      },
+    ),
+  );
+  await background.call("fixture", context());
+
+  const streamed = new PerplexityAdapter(config);
+  const streamedCalls = recorder();
+  async function* completedStream(): AsyncGenerator<Record<string, unknown>> {
+    yield { type: "response.created", response: { id: "resp_bg_pins", status: "queued" } };
+    yield { type: "response.output_text.delta", delta: READY };
+    yield {
+      type: "response.completed",
+      response: completedResponse(streamed.model, READY),
+    };
+  }
+  setClient(
+    streamed,
+    recordingClient(
+      streamedCalls,
+      async () => completedStream(),
+      async () => {
+        throw new Error("a completed stream must not be polled");
+      },
+    ),
+  );
+  await streamed.call("fixture", context({ stream: true }));
+
+  for (const [label, calls] of [
+    ["background", backgroundCalls],
+    ["streaming", streamedCalls],
+  ] as const) {
+    assert.equal(calls.createOptions.length, 1, `${label}: exactly one create is issued`);
+    assert.equal(
+      (calls.createOptions[0] as { maxRetries?: unknown } | undefined)?.maxRetries,
+      0,
+      `${label} create must pin maxRetries: 0 so the SDK cannot orphan a second billable run`,
+    );
+    assert.equal(
+      (calls.createOptions[0] as { timeout?: unknown } | undefined)?.timeout,
+      config.retry.timeout_ms,
+      `${label} create must carry the configured timeout`,
+    );
+  }
+  console.log("[v6.0.0-perplexity-background] creates_pin_no_sdk_retries: PASS");
 }
 
 console.log("[v6.0.0-perplexity-background] ALL CASES PASS");

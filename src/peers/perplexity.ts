@@ -126,6 +126,36 @@ export const PERPLEXITY_AGENT_MODELS_DOCS = "https://docs.perplexity.ai/docs/age
 // `GET /v1/agent/{id}` — the Agent API's own path, not the OpenAI-compatible
 // `/v1/responses` alias the SDK's typed helpers would use — so the poll goes
 // through the SDK's raw request surface at the client base URL.
+// v6.0.0 (issue #296): the streaming loop has four exits and only one of them
+// means "the run is over". A rejection this adapter raised from a terminal
+// event is the answer; a failure of our own event pipeline, a caller
+// cancellation and a transport severance all leave the background run alive at
+// the provider, still executing and billing. The discriminant travels ON THE
+// ERROR instead of in a local flag, because a rejection of the implicit
+// `await next()` in the `for await` header never passes through the loop
+// body's catch: the outer catch has to know WHICH error it caught, not merely
+// whether a flag was set.
+class PerplexityStreamExit extends Error {
+  constructor(
+    readonly kind: "terminal" | "local",
+    readonly original: unknown,
+  ) {
+    super(`perplexity_stream_exit_${kind}`);
+  }
+}
+
+// Tag a terminal-origin rejection AFTER the billing layer has annotated it.
+// `withTerminalBilling` attaches `usage`, `cost` and `accounted_attempts` to
+// the error object it rethrows, so tagging inside the callback would decorate
+// the wrapper and lose the billing of the rejected attempt.
+function terminalExit<T>(check: () => T): T {
+  try {
+    return check();
+  } catch (error) {
+    throw new PerplexityStreamExit("terminal", error);
+  }
+}
+
 export const PERPLEXITY_BACKGROUND_RETRIEVE_PREFIX = "/agent";
 // The documented stop for a background run: `POST /v1/agent/{id}/cancel`
 // answers 200 with `status: "cancelling"`, 400 when the run is already
@@ -735,7 +765,17 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     const backgroundClient = await this.client();
     const created = (await backgroundClient.responses.create(
       payload as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
-      { signal: context.signal, timeout: this.config.retry.timeout_ms },
+      {
+        signal: context.signal,
+        // The SDK sends no `Idempotency-Key`, so an automatic retry of a POST
+        // the provider accepted but whose response was lost would start a
+        // SECOND stored, billable background run whose id this adapter never
+        // sees and `cancelBackgroundRun` can never reach. One attempt only;
+        // `timeout` bounds a SINGLE attempt, not the call, and the retry
+        // authority is `withRetry`, not the SDK.
+        maxRetries: 0,
+        timeout: this.config.retry.timeout_ms,
+      },
     )) as unknown as AgentResponse;
     if (!isPerplexityBackgroundPending(created.status))
       return { response: created, polls: 0, retrieveErrors: 0 };
@@ -865,7 +905,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     const streamClient = await this.client();
     const stream = await streamClient.responses.create(
       { ...payload, stream: true } as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
-      { signal: context.signal, timeout: this.config.retry.timeout_ms },
+      // Same contract as the background create: this payload also declares
+      // `background: true` and `store: true`, so a retried POST orphans a
+      // billable run exactly the same way. `stream: true` buys no exemption —
+      // the SDK decides retries before it ever parses the response body.
+      { signal: context.signal, maxRetries: 0, timeout: this.config.retry.timeout_ms },
     );
     const stream_buffer = new StreamBuffer(this.id);
     const tokenStream = this.createTokenEventBuffer(
@@ -883,11 +927,9 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     let responseRefused = false;
     let events = 0;
     // v6.0.0 (issue #296): the provider severs a long connection at ~300 s.
-    // `terminalRejected` separates a rejection this adapter raised from the
-    // event loop (a failed/cancelled/incomplete terminal, which is the
-    // answer and must propagate) from a transport error raised by the
-    // iterator itself (which the surviving background run can outlive).
-    let terminalRejected = false;
+    // The exits are told apart by the `PerplexityStreamExit` tag carried on
+    // the error; an untagged rejection came from the iterator itself, and the
+    // surviving background run outlives it.
     let severedError: unknown;
     try {
       for await (const event of stream as AsyncIterable<AgentStreamEvent>) {
@@ -907,19 +949,21 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
                   this.config.perplexity.web_search_invocations_estimate,
                 )
               : undefined);
-          responseCompleted = withEstimatedTerminalBilling(
-            this.config,
-            this.id,
-            this.model,
-            terminalBillingUsage,
-            () =>
-              observeResponsesStreamTerminal(event, responseCompleted, {
-                context,
-                peer: this.id,
-                provider: this.provider,
-                model: this.model,
-                phase,
-              }),
+          responseCompleted = terminalExit(() =>
+            withEstimatedTerminalBilling(
+              this.config,
+              this.id,
+              this.model,
+              terminalBillingUsage,
+              () =>
+                observeResponsesStreamTerminal(event, responseCompleted, {
+                  context,
+                  peer: this.id,
+                  provider: this.provider,
+                  model: this.model,
+                  phase,
+                }),
+            ),
           );
           if (event.type === "response.output_text.delta") {
             const delta = typeof event.delta === "string" ? event.delta : "";
@@ -936,42 +980,52 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             // Codex review round 9: a cancelled terminal can still carry final
             // usage; bill the rejected attempt with it instead of settling the
             // stream as an unpriced missing-completion.
-            withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
-              throw streamingFailureErrorFromEvent(
-                event as Parameters<typeof streamingFailureErrorFromEvent>[0],
-                "Perplexity streaming response cancelled.",
-              );
-            });
+            terminalExit(() =>
+              withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+                throw streamingFailureErrorFromEvent(
+                  event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                  "Perplexity streaming response cancelled.",
+                );
+              }),
+            );
           } else if (
             event.type === "response.failed" ||
             event.type === "error" ||
             event.type === "response.error"
           ) {
-            withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
-              throw streamingFailureErrorFromEvent(
-                event as Parameters<typeof streamingFailureErrorFromEvent>[0],
-                "Perplexity streaming response failed.",
-              );
-            });
+            terminalExit(() =>
+              withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+                throw streamingFailureErrorFromEvent(
+                  event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                  "Perplexity streaming response failed.",
+                );
+              }),
+            );
           }
         } catch (error) {
-          terminalRejected = true;
-          throw error;
+          // Whatever is not a terminal-origin rejection is our own event
+          // pipeline failing — the StreamBuffer ceiling, a token sink — and the
+          // background run is untouched by that: it keeps executing.
+          if (error instanceof PerplexityStreamExit) throw error;
+          throw new PerplexityStreamExit("local", error);
         }
       }
     } catch (error) {
-      // A rejection this adapter raised from a terminal event is the answer;
-      // a caller cancellation is the caller's. Anything else is the provider
-      // dropping the connection on a run that keeps going without us.
-      if (terminalRejected || context.signal?.aborted) {
-        // A cancellation here abandons the same live background run the poll
-        // loop would have abandoned, so it earns the same best-effort stop. A
-        // terminal rejection does not: that run is already over.
-        if (!terminalRejected && requestId) {
+      // A rejection this adapter raised from a terminal event is the answer:
+      // that run is already over, so it earns no cancel.
+      if (error instanceof PerplexityStreamExit && error.kind === "terminal") throw error.original;
+      // Our own pipeline failing, and a caller cancellation, both abandon a run
+      // the provider is still executing and billing — the same debt the poll
+      // loop settles at every non-terminal exit — so both earn the same
+      // best-effort stop before the failure propagates.
+      if (error instanceof PerplexityStreamExit || context.signal?.aborted) {
+        if (requestId) {
           await this.cancelBackgroundRun(streamClient, perplexityBackgroundRetrievePath(requestId));
         }
-        throw error;
+        throw error instanceof PerplexityStreamExit ? error.original : error;
       }
+      // Anything else is the provider dropping the connection on a run that
+      // keeps going without us: the terminal object is retrieved below.
       severedError = error;
     }
     // v6.0.0 (issue #296): the stream ended without a terminal event. The

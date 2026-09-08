@@ -89,8 +89,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   depends on not happening.
 - **An abandoned background run is asked to stop.** When cross-review stops
   following a run the provider has not finished — `session_cancel_job`,
-  `perplexity_background_poll_timeout`, a non-transient retrieval status, or a
-  cancellation that interrupts a still-live streaming connection — it now
+  `perplexity_background_poll_timeout`, a non-transient retrieval status, a
+  cancellation that interrupts a still-live streaming connection, or a failure
+  of cross-review's own event pipeline while that connection is still live (the
+  16 MiB `StreamBuffer` ceiling, a throwing token sink) — it now
   issues one best-effort `POST /v1/agent/{id}/cancel`, the documented stop for
   a background run. Without it the run kept executing, kept billing and stayed
   retained after the operator had already cancelled the session. The stop is
@@ -99,6 +101,28 @@ standard `v00.00.00`; npm package versions remain SemVer.
   its own five-second budget so it cannot hold a cancellation gesture open, and
   can never fail the round. The limits and the residual consequence are
   documented in `docs/architecture.md` ("Perplexity Background Execution").
+  Telling those exits apart is what decides whether a run is asked to stop, so
+  the streaming loop no longer infers it from a flag set in a catch-all: the
+  rejection this adapter raises from a terminal event now carries its own
+  marker, applied outside the billing layer so the rejected attempt keeps the
+  usage and cost that layer attaches to the error. A terminal rejection means
+  the run is over and earns no cancel; a local failure and a caller
+  cancellation both abandon a live run and earn one; an untagged rejection came
+  from the transport and is answered by retrieving the terminal object. A flag
+  could not separate the last three, and a local failure was taking the
+  "already over" branch.
+- **Neither create is retried by the SDK.** Both `responses.create` calls — the
+  background create and the streaming one — now pin `maxRetries: 0`, like the
+  retrieval and the cancel already did. `timeout` bounds a single attempt in
+  this SDK, so the default of two retries let a create spend three times
+  `CROSS_REVIEW_TIMEOUT_MS` before the poll loop could look at its own
+  deadline; and because the SDK sends no `Idempotency-Key`, a POST the provider
+  accepted but whose response was lost was repeated, starting a second stored,
+  billable background run whose id this adapter never saw and
+  `POST /v1/agent/{id}/cancel` could never reach. Both payloads declare
+  `background: true` and `store: true`, so `stream: true` bought the streaming
+  create no exemption. The retry authority is `withRetry`, which accounts for
+  what it spends; the SDK's was invisible to it.
 
 ### Changed
 
