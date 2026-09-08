@@ -91,6 +91,46 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### Fixed
 
+- **The relator draw now respects the output ceiling of the relator seat**
+  (issue #295 / CROSREV-43). The relator is the only role that must re-emit the
+  whole artifact inside its own `max_output_tokens`; reviewers merely vote. The
+  draw ignored that, so a peer whose ceiling could not hold the draft had the
+  same chance of taking the seat as one that could — and the session died
+  _after_ the round's votes were paid. Measured twice over the same artifact
+  with the same peer drawn relator: a 34 KB draft against a 20,000-token
+  ceiling ended in `gemini_max_tokens_exhausted` (US$ 2.20 of votes already
+  paid), and a 6 KB draft against the same ceiling stopped overflowing and
+  started fabricating instead, aborting on `lead_fabrication_repeated`
+  (US$ 2.49). The draw now refuses a peer whose ceiling does not hold the draft
+  and draws among those that do, recording every refusal — peer, ceiling, draft
+  size — in the `session.relator_assigned` event. When no candidate holds it,
+  the run fails before a single peer call, naming the draft size, each refused
+  ceiling and both levers: shrink the artifact, or raise
+  `max_output_tokens_by_peer` in the central configuration. An explicitly named
+  relator (an internal-API `lead_peer`, or the operator-caller default) is
+  refused rather than replaced, because that peer was named on purpose.
+  The fit rule is `ceiling_tokens >= draft_chars`. A token encodes at least one
+  character, so this is a **lower bound on capacity, not an estimate** of a
+  characters-per-token ratio — reasoning tokens are charged against the same
+  ceiling, so no stable ratio exists to model. It is therefore deliberately
+  pessimistic and can refuse a peer that would in fact have fitted; the trade is
+  taken because a refusal costs one redraw before anything is dispatched, while
+  being wrong the other way costs the whole round. Consequence worth stating:
+  with the ceilings as they stand (`claude` 64,000, `codex` 25,000, the other
+  four 20,000) and `claude` as caller, a draft above 25,000 characters refuses
+  to start, and `prompt.max_draft_chars` defaults to 40,000 — so 25–40 KB
+  drafts are ordinary input. Raising `max_output_tokens_by_peer` is the lever.
+  The check runs at seat selection only, never per round: a draft a relator
+  produced is by construction inside that relator's ceiling, so re-applying this
+  pessimistic bound each round would refuse the very peer that just proved it fits.
+  Not covered, and deliberately so: `circular` mode rotates the artifact through
+  every peer instead of drawing one, so it has no lottery to constrain; and the
+  issue's third bullet — whether the relator could emit a patch instead of the
+  whole artifact — is a protocol redesign, not part of this fix.
+  Regression: `scripts/v7.0.0-relator-output-ceiling-regression.ts`, eight cases
+  built from the two measured sessions, each proved to fail against the
+  unfixed code.
+
 - **A poll failure no longer re-creates the run it just abandoned** (issue #298,
   merged as `9a3f7c9` without a version bump, which is why it needed this
   release to reach the registry). The poll loop's catch asks the provider to
@@ -686,8 +726,8 @@ but also …` and `não só … mas também …` as assertions of both model val
   an injectable `rng` (reported as `entropy_source="injected"`), the
   index→peer mapping and the out-of-bounds guard are tested deterministically,
   and the uniformity check of the real `crypto.randomInt` draw is a chi-square
-  test (N=50 000, df=4, threshold 48 → false-positive ≈ 9.4e-10 per run) in
-  place of the ±15% tolerance over 2 000 draws that fired in CI at ≈0.4% per
+  test (N=50,000, df=4, threshold 48 → false-positive ≈ 9.4e-10 per run) in
+  place of the ±15% tolerance over 2,000 draws that fired in CI at ≈0.4% per
   run (CROSREV-18, issue #231).
 
 ## [v04.05.45] — 21/08/2026
@@ -5520,7 +5560,7 @@ Original v2.13 plan was 6 backlog items: (1) lead drift fix, (2) precision repor
   - `session.evidence_judge_pass.started` — fires at pass entry; data carries `judge_peer`, `items_queued`, `capped`.
   - `peer.judge.completed` — per-item judgment ruling; data carries `item_id`, `satisfied`, `confidence`, `parser_warnings`.
   - `session.evidence_judge_pass.completed` — fires at pass exit; data carries `judge_peer`, `promoted_count`, `skipped_count`, `capped`. The existing `session.evidence_checklist_addressed` event also fires per promoted item with `data.method === "judge"` so dashboards can distinguish runtime sources.
-- **`session_evidence_judge_pass` MCP tool.** Inputs: `session_id` (UUIDv4), `judge_peer` (one of `codex|claude|gemini|deepseek`), `draft` (1..200 000 chars), optional `item_ids` (array of hex item ids), optional `round`, optional `review_focus`. Returns the orchestrator's `{promoted, skipped, judged_count, capped}` summary. The tool is purely operator-triggered — no auto-wire in `askPeers`.
+- **`session_evidence_judge_pass` MCP tool.** Inputs: `session_id` (UUIDv4), `judge_peer` (one of `codex|claude|gemini|deepseek`), `draft` (1..200,000 chars), optional `item_ids` (array of hex item ids), optional `round`, optional `review_focus`. Returns the orchestrator's `{promoted, skipped, judged_count, capped}` summary. The tool is purely operator-triggered — no auto-wire in `askPeers`.
 - **Backfill of `address_method = "resurfacing"`** in the v2.8.0 `runEvidenceChecklistAddressDetection` path. Items promoted by resurfacing-inference in v2.9.0+ sessions now carry the attribution; the existing reopen path also clears the new fields. Operator transitions clear all three runtime-set fields (`addressed_at_round` + `address_method` + `judge_rationale`) per the type-system invariant.
 - **Promotion-gate hardening (codex R1 catch).** Before mutating state via `markEvidenceItemAddressedByJudge`, the orchestrator additionally requires `judgment.parser_warnings.length === 0` AND `judgment.rationale.trim().length > 0`. A judgment with `satisfied=true, confidence="verified"` but missing rationale OR populated parser_warnings is reclassified as `skipped.reason === "judge_failed"` with the warning surfaced in `message`, and a `peer.judge.failed` event is emitted with `parser_warnings` + `rationale_empty` flags. Pre-fix, a malformed JSON response defaulted to `satisfied=false, confidence="unknown"` and silently fell through to `not_satisfied`; post-fix it surfaces explicitly as `judge_failed`. The fix was prompted by codex during the v2.9.0 trilateral cross-review session `59d04035-8265-462f-be47-53659b433bb4`.
 - **Four new smoke markers**:

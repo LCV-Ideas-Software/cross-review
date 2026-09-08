@@ -18,7 +18,12 @@ import {
   resolveCostRate,
 } from "./cost.js";
 import { maxOutputTokensForPeer } from "./output-budget.js";
-import { assertLeadPeerNotCaller, resolveLeadPeer } from "./relator-lottery.js";
+import {
+  assertLeadPeerFitsDraft,
+  assertLeadPeerNotCaller,
+  type RelatorOutputFit,
+  resolveLeadPeer,
+} from "./relator-lottery.js";
 import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
 import {
   type EvidenceChecklistAdmission,
@@ -8859,6 +8864,25 @@ export class CrossReviewOrchestrator {
         ? enabledRequestedPeers
         : enabledRequestedPeers.filter((peer) => peer !== callerForLottery);
 
+    // v07.00.00 (CROSREV-43, #295): the relator seat is constrained by the
+    // output ceiling of the peer that occupies it, because the relator is the
+    // only role that has to re-emit the whole artifact. The material it must
+    // reproduce is what `buildRevisionPrompt` shows it — the draft truncated
+    // at `prompt.max_draft_chars` — not necessarily the caller's whole
+    // artifact. When the caller supplies no draft the lead GENERATES the first
+    // one, so there is no size to measure and no constraint to apply.
+    //
+    // The check runs at selection time only, never per round: a draft that a
+    // relator produced is by construction inside that relator's ceiling, so
+    // re-applying this deliberately pessimistic bound each round would refuse
+    // the very peer that has just proved it fits.
+    const relatorOutputFit: RelatorOutputFit | undefined =
+      input.initial_draft === undefined
+        ? undefined
+        : {
+            draft_chars: Math.min(input.initial_draft.length, this.config.prompt.max_draft_chars),
+            ceiling_tokens: (peer) => maxOutputTokensForPeer(this.config, peer),
+          };
     let leadPeer: PeerId;
     if (callerForLottery === "operator") {
       // Pre-v2.11.0 behavior preserved for operator callers.
@@ -8877,23 +8901,40 @@ export class CrossReviewOrchestrator {
         }
         leadPeer = fallbackLeadPeer;
       }
+      // The operator branch names its relator instead of drawing one (an
+      // explicit lead_peer, or the codex-first default), so there is no draw
+      // to refuse and no second candidate to fall back to. It is refused with
+      // the peer, its ceiling and the two levers named.
+      assertLeadPeerFitsDraft(leadPeer, relatorOutputFit);
     } else {
       // v2.11.0 fix: pass sessionPeers so the lottery picks ONLY from
       // peers participating in this session, never a non-participating
       // global peer. assertLeadPeerNotCaller (called inside resolveLeadPeer
       // when lead_peer is explicit) also validates lead_peer ∈ sessionPeers.
-      const resolution = resolveLeadPeer(callerForLottery, input.lead_peer, sessionPeers);
+      const resolution = resolveLeadPeer(
+        callerForLottery,
+        input.lead_peer,
+        sessionPeers,
+        relatorOutputFit,
+      );
       leadPeer = resolution.assignment.assigned;
       if (resolution.kind === "lottery") {
+        const ceilingExclusions = resolution.assignment.excluded_for_output_ceiling ?? [];
+        const ceilingNote = ceilingExclusions.length
+          ? ` Refused for output ceiling vs a ${ceilingExclusions[0]?.draft_chars}-character draft: ${ceilingExclusions
+              .map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`)
+              .join(", ")}.`
+          : "";
         this.emit({
           type: "session.relator_assigned",
-          message: `Relator lottery: caller=${callerForLottery} → assigned=${leadPeer} (excluded from pool: ${callerForLottery}).`,
+          message: `Relator lottery: caller=${callerForLottery} → assigned=${leadPeer} (excluded from pool: ${callerForLottery}).${ceilingNote}`,
           data: {
             caller: callerForLottery,
             candidate_pool: resolution.assignment.candidate_pool,
             assigned: leadPeer,
             entropy_source: resolution.assignment.entropy_source,
             kind: "lottery",
+            excluded_for_output_ceiling: ceilingExclusions,
           },
         });
       }

@@ -32,14 +32,130 @@
 // parameter is optional to preserve back-compat with callers that pass the
 // caller alone.
 
+// v07.00.00 (CROSREV-43, #295): the draw now respects the output ceiling of
+// the relator ROLE. The relator is the only role that must re-emit the whole
+// artifact inside its own `max_output_tokens`; reviewers only vote, so the
+// constraint is specific to this seat and must not narrow the reviewer pool.
+// Measured twice over the same artifact with the same peer drawn relator:
+// a 34 KB draft against a 20,000-token ceiling died with `MAX_TOKENS`, and a
+// 6 KB draft against the same ceiling stopped overflowing and started
+// fabricating instead. Both deaths arrived AFTER the round's votes were paid.
+
 import crypto from "node:crypto";
 import type { PeerId } from "./types.js";
 import { PEERS } from "./types.js";
+
+// A token encodes AT LEAST one character, so a ceiling of N tokens can always
+// carry N characters. This is a LOWER BOUND on capacity, never an estimate of
+// the real characters-per-token ratio: reasoning tokens are charged against
+// the same ceiling, and their share varies by provider, by model and by
+// prompt, so no stable ratio exists to model here. The bound is deliberately
+// pessimistic — it can refuse a peer that would in fact have fitted. That
+// trade is taken because refusing costs one redraw before anything is
+// dispatched, while being wrong the other way costs the whole round.
+export const RELATOR_CHARS_PER_CEILING_TOKEN = 1;
+
+// The material a candidate relator would have to reproduce, and the effective
+// output ceiling of each candidate. `draft_chars` is what the relator will
+// actually SEE (the revision prompt truncates the draft at
+// `prompt.max_draft_chars`), not necessarily the caller's whole artifact.
+export interface RelatorOutputFit {
+  draft_chars: number;
+  ceiling_tokens: (peer: PeerId) => number;
+}
+
+export interface RelatorCeilingExclusion {
+  peer: PeerId;
+  ceiling_tokens: number;
+  draft_chars: number;
+}
+
+export function relatorFitsDraft(fit: RelatorOutputFit, peer: PeerId): boolean {
+  return fit.ceiling_tokens(peer) * RELATOR_CHARS_PER_CEILING_TOKEN >= fit.draft_chars;
+}
+
+// Splits a candidate pool into the peers whose ceiling provably holds the
+// draft and the ones it provably may not. Pure: the caller decides whether an
+// empty `eligible` is an error (lottery) or a refusal of a named peer.
+export function partitionRelatorPoolByOutputFit(
+  pool: readonly PeerId[],
+  fit: RelatorOutputFit,
+): { eligible: PeerId[]; excluded: RelatorCeilingExclusion[] } {
+  const eligible: PeerId[] = [];
+  const excluded: RelatorCeilingExclusion[] = [];
+  for (const peer of pool) {
+    if (relatorFitsDraft(fit, peer)) {
+      eligible.push(peer);
+      continue;
+    }
+    excluded.push({
+      peer,
+      ceiling_tokens: fit.ceiling_tokens(peer),
+      draft_chars: fit.draft_chars,
+    });
+  }
+  return { eligible, excluded };
+}
+
+const OUTPUT_CEILING_LEVERS =
+  "Two levers: shrink the artifact below the largest ceiling, or raise the peer's " +
+  "output ceiling in the central configuration (max_output_tokens_by_peer / " +
+  "CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).";
+
+export class NoRelatorFitsOutputCeilingError extends Error {
+  readonly excluded: readonly RelatorCeilingExclusion[];
+  readonly draft_chars: number;
+  constructor(excluded: readonly RelatorCeilingExclusion[], draftChars: number) {
+    const roster = excluded
+      .map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`)
+      .join(", ");
+    super(
+      `no_relator_fits_output_ceiling: the draft is ${draftChars} characters and no candidate ` +
+        `relator has an output ceiling that provably holds it (${roster}). The relator must ` +
+        `re-emit the whole artifact inside its own ceiling, so dispatching this round would pay ` +
+        `every vote and then die on the relator. ${OUTPUT_CEILING_LEVERS}`,
+    );
+    this.name = "NoRelatorFitsOutputCeilingError";
+    this.excluded = excluded;
+    this.draft_chars = draftChars;
+  }
+}
+
+export class LeadPeerCannotFitDraftError extends Error {
+  readonly peer: PeerId;
+  readonly ceiling_tokens: number;
+  readonly draft_chars: number;
+  constructor(leadPeer: PeerId, ceilingTokens: number, draftChars: number) {
+    super(
+      `lead_peer_output_ceiling_too_small: relator ${leadPeer} has an output ceiling of ` +
+        `${ceilingTokens} tokens and the draft is ${draftChars} characters, which its ceiling ` +
+        `does not provably hold. Omit lead_peer to let the relator lottery draw a peer that ` +
+        `fits. ${OUTPUT_CEILING_LEVERS}`,
+    );
+    this.name = "LeadPeerCannotFitDraftError";
+    this.peer = leadPeer;
+    this.ceiling_tokens = ceilingTokens;
+    this.draft_chars = draftChars;
+  }
+}
+
+// Refuses a NAMED relator whose ceiling does not hold the draft. Used on the
+// paths that do not draw — an explicit `lead_peer`, and the operator-caller
+// default — where there is nothing to redraw and the honest outcome is a
+// refusal that names the peer, its ceiling and the two levers.
+export function assertLeadPeerFitsDraft(leadPeer: PeerId, fit: RelatorOutputFit | undefined): void {
+  if (!fit || relatorFitsDraft(fit, leadPeer)) return;
+  throw new LeadPeerCannotFitDraftError(leadPeer, fit.ceiling_tokens(leadPeer), fit.draft_chars);
+}
 
 export interface RelatorAssignment {
   caller: PeerId | "operator";
   candidate_pool: PeerId[];
   assigned: PeerId;
+  // Peers dropped from the draw because their output ceiling does not
+  // provably hold the draft. Present only when the ceiling filter ran and
+  // actually excluded someone, so the event records WHY the pool shrank.
+  excluded_for_output_ceiling?: RelatorCeilingExclusion[] | undefined;
   // "crypto.randomInt" when the assignment came from the lottery;
   // "explicit" when the caller supplied an explicit lead_peer that
   // passed validation; "injected" when a test supplied its own `rng`
@@ -95,12 +211,25 @@ export function relatorCandidatePool(
 // peers at all). The empty-pool guard is upgraded from a theoretical
 // concern in the original v2.11.0 draft to a real error path now that
 // session-peers can be a strict subset.
+// v07.00.00 (CROSREV-43): `fit` narrows the pool to the peers whose output
+// ceiling provably holds the draft. A peer that does not fit is refused and
+// the draw runs among the rest; when the ceiling empties an otherwise
+// non-empty pool the error is `NoRelatorFitsOutputCeilingError`, distinct
+// from `no_eligible_relator` (which means there was nobody to draw from at
+// all). Both throw before any peer call, so a refusal costs nothing.
 export function assignRelator(
   caller: PeerId | "operator",
   sessionPeers?: readonly PeerId[],
   rng?: RelatorRng,
+  fit?: RelatorOutputFit,
 ): RelatorAssignment {
-  const pool = relatorCandidatePool(caller, sessionPeers);
+  const recused = relatorCandidatePool(caller, sessionPeers);
+  const { eligible: pool, excluded } = fit
+    ? partitionRelatorPoolByOutputFit(recused, fit)
+    : { eligible: recused, excluded: [] as RelatorCeilingExclusion[] };
+  if (fit && pool.length === 0 && excluded.length > 0) {
+    throw new NoRelatorFitsOutputCeilingError(excluded, fit.draft_chars);
+  }
   if (pool.length === 0) {
     throw new Error(
       `no_eligible_relator: candidate pool is empty for caller=${caller}` +
@@ -120,6 +249,7 @@ export function assignRelator(
     candidate_pool: pool,
     assigned,
     entropy_source: rng ? "injected" : "crypto.randomInt",
+    excluded_for_output_ceiling: excluded.length ? excluded : undefined,
   };
 }
 
@@ -150,11 +280,16 @@ export function resolveLeadPeer(
   caller: PeerId | "operator",
   leadPeer: PeerId | undefined,
   sessionPeers?: readonly PeerId[],
+  fit?: RelatorOutputFit,
 ):
   | { kind: "explicit"; assignment: RelatorAssignment }
   | { kind: "lottery"; assignment: RelatorAssignment } {
   if (leadPeer !== undefined) {
     assertLeadPeerNotCaller(caller, leadPeer, sessionPeers);
+    // An explicit relator carries the same exposure as a drawn one: it will
+    // rewrite the artifact inside its own ceiling. It is refused rather than
+    // replaced, because the caller named this peer on purpose.
+    assertLeadPeerFitsDraft(leadPeer, fit);
     return {
       kind: "explicit",
       assignment: {
@@ -165,5 +300,5 @@ export function resolveLeadPeer(
       },
     };
   }
-  return { kind: "lottery", assignment: assignRelator(caller, sessionPeers) };
+  return { kind: "lottery", assignment: assignRelator(caller, sessionPeers, undefined, fit) };
 }
