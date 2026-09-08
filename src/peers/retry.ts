@@ -144,7 +144,11 @@ function cancellationError(signal: AbortSignal): Error {
   return error;
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
+// Exported for the Perplexity background-mode poll loop (v6.0.0), which
+// waits between retrievals with the same cancellation semantics the retry
+// backoff uses: an aborted signal rejects immediately with an AbortError
+// the shared classifier reads as `cancelled`.
+export function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(cancellationError(signal));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -282,7 +286,14 @@ export async function withRetry<T>(
           attempts: attempt,
         });
       }
-      if (!last.retryable || attempt >= config.retry.max_attempts) {
+      // `safe_to_repeat === false` stops the loop even when the provider
+      // error is retryable: re-running the closure would repeat a side effect
+      // this adapter cannot reconcile (see PeerFailure.safe_to_repeat).
+      if (
+        !last.retryable ||
+        last.safe_to_repeat === false ||
+        attempt >= config.retry.max_attempts
+      ) {
         throw attachPeerFailure(
           error,
           mergeRetryBillingIntoFailure(last, priorRetryBilling, priorTrySpend),

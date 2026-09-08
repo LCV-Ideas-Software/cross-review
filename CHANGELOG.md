@@ -5,6 +5,184 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v06.00.00] — 08/09/2026
+
+### Breaking
+
+- **The legacy Sonar rate-card keys are rejected again, as v05.00.00
+  scheduled.** `request_fee_low_per_1000`, `request_fee_medium_per_1000`,
+  `request_fee_high_per_1000`, `citation_tokens_per_million` and
+  `deep_research_reasoning_tokens_per_million` are refused by the strict
+  central-config schema on any card, exactly like any other unknown key: the
+  boot notice and `server_info.config_load.parse_error` name the key and the
+  card path, the whole file is ignored, and paid calls stay blocked with
+  `CROSS_REVIEW_CONFIG_FILE_INVALID` until the key is removed and the MCP host
+  restarted. Remove any Sonar card or key from `config.json` before upgrading.
+- **The deprecated members leave the shipped declarations.**
+  `TokenUsage.citation_tokens`, `CostEstimate.request_cost`,
+  `CostEstimate.citation_tokens_cost`,
+  `CostEstimate.deep_research_reasoning_tokens_cost` and the five legacy keys
+  on `CostRateConfig` are gone from `dist/src/core/types.d.ts`. A consumer that
+  references them stops compiling; the package declares no `exports` map and
+  ships the whole compiled tree, so those declarations were public contract.
+
+### Removed
+
+- **The 5.x tolerance machinery, in full.** The tolerated-key list and its
+  boot notice, `server_info.config_load.deprecated_keys_ignored`, the
+  `mergeUsage` / `mergeCost` passthrough of the deprecated fields and the
+  `citation_tokens` clause of the provider-work predicate are removed. A
+  persisted attempt that reported only `citation_tokens`, no other counter and
+  no cost, is therefore no longer treated as evidence of provider work.
+  Sessions persisted by v3.0–v4.6.8 keep their stored `total_cost`, which
+  `mergeCost` still adds up. The removal was performed mechanically, by
+  reverse-applying the change set that had introduced the tolerance, so that
+  nothing shipped alongside it was lost — in particular the boot notice for a
+  rejected central configuration, which belongs to v05.00.00 and is still
+  wired into startup.
+
+### Added
+
+- **Perplexity Agent API background mode** (issue #296). The two long
+  Perplexity roles — reviewer (`call`) and relator (`generate`) — now create
+  their request with `background: true` and retrieve it with
+  `GET /v1/agent/{id}`, the documented Agent API retrieval path, until the
+  provider reports a terminal status. Perplexity severs a synchronous request
+  at approximately 300 seconds — reproduced four times across three sessions
+  (300618, 300596, 300596 and 300576 ms, provider message `terminated`) while
+  `CROSS_REVIEW_TIMEOUT_MS` was 1,800,000 ms, and unaffected by shrinking the
+  payload from 128 KB to 85 KB — so the peer could never vote on a long review
+  and its provider failure blocked unanimous convergence. A background run
+  survives that disconnection. The provider documents no request-duration
+  limit but documents background mode as the path for long runs, and its
+  output-control page recommends background over streaming for multi-minute
+  runs. The first retrieval waits one second and the interval doubles up to a
+  15-second ceiling; every wait is clamped to the remaining budget and
+  interrupted by cancellation, and the loop is bounded by
+  `CROSS_REVIEW_TIMEOUT_MS` anchored at the create — a stream severed after
+  most of the budget is spent does not receive a fresh one. Exceeding it fails
+  the attempt with `perplexity_background_poll_timeout`. Token streaming stays
+  active on top of background mode: while the connection lives the deltas flow
+  unchanged, and when the provider severs it the provisional deltas are
+  discarded with `peer.token.discarded` and the answer comes from the
+  retrieved terminal object. `queued` and `in_progress` are never read as an
+  answer; the terminal assertions, the usage and cost accounting and the
+  `incomplete`-terminal estimated billing are unchanged. The probe is not
+  affected: it is a 16-token call and stays synchronous. No new dependency and
+  no new configuration knob.
+- **The poll tolerates a failed retrieval.** A background run outlives the
+  client by design, so a retrieval that fails transiently — no HTTP status at
+  all (a socket reset, a connection or read timeout), or 408, 429 or any 5xx —
+  is retried by the same loop on the same backoff and against the same deadline
+  instead of abandoning a run that is still alive with most of its budget
+  unspent. Abandoning it was the worse outcome twice over: the resulting
+  failure is classified retryable, so `withRetry` started a second and a third
+  full background run while the earlier ones kept executing and billing with
+  the reviewer's `web_search` tool active. Only a cancellation or a non-transient status (401, 403 and the
+  documented 404 for an unknown id or another account's response) still ends
+  the poll early, and a deadline reached while retrievals were failing now
+  names the last one in the `perplexity_background_poll_timeout` message. That
+  loop is also the only retry a retrieval gets: the `GET` pins `maxRetries: 0`,
+  because `timeout` bounds a single attempt in this SDK and its default of two
+  retries would let one hung retrieval spend the whole remaining budget three
+  times over — which is exactly what the `CROSS_REVIEW_TIMEOUT_MS` bound above
+  depends on not happening.
+- **An abandoned background run is asked to stop.** When cross-review stops
+  following a run the provider has not finished — `session_cancel_job`,
+  `perplexity_background_poll_timeout`, a non-transient retrieval status, a
+  cancellation that interrupts a still-live streaming connection, or a failure
+  of cross-review's own event pipeline while that connection is still live (the
+  16 MiB `StreamBuffer` ceiling, a throwing token sink) — it now
+  issues one best-effort `POST /v1/agent/{id}/cancel`, the documented stop for
+  a background run. Without it the run kept executing, kept billing and stayed
+  retained after the operator had already cancelled the session. The stop is
+  requested, not confirmed: the provider acknowledges asynchronously with
+  `status: "cancelling"`, and the call is sent once, is never retried, carries
+  its own five-second budget so it cannot hold a cancellation gesture open, and
+  can never fail the round. The limits and the residual consequence are
+  documented in `docs/architecture.md` ("Perplexity Background Execution").
+  Telling those exits apart is what decides whether a run is asked to stop, so
+  the streaming loop no longer infers it from a flag set in a catch-all: the
+  rejection this adapter raises from a terminal event now carries its own
+  marker, applied outside the billing layer so the rejected attempt keeps the
+  usage and cost that layer attaches to the error. A terminal rejection means
+  the run is over and earns no cancel; a local failure and a caller
+  cancellation both abandon a live run and earn one; an untagged rejection came
+  from the transport and is answered by retrieving the terminal object. A flag
+  could not separate the last three, and a local failure was taking the
+  "already over" branch.
+- **Neither create is retried by the SDK.** Both `responses.create` calls — the
+  background create and the streaming one — now pin `maxRetries: 0`, like the
+  retrieval and the cancel already did. `timeout` bounds a single attempt in
+  this SDK, so the default of two retries let a create spend three times
+  `CROSS_REVIEW_TIMEOUT_MS` before the poll loop could look at its own
+  deadline; and because the SDK sends no `Idempotency-Key`, a POST the provider
+  accepted but whose response was lost was repeated, starting a second stored,
+  billable background run whose id this adapter never saw and
+  `POST /v1/agent/{id}/cancel` could never reach. Both payloads declare
+  `background: true` and `store: true`, so `stream: true` bought the streaming
+  create no exemption. The retry authority is `withRetry`, which accounts for
+  what it spends; the SDK's was invisible to it.
+- **Nor by the outer retry loop: `PeerFailure.safe_to_repeat`.** Pinning
+  `maxRetries: 0` disarms only the SDK. `withRetry` wraps the whole closure,
+  creates included, so a create failure the classifier calls retryable was
+  re-POSTed — up to `CROSS_REVIEW_RETRY_ATTEMPTS` stored, billable background
+  runs, of which at most one id is ever observed. Measured against real
+  sockets, 500, 502, 503, 504 and 429 all took the retry branch, but only the
+  5xx ones are a hazard: a 4xx is the provider REJECTING the request before it
+  stored anything, so repeating it starts no run. The Agent API
+  publishes six endpoints, none of which lists runs, and no idempotency
+  header, so the extra runs can never be found or stopped. The stop could not
+  be spelled `retryable: false`: `isSkippableFailure` reads that field to
+  leave a provider error `skipped` rather than `rejected`, so flipping it
+  would have silently blocked convergence, and the orchestrator reads the same
+  field for fallback eligibility. `PeerFailure.safe_to_repeat` is the missing
+  concept — "is it safe to run this closure again", as distinct from "would
+  the provider succeed if asked again" — read only by `withRetry` and optional,
+  so no other adapter changes behaviour. Perplexity sets it on any create
+  failure that is not a 4xx — a 5xx is ambiguous, and an error carrying no
+  status at all means no response arrived, which is the worst case. A 429 is
+  therefore left retrying exactly as before, deliberately: it stores nothing,
+  and disarming it would trade this hazard for a worse one.
+- **A create can succeed and still leave an unreachable run.** If the stream
+  fails before the first `response.created`, or the Agent API answers a pending
+  create without a response id, the run exists and bills while this adapter
+  never learns its id: the severed-stream retrieval is guarded by that id, and
+  `POST /v1/agent/{id}/cancel` has no path to call. `createAgentRun` cannot see
+  this — it returned successfully — so `safe_to_repeat: false` is now applied
+  where the error escapes instead: the two streaming exits that carry no id,
+  and the `perplexity_background_id_missing` throw. A repeat would add a second
+  unreachable run to the first.
+- **A cut after `response.completed` no longer discards the answer.** The
+  severed-stream repair is guarded by `!responseCompleted`, so a transport
+  rejection arriving once the terminal event was already in hand recovered
+  nothing and was rethrown, failing the round on a finished, billed answer.
+  openai 7.8.0 rejects the iterator when the socket dies before `data: [DONE]`
+  — a live server closing there raises `TypeError: terminated` — so the window
+  is reachable on a real wire, not only in a fixture. That run is also terminal
+  at the provider, so the best-effort cancel that a live abandoned run earns is
+  now suppressed on this path: the documented cancel answers 400 against a
+  terminal run. The record stops claiming an unbroken stream: `stream_severed`
+  reports the cut.
+
+### Changed
+
+- **Perplexity retains the reviewer and relator requests** (operator-facing
+  consequence of the item above). A background response is only retrievable if
+  the provider stored it — a `store: false` response answers 404 — so those
+  two payloads now send `store: true` instead of `store: false`, and
+  Perplexity retains their prompt and response under the account's own
+  retention terms instead of discarding them at the end of the call. This
+  affects Perplexity only: the Perplexity probe, OpenAI and Grok still send
+  `store: false`, and no other peer changed. Operators who cannot accept that
+  retention should disable the peer with `CROSS_REVIEW_PEER_PERPLEXITY=off`;
+  reverting to the synchronous path is not an alternative, because the
+  synchronous path cannot finish a long review at all. Documented in
+  `docs/architecture.md` ("Perplexity Background Execution") and in
+  `docs/apresentacao.md`.
+- `peers/retry.ts` exports its cancellable `delay` helper so the background
+  poll loop waits with the same abort semantics as the retry backoff.
+
 ## [v05.00.00] — 05/09/2026
 
 ### Breaking
