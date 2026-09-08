@@ -30,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v05.00.00** (package `5.0.0`).
+**Status.** Stable. The current source/release target is **v05.01.00** (package `5.1.0`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -48,6 +48,7 @@ The version history at a glance:
 
 | Release              | Scope                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`v05.01.00`**      | Minor: the Perplexity reviewer and relator run in Agent API background mode (`background: true` plus `GET /v1/agent/{id}`) because the provider severs a synchronous request at ~300 s; those two long requests now send `store: true`, so Perplexity retains them (issue #296).      |
 | **`v05.00.00`**      | **Major: legacy Sonar dimensions removed.** `estimateCost` no longer prices them; the five Sonar-only rate-card keys stay accepted by the schema as deprecated no-ops named at boot; a central config the schema rejects is now announced at boot.                                    |
 | **`v04.06.08`**      | **Evidence custody fixes.** A provider-escaped GitHub URL quoted from the attachment no longer downgrades a READY vote; a relator may name a file the admitted unified diff materializes.                                                                                             |
 | **`v04.06.07`**      | **No manual gesture.** A push to `main` that changes the version publishes to npmjs.com and GitHub Packages and then records the Release with the run's own token.                                                                                                                    |
@@ -305,7 +306,12 @@ For Perplexity, `PERPLEXITY_API_KEY` is canonical. The default pin is
 `/v1/responses`). Sonar Chat Completions retires on 27/09/2026, so legacy
 unprefixed Sonar ids are rejected with a migration diagnostic. The reviewer
 role declares the `web_search` tool (billed per invocation); the relator role
-never does.
+never does. Both of those long roles run in Agent API background mode
+(`background: true`, retrieved with `GET /v1/agent/{id}`) because Perplexity
+severs a synchronous request at about 300 seconds; a background response has
+to be retrievable, so those two requests send `store: true` and Perplexity
+retains them. The probe stays synchronous and keeps `store: false`. See
+[docs/architecture.md](docs/architecture.md) for the retention consequence.
 
 Central configuration is loaded once when the MCP server process starts. Use
 `server_info.config_load` to inspect the loaded path, parse result, loaded and

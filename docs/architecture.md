@@ -102,6 +102,88 @@ text and emits `peer.token.discarded` for that attempt before another attempt
 can become authoritative. This preserves live observability without letting a
 stale partial READY prefix masquerade as the final verdict.
 
+## Perplexity Background Execution
+
+Perplexity terminates a synchronous Agent API request at approximately 300
+seconds. The cut was reproduced four times across three sessions (300618,
+300596, 300596 and 300576 ms, provider message `terminated`) while
+`CROSS_REVIEW_TIMEOUT_MS` was 1,800,000 ms, and shrinking the payload from 128
+KB to 85 KB did not move it. The provider documents no maximum request
+duration; it documents the remedy instead. Since v5.1.0 the two long
+Perplexity roles — reviewer (`call`) and relator (`generate`) — create their
+request with `background: true` and follow it with `GET /v1/agent/{id}`, the
+documented Agent API retrieval path, until the provider reports a terminal
+status. A background run survives the disconnection, so the ~300-second cut no
+longer costs the round a peer. The probe stays synchronous: it is a 16-token
+call and never reaches the limit.
+
+The poll waits one second before the first retrieval and doubles up to a
+15-second ceiling. Every wait is clamped to the remaining budget, is
+interrupted by `session_cancel_job` through the same `AbortSignal` the
+provider calls receive, and the whole loop is bounded by
+`CROSS_REVIEW_TIMEOUT_MS`, anchored at the moment the request was created —
+not at the moment the connection dropped. Exceeding it fails the attempt with
+`perplexity_background_poll_timeout`. `queued` and `in_progress` are the
+documented non-terminal statuses and are never read as an answer, whatever
+text the pending object happens to carry; `completed`, `failed`, `cancelled`
+and `incomplete` go through the same terminal assertions and the same usage
+and cost accounting as a synchronous response.
+
+A failed retrieval does not end the poll. The whole point of a background run
+is that it outlives the client, so a retrieval that fails transiently — no HTTP
+status at all (a socket reset, a connection or read timeout), or 408, 429 or any
+5xx — is simply retried by the same loop, on the same backoff and against the
+same deadline, while the run keeps going untouched on the provider's side.
+Abandoning it there would be worse than the wait: the failure is classified
+retryable, so `withRetry` would start a second and a third full background run
+while the earlier ones were still executing and billing. Only a cancellation or a non-transient status —
+401, 403 and the documented 404 for an unknown id or another account's response
+— ends the poll early, and if the deadline is what ends it, the last tolerated
+retrieval error is named in the `perplexity_background_poll_timeout` message.
+That loop is also the only retry a retrieval gets: the `GET` pins
+`maxRetries: 0`, because in this SDK `timeout` bounds a single attempt, so the
+SDK's default of two retries would let one hung retrieval spend the whole
+remaining budget three times over — and the loop would no longer be bounded by
+`CROSS_REVIEW_TIMEOUT_MS` at all.
+
+Token streaming remains active on top of background mode, which Perplexity
+documents as combinable. While the connection lives, `peer.token.delta`
+records flow as before. When the provider severs it, the provisional deltas of
+that attempt are discarded with `peer.token.discarded` and the answer comes
+from the retrieved terminal object, so a partial stream is never committed as
+the verdict.
+
+**Operator-facing consequence — provider retention.** Retrieval is only
+possible for a stored response: Perplexity answers 404 for a response created
+with `store: false`. The two background paths therefore send `store: true`,
+and the reviewer and relator requests that cross-review sends to Perplexity —
+prompt and response — are retained by the provider under the account's own
+retention terms instead of being discarded at the end of the call. This
+applies to Perplexity only; OpenAI, Grok and the Perplexity probe still send
+`store: false`, and no other peer changed. Operators who cannot accept that
+retention should disable the Perplexity peer
+(`CROSS_REVIEW_PEER_PERPLEXITY=off`) rather than reverting the
+background path, because the synchronous path cannot finish a long review at
+all.
+
+**Operator-facing consequence — an abandoned run.** Cross-review sometimes
+stops following a background run that the provider has not finished:
+`session_cancel_job` cancels the session, the poll exhausts
+`CROSS_REVIEW_TIMEOUT_MS`, or a retrieval answers a non-transient status. The
+run does not stop by itself when that happens. It would keep executing, keep
+billing — with the reviewer's `web_search` tool still active — and keep its
+prompt and output retained under the `store: true` posture above, after the
+operator already cancelled. Cross-review therefore issues one best-effort
+`POST /v1/agent/{id}/cancel`, the documented stop for a background run, on
+every such exit, including a cancellation that interrupts a still-live
+streaming connection. Its limits are worth stating plainly: the provider
+acknowledges the request asynchronously with `status: "cancelling"` and ends
+the run shortly after, so cross-review reports a stop that was _requested_, not
+a terminal `cancelled` it confirmed; the call is sent once, is never retried,
+carries its own five-second budget so it cannot hold a cancellation gesture
+open, and can never fail the round. If it does not land, the run continues to
+execute, bill and be retained.
+
 ## Terminal Events and Audit Reports
 
 Session outcome changes are persisted in `meta.json` and mirrored into

@@ -144,7 +144,11 @@ function cancellationError(signal: AbortSignal): Error {
   return error;
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
+// Exported for the Perplexity background-mode poll loop (v5.1.0), which
+// waits between retrievals with the same cancellation semantics the retry
+// backoff uses: an aborted signal rejects immediately with an AbortError
+// the shared classifier reads as `cancelled`.
+export function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(cancellationError(signal));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {

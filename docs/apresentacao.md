@@ -6,7 +6,7 @@
 > leitor; as seções 4 a 7 aprofundam os aspectos técnicos para profissionais
 > de TI e pessoas desenvolvedoras.
 >
-> Estado do source/release target em 05/09/2026: `5.0.0`. O registro pode ficar
+> Estado do source/release target em 07/09/2026: `5.1.0`. O registro pode ficar
 > atrás do source durante o workflow; consulte `npm view
 @lcv-ideas-software/cross-review version` para a publicação e `server_info`
 > para a versão runtime efetivamente carregada. Recarregue a janela após
@@ -302,6 +302,19 @@ um revisor com perfil de "verificação de fatos"; quando atua como relator
 (síntese), a ferramenta não é enviada. Seu preço tem uma dimensão extra: além
 de tokens de entrada, saída e cache, há uma taxa por invocação da busca,
 reportada pela API em `usage.tool_calls_details` e cobrada por mil invocações.
+
+Desde a `v05.01.00`, as duas chamadas longas do Perplexity (revisor e relator)
+são criadas em **modo background** (`background: true`) e acompanhadas por
+consultas a `GET /v1/agent/{id}` até o estado terminal, porque o provedor
+encerrava a conexão síncrona por volta de 300 segundos e derrubava o par de
+qualquer revisão longa. A sondagem continua síncrona. **Consequência para o
+operador:** só é possível recuperar uma resposta que o provedor guardou, então
+essas duas chamadas passam a enviar `store: true` — o Perplexity retém o
+prompt e a resposta dessas requisições, em vez de descartá-los ao fim da
+chamada. Isso vale só para o Perplexity (a sondagem dele e os demais pares
+seguem com `store: false`). Quem não puder aceitar essa retenção deve desligar
+o par (`CROSS_REVIEW_PEER_PERPLEXITY=off`); voltar ao modo síncrono não é
+alternativa, porque nele o par não termina uma revisão longa.
 
 ### 4.4. Seleção de modelo: política de não-rebaixamento
 
@@ -631,6 +644,7 @@ SemVer. Marcos principais:
 
 | Versão           | Marco                                                                                                                                                                                                                                                                                                                 |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v05.01.00`      | Menor: as chamadas longas do Perplexity (revisor e relator) passam ao modo background (`background: true` mais `GET /v1/agent/{id}`), porque o provedor encerrava a conexão síncrona por volta de 300 s; essas duas requisições passam a enviar `store: true`, então o Perplexity as retém (issue #296).              |
 | `v05.00.00`      | Versão maior: `estimateCost` deixa de precificar as dimensões Sonar legadas; as chaves seguem aceitas pelo schema como obsoletas e ignoradas, nomeadas no boot; config central rejeitada pelo schema passa a ser avisada no boot.                                                                                     |
 | `v04.06.08`      | Custódia de evidência: URL do GitHub citada em forma escapada não rebaixa voto READY; o relator pode nomear arquivo materializado como pós-imagem do diff admitido.                                                                                                                                                   |
 | `v04.06.07`      | Publicação sem gesto manual: o push em `main` que muda a versão publica e o próprio run cria a Release por último; sai a guarda de ancestralidade.                                                                                                                                                                    |

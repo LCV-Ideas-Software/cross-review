@@ -49,6 +49,42 @@
 //    but rely on the config-driven cost for budget decisions
 //    (operator-controlled rates remain authoritative).
 //
+// 6. LONG RUNS GO THROUGH BACKGROUND MODE (v5.1.0, issue #296). Perplexity
+//    severs a synchronous Agent API request at ~300 s — reproduced four
+//    times across three sessions (300618, 300596, 300596 and 300576 ms,
+//    message "terminated") while our own retry timeout was 1 800 000 ms, and
+//    a smaller payload did not move the cut. The provider documents no
+//    request-duration limit; what it documents is the remedy: create with
+//    `background: true` and poll `GET /v1/agent/{id}`, because a background
+//    run survives client disconnection
+//    (https://docs.perplexity.ai/docs/agent-api/background-mode), and the
+//    output-control page says to prefer background over streaming for
+//    multi-minute runs. The reviewer (`call`) and relator (`generate`)
+//    requests therefore declare `background: true`; the probe stays
+//    synchronous because it is a 16-token call. Token streaming is kept as
+//    an opportunistic overlay on top of background mode (the two are
+//    documented as combinable): while the connection lives the deltas flow,
+//    and when the provider severs it the adapter discards the provisional
+//    deltas and retrieves the terminal object instead of failing the round.
+//    Retrieval is only possible for a stored response — a `store: false`
+//    response answers 404
+//    (https://docs.perplexity.ai/docs/agent-api/conversation-state) — so the
+//    two long paths send `store: true` and Perplexity retains those
+//    requests; the probe keeps `store: false`.
+//    A background run's documented property is that it OUTLIVES the client, so
+//    the adapter must not throw it away on the first transport bump: a
+//    retrieval that fails transiently (no HTTP status, a timeout, 408, 429 or
+//    5xx) is retried by the same poll loop under the same deadline, and only
+//    cancellation or a non-transient 4xx (401/403/404 — the documented
+//    unknown-id / wrong-account answer) ends the poll early. Conversely, when
+//    the adapter DOES abandon a run — cancellation, poll timeout, non-transient
+//    retrieval status — the run would keep executing, keep billing and stay
+//    retained, so the adapter asks the provider to stop it with one best-effort
+//    `POST /v1/agent/{id}/cancel`, the documented stop for a background run
+//    (https://docs.perplexity.ai/api-reference/agent-cancel-post). That call is
+//    acknowledged asynchronously with `status: "cancelling"`, is never retried
+//    and can never fail a round.
+//
 // All 6 peers remain symmetric in role assignment — Perplexity can be
 // caller, lead_peer, or reviewer; the workspace HARD GATE
 // (caller != lead_peer != reviewer per session) applies uniformly.
@@ -69,7 +105,7 @@ import type {
 import { BasePeerAdapter, StreamBuffer, type TokenEventBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
 import { loadOpenAICtor, streamingFailureErrorFromEvent } from "./openai.js";
-import { withRetry } from "./retry.js";
+import { delay, withRetry } from "./retry.js";
 import {
   assertResponsesCompletion,
   assertResponsesStreamCompleted,
@@ -85,6 +121,74 @@ import { userPrompt } from "./text.js";
 export const PERPLEXITY_BASE_URL = "https://api.perplexity.ai/v1";
 export const PERPLEXITY_SONAR_SUNSET_DATE = "27/09/2026";
 export const PERPLEXITY_AGENT_MODELS_DOCS = "https://docs.perplexity.ai/docs/agent-api/models";
+
+// v5.1.0 (issue #296): background-mode retrieval. The documented endpoint is
+// `GET /v1/agent/{id}` — the Agent API's own path, not the OpenAI-compatible
+// `/v1/responses` alias the SDK's typed helpers would use — so the poll goes
+// through the SDK's raw request surface at the client base URL.
+export const PERPLEXITY_BACKGROUND_RETRIEVE_PREFIX = "/agent";
+// The documented stop for a background run: `POST /v1/agent/{id}/cancel`
+// answers 200 with `status: "cancelling"`, 400 when the run is already
+// terminal and 404 for an unknown id or another account's response
+// (https://docs.perplexity.ai/api-reference/agent-cancel-post).
+export const PERPLEXITY_BACKGROUND_CANCEL_SUFFIX = "/cancel";
+// The cancel is a courtesy on a path that has already failed (a cancelled
+// session, an exhausted deadline), so it gets its own short budget instead of
+// the retry timeout: it must never hold a cancellation gesture open.
+export const PERPLEXITY_BACKGROUND_CANCEL_TIMEOUT_MS = 5_000;
+// Perplexity documents no polling guidance. A first retrieval one second
+// after the create keeps short runs responsive, doubling to a 15 s ceiling
+// keeps a run at the 1 800 000 ms retry timeout under ~125 retrievals, and
+// the interval is always clamped to the remaining deadline.
+export const PERPLEXITY_BACKGROUND_POLL_INITIAL_MS = 1_000;
+export const PERPLEXITY_BACKGROUND_POLL_MAX_MS = 15_000;
+
+export function perplexityBackgroundRetrievePath(backgroundId: string): string {
+  return `${PERPLEXITY_BACKGROUND_RETRIEVE_PREFIX}/${encodeURIComponent(backgroundId)}`;
+}
+
+// The documented non-terminal statuses; `completed`, `failed`, `cancelled`
+// and `incomplete` are terminal and are handed to the shared terminal
+// assertions exactly like a synchronous response.
+const PERPLEXITY_BACKGROUND_PENDING_STATUSES = new Set(["queued", "in_progress"]);
+
+export function isPerplexityBackgroundPending(status: unknown): boolean {
+  return (
+    typeof status === "string" &&
+    PERPLEXITY_BACKGROUND_PENDING_STATUSES.has(status.trim().toLowerCase())
+  );
+}
+
+function backgroundRetrievalHttpStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as { status?: unknown; statusCode?: unknown; response?: unknown };
+  const candidates: unknown[] = [record.status, record.statusCode];
+  if (record.response && typeof record.response === "object") {
+    const response = record.response as { status?: unknown; statusCode?: unknown };
+    candidates.push(response.status, response.statusCode);
+  }
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+// v5.1.0 (issue #296): a background run survives transport trouble, so a
+// failed retrieval must not throw the run away while the deadline still has
+// budget — the run itself is untouched by anything that happens to the
+// retrieval, and this classifier plus the poll loop are the only retry the
+// retrieval gets (the GET pins `maxRetries: 0` so the SDK cannot spend the
+// remaining budget several times over inside a single attempt). Only an
+// answer that will never change ends the poll: the documented 404 (unknown id
+// or another account's response) and the authorization statuses. Everything
+// without an HTTP status (a socket reset, a connection or read timeout) is
+// transient by construction, and so are 408, 429 and every 5xx.
+export function isPerplexityRetrievalTransient(error: unknown): boolean {
+  const status = backgroundRetrievalHttpStatus(error);
+  if (status === undefined) return true;
+  if (status === 408 || status === 429) return true;
+  return status < 400 || status >= 500;
+}
 
 // Agent API model ids are `provider/model` (e.g. `perplexity/kimi-k3`,
 // `openai/gpt-5.6-sol`). Anything without the provider segment is a
@@ -316,7 +420,10 @@ type PerplexityAgentPayload = PerplexityAgentOptions & {
   instructions: string;
   input: Array<{ role: "user"; content: string }>;
   max_output_tokens: number;
-  store: false;
+  // v5.1.0: the background path needs a retrievable response, so the two
+  // long roles send `true`; the probe keeps `false` (see header note 6).
+  store: boolean;
+  background?: boolean;
   response_format?: {
     type: "json_schema";
     json_schema: { name: string; schema: typeof portableStatusJsonSchema };
@@ -503,6 +610,146 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     });
   }
 
+  private backgroundPollTimeout(
+    backgroundId: string,
+    polls: number,
+    lastRetrieveError: unknown,
+  ): Error {
+    // A deadline reached while retrievals were failing is a different
+    // diagnosis from a run the provider simply never finished; name the last
+    // tolerated retrieval error so the operator can tell them apart.
+    const retrieveDetail =
+      lastRetrieveError === undefined
+        ? ""
+        : ` The last retrieval attempt failed with: ${
+            lastRetrieveError instanceof Error
+              ? lastRetrieveError.message
+              : String(lastRetrieveError)
+          }`;
+    return new Error(
+      `perplexity_background_poll_timeout: background response ${backgroundId} was still queued or in_progress ` +
+        `after ${polls} retrievals and ${this.config.retry.timeout_ms} ms (CROSS_REVIEW_TIMEOUT_MS).${retrieveDetail}`,
+    );
+  }
+
+  // v5.1.0 (issue #296): ask the provider to stop a background run this
+  // adapter is abandoning. Without it a cancelled or timed-out run keeps
+  // executing, keeps billing (with the reviewer's `web_search` tool active)
+  // and stays retained, after the operator already cancelled the session.
+  // Best effort by contract: the provider acknowledges asynchronously with
+  // `status: "cancelling"`, a run that is already terminal answers 400 and a
+  // stub client may not implement `post` at all — none of that may disturb the
+  // failure the caller is actually being told about, so every outcome is
+  // swallowed. The caller's `AbortSignal` is deliberately NOT forwarded: on the
+  // cancellation path it is already aborted and would kill this request before
+  // it reached Perplexity.
+  private async cancelBackgroundRun(client: OpenAI, retrievePath: string): Promise<void> {
+    try {
+      await client.post(`${retrievePath}${PERPLEXITY_BACKGROUND_CANCEL_SUFFIX}`, {
+        // `timeout` bounds a SINGLE request in this SDK and `maxRetries`
+        // defaults to 2, so without pinning it to zero a cancel sent over a
+        // dead network would take three attempts plus backoff — exactly the
+        // delay a cancellation gesture must not absorb. One attempt, five
+        // seconds, then give up: the run's survival is documented instead.
+        maxRetries: 0,
+        timeout: PERPLEXITY_BACKGROUND_CANCEL_TIMEOUT_MS,
+      });
+    } catch {
+      // Intentionally silent: a stop we could not deliver is reported by the
+      // retention note in docs/architecture.md, never by failing the round.
+    }
+  }
+
+  // v5.1.0 (issue #296): retrieve a background run until it reaches a
+  // terminal status. `deadline` is anchored before the create — a stream
+  // that burned most of the budget before the provider severed it must not
+  // hand the poll loop a fresh one. Every wait is cancellable through
+  // `context.signal` and clamped to the remaining budget.
+  private async pollBackgroundTerminal(
+    client: OpenAI,
+    backgroundId: string,
+    context: PeerCallContext,
+    deadline: number,
+    seed: AgentResponse | undefined,
+  ): Promise<{ response: AgentResponse; polls: number; retrieveErrors: number }> {
+    const retrievePath = perplexityBackgroundRetrievePath(backgroundId);
+    let response = seed;
+    let polls = 0;
+    let retrieveErrors = 0;
+    let lastRetrieveError: unknown;
+    let waitMs = PERPLEXITY_BACKGROUND_POLL_INITIAL_MS;
+    try {
+      while (!response || isPerplexityBackgroundPending(response.status)) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0)
+          throw this.backgroundPollTimeout(backgroundId, polls, lastRetrieveError);
+        await delay(Math.min(waitMs, remaining), context.signal);
+        if (Date.now() >= deadline)
+          throw this.backgroundPollTimeout(backgroundId, polls, lastRetrieveError);
+        polls += 1;
+        try {
+          response = (await client.get(retrievePath, {
+            signal: context.signal,
+            // `timeout` bounds a SINGLE attempt in this SDK and `maxRetries`
+            // defaults to 2, so leaving it unpinned would let one hung or
+            // 5xx-ing retrieval spend the WHOLE remaining budget three times
+            // over before the loop's next `remaining <= 0` check could run —
+            // the loop would no longer be bounded by CROSS_REVIEW_TIMEOUT_MS.
+            // One attempt is all this call needs: the loop below, together
+            // with `isPerplexityRetrievalTransient`, already IS the retry
+            // mechanism, on its own backoff and against the same deadline.
+            maxRetries: 0,
+            timeout: Math.max(1, deadline - Date.now()),
+          })) as unknown as AgentResponse;
+          lastRetrieveError = undefined;
+        } catch (error) {
+          // The run is still alive server-side; a transient retrieval failure
+          // is a fact about the transport, not about the run. Keep polling on
+          // the same backoff and the same deadline — both of which already
+          // bound this loop — and let only a cancellation or a non-transient
+          // status abandon it.
+          if (context.signal?.aborted || !isPerplexityRetrievalTransient(error)) throw error;
+          retrieveErrors += 1;
+          lastRetrieveError = error;
+        }
+        waitMs = Math.min(PERPLEXITY_BACKGROUND_POLL_MAX_MS, waitMs * 2);
+      }
+    } catch (error) {
+      // Every exit from this loop without a terminal status abandons a run the
+      // provider is still executing and billing: ask it to stop before the
+      // failure propagates.
+      await this.cancelBackgroundRun(client, retrievePath);
+      throw error;
+    }
+    return { response, polls, retrieveErrors };
+  }
+
+  // Create a background run and hold it until the provider reports a
+  // terminal status. A run that is already terminal on the create response
+  // is answered without a single retrieval.
+  private async createBackgroundResponse(
+    payload: PerplexityAgentPayload,
+    context: PeerCallContext,
+  ): Promise<{ response: AgentResponse; polls: number; retrieveErrors: number }> {
+    const deadline = Date.now() + this.config.retry.timeout_ms;
+    const backgroundClient = await this.client();
+    const created = (await backgroundClient.responses.create(
+      payload as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+      { signal: context.signal, timeout: this.config.retry.timeout_ms },
+    )) as unknown as AgentResponse;
+    if (!isPerplexityBackgroundPending(created.status))
+      return { response: created, polls: 0, retrieveErrors: 0 };
+    const backgroundId = typeof created.id === "string" ? created.id.trim() : "";
+    if (!backgroundId) {
+      throw new Error(
+        `perplexity_background_id_missing: the Agent API reported status=${String(created.status)} ` +
+          `without a response id, so the background run cannot be retrieved at ` +
+          `${PERPLEXITY_BACKGROUND_RETRIEVE_PREFIX}/{id}.`,
+      );
+    }
+    return this.pollBackgroundTerminal(backgroundClient, backgroundId, context, deadline, created);
+  }
+
   async probe(): Promise<PeerProbeResult> {
     const started = Date.now();
     const authPresent = Boolean(this.config.api_keys.perplexity);
@@ -614,6 +861,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     modelReported: string | undefined;
     raw: Record<string, unknown>;
   }> {
+    const deadline = Date.now() + this.config.retry.timeout_ms;
     const streamClient = await this.client();
     const stream = await streamClient.responses.create(
       { ...payload, stream: true } as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
@@ -634,70 +882,153 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     let responseCompleted = false;
     let responseRefused = false;
     let events = 0;
-    for await (const event of stream as AsyncIterable<AgentStreamEvent>) {
-      events += 1;
-      requestId = event.response?.id ?? requestId;
-      responseRefused = observeResponsesStreamRefusal(event, responseRefused);
-      const eventUsage = usageFromAgentApi(event.response?.usage, searchPerformed);
-      // `response.incomplete` may carry `usage: null`; bill the rejected
-      // attempt with the request envelope instead of settling it as zero.
-      const terminalBillingUsage =
-        eventUsage ??
-        (event.type === "response.incomplete" || isIncompleteTerminal(event.response?.status)
-          ? estimatedIncompleteUsage(
-              payload,
-              searchPerformed,
-              this.config.perplexity.web_search_invocations_estimate,
-            )
-          : undefined);
-      responseCompleted = withEstimatedTerminalBilling(
-        this.config,
-        this.id,
-        this.model,
-        terminalBillingUsage,
-        () =>
-          observeResponsesStreamTerminal(event, responseCompleted, {
-            context,
-            peer: this.id,
-            provider: this.provider,
-            model: this.model,
-            phase,
-          }),
-      );
-      if (event.type === "response.output_text.delta") {
-        const delta = typeof event.delta === "string" ? event.delta : "";
-        stream_buffer.append(delta);
-        perplexityTokenStream.append(delta);
-      } else if (event.type === "response.completed") {
-        usage = eventUsage;
-        modelReported = event.response?.model;
-        // The terminal event carries the aggregate output; retained as the
-        // documented fallback when no usable delta text was streamed.
-        const aggregate = agentOutputText(event.response?.output);
-        if (aggregate.length > 0) terminalMessageText = aggregate;
-      } else if (event.type === "response.cancelled") {
-        // Codex review round 9: a cancelled terminal can still carry final
-        // usage; bill the rejected attempt with it instead of settling the
-        // stream as an unpriced missing-completion.
-        withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
-          throw streamingFailureErrorFromEvent(
-            event as Parameters<typeof streamingFailureErrorFromEvent>[0],
-            "Perplexity streaming response cancelled.",
+    // v5.1.0 (issue #296): the provider severs a long connection at ~300 s.
+    // `terminalRejected` separates a rejection this adapter raised from the
+    // event loop (a failed/cancelled/incomplete terminal, which is the
+    // answer and must propagate) from a transport error raised by the
+    // iterator itself (which the surviving background run can outlive).
+    let terminalRejected = false;
+    let severedError: unknown;
+    try {
+      for await (const event of stream as AsyncIterable<AgentStreamEvent>) {
+        try {
+          events += 1;
+          requestId = event.response?.id ?? requestId;
+          responseRefused = observeResponsesStreamRefusal(event, responseRefused);
+          const eventUsage = usageFromAgentApi(event.response?.usage, searchPerformed);
+          // `response.incomplete` may carry `usage: null`; bill the rejected
+          // attempt with the request envelope instead of settling it as zero.
+          const terminalBillingUsage =
+            eventUsage ??
+            (event.type === "response.incomplete" || isIncompleteTerminal(event.response?.status)
+              ? estimatedIncompleteUsage(
+                  payload,
+                  searchPerformed,
+                  this.config.perplexity.web_search_invocations_estimate,
+                )
+              : undefined);
+          responseCompleted = withEstimatedTerminalBilling(
+            this.config,
+            this.id,
+            this.model,
+            terminalBillingUsage,
+            () =>
+              observeResponsesStreamTerminal(event, responseCompleted, {
+                context,
+                peer: this.id,
+                provider: this.provider,
+                model: this.model,
+                phase,
+              }),
           );
-        });
-      } else if (
-        event.type === "response.failed" ||
-        event.type === "error" ||
-        event.type === "response.error"
-      ) {
-        withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
-          throw streamingFailureErrorFromEvent(
-            event as Parameters<typeof streamingFailureErrorFromEvent>[0],
-            "Perplexity streaming response failed.",
-          );
-        });
+          if (event.type === "response.output_text.delta") {
+            const delta = typeof event.delta === "string" ? event.delta : "";
+            stream_buffer.append(delta);
+            perplexityTokenStream.append(delta);
+          } else if (event.type === "response.completed") {
+            usage = eventUsage;
+            modelReported = event.response?.model;
+            // The terminal event carries the aggregate output; retained as the
+            // documented fallback when no usable delta text was streamed.
+            const aggregate = agentOutputText(event.response?.output);
+            if (aggregate.length > 0) terminalMessageText = aggregate;
+          } else if (event.type === "response.cancelled") {
+            // Codex review round 9: a cancelled terminal can still carry final
+            // usage; bill the rejected attempt with it instead of settling the
+            // stream as an unpriced missing-completion.
+            withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+              throw streamingFailureErrorFromEvent(
+                event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                "Perplexity streaming response cancelled.",
+              );
+            });
+          } else if (
+            event.type === "response.failed" ||
+            event.type === "error" ||
+            event.type === "response.error"
+          ) {
+            withEstimatedTerminalBilling(this.config, this.id, this.model, eventUsage, () => {
+              throw streamingFailureErrorFromEvent(
+                event as Parameters<typeof streamingFailureErrorFromEvent>[0],
+                "Perplexity streaming response failed.",
+              );
+            });
+          }
+        } catch (error) {
+          terminalRejected = true;
+          throw error;
+        }
       }
+    } catch (error) {
+      // A rejection this adapter raised from a terminal event is the answer;
+      // a caller cancellation is the caller's. Anything else is the provider
+      // dropping the connection on a run that keeps going without us.
+      if (terminalRejected || context.signal?.aborted) {
+        // A cancellation here abandons the same live background run the poll
+        // loop would have abandoned, so it earns the same best-effort stop. A
+        // terminal rejection does not: that run is already over.
+        if (!terminalRejected && requestId) {
+          await this.cancelBackgroundRun(streamClient, perplexityBackgroundRetrievePath(requestId));
+        }
+        throw error;
+      }
+      severedError = error;
     }
+    // v5.1.0 (issue #296): the stream ended without a terminal event. The
+    // request declared `background: true`, so the run survived the severed
+    // connection: discard the provisional deltas and retrieve the terminal
+    // object at the documented `GET /v1/agent/{id}` instead of failing the
+    // round on a transport cut.
+    if (!responseCompleted && requestId) {
+      this.discardTokenEventBuffer(context, phase, attempt, "background_stream_severed");
+      const polled = await this.pollBackgroundTerminal(
+        streamClient,
+        requestId,
+        context,
+        deadline,
+        undefined,
+      );
+      const polledUsage = usageFromAgentApi(polled.response.usage, searchPerformed);
+      withEstimatedTerminalBilling(this.config, this.id, this.model, polledUsage, () => {
+        assertResponsesStreamNotRefused(responseRefused, {
+          context,
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          phase,
+        });
+      });
+      this.assertResponseTerminal(
+        polled.response,
+        context,
+        phase,
+        polledUsage,
+        payload,
+        searchPerformed,
+      );
+      const polledText = agentText(polled.response);
+      return {
+        text: polledText,
+        usage: polledUsage,
+        modelReported: polled.response.model,
+        raw: {
+          streamed: true,
+          background: true,
+          background_id: requestId,
+          background_polls: polled.polls,
+          background_retrieve_errors: polled.retrieveErrors,
+          stream_severed: severedError !== undefined,
+          provider: this.provider,
+          events,
+          model: polled.response.model,
+          request_id: requestId,
+          raw_delta_chars: stream_buffer.text().length,
+          visible_chars: polledText.length,
+          empty_usable_output: polledText.length === 0,
+        },
+      };
+    }
+    if (severedError !== undefined) throw severedError;
     withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
       assertResponsesStreamCompleted(responseCompleted, {
         context,
@@ -735,6 +1066,10 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       modelReported,
       raw: {
         streamed: true,
+        background: true,
+        background_polls: 0,
+        background_retrieve_errors: 0,
+        stream_severed: false,
         provider: this.provider,
         events,
         model: modelReported,
@@ -781,7 +1116,12 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           },
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          store: false,
+          // v5.1.0 (issue #296): a reviewer request is a multi-minute run,
+          // which the provider severs at ~300 s unless it runs in the
+          // background; a background response must be stored to be
+          // retrievable (header note 6).
+          store: true,
+          background: true,
         };
         if (this.shouldStreamTokens(context)) {
           const streamed = await this.streamAgentResponse(
@@ -800,11 +1140,10 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported: streamed.modelReported,
           });
         }
-        const reviewClient = await this.client();
-        const response = (await reviewClient.responses.create(
-          payload as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
-          { signal: context.signal, timeout: this.config.retry.timeout_ms },
-        )) as unknown as AgentResponse;
+        const { response, polls, retrieveErrors } = await this.createBackgroundResponse(
+          payload,
+          context,
+        );
         const responseUsage = usageFromAgentApi(response.usage, searchPerformed);
         this.assertResponseTerminal(
           response,
@@ -816,7 +1155,12 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         );
         return this.resultFromText({
           text: agentText(response),
-          raw: response,
+          raw: {
+            ...response,
+            background: true,
+            background_polls: polls,
+            background_retrieve_errors: retrieveErrors,
+          },
           usage: responseUsage,
           started,
           attempts: attempt,
@@ -855,7 +1199,11 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           input: [{ role: "user", content: userPrompt(prompt) }],
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          store: false,
+          // v5.1.0 (issue #296): same background contract as the reviewer
+          // path — a relator draft is just as long, and the provider cut is
+          // time-based, not payload-based.
+          store: true,
+          background: true,
         };
         if (this.shouldStreamTokens(context)) {
           const streamed = await this.streamAgentResponse(
@@ -874,11 +1222,10 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported: streamed.modelReported,
           });
         }
-        const generateClient = await this.client();
-        const response = (await generateClient.responses.create(
-          payload as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
-          { signal: context.signal, timeout: this.config.retry.timeout_ms },
-        )) as unknown as AgentResponse;
+        const { response, polls, retrieveErrors } = await this.createBackgroundResponse(
+          payload,
+          context,
+        );
         const responseUsage = usageFromAgentApi(response.usage, searchPerformed);
         this.assertResponseTerminal(
           response,
@@ -890,7 +1237,12 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         );
         return this.generationFromText({
           text: agentText(response),
-          raw: response,
+          raw: {
+            ...response,
+            background: true,
+            background_polls: polls,
+            background_retrieve_errors: retrieveErrors,
+          },
           usage: responseUsage,
           started,
           attempts: attempt,
