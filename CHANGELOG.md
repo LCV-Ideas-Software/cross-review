@@ -5,6 +5,26 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [v07.00.00] — 08/09/2026
+
+### Fixed
+
+- **A poll failure no longer re-creates the run it just abandoned** (issue #298,
+  merged as `9a3f7c9` without a version bump, which is why it needed this
+  release to reach the registry). The poll loop's catch asks the provider to
+  stop the run before propagating, but asking is not stopping:
+  `cancelBackgroundRun` swallows every outcome, including a cancel that never
+  left the machine, and the provider acknowledges asynchronously with
+  `status: "cancelling"`. At the instant `withRetry` re-enters the closure the
+  run is at best winding down and still billing — and the closure it re-enters
+  contains `responses.create`. The reachable path: transient 5xx retrievals
+  keep the loop polling to the deadline, and the poll-timeout message embeds
+  the last retrieval error's text, so the 5xx pattern matches and the whole
+  closure classifies retryable. The rethrow now carries
+  `safe_to_repeat: false`, which only `withRetry` reads. A reported 4xx other
+  than 408/429 also escapes the loop, but it already classified
+  `retryable: false`, so nothing changes there.
+
 ## [v06.00.00] — 08/09/2026
 
 ### Breaking
