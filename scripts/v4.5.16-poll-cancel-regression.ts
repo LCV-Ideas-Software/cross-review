@@ -348,6 +348,7 @@ try {
 
   await client.connect(transport);
   const started = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     task: "Focused stub regression for poll and settled-job cancellation contracts.",
     draft: "Review this neutral fixture.",
     response_format: "json",
@@ -482,6 +483,7 @@ try {
       reason?: string;
       terminal_job?: { job_id?: string; status?: string };
     }>(siblingClient, "session_cancel_job", {
+      caller: "claude",
       session_id: started.session_id,
       job_id: started.job.job_id,
       reason: "cross_process_terminal_lookup",
@@ -507,6 +509,7 @@ try {
     terminal_job?: { job_id?: string; status?: string; completed_at?: string };
     final_state?: { session_outcome?: string | null; latest_round_number?: number | null };
   }>("session_cancel_job", {
+    caller: "claude",
     session_id: started.session_id,
     job_id: started.job.job_id,
     reason: "settled_job_race_regression",
@@ -549,6 +552,7 @@ try {
   );
 
   const unsettledFixture = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     task: "Settlement failure must remain cancellable without an explicit job id.",
     draft: "FORCE_NOT_READY",
     response_format: "json",
@@ -614,6 +618,7 @@ try {
   let unsettledCancel: { requested?: boolean; control?: { status?: string } };
   try {
     unsettledCancel = await callJsonWith(settlementSiblingClient, "session_cancel_job", {
+      caller: "claude",
       session_id: unsettledFixture.session_id,
       reason: "settlement_cleanup_without_job_id",
       response_format: "json",
@@ -636,6 +641,7 @@ try {
   );
 
   const firstOpenJob = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     task: "Old terminal job must not cancel a newer active job.",
     draft: "FORCE_NOT_READY",
     response_format: "json",
@@ -653,6 +659,7 @@ try {
   }
   check(firstOpenJobStatus === "completed", "the old job fixture did not complete");
   const secondActiveJob = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     session_id: firstOpenJob.session_id,
     task: "Old terminal job must not cancel a newer active job.",
     draft: "FORCE_CANCEL_SLOW",
@@ -663,6 +670,7 @@ try {
     reason?: string;
     terminal_job?: { job_id?: string; status?: string };
   }>("session_cancel_job", {
+    caller: "claude",
     session_id: firstOpenJob.session_id,
     job_id: firstOpenJob.job.job_id,
     reason: "must_not_cancel_new_job",
@@ -710,6 +718,7 @@ try {
     "active summary poll exposed the evidence broker snapshot",
   );
   const newJobCancel = await callJson<{ requested?: boolean }>("session_cancel_job", {
+    caller: "claude",
     session_id: firstOpenJob.session_id,
     job_id: secondActiveJob.job.job_id,
     reason: "regression_cleanup",

@@ -33,6 +33,7 @@ import { PEERS } from "../src/core/types.js";
 import type { JobStatus } from "../src/mcp/server.js";
 import {
   assertSessionMutationAuthority,
+  CallerSchema,
   centralConfigInvalidBootNotice,
   getCallerCandidatesFromClientInfo,
   hasTrustedPetitionerProvenance,
@@ -6811,23 +6812,30 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(captured[0]?.data?.peer_panel_overridden, false);
   assert.equal(captured[0]?.data?.ignored_lead_peer, "gemini");
 
-  // Scenario C: operator caller passes `lead_peer: gemini` → preserved
-  // (operator is the meta-authority, may pin lead_peer for legitimate
-  // testing). `peers` is still stripped though.
+  // Scenario C (contract change, v07.00.00): this case used to assert that an
+  // "operator" caller kept its `lead_peer` pin, because the operator was the
+  // meta-authority allowed to pin a relator for legitimate testing. That caller
+  // never existed — there is no operator channel to this server — so the
+  // exemption is gone with the identity and the lottery is now unconditional.
+  // Both overrides are stripped and both are named in the same audit event.
   captured.length = 0;
   const cIn = {
     task: "lock-test-C",
     draft: "draft",
-    caller: "operator" as const,
+    caller: "codex" as const,
     peers: ["codex"] as PeerId[],
     lead_peer: "gemini" as PeerId,
   };
   const cOut = lockCallerPeerSelection(cIn, { site: "run_until_unanimous", emit: captureEmit });
-  assert.equal(cOut.peers, undefined, "operator's `peers` MUST be stripped (TODOS SEMPRE)");
-  assert.equal(cOut.lead_peer, "gemini", "operator's `lead_peer` MUST be preserved");
-  assert.equal(captured.length, 1, "operator's peers override MUST emit audit event");
+  assert.equal(cOut.peers, undefined, "`peers` MUST be stripped for every caller (TODOS SEMPRE)");
+  assert.equal(
+    cOut.lead_peer,
+    undefined,
+    "`lead_peer` MUST be stripped for every caller: no caller may pin a sympathetic relator",
+  );
+  assert.equal(captured.length, 1, "the override MUST emit one audit event");
   assert.equal(captured[0]?.data?.peer_panel_overridden, true);
-  assert.equal(captured[0]?.data?.lead_peer_overridden, false);
+  assert.equal(captured[0]?.data?.lead_peer_overridden, true);
 
   // Scenario D: caller passes nothing (no peers, no lead_peer) → no
   // event, input passes through unchanged.
@@ -7420,15 +7428,21 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(override.identity_verified, false);
   assert.equal(override.client_info_name, "headless-orchestrator-v9");
 
-  // (4) An agent-identified host cannot escape its identity by declaring operator.
-  assert.throws(
-    () => verifyCallerIdentity("operator", { name: "claude-code" }),
-    /identity_forgery_blocked.*operator.*agent-identified host/i,
+  // (4) contract change (v07.00.00): "operator" is no longer an admissible
+  // caller at all, so there is no identity to escape into and no forgery guard
+  // to exercise. The successor invariant is that the schema refuses it.
+  assert.equal(
+    CallerSchema.safeParse("operator").success,
+    false,
+    "v07.00.00: 'operator' MUST NOT be an admissible caller — it names a principal with no channel to this server",
   );
-  assert.throws(
-    () => verifyCallerIdentity("operator", { name: "cross-review-human-console" }),
-    /operator_authority_required/,
-  );
+  for (const peer of PEERS) {
+    assert.equal(
+      CallerSchema.safeParse(peer).success,
+      true,
+      `v07.00.00: '${peer}' must remain an admissible caller`,
+    );
+  }
 
   // (5) Multi-match clientInfo while declaring an agent caller.
   let threwMulti = false;
@@ -7671,44 +7685,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.ok(hardEnforceThrown, "v2.18.0 F1: hard-enforce mode rejects token-absent calls");
   delete process.env.CROSS_REVIEW_REQUIRE_TOKEN;
 
-  // (12) operator caller — an agent-named host cannot declare operator,
-  // regardless of the token it presents.
-  process.env.CROSS_REVIEW_CALLER_TOKEN = "deadbeef".repeat(8);
-  let operatorWithTokenThrown = false;
-  try {
-    verifyCallerIdentity("operator", { name: "claude-code" });
-  } catch (err) {
-    operatorWithTokenThrown = /operator.*agent-identified host/i.test((err as Error).message);
-  }
-  assert.ok(
-    operatorWithTokenThrown,
-    "v2.18.0 F1: caller='operator' from a token-bearing host MUST throw (R2 codex catch hardening)",
-  );
-
-  // (12b) operator caller without its dedicated token is rejected even from
-  // a human-console client name.
-  delete process.env.CROSS_REVIEW_CALLER_TOKEN;
-  assert.throws(
-    () => verifyCallerIdentity("operator", { name: "claude-code" }),
-    /identity_forgery_blocked/,
-  );
-  assert.throws(
-    () => verifyCallerIdentity("operator", { name: "cross-review-human-console" }),
-    /operator_authority_required/,
-  );
-
-  // (12c) operator is available only with its distinct capability token.
+  // (12) contract change (v07.00.00): cases (12), (12b) and (12c) exercised the
+  // operator identity — from an agent-named host, from a human-console name,
+  // with and without its dedicated token. None of that is reachable now: the
+  // identity is not admissible (case 4 above) and the token that unlocked it
+  // belonged to a console that does not exist. What survives, and matters, is
+  // that a peer under hard token enforcement is verified by its OWN token.
   process.env.CROSS_REVIEW_REQUIRE_TOKEN = "true";
-  assert.throws(
-    () => verifyCallerIdentity("operator", { name: "cross-review-human-console" }),
-    /operator_authority_required/,
-  );
-  process.env.CROSS_REVIEW_CALLER_TOKEN = map.operator;
-  const opHardEnforce = verifyCallerIdentity("operator", {
-    name: "cross-review-human-console",
-  });
-  assert.equal(opHardEnforce.verification_method, "token");
-  assert.equal(opHardEnforce.identity_verified, true);
+  process.env.CROSS_REVIEW_CALLER_TOKEN = map.claude;
+  const peerHardEnforce = verifyCallerIdentity("claude", { name: "claude-code" });
+  assert.equal(peerHardEnforce.verification_method, "token");
+  assert.equal(peerHardEnforce.identity_verified, true);
   delete process.env.CROSS_REVIEW_REQUIRE_TOKEN;
 
   // (12d) Authoritative session mutations require either the verified
@@ -7729,8 +7716,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     () => assertSessionMutationAuthority("contest_verdict", "claude", idFallback, "claude"),
     /session_owner_token_required/,
   );
+  // The operator bypass that used to satisfy this assertion is gone: an
+  // authoritative mutation now requires the persisted petitioner's own
+  // verified token, with no identity able to step over it. Removing that
+  // branch TIGHTENS the gate.
   assert.doesNotThrow(() =>
-    assertSessionMutationAuthority("contest_verdict", "operator", opHardEnforce, "claude"),
+    assertSessionMutationAuthority("contest_verdict", "claude", peerHardEnforce, "claude"),
+  );
+  assert.throws(
+    () => assertSessionMutationAuthority("contest_verdict", "codex", peerHardEnforce, "claude"),
+    /session_owner_mismatch/,
+    "v07.00.00: no caller may mutate another petitioner's session",
   );
   assert.equal(hasTrustedPetitionerProvenance("2.15.9"), false);
   assert.equal(hasTrustedPetitionerProvenance("v02.16.00"), true);
@@ -9701,12 +9697,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.6.0 / B4: peer-caller lead_peer pin must produce a peer_selection_lock notice",
   );
 
-  // (c) operator caller pinning lead_peer is legitimate -> NO notice.
-  const operatorLead = buildResponseNotices({ caller: "operator", lead_peer: "gemini" }, {});
-  assert.equal(
-    operatorLead.length,
-    0,
-    "v3.6.0 / B4: operator pinning lead_peer is legitimate — must NOT produce a notice",
+  // (c) contract change (v07.00.00): there is no caller for whom pinning
+  // lead_peer is legitimate, so every pin produces the notice. The exemption
+  // this case asserted belonged to an identity that had no channel to reach
+  // the server.
+  const secondLead = buildResponseNotices({ caller: "gemini", lead_peer: "grok" }, {});
+  assert.ok(
+    secondLead.some((n: string) => n.startsWith("peer_selection_lock:")),
+    "v07.00.00: any caller pinning lead_peer must produce a peer_selection_lock notice",
   );
 
   // (d) relator-non-voting scope -> relator notice naming the voters.
@@ -9738,11 +9736,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v3.6.0 / B3: the relator notice must enumerate the voting peers",
   );
 
-  // (e) clean operator call, no scope -> empty.
+  // (e) clean call with nothing pinned and no scope -> empty. The caller here
+  // used to be "operator"; any peer serves the same purpose now.
   assert.equal(
-    buildResponseNotices({ caller: "operator" }, {}).length,
+    buildResponseNotices({ caller: "perplexity" }, {}).length,
     0,
-    "v3.6.0 / B3+B4: a clean operator call with no relator scope produces no notices",
+    "v3.6.0 / B3+B4: a clean call with no relator scope produces no notices",
   );
 
   // Source pins: 4 caller-facing tools wire buildResponseNotices, and
@@ -10181,7 +10180,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const lockCallerPeerSelection = (await import("../src/mcp/server.js")).lockCallerPeerSelection;
   const enabledSet: readonly PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok"];
   const runLockCase = (
-    caller: PeerId | "operator",
+    caller: PeerId,
     panel: PeerId[],
     passEnabledPeers: boolean,
   ): { emits: LockEvent[] } => {

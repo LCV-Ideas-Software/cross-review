@@ -40,7 +40,11 @@ const PeerSchema = z.enum(PEERS);
 // function-declaration validator rejects that shape. A flat enum is
 // runtime-equivalent (same accepted values, same TS inferred type) and
 // produces a clean single `enum` in the wire JSON Schema.
-const CallerSchema = z.enum(PEERS);
+// v07.00.00: the admissible callers are exactly the peers. "operator" was an
+// eighth value here, and it named a principal with no channel to this server:
+// the whole surface is MCP, exercised by agents. Exported so the contract that
+// it is NOT admissible can be asserted directly.
+export const CallerSchema = z.enum(PEERS);
 const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
 const SessionListOutcomeFilterSchema = z
   .enum(["all", "open", "converged", "aborted", "max-rounds"])
@@ -351,7 +355,6 @@ export type ClientInfo = { name?: string; version?: string } | undefined;
 // every call would be wasteful and gives an attacker a TOCTOU window).
 import {
   ensureHostTokens,
-  generateHostTokens as f1GenerateHostTokens,
   getParentProcessSnapshot,
   type HostTokensLoadDiagnostics,
   type HostTokensLoadFailure,
@@ -526,10 +529,10 @@ export function lockCallerPeerSelection<
     ctx.emit({
       type: "session.caller_peer_selection_ignored",
       session_id: input.session_id,
-      message: `caller_peer_selection_lock: caller=${caller} attempted to ${peerPanelOverridden ? "override the reviewer panel" : "pin lead_peer"} via ${ctx.site}; the request was silently overridden — operator directive 2026-05-12 ("TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM").`,
+      message: `caller_peer_selection_lock: caller=${input.caller} attempted to ${peerPanelOverridden ? "override the reviewer panel" : "pin lead_peer"} via ${ctx.site}; the request was silently overridden — operator directive 2026-05-12 ("TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM").`,
       data: {
         site: ctx.site,
-        caller,
+        caller: input.caller,
         peer_panel_overridden: peerPanelOverridden,
         ignored_peers: peerPanelOverridden ? callerSuppliedPeers : undefined,
         lead_peer_overridden: leadPeerOverridden,
@@ -1140,7 +1143,7 @@ export async function recoverStartupInterruptedSessions(
 function recordIdentityForgeryBlocked(
   runtime: Runtime,
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   clientInfo: ClientInfo,
   error: unknown,
   session_id?: string,
@@ -1162,7 +1165,7 @@ function recordIdentityForgeryBlocked(
 function verifyToolCallerIdentity(
   runtime: Runtime,
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   clientInfo: ClientInfo,
   session_id?: string,
 ): CallerIdentityResult {
@@ -1188,86 +1191,12 @@ function verifyToolCallerIdentity(
   }
 }
 
-function verifyOperatorToolCallerIdentity(
-  runtime: Runtime,
-  site: string,
-  caller: PeerId | "operator",
-  clientInfo: ClientInfo,
-  session_id?: string,
-): CallerIdentityResult {
-  let identity: CallerIdentityResult;
-  try {
-    identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, session_id);
-  } catch (error) {
-    if (site !== "session_attach_evidence" || caller !== "operator") throw error;
-    const routedError = new Error(
-      `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface and the requested operator identity was not verified. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`,
-      { cause: error },
-    );
-    runtime.emit({
-      type: "session.operator_authority_blocked",
-      session_id,
-      message: routedError.message,
-      data: {
-        site,
-        caller,
-        verification_method: "none",
-        client_info_name: clientInfo?.name ?? "unknown",
-      },
-    });
-    throw routedError;
-  }
-  if (caller !== "operator") {
-    const error = new Error(
-      site === "session_attach_evidence"
-        ? `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface; received caller='${caller}'. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`
-        : `operator_authority_required: ${site} mutates evidence dispositions, cross-session housekeeping, or security configuration and requires the distinct operator capability token in CROSS_REVIEW_CALLER_TOKEN; received caller='${caller}'.`,
-    );
-    runtime.emit({
-      type: "session.operator_authority_blocked",
-      session_id,
-      message: error.message,
-      data: {
-        site,
-        caller,
-        verification_method: identity.verification_method,
-        client_info_name: identity.client_info_name,
-      },
-    });
-    throw error;
-  }
-  if (!identity.identity_verified || identity.verification_method !== "token") {
-    const error = new Error(
-      `operator_authority_required: ${site} requires a verified dedicated operator capability token.`,
-    );
-    runtime.emit({
-      type: "session.operator_authority_blocked",
-      session_id,
-      message: error.message,
-      data: {
-        site,
-        caller,
-        verification_method: identity.verification_method,
-        client_info_name: identity.client_info_name,
-      },
-    });
-    throw error;
-  }
-  return identity;
-}
-
 export function assertSessionMutationAuthority(
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   identity: CallerIdentityResult,
-  sessionOwner: PeerId | "operator" | null,
+  sessionOwner: PeerId | null,
 ): void {
-  if (caller === "operator") {
-    if (identity.identity_verified && identity.verification_method === "token") return;
-    throw new Error(
-      `operator_authority_required: ${site} requires the dedicated verified operator capability token.`,
-    );
-  }
   if (!identity.identity_verified || identity.verification_method !== "token") {
     throw new Error(
       `session_owner_token_required: ${site} requires the verified capability token for session petitioner '${sessionOwner}'.`,
@@ -1302,15 +1231,22 @@ export function hasTrustedPetitionerProvenance(version: unknown): boolean {
 function verifySessionMutationAuthority(
   runtime: Runtime,
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   clientInfo: ClientInfo,
   sessionId: string,
 ): CallerIdentityResult {
   const identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, sessionId);
   const session = runtime.orchestrator.store.read(sessionId);
-  const sessionOwner = hasTrustedPetitionerProvenance(session.version)
+  // A session persisted before the operator identity was removed can still
+  // carry `"operator"` as its petitioner. That value describes bytes on disk,
+  // which are not rewritten, but it names a caller that can never present
+  // itself again — so it yields no derivable owner and the mutation takes the
+  // `session_owner_unverified` path, which is the legitimate refusal.
+  const persistedOwner = hasTrustedPetitionerProvenance(session.version)
     ? (session.convergence_scope?.petitioner ?? session.caller)
     : null;
+  const sessionOwner: PeerId | null =
+    persistedOwner === null || persistedOwner === "operator" ? null : persistedOwner;
   try {
     assertSessionMutationAuthority(site, caller, identity, sessionOwner);
     return identity;
@@ -2388,7 +2324,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
+      verifyToolCallerIdentity(
         runtime,
         "session_recover_interrupted",
         caller,
@@ -2570,7 +2506,7 @@ export async function main(): Promise<void> {
       response_format,
     }) => {
       if (repair) {
-        verifyOperatorToolCallerIdentity(
+        verifyToolCallerIdentity(
           runtime,
           "session_doctor.repair",
           caller,
@@ -2826,7 +2762,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, label, content, content_type, extension, caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
+      verifyToolCallerIdentity(
         runtime,
         "session_attach_evidence",
         caller,
@@ -2842,54 +2778,6 @@ export async function main(): Promise<void> {
           attached_by: caller,
           origin: "session_attach_evidence",
         }),
-        response_format,
-      );
-    },
-  );
-
-  registerTool(
-    "session_evidence_checklist_update",
-    {
-      title: "Update Evidence Checklist Item Status",
-      description:
-        "Operator workflow for the v2.7.0 Evidence Broker. Mark a checklist item as 'satisfied' (operator confirms the ask was answered), 'deferred' (out of scope for this session), 'rejected' (ask itself is unfounded), or 'open' (retract a prior terminal status). The 'addressed' status is reserved for runtime auto-promotion (resurfacing inference) and cannot be set via this tool. Every transition is appended to evidence_status_history with the operator's optional note.",
-      inputSchema: z.object({
-        session_id: SessionIdSchema,
-        item_id: z
-          .string()
-          .min(1)
-          .max(64)
-          .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
-        status: z.enum(["open", "satisfied", "deferred", "rejected"]),
-        note: z.string().min(1).max(2000).optional(),
-        caller: CallerSchema,
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    async ({ session_id, item_id, status, note, caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
-        runtime,
-        "session_evidence_checklist_update",
-        caller,
-        server.server.getClientVersion(),
-        session_id,
-      );
-      return textResult(
-        await runtime.orchestrator.store.setEvidenceChecklistItemStatus(
-          session_id,
-          item_id,
-          status,
-          {
-            note,
-            by: "operator",
-          },
-        ),
         response_format,
       );
     },
@@ -2939,7 +2827,7 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyOperatorToolCallerIdentity(
+      verifyToolCallerIdentity(
         runtime,
         "session_evidence_judge_pass",
         caller,
@@ -3015,7 +2903,7 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyOperatorToolCallerIdentity(
+      verifyToolCallerIdentity(
         runtime,
         "session_evidence_judge_consensus_pass",
         caller,
@@ -3145,67 +3033,6 @@ export async function main(): Promise<void> {
   );
 
   registerTool(
-    "regenerate_caller_tokens",
-    {
-      title: "Regenerate Caller Tokens (F1)",
-      description:
-        "Rotate the seven caller capability tokens (six peer identities plus a distinct operator). Requires the current dedicated operator token. The response exposes fingerprints only. Distribute each peer token only to its matching model host; keep the operator token exclusively in a separate human-console MCP host. Never place the operator token in Codex, Claude, Gemini, DeepSeek, Grok or Perplexity host configuration.",
-      inputSchema: z.object({
-        caller: CallerSchema,
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    async ({ caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
-        runtime,
-        "regenerate_caller_tokens",
-        caller,
-        server.server.getClientVersion(),
-      );
-      const generated = f1GenerateHostTokens(runtime.config.data_dir, {
-        overwrite: true,
-      });
-      if (!generated) {
-        throw new Error(
-          "regenerate_caller_tokens: failed to write host-tokens.json (no record returned); check data_dir / CROSS_REVIEW_TOKENS_FILE permissions.",
-        );
-      }
-      setHostTokensRecord({
-        filePath: generated.filePath,
-        map: generated.map,
-        generated_at: generated.generated_at,
-      });
-      const token_fingerprints = Object.fromEntries(
-        Object.entries(generated.map).map(([agent, token]) => [
-          agent,
-          crypto.createHash("sha256").update(token).digest("hex").slice(0, 16),
-        ]),
-      );
-      return textResult(
-        {
-          ok: true,
-          file_path: generated.filePath,
-          generated_at: generated.generated_at,
-          token_fingerprints,
-          next_steps: [
-            "Read host-tokens.json locally and copy each peer secret only into its matching model host as CROSS_REVIEW_CALLER_TOKEN.",
-            "Put the distinct operator secret only in a dedicated human-console MCP host; never expose it to a model host.",
-            "Reload the affected MCP hosts so the new env value is picked up.",
-            "Stale tokens will start being rejected with identity_forgery_blocked: token does not match any known agent.",
-          ],
-        },
-        response_format,
-      );
-    },
-  );
-
-  registerTool(
     "session_sweep",
     {
       title: "Sweep Idle Sessions",
@@ -3242,12 +3069,7 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyOperatorToolCallerIdentity(
-        runtime,
-        "session_sweep",
-        caller,
-        server.server.getClientVersion(),
-      );
+      verifyToolCallerIdentity(runtime, "session_sweep", caller, server.server.getClientVersion());
       const swept = await runtime.orchestrator.store.sweepIdle(
         idle_minutes * 60_000,
         outcome,

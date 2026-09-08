@@ -4526,11 +4526,12 @@ export class SessionStore {
         bytes: actualBytes,
         truncated,
         provenance_status: custody ? "verified" : "legacy_unverified",
-        authority_status: custody
-          ? custody.attached_by === "operator"
-            ? "operator_verified"
-            : "caller_submitted_unverified"
-          : "legacy_unverified",
+        // Sessions persisted before v07.00.00 can carry custody attached by
+        // "operator". Those bytes on disk are not rewritten, but the tier they
+        // claim can no longer be earned, so reading them grants no promotion:
+        // custody now means caller-submitted, exactly like every new
+        // attachment.
+        authority_status: custody ? "caller_submitted_unverified" : "legacy_unverified",
         content_type: file.content_type,
         ...(custody
           ? {
@@ -4845,8 +4846,11 @@ export class SessionStore {
           attached_by: params.attached_by,
           attached_at: attachedAt,
           origin: params.origin,
-          authority_status:
-            params.attached_by === "operator" ? "operator_verified" : "caller_submitted_unverified",
+          // v07.00.00: every attachment is caller-submitted. The branch that
+          // stamped "operator_verified" tested `attached_by === "operator"`,
+          // and that caller no longer exists, so the tier is unreachable for
+          // anything written from here on.
+          authority_status: "caller_submitted_unverified",
         },
       });
       return { meta: current, path: relativePath };

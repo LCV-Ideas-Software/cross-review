@@ -233,6 +233,7 @@ try {
     "utf8",
   );
   const staleServerInfo = (await callTool("server_info", {
+    caller: "claude",
     response_format: "json",
   })) as { config_load?: { reload_required?: boolean; current_sha256?: string } };
   assert.equal(
@@ -351,6 +352,7 @@ try {
       let optionalAuthorityRejection = "";
       try {
         await callToolWithClient(codexClient, "session_attach_evidence", {
+          caller: "claude",
           session_id: peerSession.session_id,
           label: "wrong-surface-regression",
           content: "COMMAND: npm test\nEXIT_CODE: 0",
@@ -632,6 +634,7 @@ try {
     );
   }
   const markdownInitText = await callToolText("session_init", {
+    caller: "claude",
     task: "Runtime smoke: verify session_init markdown response.",
     review_focus: "runtime/markdown-init",
     response_format: "markdown",
@@ -659,6 +662,7 @@ try {
     "runtime session_list must quarantine a syntactically valid but structurally invalid meta.json.",
   );
   const noJobSession = (await callTool("session_init", {
+    caller: "claude",
     task: "Runtime smoke: verify no-job cancellation is non-terminal.",
     review_focus: "runtime/cancel-no-job",
     response_format: "json",
@@ -681,6 +685,7 @@ try {
     "An operator-token host declaring a peer caller must be refused as identity forgery by session_finalize.",
   );
   const operatorClosableSession = (await callTool("session_init", {
+    caller: "claude",
     task: "Runtime smoke: operator token still closes a session it petitioned.",
     review_focus: "runtime/operator-finalize",
     response_format: "json",
@@ -694,6 +699,7 @@ try {
   assert.equal(operatorClosed.outcome, "aborted");
   assert.equal(operatorClosed.outcome_reason, "operator_closed");
   const noJobCancelResult = (await callTool("session_cancel_job", {
+    caller: "claude",
     session_id: noJobSession.session_id,
     reason: "runtime_smoke_no_active_job",
     response_format: "json",
@@ -703,6 +709,7 @@ try {
     response_format: "json",
   })) as PollState;
   const roundStart = (await callTool("session_start_round", {
+    caller: "claude",
     task: "Runtime smoke: verify async review round.",
     review_focus: "runtime/smoke",
     draft: "Runtime smoke draft.",
@@ -728,12 +735,14 @@ try {
   })) as { session_id: string };
   const unanimousState = await pollUntilDone(unanimousStart.session_id);
   const cancelStart = (await callTool("session_start_round", {
+    caller: "claude",
     task: "Runtime smoke: verify cancellation tool.",
     draft: "FORCE_CANCEL_SLOW",
     peers: ["codex"],
     response_format: "json",
   })) as { session_id: string; job: { job_id: string } };
   const cancelResult = await callTool("session_cancel_job", {
+    caller: "claude",
     session_id: cancelStart.session_id,
     job_id: cancelStart.job.job_id,
     reason: "runtime_smoke_cancel",
