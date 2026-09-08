@@ -256,7 +256,7 @@ function unresolvedEvidenceDispositionLines(session: SessionMeta): string[] {
     "",
     "- These items are not terminally satisfied, deferred, or rejected.",
     "- `open` still requires a concrete response; `not_resurfaced` only means the peer did not repeat the ask in a later round.",
-    "- To close them explicitly, the authenticated AI caller submits the requested bytes through the review starter's automatic `evidence` field; no human upload is required. The operator-only checklist update remains an optional administrative disposition.",
+    "- To close them explicitly, the authenticated AI caller submits the requested bytes through the review starter's automatic `evidence` field; no human upload is required.",
     "",
   ];
   for (const item of unresolved.slice(0, 20)) {

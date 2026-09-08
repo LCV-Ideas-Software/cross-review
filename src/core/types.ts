@@ -618,14 +618,16 @@ export interface ResolvedEvidenceAttachment {
 // the runtime marks it "not_resurfaced" (v3.5.0 / CRV2-2 — NOT
 // "addressed"; non-resurfacing is not proof of satisfaction). "addressed"
 // is reserved for a judge verified-satisfied decision or a strictly grounded
-// READY/verified recheck by the same peer that authored the ask. The
-// operator can move items to terminal states via
-// session_evidence_checklist_update. Conflict rule: when a peer
-// resurfaces a "not_resurfaced" OR "addressed" item it reverts to "open"
-// — the peer's renewed ask wins over either inference path. Terminal
-// operator statuses are NOT auto-reverted; the runtime emits a
-// peer_resurfaced_terminal event so the operator notices peers still
-// asking for something they explicitly closed.
+// READY/verified recheck by the same peer that authored the ask.
+// v07.00.00: the terminal statuses satisfied/deferred/rejected can no
+// longer be set by any caller — the tool that wrote them belonged to the
+// retired operator identity and went with it. They survive in the type
+// because sessions persisted before that release still carry them.
+// Conflict rule: when a peer resurfaces a "not_resurfaced" OR "addressed"
+// item it reverts to "open" — the peer's renewed ask wins over either
+// inference path. A persisted terminal status is NOT auto-reverted; the
+// runtime emits a peer_resurfaced_terminal event when peers keep asking
+// for something that record closed.
 // v3.5.0 (CRV2-2, Codex operational report): `not_resurfaced` is a
 // distinct soft state. Pre-v3.5.0 the runtime promoted an `open` item
 // to `addressed` whenever a round went by without the peer resurfacing
@@ -634,8 +636,8 @@ export interface ResolvedEvidenceAttachment {
 // `not_resurfaced` now carries that inference honestly: it is NOT
 // `open` and it is NOT `addressed`; both `open` and `not_resurfaced` block
 // convergence. `addressed` is reserved for judge verified-satisfied or
-// requester-reverified promotions, while explicit operator actions use the
-// terminal satisfied/deferred/rejected states.
+// requester-reverified promotions; the terminal satisfied/deferred/rejected
+// states are now read-only history.
 // prettier-ignore
 export type EvidenceChecklistStatus =
   | "open"
@@ -699,9 +701,9 @@ export interface EvidenceBrokerLimits {
 }
 
 // v2.8.0: durable audit trail for every status transition on an
-// evidence checklist item. The runtime appends an entry on every
-// auto-transition (resurfacing inference) and on every operator
-// call to session_evidence_checklist_update.
+// evidence checklist item. v07.00.00: the runtime auto-transition
+// (resurfacing inference) is the only remaining writer — the tool that
+// wrote caller-driven transitions was removed with the operator identity.
 export interface EvidenceStatusHistoryEntry {
   ts: string;
   item_id: string;
@@ -902,9 +904,11 @@ export interface PeerCallContext {
   max_output_tokens_override?: number | undefined;
   // v2.21.0 (caching): caller identity plumbed to the adapter so
   // OpenAI/Grok adapters can build a pair-scoped prompt_cache_key
-  // (peer:caller:vN). Defaults to "operator" when omitted by the
-  // orchestrator (preserves pre-v2.21.0 caller-less calls).
-  caller?: PeerId | "operator" | undefined;
+  // (peer:caller:vN). v07.00.00: the union no longer admits "operator".
+  // When it is absent the pair cannot be named, so the adapters send NO
+  // `prompt_cache_key` rather than an unscoped one — an unscoped key would
+  // pool unrelated petitioners into one provider-side bucket.
+  caller?: PeerId | undefined;
 }
 
 export interface PeerProbeResult {
@@ -1048,7 +1052,8 @@ export interface SessionMeta {
   evidence_checklist_runtime_reclassifications?: EvidenceChecklistRuntimeReclassificationLog;
   evidence_checklist_alias_collapses?: EvidenceChecklistAliasCollapse[] | undefined;
   // v2.8.0: durable audit trail for every status transition on an
-  // evidence checklist item (auto + operator). Newest entries appended.
+  // evidence checklist item (runtime auto-transitions only, since
+  // v07.00.00). Newest entries appended.
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;
   generation_files?: GenerationArtifact[] | undefined;
   preflight_checks?: PreflightCheckRecord[] | undefined;

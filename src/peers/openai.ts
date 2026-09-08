@@ -192,14 +192,18 @@ function pricedAttemptCount(items: Array<CostEstimate | undefined>): number {
 }
 
 // v2.21.0: caller identity is plumbed through PeerCallContext via
-// `caller`. Default to "operator" when unset so legacy callers (no
-// caller set) still get a stable cache key bucket.
-function cacheKeyFor(adapter: { id: PeerId }, config: AppConfig, caller?: string): string {
-  return pairScopedCacheKey(
-    adapter.id,
-    (caller as PeerId | "operator") ?? "operator",
-    config.cache.schema_version,
-  );
+// `caller`. v07.00.00: pre-v07 this defaulted to "operator" when unset, so
+// every call that omitted the caller — the evidence-judge passes among them —
+// sent a key naming a principal the protocol no longer admits, AND pooled
+// unrelated petitioners into one provider-side bucket. Without a caller the
+// pair cannot be named, so no key is sent.
+function cacheKeyFor(
+  adapter: { id: PeerId },
+  config: AppConfig,
+  caller?: PeerId,
+): string | undefined {
+  if (!caller) return undefined;
+  return pairScopedCacheKey(adapter.id, caller, config.cache.schema_version);
 }
 
 function isGpt56Family(model: string): boolean {
@@ -250,8 +254,8 @@ function openAIEffort(
   }
 }
 
-function promptCacheFields(config: AppConfig, model: string, cacheKey: string) {
-  if (!config.cache.enabled) return {};
+function promptCacheFields(config: AppConfig, model: string, cacheKey: string | undefined) {
+  if (!config.cache.enabled || !cacheKey) return {};
   if (isGpt56Family(model)) {
     return {
       prompt_cache_key: cacheKey,

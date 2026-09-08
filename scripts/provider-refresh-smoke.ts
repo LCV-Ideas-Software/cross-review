@@ -282,6 +282,12 @@ async function captureGrokReasoningEffort(
     session_id: "550e8400-e29b-41d4-a716-446655440001",
     round: 1,
     task: "provider refresh smoke",
+    // v07.00.00: the cache key is scoped to the (peer, caller) pair, and a
+    // call with no caller now sends no key at all rather than an unscoped
+    // one. Every production call carries the petitioner, so the fixture
+    // carries one too — otherwise it would assert the cache contract on a
+    // shape the runtime no longer produces.
+    caller: "claude",
     emit: () => undefined,
   });
   assert.equal(
@@ -419,6 +425,9 @@ async function captureGrokReasoningEffort(
     session_id: "550e8400-e29b-41d4-a716-446655440003",
     round: 1,
     task: "provider refresh smoke",
+    // v07.00.00: same reason as the GPT-5.6 fixture above — the cache key is
+    // scoped to the (peer, caller) pair and a callerless call sends none.
+    caller: "claude",
     emit: () => undefined,
   });
   assert.deepEqual(
@@ -432,8 +441,83 @@ async function captureGrokReasoningEffort(
     "Grok 4.6 must not receive OpenAI-only prompt_cache_retention.",
   );
   assert.equal(capturedPayload?.prompt_cache_key !== undefined, true);
+  assert.equal(
+    capturedPayload?.prompt_cache_key,
+    "cross-review:grok:claude:v1",
+    "the cache key must name the (peer, caller) pair it scopes",
+  );
   assert.equal(generated.usage?.input_tokens, 60);
   assert.equal(generated.usage?.cache_read_tokens, 40);
+}
+
+{
+  // v07.00.00: a call with no caller sends NO prompt_cache_key.
+  //
+  // Pre-v07 both adapters defaulted the caller to "operator", so every
+  // evidence-judge call — whose context never set one — sent a key naming a
+  // principal the protocol no longer admits, to api.openai.com and api.x.ai.
+  // Worse than the name: one bucket held every petitioner's prefixes, which
+  // is the opposite of what a pair-scoped key is for. The judge contexts now
+  // carry the session petitioner; where the pair still cannot be named (a
+  // session persisted before this release, whose petitioner is not a peer)
+  // the key is omitted rather than invented, and caching simply does not
+  // engage for that call.
+  const cachelessAdapters = [
+    {
+      label: "openai",
+      adapter: new OpenAIAdapter({
+        ...config,
+        models: { ...config.models, codex: "gpt-5.6-sol" },
+        streaming: { ...config.streaming, tokens: false },
+      }) as unknown as { client: unknown },
+      model: "gpt-5.6-sol",
+    },
+    {
+      label: "grok",
+      adapter: new GrokAdapter({
+        ...config,
+        models: { ...config.models, grok: "grok-4.6" },
+        streaming: { ...config.streaming, tokens: false },
+      }) as unknown as { client: unknown },
+      model: "grok-4.6",
+    },
+  ];
+  for (const { label, adapter, model } of cachelessAdapters) {
+    let payload: Record<string, unknown> | undefined;
+    adapter.client = async () => ({
+      responses: {
+        create: async (body: Record<string, unknown>) => {
+          payload = body;
+          return {
+            status: "completed",
+            output_text: "revised fixture",
+            model,
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          };
+        },
+      },
+    });
+    await (
+      adapter as unknown as { generate: (p: string, c: unknown) => Promise<unknown> }
+    ).generate("Revise this fixture.", {
+      session_id: "550e8400-e29b-41d4-a716-446655440099",
+      round: 1,
+      task: "callerless cache scoping",
+      emit: () => undefined,
+    });
+    assert.equal(
+      Object.hasOwn(payload ?? {}, "prompt_cache_key"),
+      false,
+      `${label} must send no prompt_cache_key when the (peer, caller) pair cannot be named`,
+    );
+    const serialized = JSON.stringify(payload ?? {});
+    assert.doesNotMatch(
+      serialized,
+      /operator/i,
+      `${label} must never put the retired operator principal on the wire`,
+    );
+  }
+  console.log("[provider-refresh-smoke] callerless_calls_send_no_cache_key: PASS");
 }
 
 {

@@ -1509,7 +1509,7 @@ const regressions: Regression[] = [
         "codex",
       );
       const runtimeAsk =
-        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+        "Cite evidence verbatim from the reviewed artifact, an authenticated caller submission, or a persisted attachment; invented or untraceable sources cannot support READY.";
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "claude", ask: runtimeAsk },
       ]);
@@ -1591,7 +1591,7 @@ const regressions: Regression[] = [
         "codex",
       );
       const collidingAsk =
-        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+        "Cite evidence verbatim from the reviewed artifact, an authenticated caller submission, or a persisted attachment; invented or untraceable sources cannot support READY.";
       const genuineText = JSON.stringify({
         status: "NEEDS_EVIDENCE",
         summary: "A concrete citation is required.",

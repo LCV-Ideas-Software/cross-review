@@ -34,7 +34,7 @@ import { EventLog } from "../observability/logger.js";
 import { safeErrorMessage } from "../security/redact.js";
 
 const PeerSchema = z.enum(PEERS);
-// v2.18.6 / Gemini-API compat: `caller` accepts any peer + "operator".
+// v2.18.6 / Gemini-API compat: `caller` is a flat enum.
 // Pre-v2.18.6 we used `CallerSchema`
 // which the MCP SDK serialized as `anyOf: [enum, const]` — Gemini API's
 // function-declaration validator rejects that shape. A flat enum is
@@ -338,10 +338,9 @@ function sessionInitMarkdown(meta: SessionMeta): string {
 // the declared `caller` (from input) against the substrings; mismatch
 // with a single-resolved client throws `identity_forgery_blocked`.
 //
-// Permissive cases preserved: (a) caller="operator" → OK (explicit
-// "I'm the human operator" identity, no agent claim made); (b) clientInfo
-// doesn't resolve to a known agent → OK (legitimate override for headless
-// hosts); (c) declared caller matches clientInfo-derived candidate → OK.
+// Permissive cases preserved: (a) clientInfo doesn't resolve to a known
+// agent → OK (legitimate override for headless hosts); (b) declared caller
+// matches clientInfo-derived candidate → OK.
 //
 // Blocked: (1) declared caller is a known agent + clientInfo resolves to
 // a different known agent; (2) declared caller is a known agent +
@@ -407,21 +406,18 @@ export interface CallerIdentityResult {
 
 // v2.18.0 / F1: token verification overlays the v2.17.0 clientInfo gate.
 // Decision tree (in order):
-//   1. caller="operator" → require the distinct operator capability token.
-//      A client name is self-declared and cannot authenticate a human; tokenless
-//      or peer-token hosts therefore fail closed regardless of hard-enforce
-//      mode. The operator token belongs only in a dedicated human console,
-//      never in a model host.
-//   2. v2.17.0 clientInfo cross-check throws → propagate (preserves all
+//   1. v2.17.0 clientInfo cross-check throws → propagate (preserves all
 //      existing forgery rejections).
-//   3. CROSS_REVIEW_CALLER_TOKEN env present → must resolve to declaredCaller
+//   2. CROSS_REVIEW_CALLER_TOKEN env present → must resolve to declaredCaller
 //      via host-tokens.json; mismatch / unknown / file-missing → throws.
 //      Match → upgrade verification_method to "token".
-//   4. CROSS_REVIEW_CALLER_TOKEN absent + CROSS_REVIEW_REQUIRE_TOKEN=true →
-//      throws (hard-enforce mode opted into by operator).
-//   5. CROSS_REVIEW_CALLER_TOKEN absent + permissive (default) → return
+//   3. CROSS_REVIEW_CALLER_TOKEN absent + CROSS_REVIEW_REQUIRE_TOKEN=true →
+//      throws (hard-enforce mode opted into by the deployment owner).
+//   4. CROSS_REVIEW_CALLER_TOKEN absent + permissive (default) → return
 //      whatever clientInfo cross-check yielded ("client_info" if matched,
 //      "none" if unknown).
+// v07.00.00: the step that demanded a distinct operator capability token is
+// gone with the principal it served — every admissible caller is a peer.
 // All paths attach identity_metadata with a best-effort parent-process
 // snapshot for forensics (Option C / Hybrid per design memory).
 export function verifyCallerIdentity(
@@ -473,9 +469,7 @@ export function verifyCallerIdentity(
 // callers) `lead_peer` stripped before reaching the orchestrator.
 // Internal call sites (orchestrator's own runUntilUnanimous → askPeers
 // loop, smoke harness) bypass the lock by construction — they do not go
-// through this boundary. Operator caller may still pin `lead_peer`
-// explicitly (legitimate testing/debug; operator is the meta-authority,
-// not a session participant whose vote can be biased).
+// through this boundary.
 //
 // `emitFn` carries the audit trail to the eventLog/store so the operator
 // can inspect who tried to game which peer in/out via `session_events`.
@@ -1204,12 +1198,12 @@ export function assertSessionMutationAuthority(
   }
   if (sessionOwner === null) {
     throw new Error(
-      `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session; the dedicated operator token is required.`,
+      `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session, so no caller can be authorized to mutate it.`,
     );
   }
   if (caller !== sessionOwner) {
     throw new Error(
-      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}' or the operator capability token; received caller='${caller}'.`,
+      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}'; received caller='${caller}'.`,
     );
   }
 }
@@ -1518,19 +1512,20 @@ function runtimeCapabilities(runtime: Runtime): RuntimeCapabilities {
 export async function main(): Promise<void> {
   const runtime = createRuntime();
   // v2.18.0 / F1: initialize the per-host token map (load existing OR
-  // generate with mode 0o600). Legacy v1 records are migrated in place by
-  // adding a seventh, distinct operator capability. Failure leaves peer
-  // clientInfo checks available in permissive mode, but operator calls remain
-  // fail-closed because a client name cannot authenticate a human.
+  // generate with mode 0o600). v07.00.00: a legacy record is rewritten in
+  // place to DROP the seventh capability, which bound a secret to a human
+  // console this server never had. Failure leaves peer clientInfo checks
+  // available in permissive mode, but every session-mutation tool fails
+  // closed, because no caller can then be token-verified.
   initHostTokensRecord(runtime.config.data_dir);
   const tokensRecord = getHostTokensRecord();
   if (tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute each peer token only to its model host and keep the distinct operator token only in a dedicated human console).\n`,
+      `[cross-review] caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute each peer token only to its model host).\n`,
     );
   } else if (!tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but operator tools are disabled fail-closed. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions.\n`,
+      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so session-mutation tools fail closed. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions.\n`,
     );
   }
   const server = new McpServer({
@@ -1816,7 +1811,7 @@ export async function main(): Promise<void> {
     {
       title: "Ask Peers",
       description:
-        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
+        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -1887,7 +1882,7 @@ export async function main(): Promise<void> {
     {
       title: "Start Review Round",
       description:
-        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required.",
+        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -1968,20 +1963,17 @@ export async function main(): Promise<void> {
     {
       title: "Run Until Unanimous",
       description:
-        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
+        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
       inputSchema: z.object({
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-        // v2.11.0: lead_peer is now optional. When omitted with a peer
-        // caller, the relator lottery picks one. When omitted with an
-        // operator caller, the orchestrator uses "codex" if it is enabled,
-        // else the first enabled session peer (v3.7.1 / AUDIT-4: comment
-        // refreshed — v3.7.0 / AUDIT-2 replaced the pre-v3.7.0 hardcoded
-        // "codex" that ignored peer_enabled).
+        // v2.11.0: lead_peer is optional. v07.00.00: every caller is a
+        // peer, so omitting it always runs the relator lottery.
         lead_peer: PeerSchema.optional(),
         // v2.11.0: caller identifies the petitioner for the lottery.
-        // Default "operator" preserves v2.10.0 behavior (no exclusion).
+        // v07.00.00: caller is required and always a peer, so the
+        // petitioner is always excluded from the draw.
         caller: CallerSchema,
         peers: z
           .array(PeerSchema)
@@ -2029,7 +2021,7 @@ export async function main(): Promise<void> {
         // The preflight checks value correspondence with every operational
         // claim; presence alone is never proof. Peer material is persisted,
         // hashed and transported as unverified review evidence without a
-        // manual operator attachment step.
+        // separate attachment step.
         evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
@@ -2069,7 +2061,7 @@ export async function main(): Promise<void> {
     {
       title: "Start Until Unanimous",
       description:
-        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
+        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -2117,7 +2109,7 @@ export async function main(): Promise<void> {
         // The preflight checks value correspondence with every operational
         // claim; presence alone is never proof. Peer material is persisted,
         // hashed and transported as unverified review evidence without a
-        // manual operator attachment step.
+        // separate attachment step.
         evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
@@ -2188,7 +2180,7 @@ export async function main(): Promise<void> {
     {
       title: "Cancel Session Job",
       description:
-        "Request cancellation for running background jobs in a durable session. The reason accepts at most 300 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token; another peer cannot cancel the job. Provider calls receive AbortSignal where the provider client supports it.",
+        "Request cancellation for running background jobs in a durable session. The reason accepts at most 300 characters. Requires the verified capability token of the persisted session petitioner; another peer cannot cancel the job. Provider calls receive AbortSignal where the provider client supports it.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         job_id: SessionIdSchema.optional(),
@@ -2708,7 +2700,7 @@ export async function main(): Promise<void> {
     {
       title: "Check Submission Preflights",
       description:
-        "Run the same enabled evidence and truthfulness gates used by a real review round, without calling providers. Peer-submitted inline/structured evidence is checked as review material and requires no manual operator attachment.",
+        "Run the same enabled evidence and truthfulness gates used by a real review round, without calling providers. Peer-submitted inline/structured evidence is checked as review material and requires no separate attachment step.",
       inputSchema: savedSessionPreflightSchema,
       annotations: {
         readOnlyHint: true,
@@ -2740,7 +2732,7 @@ export async function main(): Promise<void> {
   registerTool(
     "session_attach_evidence",
     {
-      title: "Promote Operator Evidence (Optional)",
+      title: "Attach Session Evidence (Optional)",
       description:
         "Attach one durable evidence artifact to an existing session, out of band from a review round. Any authenticated peer may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round.",
       inputSchema: z.object({
@@ -2972,7 +2964,7 @@ export async function main(): Promise<void> {
     {
       title: "Contest Verdict",
       description:
-        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner (pass `caller` explicitly as that peer identity), or the operator token. Petitioner READY → nothing to do: the runtime already sealed `converged`; petitioner NOT_READY → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
+        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner (pass `caller` explicitly as that peer identity). Petitioner READY → nothing to do: the runtime already sealed `converged`; petitioner NOT_READY → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(4_000),
@@ -3097,7 +3089,7 @@ export async function main(): Promise<void> {
     {
       title: "Finalize Session",
       description:
-        "Close a non-terminal durable session as `aborted` with an optional reason of at most 200 characters. Requires the verified capability token of the persisted session petitioner or the operator token: a peer host must pass `caller` explicitly as its own identity, because the schema default caller=operator is refused from a peer host as identity forgery. `converged` is sealed only by the runtime, when the petitioner and every required peer are READY and every evidence gate passes; `max-rounds` is written only by the runtime or the idle sweep.",
+        "Close a non-terminal durable session as `aborted` with an optional reason of at most 200 characters. Requires the verified capability token of the persisted session petitioner: the peer host must pass `caller` explicitly as its own identity, and a `caller` that contradicts that host's own token or clientInfo is refused as identity forgery. `converged` is sealed only by the runtime, when the petitioner and every required peer are READY and every evidence gate passes; `max-rounds` is written only by the runtime or the idle sweep.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         outcome: z.enum(["aborted"]),

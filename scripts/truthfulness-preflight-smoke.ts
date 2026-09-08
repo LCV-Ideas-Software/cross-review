@@ -146,7 +146,7 @@ import type { PeerResult } from "../src/core/types.js";
   assert.ok(
     /attachments_present=false/.test(fabricatedTiming.reason) &&
       /inline|evidence field/.test(fabricatedTiming.reason) &&
-      /no manual operator attachment/.test(fabricatedTiming.reason),
+      /no separate attachment step/.test(fabricatedTiming.reason),
     "v4.5.1 / truthfulness_preflight: remediation must accept authenticated caller evidence without manual attachment",
   );
 

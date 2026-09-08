@@ -90,7 +90,7 @@ export interface AskPeersOutput {
 }
 
 const GROUNDING_READY_REMEDIATION =
-  "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+  "Cite evidence verbatim from the reviewed artifact, an authenticated caller submission, or a persisted attachment; invented or untraceable sources cannot support READY.";
 const GROUNDING_BLOCKING_REMEDIATION =
   "Cite each factual blocker or supporting source verbatim from the reviewed artifact or a persisted attachment; invented or untraceable evidence cannot support a definitive verdict.";
 
@@ -185,7 +185,7 @@ export interface RunUntilUnanimousInput {
   // caller supplies up-front. It is value-correlated with operational
   // claims; mere presence is never proof. Authenticated peer evidence is
   // persisted and transported as unverified review material, without any
-  // manual operator step. Cross-review stays API-only and never executes
+  // separate attachment step. Cross-review stays API-only and never executes
   // shell or reads the caller's repo (see docs/evidence-preflight.md).
   evidence?: string | undefined;
 }
@@ -3812,14 +3812,14 @@ export function truthfulnessPreflight(params: {
     `source_marker_found=${sourceMarkerFound}; ` +
     `runtime_facts_available=${runtimeFactsAvailable}`;
   const remediation =
-    "supply value-corresponding raw material inline or through the evidence field, then retry the combined preflight; no manual operator attachment is required";
+    "supply value-corresponding raw material inline or through the evidence field, then retry the combined preflight; no separate attachment step is required";
   return {
     pass,
     reason: pass
       ? currentStateClaimMatched || historicalStateClaimMatched
         ? independentReviewRequired
           ? "high-risk claims are accompanied by value-corresponding peer-submitted material and require strict independent panel corroboration"
-          : "high-risk runtime truthfulness claims are consistent with runtime facts or operator-grounded evidence"
+          : "high-risk runtime truthfulness claims are consistent with runtime facts or caller-submitted evidence"
         : fabricationProneClaimMatched && independentReviewRequired
           ? "fabrication-prone operational claims are admitted with peer-submitted raw material and require strict independent panel corroboration"
           : "no high-risk runtime truthfulness claim detected"
@@ -3864,10 +3864,9 @@ function leadShipModeDirective(): string[] {
     // rationale, prose) but MUST refuse to invent operational facts.
     "## Evidence Provenance Lock (HARD)",
     "Operational evidence — git SHAs, content hashes, build outputs, test counts (e.g. `147 passed`), diff hunks, `git diff --check passed` style assertions, vite asset filenames with hex suffixes, `cargo test`/`npm run build`/`npm run typecheck` result lines, `git rev-parse HEAD` output, session IDs, GitHub URLs, timestamps, file paths — has a PROVENANCE level. Two levels exist:",
-    "  - OPERATOR-VERIFIED: exact persisted bytes admitted by the authenticated human operator. This tier is optional and is never required merely to start or complete a review.",
     "  - PEER-SUBMITTED / UNVERIFIED: raw command/tool output supplied inline or through the evidence field by the authenticated caller, persisted with caller identity, SHA-256 and byte count. This is valid review material, but do not claim that you independently executed the command.",
     "  - NARRATIVE: a natural-language claim without the corresponding raw output (e.g. `I ran cargo test, it passed`). Narrative alone is not evidence.",
-    "Use peer-submitted raw material directly when it value-corresponds with the claim. Ask for corrected inline/evidence-field content only when the raw material is absent, mismatched or internally insufficient; never require a manual operator attachment as routine remediation.",
+    "Use peer-submitted raw material directly when it value-corresponds with the claim. Ask for corrected inline/evidence-field content only when the raw material is absent, mismatched or internally insufficient; never require a separate attachment step as routine remediation.",
     "Do NOT generate plausible-looking SHAs, hashes, or build output to make the revision feel complete. Do NOT paraphrase tool output with ellipses, pseudocode, or summary counts when the raw output is missing. The relator may not fabricate AND may not propagate caller narrative as if it were fact.",
     "A post-revision heuristic detector flags net-new operational tokens (hex strings, test counts, command-output assertions) and causes the revision to be discarded if the threshold trips. Two consecutive discards abort the session.",
     "Distinguish `peer_analysis` (your interpretation, free-form) from `cited_evidence` (verbatim from `## Attached Evidence`, marked with source path/line). When in doubt about the provenance level of a claim, prefer marking it as a blocker over quoting it as evidence.",
@@ -3926,7 +3925,7 @@ function leadCircularModeDirective(): string[] {
     "You may have produced an earlier version in a prior round of this rotation. You are NOT reviewing your own immediate output — between your previous turn and now, other peers had custody and may have transformed the artifact. Engage with the current text as the panel's product, not as your own draft.",
     "",
     "### Evidence Provenance Lock (HARD, shared with ship mode)",
-    "Operational evidence — git SHAs, content hashes, build outputs, test counts (`147 passed`), diff hunks, `git diff --check passed`, vite asset filenames, `cargo test`/`npm run *` result lines, `git rev-parse HEAD` output, timestamps, file paths — may be cited from raw PEER-SUBMITTED / UNVERIFIED material, optional OPERATOR-VERIFIED material, or a verbatim file slice with path:line refs. Preserve the trust label and never claim independent execution.",
+    "Operational evidence — git SHAs, content hashes, build outputs, test counts (`147 passed`), diff hunks, `git diff --check passed`, vite asset filenames, `cargo test`/`npm run *` result lines, `git rev-parse HEAD` output, timestamps, file paths — may be cited from raw PEER-SUBMITTED / UNVERIFIED material or a verbatim file slice with path:line refs. Preserve the trust label and never claim independent execution.",
     "NARRATIVE operational claims without corresponding raw content are NOT evidence. You must NOT fabricate SHAs/hashes/test counts to make the artifact feel complete. A post-revision detector enforces this — two consecutive trips abort the session.",
     "",
     "### Output format",
@@ -4075,6 +4074,22 @@ export function buildDecisionRetryPrompt(
 
 function containsReviewDecisionLexeme(text: string): boolean {
   return /\b(?:READY|NOT_READY|NEEDS_EVIDENCE)\b/.test(text);
+}
+
+// v07.00.00: the persisted petitioner of a session, when it is a peer. A
+// record written before the operator identity was retired can still carry
+// "operator" there, and such a session has no peer petitioner to scope a
+// provider-side cache key to — the adapters then send no key at all.
+// v07.00.00: narrows an identity that may still be the retired "operator" —
+// a value only a session persisted before that release can carry — down to a
+// peer, at the adapter boundary where naming a principal is required.
+function peerIdOrUndefined(identity: PeerId | "operator" | undefined): PeerId | undefined {
+  return identity === undefined || identity === "operator" ? undefined : identity;
+}
+
+function peerPetitionerOf(meta: SessionMeta): PeerId | undefined {
+  const persisted = meta.convergence_scope?.petitioner ?? meta.caller;
+  return persisted === undefined || persisted === "operator" ? undefined : persisted;
 }
 
 function uniquePeers(peers: PeerId[]): PeerId[] {
@@ -5205,6 +5220,11 @@ export class CrossReviewOrchestrator {
               session_id: params.session_id,
               round: judgmentRound,
               task: meta.task,
+              // v07.00.00: scope the provider cache key to the session's
+              // petitioner. Omitting it used to fall back to "operator" in
+              // the OpenAI/Grok adapters, putting a retired principal on the
+              // wire on every judge call.
+              caller: peerPetitionerOf(meta),
               // v2.18.4 / Codex audit 2026-05-07 P1.3: thread the
               // round-scoped AbortSignal so session_cancel_job aborts
               // judge calls mid-flight (was hard-coded `undefined`).
@@ -5699,6 +5719,9 @@ export class CrossReviewOrchestrator {
         session_id: params.session_id,
         round: judgmentRound,
         task: meta.task,
+        // v07.00.00: see the consensus judge above — the cache key is scoped
+        // to the session petitioner instead of defaulting to "operator".
+        caller: peerPetitionerOf(meta),
         // v2.18.4 / Codex audit 2026-05-07 P1.3: thread session-scoped
         // AbortSignal so session_cancel_job aborts judge mid-flight.
         signal: params.signal,
@@ -7208,7 +7231,7 @@ export class CrossReviewOrchestrator {
           // v2.21.0 (caching): pair-scoped cache key needs caller
           // identity. Pass petitioner so cache hits bucket per
           // caller+peer pair.
-          caller: requestedPetitioner,
+          caller: peerIdOrUndefined(requestedPetitioner),
         });
         if (outcome.result) {
           await this.store.saveInFlightPeerResult(
@@ -7471,7 +7494,7 @@ export class CrossReviewOrchestrator {
               stream_tokens: this.config.streaming.tokens,
               emit: this.emit,
               reasoning_effort_override: input.reasoning_effort_overrides?.[adapter.id],
-              caller: requestedPetitioner,
+              caller: peerIdOrUndefined(requestedPetitioner),
             });
             await this.store.saveInFlightPeerResult(
               session.session_id,
@@ -8237,7 +8260,7 @@ export class CrossReviewOrchestrator {
           stream_tokens: this.config.streaming.tokens,
           emit: this.emit,
           reasoning_effort_override: input.reasoning_effort_overrides?.[initRotator],
-          caller: callerForLottery,
+          caller: peerIdOrUndefined(callerForLottery),
         },
         "initial-draft",
         "circular-initial-draft-failure",
@@ -8455,7 +8478,7 @@ export class CrossReviewOrchestrator {
           stream_tokens: this.config.streaming.tokens,
           emit: this.emit,
           reasoning_effort_override: input.reasoning_effort_overrides?.[rotator],
-          caller: callerForLottery,
+          caller: peerIdOrUndefined(callerForLottery),
         },
         "rotation",
         "circular-rotation-failure",
@@ -9242,7 +9265,7 @@ export class CrossReviewOrchestrator {
           stream_tokens: this.config.streaming.tokens,
           emit: this.emit,
           reasoning_effort_override: input.reasoning_effort_overrides?.[leadPeer],
-          caller: callerForLottery,
+          caller: peerIdOrUndefined(callerForLottery),
         },
         "initial-draft",
         "initial-draft-failure",
@@ -9578,7 +9601,7 @@ export class CrossReviewOrchestrator {
             stream_tokens: this.config.streaming.tokens,
             emit: this.emit,
             reasoning_effort_override: input.reasoning_effort_overrides?.[leadPeer],
-            caller: callerForLottery,
+            caller: peerIdOrUndefined(callerForLottery),
           },
           "revision",
           "lead-revision-failure",
@@ -9777,7 +9800,7 @@ export class CrossReviewOrchestrator {
               `Lead ${leadPeer} produced revision text with operational evidence that does not appear in the caller's task, prior draft, or attached evidence (consecutive drift count: ${consecutiveLeadDrifts}). ` +
               `Signals: net_new_hex_tokens=${sample.net_new_hex_count} [${sample.net_new_hex_sample.join(",")}]; suspicious_assertions=${sample.suspicious_assertion_count} [${assertionLabels}]. ` +
               `Preserving prior draft for next round per evidence-provenance lock (v2.24.0); the relator may not fabricate SHAs, hashes, test counts, or build outputs. ` +
-              `If the citation is real, the caller must resubmit the raw proof inline or through the evidence field before the next round; no manual operator attachment is required.`;
+              `If the citation is real, the caller must resubmit the raw proof inline or through the evidence field before the next round; no separate attachment step is required.`;
           } else if (metaAuditDetected) {
             const sample = metaAuditResult ?? {
               placeholder_count: 0,

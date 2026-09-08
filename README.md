@@ -390,7 +390,6 @@ these environment variables before running real sessions (example):
 - `session_evidence_judge_consensus_pass`
 - `session_judgment_precision_report`
 - `contest_verdict`
-- `regenerate_caller_tokens`
 - `session_sweep`
 - `session_finalize`
 

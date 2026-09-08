@@ -263,7 +263,6 @@ A superfície MCP da release expõe as seguintes ferramentas:
 | `session_preflight_check`               | Executa os mesmos gates de evidência e veracidade da rodada real sem chamar provedores.                                                    |
 | `session_truthfulness_preflight_check`  | Alias legado do preflight combinado.                                                                                                       |
 | `session_attach_evidence`               | Canal opcional de anexo fora de rodada, aberto a qualquer peer e sem promoção alguma; agentes usam `evidence`, persistido automaticamente. |
-| `session_evidence_checklist_update`     | Atualiza status de itens de evidência.                                                                                                     |
 | `session_evidence_judge_pass`           | Usa um peer como juiz de evidência em modo controlado.                                                                                     |
 | `session_evidence_judge_consensus_pass` | Juízo de evidência por consenso entre peers.                                                                                               |
 | `session_judgment_precision_report`     | Mede precisão/recall/F1 dos julgamentos shadow.                                                                                            |

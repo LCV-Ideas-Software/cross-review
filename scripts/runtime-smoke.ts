@@ -320,16 +320,42 @@ try {
     assert.ok(finalizeTool?.description, "runtime must expose session_finalize with a description");
     const contestTool = listedTools.tools.find((tool) => tool.name === "contest_verdict");
     assert.ok(contestTool?.description, "runtime must expose contest_verdict with a description");
-    for (const [name, description] of [
-      ["session_finalize", finalizeTool.description],
-      ["contest_verdict", contestTool.description],
-    ] as const) {
-      assert.doesNotMatch(
-        description,
-        /human operator|dedicated console|operator console|human-console/i,
-        `${name} must not direct an agent to a human or console that cannot act on the MCP surface`,
-      );
+    // v07.00.00: this used to cover two tools. Removing the operator principal
+    // left 51 user-facing sites still describing it, and the worst of them were
+    // exactly here — descriptions offering "the operator token" as a credential
+    // for `session_cancel_job`, `contest_verdict` and `session_finalize`, and a
+    // title reading "Promote Operator Evidence" on a tool that promotes
+    // nothing. So the gate now reads EVERY registered title and description
+    // from the live tools/list, which is the surface a peer host actually
+    // receives. It deliberately does not scan source files: the sentences that
+    // record the removal legitimately name what was removed, and a file scan
+    // cannot tell "this exists" from "this stopped existing".
+    const retiredIdentityPatterns: Array<[RegExp, string]> = [
+      [/operator\s+(?:capability\s+)?token/i, "no operator token is generated"],
+      [
+        /human operator|dedicated console|operator console|human-console|human console/i,
+        "no human acts on the MCP surface",
+      ],
+      [/manual operator attachment/i, "no such attachment party ever existed"],
+      [/OPERATOR-VERIFIED/, "the promoted evidence tier was collapsed"],
+      [/Promote Operator Evidence/i, "the tool promotes nothing"],
+      [/caller=operator|caller = operator/i, "the caller schema admits only peers"],
+    ];
+    const identityLeaks: string[] = [];
+    for (const tool of listedTools.tools) {
+      for (const surface of [tool.title, tool.description, tool.annotations?.title]) {
+        if (typeof surface !== "string") continue;
+        for (const [pattern, why] of retiredIdentityPatterns) {
+          const hit = pattern.exec(surface);
+          if (hit) identityLeaks.push(`${tool.name}: "${hit[0]}" — ${why}`);
+        }
+      }
     }
+    assert.deepEqual(
+      identityLeaks,
+      [],
+      "v07.00.00 / retired identity: a published tool surface describes the operator principal again",
+    );
     assert.match(
       finalizeTool.description,
       /persisted session petitioner[\s\S]*pass `caller` explicitly/i,

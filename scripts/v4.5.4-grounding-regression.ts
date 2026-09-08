@@ -121,7 +121,7 @@ const regressions: Regression[] = [
       );
       assert.equal(
         grounding.result.decision_transformations?.at(-1)?.details?.remediation,
-        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.",
+        "Cite evidence verbatim from the reviewed artifact, an authenticated caller submission, or a persisted attachment; invented or untraceable sources cannot support READY.",
         "the remediation must remain auditable on the server-side decision transformation",
       );
       assert.deepEqual(

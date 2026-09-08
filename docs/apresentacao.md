@@ -470,8 +470,6 @@ um cancelamento tardio retorna `job_already_terminal` ou
 **Governança**
 
 - `contest_verdict` — contesta um veredito.
-- `regenerate_caller_tokens` — regenera os tokens de capacidade de quem
-  chama.
 
 ### 4.9. Armazenamento, eventos e relatórios
 

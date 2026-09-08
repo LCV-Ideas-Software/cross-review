@@ -71,6 +71,35 @@ standard `v00.00.00`; npm package versions remain SemVer.
   those sites. After this change the honest disposition of such a session is
   `session_finalize(outcome=aborted)` by its petitioner.
 
+- **The retired operator identity stops being described, and stops being
+  sent.** Removing the principal was not the same as removing every place the
+  running system still talked about it, and an adversarially verified sweep of
+  the tree found 73 surviving sites, 51 of them user-facing. What shipped
+  before this entry: four MCP tool descriptions and one tool title still
+  offered "the operator token" as an admissible credential for
+  `session_cancel_job`, `contest_verdict` and `session_finalize`; both boot
+  banners told the reader to keep an operator token in a dedicated human
+  console and called the token-load failure "operator tools disabled"; two
+  runtime authorization errors demanded a token that is no longer generated;
+  the relator's own prompt still taught peers an `OPERATOR-VERIFIED` provenance
+  tier that no longer exists (the same paragraph announced "Two levels" and
+  then listed three); the session report advertised an "operator-only checklist
+  update" whose tool was deleted; and `README.md`, `docs/apresentacao.md` and
+  `docs/apresentacao-cross-review.md` still listed `regenerate_caller_tokens`
+  and `session_evidence_checklist_update` among the tools on offer. Six
+  separate strings promised that "no manual operator attachment is required" —
+  reassurance about a party that never existed.
+  The one that was not prose: `PeerCallContext.caller` was optional and
+  defaulted to `"operator"` inside the OpenAI and Grok adapters, so every
+  evidence-judge call — whose context never set `caller` — put a
+  `prompt_cache_key` naming the retired principal on the wire to
+  `api.openai.com` and `api.x.ai`, and pooled every petitioner into one
+  provider-side cache bucket. The union no longer admits `"operator"`, the two
+  judge contexts now carry the session's petitioner, and a call that cannot
+  name the pair sends **no** cache key rather than an unscoped one. Caching
+  degrades to off for a session persisted before this release, whose petitioner
+  is not a peer; that is deliberate, and cheaper than a shared bucket.
+
 ### Removed
 
 - **`session_evidence_checklist_update` and `regenerate_caller_tokens`, in
