@@ -144,6 +144,15 @@ standard `v00.00.00`; npm package versions remain SemVer.
   status at all means no response arrived, which is the worst case. A 429 is
   therefore left retrying exactly as before, deliberately: it stores nothing,
   and disarming it would trade this hazard for a worse one.
+- **A create can succeed and still leave an unreachable run.** If the stream
+  fails before the first `response.created`, or the Agent API answers a pending
+  create without a response id, the run exists and bills while this adapter
+  never learns its id: the severed-stream retrieval is guarded by that id, and
+  `POST /v1/agent/{id}/cancel` has no path to call. `createAgentRun` cannot see
+  this — it returned successfully — so `safe_to_repeat: false` is now applied
+  where the error escapes instead: the two streaming exits that carry no id,
+  and the `perplexity_background_id_missing` throw. A repeat would add a second
+  unreachable run to the first.
 - **A cut after `response.completed` no longer discards the answer.** The
   severed-stream repair is guarded by `!responseCompleted`, so a transport
   rejection arriving once the terminal event was already in hand recovered

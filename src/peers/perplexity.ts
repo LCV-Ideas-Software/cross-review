@@ -167,15 +167,20 @@ function hasCreateOrphanRisk(error: unknown): boolean {
 // ambiguous, and an error carrying no status at all means no response arrived,
 // which is the worst case: the POST may have been accepted in full. Both are
 // marked. The mark is a symbol, so it never reaches a serialized record.
+function markCreateOrphanRisk<T>(error: T): T {
+  if (typeof error === "object" && error !== null) {
+    (error as Record<symbol, unknown>)[PERPLEXITY_CREATE_ORPHAN_RISK] = true;
+  }
+  return error;
+}
+
 async function createAgentRun<T>(create: () => Promise<T>): Promise<T> {
   try {
     return await create();
   } catch (error) {
     const status: unknown = (error as { status?: unknown } | null | undefined)?.status;
     const rejectedWithoutStoring = typeof status === "number" && status >= 400 && status < 500;
-    if (!rejectedWithoutStoring && typeof error === "object" && error !== null) {
-      (error as Record<symbol, unknown>)[PERPLEXITY_CREATE_ORPHAN_RISK] = true;
-    }
+    if (!rejectedWithoutStoring) markCreateOrphanRisk(error);
     throw error;
   }
 }
@@ -819,10 +824,16 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       return { response: created, polls: 0, retrieveErrors: 0 };
     const backgroundId = typeof created.id === "string" ? created.id.trim() : "";
     if (!backgroundId) {
-      throw new Error(
-        `perplexity_background_id_missing: the Agent API reported status=${String(created.status)} ` +
-          `without a response id, so the background run cannot be retrieved at ` +
-          `${PERPLEXITY_BACKGROUND_RETRIEVE_PREFIX}/{id}.`,
+      // The create SUCCEEDED and the run is pending: it exists, it bills, and
+      // without an id neither retrieval nor cancellation can reach it. A
+      // repeat would add a second one, so this is the same hazard a failed
+      // create carries, reached through a successful one.
+      throw markCreateOrphanRisk(
+        new Error(
+          `perplexity_background_id_missing: the Agent API reported status=${String(created.status)} ` +
+            `without a response id, so the background run cannot be retrieved at ` +
+            `${PERPLEXITY_BACKGROUND_RETRIEVE_PREFIX}/{id}.`,
+        ),
       );
     }
     return this.pollBackgroundTerminal(backgroundClient, backgroundId, context, deadline, created);
@@ -1066,7 +1077,10 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         if (requestId && !responseCompleted) {
           await this.cancelBackgroundRun(streamClient, perplexityBackgroundRetrievePath(requestId));
         }
-        throw error instanceof PerplexityStreamExit ? error.original : error;
+        // No `response.created` ever arrived, so the create succeeded on a run
+        // whose id this adapter never learned: it cannot be retrieved and
+        // cannot be cancelled, and a repeat would add a second one to it.
+        throw markCreateOrphanRisk(error instanceof PerplexityStreamExit ? error.original : error);
       }
       // Anything else is the provider dropping the connection on a run that
       // keeps going without us: the terminal object is retrieved below.
@@ -1130,7 +1144,12 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     // answer is already complete in hand: the retrieval above only runs while
     // the terminal object is still missing, so failing here would discard a
     // finished, billed answer over a socket that no longer mattered.
-    if (severedError !== undefined && !responseCompleted) throw severedError;
+    if (severedError !== undefined && !responseCompleted) {
+      // Same window reached through a transport cut: with no id there is
+      // nothing to retrieve above and nothing to cancel, so the run survives
+      // unreachable and must not be joined by a second one.
+      throw requestId ? severedError : markCreateOrphanRisk(severedError);
+    }
     withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
       assertResponsesStreamCompleted(responseCompleted, {
         context,

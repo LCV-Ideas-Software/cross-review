@@ -891,4 +891,64 @@ function completedResponse(model: string, text: string): Record<string, unknown>
   console.log("[v6.0.0-perplexity-background] completed_then_severed_keeps_the_answer: PASS");
 }
 
+// (17) The create can succeed and STILL leave an unreachable run. If the
+// stream fails before the first `response.created`, `requestId` is never
+// learned: the retrieval above is guarded by it, `cancelBackgroundRun` has no
+// path to call, and the run the provider already stored keeps executing and
+// billing with nobody able to stop it. `createAgentRun` cannot see this — it
+// returned successfully — so the mark is applied where the error escapes
+// instead. A repeat would add a SECOND unreachable run to the first.
+{
+  const retrying: AppConfig = {
+    ...config,
+    retry: { ...config.retry, max_attempts: 3, base_delay_ms: 1, max_delay_ms: 1 },
+  };
+  const adapter = new PerplexityAdapter(retrying);
+  const calls = recorder();
+  async function* failsBeforeCreatedEvent(): AsyncGenerator<Record<string, unknown>> {
+    // A retryable provider error reaching us before any event carries an id.
+    // The create has always been recorded by the time the stream is consumed,
+    // so the throw always fires; the yield below is never reached.
+    if (calls.createOptions.length > 0) throw httpError(503, "Service unavailable");
+    yield { type: "response.created", response: { id: "never", status: "queued" } };
+  }
+  setClient(
+    adapter,
+    recordingClient(
+      calls,
+      async () => failsBeforeCreatedEvent(),
+      async () => {
+        throw new Error("a run with no id cannot be retrieved");
+      },
+    ),
+  );
+  await assert.rejects(
+    () => adapter.call("fixture", context({ stream: true })),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure);
+      assert.equal(
+        failure.retryable,
+        true,
+        "the provider classification is untouched: a 503 is still a retryable provider error",
+      );
+      assert.equal(isSkippableFailure(failure), true, "convergence must still be reachable");
+      assert.equal(
+        failure.safe_to_repeat,
+        false,
+        "a run whose id was never learned makes the attempt un-repeatable",
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    calls.createOptions.length,
+    1,
+    "a stream that failed before the id must not be re-created: the first run is already unreachable",
+  );
+  assert.deepEqual(calls.postPaths, [], "there is no id to cancel");
+  assert.deepEqual(calls.getPaths, [], "there is no id to retrieve");
+  console.log("[v6.0.0-perplexity-background] pre_id_stream_failure_is_unrepeatable: PASS");
+}
+
 console.log("[v6.0.0-perplexity-background] ALL CASES PASS");
