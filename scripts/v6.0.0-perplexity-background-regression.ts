@@ -951,4 +951,76 @@ function completedResponse(model: string, text: string): Record<string, unknown>
   console.log("[v6.0.0-perplexity-background] pre_id_stream_failure_is_unrepeatable: PASS");
 }
 
+// (18) The create succeeds, the run is known and alive, and the POLL fails. The
+// poll loop's catch asks the provider to stop — but asking is not stopping:
+// `cancelBackgroundRun` swallows every outcome, including a cancel that never
+// left this machine, and the provider acknowledges ASYNCHRONOUSLY with
+// `status: "cancelling"`. So at the instant `withRetry` re-enters the closure
+// the run is at best winding down and still billing, and the closure contains
+// the create. The path that reaches it: a transient 5xx retrieval keeps the
+// loop polling until the deadline, and the poll-timeout message EMBEDS that
+// retrieval error's text, so `GATEWAY_5XX_RE` matches and the whole closure is
+// classified retryable. Confirmed by a peer panel against the pre-fix tree; the
+// session identifier stays out of the repository by policy.
+{
+  const retrying: AppConfig = {
+    ...withTimeout(1_500),
+    retry: {
+      ...config.retry,
+      timeout_ms: 1_500,
+      max_attempts: 3,
+      base_delay_ms: 1,
+      max_delay_ms: 1,
+    },
+  };
+  const adapter = new PerplexityAdapter(retrying);
+  const calls = recorder();
+  setClient(
+    adapter,
+    recordingClient(
+      calls,
+      async () => ({ id: "resp_bg_poll5xx", status: "queued" }),
+      async () => {
+        // Transient by `isPerplexityRetrievalTransient` (>= 500), so the loop
+        // keeps polling and records this as the last retrieval error.
+        throw httpError(503, "Service Unavailable");
+      },
+    ),
+  );
+  await assert.rejects(
+    () => adapter.call("fixture", context()),
+    (error: unknown) => {
+      const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure);
+      assert.match(
+        failure.message,
+        /perplexity_background_poll_timeout/,
+        "the failure must be the poll timeout, not the retrieval error itself",
+      );
+      assert.equal(
+        failure.retryable,
+        true,
+        "the embedded 5xx still classifies retryable — the classification is untouched",
+      );
+      assert.equal(isSkippableFailure(failure), true, "convergence must still be reachable");
+      assert.equal(
+        failure.safe_to_repeat,
+        false,
+        "a run the provider has not confirmed stopped makes the attempt un-repeatable",
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    calls.createOptions.length,
+    1,
+    "the closure must not be re-entered: a second create would run alongside a run that is at best cancelling",
+  );
+  assert.ok(
+    calls.postPaths.includes("/agent/resp_bg_poll5xx/cancel"),
+    "the abandoned run must still be asked to stop",
+  );
+  console.log("[v6.0.0-perplexity-background] poll_failure_is_unrepeatable: PASS");
+}
+
 console.log("[v6.0.0-perplexity-background] ALL CASES PASS");
