@@ -716,7 +716,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
       },
     ),
   );
-  await streamed.call("fixture", context({ stream: true }));
+  const streamedResult = await streamed.call("fixture", context({ stream: true }));
 
   for (const [label, calls] of [
     ["background", backgroundCalls],
@@ -734,6 +734,13 @@ function completedResponse(model: string, text: string): Record<string, unknown>
       `${label} create must carry the configured timeout`,
     );
   }
+  // `stream_severed` is an expression, not a constant (case 16): the clean
+  // stream that ran above must still report an unbroken one.
+  assert.equal(
+    (streamedResult.raw as { stream_severed?: unknown }).stream_severed,
+    false,
+    "an uncut stream must not be recorded as severed",
+  );
   console.log("[v6.0.0-perplexity-background] creates_pin_no_sdk_retries: PASS");
 }
 

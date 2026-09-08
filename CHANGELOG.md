@@ -128,7 +128,9 @@ standard `v00.00.00`; npm package versions remain SemVer.
   creates included, so a create failure the classifier calls retryable was
   re-POSTed — up to `CROSS_REVIEW_RETRY_ATTEMPTS` stored, billable background
   runs, of which at most one id is ever observed. Measured against real
-  sockets: 500, 502, 503, 504 and 429 all took that branch. The Agent API
+  sockets, 500, 502, 503, 504 and 429 all took the retry branch, but only the
+  5xx ones are a hazard: a 4xx is the provider REJECTING the request before it
+  stored anything, so repeating it starts no run. The Agent API
   publishes six endpoints, none of which lists runs, and no idempotency
   header, so the extra runs can never be found or stopped. The stop could not
   be spelled `retryable: false`: `isSkippableFailure` reads that field to
@@ -138,8 +140,10 @@ standard `v00.00.00`; npm package versions remain SemVer.
   concept — "is it safe to run this closure again", as distinct from "would
   the provider succeed if asked again" — read only by `withRetry` and optional,
   so no other adapter changes behaviour. Perplexity sets it on any create
-  failure that is not a 4xx: a rejected request stored nothing, so the ordinary
-  rate-limit retry survives intact.
+  failure that is not a 4xx — a 5xx is ambiguous, and an error carrying no
+  status at all means no response arrived, which is the worst case. A 429 is
+  therefore left retrying exactly as before, deliberately: it stores nothing,
+  and disarming it would trade this hazard for a worse one.
 - **A cut after `response.completed` no longer discards the answer.** The
   severed-stream repair is guarded by `!responseCompleted`, so a transport
   rejection arriving once the terminal event was already in hand recovered
