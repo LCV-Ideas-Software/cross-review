@@ -790,7 +790,21 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       // provider is still executing and billing: ask it to stop before the
       // failure propagates.
       await this.cancelBackgroundRun(client, retrievePath);
-      throw error;
+      // Asking is not stopping. The provider acknowledges the cancel
+      // ASYNCHRONOUSLY with `status: "cancelling"` (see the contract note
+      // above), and `cancelBackgroundRun` swallows every outcome — including a
+      // cancel that never left this machine. So at the instant `withRetry`
+      // re-enters the closure the run is, at best, still winding down and
+      // still billing. The closure it re-enters contains the create, so a
+      // retryable poll-error message would start a SECOND run alongside it.
+      // Nothing worth keeping is lost by refusing that retry. The poll loop,
+      // with `isPerplexityRetrievalTransient`, has ALREADY retried every
+      // transient status against this same deadline, so what reaches here is
+      // either a reported 4xx other than 408/429 — which `classifyProviderError`
+      // already returns `retryable: false` for, so the loop stopped anyway — or
+      // an exhausted budget. Only the second one changes behaviour here, and
+      // only when its message embeds a retrieval error text that reads as 5xx.
+      throw markCreateOrphanRisk(error);
     }
     return { response, polls, retrieveErrors };
   }
