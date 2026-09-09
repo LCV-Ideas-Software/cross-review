@@ -8195,7 +8195,13 @@ export class CrossReviewOrchestrator {
   //   - rotation length must be >= 2 (no self-immediate-review); enforce at entry
   //   - caller (when peer) is auto-excluded by upstream `sessionPeers` derivation
   //   - first rotator = `firstRotator` (lottery-selected or operator-default leadPeer)
-  //   - convergence = `consecutive_no_change_count >= rotation_order.length`
+  //   - convergence = every listed rotator has seen the CURRENT artifact and
+  //     left it unchanged, counted as a set of distinct peers; the scalar
+  //     `consecutive_no_change_count` is persisted telemetry, not the decision
+  //   - a rotator whose output ceiling cannot re-emit the live artifact is
+  //     skipped without dispatch, and a rotation in which every peer is either
+  //     approved or skipped (with at least one skip) is unreachable: abort
+  //     fail-closed rather than grind to the cap or converge on it
   //   - drift / empty / fabrication detection identical to ship-mode relator;
   //     consecutive-cap=2 aborts the session (shared `consecutiveLeadDrifts`)
   //   - per-round cost telemetry + budget ceiling honored same as ship mode
@@ -8321,6 +8327,18 @@ export class CrossReviewOrchestrator {
     // ceiling. Reset whenever the artifact changes, since a smaller artifact
     // makes them eligible again.
     let skippedForCeiling = new Set<PeerId>();
+    // The peers that have actually SEEN the current artifact and returned it
+    // unchanged. `consecutiveNoChangeCount` cannot answer that question: it is
+    // a scalar of consecutive unchanged TURNS, and it was a sound proxy for a
+    // full rotation only while every round dispatched exactly one peer and
+    // advanced the cursor by one. The ceiling skip broke that equivalence, so
+    // with E eligible peers out of N the count reached N after ceil(N/E)
+    // passes — some eligible peers counted twice, the skipped one never — and
+    // the session was finalized `converged` with a peer in `rotation_order`,
+    // `expected_peers` and `reviewer_peers` that had never received the
+    // artifact. In a protocol whose whole claim is unanimity, that is the
+    // verdict lying about itself.
+    let approvedUnchanged = new Set<PeerId>();
 
     await this.store.setCircularState(session.session_id, {
       rotation_order: rotationOrder,
@@ -8532,6 +8550,14 @@ export class CrossReviewOrchestrator {
         };
       }
       draft = initGeneration.text;
+      // The round-zero generator produced the artifact now in circulation, so
+      // it is the producer for the live screen. Without this the screen
+      // measured that peer against its OWN output — the screen is one ceiling
+      // token per character and therefore roughly 4x pessimistic, so a peer
+      // legitimately emits more characters than its ceiling in tokens — and it
+      // was skipped when the cursor came back to it. It also left the producer
+      // inside `others`, so the collapse guard could never fire.
+      currentProducer = initRotator;
       cursor = (cursor + 1) % rotationOrder.length;
     }
 
@@ -8640,6 +8666,48 @@ export class CrossReviewOrchestrator {
         // would let a skipped rotator manufacture convergence.
         cursor = (cursor + 1) % rotationOrder.length;
         continue;
+      }
+
+      // A full rotation is unreachable once every peer has either approved the
+      // current artifact or been skipped for its ceiling, with at least one
+      // skip: the artifact is stable, so those skips repeat forever and more
+      // rounds only buy paid re-approvals from the peers that already
+      // approved. Refuse instead of grinding to max-rounds — and, above all,
+      // instead of converging on a rotation that can never complete.
+      if (
+        skippedForCeiling.size > 0 &&
+        rotationOrder.every((peer) => approvedUnchanged.has(peer) || skippedForCeiling.has(peer))
+      ) {
+        this.emit({
+          type: "session.circular_rotation_output_ceiling",
+          session_id: session.session_id,
+          message:
+            `Circular rotation cannot complete at round ${round}: the artifact is ` +
+            `${Math.min((draft ?? "").length, this.config.prompt.max_draft_chars)} characters, ` +
+            `${[...skippedForCeiling].join(", ")} cannot re-emit it, and every other rotator has ` +
+            `already approved it unchanged. Convergence requires the whole rotation, so further ` +
+            `rounds would only re-bill the peers that already agreed. Two levers: shrink the ` +
+            `artifact, or raise those ceilings in the central configuration ` +
+            `(max_output_tokens_by_peer / CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`,
+          data: {
+            draft_chars: Math.min((draft ?? "").length, this.config.prompt.max_draft_chars),
+            round,
+            producer: currentProducer ?? null,
+            approved_unchanged: [...approvedUnchanged],
+            skipped_for_output_ceiling: [...skippedForCeiling],
+          },
+        });
+        await this.store.finalize(
+          session.session_id,
+          "aborted",
+          "circular_rotation_output_ceiling",
+        );
+        return {
+          session: this.store.read(session.session_id),
+          final_text: draft,
+          converged: false,
+          rounds: round - 1,
+        };
       }
 
       const startedAt = new Date().toISOString();
@@ -8847,8 +8915,10 @@ export class CrossReviewOrchestrator {
       const unchanged = newDraft.trim() === (draft as string).trim();
       if (unchanged) {
         consecutiveNoChangeCount += 1;
+        approvedUnchanged.add(rotator);
       } else {
         consecutiveNoChangeCount = 0;
+        approvedUnchanged = new Set<PeerId>();
         draft = newDraft;
         lastRevisionRound = round;
         currentProducer = rotator;
@@ -8856,7 +8926,12 @@ export class CrossReviewOrchestrator {
         // than the one that excluded them.
         skippedForCeiling = new Set<PeerId>();
       }
-      const fullRotationConverged = consecutiveNoChangeCount >= rotationOrder.length;
+      // Convergence is a property of the ROTATION, not of a run of turns:
+      // every listed rotator must have seen this exact artifact and left it
+      // alone. `consecutiveNoChangeCount` stays because it is persisted
+      // through setCircularState and read back by the report and health
+      // surfaces — it is telemetry now, not the decision.
+      const fullRotationConverged = rotationOrder.every((peer) => approvedUnchanged.has(peer));
 
       // Synthetic single-peer round so meta.rounds[] remains walkable
       // by existing readers (dashboard, session_check_convergence).

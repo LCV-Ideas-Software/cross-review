@@ -292,8 +292,11 @@ No API can prove how much internal reasoning a model performed. The runtime
 proves observable protocol behavior—terminal completion, evidence custody,
 source grounding, independent unanimity and contradiction checks—not private
 cognition. In circular mode, byte-identical output is an artifact-stability
-signal only; convergence still requires a complete rotation, but an individual
-echo is not cryptographic proof that the rotator read deeply. SHA-256 likewise
+signal only; convergence still requires that EVERY listed rotator has seen the
+current artifact and left it unchanged — counted as a set of distinct peers, not
+as a run of unchanged turns, because a rotator skipped for its output ceiling
+would otherwise let the remaining peers reach the threshold by voting twice. An
+individual echo is still not cryptographic proof that the rotator read deeply. SHA-256 likewise
 proves file integrity after custody, not human authorship.
 
 ## Reporting a vulnerability

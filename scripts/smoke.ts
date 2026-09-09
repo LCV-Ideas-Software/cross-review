@@ -4612,7 +4612,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] relator_lottery_excludes_caller_test: PASS");
 }
 
-// v4.6.0 (CROSREV-18) Relator Lottery — mapeamento determinístico.
+// v4.6.0 (CROSREV-18) Relator Lottery — deterministic mapping.
 // The draw accepts an injected `rng`: every index of the half-open range
 // [0, pool.length) maps exactly to the peer at that position of the pool, the
 // rng receives the pool size as its exclusive bound, and an index outside the
@@ -4650,16 +4650,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] relator_lottery_deterministic_mapping_test: PASS");
 }
 
-// v2.11.0 / v4.6.0 (CROSREV-18) Relator Lottery — distribuição uniforme do
-// RNG real (`crypto.randomInt`). Guard contra Math.random ou um viés no
+// v2.11.0 / v4.6.0 (CROSREV-18) Relator Lottery — uniform distribution of the
+// real RNG (`crypto.randomInt`). Guards against Math.random or a bias in the
 // mapping. Explicit statistical design: N = 50,000 draws with caller=claude
-// over the pool of 5; a chi-square statistic with 4 degrees of
-// liberdade (Σ (obs − 10 000)² / 10 000). Limiar 48.0: para df=4,
-// P(χ² > x) = e^(−x/2)·(1 + x/2), logo P(χ² > 48) ≈ 9,4e-10 por execução —
-// o falso positivo é controlado explicitamente (o desenho anterior, ±15%
-// over N=2000, carried ~0.4% per run and did fire in CI). Power: a
-// viés relativo de 10% em um peer (p = 0,22) eleva a estatística esperada
-// to ~125, far above 48, so it stays detected with room to spare.
+// over the pool of 5; a chi-square statistic with 4 degrees of freedom
+// (Σ (obs − 10,000)² / 10,000). Threshold 48.0: for df=4,
+// P(χ² > x) = e^(−x/2)·(1 + x/2), so P(χ² > 48) ≈ 9.4e-10 per run — the false
+// positive is controlled explicitly (the previous design, ±15% over N=2000,
+// carried ~0.4% per run and did fire in CI). Power: a 10% relative bias in one
+// peer (p = 0.22) raises the expected statistic to ~125, far above 48, so it
+// stays detected with room to spare.
 {
   const { assignRelator } = await import("../src/core/relator-lottery.js");
   const peers = ["codex", "gemini", "deepseek", "grok", "perplexity"] as const;
@@ -4688,9 +4688,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] relator_lottery_uniform_distribution_test: PASS");
 }
 
-// v2.11.0 Relator Lottery — rejeita lead_peer === caller.
+// v2.11.0 Relator Lottery — rejects lead_peer === caller.
 // An explicit call with caller=claude and lead_peer=claude MUST throw
-// CallerCannotBeLeadPeerError. Sem fallback silencioso pra sorteio.
+// CallerCannotBeLeadPeerError. No silent fallback to the draw.
 {
   const lotteryMod1 = await import("../src/core/relator-lottery.js");
   const { assertLeadPeerNotCaller, CallerCannotBeLeadPeerError } = lotteryMod1;
@@ -4706,7 +4706,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
   }
   assert.ok(threw, "lead_peer === caller must throw");
-  // Casos válidos: caller=claude + lead_peer=non-claude → no-op.
+  // Valid cases: caller=claude + lead_peer=non-claude → no-op.
   // v3.0.0: include perplexity in the eligible-lead set.
   for (const lead of ["codex", "gemini", "deepseek", "grok", "perplexity"] as const) {
     assertLeadPeerNotCaller("claude", lead);
@@ -4725,9 +4725,9 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] lead_peer_caller_match_rejected_test: PASS");
 }
 
-// v2.11.0 Relator Lottery — evento session.relator_assigned emitido.
-// Chamada de runUntilUnanimous com caller=claude e lead_peer omitido →
-// orchestrator emite session.relator_assigned com candidate_pool, assigned,
+// v2.11.0 Relator Lottery — the session.relator_assigned event is emitted.
+// A runUntilUnanimous call with caller=claude and lead_peer omitted makes the
+// orchestrator emit session.relator_assigned with candidate_pool, assigned and
 // entropy_source populated. Uses stub adapters so no real provider is called.
 {
   const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
@@ -4746,7 +4746,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     task: "Relator lottery event smoke",
     initial_draft: "Test draft.",
     caller: "claude",
-    // lead_peer OMITIDO → sorteio. Explicit peers list to keep the test
+    // lead_peer OMITTED → the draw runs. Explicit peers list to keep the test
     // count deterministic (3 peers + caller=claude → pool of 3 after
     // recusal, not the global 5-peer pool).
     peers: ["codex", "gemini", "deepseek"],
@@ -7524,7 +7524,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // host that never existed.
   assert.equal(distinct.size, 6, "all 6 peer tokens are distinct");
   assert.equal(
-    Object.prototype.hasOwnProperty.call(map, "operator"),
+    Object.hasOwn(map, "operator"),
     false,
     "v07.00.00: the record MUST NOT carry an operator capability",
   );
@@ -7623,15 +7623,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // not admissible, so the secret binds to no host, and a host still presenting
   // it would declare a caller the server refuses.
   assert.equal(
-    Object.prototype.hasOwnProperty.call(migrated?.map ?? {}, "operator"),
+    Object.hasOwn(migrated?.map ?? {}, "operator"),
     false,
     "v07.00.00: loading a legacy record MUST drop the operator capability",
   );
   assert.equal(
-    Object.prototype.hasOwnProperty.call(
-      JSON.parse(fs.readFileSync(legacyPath, "utf8")).tokens,
-      "operator",
-    ),
+    Object.hasOwn(JSON.parse(fs.readFileSync(legacyPath, "utf8")).tokens, "operator"),
     false,
     "v07.00.00: the rewritten file on disk MUST NOT keep the operator token",
   );
@@ -8888,10 +8885,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // v2.25.0 — circular_mode_test. Pins the third SessionMode `"circular"`
 // imported from maestro-app's serial deliberative protocol. Distinct
 // from ship/review modes in three ways: (1) no parallel peer-voting
-// per round (rotator-only sequential flow); (2) convergence = full
-// rotation completes with consecutive_no_change_count >=
-// rotation_order.length; (3) approved-content lock + quality-
-// preservation rules in the rotator prompt directive.
+// per round (rotator-only sequential flow); (2) convergence = every
+// listed rotator has seen the current artifact and left it unchanged,
+// counted as a set of DISTINCT peers; (3) approved-content lock +
+// quality-preservation rules in the rotator prompt directive.
 //
 // Invariants pinned here:
 // (1) `SessionMode` type union includes `"circular"`.
@@ -8909,7 +8906,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // (6) `runCircularLoop` enforces rotation_order.length >= 2 (else
 //     finalizes with reason `circular_rotation_too_small`).
 // (7) Convergence event type `session.circular_full_rotation_no_change`
-//     fires when consecutive_no_change_count >= rotation_order.length.
+//     fires when every listed rotator sits in `approvedUnchanged`. The
+//     scalar `consecutive_no_change_count` survives as telemetry only:
+//     the output-ceiling skip advances the cursor without a counted
+//     turn, so a run of unchanged TURNS is no longer a full rotation
+//     and the remaining peers could reach the old threshold by voting
+//     twice (PR #300, review round 3).
 // (8) Max-rotations abort event `session.circular_max_rotations_exceeded`
 //     fires at the rotation cap.
 // (9) Session meta carries `circular_state: { rotation_order, consecutive_no_change_count, last_revision_round }`.
@@ -9012,8 +9014,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "v2.25.0 / circular_mode: orchestrator finalizes with outcome=converged + reason=circular_full_rotation_no_change",
   );
   assert.ok(
-    /consecutiveNoChangeCount\s*>=\s*rotationOrder\.length/.test(orchSrc),
-    "v2.25.0 / circular_mode: convergence condition is consecutiveNoChangeCount >= rotationOrder.length",
+    /rotationOrder\.every\(\s*\(peer\)\s*=>\s*approvedUnchanged\.has\(peer\)\s*,?\s*\)/.test(
+      orchSrc,
+    ) && !orchSrc.includes("consecutiveNoChangeCount >= rotationOrder.length"),
+    "v2.25.0 / circular_mode: convergence counts DISTINCT peers via rotationOrder.every(approvedUnchanged.has) AND the scalar consecutiveNoChangeCount >= rotationOrder.length is no longer the decision",
   );
 
   // (8) Max-rotations abort.
