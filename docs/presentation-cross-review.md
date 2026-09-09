@@ -212,11 +212,6 @@ explicit `thinking` field because adaptive thinking is automatic and uses
 no ZDR; `stop_reason="refusal"` refusals block as `provider_refusal` and their
 partial text is not accepted as an opinion.
 
-`claude-opus-5` is a supported explicit override, not a fallback. It uses
-adaptive thinking with the display omitted and the same effort control, plus its
-own rate card; swapping only the model name without the matching rate still
-fails closed in the financial preflight.
-
 In this version the Evidence Broker also admits requests atomically, with
 ceilings configurable per peer, per round and per session. Exceeding a ceiling
 preserves the complete response for auditing and ends the session before further

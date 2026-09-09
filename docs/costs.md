@@ -92,10 +92,10 @@ only.
 Official pricing sources:
 
 - OpenAI: [API pricing](https://developers.openai.com/api/docs/pricing),
-  [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol) and
+  [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra) and
   [Priority processing](https://developers.openai.com/api/docs/guides/priority-processing#configuring-priority-processing).
 - Anthropic: [models overview](https://platform.claude.com/docs/en/about-claude/models/overview),
-  [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5)
+  [Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview)
   and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 - Google: [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 - DeepSeek: [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
@@ -105,11 +105,6 @@ Official pricing sources:
 - Perplexity: [Agent API models and pricing](https://docs.perplexity.ai/docs/agent-api/models)
   and the [Agent API request schema](https://docs.perplexity.ai/api-reference/agent-post)
   (usage `cost` and `tool_calls_details`).
-
-Anthropic cache-write rates are separate from cache-hit rates. With the
-workspace's default `1h` TTL, configure cache write as `20` for Fable 5 and
-`10` for Opus 5. If you deliberately switch to `5m`, the corresponding values
-are `12.5` and `6.25`.
 
 Perplexity Agent API requests pay the `web_search` tool per invocation
 reported in `usage.tool_calls_details`; the adapter surfaces that count as

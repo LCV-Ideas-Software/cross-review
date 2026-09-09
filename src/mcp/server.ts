@@ -122,7 +122,7 @@ const ReasoningEffortOverridesSchema = z
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-5.6, Kimi K3 via Perplexity and DeepSeek, and xhigh on Grok 4.6; older GPT-5 families use their own ceilings).",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-6 Astra, GPT-5.6, Kimi K3 via Perplexity and DeepSeek, and xhigh on Grok 4.6; older GPT-5 families use their own ceilings).",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -1201,7 +1201,7 @@ export function assertSessionMutationAuthority(
   }
   if (sessionOwner === null) {
     throw new Error(
-      `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session, so no caller can be authorized to mutate it.`,
+      `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session, so no caller can be authorized to mutate it through ${site}.`,
     );
   }
   if (caller !== sessionOwner) {
@@ -1518,8 +1518,9 @@ export async function main(): Promise<void> {
   // generate with mode 0o600). v07.00.00: a legacy record is rewritten in
   // place to DROP the seventh capability, which bound a secret to a human
   // console this server never had. Failure leaves peer clientInfo checks
-  // available in permissive mode, but every session-mutation tool fails
-  // closed, because no caller can then be token-verified.
+  // available in permissive mode, but every OWNER-SCOPED session-mutation tool
+  // fails closed, because no caller can then be token-verified. `session_sweep`
+  // is the exception: it is gated on identity alone and still runs.
   initHostTokensRecord(runtime.config.data_dir);
   const tokensRecord = getHostTokensRecord();
   if (tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
@@ -1528,7 +1529,7 @@ export async function main(): Promise<void> {
     );
   } else if (!tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so session-mutation tools fail closed. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions.\n`,
+      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so every owner-scoped session-mutation tool fails closed (session_finalize, contest_verdict, session_cancel_job and both evidence-judge passes). session_sweep is gated on identity alone and still runs. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions.\n`,
     );
   }
   const server = new McpServer({

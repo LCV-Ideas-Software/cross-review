@@ -53,7 +53,7 @@ env-var per host — a deliberate decision, never a silent downgrade.
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
 
-Claude Fable 5 (`claude-fable-5`) is the canonical Anthropic production model.
+Claude Fable 5.1 (`claude-fable-5-1`) is the canonical Anthropic production model.
 The adapter omits the explicit `thinking` field because Fable applies adaptive
 thinking automatically; `output_config.effort` remains the depth control.
 Fable refusals are successful API responses with `stop_reason="refusal"`; the
@@ -140,7 +140,7 @@ explicitly want a minimal round-trip without tools.
 
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
-- OpenAI/Codex: `gpt-5.6-sol` through the Responses API. The API accepts
+- OpenAI/Codex: `gpt-6-astra` through the Responses API. The API accepts
   `reasoning.effort=max`; cross-review accepts the Codex product/CLI term
   `ultra` only as a config compatibility alias and normalizes it to `max`
   before the request. The shared legacy `minimal` setting is normalized to
@@ -193,10 +193,10 @@ preflight.
 
 ## Official provider references
 
-- OpenAI: [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- OpenAI: [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
   and [latest-model guide](https://developers.openai.com/api/docs/guides/latest-model).
-- Anthropic: [Fable 5 introduction](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5),
-  [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5),
+- Anthropic: [Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview),
+  [Fable 5.1 migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migration-guide),
   [Opus 5 migration guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide),
   [effort](https://platform.claude.com/docs/en/build-with-claude/effort),
   [refusals and fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback),

@@ -273,11 +273,12 @@ variables. Example overrides (PowerShell):
 `ultra` is a Codex product/CLI execution mode, not a literal OpenAI Responses
 API `reasoning.effort`. Cross-review nevertheless accepts it in central config,
 environment variables and per-call overrides as a compatibility alias, then
-normalizes it inside each provider adapter. For `gpt-5.6-sol`, the wire value is
+normalizes it inside each provider adapter. For `gpt-6-astra`, the wire value is
 the official `max`; `ultra` is never sent to the Responses API. Using `max`
 directly remains equivalent and makes the API value explicit. The shared
-legacy value `minimal` is likewise translated to GPT-5.6's lowest active API
-effort, `low`. Explicit older-model overrides use a family-aware compatibility
+legacy value `minimal` is likewise translated to Astra's lowest active API
+effort, `low` — Astra documents `low|medium|high|xhigh|max` and does NOT list
+`none`, so `none` is raised to `low` rather than sent and rejected. Explicit older-model overrides use a family-aware compatibility
 matrix: GPT-5.5/5.4/5.2 map `minimal` to `low` and `max`/`ultra` to `xhigh`;
 GPT-5.1 maps `minimal` to `low` and `xhigh`/`max`/`ultra` to `high`; original
 GPT-5 maps `none` to `minimal` and `xhigh`/`max`/`ultra` to `high`. Supported

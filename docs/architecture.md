@@ -403,10 +403,9 @@ The peer adapters use the strongest official reasoning controls available for ea
   lower literals are translated to the nearest available family value.
 - Anthropic runs canonical `claude-fable-5-1`. The request omits the explicit
   `thinking` field because adaptive thinking is automatic and controls depth
-  with `output_config.effort`. The supported explicit `claude-opus-5` override
-  sends adaptive thinking with display omitted and the same effort control;
-  it is never selected as a fallback. Fable has 30-day/no-ZDR retention
-  semantics.
+  with `output_config.effort`. There is no second supported Anthropic model:
+  cross-review runs the top model of each provider, so the canonical pin is the
+  whole admissible set. Fable has 30-day/no-ZDR retention semantics.
 - Gemini maps the shared configured effort to the pinned Gemini 3.x model's
   native `LOW`, `MEDIUM`, or `HIGH` thinking level.
 - DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows

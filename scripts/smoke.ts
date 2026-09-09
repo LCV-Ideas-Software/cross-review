@@ -7750,8 +7750,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   // The operator bypass that used to satisfy this assertion is gone: an
   // authoritative mutation now requires the persisted petitioner's own
-  // verified token, with no identity able to step over it. Removing that
-  // branch TIGHTENS the gate.
+  // verified token, with no identity able to step over
+  // `assertSessionMutationAuthority`. Removing that branch TIGHTENS the gate.
+  // Scope matters: `session_sweep` never reaches this helper — it is gated on
+  // identity alone, deliberately, because it exists to close sessions whose
+  // petitioner is gone. It is the one authoritative mutation that is not
+  // owner-scoped, and the sentence above must not be read as covering it.
   assert.doesNotThrow(() =>
     assertSessionMutationAuthority("contest_verdict", "claude", peerHardEnforce, "claude"),
   );

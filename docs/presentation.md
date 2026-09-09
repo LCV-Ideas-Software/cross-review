@@ -343,11 +343,6 @@ when the alias is used; Perplexity (`perplexity/kimi-k3`) receives `max`.
 Explicit overrides for earlier OpenAI families are normalized to the family's
 enum: ceiling `xhigh` on GPT-5.5/5.4/5.2 and `high` on GPT-5.1/GPT-5.
 
-`claude-opus-5` is also supported as an explicit override, without replacing
-the canonical Fable 5 and without creating an automatic fallback. Its request
-uses adaptive thinking with the display omitted, `output_config.effort` and its
-own rate card of US$ 5/MTok of input and US$ 25/MTok of output.
-
 Because `cross-review` is correctness-oriented, the adapters explicitly ask
 for the highest reasoning level each official API offers. Raw "thinking"
 content (chain-of-thought) is **neither requested nor persisted**; session

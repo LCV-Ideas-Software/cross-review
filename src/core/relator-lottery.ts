@@ -156,7 +156,7 @@ export class LeadPeerCannotFitDraftError extends Error {
   }
 }
 
-// Refuses a NAMED relator whose ceiling does not hold the draft. Used on the
+// Refuses a NAMED relator whose ceiling does not clear the size screen. Used on the
 // one path that does not draw — an explicit `lead_peer` — where there is
 // nothing to redraw and the honest outcome is a refusal that names the peer,
 // its ceiling and the two levers.

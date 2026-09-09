@@ -8278,7 +8278,7 @@ export class CrossReviewOrchestrator {
         session_id: session.session_id,
         message:
           `Circular rotation refused before dispatch: the draft is ${draftChars} characters and ` +
-          `every other rotator's output ceiling is too small to re-emit it (${roster}). Each ` +
+          `no other rotator's output ceiling clears the size screen (${roster}). Each ` +
           `rotator must re-emit the whole artifact inside its own ceiling. Two levers: shrink ` +
           `the artifact, or raise those ceilings in the central configuration ` +
           `(max_output_tokens_by_peer / CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`,
