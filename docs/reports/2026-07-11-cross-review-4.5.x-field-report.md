@@ -1,155 +1,155 @@
-# Cross-Review 4.5.x — Relatório de Campo (Field Report)
+# Cross-Review 4.5.x — Field Report
 
-**Data:** 11/07/2026 / 12/07/2026 / 13/07/2026 UTC
-**Autor:** Claude (caller=claude, host claude-code) — sessão de trabalho da calculadora-app
-**Contexto:** hardgate pré/pós-ship do workspace exigiu submeter dois ships da calculadora-app
-(v04.02.00 e o retro-review de v04.02.01, commit `8eee516`) ao cross-review. Durante a execução,
-o gate **não conseguiu registrar convergência nas versões 4.5.0–4.5.3 exercitadas nessa fase,
-apesar de a substância ter sido aprovada por unanimidade dos peers**. Este relatório registra todos
-os comportamentos observados (corretos e defeituosos) para análise e correção. O adendo da 4.5.8
-registra a convergência formal posterior.
+**Date:** 11/07/2026 / 12/07/2026 / 13/07/2026 UTC
+**Author:** Claude (caller=claude, host claude-code) — calculadora-app working session
+**Context:** the workspace's pre/post-ship hardgate required submitting two calculadora-app ships
+(v04.02.00 and the retro-review of v04.02.01, commit `8eee516`) to cross-review. During the run,
+the gate **could not record convergence on the 4.5.0–4.5.3 versions exercised in that phase, even
+though the substance was approved unanimously by the peers**. This report records every observed
+behaviour, correct and defective, for analysis and correction. The 4.5.8 addendum records the
+formal convergence that came later.
 
-> **Achado central:** os defeitos NÃO estão na qualidade do trabalho revisado nem na evidência
-> submetida. Em 4.5.2 e 4.5.3, os 6 modelos peer **emitiram `"status":"READY"` com
-> "No blocking objections remain"** e citações verbatim ancoradas por `sha256`; o servidor os
-> **rebaixou** para `NEEDS_EVIDENCE` por falsos-positivos de camadas anti-alucinação, e depois
-> **abortou** rounds inteiros por falsos-positivos de preflight. Naquele intervalo, o gate ficou
-> incapaz de atingir ALL READY para um caller-agente, mesmo com trabalho e evidência impecáveis.
-
----
-
-## 1. Escopo e metodologia
-
-- **Versões runtime exercitadas:** 4.5.0, 4.5.2, 4.5.3 (a 4.5.1 foi instalada via tarball mas o
-  processo em memória não recarregou a tempo — não exercitada isoladamente).
-- **Caller:** sempre `claude`, host `claude-code` (agente, não operador humano).
-- **Modo:** `review` (retro/pre-commit), 6 peers habilitados
-  (codex/claude/gemini/deepseek/grok/perplexity), relator-lottery ativo.
-- **Método de diagnóstico:** leitura direta de `meta.json`, `agent-runs/round-*-*.json` e
-  `events.ndjson` de cada sessão em `~/.cross-review/data/sessions/`; execução offline do
-  `evidencePreflight`/`truthfulnessPreflight` do build instalado (`node -e`) contra os drafts
-  exatos; leitura da fonte (`dist/src/core/{orchestrator,status,convergence}.js` e
-  `src/core/orchestrator.ts` do workspace).
-
-### 1.1 Inventário de sessões
-
-| Sessão (7) | Versão | Outcome    | Motivo                       | Rounds      | Defeito observado               |
-| ---------- | ------ | ---------- | ---------------------------- | ----------- | ------------------------------- |
-| `306ba203` | 4.5.0  | aborted    | needs_evidence_preflight     | 1           | DEF-1                           |
-| `be550cc3` | 4.5.0  | aborted    | needs_evidence_preflight     | 1           | DEF-1                           |
-| `469d8785` | 4.5.0  | aborted    | needs_evidence_preflight     | 1           | DEF-1 (incl. saídas RED de TDD) |
-| `989d8a2e` | 4.5.0  | aborted    | needs_evidence_preflight     | 2           | DEF-1, DEF-4                    |
-| `7afaf133` | 4.5.0  | max-rounds | max_rounds_without_unanimity | 4           | DEF-2                           |
-| `a37722c8` | 4.5.2  | max-rounds | max_rounds_without_unanimity | 6           | DEF-5                           |
-| `8789eb50` | 4.5.3  | aborted    | needs_truthfulness_preflight | 1(+relator) | DEF-5, DEF-6                    |
-
-Também observados fora das sessões: DEF-3 (`session_attach_evidence` operator-only) e o limite de
-1000 chars do `escalate_to_operator` (minor).
+> **Central finding:** the defects are NOT in the quality of the reviewed work nor in the submitted
+> evidence. On 4.5.2 and 4.5.3, the 6 peer models **emitted `"status":"READY"` with
+> "No blocking objections remain"** and verbatim citations anchored by `sha256`; the server
+> **demoted** them to `NEEDS_EVIDENCE` through anti-hallucination false positives, and then
+> **aborted** whole rounds through preflight false positives. In that interval, the gate was unable
+> to reach ALL READY for an agent-caller, even with impeccable work and evidence.
 
 ---
 
-## 2. Comportamentos CORRETOS observados (o que funciona)
+## 1. Scope and methodology
 
-Para calibrar: muita coisa funciona bem e deve ser preservada.
+- **Runtime versions exercised:** 4.5.0, 4.5.2, 4.5.3 (4.5.1 was installed via tarball but the
+  in-memory process did not reload in time — not exercised in isolation).
+- **Caller:** always `claude`, host `claude-code` (an agent, not a human operator).
+- **Mode:** `review` (retro/pre-commit), 6 peers enabled
+  (codex/claude/gemini/deepseek/grok/perplexity), relator-lottery active.
+- **Diagnostic method:** direct reading of `meta.json`, `agent-runs/round-*-*.json` and
+  `events.ndjson` for each session under `~/.cross-review/data/sessions/`; offline execution of the
+  installed build's `evidencePreflight`/`truthfulnessPreflight` (`node -e`) against the exact
+  drafts; reading the source (`dist/src/core/{orchestrator,status,convergence}.js` and the
+  workspace's `src/core/orchestrator.ts`).
 
-1. **`server_info` / `probe_peers` / capability_snapshot:** preciso e rápido. Latências,
-   `auth_present`, `model_selection` com `source_url` e `confidence:"verified"` por peer.
-2. **Contabilidade de custo/uso:** por-peer e agregada, com `cache_read/write`, `reasoning_tokens`,
-   `tier_used`, `request_cost` (perplexity), `cost_ceiling_usd` e `budget_warning_emitted`.
-   Ex.: sessão `8789eb50` custou **US$ 0,515** para 4 peers + 1 relator.
-3. **Persistência de evidência do caller (4.5.1+):** `persistCallerSubmittedEvidence` grava o campo
-   `evidence` como attachment de sessão com `sha256` e `integrity_version`, e o round o inlinea no
-   prompt dos peers. Confirmado: os peers da 4.5.3 citaram o arquivo por hash
-   (`c5083095…dc24da`) e por §-seção. **Corrige a regressão de entrega da 4.5.0 (DEF-2).**
-4. **Preflight testável offline, de graça:** `session_truthfulness_preflight_check` e o
-   `evidencePreflight` exportado permitem iterar o draft sem gastar rounds pagos — essencial e bem
-   desenhado.
-5. **Relator-lottery / anti-self-review:** `convergence_scope` elege um `lead_peer` não-votante
-   (`grok` em `8789eb50`), com `anti_self_review_exclusion_reason` explícito. Correto.
-6. **Idempotência de identidade:** `identity_forgery_blocked` corretamente impede um host-agente de
-   se declarar `operator`. A intenção é certa (ver DEF-3 para o efeito colateral).
-7. **Auto-finalização durável + escalação:** `escalate_to_operator` grava em
-   `operator_escalations[]` no meta; `convergence_health.state` reflete `blocked`.
+### 1.1 Session inventory
+
+| Session (7) | Version | Outcome    | Reason                       | Rounds      | Defect observed              |
+| ----------- | ------- | ---------- | ---------------------------- | ----------- | ---------------------------- |
+| `306ba203`  | 4.5.0   | aborted    | needs_evidence_preflight     | 1           | DEF-1                        |
+| `be550cc3`  | 4.5.0   | aborted    | needs_evidence_preflight     | 1           | DEF-1                        |
+| `469d8785`  | 4.5.0   | aborted    | needs_evidence_preflight     | 1           | DEF-1 (incl. RED TDD output) |
+| `989d8a2e`  | 4.5.0   | aborted    | needs_evidence_preflight     | 2           | DEF-1, DEF-4                 |
+| `7afaf133`  | 4.5.0   | max-rounds | max_rounds_without_unanimity | 4           | DEF-2                        |
+| `a37722c8`  | 4.5.2   | max-rounds | max_rounds_without_unanimity | 6           | DEF-5                        |
+| `8789eb50`  | 4.5.3   | aborted    | needs_truthfulness_preflight | 1(+relator) | DEF-5, DEF-6                 |
+
+Also observed outside the sessions: DEF-3 (`session_attach_evidence` operator-only) and the
+1000-char limit of `escalate_to_operator` (minor).
 
 ---
 
-## 3. Defeitos observados
+## 2. CORRECT behaviours observed (what works)
 
-### DEF-1 — `evidence_preflight` falso-positivo em claims de contagem/comando inline (4.5.0)
+For calibration: a great deal works well and should be preserved.
 
-- **Sintoma:** todo round abortava ANTES de qualquer chamada paga, com
+1. **`server_info` / `probe_peers` / capability_snapshot:** accurate and fast. Latencies,
+   `auth_present`, `model_selection` with `source_url` and `confidence:"verified"` per peer.
+2. **Cost/usage accounting:** per-peer and aggregate, with `cache_read/write`, `reasoning_tokens`,
+   `tier_used`, `request_cost` (perplexity), `cost_ceiling_usd` and `budget_warning_emitted`.
+   Example: session `8789eb50` cost **USD 0.515** for 4 peers + 1 relator.
+3. **Persistence of caller evidence (4.5.1+):** `persistCallerSubmittedEvidence` writes the
+   `evidence` field as a session attachment with `sha256` and `integrity_version`, and the round
+   inlines it into the peers' prompt. Confirmed: the 4.5.3 peers cited the file by hash
+   (`c5083095…dc24da`) and by §-section. **This fixes the 4.5.0 delivery regression (DEF-2).**
+4. **Preflight testable offline, for free:** `session_truthfulness_preflight_check` and the exported
+   `evidencePreflight` allow iterating on the draft without spending paid rounds — essential and
+   well designed.
+5. **Relator-lottery / anti-self-review:** `convergence_scope` elects a non-voting `lead_peer`
+   (`grok` in `8789eb50`), with an explicit `anti_self_review_exclusion_reason`. Correct.
+6. **Identity idempotence:** `identity_forgery_blocked` correctly stops an agent host from declaring
+   itself `operator`. The intent is right (see DEF-3 for the side effect).
+7. **Durable auto-finalization + escalation:** `escalate_to_operator` writes to
+   `operator_escalations[]` in the meta; `convergence_health.state` reflects `blocked`.
+
+---
+
+## 3. Defects observed
+
+### DEF-1 — `evidence_preflight` false positive on inline count/command claims (4.5.0)
+
+- **Symptom:** every round aborted BEFORE any paid call, with
   `Evidence preflight failed before any paid peer call: task/draft claims completed operational
 work without value-corresponding evidence: 11 passed, 47 passed[, 1 failed, 2 failed, npm run
 biome, git diff]; attach raw matching output inline, via the evidence field, or as session
 evidence`.
-- **Gatilho:** o draft continha frases como `47 passed`, `npm run biome`, `git diff` — extraídas
-  por `extractEvidenceOperationalAssertions` (`orchestrator.ts:1169`) como assertivas operacionais,
-  sem corroboração reconhecida por `extractInlineRawEvidence` (`:1230`).
-- **Prova empírica:** rodando o `evidencePreflight` das duas builds contra o **mesmo draft**:
+- **Trigger:** the draft contained phrases such as `47 passed`, `npm run biome`, `git diff` —
+  extracted by `extractEvidenceOperationalAssertions` (`orchestrator.ts:1169`) as operational
+  assertions, with no corroboration recognized by `extractInlineRawEvidence` (`:1230`).
+- **Empirical proof:** running each build's `evidencePreflight` against the **same draft**:
   `4.5.0 → pass:false` (uncorroborated: `["11 passed","47 passed","npm run biome","git diff"]`);
   `4.5.1 → pass:true` ("value-correlated with caller-submitted raw material").
-- **Agravante observado:** ao adicionar as saídas RED de TDD como evidência (para "mostrar o
-  vermelho antes do verde"), a frase `1 failed`/`2 failed` vira sinal de falha
-  (`evidenceHasExplicitFailureSignal`, `:1267`) e **invalida todas as corroborações de contagem** —
-  contraintuitivo para quem documenta TDD honestamente.
-- **Raiz:** heurística de corroboração muito sensível a texto narrativo; o 4.5.0 não reconhecia
-  blocos ``` com `$ cmd`/`EXIT_CODE:` que o 4.5.1 passou a reconhecer.
-- **Status:** **corrigido na 4.5.1** (a entrega de evidência ao peer é DEF-2).
-- **Severidade:** alta (bloqueio total) — resolvida.
+- **Aggravating factor observed:** adding the RED TDD output as evidence (to "show the red before
+  the green") turns the phrase `1 failed`/`2 failed` into a failure signal
+  (`evidenceHasExplicitFailureSignal`, `:1267`) and **invalidates every count corroboration** —
+  counter-intuitive for anyone documenting TDD honestly.
+- **Root cause:** a corroboration heuristic far too sensitive to narrative text; 4.5.0 did not
+  recognize ``` blocks with `$ cmd`/`EXIT_CODE:` that 4.5.1 began to recognize.
+- **Status:** **fixed in 4.5.1** (delivering the evidence to the peer is DEF-2).
+- **Severity:** high (total block) — resolved.
 
-### DEF-2 — Campo `evidence` não entregue aos peers em `session_start_round`/`ask_peers` (4.5.0)
+### DEF-2 — the `evidence` field was not delivered to peers in `session_start_round`/`ask_peers` (4.5.0)
 
-- **Sintoma:** na sessão `7afaf133`, com a evidência no campo `evidence` (via
-  `session_start_unanimous`), o preflight passou mas os 4 rounds retornaram `NEEDS_EVIDENCE` — o
-  `round-1-prompt.md` continha **zero bytes** da evidência.
-- **Raiz:** no 4.5.0, os schemas de `session_start_round`/`ask_peers` sequer tinham o campo
-  `evidence`; e o pipeline não inlineava a evidência do caller no prompt do peer.
-- **Status:** **corrigido na 4.5.1+** (`persistCallerSubmittedEvidence` — ver §2.3).
-- **Severidade:** alta — resolvida.
+- **Symptom:** in session `7afaf133`, with the evidence in the `evidence` field (via
+  `session_start_unanimous`), the preflight passed but all 4 rounds returned `NEEDS_EVIDENCE` — the
+  `round-1-prompt.md` contained **zero bytes** of the evidence.
+- **Root cause:** in 4.5.0, the `session_start_round`/`ask_peers` schemas did not even have an
+  `evidence` field; and the pipeline did not inline the caller's evidence into the peer prompt.
+- **Status:** **fixed in 4.5.1+** (`persistCallerSubmittedEvidence` — see §2.3).
+- **Severity:** high — resolved.
 
-### DEF-3 — `session_attach_evidence` é operator-only → inacessível a caller-agente (4.5.0+)
+### DEF-3 — `session_attach_evidence` is operator-only → unreachable for an agent-caller (4.5.0+)
 
-- **Sintoma:** `session_attach_evidence(caller:'claude')` →
-  `operator_authority_required: ...may only be called by the human operator`; e
-  `caller:'operator'` de host-agente → `identity_forgery_blocked: clientInfo.name='claude-code'
+- **Symptom:** `session_attach_evidence(caller:'claude')` →
+  `operator_authority_required: ...may only be called by the human operator`; and
+  `caller:'operator'` from an agent host → `identity_forgery_blocked: clientInfo.name='claude-code'
 resolves to claude`.
-- **Efeito:** um caller-agente não tem NENHUMA rota de "operator-verified attachment"; depende
-  inteiramente de o `evidence` inline ser aceito pelos preflights. Quando estes têm falsos-positivos
-  (DEF-1/4/5/6), o agente fica sem escape.
-- **Recomendação:** manter o bloqueio de forja, mas prover uma custódia de evidência de primeira
-  classe para caller-agente autenticado por token (o `CROSS_REVIEW_CALLER_TOKEN` já existe e é
-  `hard_enforce:true`), tratando `caller_submitted` autenticado como suficiente para READY quando o
-  peer o corrobora.
-- **Severidade:** média (arquitetural).
+- **Effect:** an agent-caller has NO route to an "operator-verified attachment"; it depends entirely
+  on the inline `evidence` being accepted by the preflights. When those have false positives
+  (DEF-1/4/5/6), the agent has no escape.
+- **Recommendation:** keep the forgery block, but provide first-class evidence custody for an
+  agent-caller authenticated by token (`CROSS_REVIEW_CALLER_TOKEN` already exists and is
+  `hard_enforce:true`), treating an authenticated `caller_submitted` as sufficient for READY when
+  the peer corroborates it.
+- **Severity:** medium (architectural).
 
-### DEF-4 — `truthfulness_preflight` confunde IDs/datas de terceiros com estado do sistema (4.5.0)
+### DEF-4 — `truthfulness_preflight` confuses third-party IDs/dates with system state (4.5.0)
 
-- **Sintoma (sessão `989d8a2e`, 1ª tentativa):**
+- **Symptom (session `989d8a2e`, 1st attempt):**
   `current-state model claim gemini-3.5-flash for gemini contradicts model_pin
 gemini-3.1-pro-preview; current-state release_date claim 2026-10-16 contradicts runtime
 release_date 2026-07-10; ...2026-05-19...`.
-- **Gatilho:** o draft mencionava o **modelo migrado da aplicação** (`gemini-3.5-flash`) e datas de
-  deprecation (`2026-10-16`). O scanner cruzou esses tokens com o `model_pin` do **peer gemini do
-  próprio servidor** (`gemini-3.1-pro-preview`) e com o `release_date` de runtime — dois universos
-  distintos (o modelo da app ≠ o modelo do peer).
-- **Workaround encontrado:** manter IDs de modelo e datas ISO fora de linhas que casam
+- **Trigger:** the draft mentioned the **application's migrated model** (`gemini-3.5-flash`) and
+  deprecation dates (`2026-10-16`). The scanner crossed those tokens with the `model_pin` of the
+  **server's own gemini peer** (`gemini-3.1-pro-preview`) and with the runtime `release_date` — two
+  distinct universes (the app's model ≠ the peer's model).
+- **Workaround found:** keep model IDs and ISO dates out of lines matching
   `CURRENT_STATE_CLAIM_PATTERN` (`orchestrator.js:1141`:
   `current|currently|actual|atual|runtime|production|prod|loaded|carregad[ao]|is/are running`).
-  Reformulando as linhas, o mesmo conteúdo passou.
-- **Raiz:** o preflight não distingue "afirmação sobre o sistema sob review" de "citação sobre um
-  produto de terceiro". A correlação por token de modelo/data é global à linha.
-- **Severidade:** alta (bloqueio total, contornável só por reescrita anti-idiomática).
+  Rewording the lines let the same content pass.
+- **Root cause:** the preflight does not distinguish "a claim about the system under review" from "a
+  citation about a third-party product". Model/date token correlation is global to the line.
+- **Severity:** high (total block, avoidable only by anti-idiomatic rewriting).
 
-### DEF-5 — Demoção READY→NEEDS_EVIDENCE por grounding check (4.5.2 e 4.5.3) ⚠️ **principal**
+### DEF-5 — READY→NEEDS_EVIDENCE demotion by the grounding check (4.5.2 and 4.5.3) ⚠️ **principal**
 
-- **Sintoma:** os peers emitem `"status":"READY"` no texto cru, e o servidor os rebaixa a
-  `NEEDS_EVIDENCE`, com `decision_quality:"format_warning"`.
-- **Dados brutos (campo `text` vs `status` pós-parser):**
+- **Symptom:** the peers emit `"status":"READY"` in the raw text, and the server demotes them to
+  `NEEDS_EVIDENCE`, with `decision_quality:"format_warning"`.
+- **Raw data (the `text` field vs the post-parser `status`):**
 
-  | Sessão             | Peer       | raw `text` | `status` final | `parser_warnings`                                                                  |
+  | Session            | Peer       | raw `text` | final `status` | `parser_warnings`                                                                  |
   | ------------------ | ---------- | ---------- | -------------- | ---------------------------------------------------------------------------------- |
   | `a37722c8` (4.5.2) | deepseek   | READY      | NEEDS_EVIDENCE | `verified_without_concrete_evidence_sources`, `ready_downgraded_to_needs_evidence` |
-  | `a37722c8` (4.5.2) | gemini     | READY      | NEEDS_EVIDENCE | idem                                                                               |
+  | `a37722c8` (4.5.2) | gemini     | READY      | NEEDS_EVIDENCE | same                                                                               |
   | `a37722c8` (4.5.2) | grok       | READY      | NEEDS_EVIDENCE | `ready_evidence_sources_fabricated`                                                |
   | `a37722c8` (4.5.2) | perplexity | READY      | NEEDS_EVIDENCE | `ready_evidence_sources_fabricated`                                                |
   | `8789eb50` (4.5.3) | codex      | READY      | NEEDS_EVIDENCE | `ready_evidence_sources_ungrounded`                                                |
@@ -157,641 +157,612 @@ release_date 2026-07-10; ...2026-05-19...`.
   | `8789eb50` (4.5.3) | deepseek   | READY      | NEEDS_EVIDENCE | `ready_evidence_sources_ungrounded`                                                |
   | `8789eb50` (4.5.3) | perplexity | READY      | NEEDS_EVIDENCE | `ready_evidence_sources_ungrounded`                                                |
 
-- **Contradição-chave:** as `evidence_sources` desses votos **são** concretas e rastreáveis. Ex.
-  (perplexity, `8789eb50`): citam `evidence/...-caller-structured-evidence-...txt
-(sha256=c5083095…dc24da)` e transcrevem §2–§8 verbatim (INSERTs numerados, `typeof` do D1,
-  saídas de teste, HTTP 200 do smoke). Ainda assim o grounding check as classificou como
+- **Key contradiction:** those votes' `evidence_sources` **are** concrete and traceable. Example
+  (perplexity, `8789eb50`): they cite `evidence/...-caller-structured-evidence-...txt
+(sha256=c5083095…dc24da)` and transcribe §2–§8 verbatim (numbered INSERTs, the D1 `typeof`, test
+  output, the smoke's HTTP 200). Even so the grounding check classified them as
   `ungrounded`/`fabricated`.
-- **Ponteiros de código (dist 4.5.3):**
-  - `core/orchestrator.js:659-667` — decide o warning:
+- **Code pointers (dist 4.5.3):**
+  - `core/orchestrator.js:659-667` — decides the warning:
     `ready_peer_submitted_evidence_requires_path_hash_and_correlated_raw_quote` →
     `ready_evidence_sources_fabricated` → `ready_evidence_sources_missing` →
-    `ready_evidence_sources_ungrounded`, e força `status:"NEEDS_EVIDENCE"`.
-  - `core/status.js:334-355` — `isConcreteEvidenceSource` + demoção
-    `ready_downgraded_to_needs_evidence` / `verified_without_concrete_evidence_sources`.
-- **Raiz provável:** o matcher de "correlated raw quote / path+hash" não reconhece o formato de
-  citação que os próprios peers produzem (referência ao arquivo por `sha256` + citação de §-seção),
-  OU exige um formato de quote literal que o prompt não instrui os peers a emitir. Resultado: um
-  peer que faz exatamente o pedido ("cite verbatim") é punido como se tivesse fabricado.
-- **Severidade:** **crítica** — é o que impede convergência mesmo com aprovação unânime real.
+    `ready_evidence_sources_ungrounded`, and forces `status:"NEEDS_EVIDENCE"`.
+  - `core/status.js:334-355` — `isConcreteEvidenceSource` + the
+    `ready_downgraded_to_needs_evidence` / `verified_without_concrete_evidence_sources` demotion.
+- **Likely root cause:** the "correlated raw quote / path+hash" matcher does not recognize the
+  citation format the peers themselves produce (a reference to the file by `sha256` + a §-section
+  citation), OR it requires a literal quote format the prompt does not instruct the peers to emit.
+  Result: a peer that does exactly what was asked ("cite verbatim") is punished as if it had
+  fabricated.
+- **Severity:** **critical** — this is what prevents convergence even with real unanimous approval.
 
-### DEF-6 — `truthfulness_preflight` aborta round-2 na citação verbatim da doc de terceiro (4.5.3)
+### DEF-6 — `truthfulness_preflight` aborts round 2 on a verbatim third-party doc citation (4.5.3)
 
-- **Sintoma (sessão `8789eb50`, round 2 / revisão do relator):** os 4 peers registrados em
-  `failed_attempts` com
+- **Symptom (session `8789eb50`, round 2 / relator revision):** the 4 peers recorded in
+  `failed_attempts` with
   `Truthfulness preflight failed on lead-generated revision before reviewer peer calls: current
 operational-state claim lacks a correlated raw status record: GA (§5): "generally available (GA),
 stable, and ready for scaled production use." ... preflight_issue_classes:
 ["unsupported_current_state_claim"]`.
-- **Gatilho:** a **citação verbatim da doc do Google** (que os peers do round 1 EXIGIRAM: "cite
-  evidence verbatim") contém `GA`, `stable`, `production` — `production`/`prod` casam
-  `CURRENT_STATE_CLAIM_PATTERN` (`orchestrator.js:1141`) e a linha é tratada como afirmação de
-  estado-corrente do **sistema sob review**, exigindo "raw status record" que uma citação de doc
-  não tem.
-- **Catch-22:** a camada de citação (DEF-5) exige verbatim; a de veracidade (DEF-6) aborta a
-  sessão justamente por causa do verbatim. Não há draft que satisfaça ambas.
-- **Ponteiros:** `orchestrator.js:1322` e `:1361` (`unsupported_current_state_claim`); pattern em
+- **Trigger:** the **verbatim citation of Google's doc** (which the round-1 peers DEMANDED: "cite
+  evidence verbatim") contains `GA`, `stable`, `production` — `production`/`prod` match
+  `CURRENT_STATE_CLAIM_PATTERN` (`orchestrator.js:1141`) and the line is treated as a current-state
+  claim about the **system under review**, requiring a "raw status record" that a doc citation does
+  not have.
+- **Catch-22:** the citation layer (DEF-5) demands verbatim; the truthfulness layer (DEF-6) aborts
+  the session precisely because of the verbatim. No draft satisfies both.
+- **Pointers:** `orchestrator.js:1322` and `:1361` (`unsupported_current_state_claim`); pattern at
   `:1141`.
-- **Raiz:** idêntica à DEF-4 — ausência de distinção "citação atribuída a fonte externa" vs
-  "auto-alegação do sistema". A entrada de round-2 é gerada pelo relator, então o abort mata a
-  sessão inteira mesmo com round-1 já tendo colhido votos READY.
-- **Severidade:** **crítica**.
+- **Root cause:** identical to DEF-4 — the absence of a distinction between "a citation attributed
+  to an external source" and "a self-claim by the system". The round-2 input is generated by the
+  relator, so the abort kills the whole session even though round 1 had already collected READY
+  votes.
+- **Severity:** **critical**.
 
-### DEF-7 (minor) — Efeitos operacionais colaterais
+### DEF-7 (minor) — collateral operational effects
 
-- **Auto-finalização em abort de preflight:** cada abort seta `outcome:"aborted"` e a sessão fica
-  `session_already_finalized`; toda retry exige `session_init` novo (não dá para "consertar e
-  reenviar" na mesma sessão). Fricção alta durante iteração.
-- **`escalate_to_operator.reason` ≤ 1000 chars:** truncou a primeira tentativa de escalação
-  (mensagem de erro `too_big`). Considerar 4000 (paridade com `review_focus`).
-- **Ruído de processos:** ~10 `server.js` de hosts distintos em memória; nenhuma recarrega config
-  em disco sem restart do host (`live_reload_supported:false`). Documentar que o gate depende de
-  Reload Window por-host.
+- **Auto-finalization on a preflight abort:** each abort sets `outcome:"aborted"` and the session
+  becomes `session_already_finalized`; every retry requires a new `session_init` (there is no "fix
+  and resubmit" within the same session). High friction while iterating.
+- **`escalate_to_operator.reason` ≤ 1000 chars:** it truncated the first escalation attempt (error
+  message `too_big`). Consider 4000 (parity with `review_focus`).
+- **Process noise:** ~10 `server.js` instances from distinct hosts in memory; none reloads the
+  on-disk config without a host restart (`live_reload_supported:false`). Document that the gate
+  depends on a per-host Reload Window.
 
 ---
 
-## 3.5. Adendo 4.5.5 (12/07/2026) — reteste pós-fix e defeitos residuais
+## 3.5. 4.5.5 addendum (12/07/2026) — post-fix retest and residual defects
 
-Retestado com duas sessões na 4.5.5 (`04691dd6` via loop unânime; `741b69bc` via round único
-controlado, sem relator entre rounds). **Progresso real e mensurável**, mas ainda sem convergência.
+Retested with two sessions on 4.5.5 (`04691dd6` via unanimous loop; `741b69bc` via a controlled
+single round, with no relator between rounds). **Real, measurable progress**, but still no
+convergence.
 
-### O que a 4.5.4/4.5.5 comprovadamente corrigiu
+### What 4.5.4/4.5.5 demonstrably fixed
 
-- **DEF-5 parcial:** votos READY agora SOBREVIVEM ao parser quando 100% dos quotes citados são
-  substrings exatas (ou whitespace-normalizadas) do attachment. Provas: deepseek (2 sessões) e
-  perplexity (`741b69bc`) mantiveram `raw:READY → final:READY`, `parser_warnings: []`.
-- **DEF-6 parcial:** a citação verbatim das docs Google na evidência (§5) **não abortou mais** o
-  round 1 — docs atribuídas deixaram de ser tratadas como claim de runtime na entrada do caller.
-- **Transparência nova (excelente):** `raw_status`/`parsed_status`/`normalized_status` são
-  persistidos por peer — a demoção agora é auditável de primeira classe, sem ler o `text` cru.
+- **DEF-5 partially:** READY votes now SURVIVE the parser when 100% of the cited quotes are exact
+  (or whitespace-normalized) substrings of the attachment. Proof: deepseek (2 sessions) and
+  perplexity (`741b69bc`) kept `raw:READY → final:READY`, `parser_warnings: []`.
+- **DEF-6 partially:** the verbatim citation of Google's docs in the evidence (§5) **no longer
+  aborted** round 1 — attributed docs stopped being treated as a runtime claim in the caller's
+  input.
+- **New transparency (excellent):** `raw_status`/`parsed_status`/`normalized_status` are persisted
+  per peer — the demotion is now first-class auditable, without reading the raw `text`.
 
-### Defeitos residuais observados na 4.5.5
+### Residual defects observed on 4.5.5
 
-**DEF-8 — Validação de citação all-or-nothing + sem des-escape de aspas (novo, causa dominante).**
-Um ÚNICO item imperfeito em `evidence_sources` anula o voto READY inteiro
-(`ready_evidence_sources_ungrounded`). Medição na sessão `741b69bc`: gemini 3 itens/1 ruim →
-demovido; grok **15 itens/2 ruins** (13 verbatim perfeitos!) → demovido. E os itens ruins têm
-padrão único: são os quotes da §5 (docs Gemini) que **contêm aspas internas** — os peers os
-serializam com `\"` escapado no JSON, o validador compara sem des-escapar → nunca casa.
-Correções sugeridas: (a) des-escapar `\"`→`"` (e normalizar aspas tipográficas) antes da
-correlação; (b) política proporcional — voto cai apenas se a MAIORIA dos itens for
-incorrelacionável, descartando itens ruins individualmente (ou ao menos reportá-los por índice
-para o peer corrigir no round seguinte).
+**DEF-8 — all-or-nothing citation validation + no quote unescaping (new, dominant cause).** A SINGLE
+imperfect item in `evidence_sources` voids the entire READY vote
+(`ready_evidence_sources_ungrounded`). Measured in session `741b69bc`: gemini 3 items/1 bad →
+demoted; grok **15 items/2 bad** (13 perfectly verbatim!) → demoted. And the bad items share one
+pattern: they are the §5 quotes (Gemini docs) that **contain internal quotation marks** — the peers
+serialize them with `\"` escaped in the JSON, the validator compares without unescaping → it never
+matches. Suggested fixes: (a) unescape `\"`→`"` (and normalize typographic quotes) before the
+correlation; (b) a proportional policy — the vote falls only if the MAJORITY of items is
+uncorrelatable, discarding bad items individually (or at least reporting them by index so the peer
+can fix them in the next round).
 
-**DEF-6 residual — texto gerado pelo relator ainda dispara truthfulness.** Na sessão `04691dd6`
-(loop unânime), o round 2 abortou com `current-state model claim gemini-3.5 for gemini contradicts
-model_pin gemini-3.1-pro-preview` — a REVISÃO gerada pelo relator (lead peer) mencionou o modelo
-da aplicação em frase com palavra de estado-corrente. O texto de relator não passa pelo
-saneamento que o caller pode fazer no próprio draft; enquanto o scanner não distinguir
-"modelo da aplicação sob review" de "model_pin do peer", o modo loop-unânime fica inviável para
-qualquer review que envolva modelos Gemini da aplicação. Workaround validado: `session_start_round`
-(caller controla 100% do texto entre rounds).
+**DEF-6 residual — relator-generated text still triggers truthfulness.** In session `04691dd6`
+(unanimous loop), round 2 aborted with `current-state model claim gemini-3.5 for gemini contradicts
+model_pin gemini-3.1-pro-preview` — the REVISION generated by the relator (lead peer) mentioned the
+application's model in a sentence carrying a current-state word. Relator text does not go through
+the sanitization the caller can apply to its own draft; while the scanner does not distinguish "the
+model of the application under review" from "the peer's model_pin", unanimous-loop mode is unusable
+for any review involving the application's Gemini models. Validated workaround:
+`session_start_round` (the caller controls 100% of the text between rounds).
 
-**DEF-9 — codex `provider_error: response.incomplete` (transiente).** Sessão `04691dd6`:
+**DEF-9 — codex `provider_error: response.incomplete` (transient).** Session `04691dd6`:
 `openai responses terminal state rejected for gpt-5.6-sol: event=response.incomplete. Partial,
 truncated, filtered, or unterminated output is not a usable response.` — reasoning effort `max` +
-`max_output_tokens 20000` truncou. O peer foi rejeitado sem retry no mesmo round. Sugestão:
-retry automático 1x no mesmo modelo para essa classe (política do workspace: nunca downgrade).
+`max_output_tokens 20000` truncated it. The peer was rejected with no retry in the same round.
+Suggestion: automatic 1× retry on the same model for this class (workspace policy: never
+downgrade).
 
-### Resultado de mérito da última sessão (`741b69bc`, round 1)
+### Merit result of the last session (`741b69bc`, round 1)
 
-| Peer       | raw           | final          | Observação                                |
-| ---------- | ------------- | -------------- | ----------------------------------------- |
-| deepseek   | READY         | **READY**      | citações 100% verbatim                    |
-| perplexity | READY         | **READY**      | citações 100% verbatim                    |
-| gemini     | READY         | NEEDS_EVIDENCE | 1/3 itens com `\"` (DEF-8)                |
-| grok       | READY         | NEEDS_EVIDENCE | 2/15 itens com `\"` (DEF-8)               |
-| codex      | **NOT_READY** | NOT_READY      | **finding de mérito procedente** (abaixo) |
+| Peer       | raw           | final          | Note                                   |
+| ---------- | ------------- | -------------- | -------------------------------------- |
+| deepseek   | READY         | **READY**      | citations 100% verbatim                |
+| perplexity | READY         | **READY**      | citations 100% verbatim                |
+| gemini     | READY         | NEEDS_EVIDENCE | 1/3 items with `\"` (DEF-8)            |
+| grok       | READY         | NEEDS_EVIDENCE | 2/15 items with `\"` (DEF-8)           |
+| codex      | **NOT_READY** | NOT_READY      | **well-founded merit finding** (below) |
 
-**Finding do codex (procedente, vira patch na calculadora):** o DELETE de retenção de
-`ai_usage_logs` (oraculo.ts:93) está dentro do `logAiUsage` fire-and-forget (IIFE não-awaitada,
-não registrada em `context.waitUntil`), diferente do prune de observabilidade (que usa
-`waitUntil`). Em Workers/Pages, trabalho não-awaitado após a resposta não tem garantia de
-execução — a retenção fica best-effort. Correção pedida: retornar a Promise do insert+prune e
-registrá-la em `context.waitUntil` (ou await explícito). Primeiro finding de mérito real de toda a
-jornada — e só emergiu quando a instrução de citação byte-a-byte liberou os peers para focar em
-substância. Nota: 4 dos 5 peers votantes aprovaram o mérito; o veredito de convergência oficial
-segue bloqueado pelos defeitos acima.
-
----
-
-## 3.6. Fechamento preparado para 4.5.6 (12/07/2026)
-
-A remediação preserva as sessões acima como evidência histórica e não abriu uma nova rodada paga.
-Os três defeitos residuais ganharam regressões offline:
-
-- **DEF-8:** uma camada controlada de escape JSON é desserializada antes da correlação. A política
-  all-or-nothing foi mantida por segurança; a proposta de aceitar maioria de fontes foi rejeitada.
-  Matching posterior continua literal em case e whitespace, e código removido não fundamenta READY
-  nem quando citado com o marcador `-` do diff.
-- **DEF-6 residual:** somente alegações explicitamente vinculadas a cross-review/MCP,
-  `server_info`, `runtime_capabilities` ou `model_pin` são comparadas aos pins locais. “Reviewer” ou
-  “peer model” da aplicação sob revisão não pertence automaticamente ao namespace do servidor.
-- **DEF-9:** GPT-5.6 Sol pode fazer exatamente uma recuperação no mesmo modelo, prompt e teto,
-  reduzindo `high`/`xhigh`/`max` para `medium`; usage e custo da tentativa truncada permanecem no
-  ledger. Safety/content filter e esforço já baixo/médio continuam fail-closed sem retry.
-
-A revisão independente do diff encontrou e a mesma bateria cobre ainda: distinção oficial entre
-Gemini `promptFeedback.blockReason` (entrada) e `Candidate.finishReason=SAFETY` (saída), orçamento
-por peer compatível com consumidores de patch, envelope de status válido acima de 64 KiB,
-streaming provisional/commit/discard por tentativa e precificação do modelo efetivamente chamado
-em adapters e fallbacks. A rodada final de auditoria acrescentou: bloqueio de READY
-auto-referencial genérico, call graph integral no hardgate, fail-closed de Sonar Deep Research sem
-teto oficial e preservação de billing/erros/recusas nos terminais oficiais dos seis adapters. O
-relatório forense de 12/07/2026 contém a matriz oficial e a auditoria das 36 horas.
+**Codex's finding (well founded, becomes a patch on the calculadora):** the retention DELETE for
+`ai_usage_logs` (oraculo.ts:93) sits inside the fire-and-forget `logAiUsage` (a non-awaited IIFE,
+not registered in `context.waitUntil`), unlike the observability prune (which does use
+`waitUntil`). On Workers/Pages, non-awaited work after the response has no execution guarantee — so
+retention is best-effort. Requested fix: return the insert+prune Promise and register it in
+`context.waitUntil` (or await it explicitly). The first real merit finding of the whole journey —
+and it only emerged once the byte-for-byte citation instruction freed the peers to focus on
+substance. Note: 4 of the 5 voting peers approved the merit; the official convergence verdict stays
+blocked by the defects above.
 
 ---
 
-## 3.7. Desfecho 4.5.8 (12/07/2026) — convergência formal atingida
+## 3.6. Closing prepared for 4.5.6 (12/07/2026)
 
-Sessão limpa `4ed963d4` (round único, `session_start_round`): **outcome `converged |
-unanimous_ready` — caller + 5 peers READY raw+final, zero warnings, checklist vazio.** O finding
-do codex (round 1 da sessão `741b69bc`) foi corrigido com TDD e shipado como calculadora
-v04.02.02. Receita que produziu a convergência: pacote de citação byte-exato anexado desde o
-round 1 (trechos sem aspas internas, workaround usado naquela sessão), contrato de citação
-explícito no draft e no review_focus, `session_start_round` (sem relator), e abandono de sessões
-contaminadas por asks genéricos.
+The remediation preserves the sessions above as historical evidence and opened no new paid round.
+The three residual defects received offline regressions:
 
-Correção de estado após confronto com a fonte 4.5.8:
+- **DEF-8:** one controlled JSON escape layer is deserialized before the correlation. The
+  all-or-nothing policy was kept for safety; the proposal to accept a majority of sources was
+  rejected. Later matching stays literal in case and whitespace, and removed code does not ground a
+  READY even when quoted with the diff's `-` marker.
+- **DEF-6 residual:** only claims explicitly bound to cross-review/MCP, `server_info`,
+  `runtime_capabilities` or `model_pin` are compared against the local pins. A "reviewer" or "peer
+  model" of the application under review does not automatically belong to the server's namespace.
+- **DEF-9:** GPT-5.6 Sol may perform exactly one recovery on the same model, prompt and ceiling,
+  reducing `high`/`xhigh`/`max` to `medium`; the truncated attempt's usage and cost stay in the
+  ledger. Safety/content filter and an already low/medium effort remain fail-closed with no retry.
 
-- **DEF-8:** corrigido desde 4.5.6 por des-escape controlado antes da correlação; a política
-  all-or-nothing permanece deliberadamente fail-closed.
-- **DEF-6 residual:** corrigido desde 4.5.6 pela separação entre namespace da aplicação revisada e
-  namespace explícito de cross-review/MCP/runtime.
-- **DEF-9:** corrigido desde 4.5.6 por uma recuperação controlada de
-  `response.incomplete/max_output_tokens` no mesmo GPT-5.6 Sol, com effort `medium` e ledger
-  preservado.
-- **DEF-10 (novo, confirmado):** remediações genéricas criadas pelo próprio servidor eram
-  misturadas aos `caller_requests` dos peers. Sem âncora derivada, elas não podiam ser encerradas
-  por requester reverification e bloqueavam convergência quando judge ativo/operador não estavam
-  disponíveis. A correção foi preparada para 4.5.9, mantendo remediação em
-  `decision_transformations[].details.remediation` e reservando `caller_requests` a pedidos reais
-  dos peers.
+The independent review of the diff found, and the same battery also covers: the official
+distinction between Gemini `promptFeedback.blockReason` (input) and `Candidate.finishReason=SAFETY`
+(output), a per-peer budget compatible with patch consumers, a valid status envelope above 64 KiB,
+provisional/commit/discard streaming per attempt, and pricing of the model actually called in
+adapters and fallbacks. The final audit round added: a block on generic self-referential READY, the
+complete call graph in the hardgate, fail-closed handling of Sonar Deep Research with no official
+ceiling, and preservation of billing/errors/refusals across the six adapters' official terminals.
+The forensic report of 12/07/2026 contains the official matrix and the 36-hour audit.
 
-## 3.8. Fechamento preparado para 4.5.9 (12/07/2026)
+---
 
-O DEF-10 ganhou regressões vermelha/verde para as cinco demoções READY do parser e para a demoção
-de grounding. A correção não altera `hasAskDerivedAnchor`, não autoencerra asks genéricos reais e
-não reduz a política all-or-nothing: pedidos autênticos dos peers continuam persistidos e
-bloqueantes; somente orientação produzida pelo servidor deixa de ingressar na checklist como se
-fosse autoria do peer.
+## 3.7. 4.5.8 outcome (12/07/2026) — formal convergence reached
 
-A varredura histórica encontrou 54 itens sintéticos em 19 sessões: 40 `open` e 14
-`not_resurfaced`. Quatro sessões ainda ativas continham 11 itens. Ao retomar uma sessão ativa, a
-4.5.9 remove somente o item cuja origem sintética seja provada pelo voto bruto READY sem aquele
-ask e pelo warning correspondente na própria rodada de criação do item; uma colisão sintética
-posterior não pode apagar um pedido genuíno anterior. A correção registra reclassificação durável
-e não altera sessões terminais. Assim, sessões antigas comprovadamente contaminadas deixam de
-exigir intervenção manual sem que pedidos reais sejam satisfeitos por inferência.
+Clean session `4ed963d4` (single round, `session_start_round`): **outcome `converged |
+unanimous_ready` — caller + 5 peers READY raw+final, zero warnings, empty checklist.** Codex's
+finding (round 1 of session `741b69bc`) was fixed with TDD and shipped as calculadora v04.02.02.
+The recipe that produced the convergence: a byte-exact citation package attached from round 1
+(excerpts with no internal quotation marks, the workaround used in that session), an explicit
+citation contract in the draft and in the review_focus, `session_start_round` (no relator), and
+abandoning sessions contaminated by generic asks.
 
-## 3.9. DEF-11 — propagação independente da atestação npm (4.5.9 → 4.5.10)
+State correction after confronting the 4.5.8 source:
 
-O run de publicação `29209138113` comprovou que o pacote 4.5.9 foi publicado corretamente no
-npmjs.com por Trusted Publishing/OIDC, com provenance, mas o gate pós-publicação produziu um falso
-negativo. O `npm publish` terminou às `21:13:01Z`; a versão passou a aparecer na metadata pública
-às `21:13:11Z`; aproximadamente 0,4 segundo depois, o URL já anunciado em
-`dist.attestations.url` ainda respondeu `HTTP 404`. O verificador abortava no primeiro erro. Mais
-tarde, sem qualquer nova publicação, o mesmo URL respondeu `200` com SLSA provenance v1. O rerun
-idempotente detectou a versão existente, não republicou o pacote, verificou a atestação e fechou o
-run e a GitHub Release em verde.
+- **DEF-8:** fixed since 4.5.6 by controlled unescaping before the correlation; the all-or-nothing
+  policy stays deliberately fail-closed.
+- **DEF-6 residual:** fixed since 4.5.6 by separating the reviewed application's namespace from the
+  explicit cross-review/MCP/runtime namespace.
+- **DEF-9:** fixed since 4.5.6 by a controlled recovery of
+  `response.incomplete/max_output_tokens` on the same GPT-5.6 Sol, with `medium` effort and the
+  ledger preserved.
+- **DEF-10 (new, confirmed):** generic remediations created by the server itself were mixed into the
+  peers' `caller_requests`. With no derived anchor, they could not be closed by requester
+  reverification and blocked convergence when an active judge or the operator was unavailable. The
+  fix was prepared for 4.5.9, keeping remediation in
+  `decision_transformations[].details.remediation` and reserving `caller_requests` for the peers'
+  real requests.
 
-A [documentação oficial de provenance](https://docs.npmjs.com/generating-provenance-statements/) e
-a [implementação oficial do npm/Pacote](https://github.com/npm/pacote/blob/3b5c462a96326fe7c88dc46312122ea720194179/lib/registry.js#L228-L239)
-confirmam que o consumidor deve seguir o URL de atestação anunciado pela metadata; o Pacote utiliza
-seu pathname preso novamente ao host do registry. O caminho literal interno não é documentado como
-contrato público estável. A 4.5.10 remove essa suposição e acrescenta retry delimitado para `404`,
-erros de rede/timeout, rate limit, falhas HTTP transitórias, JSON incompleto e documento cujo
-predicate SLSA ainda não propagou. Erros permanentes, metadata estruturalmente inválida e ausência
-persistente de SLSA provenance v1 continuam falhando fechados. Regressões comportamentais
-reproduzem as sequências metadata visível → primeiro lookup 404/JSON incompleto/predicate ausente →
-segundo lookup 200 com SLSA.
+## 3.8. Closing prepared for 4.5.9 (12/07/2026)
 
-A adaptação não copia cegamente a construção `new URL(pathname, registry)`: um pathname iniciado
-por `//` seria reinterpretado pela semântica WHATWG como host protocol-relative. A URL é criada já
-presa ao registry, recebe o pathname por atribuição, tem o origin reafirmado e usa
-`redirect: "error"`. A regressão inclui pathname `//attacker.invalid/...` e exige que o fetch
-permaneça no npm registry sem seguir redirects.
+DEF-10 received red/green regressions for the parser's five READY demotions and for the grounding
+demotion. The fix does not change `hasAskDerivedAnchor`, does not auto-close genuine generic asks
+and does not weaken the all-or-nothing policy: authentic peer requests stay persisted and blocking;
+only server-produced guidance stops entering the checklist as though the peer had authored it.
 
-Este verificador comprova presença do predicate SLSA na metadata e no documento publicado; ele não
-é apresentado como verificação criptográfica independente de assinatura, PURL ou digest do
-subject.
+The historical sweep found 54 synthetic items across 19 sessions: 40 `open` and 14
+`not_resurfaced`. Four still-active sessions held 11 items. When resuming an active session, 4.5.9
+removes only the item whose synthetic origin is proven by the raw READY vote without that ask and
+by the matching warning in the very round that created the item; a later synthetic collision cannot
+erase an earlier genuine request. The fix records a durable reclassification and does not alter
+terminal sessions. Demonstrably contaminated old sessions therefore stop requiring manual
+intervention, without real requests being satisfied by inference.
 
-## 3.10. DEF-12 — contrato MCP induzia agente a pedir upload humano (4.5.10 → 4.5.11)
+## 3.9. DEF-11 — independent propagation of the npm attestation (4.5.9 → 4.5.10)
 
-A sessão `86f41fbd-fe75-4cd4-a7bb-436f813294e9` reproduziu uma interpretação operacional errada,
-mas razoável diante do schema exposto. Um Codex autenticado criou a sessão e chamou duas vezes o
-tool genericamente apresentado como `Attach Evidence`. O runtime validou sua identidade e rejeitou
-`session_attach_evidence` com `operator_authority_required`, pois essa superfície promove evidência
-à autoridade opcional do operador. A restrição existe desde 4.5.0; não foi introduzida pela 4.5.10.
+Publication run `29209138113` proved that package 4.5.9 was published correctly on npmjs.com by
+Trusted Publishing/OIDC, with provenance, but the post-publication gate produced a false negative.
+`npm publish` finished at `21:13:01Z`; the version appeared in the public metadata at `21:13:11Z`;
+roughly 0.4 seconds later, the URL already announced in `dist.attestations.url` still answered
+`HTTP 404`. The verifier aborted on the first error. Later, with no new publication, the same URL
+answered `200` with SLSA provenance v1. The idempotent rerun detected the existing version, did not
+republish the package, verified the attestation and closed the run and the GitHub Release green.
 
-O transporte autônomo não estava quebrado. Logo depois, o mesmo host usou o campo `evidence` em
-`run_until_unanimous`. As sessões `ec55558d-a11b-46a8-bce9-31394d299c16` e
-`5e076838-7e9c-4ff2-9933-147ee5855d2e` persistiram, respectivamente, 41.417 e 40.751 bytes em
-arquivos físicos, com SHA-256, `submitted_by=codex`, manifesto ativo e eventos
-`session.evidence_attached`/`session.caller_evidence_submission_activated`. Os quatro preflights
-passaram. As rodadas não chamaram revisores porque o budget preflight estimou US$ 34,10/US$ 34,07,
-acima do limite de US$ 20 (e limite de sessão US$ 5); o bloqueio não foi evidência nem autorização.
+The [official provenance documentation](https://docs.npmjs.com/generating-provenance-statements/)
+and the [official npm/Pacote implementation](https://github.com/npm/pacote/blob/3b5c462a96326fe7c88dc46312122ea720194179/lib/registry.js#L228-L239)
+confirm that the consumer must follow the attestation URL announced by the metadata; Pacote uses
+its pathname re-anchored to the registry host. The internal literal path is not documented as a
+stable public contract. 4.5.10 removes that assumption and adds a bounded retry for `404`,
+network/timeout errors, rate limiting, transient HTTP failures, incomplete JSON and a document
+whose SLSA predicate has not propagated yet. Permanent errors, structurally invalid metadata and a
+persistent absence of SLSA provenance v1 still fail closed. Behavioural regressions reproduce the
+sequences visible metadata → first lookup 404/incomplete JSON/missing predicate → second lookup 200
+with SLSA.
 
-O defeito real era de descoberta e contrato: a descrição runtime do tool privilegiado não dizia
-`operator-only`, seu schema aceitava os identificadores dos peers, e as descrições dos campos
-`evidence` não anunciavam sua persistência automática. Isso levou o agente a escolher a superfície
-errada, fazer duas chamadas inúteis e concluir que precisava do humano.
+The adaptation does not blindly copy the `new URL(pathname, registry)` construction: a pathname
+starting with `//` would be reinterpreted by WHATWG semantics as a protocol-relative host. The URL
+is created already anchored to the registry, receives the pathname by assignment, has its origin
+reasserted and uses `redirect: "error"`. The regression includes the pathname
+`//attacker.invalid/...` and requires the fetch to stay on the npm registry without following
+redirects.
 
-A 4.5.11 mantém `operator_verified` fora de qualquer model host, mas torna o caminho correto
-inequívoco. `session_attach_evidence` é apresentado como promoção opcional de autoridade; os quatro
-review starters declaram que `evidence` é persistido automaticamente como
-`caller_submitted_unverified`; e uma chamada errada redireciona o agente para esses campos dizendo
-explicitamente que nenhuma ação humana é necessária. O runtime smoke lista os schemas MCP e cobre
-tanto as descrições quanto a remediação da rejeição.
+This verifier proves the SLSA predicate is present in the metadata and in the published document;
+it is not presented as an independent cryptographic verification of the subject's signature, PURL
+or digest.
 
-## 3.11. DEF-13 — Evidence Broker mantinha asks satisfeitos em `not_resurfaced` (4.5.11 → 4.5.12)
+## 3.10. DEF-12 — the MCP contract led an agent to request a human upload (4.5.10 → 4.5.11)
 
-A sessão `b5a73952-8236-4cdf-8e34-880624f663f4` confirmou um defeito determinístico no correlator
-do Evidence Broker. O DeepSeek abriu dois pedidos na rodada 2. Ambos passaram de `open` para
-`not_resurfaced` na rodada 3. Nas rodadas 4, 6 e 7, Claude, Gemini, DeepSeek, Grok e Perplexity
-retornaram `READY/verified`, sem warnings; path, SHA-256 e quotes foram validados byte a byte. Mesmo
-assim, as rodadas continuaram bloqueadas pelos mesmos dois itens. A sessão consumiu sete rodadas,
-241.207 tokens e custo configurado estimado de US$ 1,4204596.
+Session `86f41fbd-fe75-4cd4-a7bb-436f813294e9` reproduced an operationally wrong interpretation
+that was nonetheless reasonable given the exposed schema. An authenticated Codex created the
+session and twice called the tool generically presented as `Attach Evidence`. The runtime validated
+its identity and rejected `session_attach_evidence` with `operator_authority_required`, because
+that surface promotes evidence to the operator's optional authority. The restriction has existed
+since 4.5.0; it was not introduced by 4.5.10.
 
-O correlator transformava linguagem natural em uma conjunção incorreta. No primeiro pedido,
-“file/line **ou** git diff” exigia também a expressão `git diff`; no segundo, a abreviação `e.g.` era
-extraída como se fosse um caminho de arquivo obrigatório. Além disso, embora a documentação dissesse
-que `Checklist-Item` roteia a rechecagem, a implementação unia todas as fontes do peer num único
-corpus e não usava o ID. Isso criava falsos negativos e risco simétrico de uma fonte fechar outro
-item do mesmo autor.
+Autonomous transport was not broken. Right afterwards, the same host used the `evidence` field in
+`run_until_unanimous`. Sessions `ec55558d-a11b-46a8-bce9-31394d299c16` and
+`5e076838-7e9c-4ff2-9933-147ee5855d2e` persisted, respectively, 41,417 and 40,751 bytes in physical
+files, with SHA-256, `submitted_by=codex`, an active manifest and the events
+`session.evidence_attached`/`session.caller_evidence_submission_activated`. All four preflights
+passed. The rounds did not call reviewers because the budget preflight estimated
+USD 34.10/USD 34.07, above the USD 20 limit (and a USD 5 session limit); the block was neither
+evidence nor authorization.
 
-A sessão imediatamente posterior `a78aa17c-93f6-4825-89f9-b8abe1ec76d8` reproduziu a classe em
-mais linguagem real: `diff/grep`, documentos de release sem extensão, termos em português sobre
-injeção/validação e redação de segredos, além de enumeração numerada do Perplexity. Cinco itens ficaram
-`not_resurfaced`; na rodada 3, os cinco peers estavam READY, mas o broker continuou bloqueando. A
-análise também distinguiu asks realmente provados de alegações narrativas: READY e ID não bastam se
-os bytes citados forem irrelevantes, parciais ou apenas afirmarem que uma rodada anterior teria
-provado algo.
+The real defect was one of discovery and contract: the privileged tool's runtime description did
+not say `operator-only`, its schema accepted the peers' identifiers, and the `evidence` field
+descriptions did not announce their automatic persistence. That led the agent to pick the wrong
+surface, make two useless calls and conclude it needed the human.
 
-A 4.5.12 corrige o ciclo sem afrouxar o mecanismo anti-enganação:
+4.5.11 keeps `operator_verified` out of any model host but makes the correct path unambiguous.
+`session_attach_evidence` is presented as an optional authority promotion; the four review starters
+declare that `evidence` is persisted automatically as `caller_submitted_unverified`; and a wrong
+call redirects the agent to those fields, saying explicitly that no human action is required. The
+runtime smoke lists the MCP schemas and covers both the descriptions and the rejection's
+remediation.
 
-- `ask_peers`/`session_start_round` passam a injetar automaticamente todos os IDs pendentes;
-- quando há IDs nas fontes, cada item usa apenas as fontes que carregam seu próprio ID;
-- `e.g.`/`i.e.`, alternativas line/diff e diff/grep e marcadores de lista são tratados conforme o
-  papel sintático, não como prova obrigatória;
-- conceitos bilíngues e documentos explicitamente pedidos precisam aparecer na evidência;
-- ID com file:line/teste irrelevante, documento parcial, comando apenas documentado ou conjunção
-  explicitamente incompleta continuam bloqueados;
-- uma regressão E2E offline percorre cinco READY, attachment real, path, SHA-256, quote literal,
-  `requester_reverified`, evento durável e convergência a partir de `not_resurfaced`.
+## 3.11. DEF-13 — the Evidence Broker kept satisfied asks in `not_resurfaced` (4.5.11 → 4.5.12)
 
-Durante a criação desse E2E, duas versões iniciais do fixture usaram `stub=false`, mas `askPeers`
-recriava adapters internamente e ignorava a substituição feita no construtor. Isso produziu duas
-rodadas reais não pretendidas, dez chamadas, 65.501 tokens e custo externo estimado em cerca de
-US$ 1,06; o rate card zero do fixture deixou o ledger local incorretamente em US$ 0. A seam final é
-injetada em todos os pontos de criação, só é aceita com stub/teste confirmado, rejeita `stub=false`
-antes de probes/calls e verifica cinco chamadas locais exatas, zero chamadas Codex e zero retries.
+Session `b5a73952-8236-4cdf-8e34-880624f663f4` confirmed a deterministic defect in the Evidence
+Broker's correlator. DeepSeek opened two requests in round 2. Both moved from `open` to
+`not_resurfaced` in round 3. In rounds 4, 6 and 7, Claude, Gemini, DeepSeek, Grok and Perplexity
+returned `READY/verified`, with no warnings; path, SHA-256 and quotes were validated byte by byte.
+Even so, the rounds stayed blocked by the same two items. The session consumed seven rounds,
+241,207 tokens and an estimated configured cost of USD 1.4204596.
 
-## 3.12. DEF-14 — recorrência ReDoS e publicação antes da leitura dos achados (4.5.12 → 4.5.13)
+The correlator turned natural language into an incorrect conjunction. In the first request,
+"file/line **or** git diff" also demanded the expression `git diff`; in the second, the
+abbreviation `e.g.` was extracted as though it were a mandatory file path. Beyond that, although
+the documentation said `Checklist-Item` routes the recheck, the implementation merged all of the
+peer's sources into a single corpus and did not use the ID. That created false negatives and a
+symmetric risk of one source closing another item by the same author.
 
-O CodeQL da 4.5.12 abriu o alerta 39 em `src/core/session-store.ts`, no matcher
-camelCase usado para correlacionar símbolos pedidos pelo Evidence Broker. A
-repetição externa aceitava o mesmo `A` que a repetição interna, permitindo
-partições exponenciais de uma sequência longa. A classe `js/redos` era a mesma
-do alerta 31, corrigido na 4.5.3 no matcher de opções Git; portanto, não se trata
-de uma classe inédita, mas de uma recorrência metodológica.
+The immediately following session `a78aa17c-93f6-4825-89f9-b8abe1ec76d8` reproduced the class in
+more real language: `diff/grep`, release documents with no extension, Portuguese terms about
+injection/validation and secret redaction, plus a numbered enumeration from Perplexity. Five items
+stayed `not_resurfaced`; in round 3, all five peers were READY, but the broker kept blocking. The
+analysis also distinguished genuinely proven asks from narrative claims: READY and an ID are not
+enough if the quoted bytes are irrelevant, partial, or merely assert that an earlier round would
+have proven something.
 
-O problema chegou ao npm porque `auto-tag.yml` aguardava apenas o CI funcional.
-O workflow CodeQL pode terminar com `success` depois de carregar achados, e a
-automação confundia sucesso do upload/análise com ausência de vulnerabilidades.
-A tag `v04.05.12` e o publish ocorreram antes da auditoria explícita do conjunto
-de alertas.
+4.5.12 fixes the cycle without loosening the anti-deception mechanism:
 
-A 4.5.13 substitui o matcher por uma varredura linear de identificadores e um
-filtro explícito de maiúscula, com regressão adversarial de 100.000 caracteres.
-Também torna a publicação fail-closed: o auto-tag espera o CodeQL `push` do SHA
-exato que passou no CI e consulta os alertas reais da branch padrão. CodeQL
-ausente, incompleto, falho ou qualquer alerta aberto impede tag e publicação.
-A consulta ao ref móvel é cercada por verificações de SHA antes e depois; a tag
-nomeia explicitamente o SHA imutável cujos CI, análises processadas e snapshot
-sem alertas passaram. Uma regressão de política verifica permissões, espera,
-endpoint, bracket do ref e identidade exata da tag.
+- `ask_peers`/`session_start_round` now automatically inject every pending ID;
+- when the sources carry IDs, each item uses only the sources bearing its own ID;
+- `e.g.`/`i.e.`, line/diff and diff/grep alternatives and list markers are handled according to
+  their syntactic role, not as mandatory proof;
+- bilingual concepts and explicitly requested documents must appear in the evidence;
+- an ID with an irrelevant file:line/test, a partial document, a command that is only documented, or
+  an explicitly incomplete conjunction all stay blocked;
+- an offline E2E regression walks five READY votes, a real attachment, path, SHA-256, a literal
+  quote, `requester_reverified`, a durable event and convergence out of `not_resurfaced`.
 
-Na primeira execução do auto-tag para o commit `e698801`, o gate bloqueou a
-publicação antes da tag porque o filtro `gh --jq` omitia o operador `|` entre a
-iteração do array e a projeção do objeto. O log registrou `expected an object but
-got: array`; nenhuma publicação 4.5.13 ocorreu. O filtro foi corrigido e a
-regressão passou a exigir explicitamente a projeção por objeto, o grep do SHA e
-as três comparações que prendem análise e alerta ao `VERIFIED_SHA`.
+While that E2E was being created, two initial fixture versions used `stub=false`, but `askPeers`
+recreated adapters internally and ignored the substitution made in the constructor. That produced
+two unintended real rounds, ten calls, 65,501 tokens and an external cost estimated at about
+USD 1.06; the fixture's zero rate card left the local ledger incorrectly at USD 0. The final seam
+is injected at every creation point, is accepted only with a confirmed stub/test, rejects
+`stub=false` before probes/calls, and verifies exactly five local calls, zero Codex calls and zero
+retries.
 
-## 3.13. DEF-15 — perda de continuidade e divergência do Evidence Broker (4.5.13 → 4.5.14)
+## 3.12. DEF-14 — ReDoS recurrence and publication before the findings were read (4.5.12 → 4.5.13)
 
-A sessão `39cb7669-99c3-4ecd-a635-95103c105390`, executada no runtime 4.5.13,
-terminou a sexta rodada com Claude, Gemini, DeepSeek, Grok e Perplexity em
-`raw_status=READY`, `parsed_status=READY`, `normalized_status=READY`,
-`decision_quality=clean`, `confidence=verified` e sem `caller_requests` ou
-`follow_ups`. Mesmo assim, o resultado formal permaneceu bloqueado por 18 itens
-`not_resurfaced`. O objeto de convergência colocou DeepSeek, Grok e Perplexity
-simultaneamente em `ready_peers` e `needs_evidence_peers`.
+4.5.12's CodeQL opened alert 39 in `src/core/session-store.ts`, in the camelCase matcher used to
+correlate symbols requested by the Evidence Broker. The outer repetition accepted the same `A` as
+the inner repetition, allowing exponential partitions of a long sequence. The `js/redos` class was
+the same as alert 31, fixed in 4.5.3 in the Git options matcher; so this is not a novel class, but
+a methodological recurrence.
 
-A auditoria dos seis rounds mostrou que a unanimidade final, isoladamente, não
-provava os 18 itens. O anexo ativo da rodada 6 tinha apenas 476 bytes e duas
-linhas de resumo; os diffs, transcrições e testes específicos estavam em
-submissões anteriores, inclusive arquivos de 36.467 e 30.886 bytes. Os peers
-recebiam somente o snapshot ativo. Os blobs continuavam duráveis no disco e no
-manifesto, mas o broker 4.5.13 não reavaliava as respostas READY da rodada que
-efetivamente os havia recebido depois que o correlator foi corrigido. Exigir
-novo upload manual recriaria a falha de produto já rejeitada no DEF-12; reinserir
-todos os blobs no prompt atual, por outro lado, permitiria empréstimo stale e
-aumentaria novamente o custo das APIs.
+The problem reached npm because `auto-tag.yml` waited only for the functional CI. The CodeQL
+workflow can finish with `success` after uploading findings, and the automation confused
+upload/analysis success with an absence of vulnerabilities. Tag `v04.05.12` and the publish
+happened before the explicit audit of the alert set.
 
-Quatro defeitos adicionais amplificaram o ciclo:
+4.5.13 replaces the matcher with a linear identifier scan and an explicit uppercase filter, with an
+adversarial regression of 100,000 characters. It also makes publication fail-closed: auto-tag waits
+for the `push` CodeQL of the exact SHA that passed CI and queries the default branch's real alerts.
+A missing, incomplete or failed CodeQL, or any open alert, prevents the tag and the publication.
+The moving-ref query is fenced by SHA checks before and after; the tag explicitly names the
+immutable SHA whose CI, processed analyses and alert-free snapshot passed. A policy regression
+verifies permissions, the wait, the endpoint, the ref bracket and the tag's exact identity.
 
-- o preflight reconhecia `git diff --check`, mas não a identidade equivalente
-  `git -C astrologo-app diff --check`; a saída vazia não era a causa, pois o
-  registro já continha `EXIT_CODE: 0` e `STDOUT: <empty>`;
-- uma única fonte contendo qualquer ID conhecido fazia o roteador descartar
-  todas as fontes genéricas separadas ao avaliar os demais itens do peer;
-- a deduplicação por hash de `peer + texto integral` transformava pedidos que
-  começavam com `Checklist-Item: <id>` em novos IDs. As 19 entradas eram
-  principalmente reapresentações de quatro grupos de prova;
-- a rodada era persistida antes da agregação, address detection e judge. O
-  `finalConvergence` calculado depois não era gravado de volta, permitindo
-  divergência entre a resposta, `rounds[-1].convergence` e
-  `convergence_health`.
+On the first auto-tag run for commit `e698801`, the gate blocked publication before the tag because
+the `gh --jq` filter omitted the `|` operator between the array iteration and the object
+projection. The log recorded `expected an object but got: array`; no 4.5.13 publication occurred.
+The filter was fixed and the regression now explicitly requires the object projection, the SHA grep
+and the three comparisons that bind analysis and alert to `VERIFIED_SHA`.
 
-A recomendação do relatório externo de fechar automaticamente todo pedido
-antigo quando o peer retorna READY foi deliberadamente rejeitada. Um Claude
-preguiçoso poderia abandonar o próprio pedido sem verificar os bytes. Na
-4.5.14, `open` e `not_resurfaced` continuam bloqueantes; silêncio, READY
-genérico e o ID isolado continuam sem provar satisfação.
+## 3.13. DEF-15 — loss of continuity and Evidence Broker divergence (4.5.13 → 4.5.14)
 
-O source 4.5.14 corrige a continuidade sem reduzir os mecanismos
-anti-enganação:
+Session `39cb7669-99c3-4ecd-a635-95103c105390`, run on runtime 4.5.13, finished its sixth round
+with Claude, Gemini, DeepSeek, Grok and Perplexity at `raw_status=READY`, `parsed_status=READY`,
+`normalized_status=READY`, `decision_quality=clean`, `confidence=verified` and with no
+`caller_requests` or `follow_ups`. Even so, the formal result stayed blocked by 18
+`not_resurfaced` items. The convergence object placed DeepSeek, Grok and Perplexity simultaneously
+in `ready_peers` and `needs_evidence_peers`.
 
-- o snapshot ativo permanece a única fonte do preflight, prompt e grounding da
-  rodada atual. Ao retomar uma sessão, o broker pode reprocessar localmente um
-  READY histórico `clean/verified` contra o path, SHA-256 e quote literal do
-  snapshot daquela resposta. Os bytes antigos não voltam ao prompt, não
-  autorizam alegação nova e o replay não faz chamada de provedor;
-- fontes sem ID continuam elegíveis para correlação estrita de outro item,
-  enquanto fontes explicitamente roteadas a um ID alheio permanecem excluídas;
-- somente uma referência estrita de “mesmo item”, do mesmo peer e para um
-  ancestral mais antigo, ressurge/colapsa o ancestral. Referências cross-peer,
-  ciclos e um ID seguido de exigência nova continuam first-class e bloqueantes.
-  Reparos seguros de sessões 4.5.13 registram
-  `evidence_checklist_alias_collapses` mais evento de auditoria;
-- o matcher de comandos compara a identidade Git depois das opções globais.
-  `git -C <dir> diff --check` com exit zero e streams explicitamente vazios
-  passa; exit ausente/não zero, `diff --stat`, mero `echo`, `|| true`, `&&` e
-  pipelines continuam falhando. `--check` depois do terminador `--` é pathspec,
-  não opção; `--no-index`, refs e pathspecs estreitados também não provam a
-  alegação global;
-- `ready_peers` e `needs_evidence_peers` tornam-se disjuntos no estado formal,
-  sem apagar o voto bruto; o prompt exige que o proprietário associe cada
-  retirada a seu ID e a uma fonte literal correspondente;
-- o `in_flight` guarda o snapshot journaled de checklist/history anterior à
-  rodada e é adquirido antes de reparo, evidência ou preflight; recuperação,
-  sweep stale ou cancelamento sem append restaura esse baseline e registra um
-  evento compensatório. O `appendRound` reaplica o gate sob o mesmo lock da
-  gravação e mantém a reserva até a finalização convergida. Seu resultado é a
-  autoridade para rodada, health, resposta e outcome, eliminando gaps de crash,
-  concorrência pré-round e append-to-finalize da primeira implementação.
+The audit of the six rounds showed that the final unanimity, on its own, did not prove the 18
+items. Round 6's active attachment held only 476 bytes and two summary lines; the diffs,
+transcripts and specific tests were in earlier submissions, including files of 36,467 and 30,886
+bytes. The peers received only the active snapshot. The blobs remained durable on disk and in the
+manifest, but the 4.5.13 broker did not re-evaluate the READY responses from the round that had
+actually received them once the correlator was fixed. Demanding a new manual upload would recreate
+the product failure already rejected in DEF-12; reinserting every blob into the current prompt, on
+the other hand, would allow stale borrowing and would raise the APIs' cost again.
 
-As regressões offline reproduzem o comando real da sessão e seus negativos,
-fontes mistas ID/generic, aliases seguros/cross-peer/cíclicos, replay local
-após reinício sem reinjeção de blobs, isolamento do snapshot atual, disjunção
-dos conjuntos derivados e igualdade do estado bloqueado ou promovido após
-serialização e leitura da sessão. Nenhum schema wire das seis APIs,
-modelo, rate card ou chave da configuração central precisou mudar para este
-fix.
+Four additional defects amplified the cycle:
 
-A auditoria final de manutenção de dependências encontrou quatro ecossistemas
-reais no repositório: npm, GitHub Actions, o lock pip/pip-compile usado pelo
-Socket e os hooks pre-commit. A configuração Dependabot 4.5.14 cobre os quatro,
-autentica o proxy StepSecurity já declarado como registry global no `.npmrc` e
-remove `day` dos schedules `daily` (a chave é semanal segundo o contrato
-oficial). A primeira execução remota demonstrou que combinar esse `.npmrc` com
-`replaces-base: true` redirecionava também o bootstrap do próprio npm pelo
-Corepack; o proxy respondia sem `dist.tarball` e abortava antes da resolução das
-dependências. Omitir `replaces-base` não bastou: a segunda execução mostrou que
-o experimento `enable-private-registry-for-corepack` do próprio Dependabot ainda
-redirecionava a CLI quando encontrava `packageManager: npm@12.0.1`. A configuração
-final mantém `.npmrc` e a credencial StepSecurity para resolver dependências,
-mas remove do manifest apenas a dica Corepack. O Dependabot usa o npm 11.17
-embutido/documentado; CI e Publish continuam baixando npm 12.0.1 diretamente,
-validando o SHA-512 antes de executar. O CI instala o lock Python com hashes sob
-o pin 3.12 e executa os hooks pre-commit reais. A mesma primeira análise remota
-abriu o alerta CodeQL 40 na regressão textual da URL do registry; a expressão
-sem âncoras foi removida em favor de comparação literal, enquanto o parser YAML
-continua responsável pela associação estrutural, sem dismiss ou supressão.
+- the preflight recognized `git diff --check`, but not the equivalent identity
+  `git -C astrologo-app diff --check`; the empty output was not the cause, since the record already
+  contained `EXIT_CODE: 0` and `STDOUT: <empty>`;
+- a single source carrying any known ID made the router discard every separate generic source when
+  evaluating the peer's remaining items;
+- deduplication by a hash of `peer + full text` turned requests beginning with
+  `Checklist-Item: <id>` into new IDs. The 19 entries were mainly re-presentations of four proof
+  groups;
+- the round was persisted before aggregation, address detection and the judge. The
+  `finalConvergence` computed afterwards was not written back, allowing divergence between the
+  response, `rounds[-1].convergence` and `convergence_health`.
 
-Essa ativação abriu doze PRs de manutenção em paralelo. Nove foram validados e
-incorporados automaticamente; os PRs 112 e 116 tiveram todos os checks de
-conteúdo verdes, mas o job de automerge terminou vermelho porque outro PR mudou
-a base entre a leitura e o merge. O workflow agora repete apenas a resposta
-transiente `Base branch was modified`, sempre com `--match-head-commit` no mesmo
-SHA já validado. O PR 113 demonstrou uma segunda lacuna: sem o
-`socketsecurity-requirements.in`, o Dependabot trocou o pin direto para 2.4.20,
-mas não recompilou o novo transitivo `brotli>=1.0.9`; `--require-hashes` abortou
-corretamente. A 4.5.14 inclui o par `.in`/`.txt`, agrupa updates Python
-compatíveis e recompila a closure integral com pip-compile 7.5.3/Python 3.12.
-O pin npm 12 + SHA-512 continua sob regressão própria: a documentação oficial
-do Dependabot enumera apenas npm 7–11, portanto não se atribui cobertura não
-documentada ao bot.
+The external report's recommendation to automatically close every old request when the peer returns
+READY was deliberately rejected. A lazy Claude could abandon its own request without checking the
+bytes. In 4.5.14, `open` and `not_resurfaced` remain blocking; silence, a generic READY and a bare
+ID still do not prove satisfaction.
 
-Um dry-run da lógica final 4.5.14 sobre uma cópia integral da sessão 39cb, sem
-chamadas de API e sem alterar os autos originais, não colapsou nem promoveu item
-algum. As reformulações antigas continham autoria cross-peer ou exigências
-adicionais e, portanto, não eram aliases estritos seguros. Isso corrige uma
-conclusão excessiva do relatório externo: a sobreposição dos conjuntos e os
-falsos negativos de transporte/correlação eram bugs, mas as duas linhas
-genéricas da rodada 6 e as citações da rodada 5 não satisfaziam estritamente
-cada pedido de diffs, comandos e testes. A 4.5.14 não falsifica convergência
-retroativa. Uma rodada nova pode receber evidência pelo canal automático do
-caller, sem upload humano; cada ask só fecha com prova realmente correlacionada.
+The 4.5.14 source fixes continuity without weakening the anti-deception mechanisms:
 
-## 3.14. Fechamento de release — tag protegido 4.5.14 e alvo 4.5.15
+- the active snapshot remains the only source for the current round's preflight, prompt and
+  grounding. When resuming a session, the broker may locally reprocess a historical
+  `clean/verified` READY against the path, SHA-256 and literal quote of that response's snapshot.
+  The old bytes do not return to the prompt, do not authorize a new claim, and the replay makes no
+  provider call;
+- sources with no ID stay eligible for another item's strict correlation, while sources explicitly
+  routed to someone else's ID stay excluded;
+- only a strict "same item" reference, from the same peer and to an older ancestor, resurfaces or
+  collapses the ancestor. Cross-peer references, cycles and an ID followed by a new demand remain
+  first-class and blocking. Safe repairs of 4.5.13 sessions record
+  `evidence_checklist_alias_collapses` plus an audit event;
+- the command matcher compares the Git identity after the global options.
+  `git -C <dir> diff --check` with a zero exit and explicitly empty streams passes; a missing or
+  non-zero exit, `diff --stat`, a bare `echo`, `|| true`, `&&` and pipelines still fail. `--check`
+  after the `--` terminator is a pathspec, not an option; `--no-index`, refs and narrowed pathspecs
+  also do not prove the global claim;
+- `ready_peers` and `needs_evidence_peers` become disjoint in the formal state, without erasing the
+  raw vote; the prompt requires the owner to bind each withdrawal to its ID and to a matching
+  literal source;
+- `in_flight` stores the journaled checklist/history snapshot from before the round and is acquired
+  before any repair, evidence or preflight; recovery, a stale sweep or a cancellation without an
+  append restores that baseline and records a compensating event. `appendRound` reapplies the gate
+  under the same write lock and holds the reservation until converged finalization. Its result is
+  the authority for round, health, response and outcome, eliminating the first implementation's
+  crash, pre-round concurrency and append-to-finalize gaps.
 
-O auto-tag criou `v04.05.14` no SHA `1553c1af` enquanto a auditoria final do
-Dependabot ainda concluía. O Publish foi cancelado durante a instalação do gate,
-antes de npmjs.com, GitHub Packages ou GitHub Release; a consulta ao npm retornou
-404 para 4.5.14. A regra imutável de tags recusou a exclusão, corretamente. O
-alvo publicável passou então a 4.5.15, sem mover nem sobrescrever o tag antigo.
+The offline regressions reproduce the session's real command and its negatives, mixed ID/generic
+sources, safe/cross-peer/cyclic aliases, local replay after a restart without reinjecting blobs,
+isolation of the current snapshot, disjunction of the derived sets and equality of the blocked or
+promoted state after serializing and reading the session back. No wire schema of the six APIs, no
+model, no rate card and no central configuration key had to change for this fix.
 
-A correção final remove somente a dica `packageManager` do manifest. O
-Dependabot deixa de tentar ativar npm 12 pelo Corepack/StepSecurity e usa o npm
-11 documentado de sua imagem; CI e Publish continuam responsáveis pelo npm
-12.0.1, baixado diretamente e conferido pelo SHA-512 fixo. Nenhum modelo, wire
-schema, rate card ou chave da configuração central mudou neste fechamento.
-O Auto-tag também passou a detectar mudança em `dependabot.yml` e aguardar os
-quatro updater jobs dinâmicos do mesmo SHA; resultado ausente, pendente ou
-vermelho bloqueia o tag. Isso elimina a corrida que chegou a criar o tag 4.5.14
-antes de a falha do updater npm ficar visível.
+The final dependency-maintenance audit found four real ecosystems in the repository: npm, GitHub
+Actions, the pip/pip-compile lock used by Socket, and the pre-commit hooks. The 4.5.14 Dependabot
+configuration covers all four, authenticates the StepSecurity proxy already declared as the global
+registry in `.npmrc`, and removes `day` from the `daily` schedules (the key is weekly per the
+official contract). The first remote run showed that combining that `.npmrc` with
+`replaces-base: true` also redirected npm's own bootstrap through Corepack; the proxy answered
+without `dist.tarball` and aborted before dependency resolution. Omitting `replaces-base` was not
+enough: the second run showed that Dependabot's own
+`enable-private-registry-for-corepack` experiment still redirected the CLI when it found
+`packageManager: npm@12.0.1`. The final configuration keeps `.npmrc` and the StepSecurity
+credential for resolving dependencies but removes only the Corepack hint from the manifest.
+Dependabot uses the built-in/documented npm 11.17; CI and Publish still download npm 12.0.1
+directly, validating the SHA-512 before executing it. CI installs the Python lock with hashes under
+the 3.12 pin and runs the real pre-commit hooks. That same first remote analysis opened CodeQL
+alert 40 on the registry URL's textual regression; the unanchored expression was removed in favour
+of a literal comparison, while the YAML parser stays responsible for the structural association,
+with no dismissal or suppression.
 
-## 3.15. Adendo 4.5.16 (13/07/2026) — poll excessivo, Markdown e cancelamento tardio
+That activation opened twelve maintenance PRs in parallel. Nine were validated and merged
+automatically; PRs 112 and 116 had every content check green, but the automerge job ended red
+because another PR changed the base between the read and the merge. The workflow now retries only
+the transient `Base branch was modified` response, always with `--match-head-commit` on the same
+already-validated SHA. PR 113 demonstrated a second gap: without
+`socketsecurity-requirements.in`, Dependabot moved the direct pin to 2.4.20 but did not recompile
+the new transitive `brotli>=1.0.9`; `--require-hashes` correctly aborted. 4.5.14 includes the
+`.in`/`.txt` pair, groups compatible Python updates and recompiles the full closure with
+pip-compile 7.5.3/Python 3.12. The npm 12 + SHA-512 pin stays under its own regression: Dependabot's
+official documentation enumerates only npm 7–11, so no undocumented coverage is attributed to the
+bot.
 
-**Sessão observada:** `50e68ea8-8da3-4132-99b4-552a0399b72a`
+A dry-run of the final 4.5.14 logic over a complete copy of session 39cb, with no API calls and
+without altering the original records, collapsed and promoted nothing. The old reformulations
+carried cross-peer authorship or additional demands and were therefore not safe strict aliases.
+That corrects an overreaching conclusion in the external report: the set overlap and the
+transport/correlation false negatives were bugs, but round 6's two generic lines and round 5's
+citations did not strictly satisfy each request for diffs, commands and tests. 4.5.14 does not
+falsify retroactive convergence. A new round can receive evidence through the caller's automatic
+channel, with no human upload; each ask closes only with genuinely correlated proof.
+
+## 3.14. Release closing — protected tag 4.5.14 and target 4.5.15
+
+Auto-tag created `v04.05.14` on SHA `1553c1af` while the final Dependabot audit was still
+finishing. Publish was cancelled during the gate's install, before npmjs.com, GitHub Packages or
+GitHub Release; the npm query returned 404 for 4.5.14. The immutable tag rule refused the deletion,
+correctly. The publishable target therefore moved to 4.5.15, without moving or overwriting the old
+tag.
+
+The final fix removes only the `packageManager` hint from the manifest. Dependabot stops trying to
+activate npm 12 through Corepack/StepSecurity and uses the documented npm 11 from its image; CI and
+Publish remain responsible for npm 12.0.1, downloaded directly and checked against the fixed
+SHA-512. No model, wire schema, rate card or central configuration key changed in this closing.
+Auto-tag also began detecting changes to `dependabot.yml` and waiting for the four dynamic updater
+jobs of the same SHA; a missing, pending or red result blocks the tag. That eliminates the race
+that once created tag 4.5.14 before the npm updater's failure became visible.
+
+## 3.15. 4.5.16 addendum (13/07/2026) — excessive polling, Markdown and late cancellation
+
+**Session observed:** `50e68ea8-8da3-4132-99b4-552a0399b72a`
 
 **Runtime:** `4.5.15`
 
-**Janela UTC:** 2026-07-13T08:42:07.513Z a 2026-07-13T09:03:07.360Z
+**UTC window:** 2026-07-13T08:42:07.513Z to 2026-07-13T09:03:07.360Z
 
-**Classificação:** três defeitos de contrato/observabilidade; nenhuma falha de
-provider comprovada.
+**Classification:** three contract/observability defects; no proven provider failure.
 
-### DEF-16A — amplificação do `session_poll`
+### DEF-16A — `session_poll` amplification
 
-Enquanto a primeira rodada ainda não tinha histórico completo, o poll media
-1.122 caracteres. Após a primeira rodada, passou a 39.373. Durante a segunda
-rodada, cada resposta repetida tinha **43.326 caracteres**; **34.783** eram o
-`latest_round` completo, com os cinco peers, inclusive 14.848 caracteres de
-`text` e 14.690 de `structured`. A ferramenta transportava novamente o
-resultado anterior quando o caller precisava apenas acompanhar o trabalho
-ativo, o que levou a truncamento na superfície cliente.
+While the first round still had no complete history, the poll measured 1,122 characters. After the
+first round, it went to 39,373. During the second round, each repeated response was **43,326
+characters**; **34,783** of them were the complete `latest_round`, with all five peers, including
+14,848 characters of `text` and 14,690 of `structured`. The tool re-transported the previous result
+when the caller only needed to follow the active work, which led to truncation on the client
+surface.
 
-A 4.5.16 faz `detail="summary"` ser o padrão: conserva progresso, status,
-verdicts, resumos limitados e convergência, mas exclui `text`, `raw` e
-`structured` integrais. `detail="full"` e `session_read` preservam a rota
-forense explícita. O contrato também separa
-`active_round_number` — rodada atualmente em execução — de
-`latest_completed_round_number` — rodada mais recente já anexada.
+4.5.16 makes `detail="summary"` the default: it keeps progress, status, verdicts, bounded summaries
+and convergence, but excludes the complete `text`, `raw` and `structured`. `detail="full"` and
+`session_read` preserve the explicit forensic route. The contract also separates
+`active_round_number` — the round currently running — from `latest_completed_round_number` — the
+most recent round already appended.
 
-### DEF-16B — `response_format="markdown"` ignorado
+### DEF-16B — `response_format="markdown"` ignored
 
-O poll JSON de 09:01:49.581Z e o poll solicitado como Markdown de
-09:01:57.681Z tinham os mesmos 43.326 caracteres e o mesmo SHA-256
-`499e628472bc3ca11b767c11b7a4d6854a58b8ee589a59b1470fd291c7fb98af`.
-Ambos começavam por `{` e eram byte a byte idênticos. A 4.5.16 aplica o
-renderer Markdown compartilhado aos objetos retornados pela superfície MCP e
-neutraliza HTML de strings provenientes de callers, peers ou persistência.
+The JSON poll at 09:01:49.581Z and the poll requested as Markdown at 09:01:57.681Z had the same
+43,326 characters and the same SHA-256
+`499e628472bc3ca11b767c11b7a4d6854a58b8ee589a59b1470fd291c7fb98af`. Both began with `{` and were
+byte-for-byte identical. 4.5.16 applies the shared Markdown renderer to the objects returned by the
+MCP surface and neutralizes HTML in strings coming from callers, peers or persistence.
 
-### DEF-16C — corrida terminal descrita como job inexistente
+### DEF-16C — a terminal race described as a non-existent job
 
-O último poll ainda observou a rodada 2 ativa às 09:02:36.993Z. Perplexity, o
-último peer, concluiu e confirmou o stream às 09:02:56.242Z; a rodada foi
-registrada como concluída às 09:02:56.489Z. O cancelamento foi processado às
-09:03:07.360Z, **10,871 segundos depois**, e respondeu somente
+The last poll still observed round 2 active at 09:02:36.993Z. Perplexity, the last peer, finished
+and confirmed the stream at 09:02:56.242Z; the round was recorded as complete at 09:02:56.489Z. The
+cancellation was processed at 09:03:07.360Z, **10.871 seconds later**, and answered only
 `requested=false / no_running_job_matched`.
 
-Essa linha do tempo confirma uma corrida normal em que o job terminou entre o
-poll e o cancelamento, não corrupção de concorrência. A 4.5.16 persiste status
-compacto dos jobs sob a sessão, reconcilia a observação entre hosts/restarts e
-faz a resposta tardia ser idempotente e informativa:
-`job_already_terminal` inclui `terminal_job` e `final_state`;
-`session_already_terminal` inclui o mesmo estado final compacto.
+That timeline confirms a normal race in which the job finished between the poll and the
+cancellation, not concurrency corruption. 4.5.16 persists a compact job status under the session,
+reconciles the observation across hosts/restarts and makes the late response idempotent and
+informative: `job_already_terminal` includes `terminal_job` and `final_state`;
+`session_already_terminal` includes the same compact final state.
 
-### Disposição dos providers e responsabilidade da segunda rodada
+### Provider disposition and responsibility for the second round
 
-Os cinco peers da rodada 2 emitiram `peer.token.completed` com
-`committed=true`: Grok (4.791 caracteres), Gemini (2.203), DeepSeek (2.314),
-Claude (3.508) e Perplexity (4.530). Não houve falha comprovada nas chamadas ou
-no streaming dos providers. A segunda rodada foi iniciada indevidamente pelo
-caller; não foi criada automaticamente pelo cross-review e não é classificada
-como defeito da ferramenta.
+The five peers of round 2 emitted `peer.token.completed` with `committed=true`: Grok (4,791
+characters), Gemini (2,203), DeepSeek (2,314), Claude (3,508) and Perplexity (4,530). There was no
+proven failure in the providers' calls or streaming. The second round was started improperly by the
+caller; it was not created automatically by cross-review and is not classified as a defect of the
+tool.
 
-### Resultado preparado para 4.5.16
+### Result prepared for 4.5.16
 
-- poll operacional limitado por padrão, com detalhe forense opt-in;
-- nomes distintos para rodada ativa e última rodada concluída;
-- Markdown real e HTML-neutralizado;
-- status de job durável entre processos e reinícios;
-- cancelamento terminal idempotente com estado final;
-- ownership durável publicado antes do dispatch e settlement reconciliado sem
-  recriar controle órfão;
-- regressão hermética em stub, sem chamadas pagas ou dependência da config
-  central.
+- an operational poll bounded by default, with opt-in forensic detail;
+- distinct names for the active round and the last completed round;
+- real Markdown and neutralized HTML;
+- durable job status across processes and restarts;
+- idempotent terminal cancellation with a final state;
+- durable ownership published before the dispatch and a settlement reconciled without recreating an
+  orphan control;
+- a hermetic regression on stubs, with no paid calls and no dependency on the central config.
 
-Nenhum modelo, wire schema de provider, rate card ou chave da configuração
-central muda neste patch.
+No model, provider wire schema, rate card or central configuration key changes in this patch.
 
-## 4. Análise consolidada histórica (4.5.0–4.5.3)
+## 4. Consolidated historical analysis (4.5.0–4.5.3)
 
-O pipeline anti-alucinação tinha **quatro camadas** em série, cada uma com poder de veto absoluto
-e, naquele intervalo, com falsos-positivos que se sobrepunham:
+The anti-hallucination pipeline had **four layers** in series, each with absolute veto power and,
+in that interval, with overlapping false positives:
 
 ```
 draft+evidence
-  → [1] evidence_preflight        (DEF-1: contagem/comando inline)      → abort
-  → [2] truthfulness_preflight    (DEF-4/DEF-6: ID/data/GA de terceiro) → abort
-  → [3] peer call (paga)          → peer vota READY
-  → [4] grounding/demotion parser (DEF-5: citação "ungrounded")         → READY vira NEEDS_EVIDENCE
+  → [1] evidence_preflight        (DEF-1: inline count/command)          → abort
+  → [2] truthfulness_preflight    (DEF-4/DEF-6: third-party ID/date/GA)  → abort
+  → [3] peer call (paid)          → peer votes READY
+  → [4] grounding/demotion parser (DEF-5: "ungrounded" citation)         → READY becomes NEEDS_EVIDENCE
 ```
 
-Para um **caller-agente**, as camadas [1], [2] e [4] disparam em conteúdo perfeitamente honesto e
-corroborado, e a camada [4] pune exatamente o formato de citação que [1] exige. O veredito humano
-dos peers ("No blocking objections remain", READY unânime) **nunca é registrado**: ou a sessão
-aborta antes, ou o parser demove o voto depois.
+For an **agent-caller**, layers [1], [2] and [4] fire on perfectly honest and corroborated content,
+and layer [4] punishes exactly the citation format that [1] demands. The peers' human
+verdict ("No blocking objections remain", unanimous READY) **is never recorded**: either
+the session aborts first, or the parser demotes the vote afterwards.
 
-**Impacto histórico de produto:** nessas primeiras versões 4.5.x, o hardgate deixou de atuar como
-gate de qualidade do trabalho e virou um
-gate de conformidade de _formato textual do draft/citação_, no qual trabalho e evidência impecáveis
-falham por acionar heurísticas. Isso corrói a confiança no gate e força workarounds anti-idiomáticos
-(evitar palavras como "production", não colar saídas RED de TDD, não citar docs verbatim).
+**Historical product impact:** in those first 4.5.x versions, the hardgate stopped acting as a
+quality gate on the work and became a conformance gate on the _textual format of the
+draft/citation_, in which impeccable work and evidence fail by tripping heuristics. That erodes
+trust in the gate and forces anti-idiomatic workarounds (avoid words like "production", do not
+paste RED TDD output, do not cite docs verbatim).
 
 ---
 
-## 5. Correções recomendadas à época (registro histórico)
+## 5. Corrections recommended at the time (historical record)
 
-Esta lista preserva a priorização original e não representa o backlog vigente. DEF-1, DEF-2,
-DEF-4, DEF-5, DEF-6, DEF-8 e DEF-9 foram corrigidos nas releases posteriores. A rota automática
-de evidência autenticada também eliminou a necessidade de attachment manual do operador em
-revisões normais; a superfície `session_attach_evidence` continua operator-only por desenho de
-segurança. Os novos defeitos confirmados após o adendo foram o DEF-10, fechado na 4.5.9, e o
-DEF-11 de propagação da atestação npm, fechado na 4.5.10, DEF-12 de descoberta do transporte
-autônomo, fechado na 4.5.11, DEF-13 de convergência do Evidence Broker, fechado
-na 4.5.12, DEF-14 de recorrência ReDoS/publicação prematura, fechado no source 4.5.13,
-e DEF-15 de continuidade/persistência do Evidence Broker, fechado no source 4.5.14.
-O DEF-16 de polling/cancelamento foi reproduzido na 4.5.15 e fechado no source
+This list preserves the original prioritization and does not represent the current backlog. DEF-1,
+DEF-2, DEF-4, DEF-5, DEF-6, DEF-8 and DEF-9 were fixed in later releases. The automatic
+authenticated-evidence route also eliminated the need for a manual operator attachment in normal
+reviews; the `session_attach_evidence` surface stays operator-only by security design. The new
+defects confirmed after the addendum were DEF-10, closed in 4.5.9, and DEF-11 on npm attestation
+propagation, closed in 4.5.10, DEF-12 on autonomous transport discovery, closed in 4.5.11, DEF-13
+on Evidence Broker convergence, closed in 4.5.12, DEF-14 on the ReDoS recurrence and premature
+publication, closed in source 4.5.13, and DEF-15 on Evidence Broker continuity/persistence, closed
+in source 4.5.14. DEF-16 on polling/cancellation was reproduced on 4.5.15 and closed in source
 4.5.16.
 
-1. **[P0 — DEF-5] Reconhecer o formato de citação que o próprio prompt pede.** Se um voto READY tem
-   `evidence_sources` que (a) referenciam um attachment por `sha256` presente na sessão E (b) contêm
-   substrings que casam verbatim o conteúdo do attachment, tratar como _grounded_ — nunca
-   `fabricated`/`ungrounded`. Adicionar teste com o corpo real da sessão `8789eb50`.
-2. **[P0 — DEF-4/DEF-6] Distinguir citação de fonte externa de auto-alegação.** Linhas claramente
-   atribuídas (prefixo de URL, "doc:", aspas + fonte, seção `§`) não devem acionar
-   `CURRENT_STATE_CLAIM_PATTERN`/`model_pin`/`release_date`. Alternativa mínima: só cruzar
-   `model_pin` de peer quando o token do modelo aparecer SEM contexto de citação e casar o alias do
-   peer — nunca com o modelo _da aplicação sob review_.
-3. **[P1 — DEF-3] Custódia de evidência para caller-agente autenticado por token.** Com
-   `CROSS_REVIEW_CALLER_TOKEN` válido (`hard_enforce:true`), permitir uma rota equivalente ao
-   attachment do operador, para o agente não depender só do preflight inline.
-4. **[P1 — arquitetura] Não abortar a sessão inteira quando o round-1 já colheu votos.** Um abort de
-   preflight na revisão do relator (round 2) descarta votos READY válidos do round 1. Preservar o
-   estado e permitir retomar.
-5. **[P2 — DEF-1] Suavizar sinais de falha em evidência de TDD.** Saídas RED explicitamente rotuladas
-   ("antes da implementação", "RED esperado") não deveriam invalidar corroborações de contagens
-   verdes subsequentes no mesmo corpus.
-6. **[P2 — DEF-7] `escalate_to_operator.reason` para 4000 chars; documentar dependência de reload.**
+1. **[P0 — DEF-5] Recognize the citation format the prompt itself asks for.** If a READY vote has
+   `evidence_sources` that (a) reference an attachment by a `sha256` present in the session AND (b)
+   contain substrings matching the attachment's content verbatim, treat it as _grounded_ — never as
+   `fabricated`/`ungrounded`. Add a test with the real body of session `8789eb50`.
+2. **[P0 — DEF-4/DEF-6] Distinguish an external-source citation from a self-claim.** Clearly
+   attributed lines (a URL prefix, "doc:", quotes + a source, a `§` section) should not trip
+   `CURRENT_STATE_CLAIM_PATTERN`/`model_pin`/`release_date`. Minimal alternative: cross a peer's
+   `model_pin` only when the model token appears WITHOUT citation context and matches the peer's
+   alias — never with the model _of the application under review_.
+3. **[P1 — DEF-3] Evidence custody for a token-authenticated agent-caller.** With a valid
+   `CROSS_REVIEW_CALLER_TOKEN` (`hard_enforce:true`), allow a route equivalent to the operator's
+   attachment, so the agent does not depend on the inline preflight alone.
+4. **[P1 — architecture] Do not abort the whole session when round 1 has already collected votes.**
+   A preflight abort on the relator's revision (round 2) discards valid READY votes from round 1.
+   Preserve the state and allow resuming.
+5. **[P2 — DEF-1] Soften failure signals in TDD evidence.** RED output explicitly labelled ("before
+   the implementation", "expected RED") should not invalidate corroborations of the subsequent green
+   counts in the same corpus.
+6. **[P2 — DEF-7] `escalate_to_operator.reason` to 4000 chars; document the reload dependency.**
 
 ---
 
-## 6. Apêndice — chaves de dados brutos
+## 6. Appendix — raw data keys
 
-- Sessões: `~/.cross-review/data/sessions/{306ba203,be550cc3,469d8785,989d8a2e,7afaf133,a37722c8,8789eb50}/`
-- Voto cru vs parser: campo `rounds[].peers[].text` (cru) vs `.status` (pós-parser) vs
+- Sessions: `~/.cross-review/data/sessions/{306ba203,be550cc3,469d8785,989d8a2e,7afaf133,a37722c8,8789eb50}/`
+- Raw vote vs parser: the `rounds[].peers[].text` field (raw) vs `.status` (post-parser) vs
   `.parser_warnings` / `.decision_quality`.
-- Aborts: `meta.failed_attempts[]` (com `preflight_issue_classes`) e `events.ndjson`
+- Aborts: `meta.failed_attempts[]` (with `preflight_issue_classes`) and `events.ndjson`
   (`session.truthfulness_preflight_failed`, `session.evidence_preflight_failed`,
   `session.finalized`).
-- Attachment da 4.5.3: `evidence/2026-07-12T01-47-12-165Z-caller-structured-evidence-*.txt`,
+- 4.5.3 attachment: `evidence/2026-07-12T01-47-12-165Z-caller-structured-evidence-*.txt`,
   `sha256=c5083095f3a9052ddad81d35be00a315e660c8322fc794dc50827cb649dc24da`, 7906 bytes.
-- Custo da sessão `8789eb50`: US$ 0,5148 (codex 0,437 / perplexity 0,031 / gemini 0,016 /
-  deepseek 0,007 / relator grok 0,024).
-- Fonte inspecionada: `dist/src/core/orchestrator.js:{659-667,1141,1322,1361}`,
+- Cost of session `8789eb50`: USD 0.5148 (codex 0.437 / perplexity 0.031 / gemini 0.016 /
+  deepseek 0.007 / relator grok 0.024).
+- Source inspected: `dist/src/core/orchestrator.js:{659-667,1141,1322,1361}`,
   `dist/src/core/status.js:{334-355}`, `src/core/orchestrator.ts:{1169,1230,1267,1460,1770}`.
 
-**Conclusão factual para o registro:** o retro-review de calculadora-app v04.02.01 (`8eee516`)
-recebeu **aprovação de mérito unânime** dos 4 peers votantes (codex, gemini, deepseek, perplexity:
-todos READY, "No blocking objections remain", com evidência corroborada), com o relator grok
-não-votante. O outcome oficial `aborted` reflete defeitos do servidor (DEF-5/DEF-6), não o veredito
-técnico dos peers.
+**Factual conclusion for the record:** the retro-review of calculadora-app v04.02.01 (`8eee516`)
+received **unanimous merit approval** from the 4 voting peers (codex, gemini, deepseek, perplexity:
+all READY, "No blocking objections remain", with corroborated evidence), with the non-voting
+relator grok. The official `aborted` outcome reflects server defects (DEF-5/DEF-6), not the peers'
+technical verdict.
 
-## 7. Continuação da auditoria — sessões 4.5.16/4.5.17 e remediação 4.5.18
+## 7. Audit continued — 4.5.16/4.5.17 sessions and the 4.5.18 remediation
 
-A auditoria integral das sessões posteriores à publicação da 4.5.16, incluindo
-o inventário das cinco sessões encontradas, os defeitos DEF-17 a DEF-25, a
-revalidação oficial das seis APIs, as regressões TDD e o plano de release
-4.5.18, está registrada em
+The complete audit of the sessions after 4.5.16 was published, including the inventory of the five
+sessions found, defects DEF-17 through DEF-25, the official revalidation of the six APIs, the TDD
+regressions and the 4.5.18 release plan, is recorded in
 [2026-07-17-cross-review-4.5.16-4.5.17-session-audit.md](./2026-07-17-cross-review-4.5.16-4.5.17-session-audit.md).
 
-Não havia sessão 4.5.17 no corpus. A única sessão convergida do período
-comprovou operação sem upload ou finalização humana; os defeitos residuais
-concentravam-se em grounding de vetos, durabilidade pré-barreira/preflight,
-gasto e telemetria dos judges e relatório operacional.
+There was no 4.5.17 session in the corpus. The period's only converged session proved operation
+with no human upload or finalization; the residual defects were concentrated in veto grounding,
+pre-barrier/preflight durability, judge spend and telemetry, and the operational report.

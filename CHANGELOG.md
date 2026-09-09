@@ -1097,27 +1097,27 @@ but also …` and `não só … mas também …` as assertions of both model val
 
 ### Added
 
-- Governanca de trabalho sobre GitHub Projects, Issues e Discussions: quadro dedicado do repositorio, formularios de issue para Incident, Maintenance e Spike, atalhos para Discussions no seletor de issues, automacoes nativas dos Projects para inclusao e progressao de itens e o ritual de registro G1..G4 versionado em `AGENTS.md` e `CLAUDE.md` para Claude Code e ChatGPT-Codex.
+- Work governance over GitHub Projects, Issues and Discussions: a dedicated board for the repository, issue forms for Incident, Maintenance and Spike, shortcuts to Discussions in the issue picker, native Projects automations for item inclusion and progression, and the G1..G4 record ritual versioned in `AGENTS.md` and `CLAUDE.md` for Claude Code and ChatGPT-Codex.
 
 ### Changed
 
-- Substitui o caller reutilizavel interno do Zizmor pela Action oficial `zizmorcore/zizmor-action` fixada em SHA, com checkout sem credenciais, permissoes minimas e publicacao SARIF; aposenta o workflow customizado de Projects que permanecia inerte depois da ativacao das automacoes nativas dos quadros.
-- Aposenta o controlador customizado de Native Auto-merge e seu gate privilegiado de `merge_group`; a admissao continua humana pela merge queue nativa, e o Dependency Review passa a usar somente a Action oficial com permissao de leitura.
-- Adiciona um job `windows-latest`, restrito a `contents: read`, focalizado na regressao de ACL do arquivo de caller tokens; os contratos puros de planejamento, retry e redacao continuam rodando no job Linux da suite completa.
+- Replaces Zizmor's internal reusable caller with the official `zizmorcore/zizmor-action` Action pinned by SHA, with a credential-less checkout, minimal permissions and SARIF publication; retires the custom Projects workflow that had stayed inert since the boards' native automations were activated.
+- Retires the custom Native Auto-merge controller and its privileged `merge_group` gate; admission stays human through the native merge queue, and Dependency Review moves to the official Action alone, with read permission.
+- Adds a `windows-latest` job, restricted to `contents: read`, focused on the caller-token file's ACL regression; the pure planning, retry and redaction contracts keep running on the full suite's Linux job.
 
 ### Fixed
 
-- Torna o endurecimento da DACL de `host-tokens.json` tolerante a interrupcao no Windows: substitui a sequencia de tres processos `icacls` por uma unica aplicacao completa de `FileSecurity`, protegida e limitada ao usuario atual, SYSTEM e Administrators. A mesma rotina funciona em Windows PowerShell 5.1 e PowerShell 7.
-- Recupera uma unica vez um `EACCES`/`EPERM` no primeiro open do token file, somente no Windows. A recuperacao rejeita symlink/non-file, captura a identidade do arquivo antes da mudanca de ACL, reabre uma vez e valida descriptor, pathname e identidade; erro persistente, troca de arquivo e qualquer outra classe continuam fail-closed. POSIX conserva o fluxo por descriptor sem chmod por pathname.
-- Impede `ensureHostTokens` de repetir a recuperacao na mesma inicializacao quando ja existe uma entrada ilegivel ou invalida; o segundo load fica reservado exclusivamente a corrida em que outro processo cria o arquivo entre load e generate.
-- Substitui a rota de reparo circular de `identity_forgery_blocked` por uma receita manual segura, com placeholders e ordem interruption-tolerant, sem interpolar token nem caminho resolvido.
-- Transporta caminho e SID para os scripts de ACL como JSON por entrada padrao, fora do parser de `-Command`; caminhos Windows validos com metacaracteres como `;` nao viram comandos nem argumentos PowerShell.
-- Compara a DACL final como conjunto exato: deduplica identidades obrigatorias, rejeita ACE repetida e exige cada SID restante, inclusive quando o host roda como SYSTEM ou Administrator.
+- Makes the hardening of `host-tokens.json`'s DACL interruption-tolerant on Windows: it replaces the three-process `icacls` sequence with a single complete application of `FileSecurity`, protected and limited to the current user, SYSTEM and Administrators. The same routine works on Windows PowerShell 5.1 and PowerShell 7.
+- Recovers exactly once from an `EACCES`/`EPERM` on the token file's first open, on Windows only. The recovery rejects a symlink/non-file, captures the file's identity before the ACL change, reopens once and validates descriptor, pathname and identity; a persistent error, a file swap and any other class stay fail-closed. POSIX keeps the descriptor-based flow with no chmod by pathname.
+- Stops `ensureHostTokens` from repeating the recovery within the same startup when an unreadable or invalid entry already exists; the second load is reserved exclusively for the race in which another process creates the file between load and generate.
+- Replaces the circular repair route for `identity_forgery_blocked` with a safe manual recipe, using placeholders and an interruption-tolerant order, interpolating neither the token nor the resolved path.
+- Passes the path and the SID to the ACL scripts as JSON on standard input, outside the `-Command` parser; valid Windows paths carrying metacharacters such as `;` do not become PowerShell commands or arguments.
+- Compares the final DACL as an exact set: it deduplicates mandatory identities, rejects a repeated ACE and requires every remaining SID, including when the host runs as SYSTEM or Administrator.
 
 ### Verification
 
-- A regressao versionada prova o RED da antiga ordem, uma unica fronteira externa de substituicao, remocao de uma DACL herdada ampla, passagem literal de caminho com `;`, execucao identificada em Windows PowerShell 5.1 e PowerShell 7, conjunto final protegido e exato de ACEs FullControl, deduplicacao de SID, retry unico, ausencia de loop, rejeicao de erros nao-permissao/path swap e redacao de sentinelas.
-- A substituicao completa da DACL nao e apresentada como serializacao entre hosts concorrentes; a verificacao final fail-closed continua sendo a autoridade sobre o estado concluido.
+- The versioned regression proves the RED of the old ordering, a single external substitution boundary, removal of a broad inherited DACL, literal passing of a path containing `;`, identified execution on Windows PowerShell 5.1 and PowerShell 7, a final protected and exact set of FullControl ACEs, SID deduplication, a single retry, the absence of a loop, rejection of non-permission/path-swap errors, and sentinel redaction.
+- The complete DACL replacement is not presented as serialization between concurrent hosts; the fail-closed final verification remains the authority over the completed state.
 
 ## [v04.05.36] — 05/08/2026
 
@@ -3604,8 +3604,8 @@ jump from `v04.00.04` directly to `v04.00.02`.
 ## [v04.00.02] — 15/05/2026
 
 **Patch — Codex second-pass audit close-out (6 findings).** v4.0.1 closed 8
-findings from the first Codex parecer; this v4.0.2 closes 6 additional
-items the second parecer flagged. None affects runtime semantics.
+findings from the first Codex review; this v4.0.2 closes 6 additional
+items the second review flagged. None affects runtime semantics.
 
 ### Fixed
 
@@ -3626,7 +3626,8 @@ items the second parecer flagged. None affects runtime semantics.
   were still describing "automatic model selection", "priority list",
   and "documented fallback" — terms from the pre-v3.7.2 multi-model era.
   The runtime has used canonical pins (one model per peer, no auto-chain)
-  since v3.7.2 (operator directive "sem fallback é sem fallback").
+  since v3.7.2 (operator directive, quoted verbatim in pt-BR: "sem fallback
+  é sem fallback").
   Updated docs + the `selected/candidates/reason` messages in
   `selectFromCandidates`, `overrideSelection`, and the no-API-key
   path to use canonical-pin language consistently. The `confidence`
@@ -3865,7 +3866,7 @@ is omitted/false). **Patch bump (3.7.4 → 3.7.5).**
   it wraps to `{ swept: SessionMeta[], pruned_corrupt: {
 threshold_days, scanned, removed, kept } }`.
 
-Close-out of Codex's v3.7.3 parecer (APROVADO-COM-RESSALVAS) — two
+Close-out of Codex's v3.7.3 review (APROVADO-COM-RESSALVAS) — two
 follow-up findings on the shipped v3.7.3 — plus two operator-directed
 root-cause fixes for cross-review-gate bugs that surfaced while running
 this very ship's HARD GATE: a `detectFabricatedEvidence` false positive
@@ -3921,7 +3922,7 @@ priorDraftCorpus}` (symmetric with the existing hex-token check). An
   narrated only in the task body, promoted into the artifact, still
   trips) is preserved exactly. `detectFabricatedEvidence`'s signature is
   unchanged; the `FabricationDetectionCorpus` interface gains one field.
-- **`scripts/runtime-smoke.ts` false positive (Codex v3.7.3 parecer
+- **`scripts/runtime-smoke.ts` false positive (Codex v3.7.3 review
   AUDIT-1, MEDIUM).** The runtime smoke injected cost rate cards for only
   4 peers (codex / claude / gemini / deepseek). But the public MCP path
   strips a caller's `peers` list (the v3.3.0 `lockCallerPeerSelection`
@@ -3942,7 +3943,7 @@ priorDraftCorpus}` (symmetric with the existing hex-token check). An
 ### Changed
 
 - **`src/core/convergence.ts` skip-peer comment precision (Codex v3.7.3
-  parecer AUDIT-2, LOW).** The top comment block and the
+  review AUDIT-2, LOW).** The top comment block and the
   `SKIPPABLE_FAILURE_CLASSES` comment framed the skip as happening only
   "when the user declared no fallback models" — but `fallback_exhausted`
   is in the skippable set, and it arises precisely AFTER a user-declared
@@ -3967,8 +3968,9 @@ priorDraftCorpus}` (symmetric with the existing hex-token check). An
 
 ## [v03.07.03] — 14/05/2026
 
-Close-out of the operator's "sem fallback é sem fallback" directive
-(14/05/2026, refined across three messages) + Codex's v3.7.2 parecer
+Close-out of the operator's directive, quoted verbatim in pt-BR, "sem
+fallback é sem fallback"
+(14/05/2026, refined across three messages) + Codex's v3.7.2 review
 (APROVADO-COM-RESSALVAS) 3 LOW/NIT residuals.
 
 ### Added
@@ -3979,8 +3981,8 @@ Close-out of the operator's "sem fallback é sem fallback" directive
   `fallback_exhausted`, with retries exhausted and no user-declared
   fallback), the round now SKIPS that peer and converges on the remaining
   peers, instead of the failure landing in `rejected` and blocking
-  convergence. This is the operator's "pular aquele peer e trabalhar
-  apenas com os outros" path — a model-down peer must not hard-fail the
+  convergence. This is the operator's path, quoted verbatim in pt-BR,
+  "pular aquele peer e trabalhar apenas com os outros" — a model-down peer must not hard-fail the
   round, and cross-review-v2 must never silently downgrade to an older
   model. New exported `SKIPPABLE_FAILURE_CLASSES` / `isSkippableFailure` /
   `SKIP_QUORUM_FLOOR` in `convergence.ts`; the round loop in
@@ -4017,15 +4019,15 @@ Close-out of the operator's "sem fallback é sem fallback" directive
 - `server_info` `model_fallback` capability flag — was the literal `true`
   unconditionally; now derived honestly from the config (`true` ONLY when
   the user declared fallback models, `false` by default). (Codex v3.7.2
-  parecer AUDIT-1.)
+  review AUDIT-1.)
 - `GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE` shadow set in `server.ts` had
   drifted from `peers/grok.ts:GROK_REASONING_EFFORT_MODELS` — added
   `grok-4.3` (accepted since v2.18.4) and corrected the stale boot warning
   that claimed only `grok-4.20-multi-agent` accepts `reasoning.effort`.
-  (Codex v3.7.2 parecer AUDIT-2.)
+  (Codex v3.7.2 review AUDIT-2.)
 - `reasoning_effort_overrides` tool description: "the 7 MCP configs" →
   "the host MCP configs" (the canonical set is 5 environments since
-  13/05/2026). (Codex v3.7.2 parecer AUDIT-3.)
+  13/05/2026). (Codex v3.7.2 review AUDIT-3.)
 
 ### Notes
 
@@ -4873,7 +4875,7 @@ Plus 2 existing smoke assertions updated: `gemini.ts thinkingConfig:` literal no
 
 **Local gates**: typecheck clean, lint clean, format:check clean, build clean. Smoke 96 events GREEN with both new markers.
 
-**Cross-review-v2 HARD GATE BYPASSED** per `feedback_cross_review_self_repair_exception.md` (operator directive 12/05/2026 "fazer logo tudo de uma só vez e fazer direito"). v2.27.1 is the second-half of v2.27.0's cold-start hardening — routing a fix for the gate's own startup time through the broken gate is the failure mode being fixed. Two cross-review attempts ran on 12/05/2026 (sess `a4a2959b-c1b9-4724-82f0-45675ea71f53` 5R `max-rounds`; sess `81e669d1-dd79-4372-9e86-601a03df34ba` aborted) — peers escalated NOT_READY because the relator hallucinated source-code excerpts to fill ellipsis-truncated portions of the attached summary diff (same fabrication failure mode that v2.24.0 added detection for, but `mode: "review"` doesn't apply Evidence Provenance Lock — only `mode: "ship"` does). Continuing with bypass per the established precedent (v2.25.1, v2.26.1, v2.27.0 all bypassed for gate-fixing-itself); the empirical Claude Code reload friction is the evidence + local gates GREEN + 100% backward-compatible additive public surface.
+**Cross-review-v2 HARD GATE BYPASSED** per `feedback_cross_review_self_repair_exception.md` (operator directive 12/05/2026, quoted verbatim in pt-BR: "fazer logo tudo de uma só vez e fazer direito"). v2.27.1 is the second-half of v2.27.0's cold-start hardening — routing a fix for the gate's own startup time through the broken gate is the failure mode being fixed. Two cross-review attempts ran on 12/05/2026 (sess `a4a2959b-c1b9-4724-82f0-45675ea71f53` 5R `max-rounds`; sess `81e669d1-dd79-4372-9e86-601a03df34ba` aborted) — peers escalated NOT_READY because the relator hallucinated source-code excerpts to fill ellipsis-truncated portions of the attached summary diff (same fabrication failure mode that v2.24.0 added detection for, but `mode: "review"` doesn't apply Evidence Provenance Lock — only `mode: "ship"` does). Continuing with bypass per the established precedent (v2.25.1, v2.26.1, v2.27.0 all bypassed for gate-fixing-itself); the empirical Claude Code reload friction is the evidence + local gates GREEN + 100% backward-compatible additive public surface.
 
 **Lessons learned**:
 
@@ -4994,7 +4996,7 @@ For an architectural deep-dive on the maestro-app origin and the editorial primi
 
 ## [v02.24.00] - 10/05/2026
 
-**Patch — evidence-provenance lock for the ship-mode relator (Codex bug report 10/05/2026, sessões `09c21d7a` + `eee886d3`).** Codex's working session `019dc794-0833-7de2-9ecf-3f36fe176f03` exercised cross-review-v2 in two adjacent failure modes that the operator framed as the same underlying violation: "cross-review-v2 está violando provenance de evidência. Ele não pode permitir que relator/peer ou camada gerativa invente paths, SHAs, logs, diffs, outputs de teste, timestamps ou arquivos. Evidência operacional só pode vir de caller/tool output persistido. Se faltar evidência, deve permanecer NEEDS_EVIDENCE, não 'completar' o caso com narrativa fabricada." Two empirical instances on disk:
+**Patch — evidence-provenance lock for the ship-mode relator (Codex bug report 10/05/2026, sessions `09c21d7a` + `eee886d3`).** Codex's working session `019dc794-0833-7de2-9ecf-3f36fe176f03` exercised cross-review-v2 in two adjacent failure modes that the operator framed as the same underlying violation: "cross-review-v2 está violando provenance de evidência. Ele não pode permitir que relator/peer ou camada gerativa invente paths, SHAs, logs, diffs, outputs de teste, timestamps ou arquivos. Evidência operacional só pode vir de caller/tool output persistido. Se faltar evidência, deve permanecer NEEDS_EVIDENCE, não 'completar' o caso com narrativa fabricada." Two empirical instances on disk:
 
 - **Session `09c21d7a-008f-48b1-bd48-93d93985cd43`** — `run_until_unanimous` with `mode: ship` over a maestro-app review. Lead_peer (Grok) fabricated operational evidence ex nihilo: git SHAs with symmetric bit-patterns (`e7f4a2b1c9d8e3f2a1b0c9d8e7f6a5b4c3d2e1f0`, `9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b`), 39-char SHAs where git emits 40, "147 passed, 0 failed" test counts not present in any attached evidence, "git diff --check passed" assertions, vite asset hash filenames, `cargo test`/`npm run build` result lines. Claude + DeepSeek correctly blocked convergence in R1–R5; convergence only arrived in R6 when Codex abandoned the generative round and ran `ask_peers` controlled with real workspace evidence.
 
@@ -5096,11 +5098,11 @@ The two sessions surface the same architectural gap from different angles: **NAR
 
 ## [v02.18.08] - 09/05/2026
 
-**Patch — `site/index.html` GitHub Sponsors iframe replaced with styled dark link card.** Companion ship coordenado Phase 3 (12 repos no batch). Substitui `<iframe>` cross-origin com fundo branco (que destoava do dark theme) por `<a class="github-sponsor-card">` link card dark navy com ❤ pink + título + meta cyan + seta animada. Card movido para DEPOIS dos botões (lcv.dev/sponsor primário, GitHub Sponsors alternativa secundária). Sem mudança no tarball npm publicado.
+**Patch — `site/index.html` GitHub Sponsors iframe replaced with styled dark link card.** Coordinated companion ship, Phase 3 (12 repos in the batch). Replaces the cross-origin `<iframe>` with a white background (which clashed with the dark theme) with an `<a class="github-sponsor-card">` dark navy link card carrying a pink ❤ + title + cyan meta + an animated arrow. The card moved to AFTER the buttons (lcv.dev/sponsor primary, GitHub Sponsors secondary alternative). No change to the published npm tarball.
 
-### Alterado
+### Changed
 
-- **`site/index.html`** — iframe → link card dark + reordenação (card abaixo dos botões).
+- **`site/index.html`** — iframe → dark link card + reordering (card below the buttons).
 
 ## [v02.18.07] - 09/05/2026
 
@@ -5632,7 +5634,7 @@ Original v2.13 plan was 6 backlog items: (1) lead drift fix, (2) precision repor
 
 ### Mental model (codified, no code change)
 
-- **`tribunal colegiado` framing reaffirmed** (operator + codex 03/05/2026 refinement): caller = impetrante, `lead_peer` sorteado = juiz relator, peers = colegiado de juízes, votos = respostas estruturadas peer (READY/NOT_READY/NEEDS_EVIDENCE), veredito = síntese colegiado, contestação = caller pede novo ciclo deliberativo dentro dos mesmos autos (não reinício). Caller never votes as peer — only `READY` (acata) or `NOT_READY` (contesta). Memory `project_cross_review_v2_tribunal_colegiado_model.md` now carries the precise jurisprudential mapping table.
+- **`tribunal colegiado` framing reaffirmed** (operator + codex 03/05/2026 refinement). The framing keeps its Brazilian-court name, and the roles map as: caller = the petitioner; the drawn `lead_peer` = the reporting judge; peers = the panel of judges; votes = structured peer responses (READY/NOT_READY/NEEDS_EVIDENCE); the verdict = the panel's synthesis; a contest = the caller asking for a new deliberative cycle within the same case record, not a restart. The caller never votes as a peer — only `READY` (accepts) or `NOT_READY` (contests). Memory `project_cross_review_v2_tribunal_colegiado_model.md` now carries the precise jurisprudential mapping table.
 
 ### Deferred to v2.13+
 
