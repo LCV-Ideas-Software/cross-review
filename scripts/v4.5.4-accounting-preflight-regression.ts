@@ -108,7 +108,6 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         sessionId: session.session_id,
         task: session.task,
         draft: "Static implementation note with no operational claim.",
-        caller: "operator",
       });
       assert.equal(explicit.pass, true);
       assert.deepEqual(orchestrator.store.read(session.session_id).preflight_checks ?? [], []);

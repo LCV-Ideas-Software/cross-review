@@ -2714,7 +2714,6 @@ const regressions: Regression[] = [
         sessionId: session.session_id,
         task: session.task,
         draft: "No raw output is included here.",
-        caller: "codex",
       });
       assert.equal(combined.truthfulness.pass, true);
       assert.equal(combined.evidence.pass, false);

@@ -173,7 +173,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
         scope: {
           petitioner: "codex",
           caller: "codex",
-          acting_peer: "operator",
+          acting_peer: "codex",
           caller_status: "READY",
           expected_peers: ["claude"],
           reviewer_peers: ["claude"],
@@ -327,7 +327,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],
@@ -676,7 +676,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],
@@ -713,7 +713,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],
@@ -769,7 +769,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],
@@ -819,7 +819,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],
@@ -854,7 +854,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],
@@ -975,7 +975,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude", "gemini"],
             reviewer_peers: ["claude", "gemini"],
@@ -1014,7 +1014,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude", "gemini"],
             reviewer_peers: ["claude", "gemini"],
@@ -1047,7 +1047,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],
@@ -1264,7 +1264,7 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
           scope: {
             petitioner: "codex",
             caller: "codex",
-            acting_peer: "operator",
+            acting_peer: "codex",
             caller_status: "READY",
             expected_peers: ["claude"],
             reviewer_peers: ["claude"],

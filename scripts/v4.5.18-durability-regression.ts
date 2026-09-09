@@ -320,7 +320,7 @@ const regressions: Regression[] = [
         scope: {
           petitioner: "claude",
           caller: "claude",
-          acting_peer: "operator",
+          acting_peer: "claude",
           caller_status: "READY",
           expected_peers: ["codex"],
           reviewer_peers: ["codex"],
@@ -365,7 +365,7 @@ const regressions: Regression[] = [
         scope: {
           petitioner: "claude",
           caller: "claude",
-          acting_peer: "operator",
+          acting_peer: "claude",
           caller_status: "READY",
           expected_peers: ["codex"],
           reviewer_peers: ["codex"],

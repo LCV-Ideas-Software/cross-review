@@ -4924,7 +4924,8 @@ export class CrossReviewOrchestrator {
     task: string;
     draft?: string | undefined;
     evidence?: string | undefined;
-    caller: PeerId | "operator";
+    // v07.00.00: the `caller` parameter went with the evidence tier that
+    // read it. Nothing in this method has consulted it since.
   }): CombinedSessionPreflightResult {
     const reviewableAttachments = this.safeReadEvidenceAttachments(params.sessionId);
     const evidenceResult = this.config.evidence_preflight_enabled

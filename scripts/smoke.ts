@@ -1202,7 +1202,7 @@ const evidence = await orchestrator.store.attachEvidence(evidenceSession.session
   content: "smoke evidence body",
   content_type: "text/markdown",
   extension: "md",
-  attached_by: "operator",
+  attached_by: "claude",
   origin: "runtime_generated",
 });
 assert.equal(
@@ -5397,7 +5397,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       label: `att-${i}`,
       content: big,
       extension: "txt",
-      attached_by: "operator",
+      attached_by: "claude",
       origin: "runtime_generated",
     });
   }
@@ -6598,7 +6598,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     convergence_scope: {
       petitioner: "deepseek",
       caller: "deepseek",
-      acting_peer: "operator",
+      acting_peer: "deepseek",
       caller_status: "READY",
       expected_peers: ["codex", "claude", "gemini"],
       reviewer_peers: ["codex", "claude", "gemini"],
@@ -6649,7 +6649,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     convergence_scope: {
       petitioner: "deepseek",
       caller: "deepseek",
-      acting_peer: "operator",
+      acting_peer: "deepseek",
       caller_status: "READY",
       expected_peers: ["codex", "claude", "gemini"],
       reviewer_peers: ["codex", "claude", "gemini"],
@@ -6683,7 +6683,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       convergence_scope: {
         petitioner: "deepseek",
         caller: "codex",
-        acting_peer: "operator",
+        acting_peer: "codex",
         caller_status: "READY",
         expected_peers: [],
         reviewer_peers: [],

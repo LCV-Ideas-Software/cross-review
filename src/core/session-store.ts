@@ -4770,12 +4770,16 @@ export class SessionStore {
       content: string;
       content_type?: string;
       extension?: string;
-      attached_by: PeerId | "operator";
+      // v07.00.00: `attached_by` is documented as the already-verified tool
+      // caller, and every verified caller is a peer. The PERSISTED type keeps
+      // the wider union so attachments written before this release still
+      // parse; nothing may create one any more.
+      attached_by: PeerId;
       origin: EvidenceAttachmentOrigin;
       deduplicate?: boolean;
     },
   ): Promise<{ path: string; meta: SessionMeta }> {
-    if (params.attached_by !== "operator" && !PEERS.includes(params.attached_by)) {
+    if (!PEERS.includes(params.attached_by)) {
       throw new Error(`evidence_attached_by_invalid: ${String(params.attached_by)}`);
     }
     if (!EVIDENCE_ATTACHMENT_ORIGINS.has(params.origin)) {
@@ -4838,8 +4842,11 @@ export class SessionStore {
         type: "session.evidence_attached",
         session_id: sessionId,
         ts: attachedAt,
+        // v07.00.00: the second conjunct distinguished a peer submission from
+        // an operator one. Every attacher is a peer now, so the origin alone
+        // decides the wording.
         message:
-          params.origin === "caller_submitted" && params.attached_by !== "operator"
+          params.origin === "caller_submitted"
             ? `Caller-submitted evidence persisted as unverified material from ${params.attached_by}: ${params.label}`
             : `Evidence attached by ${params.attached_by}: ${params.label}`,
         data: {

@@ -35,7 +35,7 @@ async function runScenario(label, plant) {
     budget: { max_session_cost_usd: 10 },
   };
   const store = new SessionStore(cfg);
-  const meta = await store.init(`legacy holder ${label}`, "operator", []);
+  const meta = await store.init(`legacy holder ${label}`, "claude", []);
   const sessionId = meta.session_id;
   const dir = store.sessionDir(sessionId);
   const lockfilePath = path.join(dir, ".lock");

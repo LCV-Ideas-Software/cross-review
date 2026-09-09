@@ -2655,7 +2655,6 @@ export async function main(): Promise<void> {
         task: task ?? session.task,
         draft: effectiveDraft,
         evidence,
-        caller,
       });
       const truthfulness = result.truthfulness.result;
       const evidenceResult = result.evidence.result;

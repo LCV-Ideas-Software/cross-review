@@ -100,7 +100,7 @@ try {
         content: `collision-payload-${String(index).padStart(2, "0")}`,
         content_type: "text/plain; charset=utf-8",
         extension: "txt",
-        attached_by: "operator",
+        attached_by: "claude",
         origin: "session_attach_evidence",
       }),
     ),
@@ -195,7 +195,7 @@ await assert.rejects(
   store.attachEvidence(finalizedSession.session_id, {
     label: "too-late",
     content: "must not be persisted",
-    attached_by: "operator",
+    attached_by: "claude",
     origin: "session_attach_evidence",
   }),
   /session_already_finalized/,
