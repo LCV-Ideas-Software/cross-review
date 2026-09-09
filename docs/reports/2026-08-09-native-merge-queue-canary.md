@@ -1,9 +1,9 @@
 # Native merge-queue canary
 
-> **Registro histórico supersedido em 16/08/2026.** O controlador central citado
-> abaixo foi aposentado. A admissão atual é uma ação humana explícita na merge
-> queue nativa; os checks continuam executados no `merge_group`, sem parser ou
-> controlador customizado de auto-merge.
+> **Historical record, superseded on 16/08/2026.** The central controller named
+> below was retired. Admission today is an explicit human action on the native
+> merge queue; the checks still run in the `merge_group`, with no custom
+> auto-merge parser or controller.
 
 Date: 9 August 2026
 Scope: GitHub Actions governance only; no application or runtime behavior changes.

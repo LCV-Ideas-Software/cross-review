@@ -152,7 +152,7 @@ function html(): string {
       <article class="card"><strong>Logs</strong><p class="muted">${escapeHtmlServer(eventLog.path())}</p></article>
     </section>
     <div class="toolbar">
-      <input id="filter" placeholder="Filtrar por sessão, estado ou texto..." />
+      <input id="filter" placeholder="Filter by session, state or text..." />
       <select id="state">
         <option value="">Todos os estados</option>
         <option value="running">Em execução</option>
@@ -214,7 +214,7 @@ function html(): string {
     }
     function renderPeerHealth(perPeer) {
       const peers = Object.values(perPeer || {}).filter(Boolean).sort((a, b) => b.results_total - a.results_total);
-      if (!peers.length) return '<div class="muted">Nenhum resultado de peer registrado ainda.</div>';
+      if (!peers.length) return '<div class="muted">No peer result recorded yet.</div>';
       const head = '<thead><tr>' +
         ['Peer','Resultados','READY','NEEDS_EVIDENCE','NOT_READY','READY rate','NE rate','Custo total','Custo médio','Parser warns','Rejections']
           .map(h => '<th>' + h + '</th>').join('') + '</tr></thead>';
@@ -258,7 +258,7 @@ function html(): string {
       });
       const container = document.getElementById('sessions');
       if (!visible.length) {
-        container.textContent = 'Nenhuma sessão encontrada.';
+        container.textContent = 'No session found.';
         return;
       }
       container.innerHTML = visible.map(session => {

@@ -58,6 +58,41 @@ repository-owned regression, by the operator's decision: native scanners
 (zizmor, CodeQL) own workflow security, and the script changes only through a
 reviewed pull request. The regression rule above does not apply to them.
 
+## Language
+
+cross-review is an agent-to-agent protocol. Agents natively speak English, so
+every surface of the protocol is English: prompts, tool descriptions, runtime
+and error messages, reports, code comments, test descriptions and these
+instructions.
+
+Four things stay as they are, and each for a reason that is not style:
+
+- **Verbatim quotations of the operator's standing directives.** Marked as
+  quoted in pt-BR, never translated. A translated instruction is a paraphrase,
+  and a paraphrase of an instruction is no longer the instruction.
+- **Raw provider, OS and tool output** quoted as evidence, byte for byte.
+- **Technical identifiers**: model ids, env var names, file paths, and the
+  GitHub Project option names (`Triagem`, `Backlog`, `Em andamento`,
+  `Em cross-review`, `Em PR`, `Concluido`, `Bloqueado`, `Descartado`), which are
+  literal values configured on the board.
+- **Passive multilingual recognition.** The truthfulness and status parsers
+  match Portuguese phrasing so cross-review can READ evidence and peer output in
+  that language. Those alternations, and the test inputs that exercise them, are
+  the capability — deleting them would delete it. What matters is that
+  cross-review never EMITS in that language.
+
+`site/` is out of scope: it is a public sponsorship page for human sponsors, not
+an interface between agents.
+
+**Enforcement is by review, not by a checker.** GitHub's rulesets constrain
+branch and tag names, commit metadata, file paths, extensions, size, code
+scanning, code quality, coverage and workflows — there is no rule for the
+natural language of file content. The repository's existing official tooling
+(Biome, ESLint, Prettier, typescript-eslint) has no natural-language rule
+either. A custom language detector is explicitly not authorized, and writing one
+would be the repository-owned policy engine the workspace policy forbids. So no
+mechanism is added: this section is the rule, and review is the gate.
+
 ## Workspace Policy
 
 Follow the workspace-root `AGENTS.md` directives of the private workspace that

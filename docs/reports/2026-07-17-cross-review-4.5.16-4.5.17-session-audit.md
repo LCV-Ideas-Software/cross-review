@@ -1,700 +1,695 @@
-# Auditoria circunstanciada de sessões — cross-review 4.5.16 e 4.5.17
+# Detailed session audit — cross-review 4.5.16 and 4.5.17
 
-Data da auditoria: 17/07/2026
-Escopo: todas as sessões duráveis criadas desde a publicação de
-`v04.05.16`, logs correspondentes, source `v04.05.16..v04.05.17`, contratos
-oficiais das seis APIs e correções preparadas para `v04.05.18`.
+Audit date: 17/07/2026
+Scope: every durable session created since the publication of `v04.05.16`, the
+corresponding logs, source `v04.05.16..v04.05.17`, the official contracts of the
+six APIs, and the corrections prepared for `v04.05.18`.
 
-## 1. Conclusão executiva
+## 1. Executive conclusion
 
-O corpus contém exatamente cinco sessões 4.5.16 e nenhuma sessão 4.5.17.
-Houve 29 chamadas de modelo, 113.267 tokens e custo reconciliado de
-US$ 0,964851031. Nenhum provider rejeitou o request, nenhum pin divergiu e
-nenhum parser perdeu uma resposta completa. Uma sessão convergiu em uma rodada,
-com quatro revisores `READY`, evidência automática e zero intervenção humana.
+The corpus holds exactly five 4.5.16 sessions and no 4.5.17 session. There were
+29 model calls, 113,267 tokens and a reconciled cost of USD 0.964851031. No
+provider rejected the request, no pin diverged and no parser lost a complete
+response. One session converged in a single round, with four `READY` reviewers,
+automatic evidence and zero human intervention.
 
-A auditoria, contudo, confirmou defeitos internos do cross-review:
+The audit did, however, confirm defects internal to cross-review:
 
-1. votos factuais `NOT_READY` e fontes apresentadas com `NEEDS_EVIDENCE` não
-   recebiam o mesmo grounding anti-fabricação aplicado a `READY`;
-2. respostas concluídas só ganhavam artefato durável depois do peer mais lento;
-3. loops recusados pelo preflight perdiam o draft e permaneciam abertos até o
+1. factual `NOT_READY` votes and sources presented with `NEEDS_EVIDENCE` did not
+   receive the same anti-fabrication grounding applied to `READY`;
+2. completed responses only gained a durable artifact after the slowest peer;
+3. loops refused by the preflight lost the draft and stayed open until the
    reaper;
-4. cache e custo dos evidence judges não eram integralmente manifestados;
-5. o judge shadow executava contra asks recém-criadas, quando ainda não podia
-   existir nova evidência;
-6. relatórios descartavam ações pedidas pelos peers e privilegiavam eventos de
-   streaming;
-7. sessões sem chamadas mostravam custo desconhecido em vez de zero;
-8. a sessão não preservava snapshot redigido da configuração efetiva;
-9. consenso unânime dos judges por `satisfied=false` era descrito como
+4. evidence-judge cache and cost were not fully manifested;
+5. the shadow judge ran against freshly created asks, when no new evidence could
+   yet exist;
+6. reports discarded actions requested by the peers and favoured streaming
+   events;
+7. sessions with no calls showed an unknown cost instead of zero;
+8. the session did not preserve a redacted snapshot of the effective
+   configuration;
+9. a unanimous judge consensus of `satisfied=false` was described as a
    disagreement;
-10. a expressão técnica “Service Bindings” acionava indevidamente o detector
-    genérico de estado de um “service”.
+10. the technical phrase "Service Bindings" improperly triggered the generic
+    state detector for a "service".
 
-Esses pontos estão cobertos no source 4.5.18 por regressões herméticas. O judge
-automático foi desligado na configuração central como contenção até o reload do
-novo runtime.
+These points are covered in source 4.5.18 by hermetic regressions. The automatic
+judge was switched off in the central configuration as containment until the new
+runtime is reloaded.
 
-Uma revisão independente do patch, executada antes da suíte integral, encontrou
-cinco lacunas residuais que ainda não apareciam no corpus: o artefato antecipado
-do peer não participava do ledger de recovery; cache de geração era escrito
-antes do resultado durável e com label de falha; judges herdavam effort `max`;
-custo pendente desconhecido era convertido em zero; e a demoção de um
-`NOT_READY` sem fonte não criava um ask acionável. Todas ganharam reproduções
-vermelhas antes da correção e estão detalhadas em DEF-26 a DEF-30.
+An independent review of the patch, run before the full suite, found five
+residual gaps that had not yet appeared in the corpus: the peer's early artifact
+did not take part in the recovery ledger; the generation cache was written before
+the durable result and with a failure label; judges inherited `max` effort;
+unknown pending cost was converted into zero; and demoting a sourceless
+`NOT_READY` did not create an actionable ask. All of them received red
+reproductions before the fix and are detailed in DEF-26 through DEF-30.
 
-O fechamento independente encontrou ainda quatro janelas que também foram
-reproduzidas antes de qualquer correção: uma quote autêntica mas irrelevante
-mantinha um veto limpo; uma queda entre append da rodada e finalize deixava o
-resultado material sem `final.md`; uma chamada de evidence judge podia ficar
-reservada após crash ou ser contabilizada indevidamente por um recovery
-concorrente; e o caminho de publicação aceitava um input de tag diferente do
-ref do `workflow_dispatch`. Elas são DEF-33 a DEF-36. Nenhuma exigiu rodada
-paga nem anexo/intervenção humana.
+The independent closing found four further windows, also reproduced before any
+fix: an authentic but irrelevant quote kept a clean veto; a crash between the
+round's append and finalize left the material result without `final.md`; an
+evidence-judge call could stay reserved after a crash or be improperly accounted
+by a concurrent recovery; and the publication path accepted a tag input
+different from the `workflow_dispatch` ref. These are DEF-33 through DEF-36.
+None required a paid round or any human attachment or intervention.
 
-## 2. Método e limites
+## 2. Method and limits
 
-Foram examinados:
+What was examined:
 
-- 435 diretórios sob `<data_dir>/sessions`;
-- 434 `meta.json` parseáveis e um diretório histórico sem metadata;
-- todos os `meta.json`, `events.ndjson`, relatórios e artefatos relevantes das
-  versões em escopo;
-- o diff de produção entre 4.5.16 e 4.5.17;
-- o source não publicado preparado para 4.5.18;
-- documentação oficial e contratos de wire de OpenAI, Anthropic, Google,
-  DeepSeek, xAI e Perplexity.
+- 435 directories under `<data_dir>/sessions`;
+- 434 parseable `meta.json` files and one historical directory with no metadata;
+- every relevant `meta.json`, `events.ndjson`, report and artifact for the
+  versions in scope;
+- the production diff between 4.5.16 and 4.5.17;
+- the unpublished source prepared for 4.5.18;
+- official documentation and wire contracts from OpenAI, Anthropic, Google,
+  DeepSeek, xAI and Perplexity.
 
-Não foram abertas sessões, não houve reteste pago de providers e nenhum
-resultado material foi inferido de narrativa sem conferir o artefato
-persistido. O tag 4.5.16 foi publicado em 2026-07-13T10:16:17Z; todas as sessões
-posteriores traziam versão explícita.
+No sessions were opened, there was no paid provider retest, and no material
+result was inferred from narrative without checking the persisted artifact. Tag
+4.5.16 was published at 2026-07-13T10:16:17Z; every later session carried an
+explicit version.
 
-## 3. Estado do runtime e da configuração
+## 3. Runtime and configuration state
 
-Um `server_info` novo, consultado durante esta auditoria, comprovou:
+A fresh `server_info`, consulted during this audit, proved:
 
-- runtime carregado: `4.5.17`;
-- config carregada: SHA-256
+- loaded runtime: `4.5.17`;
+- loaded config: SHA-256
   `57331b5b47bd80fedc9fed2cd4631554c10d1028048ce87e58130fcca38a054d`;
-- config central atualizada: SHA-256
+- updated central config: SHA-256
   `a8eec09cbafa07a11e814d7b46186d7e1769762ba20e2ecc31f24052e79fbef7`;
 - `live_reload_supported=false`;
 - `reload_required=true`;
-- chamadas pagas bloqueadas por `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED`.
+- paid calls blocked by `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED`.
 
-Isso é o comportamento fail-closed esperado. A configuração em disco foi
-alterada de forma atômica para:
+This is the expected fail-closed behaviour. The on-disk configuration was
+atomically changed to:
 
 - `evidence_judge_autowire.mode="off"`;
-- Grok 4.5 acima de 200.000 prompt tokens: input `4`, cached input `1`,
-  output `12` USD por milhão;
-- card base Grok preservado em input `2`, cached input `0.5`, output `6`.
+- Grok 4.5 above 200,000 prompt tokens: input `4`, cached input `1`, output `12`
+  USD per million;
+- the Grok base card preserved at input `2`, cached input `0.5`, output `6`.
 
-A chave nova `evidence_judge_autowire.max_output_tokens` não foi escrita
-enquanto o host 4.5.17 permanecia carregado. O schema central é estrito e uma
-chave desconhecida poderia invalidar o arquivo inteiro se o host antigo fosse
-reiniciado. O runtime 4.5.18 usa default seguro de 2.048 tokens mesmo sem essa
-chave.
+The new `evidence_judge_autowire.max_output_tokens` key was not written while the
+4.5.17 host stayed loaded. The central schema is strict and an unknown key could
+invalidate the whole file if the old host were restarted. The 4.5.18 runtime uses
+a safe default of 2,048 tokens even without that key.
 
-## 4. Inventário completo
+## 4. Complete inventory
 
-Todas as datas abaixo estão em UTC.
+Every date below is in UTC.
 
-| Sessão                                 | Versão | Intervalo                       | Modo          | Resultado                                  | Rodadas |            Chamadas | Tokens |        Custo |
-| -------------------------------------- | ------ | ------------------------------- | ------------- | ------------------------------------------ | ------: | ------------------: | -----: | -----------: |
-| `5dd0845a-8ddf-4de8-9000-ffba7253aa76` | 4.5.16 | 15/07 09:26:43 → 16/07 23:06:38 | loop          | `aborted / stale_no_finalize_24h`          |       0 |             0 pagas |      0 |        US$ 0 |
-| `e0b55698-d6d1-42fd-91e3-5ca7afd80c62` | 4.5.16 | 15/07 09:27:25 → 16/07 23:06:38 | loop          | `aborted / stale_no_finalize_24h`          |       0 |             0 pagas |      0 |        US$ 0 |
-| `808fe68d-3985-428f-a048-5812a2ce7761` | 4.5.16 | 15/07 09:27:54 → 16/07 23:06:37 | rodada direta | `aborted / stale_no_finalize_24h`          |       1 | 5 review + 16 judge | 65.470 | US$ 0,782538 |
-| `36214b31-1e47-42f4-addd-efc1385e2f55` | 4.5.16 | 17/07 00:17:29 → 00:19:32       | loop          | `max-rounds / generation_budget_preflight` |       1 |            4 review | 21.921 | US$ 0,089524 |
-| `5e5d0389-6140-4454-b216-680864e7b12a` | 4.5.16 | 17/07 00:21:23 → 00:23:04       | loop          | `converged / unanimous_ready`              |       1 |            4 review | 25.876 | US$ 0,092789 |
+| Session                                | Version | Interval                        | Mode         | Result                                     | Rounds |               Calls | Tokens |         Cost |
+| -------------------------------------- | ------- | ------------------------------- | ------------ | ------------------------------------------ | -----: | ------------------: | -----: | -----------: |
+| `5dd0845a-8ddf-4de8-9000-ffba7253aa76` | 4.5.16  | 15/07 09:26:43 → 16/07 23:06:38 | loop         | `aborted / stale_no_finalize_24h`          |      0 |              0 paid |      0 |        USD 0 |
+| `e0b55698-d6d1-42fd-91e3-5ca7afd80c62` | 4.5.16  | 15/07 09:27:25 → 16/07 23:06:38 | loop         | `aborted / stale_no_finalize_24h`          |      0 |              0 paid |      0 |        USD 0 |
+| `808fe68d-3985-428f-a048-5812a2ce7761` | 4.5.16  | 15/07 09:27:54 → 16/07 23:06:37 | direct round | `aborted / stale_no_finalize_24h`          |      1 | 5 review + 16 judge | 65,470 | USD 0.782538 |
+| `36214b31-1e47-42f4-addd-efc1385e2f55` | 4.5.16  | 17/07 00:17:29 → 00:19:32       | loop         | `max-rounds / generation_budget_preflight` |      1 |            4 review | 21,921 | USD 0.089524 |
+| `5e5d0389-6140-4454-b216-680864e7b12a` | 4.5.16  | 17/07 00:21:23 → 00:23:04       | loop         | `converged / unanimous_ready`              |      1 |            4 review | 25,876 | USD 0.092789 |
 
-Agregado:
+Aggregate:
 
-- cinco sessões;
-- três rodadas pagas;
-- 13 reviews e 16 julgamentos;
-- 92.854 tokens de review e 20.413 de judge;
-- custo de review US$ 0,887963110;
-- custo de judge US$ 0,076887921;
-- total de 113.267 tokens e US$ 0,964851031;
-- sete `READY`, três `NOT_READY` e três `NEEDS_EVIDENCE` no raw;
-- seis `READY`, três `NOT_READY` e quatro `NEEDS_EVIDENCE` normalizados;
-- uma demoção de `READY` correta, pois a quote composta pulava uma linha e não
-  era substring literal.
+- five sessions;
+- three paid rounds;
+- 13 reviews and 16 judgements;
+- 92,854 review tokens and 20,413 judge tokens;
+- review cost USD 0.887963110;
+- judge cost USD 0.076887921;
+- a total of 113,267 tokens and USD 0.964851031;
+- seven `READY`, three `NOT_READY` and three `NEEDS_EVIDENCE` in the raw;
+- six `READY`, three `NOT_READY` and four `NEEDS_EVIDENCE` normalized;
+- one correct `READY` demotion, since the composite quote skipped a line and was
+  not a literal substring.
 
-## 5. Análise por sessão
+## 5. Per-session analysis
 
-### 5.1. Sessão `5dd0845a`
+### 5.1. Session `5dd0845a`
 
-O evidence preflight recusou a afirmação agregada “163 passed” porque o pacote
-listava `22 + 23 + 118` e não trazia a saída bruta correspondente ao total
-agregado. O bloqueio antes de chamada paga foi defensável. O defeito foi de
-durabilidade: o draft integral não foi persistido e a sessão só ganhou estado
-terminal cerca de 37h40 depois, pelo stale reaper.
+The evidence preflight refused the aggregate claim "163 passed" because the
+package listed `22 + 23 + 118` and did not carry the raw output matching the
+aggregate total. Blocking before a paid call was defensible. The defect was one
+of durability: the full draft was not persisted and the session only reached a
+terminal state roughly 37h40 later, through the stale reaper.
 
-### 5.2. Sessão `e0b55698`
+### 5.2. Session `e0b55698`
 
-O pacote tinha resultados brutos de testes e uma seção de consulta live que
-dizia `Pages bindings: WORKER->mainsite-motor; ADMIN_MOTOR->admin-motor`. A
-frase do draft “caminho ativo Pages->Workers usa Service Bindings” foi
-classificada como alegação genérica de saúde/estado de um `service`.
+The package held raw test results and a live-query section that read
+`Pages bindings: WORKER->mainsite-motor; ADMIN_MOTOR->admin-motor`. The draft's
+sentence "the active Pages->Workers path uses Service Bindings" was classified as
+a generic health/state claim about a `service`.
 
-O problema não era exigir prova para um fato operacional; era a colisão lexical
-entre o produto Cloudflare **Service Bindings** e o sujeito genérico
-`service`. O runtime seguinte aceitou o mesmo fato quando recebeu JSON mais
-literal, mas a categoria original ainda era incorreta. A 4.5.18 exclui
-`Service Binding(s)` do detector de service-health e mantém bloqueado um claim
-real como “the current service is healthy” quando não há status bruto.
+The problem was not requiring proof for an operational fact; it was the lexical
+collision between the Cloudflare product **Service Bindings** and the generic
+subject `service`. The next runtime accepted the same fact when it received more
+literal JSON, but the original category was still wrong. 4.5.18 excludes
+`Service Binding(s)` from the service-health detector and keeps a real claim such
+as "the current service is healthy" blocked when there is no raw status.
 
-Assim como na sessão anterior, o loop não preservou o draft e só terminou pelo
-reaper cerca de 37h39 depois.
+As in the previous session, the loop did not preserve the draft and only ended
+through the reaper roughly 37h39 later.
 
-### 5.3. Sessão `808fe68d`
+### 5.3. Session `808fe68d`
 
-Cinco providers responderam sem rejeição:
+Five providers answered with no rejection:
 
 - Gemini: `READY`;
 - Claude: `NEEDS_EVIDENCE`;
-- DeepSeek, Grok e Perplexity: `NOT_READY`.
+- DeepSeek, Grok and Perplexity: `NOT_READY`.
 
-A não convergência material não é bug. Os defeitos estão na confiança atribuída
-aos vetos e na durabilidade:
+Material non-convergence is not a bug. The defects lie in the confidence given to
+the vetoes and in durability:
 
-- DeepSeek permaneceu `NOT_READY / clean` com zero `evidence_sources`;
-- Claude permaneceu `NEEDS_EVIDENCE / clean` apesar de uma fonte declarar
-  SHA-256
-  `2e0d7ca35a1dd48478cc45cd6e918051b28d0ad6af76c86de9e409d94c48d841`,
-  diferente do digest real
+- DeepSeek stayed `NOT_READY / clean` with zero `evidence_sources`;
+- Claude stayed `NEEDS_EVIDENCE / clean` even though one source declared SHA-256
+  `2e0d7ca35a1dd48478cc45cd6e918051b28d0ad6af76c86de9e409d94c48d841`, different
+  from the real digest
   `2e0d7ca35a1dd48478cc45cd6e918051b28ad6af76c86de9e409d94c48d8410d`;
-- o código 4.5.16 retornava `grounded=true` para todo status que não fosse
-  `READY`;
-- pedidos factuais originados de um `NOT_READY` normalizado não eram
-  encaminhados de forma consistente ao Evidence Broker.
+- the 4.5.16 code returned `grounded=true` for every status other than `READY`;
+- factual requests originating from a normalized `NOT_READY` were not
+  consistently forwarded to the Evidence Broker.
 
-As respostas já concluídas ficaram sem artefato final enquanto Perplexity
-continuava executando. Atraso entre conclusão e persistência:
+Responses that had already completed were left without a final artifact while
+Perplexity kept running. Delay between completion and persistence:
 
-- Gemini: 422,746 s;
-- Grok: 414,576 s;
-- Claude: 315,135 s;
-- DeepSeek: 295,506 s;
-- Perplexity: 0,042 s.
+- Gemini: 422.746 s;
+- Grok: 414.576 s;
+- Claude: 315.135 s;
+- DeepSeek: 295.506 s;
+- Perplexity: 0.042 s.
 
-O judge shadow executou 16 chamadas para quatro asks recém-criadas. Todos os 16
-julgamentos disseram `satisfied=false`; mesmo assim, cada decisão agregada foi
-rotulada `consensus_disagreement`. O manifesto de cache omitiu exatamente o
-tráfego desses judges: 1.024 cache-read e 3.011 cache-write tokens.
+The shadow judge ran 16 calls against four freshly created asks. All 16
+judgements said `satisfied=false`; even so, every aggregate decision was labelled
+`consensus_disagreement`. The cache manifest omitted exactly those judges'
+traffic: 1,024 cache-read and 3,011 cache-write tokens.
 
-O log tinha 123 eventos. O relatório usava somente os últimos 100 sem anunciar
-o corte, omitindo 23 eventos iniciais. Dos 100 apresentados, 57 eram eventos de
-stream (`peer.token.delta` ou `peer.token.completed`), enquanto
-`caller_requests` e `follow_ups` não eram renderizados.
+The log had 123 events. The report used only the last 100 without announcing the
+cut, omitting 23 initial events. Of the 100 presented, 57 were stream events
+(`peer.token.delta` or `peer.token.completed`), while `caller_requests` and
+`follow_ups` were not rendered.
 
-### 5.4. Sessão `36214b31`
+### 5.4. Session `36214b31`
 
-O budget funcionou corretamente. Depois de quatro reviews, a geração de Claude
-foi estimada em US$ 9,787594, acima do teto persistido de US$ 5; nenhuma chamada
-de geração ocorreu. O outcome público `max-rounds` é mais amplo que o nome
-sugere, mas está documentado desde versões anteriores como bucket de limite de
-rodadas **ou orçamento**. Reclassificá-lo isoladamente quebraria métricas,
-health, dashboard e consumidores.
+The budget worked correctly. After four reviews, Claude's generation was
+estimated at USD 9.787594, above the persisted ceiling of USD 5; no generation
+call happened. The public outcome `max-rounds` is broader than its name suggests,
+but it has been documented since earlier versions as the bucket for a round
+**or budget** limit. Reclassifying it in isolation would break metrics, health,
+the dashboard and consumers.
 
-Portanto, a 4.5.18 preserva `max-rounds / generation_budget_preflight`. Uma
-eventual taxonomia futura deve criar um outcome próprio, como
-`budget-exhausted`, em mudança deliberada de contrato.
+4.5.18 therefore preserves `max-rounds / generation_budget_preflight`. A future
+taxonomy should create an outcome of its own, such as `budget-exhausted`, in a
+deliberate contract change.
 
-### 5.5. Sessão `5e5d0389`
+### 5.5. Session `5e5d0389`
 
-Este é o controle positivo:
+This is the positive control:
 
-- quatro revisores `READY / clean`;
-- nenhum rejected;
-- evidência persistida automaticamente;
-- truthfulness e evidence preflight aprovados;
-- convergência em uma rodada;
-- zero upload, promoção ou finalização humana.
+- four `READY / clean` reviewers;
+- nothing rejected;
+- evidence persisted automatically;
+- truthfulness and evidence preflight approved;
+- convergence in one round;
+- zero human upload, promotion or finalization.
 
-Ele comprova que o caminho feliz 4.5.16 funciona e que não havia
-incompatibilidade generalizada de API. Não neutraliza os defeitos de caminhos
-bloqueadores e de observabilidade descritos acima.
+It proves the 4.5.16 happy path works and that there was no widespread API
+incompatibility. It does not neutralize the blocking-path and observability
+defects described above.
 
-## 6. Defeitos e remediações 4.5.18
+## 6. Defects and 4.5.18 remediations
 
-### DEF-17 — grounding assimétrico de vetos factuais
+### DEF-17 — asymmetric grounding of factual vetoes
 
-**Severidade:** alta.
+**Severity:** high.
 
-`READY` era verificado contra artifact/attachments; `NOT_READY` e
-`NEEDS_EVIDENCE` escapavam pelo retorno antecipado. Isso permitia que uma
-alucinação bloqueadora impedisse unanimidade e gerasse rodadas adicionais.
+`READY` was checked against artifact/attachments; `NOT_READY` and
+`NEEDS_EVIDENCE` escaped through the early return. That let a blocking
+hallucination prevent unanimity and generate additional rounds.
 
-**Correção:**
+**Fix:**
 
-- `READY` e `NOT_READY` são verdicts definitivos e precisam de fonte grounded;
-- `NOT_READY` factual sem fonte ou com fonte falsa vira `NEEDS_EVIDENCE`,
-  `decision_quality` não-clean e transformação `blocking_grounding`;
-- `NEEDS_EVIDENCE` pode legitimamente não ter fonte, mas uma fonte fornecida e
-  fabricada/ungrounded gera warning auditável;
-- pedidos originalmente escritos no `NOT_READY` continuam sendo asks do peer,
-  não remediação inventada pelo servidor.
+- `READY` and `NOT_READY` are definitive verdicts and require a grounded source;
+- a factual `NOT_READY` with no source, or with a false source, becomes
+  `NEEDS_EVIDENCE`, a non-clean `decision_quality` and a `blocking_grounding`
+  transformation;
+- `NEEDS_EVIDENCE` may legitimately have no source, but a supplied source that is
+  fabricated/ungrounded raises an auditable warning;
+- requests originally written in the `NOT_READY` remain the peer's asks, not
+  remediation invented by the server.
 
-### DEF-18 — perda potencial antes da barreira do peer mais lento
+### DEF-18 — potential loss before the slowest peer's barrier
 
-**Severidade:** alta.
+**Severity:** high.
 
-O `Promise.all` precisava terminar antes do primeiro `savePeerResult`.
+`Promise.all` had to finish before the first `savePeerResult`.
 
-**Correção:**
+**Fix:**
 
-- cada resposta/falha é gravada como `provider-response`/`provider-failure`
-  assim que a chamada termina;
-- o settlement entra também em `in_flight.provider_settlements`, com path,
-  usage, cost, attempts e billing status;
-- restart/cancel move settlements já concluídos para o ledger interrompido e
-  marcam como desconhecidos apenas os peers ainda não resolvidos;
-- ao append normal, o ledger temporário é promovido sem dupla contagem;
-- `peer.call.completed` é emitido depois da persistência;
-- a versão normalizada continua sendo salva ao final, preservando raw e decisão
-  pós-gates como artefatos distintos.
+- each response/failure is written as `provider-response`/`provider-failure` as
+  soon as the call ends;
+- the settlement also enters `in_flight.provider_settlements`, with path, usage,
+  cost, attempts and billing status;
+- restart/cancel moves already-completed settlements into the interrupted ledger
+  and marks as unknown only the peers not yet resolved;
+- on a normal append, the temporary ledger is promoted without double-counting;
+- `peer.call.completed` is emitted after persistence;
+- the normalized version is still saved at the end, keeping the raw and the
+  post-gate decision as distinct artifacts.
 
-### DEF-19 — preflight sem draft durável e sessão stale-open
+### DEF-19 — preflight without a durable draft and a stale-open session
 
-**Severidade:** alta para auditabilidade.
+**Severity:** high for auditability.
 
-**Correção:**
+**Fix:**
 
-- loops salvam o draft antes dos gates locais;
-- truthfulness/evidence preflight recusado termina imediatamente em
+- loops save the draft before the local gates;
+- a refused truthfulness/evidence preflight ends immediately in
   `aborted / needs_*_preflight`;
-- `ask_peers`, que é iterativo, mantém sua rodada local recusada e aberta para a
-  correção seguinte;
-- nenhuma rota exige operador humano.
+- `ask_peers`, which is iterative, keeps its refused local round open for the
+  next correction;
+- no route requires a human operator.
 
-### DEF-20 — custo, cache e oportunidade dos judges
+### DEF-20 — judge cost, cache and timing
 
-**Severidade:** média/alta por gasto repetitivo.
+**Severity:** medium/high because of repetitive spend.
 
-**Correção:**
+**Fix:**
 
-- budget do judge soma o custo da rodada paga ainda em voo;
-- cap próprio `max_output_tokens`, default 2.048, mínimo 256;
-- effort próprio, default `medium`, sem herdar o `max` dos reviews;
-- estimate e chamada usam o modelo real e o mesmo cap;
-- custo pendente desconhecido/unpriced bloqueia o judge em vez de virar zero;
-- asks criadas na rodada atual aguardam uma submissão posterior antes de
-  disparar judge;
-- manifesto registra `call_kind` e `call_label` para review, generation e
+- the judge budget adds the cost of the paid round still in flight;
+- its own `max_output_tokens` cap, default 2,048, minimum 256;
+- its own effort, default `medium`, without inheriting the reviews' `max`;
+- the estimate and the call use the real model and the same cap;
+- unknown/unpriced pending cost blocks the judge instead of becoming zero;
+- asks created in the current round wait for a later submission before
+  triggering a judge;
+- the manifest records `call_kind` and `call_label` for review, generation and
   evidence judge.
 
-### DEF-21 — relatório não acionável
+### DEF-21 — non-actionable report
 
-**Severidade:** média.
+**Severity:** medium.
 
-**Correção:**
+**Fix:**
 
-- token deltas deixam a timeline padrão;
-- truncamento e quantidade suprimida são anunciados;
-- `caller_requests` e `follow_ups` aparecem por peer;
-- Markdown não imprime campos `undefined`;
-- `session_list` trata metadata sem outcome como open e expõe
+- token deltas leave the default timeline;
+- truncation and the suppressed quantity are announced;
+- `caller_requests` and `follow_ups` appear per peer;
+- Markdown does not print `undefined` fields;
+- `session_list` treats metadata with no outcome as open and exposes
   `not_resurfaced_evidence_items`.
 
-### DEF-22 — zero chamadas exibido como custo desconhecido
+### DEF-22 — zero calls displayed as unknown cost
 
-**Severidade:** baixa.
+**Severity:** low.
 
-**Correção:** sessões accounting-v2 com zero chamadas têm custo conhecido igual
-a US$ 0. Sessões históricas/incompletas continuam sem inventar reconciliação.
+**Fix:** accounting-v2 sessions with zero calls have a known cost equal to
+USD 0. Historical/incomplete sessions still do not invent a reconciliation.
 
-### DEF-23 — configuração efetiva não reproduzível
+### DEF-23 — effective configuration not reproducible
 
-**Severidade:** média.
+**Severity:** medium.
 
-**Correção:** toda sessão nova guarda snapshot redigido e SHA-256 de modelos,
-fallbacks, seleção, enablement, effort, retry, budgets, limites de prompt,
-output caps, preflights, streaming, judge, cache, controles Perplexity e rate
-cards. Credenciais não entram no snapshot.
+**Fix:** every new session stores a redacted snapshot and the SHA-256 of models,
+fallbacks, selection, enablement, effort, retry, budgets, prompt limits, output
+caps, preflights, streaming, judge, cache, Perplexity controls and rate cards.
+Credentials do not enter the snapshot.
 
-### DEF-24 — semântica de consenso shadow
+### DEF-24 — shadow consensus semantics
 
-**Severidade:** média.
+**Severity:** medium.
 
-**Correção:** todos os judges em falso produzem `consensus_unsatisfied`, não
-`consensus_disagreement`; eventos shadow não atribuem arbitrariamente o
-resultado a um peer, e a mensagem explica que a exclusão do autor ocorre por
-item.
+**Fix:** all judges returning false produce `consensus_unsatisfied`, not
+`consensus_disagreement`; shadow events do not arbitrarily attribute the result
+to a peer, and the message explains that the author is excluded per item.
 
-### DEF-25 — falso positivo lexical em Service Bindings
+### DEF-25 — lexical false positive on Service Bindings
 
-**Severidade:** média.
+**Severity:** medium.
 
-**Correção:** a expressão de produto `Service Binding(s)` não é mais tratada
-como sujeito de health/status. Alegações reais sobre service/CI/deploy continuam
-fail-closed.
+**Fix:** the product phrase `Service Binding(s)` is no longer treated as a
+health/status subject. Real claims about service/CI/deploy stay fail-closed.
 
-### DEF-26 — artefato antecipado órfão do ledger de recovery
+### DEF-26 — early artifact orphaned from the recovery ledger
 
-**Severidade:** alta.
+**Severity:** high.
 
-A primeira correção de DEF-18 escrevia o JSON antes da barreira, mas
-`accountInterruptedInFlight` ainda marcava todos os peers como desconhecidos.
-O arquivo sobrevivia; usage/cost e o fato de o peer já ter concluído não.
+The first DEF-18 fix wrote the JSON before the barrier, but
+`accountInterruptedInFlight` still marked every peer as unknown. The file
+survived; usage/cost and the fact that the peer had already completed did not.
 
-**Correção:** settlement mínimo e redigido por chamada passa a integrar
-`meta.in_flight`. A primeira resposta e cada recovery têm artefato próprio; a
-recovery recebe uma reserva durável antes do dispatch, removida atomicamente
-quando seu resultado ou falha é assentado. Recovery de processo preserva os
-valores exatos em `interrupted_provider_settlements`; apenas peers iniciais não
-assentados e reservas ainda abertas recebem tentativa conservadora desconhecida.
-O relatório exibe esses settlements sem fingir que formam uma rodada/voto
-completo.
+**Fix:** a minimal, redacted per-call settlement now becomes part of
+`meta.in_flight`. The first response and each recovery get their own artifact;
+the recovery receives a durable reservation before dispatch, removed atomically
+once its result or failure is settled. Process recovery preserves the exact
+values in `interrupted_provider_settlements`; only unsettled initial peers and
+still-open reservations receive a conservative unknown attempt. The report shows
+those settlements without pretending they form a complete round/vote.
 
-### DEF-27 — cache de geração anterior ao ledger
+### DEF-27 — generation cache written ahead of the ledger
 
-**Severidade:** alta para reconciliação.
+**Severity:** high for reconciliation.
 
-`generateWithFailureAccounting` registrava cache antes de `saveGeneration` e
-recebia labels como `initial-draft-failure` para uma geração bem-sucedida. Um
-crash na janela deixava cache/custo sem a geração autoritativa.
+`generateWithFailureAccounting` recorded the cache before `saveGeneration` and
+received labels such as `initial-draft-failure` for a successful generation. A
+crash in that window left cache/cost without the authoritative generation.
 
-**Correção:** a ordem é provider result → `saveGeneration` → cache manifest. O
-label de sucesso (`initial-draft`, `revision` ou `rotation`) é separado do label
-de failure e compartilhado pelo artefato e pela telemetria.
+**Fix:** the order is provider result → `saveGeneration` → cache manifest. The
+success label (`initial-draft`, `revision` or `rotation`) is separated from the
+failure label and shared by the artifact and the telemetry.
 
-### DEF-28 — judge compacto herdava effort máximo e aceitava custo desconhecido
+### DEF-28 — the compact judge inherited maximum effort and accepted unknown cost
 
-**Severidade:** alta por risco de truncamento e gasto.
+**Severity:** high because of truncation and spend risk.
 
-O cap de 2.048 tokens não impedia OpenAI/Anthropic de herdarem effort `max`.
-Além disso, `total_cost ?? 0` permitia novas chamadas quando uma tentativa da
-rodada ainda estava sem preço confiável.
+The 2,048-token cap did not stop OpenAI/Anthropic from inheriting `max` effort.
+Beyond that, `total_cost ?? 0` allowed new calls while an attempt from the round
+was still without a reliable price.
 
-**Correção:** judge tem effort independente configurável, default `medium`, e
-o preflight falha fechado quando qualquer tentativa paga atual ou histórica tem
-`unpriced_attempts`, billing desconhecido ou custo não finito. Quando a rodada
-atual já está no ledger in-flight, seu total é subtraído da base antes de o
-agregado pendente ser somado, eliminando dupla contagem.
+**Fix:** the judge has an independent configurable effort, default `medium`, and
+the preflight fails closed when any current or historical paid attempt has
+`unpriced_attempts`, unknown billing or a non-finite cost. When the current round
+is already in the in-flight ledger, its total is subtracted from the base before
+the pending aggregate is added, eliminating double-counting.
 
-### DEF-29 — demoção de veto sem pedido acionável
+### DEF-29 — veto demotion with no actionable request
 
-**Severidade:** alta para convergência.
+**Severity:** high for convergence.
 
-O runtime convertia `NOT_READY` sem fonte em `NEEDS_EVIDENCE`, mas guardava a
-remediação apenas dentro de `decision_transformations`; o Evidence Broker lê
+The runtime converted a sourceless `NOT_READY` into `NEEDS_EVIDENCE`, but stored
+the remediation only inside `decision_transformations`; the Evidence Broker reads
 `structured.caller_requests`.
 
-**Correção:** a remediação de citação é deduplicada e persistida em
-`caller_requests`. O parecer durável conserva os pedidos de correção originais
-para auditoria, mas o Evidence Broker recebe somente a remediação de citação
-sintetizada; prosa como “corrija o DELETE” não volta a nascer como item
-histórico `not_resurfaced`. O prompt também informa que `NOT_READY` é veredito
-factual definitivo e precisa citar seus bloqueios; sem fonte, o peer deve pedir
-a prova.
+**Fix:** the citation remediation is deduplicated and persisted in
+`caller_requests`. The durable opinion keeps the original correction requests for
+audit, but the Evidence Broker receives only the synthesized citation
+remediation; prose such as "fix the DELETE" is no longer reborn as a historical
+`not_resurfaced` item. The prompt also states that `NOT_READY` is a definitive
+factual verdict and must cite its blockers; without a source, the peer has to ask
+for the proof.
 
-### DEF-30 — snapshot efetivo ainda incompleto
+### DEF-30 — effective snapshot still incomplete
 
-**Severidade:** média.
+**Severity:** medium.
 
-O primeiro snapshot omitia limites de prompt e os controles Perplexity
-`disable_search`, `search_context_size` e `probe_mode`.
+The first snapshot omitted prompt limits and the Perplexity controls
+`disable_search`, `search_context_size` and `probe_mode`.
 
-**Correção:** ambos os blocos foram incluídos; o teste também confirma que
-`api_keys` e valores secretos continuam ausentes.
+**Fix:** both blocks were included; the test also confirms that `api_keys` and
+secret values remain absent.
 
-### DEF-31 — tier OpenAI herdado do projeto
+### DEF-31 — OpenAI tier inherited from the project
 
-**Severidade:** alta para reconciliação financeira.
+**Severity:** high for financial reconciliation.
 
-O adapter não enviava `service_tier`. Pela documentação oficial de Priority
-Processing, a omissão permite que a configuração do projeto selecione outro
-tier, enquanto o ledger local continuava pressupondo a tabela Standard.
+The adapter did not send `service_tier`. Per the official Priority Processing
+documentation, omitting it lets the project's configuration select another tier,
+while the local ledger kept assuming the Standard table.
 
-**Correção:** review, generation, judge e retries compartilham payloads com
-`service_tier: "default"`. O preço configurado passa a corresponder
-deterministicamente ao tier Standard; o contrato wire é coberto por regressão.
+**Fix:** review, generation, judge and retries share payloads with
+`service_tier: "default"`. The configured price now corresponds
+deterministically to the Standard tier; the wire contract is covered by a
+regression.
 
-### DEF-32 — publicação alternativa contornava o hardgate
+### DEF-32 — an alternative publication path bypassed the hardgate
 
-**Severidade:** crítica para supply chain.
+**Severity:** critical for the supply chain.
 
-O auto-tag validava CI/CodeQL/alertas, mas `workflow_dispatch` e tag manual
-podiam acionar `publish.yml` sem repetir esse vínculo. Workflows condicionais
-também podiam ainda estar em execução.
+Auto-tag validated CI/CodeQL/alerts, but `workflow_dispatch` and a manual tag
+could trigger `publish.yml` without repeating that link. Conditional workflows
+could also still be running.
 
-**Correção:** o próprio publish revalida tag = `origin/main`, aguarda CI,
-CodeQL, Socket e, quando aplicáveis, Scorecard, Pages e jobs Dependabot, exige
-as duas análises CodeQL processadas para o SHA e zero alertas abertos. Depois de
-publicar via OIDC/provenance, instala a versão exata sob as restrições npm 12 e
-executa `npm audit signatures`, que verifica assinatura de registry e
-attestation de provenance.
+**Fix:** publish itself revalidates tag = `origin/main`, waits for CI, CodeQL,
+Socket and, where applicable, Scorecard, Pages and Dependabot jobs, requires both
+CodeQL analyses processed for the SHA and zero open alerts. After publishing via
+OIDC/provenance, it installs the exact version under the npm 12 restrictions and
+runs `npm audit signatures`, which verifies the registry signature and the
+provenance attestation.
 
-### DEF-33 — quote grounded, porém irrelevante, sustentava veto factual
+### DEF-33 — a grounded but irrelevant quote sustained a factual veto
 
-**Severidade:** alta para anti-enganação e convergência.
+**Severity:** high for anti-deception and convergence.
 
-O validador comprovava path, SHA-256 e literal da quote, mas não verificava se
-ela sustentava o bloqueio concreto enunciado pelo peer. Assim, uma citação
-autêntica de `src/index.ts:10` podia acompanhar a afirmação de defeito em
-`db.ts:99` e ainda manter `NOT_READY` como veto limpo.
+The validator proved the quote's path, SHA-256 and literal, but did not check
+whether it sustained the concrete blocker the peer stated. So an authentic
+citation of `src/index.ts:10` could accompany a claimed defect in `db.ts:99` and
+still keep `NOT_READY` as a clean veto.
 
-**Correção:** um `NOT_READY` factual precisa agora trazer referência
-`path:line` no resumo que corresponda à mesma fonte já grounded. A fonte
-autêntica, porém desconexa, é preservada no artefato para auditoria, mas o
-veredito é transformado em `NEEDS_EVIDENCE`; nenhuma correção de produto é
-reaberta pelo broker a partir dessa transformação interna.
+**Fix:** a factual `NOT_READY` must now carry a `path:line` reference in the
+summary matching the same already-grounded source. The authentic but disconnected
+source is preserved in the artifact for audit, but the verdict is transformed
+into `NEEDS_EVIDENCE`; no product correction is reopened by the broker from that
+internal transformation.
 
-### DEF-34 — crash após append podia conservar mérito sem artefato final
+### DEF-34 — a crash after append could keep merit without a final artifact
 
-**Severidade:** alta para autonomia operacional.
+**Severity:** high for operational autonomy.
 
-Uma rodada unânime já persistida entre `appendRound` e `finalize` sobrevivia,
-mas a recovery a tratava como sessão interrompida. O resultado material estava
-no disco e não havia nova chamada a provider, mas faltava `final.md` e o selo
-terminal.
+A unanimous round already persisted between `appendRound` and `finalize`
+survived, but recovery treated it as an interrupted session. The material result
+was on disk and there was no new provider call, but `final.md` and the terminal
+seal were missing.
 
-**Correção:** a recovery reconhece convergência durável, reconstrói o artefato
-final a partir da rodada já anexada e registra `session.finalized` sob o lock
-da sessão. O caminho não reabre checklist, não cobra provider e não pede ao
-operador para anexar ou finalizar nada.
+**Fix:** recovery recognizes durable convergence, rebuilds the final artifact
+from the already-appended round and records `session.finalized` under the
+session's lock. The path does not reopen the checklist, does not charge the
+provider and does not ask the operator to attach or finalize anything.
 
-### DEF-35 — reserva síncrona de evidence judge não sobrevivia corretamente
+### DEF-35 — the synchronous evidence-judge reservation did not survive correctly
 
-**Severidade:** crítica para custo e recuperação.
+**Severity:** critical for cost and recovery.
 
-O judge síncrono não cria `in_flight`; uma queda deixava sua reserva global sem
-sweep automático e uma recovery manual podia contabilizar como desconhecida uma
-chamada ainda viva. Além disso, um cancelamento durante o judge podia ficar
-parado em `cancel_requested`.
+The synchronous judge does not create `in_flight`; a crash left its global
+reservation without an automatic sweep, and a manual recovery could account a
+still-live call as unknown. Beyond that, a cancellation during the judge could
+stall at `cancel_requested`.
 
-**Correção:** reservas passam a guardar `owner_pid`; a inicialização varre
-reservas de dono morto, mas preserva sessões com chamada viva. A recovery
-terminaliza cancelamento somente depois da liquidação conservadora e todos os
-eventos de recovery usam o lock normal. Os modos single e consensus voltam a
-avaliar cancelamento antes de promover evidência, e a transição compartilhada
-`markEvidenceItemAddressedByJudge` revalida `cancel_requested` dentro do lock:
-um cancelamento que vence entre a checagem otimista e a promoção deixa o item
-aberto e termina a sessão como `aborted/session_cancelled`.
+**Fix:** reservations now store `owner_pid`; initialization sweeps reservations
+whose owner is dead but preserves sessions with a live call. Recovery terminates
+a cancellation only after the conservative settlement, and every recovery event
+uses the normal lock. The single and consensus modes evaluate cancellation again
+before promoting evidence, and the shared transition
+`markEvidenceItemAddressedByJudge` revalidates `cancel_requested` inside the
+lock: a cancellation that wins between the optimistic check and the promotion
+leaves the item open and ends the session as `aborted/session_cancelled`.
 
-### DEF-36 — identidade de ref de release podia divergir do despacho
+### DEF-36 — the release ref identity could diverge from the dispatch
 
-**Severidade:** crítica para supply chain.
+**Severity:** critical for the supply chain.
 
-O `workflow_dispatch` é necessário: por documentação do GitHub, tag criada com
-`GITHUB_TOKEN` não aciona outro workflow. Contudo, o input livre `tag` podia
-substituir o ref real do despacho e criar ambiguidade entre tag, checkout e
-provenance.
+`workflow_dispatch` is necessary: per GitHub's documentation, a tag created with
+`GITHUB_TOKEN` does not trigger another workflow. The free-form `tag` input,
+however, could replace the dispatch's real ref and create ambiguity between tag,
+checkout and provenance.
 
-**Correção:** `workflow_dispatch` permanece somente como ponte sobre o próprio
-ref da tag, sem input. Auto-tag chama `gh workflow run publish.yml --ref
-"$TAG"`; Publish exige `github.ref_type=tag`, `github.ref=refs/tags/<nome>` e
-`github.ref_protected=true`, e revalida tag = checkout = `main` após os testes
-locais e antes de cada escrita externa. A auditoria live confirmou a ruleset
-organizacional ativa `tag ruleset` (ID 16728097) em `refs/tags/v*`, sem bypass,
-com `deletion`, `non_fast_forward` e `required_signatures`; `v04.05.17` é tag
-leve que aponta para `8e790116`, cujo commit tem assinatura válida.
+**Fix:** `workflow_dispatch` remains only as a bridge over the tag's own ref,
+with no input. Auto-tag calls `gh workflow run publish.yml --ref "$TAG"`; Publish
+requires `github.ref_type=tag`, `github.ref=refs/tags/<name>` and
+`github.ref_protected=true`, and revalidates tag = checkout = `main` after the
+local tests and before each external write. The live audit confirmed the active
+organization ruleset `tag ruleset` (ID 16728097) on `refs/tags/v*`, with no
+bypass, carrying `deletion`, `non_fast_forward` and `required_signatures`;
+`v04.05.17` is a lightweight tag pointing at `8e790116`, whose commit has a valid
+signature.
 
-Fontes oficiais deste controle: <https://docs.github.com/en/actions/concepts/security/github_token>,
+Official sources for this control: <https://docs.github.com/en/actions/concepts/security/github_token>,
 <https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows>,
-<https://docs.github.com/en/actions/reference/workflows-and-actions/contexts> e
+<https://docs.github.com/en/actions/reference/workflows-and-actions/contexts> and
 <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets>.
 
-### 6.1 Achados da validação final da 4.5.18 (não inferidos do corpus)
+### 6.1 Findings from the final 4.5.18 validation (not inferred from the corpus)
 
-Estes achados vieram da validação local red/green da remediação, não das cinco
-sessões 4.5.16 auditadas. Eles são registrados separadamente para não alterar a
-evidência histórica do corpus.
+These findings came from the local red/green validation of the remediation, not
+from the five audited 4.5.16 sessions. They are recorded separately so as not to
+alter the corpus's historical evidence.
 
-#### REG-37 — recovery selava cancelamento sem reconhecimento do dono morto
+#### REG-37 — recovery sealed a cancellation without the dead owner's acknowledgement
 
-**Severidade:** alta para trilha de auditoria e custo.
+**Severity:** high for the audit trail and for cost.
 
-Um processo morto com `cancel_requested`, sem ter reconhecido ou liquidado a
-chamada em voo, era tratado como `cancelled` terminal. Isso escondia trabalho
-interrompido e podia descartar a recuperação conservadora de custo.
+A dead process with `cancel_requested`, having neither acknowledged nor settled
+the in-flight call, was treated as terminal `cancelled`. That hid interrupted
+work and could discard the conservative cost recovery.
 
-**Correção:** a recovery distingue cancelamento terminal já reconhecido de uma
-solicitação persistida cujo dono morreu. O segundo caso segue o caminho de
-recovery auditável, preservando settlements e contabilizando somente o que
-permanece desconhecido. O cenário vermelho e verde está em
-`v4.5.4-durable-jobs-regression`.
+**Fix:** recovery distinguishes an already-acknowledged terminal cancellation
+from a persisted request whose owner died. The second case follows the auditable
+recovery path, preserving settlements and accounting only for what remains
+unknown. The red and green scenario is in `v4.5.4-durable-jobs-regression`.
 
-#### REG-38 — extração de símbolo do Evidence Broker tinha backtracking quadrático
+#### REG-38 — the Evidence Broker's symbol extraction had quadratic backtracking
 
-**Severidade:** alta para disponibilidade local.
+**Severity:** high for local availability.
 
-O matcher de `snake_case` aceitava a flag case-insensitive e podia retroceder
-quadraticamente diante de uma entrada adversarial composta por 100.000 letras
-maiúsculas seguidas de `_`. A extração ocorre sobre texto da solicitação, logo
-o limite precisava ser determinístico.
+The `snake_case` matcher accepted the case-insensitive flag and could backtrack
+quadratically on an adversarial input made of 100,000 uppercase letters followed
+by `_`. Extraction happens over the request's text, so the bound had to be
+deterministic.
 
-**Correção:** o matcher foi substituído por varredura ASCII linear, preservando
-as formas camelCase, snake_case e UPPER_SNAKE. A regressão
-`evidence-transport-regression` mantém o limite de dois segundos e verifica a
-correlação funcional.
+**Fix:** the matcher was replaced by a linear ASCII scan, preserving the
+camelCase, snake_case and UPPER_SNAKE forms. The `evidence-transport-regression`
+keeps the two-second bound and checks the functional correlation.
 
-#### REG-39 — guardrails de validação fortalecidos
+#### REG-39 — hardened validation guardrails
 
-**Telemetria.** O runtime já removia a autoria escalar fabricada de consenso
-shadow, mas o smoke estático ainda exigia `judge_peer` nesse evento. A asserção
-foi substituída por contrato dinâmico: shadow transporta o painel
-`judge_peers` e `per_peer_verdict`, sem `peer` nem `judge_peer`; uma promoção
-ativa mantém o autor real. A regressão de telemetria passou de dois para três
-casos.
+**Telemetry.** The runtime already removed the fabricated scalar authorship of a
+shadow consensus, but the static smoke still required `judge_peer` on that event.
+The assertion was replaced by a dynamic contract: shadow carries the `judge_peers`
+panel and `per_peer_verdict`, with neither `peer` nor `judge_peer`; an active
+promotion keeps the real author. The telemetry regression went from two cases to
+three.
 
-**Registry npm.** O fixture pós-publicação tinha `NPM_CONFIG_REGISTRY`, mas as
-três chamadas `npm init`, `npm install` e `npm audit signatures` não declaravam
-o registry inline. Todas agora fixam `https://registry.npmjs.org`, preservando
-a variável como defesa em profundidade. A política é coberta por
-`npm-v12-release-security-regression` e pelo smoke de disciplina de registry.
+**npm registry.** The post-publication fixture had `NPM_CONFIG_REGISTRY`, but the
+three calls `npm init`, `npm install` and `npm audit signatures` did not declare
+the registry inline. All of them now pin `https://registry.npmjs.org`, keeping
+the variable as defence in depth. The policy is covered by
+`npm-v12-release-security-regression` and by the registry-discipline smoke.
 
-#### REG-40 — sweep stale podia roubar uma chamada de judge ainda viva
+#### REG-40 — the stale sweep could steal a still-live judge call
 
-**Severidade:** alta para durabilidade e contabilização.
+**Severity:** high for durability and accounting.
 
-`clearStaleInFlight` observava apenas o PID de geração/background e o lock
-transitório. Depois de 30 minutos, podia reconciliar o `in_flight` de uma
-rodada cujo evidence judge ainda tinha uma reserva com `owner_pid` vivo. Isso
-removia o envelope antes do settlement real e podia criar tentativa unknown
-duplicada.
+`clearStaleInFlight` observed only the generation/background PID and the
+transient lock. After 30 minutes, it could reconcile the `in_flight` of a round
+whose evidence judge still held a reservation with a live `owner_pid`. That
+removed the envelope before the real settlement and could create a duplicate
+unknown attempt.
 
-**Correção:** o sweep identifica reserva pendente de dono vivo antes de tentar
-o lock e repete a verificação já dentro do lock. A rodada e a reserva continuam
-intactas até o resultado/falha durável. A nova regressão está em
-`v4.5.4-durable-jobs-regression`.
+**Fix:** the sweep identifies a pending reservation held by a live owner before
+attempting the lock and repeats the check once inside the lock. The round and the
+reservation stay intact until the durable result/failure. The new regression is
+in `v4.5.4-durable-jobs-regression`.
 
-#### REG-41 — `not_resurfaced` tornava uma pendência invisível ao judge
+#### REG-41 — `not_resurfaced` made a pending item invisible to the judge
 
-**Severidade:** crítica para convergência autônoma.
+**Severity:** critical for autonomous convergence.
 
-O autowire selecionava IDs abertos antes da inferência de resurfacing, mas
-depois aceitava somente itens ainda `open`. Quando um peer retornava `READY`,
-a ask histórica virava `not_resurfaced`, continuava bloqueando o hardgate e já
-não chegava ao judge. Os executores single/consensus e a promoção atômica
-também restringiam a transição a `open`.
+Autowire selected open IDs before the resurfacing inference, but then accepted
+only items still `open`. When a peer returned `READY`, the historical ask became
+`not_resurfaced`, kept blocking the hardgate and no longer reached the judge. The
+single/consensus executors and the atomic promotion also restricted the
+transition to `open`.
 
-**Correção:** itens preexistentes `open` e `not_resurfaced` são elegíveis; os
-dois executores os preservam na fila e a promoção verificada permite
-`open|not_resurfaced → addressed`, sem tocar estados terminais do operador.
-Há regressões separadas para autowire single e consenso em
+**Fix:** pre-existing `open` and `not_resurfaced` items are eligible; both
+executors keep them in the queue and the verified promotion allows
+`open|not_resurfaced → addressed`, without touching the operator's terminal
+states. There are separate regressions for single and consensus autowire in
 `v4.5.18-contract-gaps-regression`.
 
-#### REG-42 — piso implícito do judge podia ultrapassar cap explícito
+#### REG-42 — the judge's implicit floor could exceed an explicit cap
 
-**Severidade:** média para orçamento e obediência à configuração.
+**Severity:** medium for budget and configuration obedience.
 
-`evidenceJudgeOutputTokens` aplicava `max(256, min(peerCap, judgeCap))`. Como
-o schema central aceita caps positivos menores que 256, uma configuração de
-64 tokens podia gerar chamada de 256 e uma estimativa de custo incompatível.
+`evidenceJudgeOutputTokens` applied `max(256, min(peerCap, judgeCap))`. Since the
+central schema accepts positive caps below 256, a configuration of 64 tokens
+could produce a 256-token call and an incompatible cost estimate.
 
-**Correção:** o cap efetivo é somente `min(peerCap, judgeCap)`; ambos já são
-validados como positivos pelo schema. A regressão fixa um cap Codex de 64 e
-confirma que o contexto wire recebe 64, não 256.
+**Fix:** the effective cap is only `min(peerCap, judgeCap)`; both are already
+validated as positive by the schema. The regression pins a Codex cap of 64 and
+confirms the wire context receives 64, not 256.
 
-#### REG-43 — reserva durável ainda parecia custo reconciliado no relatório
+#### REG-43 — a durable reservation still looked like reconciled cost in the report
 
-**Severidade:** alta para transparência financeira.
+**Severity:** high for financial transparency.
 
-Antes de settlement, `sessionCostBreakdown` ignorava
-`pending_provider_call_reservations` e
-`in_flight.provider_call_reservations`. Uma sessão accounting-v2 sem outro
-artefato podia então exibir US$ 0 e `reconciled: true` apesar de uma chamada
-paga em curso.
+Before settlement, `sessionCostBreakdown` ignored
+`pending_provider_call_reservations` and `in_flight.provider_call_reservations`.
+An accounting-v2 session with no other artifact could then display USD 0 and
+`reconciled: true` despite a paid call in progress.
 
-**Correção:** cada reserva pendente conta como tentativa sem preço, impede o
-fallback de total zero e mantém `reconciled: false` até o settlement. A
-regressão em `server-reports-regression` cobre reserva de judge e de recovery.
+**Fix:** every pending reservation counts as an unpriced attempt, blocks the
+zero-total fallback and keeps `reconciled: false` until settlement. The
+regression in `server-reports-regression` covers judge and recovery
+reservations.
 
-#### REG-44 — geração em voo ainda podia parecer custo zero reconciliado
+#### REG-44 — an in-flight generation could still look like reconciled zero cost
 
-**Severidade:** alta para transparência financeira.
+**Severity:** high for financial transparency.
 
-O marcador `generation_in_flight` é escrito antes de `adapter.generate`, mas o
-breakdown de custo só observava settlements e reservas. Em uma sessão v2 sem
-outro artefato, a geração em curso ainda podia cair no fallback de US$ 0 e
-`reconciled: true`.
+The `generation_in_flight` marker is written before `adapter.generate`, but the
+cost breakdown observed only settlements and reservations. In a v2 session with
+no other artifact, a generation in progress could still fall into the USD 0 and
+`reconciled: true` fallback.
 
-**Correção:** geração em voo é uma tentativa não precificada até a liquidação
-atômica por `saveGeneration` ou `recordPeerFailureAccounting`. O relatório
-passa a exibir custo desconhecido e `reconciled: false` durante esse intervalo.
+**Fix:** an in-flight generation is an unpriced attempt until atomic settlement
+by `saveGeneration` or `recordPeerFailureAccounting`. The report now shows an
+unknown cost and `reconciled: false` during that interval.
 
-#### REG-45 — peers primários em voo ainda podiam parecer custo zero reconciliado
+#### REG-45 — in-flight primary peers could still look like reconciled zero cost
 
-**Severidade:** alta para transparência financeira.
+**Severity:** high for financial transparency.
 
-Os peers da rodada principal ficam em `in_flight.peers` antes de cada resultado
-ou failure ser persistido. Sem settlement primário correspondente, o relatório
-não os contava como trabalho pendente e podia anunciar uma reconciliação zero.
+The main round's peers sit in `in_flight.peers` before each result or failure is
+persisted. Without a matching primary settlement, the report did not count them
+as pending work and could announce a zero reconciliation.
 
-**Correção:** cada peer sem settlement primário é contado como dispatch
-desconhecido no breakdown. Settlements de recovery permanecem separados pelo
-`reservation_id`, sem duplicar os peers primários já liquidados.
+**Fix:** every peer without a primary settlement is counted as an unknown
+dispatch in the breakdown. Recovery settlements stay separate through the
+`reservation_id`, without duplicating primary peers that are already settled.
 
-#### REG-46 — preflight do judge e da geração divergia sobre custo desconhecido
+#### REG-46 — the judge and generation preflights disagreed about unknown cost
 
-**Severidade:** crítica para controle de orçamento.
+**Severity:** critical for budget control.
 
-O preflight do judge recebeu a regra fail-closed, mas inicialmente omitia
-`generation_in_flight`. Separadamente, a geração do relator convertia
-`total_cost` ausente em zero mesmo quando havia tentativas históricas sem preço.
-Assim, qualquer um desses caminhos podia iniciar nova chamada paga acima de um
-teto que já não era mensurável.
+The judge preflight received the fail-closed rule but initially omitted
+`generation_in_flight`. Separately, the relator's generation converted a missing
+`total_cost` into zero even when there were historical unpriced attempts. Either
+path could therefore start a new paid call above a ceiling that was no longer
+measurable.
 
-**Correção:** `sessionHasUnknownProviderSpend` inclui geração em voo e é usado
-por ambos os preflights. Judge single/consensus e geração abortam antes do
-dispatch, persistem `generation_budget_preflight` quando aplicável e não
-inventam um custo corrente numérico.
+**Fix:** `sessionHasUnknownProviderSpend` includes an in-flight generation and is
+used by both preflights. Single/consensus judge and generation abort before
+dispatch, persist `generation_budget_preflight` where applicable, and do not
+invent a numeric current cost.
 
-#### REG-47 — round e format recovery podiam ser roubados pelo sweep após 30 min
+#### REG-47 — round and format recovery could be stolen by the sweep after 30 min
 
-**Severidade:** crítica para durabilidade.
+**Severity:** critical for durability.
 
-`markInFlight` não persistia dono. Uma rodada síncrona longa, especialmente um
-peer primário, fallback ou retry de moderação, ficava sem lock durante a espera
-da API. Outro host podia então considerar a rodada velha e apagá-la. A reserva
-de format recovery tinha o mesmo problema individualmente.
+`markInFlight` did not persist an owner. A long synchronous round — especially a
+primary peer, a fallback or a moderation retry — sat without a lock while waiting
+on the API. Another host could then consider the round old and delete it. The
+format-recovery reservation had the same problem individually.
 
-**Correção:** `InFlightRound` e `ProviderCallReservation` agora persistem
-`owner_pid`. `clearStaleInFlight` e `recoverInterruptedSessions` verificam todos
-os donos conhecidos antes e depois de obter o lock. Sessões legadas sem esse
-campo continuam recuperáveis; donos mortos são contabilizados
-conservadoramente, enquanto trabalho de processo vivo não é roubado.
+**Fix:** `InFlightRound` and `ProviderCallReservation` now persist `owner_pid`.
+`clearStaleInFlight` and `recoverInterruptedSessions` check every known owner
+before and after acquiring the lock. Legacy sessions without that field remain
+recoverable; dead owners are accounted conservatively, while a live process's
+work is not stolen.
 
-#### REG-48 — autowire podia julgar uma ask que o peer acabara de reabrir
+#### REG-48 — autowire could judge an ask the peer had just reopened
 
-**Severidade:** alta para a integridade do Evidence Broker.
+**Severity:** high for the Evidence Broker's integrity.
 
-O snapshot de IDs históricos era correto, mas o filtro posterior aceitava o
-mesmo ID se a ask fosse reassertada pelo peer na rodada corrente. Isso permitia
-o judge promover `addressed` contra uma nova `NEEDS_EVIDENCE`, contrariando a
-regra de que autowire só julga evidência que predatou a rodada.
+The snapshot of historical IDs was correct, but the later filter accepted the
+same ID if the ask was reasserted by the peer in the current round. That let the
+judge promote `addressed` against a new `NEEDS_EVIDENCE`, contradicting the rule
+that autowire only judges evidence predating the round.
 
-**Correção:** além do ID histórico e do estado `open|not_resurfaced`, autowire
-exige `last_round < roundNumber`. O caso válido silêncio → `not_resurfaced`
-continua elegível; a ask reaberta agora permanece aberta para uma rodada futura
-com evidência nova.
+**Fix:** beyond the historical ID and the `open|not_resurfaced` state, autowire
+requires `last_round < roundNumber`. The valid silence → `not_resurfaced` case
+stays eligible; the reopened ask now stays open for a future round with new
+evidence.
 
-## 7. Auditoria das seis APIs oficiais
+## 7. Audit of the six official APIs
 
-| Peer             | Pin                      | Contrato confirmado                                                                                              | Resultado                                                            |
-| ---------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| OpenAI/Codex     | `gpt-5.6-sol`            | Responses API; 1.050.000 contexto; 128.000 output; structured output; effort `none/low/medium/high/xhigh/max`    | correto; `ultra` vira `max` no wire; tier fixado em `default`        |
-| Anthropic/Claude | `claude-fable-5`         | Messages API; adaptive thinking; `output_config.effort`; structured output sanitizado pelo helper oficial do SDK | correto; `maxItems` não chega cru à API                              |
-| Google/Gemini    | `gemini-3.1-pro-preview` | `generateContent` oficialmente suportado; thinking `low/medium/high`; `responseJsonSchema` no subset documentado | correto; Interactions é avaliação futura, não migração obrigatória   |
-| DeepSeek         | `deepseek-v4-pro`        | Chat Completions compatível; effort `high/max`; structured response `json_object`                                | correto                                                              |
-| xAI/Grok         | `grok-4.5`               | Responses API; effort `low/medium/high`; contexto 500K; structured outputs                                       | adapter correto; faltava apenas o tier de preço >200K na config/docs |
-| Perplexity       | `sonar-reasoning-pro`    | Sonar Chat API; effort até `high`; JSON Schema; `<think>` pode preceder JSON                                     | correto; `disable_search` não elimina request fee                    |
+| Peer             | Pin                      | Confirmed contract                                                                                                | Result                                                                  |
+| ---------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| OpenAI/Codex     | `gpt-5.6-sol`            | Responses API; 1,050,000 context; 128,000 output; structured output; effort `none/low/medium/high/xhigh/max`      | correct; `ultra` becomes `max` on the wire; tier fixed at `default`     |
+| Anthropic/Claude | `claude-fable-5`         | Messages API; adaptive thinking; `output_config.effort`; structured output sanitized by the SDK's official helper | correct; `maxItems` does not reach the API raw                          |
+| Google/Gemini    | `gemini-3.1-pro-preview` | `generateContent` officially supported; thinking `low/medium/high`; `responseJsonSchema` in the documented subset | correct; Interactions is a future evaluation, not a mandatory migration |
+| DeepSeek         | `deepseek-v4-pro`        | Chat Completions compatible; effort `high/max`; structured response `json_object`                                 | correct                                                                 |
+| xAI/Grok         | `grok-4.5`               | Responses API; effort `low/medium/high`; 500K context; structured outputs                                         | adapter correct; only the >200K price tier was missing from config/docs |
+| Perplexity       | `sonar-reasoning-pro`    | Sonar Chat API; effort up to `high`; JSON Schema; `<think>` may precede the JSON                                  | correct; `disable_search` does not eliminate the request fee            |
 
-Rate cards OpenAI, Anthropic, Gemini, DeepSeek e Perplexity coincidiram com as
-tabelas oficiais para o modo standard/global usado pelo runtime. O único ajuste
-financeiro necessário foi o tier longo do Grok 4.5. Caps locais estão abaixo
-dos limites oficiais e não foram aumentados sem evidência de truncamento.
+The OpenAI, Anthropic, Gemini, DeepSeek and Perplexity rate cards matched the
+official tables for the standard/global mode the runtime uses. The only financial
+adjustment needed was Grok 4.5's long tier. Local caps are below the official
+limits and were not raised without evidence of truncation.
 
-Fontes oficiais:
+Official sources:
 
 - OpenAI: <https://developers.openai.com/api/docs/models/gpt-5.6-sol>,
-  <https://developers.openai.com/api/docs/pricing> e
+  <https://developers.openai.com/api/docs/pricing> and
   <https://developers.openai.com/api/docs/guides/priority-processing#configuring-priority-processing>
 - Anthropic:
   <https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5>
@@ -704,74 +699,72 @@ Fontes oficiais:
 - xAI: <https://docs.x.ai/developers/models/grok-4.5>
 - Perplexity: <https://docs.perplexity.ai/docs/getting-started/pricing>
 
-## 8. Evidência TDD preparada
+## 8. TDD evidence prepared
 
-Regressões novas ou ampliadas:
+New or extended regressions:
 
-- `v4.5.18-grounding-contract-regression`: 5 casos;
-- `v4.5.18-durability-regression`: 12 casos;
-- `v4.5.18-budget-cache-regression`: 10 casos;
-- `v4.5.18-contract-gaps-regression`: 9 casos;
-- `v4.5.18-judge-wire-contract-regression`: 8 casos;
-- `v4.5.18-session-telemetry-regression`: 3 casos;
-- `server-reports-regression`: 8 casos;
-- `v4.5.18-pricing-regression`: 6 casos.
+- `v4.5.18-grounding-contract-regression`: 5 cases;
+- `v4.5.18-durability-regression`: 12 cases;
+- `v4.5.18-budget-cache-regression`: 10 cases;
+- `v4.5.18-contract-gaps-regression`: 9 cases;
+- `v4.5.18-judge-wire-contract-regression`: 8 cases;
+- `v4.5.18-session-telemetry-regression`: 3 cases;
+- `server-reports-regression`: 8 cases;
+- `v4.5.18-pricing-regression`: 6 cases.
 
-Total: 60 verificações focadas. Cada defeito novo acima foi observado vermelho
-antes da correção e verde depois. A regressão de segurança npm v12 também
-protege a identidade do dispatch por tag, ausência de input divergente,
-revalidação pós-teste e verificação de `main` antes das três escritas externas.
-Além delas, `v4.5.4-durable-jobs-regression` agora possui 24 verificações,
-incluindo dono vivo de round primário, reserva de format recovery e
-compatibilidade de recovery de sessão legada. As regressões afetadas já existentes somam outras
-verificações focadas de grounding, judge/custo, accounting/preflight e
-extração de símbolos limitada.
+Total: 60 focused checks. Every new defect above was observed red before the fix
+and green after it. The npm v12 security regression also protects the dispatch's
+identity by tag, the absence of a divergent input, post-test revalidation and the
+`main` check before the three external writes. Beyond those,
+`v4.5.4-durable-jobs-regression` now holds 24 checks, including a live owner for
+a primary round, the format-recovery reservation and legacy session recovery
+compatibility. The affected pre-existing regressions add further focused checks
+for grounding, judge/cost, accounting/preflight and bounded symbol extraction.
 
-A validação remota, o SHA publicado, os workflows e a versão confirmada no npm
-devem ser acrescentados a este relatório somente depois da convergência da
-release; não são antecipados como sucesso.
+The remote validation, the published SHA, the workflows and the version confirmed
+on npm should be added to this report only after the release converges; they are
+not anticipated as success.
 
-## 9. Validação local de encerramento
+## 9. Local closing validation
 
-Todos os testes desta seção usam os adapters stub; nenhum deles abre uma
-chamada paga a provedor.
+Every test in this section uses the stub adapters; none of them opens a paid
+provider call.
 
-- `npm run check`: verde (Prettier, ESLint sem warnings, Biome e `tsc --noEmit`);
-- `npm run smoke`: verde em 140,9 segundos, incluindo disciplina de registry,
-  evidência, custo, durabilidade e os seis peers simulados;
-- as regressões focadas novas e ampliadas descritas na seção 8: verdes;
-- `npm test` iniciou corretamente, compilou e executou sem falha todos os
-  blocos que conseguiu reportar, mas o invocador local o encerrou pelo limite
-  externo de 240,9 segundos. Isso não é uma falha de teste e não foi mascarado
-  como sucesso;
-- para fechar sem repetir a cadeia inteira, a cauda exata não alcançada por
-  esse limite foi executada isoladamente e ficou verde: transporte de
-  evidência (57 checks), custody, truthfulness preflight (4), source contract
-  (10) e `runtime-smoke` (build + seis peers stub, `ok: true`, versão fonte
-  4.5.18).
+- `npm run check`: green (Prettier, ESLint with no warnings, Biome and
+  `tsc --noEmit`);
+- `npm run smoke`: green in 140.9 seconds, including registry discipline,
+  evidence, cost, durability and the six simulated peers;
+- the new and extended focused regressions described in section 8: green;
+- `npm test` started correctly, compiled and ran without failure every block it
+  managed to report, but the local invoker terminated it at the external limit of
+  240.9 seconds. That is not a test failure and was not masked as success;
+- to close without repeating the whole chain, the exact tail not reached under
+  that limit was run in isolation and came out green: evidence transport (57
+  checks), custody, truthfulness preflight (4), source contract (10) and
+  `runtime-smoke` (build + six stub peers, `ok: true`, source version 4.5.18).
 
-Assim, cada componente da cadeia de `npm test` foi observado verde nesta
-validação, embora o processo monolítico não tenha recebido um exit code final
-por limitação do executor. A CI do GitHub continua sendo o verificador
-autoritativo da execução monolítica no SHA publicado.
+Every component of the `npm test` chain was therefore observed green in this
+validation, even though the monolithic process received no final exit code
+because of an executor limitation. GitHub's CI remains the authoritative verifier
+of the monolithic run on the published SHA.
 
-Também foi validado o Dependabot antes da publicação. A configuração cobre
-`npm`, GitHub Actions, `pip`/`pip-compile` e `pre-commit`, que são todos os
-ecossistemas/manifests presentes. O pin do binário npm nos workflows é uma
-dependência de toolchain com atualização explícita, fora do escopo do
-Dependabot; o validador `scripts/validate-dependabot-config.py` passou.
+Dependabot was also validated before publication. The configuration covers `npm`,
+GitHub Actions, `pip`/`pip-compile` and `pre-commit`, which are every
+ecosystem/manifest present. The npm binary pin in the workflows is a toolchain
+dependency with an explicit update, outside Dependabot's scope; the validator
+`scripts/validate-dependabot-config.py` passed.
 
-## 10. Plano de ação e critério de encerramento
+## 10. Action plan and closing criterion
 
-1. concluir revisão independente do diff;
-2. commit e sync direto no `main`;
-3. acompanhar CI, CodeQL, release/publish e alertas no SHA exato;
-4. confirmar `@lcv-ideas-software/cross-review@4.5.18` no npm com provenance;
-5. após upgrade global e reload da janela, exigir `server_info.version=4.5.18`,
-   config SHA atual e `reload_required=false`;
-6. só então reabilitar `shadow` deliberadamente, se seu custo/benefício for
-   desejado.
+1. finish the independent review of the diff;
+2. commit and sync directly on `main`;
+3. follow CI, CodeQL, release/publish and alerts on the exact SHA;
+4. confirm `@lcv-ideas-software/cross-review@4.5.18` on npm with provenance;
+5. after the global upgrade and the window reload, require
+   `server_info.version=4.5.18`, the current config SHA and
+   `reload_required=false`;
+6. only then deliberately re-enable `shadow`, if its cost/benefit is wanted.
 
-O trabalho não está concluído apenas porque o source está corrigido. O critério
-final é: workflows verdes, zero alerta novo relevante e pacote 4.5.18 publicado
-com sucesso.
+The work is not finished merely because the source is corrected. The final
+criterion is: green workflows, zero relevant new alerts and package 4.5.18
+published successfully.

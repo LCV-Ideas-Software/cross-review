@@ -142,8 +142,8 @@ standard `v00.00.00`; npm package versions remain SemVer.
   the relator's own prompt still taught peers an `OPERATOR-VERIFIED` provenance
   tier that no longer exists (the same paragraph announced "Two levels" and
   then listed three); the session report advertised an "operator-only checklist
-  update" whose tool was deleted; and `README.md`, `docs/apresentacao.md` and
-  `docs/apresentacao-cross-review.md` still listed `regenerate_caller_tokens`
+  update" whose tool was deleted; and `README.md`, `docs/presentation.md` and
+  `docs/presentation-cross-review.md` still listed `regenerate_caller_tokens`
   and `session_evidence_checklist_update` among the tools on offer. Six
   separate strings promised that "no manual operator attachment is required" —
   reassurance about a party that never existed.
@@ -197,6 +197,40 @@ standard `v00.00.00`; npm package versions remain SemVer.
   deployment owner's own lever and is still honoured, but a non-flagship pin
   now reports `confidence: "unknown"` instead of `"verified"`, so the deviation
   is visible at the configuration rather than at a mid-round provider 404.
+
+- **Every surface cross-review authors is now English.** The deliberation
+  protocol is agent-to-agent and agents natively speak English, so the product's
+  own voice — tool descriptions, runtime and error messages, prompts, status
+  strings, the local dashboard, agent instructions, source and test comments,
+  test descriptions, and the technical documentation — no longer switches
+  language mid-protocol. Four categories of non-English bytes are deliberate and
+  stay: literals that the truthfulness parser matches on (`não só`, `nao esta
+limitado a` and the rest of the contrastive and temporal families), which are
+  data the parser recognizes rather than prose it emits; the fixtures that prove
+  that passive parsing still works, which would stop testing anything in
+  translation; provider, source and operating-system evidence, preserved
+  byte-for-byte; and historical operator directives, which are now marked
+  `quoted verbatim in pt-BR` at each site instead of being silently rewritten
+  into words the operator did not say. The public sponsorship page in `site/` is
+  outside this: it addresses a Brazilian human through Mercado Pago and carries
+  a registered company name, address and tax identifiers, so it is not an
+  interface between agents and stays in Portuguese.
+- **The two presentation documents are renamed**, with every reference moved in
+  the same commit: `docs/apresentacao.md` becomes `docs/presentation.md` and
+  `docs/apresentacao-cross-review.md` becomes
+  `docs/presentation-cross-review.md`. The references updated are the three in
+  this file; no code, workflow, package manifest or site page pointed at either
+  path.
+- **Durable language enforcement was evaluated and no mechanism was added**, as
+  the issue requires before any custom checker. GitHub rulesets have no
+  natural-language rule; biome, eslint and prettier ship no language detector;
+  and no custom detector is authorized. A file-level scan was written, measured
+  and discarded because it cannot tell an offer from an obituary — it flagged a
+  changelog row recording a retired feature, and the README sentence explaining
+  that the operator console does not exist. What survives is a runtime gate in
+  `scripts/runtime-smoke.ts` over the live `tools/list` output, which reads what
+  the server actually says to an agent rather than what a file happens to
+  contain. The rule itself is recorded in `AGENTS.md`; enforcement is by review.
 
 ### Removed
 
@@ -481,7 +515,7 @@ standard `v00.00.00`; npm package versions remain SemVer.
   reverting to the synchronous path is not an alternative, because the
   synchronous path cannot finish a long review at all. Documented in
   `docs/architecture.md` ("Perplexity Background Execution") and in
-  `docs/apresentacao.md`.
+  `docs/presentation.md`.
 - `peers/retry.ts` exports its cancellable `delay` helper so the background
   poll loop waits with the same abort semantics as the retry backoff.
 
