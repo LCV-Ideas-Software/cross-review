@@ -332,8 +332,8 @@ explícita `CROSS_REVIEW_<PROVEDOR>_MODEL`):
 
 | Par          | Modelo canônico          |
 | ------------ | ------------------------ |
-| OpenAI/Codex | `gpt-5.6-sol`            |
-| Anthropic    | `claude-fable-5`         |
+| OpenAI/Codex | `gpt-6-astra`            |
+| Anthropic    | `claude-fable-5-1`       |
 | Google       | `gemini-3.1-pro-preview` |
 | DeepSeek     | `deepseek-v4-pro`        |
 | xAI/Grok     | `grok-4.6`               |
@@ -582,7 +582,7 @@ Use as variáveis de substituição apenas quando quiser fixar um modelo
 diferente do canônico:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-6-astra", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
 ```
 

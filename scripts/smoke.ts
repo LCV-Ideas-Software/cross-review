@@ -376,6 +376,14 @@ for (const { file, field } of adapterExpectations) {
 
 const modelSelectionSource = fs.readFileSync("src/peers/model-selection.ts", "utf8");
 for (const deprecatedOrWeakModel of [
+  // v07.00.00: superseded flagships belong here too. The directive is the TOP
+  // model of each provider, so yesterday's flagship is as inadmissible as a
+  // weaker tier — and leaving one in PRIORITY is how a "no fallback" list
+  // quietly becomes a fallback chain again.
+  "gpt-5.6-sol",
+  "claude-fable-5",
+  "claude-opus-5",
+  "claude-opus-4-8",
   "claude-haiku-4-5",
   "gemini-2.5-pro",
   "gemini-3-pro-preview",
@@ -391,8 +399,8 @@ for (const deprecatedOrWeakModel of [
 // every peer is pinned to a SINGLE canonical model in PRIORITY. The
 // "must remain" list is therefore exactly the 6 lone canonical pins.
 for (const canonicalPin of [
-  "gpt-5.6-sol",
-  "claude-fable-5",
+  "gpt-6-astra",
+  "claude-fable-5-1",
   "gemini-3.1-pro-preview",
   "deepseek-v4-pro",
   "grok-4.6",
@@ -10088,8 +10096,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     );
   }
   for (const [peer, pin] of [
-    ["codex", "gpt-5.6-sol"],
-    ["claude", "claude-fable-5"],
+    ["codex", "gpt-6-astra"],
+    ["claude", "claude-fable-5-1"],
     ["gemini", "gemini-3.1-pro-preview"],
     ["deepseek", "deepseek-v4-pro"],
     ["grok", "grok-4.6"],

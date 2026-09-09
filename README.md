@@ -258,9 +258,9 @@ Model selection and runtime behaviour can be controlled with environment
 variables. Example overrides (PowerShell):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-5.6-sol", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_MODEL", "gpt-6-astra", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_OPENAI_REASONING_EFFORT", "max", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5-1", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
@@ -290,13 +290,9 @@ retention posture and no zero-data-retention option for this model. A response
 with `stop_reason="refusal"` is recorded as `provider_refusal`, and partial
 refusal output is not accepted as a review.
 
-Claude Opus 5 (`claude-opus-5`) is a first-class explicit override, not a
-fallback and not an automatic replacement for Fable 5. The adapter sends
-adaptive thinking with omitted thinking text and supports
-`low`/`medium`/`high`/`xhigh`/`max` effort. The maintained 64,000-token Claude
-output budget is Anthropic's recommended starting point for `xhigh` or `max`;
-the model's synchronous API ceiling is 128,000. Selecting Opus 5 also selects
-its own model-specific rate card, so Fable pricing is never borrowed.
+There is no second supported Claude model. cross-review runs the top model of
+each provider, so the canonical pin is the whole admissible set. The Claude
+output budget is set to the model's synchronous API ceiling of 128,000.
 
 For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.6`; xAI
 accepts `low`, `medium`, `high`, or `xhigh` reasoning effort for it, so the

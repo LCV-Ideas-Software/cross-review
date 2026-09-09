@@ -43,8 +43,8 @@ env-var per host — a deliberate decision, never a silent downgrade.
 
 | Peer             | Pin                      | Override env-var                |
 | ---------------- | ------------------------ | ------------------------------- |
-| OpenAI/Codex     | `gpt-5.6-sol`            | `CROSS_REVIEW_OPENAI_MODEL`     |
-| Anthropic/Claude | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| OpenAI/Codex     | `gpt-6-astra`            | `CROSS_REVIEW_OPENAI_MODEL`     |
+| Anthropic/Claude | `claude-fable-5-1`       | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | Google/Gemini    | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | DeepSeek         | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
 | xAI/Grok         | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
@@ -64,15 +64,9 @@ already generated. Anthropic documents 30-day retention and no zero data
 retention option for Fable, so operators must accept that posture before using
 the peer.
 
-Claude Opus 5 (`claude-opus-5`) is a supported explicit operator override. It
-does not enter the canonical priority list and is never selected as an
-automatic fallback. The Messages request uses
-`thinking={type:"adaptive",display:"omitted"}` plus
-`output_config.effort`; it never sends the removed manual
-`thinking={type:"enabled",budget_tokens:...}` form or non-default sampling
-parameters. Opus 5 has a 1M-token context window and 128K synchronous output
-ceiling. Anthropic recommends starting with 64K `max_tokens` at `xhigh` or
-`max`, which matches the maintained Claude budget.
+There is no supported second model for this peer. cross-review runs the top
+model of each provider, so the canonical pin is the whole admissible set and
+the priority list has exactly one entry.
 
 Google's deprecation schedule lists `gemini-2.5-pro` for shutdown on
 16/10/2026 and recommends `gemini-3.1-pro-preview` as the replacement.
@@ -133,7 +127,7 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   original GPT-5 accepts `minimal` through `high` (`none` → `minimal`, higher
   shared values → `high`).
 - Anthropic/Claude: Fable 5 omits the explicit `thinking` object because
-  adaptive thinking is automatic. Opus 5 uses explicit adaptive thinking with
+  adaptive thinking is automatic. It is always on, and both
   display omitted. Both use `output_config.effort` for depth.
 - Google/Gemini: the configured shared effort maps to native `LOW`, `MEDIUM`,
   or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
@@ -165,8 +159,8 @@ enum.
 
 The legacy `max_output_tokens` value remains the fallback. Use
 `max_output_tokens_by_peer` when official reasoning guidance or model ceilings
-differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
-64,000 for Claude Fable 5 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
+differ. Each peer's ceiling is set to that provider's documented maximum:
+128,000 for GPT-6 Astra, 128,000 for Claude Fable 5.1, and 20,000 for the other
 four peers. These
 values follow the official OpenAI allocation guidance and Anthropic task-budget
 minimum without assuming an undocumented Grok 4.6 ceiling. `server_info`

@@ -35,8 +35,8 @@ const DOCS = {
 // Pre-v3.7.2 codex/claude/grok kept multi-entry same-provider chains and
 // gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
 const PRIORITY: Record<PeerId, string[]> = {
-  codex: ["gpt-5.6-sol"],
-  claude: ["claude-fable-5"],
+  codex: ["gpt-6-astra"],
+  claude: ["claude-fable-5-1"],
   gemini: ["gemini-3.1-pro-preview"],
   deepseek: ["deepseek-v4-pro"],
   // grok-4.6 (xAI, August 2026): the recommended frontier reasoning model

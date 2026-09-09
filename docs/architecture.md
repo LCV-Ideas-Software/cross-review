@@ -264,7 +264,7 @@ compact context is insufficient, the peer must return `NEEDS_EVIDENCE` and the
 session stays blocked until the petitioner resubmits corrected material in a
 new round or closes the session.
 
-Claude Fable 5 and Opus 5 refusals are different from transport errors:
+Claude Fable 5.1 refusals are different from transport errors:
 Anthropic returns HTTP 200 with `stop_reason="refusal"` and optional
 `stop_details`. The Anthropic adapter treats this as a non-skippable
 `provider_refusal`, emits a
@@ -395,13 +395,13 @@ operating-system account's trust boundary.
 
 The peer adapters use the strongest official reasoning controls available for each provider because cross-review is correctness-oriented:
 
-- OpenAI runs `gpt-5.6-sol` through the Responses API. Its strongest official
+- OpenAI runs `gpt-6-astra` through the Responses API. Its strongest official
   API value is `reasoning.effort=max`. The shared config also accepts `ultra`
   as an operator-facing compatibility alias and normalizes it to `max`; the
   alias is never transmitted to OpenAI. Explicit GPT-5.5/5.4/5.2 overrides
   cap at `xhigh`, GPT-5.1 and original GPT-5 cap at `high`, and unsupported
   lower literals are translated to the nearest available family value.
-- Anthropic runs canonical `claude-fable-5`. The request omits the explicit
+- Anthropic runs canonical `claude-fable-5-1`. The request omits the explicit
   `thinking` field because adaptive thinking is automatic and controls depth
   with `output_config.effort`. The supported explicit `claude-opus-5` override
   sends adaptive thinking with display omitted and the same effort control;

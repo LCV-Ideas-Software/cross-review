@@ -9,6 +9,46 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### Changed
 
+- **`codex` moves to `gpt-6-astra` and `claude` to `claude-fable-5-1`.** Both
+  are their provider's top model, which is the whole admissible set for that
+  peer — there is no second supported pin, and the documentation stops teaching
+  one. Both publish a 1M-class context window and a 128,000-token output
+  ceiling, so the documented ceilings move to that maximum.
+  The move is not a string swap. `gpt-6-astra` would have fallen through to the
+  adapter's generic reasoning family, which maps `max` to `xhigh` — a silent
+  downgrade of the top model's top effort, and precisely what the no-downgrade
+  policy forbids. It gets its own family arm: OpenAI documents
+  `low|medium|high|xhigh|max` for it and does NOT list `none`, so `none` and
+  `minimal` are raised to `low` rather than sent and rejected. The predicate
+  that selected the prompt-cache contract was named for one model family and
+  carried two unrelated contracts at once; it is split into
+  `usesPromptCacheOptions` (the Responses API documents `prompt_cache_options`
+  for "GPT-5.6 and later", which includes Astra) and `hasHighEffortLadder` (the
+  MAX_TOKENS recovery, which needs an effort rung to step down to). Both now
+  match `gpt-6`.
+  `claude-fable-5-1` needed no adapter change, and that is worth recording so
+  nobody adds a symmetric one: all three Anthropic model predicates are
+  prefix-anchored on `claude-fable-5` and already match the point release —
+  verified by evaluating the regexes, not by reading them. Adaptive thinking
+  stays always-on with the `thinking` field omitted, which is the
+  documented-correct shape; `thinking:{"type":"enabled"}` and
+  `{"type":"disabled"}` both return HTTP 400 on this model.
+  Rate cards move with the pins: Astra at 10/50 with cached input 1 and a
+  272,000-token long-context tier at 20/75 with cached 2; Fable 5.1 at 10/50
+  with **cache read at 0.25**, a quarter of the previous rate. The cache WRITE
+  rates did not change, which is why the cheaper read does not overturn the
+  empirical decision to keep Anthropic caching disabled: the waste was in the
+  writes. OpenAI renamed the Priority tier to "Fast mode" on 30/07/2026 and it
+  doubles every rate; requests stay pinned to `service_tier: "default"` so a
+  project-level setting cannot move the price basis the ledger uses.
+  Three things a peer will raise and that are deliberately NOT adopted, because
+  every one of them is inert here: forced tool use and `tool_choice` validation
+  (neither adapter sends `tools` or `tool_choice` at all); preserved-thinking
+  and conversation-prefix rules (every request is a single stateless turn with
+  one user message, so no thinking block is ever replayed); and mid-conversation
+  effort control (there is no second response in a call to change effort
+  between).
+
 - **`session_finalize` is petitioner-scoped and accepts only `aborted`.** The
   tool now uses the same session-mutation authority as `session_cancel_job`
   and `contest_verdict`: the persisted session petitioner, verified by its own

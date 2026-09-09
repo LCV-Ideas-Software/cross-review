@@ -198,8 +198,8 @@ documentados no repositório atual são:
 
 | Peer         | Modelo padrão            | Override                        |
 | ------------ | ------------------------ | ------------------------------- |
-| `codex`      | `gpt-5.6-sol`            | `CROSS_REVIEW_OPENAI_MODEL`     |
-| `claude`     | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| `codex`      | `gpt-6-astra`            | `CROSS_REVIEW_OPENAI_MODEL`     |
+| `claude`     | `claude-fable-5-1`       | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | `gemini`     | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | `deepseek`   | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
 | `grok`       | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
@@ -209,7 +209,7 @@ Overrides devem ser decisão explícita do operador. A proposta do sistema é
 priorizar correção, rastreabilidade e profundidade de raciocínio, não custo ou
 latência mínimos.
 
-`claude-fable-5` é o pin Anthropic canônico. O request omite o campo explícito
+`claude-fable-5-1` é o pin Anthropic canônico. O request omite o campo explícito
 `thinking` porque o pensamento adaptativo é automático e usa
 `output_config.effort` para controlar profundidade. A retenção documentada é
 de 30 dias, sem ZDR; recusas `stop_reason="refusal"` bloqueiam como
@@ -225,7 +225,7 @@ atômica, com tetos configuráveis por peer, rodada e sessão. Exceder um teto
 preserva a resposta completa para auditoria e encerra a sessão antes de novo
 gasto; nenhum blocker é truncado ou declarado satisfeito por conveniência.
 
-Para `gpt-5.6-sol`, `ultra` designa um modo de execução do produto Codex, não
+Para `gpt-6-astra`, `ultra` designa um modo de execução do produto Codex, não
 um `reasoning.effort` literal da Responses API. O cross-review o aceita como
 alias de compatibilidade na configuração e o adaptador envia o valor oficial
 `max`. O `grok-4.6` aceita `low`, `medium`, `high` e `xhigh`, portanto o alias

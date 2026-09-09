@@ -140,6 +140,23 @@ async function captureGrokReasoningEffort(
     expected: Record<ReasoningEffort, string>;
   }> = [
     {
+      models: ["gpt-6-astra"],
+      expected: {
+        // GPT-6 Astra documents low|medium|high|xhigh|max. "none" is not in
+        // that set, so it is raised to the lowest documented level instead of
+        // being sent and rejected; "max" must survive intact, because the
+        // generic fallback this row guards against downgrades it to xhigh.
+        none: "low",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+        ultra: "max",
+      },
+    },
+    {
       models: ["gpt-5.6-sol"],
       expected: {
         none: "none",
@@ -239,15 +256,15 @@ async function captureGrokReasoningEffort(
 }
 
 {
-  const sol = selectFromCandidates("codex", [{ id: "gpt-5.6-sol", source: "api" }], "gpt-5.6-sol");
-  assert.equal(sol.selected, "gpt-5.6-sol");
+  const sol = selectFromCandidates("codex", [{ id: "gpt-6-astra", source: "api" }], "gpt-6-astra");
+  assert.equal(sol.selected, "gpt-6-astra");
   assert.equal(sol.confidence, "verified");
 }
 
 {
   const adapter = new OpenAIAdapter({
     ...config,
-    models: { ...config.models, codex: "gpt-5.6-sol" },
+    models: { ...config.models, codex: "gpt-6-astra" },
     reasoning_effort: { ...config.reasoning_effort, codex: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -267,7 +284,7 @@ async function captureGrokReasoningEffort(
         return {
           status: "completed",
           output_text: "revised fixture",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-astra",
           usage: {
             input_tokens: 100,
             output_tokens: 20,
@@ -467,10 +484,10 @@ async function captureGrokReasoningEffort(
       label: "openai",
       adapter: new OpenAIAdapter({
         ...config,
-        models: { ...config.models, codex: "gpt-5.6-sol" },
+        models: { ...config.models, codex: "gpt-6-astra" },
         streaming: { ...config.streaming, tokens: false },
       }) as unknown as { client: unknown },
-      model: "gpt-5.6-sol",
+      model: "gpt-6-astra",
     },
     {
       label: "grok",
@@ -739,10 +756,10 @@ function capturePerplexityProbe(
 {
   const claude = selectFromCandidates(
     "claude",
-    [{ id: "claude-fable-5", source: "api" }],
-    "claude-fable-5",
+    [{ id: "claude-fable-5-1", source: "api" }],
+    "claude-fable-5-1",
   );
-  assert.equal(claude.selected, "claude-fable-5");
+  assert.equal(claude.selected, "claude-fable-5-1");
   assert.equal(claude.confidence, "verified");
 }
 
@@ -758,7 +775,7 @@ function capturePerplexityProbe(
   const opus5 = selectFromCandidates(
     "claude",
     [
-      { id: "claude-fable-5", source: "api" },
+      { id: "claude-fable-5-1", source: "api" },
       { id: "claude-opus-5", source: "api" },
     ],
     "claude-opus-5",
@@ -772,26 +789,29 @@ function capturePerplexityProbe(
 }
 
 {
+  // v07.00.00: the flagship must win even when the provider also lists an
+  // older, non-flagship id. The pinned model is the canonical one, so the
+  // selection is verified and the other candidate is never reached for.
   const fable = selectFromCandidates(
     "claude",
     [
       { id: "claude-opus-4-8", source: "api" },
-      { id: "claude-fable-5", source: "api" },
+      { id: "claude-fable-5-1", source: "api" },
     ],
-    "claude-fable-5",
+    "claude-fable-5-1",
   );
-  assert.equal(fable.selected, "claude-fable-5");
+  assert.equal(fable.selected, "claude-fable-5-1");
   assert.equal(
     fable.confidence,
     "verified",
-    "Claude Fable 5 must remain selected when the operator pinned it and the provider API lists both Fable and the canonical Opus pin.",
+    "the canonical Fable 5.1 pin must remain selected when the provider API also lists an older model.",
   );
 }
 
 {
   const adapter = new AnthropicAdapter({
     ...config,
-    models: { ...config.models, claude: "claude-fable-5" },
+    models: { ...config.models, claude: "claude-fable-5-1" },
     reasoning_effort: { ...config.reasoning_effort, claude: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -810,7 +830,7 @@ function capturePerplexityProbe(
         capturedPayload = payload;
         return {
           content: [{ type: "text", text: "revised fixture" }],
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           stop_reason: "end_turn",
           usage: { input_tokens: 100, output_tokens: 20 },
         };
@@ -885,6 +905,9 @@ function capturePerplexityProbe(
 }
 
 assert.equal(anthropicCacheMinTokens("claude-fable-5"), 512);
+// v07.00.00: the new pin must land on the same 512-token branch. The family
+// regex matches it by prefix, which is load-bearing and was uncovered.
+assert.equal(anthropicCacheMinTokens("claude-fable-5-1"), 512);
 assert.equal(anthropicCacheMinTokens("claude-opus-5"), 512);
 assert.equal(anthropicCacheMinTokens("claude-opus-4-8"), 1_024);
 assert.equal(anthropicCacheMinTokens("claude-unknown"), 4_096);
@@ -899,9 +922,9 @@ assert.equal(
   const unavailableFable = selectFromCandidates(
     "claude",
     [{ id: "claude-opus-4-8", source: "api" }],
-    "claude-fable-5",
+    "claude-fable-5-1",
   );
-  assert.equal(unavailableFable.selected, "claude-fable-5");
+  assert.equal(unavailableFable.selected, "claude-fable-5-1");
   assert.equal(
     unavailableFable.confidence,
     "unknown",
@@ -919,7 +942,7 @@ assert.equal(
   const failure = classifyProviderError(
     "claude",
     "anthropic",
-    "claude-fable-5",
+    "claude-fable-5-1",
     refusal,
     1,
     Date.now(),
@@ -1164,9 +1187,9 @@ assert.equal(
 {
   const configSource = fs.readFileSync("src/core/config.ts", "utf8");
   const modelSelectionSource = fs.readFileSync("src/peers/model-selection.ts", "utf8");
-  assert.ok(configSource.includes('codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.6-sol"'));
+  assert.ok(configSource.includes('codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-6-astra"'));
   assert.ok(
-    configSource.includes('claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5"'),
+    configSource.includes('claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5-1"'),
   );
   assert.ok(
     configSource.includes(
@@ -1195,8 +1218,8 @@ assert.equal(
       'perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max")',
     ),
   );
-  assert.ok(modelSelectionSource.includes('codex: ["gpt-5.6-sol"]'));
-  assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5"]'));
+  assert.ok(modelSelectionSource.includes('codex: ["gpt-6-astra"]'));
+  assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5-1"]'));
   assert.ok(modelSelectionSource.includes('gemini: ["gemini-3.1-pro-preview"]'));
   assert.ok(modelSelectionSource.includes('grok: ["grok-4.6"]'));
   assert.ok(modelSelectionSource.includes('perplexity: ["perplexity/kimi-k3"]'));
