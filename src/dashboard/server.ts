@@ -127,46 +127,46 @@ function html(): string {
     <header>
       <div>
         <h1>Cross Review</h1>
-        <div class="muted">APIs oficiais, sessões duráveis, unanimidade obrigatória</div>
+        <div class="muted">Official APIs, durable sessions, mandatory unanimity</div>
       </div>
       <div class="badge">v${VERSION}</div>
     </header>
     <section class="grid" id="metrics">
-      <article class="card metric"><span>Sessões</span><strong>...</strong></article>
-      <article class="card metric"><span>Convergidas</span><strong>...</strong></article>
-      <article class="card metric"><span>Rodadas</span><strong>...</strong></article>
-      <article class="card metric"><span>Custo</span><strong>...</strong></article>
+      <article class="card metric"><span>Sessions</span><strong>...</strong></article>
+      <article class="card metric"><span>Converged</span><strong>...</strong></article>
+      <article class="card metric"><span>Rounds</span><strong>...</strong></article>
+      <article class="card metric"><span>Cost</span><strong>...</strong></article>
     </section>
     <section class="card" id="peer-health" style="margin-top:14px">
-      <h2>Saúde por provider</h2>
-      <div class="muted" style="margin-bottom:8px">READY rate, NEEDS_EVIDENCE rate, custo médio e parser warnings por peer (todas as sessões salvas).</div>
-      <div id="peer-health-body" class="muted">Carregando...</div>
+      <h2>Health by provider</h2>
+      <div class="muted" style="margin-bottom:8px">READY rate, NEEDS_EVIDENCE rate, average cost and parser warnings per peer (every saved session).</div>
+      <div id="peer-health-body" class="muted">Loading...</div>
     </section>
     <section class="card" id="shadow-judgment" style="margin-top:14px">
-      <h2>Judge shadow (decisões observadas)</h2>
-      <div class="muted" style="margin-bottom:8px">Shadow-mode judge decisions aggregated by judging peer. Mutates no state — observability pré v2.13.</div>
-      <div id="shadow-judgment-body" class="muted">Carregando...</div>
+      <h2>Shadow judge (observed decisions)</h2>
+      <div class="muted" style="margin-bottom:8px">Shadow-mode judge decisions aggregated by judging peer. Mutates no state — observability, pre-v2.13.</div>
+      <div id="shadow-judgment-body" class="muted">Loading...</div>
     </section>
     <section class="grid" style="margin-top:14px">
-      <article class="card"><strong>Dados</strong><p class="muted">${escapeHtmlServer(config.data_dir)}</p></article>
+      <article class="card"><strong>Data</strong><p class="muted">${escapeHtmlServer(config.data_dir)}</p></article>
       <article class="card"><strong>Logs</strong><p class="muted">${escapeHtmlServer(eventLog.path())}</p></article>
     </section>
     <div class="toolbar">
       <input id="filter" placeholder="Filter by session, state or text..." />
       <select id="state">
-        <option value="">Todos os estados</option>
-        <option value="running">Em execução</option>
-        <option value="converged">Convergidas</option>
-        <option value="blocked">Bloqueadas</option>
-        <option value="stale">Interrompidas</option>
+        <option value="">All states</option>
+        <option value="running">Running</option>
+        <option value="converged">Converged</option>
+        <option value="blocked">Blocked</option>
+        <option value="stale">Interrupted</option>
       </select>
-      <button id="refresh">Atualizar</button>
-      <button id="report" class="secondary" disabled>Relatório</button>
+      <button id="refresh">Refresh</button>
+      <button id="report" class="secondary" disabled>Report</button>
     </div>
-    <section id="sessions" class="sessions">Carregando...</section>
+    <section id="sessions" class="sessions">Loading...</section>
     <section class="detail-grid">
       <pre id="details">Select a session to see its details.</pre>
-      <div class="timeline" id="timeline">A timeline aparecerá aqui.</div>
+      <div class="timeline" id="timeline">The timeline will appear here.</div>
     </section>
   </main>
   <script>
@@ -175,10 +175,10 @@ function html(): string {
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     }
     function money(value) {
-      return value == null ? 'desconhecido' : '$' + Number(value).toFixed(6);
+      return value == null ? 'unknown' : '$' + Number(value).toFixed(6);
     }
     function stateOf(session) {
-      return session.outcome || session.convergence_health?.state || 'em andamento';
+      return session.outcome || session.convergence_health?.state || 'in progress';
     }
     function pct(value) {
       if (value == null || !Number.isFinite(value)) return '—';
@@ -186,11 +186,11 @@ function html(): string {
     }
     function renderShadowJudgment(rollup) {
       if (!rollup || !rollup.decisions_total) {
-        return '<div class="muted">Nenhuma decisão shadow observada. Ative o judge shadow setando CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE=shadow + _PEER=codex.</div>';
+        return '<div class="muted">No shadow decision observed yet. Enable the shadow judge by setting CROSS_REVIEW_EVIDENCE_JUDGE_AUTOWIRE_MODE=shadow + _PEER=codex.</div>';
       }
       const peers = Object.values(rollup.by_judge_peer || {}).filter(Boolean).sort((a, b) => b.decisions_total - a.decisions_total);
       const head = '<thead><tr>' +
-        ['Judge peer','Decisões','Would promote','Skip (sat. unverified)','Skip (not satisfied)','Verified','Inferred','Unknown','Primeira','Última']
+        ['Judge peer','Decisions','Would promote','Skip (sat. unverified)','Skip (not satisfied)','Verified','Inferred','Unknown','First seen','Last seen']
           .map(h => '<th>' + h + '</th>').join('') + '</tr></thead>';
       const body = '<tbody>' + peers.map(p => {
         const conf = p.by_confidence || {};
@@ -208,7 +208,7 @@ function html(): string {
           '<td class="num">' + escapeHtml(p.last_seen_at || '—') + '</td>' +
           '</tr>';
       }).join('') + '</tbody>';
-      const summary = '<p class="muted" style="margin:0 0 8px">Total: <strong>' + rollup.decisions_total + '</strong> decisão(ões) — ' +
+      const summary = '<p class="muted" style="margin:0 0 8px">Total: <strong>' + rollup.decisions_total + '</strong> decision(s) — ' +
         rollup.would_promote_total + ' would_promote (' + pct(rollup.decisions_total ? rollup.would_promote_total / rollup.decisions_total : 0) + ')</p>';
       return summary + '<table class="peer-health">' + head + body + '</table>';
     }
@@ -216,7 +216,7 @@ function html(): string {
       const peers = Object.values(perPeer || {}).filter(Boolean).sort((a, b) => b.results_total - a.results_total);
       if (!peers.length) return '<div class="muted">No peer result recorded yet.</div>';
       const head = '<thead><tr>' +
-        ['Peer','Resultados','READY','NEEDS_EVIDENCE','NOT_READY','READY rate','NE rate','Custo total','Custo médio','Parser warns','Rejections']
+        ['Peer','Results','READY','NEEDS_EVIDENCE','NOT_READY','READY rate','NE rate','Total cost','Avg cost','Parser warns','Rejections']
           .map(h => '<th>' + h + '</th>').join('') + '</tr></thead>';
       const body = '<tbody>' + peers.map(p =>
         '<tr>' +
@@ -238,10 +238,10 @@ function html(): string {
     async function refreshMetrics() {
       const metrics = await fetch('/api/metrics').then(r => r.json());
       document.getElementById('metrics').innerHTML = [
-        ['Sessões', metrics.sessions.total],
-        ['Convergidas', metrics.sessions.converged],
-        ['Rodadas', metrics.rounds],
-        ['Custo', money(metrics.total_cost.total_cost)],
+        ['Sessions', metrics.sessions.total],
+        ['Converged', metrics.sessions.converged],
+        ['Rounds', metrics.rounds],
+        ['Cost', money(metrics.total_cost.total_cost)],
       ].map(([label, value]) => \`<article class="card metric"><span>\${label}</span><strong>\${value}</strong></article>\`).join('');
       document.getElementById('peer-health-body').innerHTML = renderPeerHealth(metrics.per_peer_health);
       document.getElementById('shadow-judgment-body').innerHTML = renderShadowJudgment(metrics.shadow_judgment);
@@ -267,10 +267,10 @@ function html(): string {
         return \`<article class="session" data-session="\${session.session_id}">
           <strong>\${escapeHtml(session.session_id)}</strong>
           <div class="row">
-            <span>estado: \${escapeHtml(stateOf(session))}</span>
-            <span>rodadas: \${session.rounds?.length || 0}</span>
-            <span>custo: \${money(cost)}</span>
-            <span>atualizada: \${escapeHtml(session.updated_at)}</span>
+            <span>state: \${escapeHtml(stateOf(session))}</span>
+            <span>rounds: \${session.rounds?.length || 0}</span>
+            <span>cost: \${money(cost)}</span>
+            <span>updated: \${escapeHtml(session.updated_at)}</span>
           </div>
           <div class="muted">\${escapeHtml(health.detail || '')}</div>
         </article>\`;
@@ -292,7 +292,7 @@ function html(): string {
         <div class="event">
           <small>#\${event.seq} \${escapeHtml(event.ts || '')} \${escapeHtml(event.type || '')}\${event.peer ? '/' + escapeHtml(event.peer) : ''}</small>
           <div>\${escapeHtml(event.message || '')}</div>
-        </div>\`).join('') || 'Sem eventos.';
+        </div>\`).join('') || 'No events.';
     }
     async function openReport() {
       if (!selectedSession) return;

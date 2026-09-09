@@ -1359,6 +1359,11 @@ import type { PeerResult } from "../src/core/types.js";
     );
   }
 
+  // Each loop below pairs an English wording with its pt-BR twin on purpose. The
+  // parser carries Portuguese-only tokens -- `permanece`, `aprovad`, `bloquead`,
+  // `bloqueadores`, `falhando` -- so the pt-BR rows are the only thing exercising
+  // that branch. They are input the parser must recognize, not prose the product
+  // emits, and translating them would silently delete the coverage.
   for (const summary of [
     "No blocking issues remain.",
     "The blocking issue was fixed; no blockers remain.",

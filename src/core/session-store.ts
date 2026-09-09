@@ -4554,8 +4554,8 @@ export class SessionStore {
   // session's meta with the contestation record AND initializes a new
   // session that references back. Validates the original session is
   // in a final state (converged | aborted | max-rounds). Per the
-  // tribunal-colegiado memory, this is the canonical "caller NOT_READY
-  // → novo ciclo deliberativo dentro dos mesmos autos" surface — the
+  // tribunal-colegiado memory, this is the canonical surface for "a caller
+  // NOT_READY opens a new deliberative cycle within the same case record" — the
   // original session is preserved (append-only); a new session opens
   // for re-deliberation with a fresh task + initial_draft and a
   // structural reference back to the contested session.

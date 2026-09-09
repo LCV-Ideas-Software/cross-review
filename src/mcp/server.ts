@@ -462,9 +462,12 @@ export function verifyCallerIdentity(
   };
 }
 
-// v3.3.0 (operator directive 2026-05-12): caller peer-selection lock.
+// v3.3.0 (operator directive 2026-05-12): caller peer-selection lock. The
+// directive is quoted verbatim in the operator's own language (pt-BR), because
+// a paraphrase of a standing instruction is no longer the instruction:
 // "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU
-// VONTADE DO CALLER." Applied at the MCP-tool boundary so every
+// VONTADE DO CALLER." Every agent/peer always takes part, regardless of the
+// caller's choice or wish. Applied at the MCP-tool boundary so every
 // externally-driven call has caller-supplied `peers` and (for peer
 // callers) `lead_peer` stripped before reaching the orchestrator.
 // Internal call sites (orchestrator's own runUntilUnanimous → askPeers

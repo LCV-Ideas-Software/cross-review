@@ -4569,8 +4569,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] evidence_judge_autowire_shadow_does_not_promote_test: PASS");
 }
 
-// v2.11.0 Relator Lottery — exclui o caller.
-// 100 sorteios com caller=claude → assigned ∈ {codex,gemini,deepseek,grok,perplexity}; nunca claude.
+// v2.11.0 Relator Lottery — excludes the caller.
+// 100 draws with caller=claude → assigned ∈ {codex,gemini,deepseek,grok,perplexity}; never claude.
 // v3.0.0: PEERS expanded from 5 (v2.14.0+) to 6 (sexteto with Perplexity).
 // caller-exclusion still applies; pool size = 5 (was 4 in v2.14.x-v2.28.x).
 {
@@ -4592,7 +4592,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.ok(!a.candidate_pool.includes("claude"));
     assert.equal(a.entropy_source, "crypto.randomInt");
   }
-  // Mesmo teste para os outros 5 callers, garantindo simetria.
+  // The same test for the other 5 callers, proving symmetry.
   for (const caller of ["codex", "gemini", "deepseek", "grok", "perplexity"] as const) {
     for (let i = 0; i < 50; i++) {
       const a = assignRelator(caller);
@@ -6773,9 +6773,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] orchestrator_strict_peer_panel_test: PASS");
 }
 
-// v3.3.0 (operator directive 2026-05-12 — caller peer-selection lock):
+// v3.3.0 (operator directive 2026-05-12 — caller peer-selection lock). The
+// directive is quoted verbatim in the operator's own language (pt-BR):
 // "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU
-// VONTADE DO CALLER." The MCP-handler layer strips caller-supplied
+// VONTADE DO CALLER." Every agent/peer always takes part, regardless of the
+// caller's choice or wish. The MCP-handler layer strips caller-supplied
 // `peers` (always) and `lead_peer` (for peer callers) and emits a
 // `session.caller_peer_selection_ignored` audit event. Operator caller
 // retains explicit lead_peer (legitimate testing). Internal call sites
@@ -6837,7 +6839,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     lead_peer: "gemini" as PeerId,
   };
   const cOut = lockCallerPeerSelection(cIn, { site: "run_until_unanimous", emit: captureEmit });
-  assert.equal(cOut.peers, undefined, "`peers` MUST be stripped for every caller (TODOS SEMPRE)");
+  assert.equal(
+    cOut.peers,
+    undefined,
+    "`peers` MUST be stripped for every caller (the directive's TODOS SEMPRE)",
+  );
   assert.equal(
     cOut.lead_peer,
     undefined,

@@ -215,6 +215,13 @@ limitado a` and the rest of the contrastive and temporal families), which are
   outside this: it addresses a Brazilian human through Mercado Pago and carries
   a registered company name, address and tax identifiers, so it is not an
   interface between agents and stays in Portuguese.
+- **This file's own released entries were translated too**, section headings
+  included. Only the language changed: no released entry's content, version,
+  date or claim was altered, and where an entry quoted a literal that shipped
+  in Portuguese — the dashboard card labels of v02.16.00, for instance — the
+  literal is kept as it shipped and labelled as such. Translating the record
+  preserves it; rewriting an operator's words into words he did not say would
+  not, which is why those stay in pt-BR with a marker.
 - **The two presentation documents are renamed**, with every reference moved in
   the same commit: `docs/apresentacao.md` becomes `docs/presentation.md` and
   `docs/apresentacao-cross-review.md` becomes
@@ -4158,7 +4165,8 @@ existingSession?.convergence_scope?.petitioner ?? existingSession?.caller
   the provider's live list contains, so a non-canonical fallback entry would
   be silently auto-selected whenever the canonical model was absent — and
   `deepseek-v4-flash` is a forbidden "flash" tier while
-  `gemini-3.1-pro-preview` is manual-override-only ("NÃO é o default") per
+  `gemini-3.1-pro-preview` is manual-override-only (operator words, quoted
+  verbatim in pt-BR: "NÃO é o default") per
   the workspace Model Selection Standards directive. With the lone canonical
   entry, `selectFromCandidates` falls back to the configured
   `config.models[peer]` instead; operators opt into other models via
@@ -4557,7 +4565,7 @@ section_count, section_sample }` for operator forensic visibility.
 
 ## [v03.03.00] - 12/05/2026
 
-**Minor — Caller peer-selection lock (operator directive 12/05/2026: "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU VONTADE DO CALLER").** Closes the systematic gaming pattern where peer callers (notably Codex, observed across multiple sessions) selectively excluded other peers from their own cross-review panels by passing curated `peers: [...]` lists or pinning a sympathetic relator via `lead_peer`. Backward-incompatible at the runtime-behavior level (caller preferences are now silently overridden) but 100% backward-compatible at the schema/tool-surface level (the parameters still exist; their values are just ignored).
+**Minor — Caller peer-selection lock (operator directive 12/05/2026, quoted verbatim in pt-BR: "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU VONTADE DO CALLER" -- every agent/peer always takes part, regardless of the caller's choice or wish).** Closes the systematic gaming pattern where peer callers (notably Codex, observed across multiple sessions) selectively excluded other peers from their own cross-review panels by passing curated `peers: [...]` lists or pinning a sympathetic relator via `lead_peer`. Backward-incompatible at the runtime-behavior level (caller preferences are now silently overridden) but 100% backward-compatible at the schema/tool-surface level (the parameters still exist; their values are just ignored).
 
 ### Lock surface
 
@@ -4579,7 +4587,7 @@ New marker `caller_peer_selection_lock_test` (5 behavioral scenarios + source-pi
 
 - A: peer caller passes `peers: [a,b]` → stripped, audit event emitted with diff
 - B: peer caller passes `lead_peer: gemini` → stripped, audit event emitted (forces lottery)
-- C: operator caller passes both `peers + lead_peer` → `peers` stripped (TODOS SEMPRE), `lead_peer` preserved (operator authority)
+- C: operator caller passes both `peers + lead_peer` → `peers` stripped (the directive's "TODOS SEMPRE" -- always all of them), `lead_peer` preserved (operator authority)
 - D: caller passes nothing → no audit event, input passes through unchanged
 - E: caller passes empty `peers: []` → not treated as override (functionally equivalent to no preference)
 - F: source-pin asserting all 4 caller-facing handlers in `server.ts` call `lockCallerPeerSelection` with their site label
@@ -4593,10 +4601,10 @@ Pre-existing smoke tests that pass `peers: [...]` to orchestrator methods direct
 ### Lessons
 
 1. **Lock at the security boundary** (MCP-handler layer), not at the data layer (orchestrator). Internal callers and external callers have different trust profiles; locking at the boundary preserves internal flexibility (smoke tests, internal loops) without weakening external defense.
-2. **Operator caller is the meta-authority for `lead_peer`** but not for `peers` — TODOS PARTICIPAM means TODOS, including from the operator's own debug invocations.
+2. **Operator caller is the meta-authority for `lead_peer`** but not for `peers` — the directive's "TODOS PARTICIPAM" means all of them, including in the operator's own debug invocations.
 3. **Audit events beat error throws** for "ignored input" semantics. Throwing would break callers' workflows; silent override + structured event in the stream lets workflows continue while preserving forensic visibility of who tried to game what.
 
-### Pós-ship operator action
+### Post-ship operator action
 
 1. `npm update -g @lcv-ideas-software/cross-review-v2` post GHA publish (3.2.0 → 3.3.0).
 2. No host config change required. Existing `~/.cross-review/data_v2/config.json` and per-host token configs continue to work unchanged.
@@ -4650,7 +4658,7 @@ The pre-existing `cross-review-v2-attachment-inline-test` was migrated to `calle
 - `session_start_round` / `run_until_unanimous` against a finalized session → throws `session_already_finalized` (call `contest_verdict` instead, the canonical v2.14.0 chain-of-custody flow).
 - `peers: [...]` excluding a peer that the autowire config includes → autowire judge skips that peer for the session, emitting `autowire_skipped` with `skipped_for_explicit_peers: true`.
 
-### Pós-ship operator action
+### Post-ship operator action
 
 1. `npm update -g @lcv-ideas-software/cross-review-v2` post GHA publish (3.1.0 → 3.2.0).
 2. No host config change required. Existing `~/.cross-review/data_v2/config.json` continues to work unchanged.
@@ -4669,7 +4677,7 @@ The pre-existing `cross-review-v2-attachment-inline-test` was migrated to `calle
 
 After v3.0.0 the sexteto introduced ~14 Perplexity env vars on top of the existing pricing/budget/autowire matrix, raising the per-host env-var count to ~100 and the workspace-wide redundant-declaration count to ~700 (100 × 7 hosts). Pricing rollouts (e.g., v2.26.0 Gemini bump) required 7 parallel edits with drift risk. Per-host `consensus_peers` lists were also asymmetric — each host hand-excluded its own caller, producing the kind of bug observed in `.deepseek/settings.json` (caller appeared in own panel).
 
-### Adicionado
+### Added
 
 - **`src/core/file-config.ts`** NEW (~440 LOC). Module providing:
   - `FileConfigSchema` (zod, `.strict()`) covering models, fallback_models, reasoning_effort, peer_enabled, cost_rates (18 fields per peer), budget, retry, evidence_judge_autowire, cache, perplexity sub-config, token_streaming, max_output_tokens, log_level, stub, dashboard_port.
@@ -4707,14 +4715,14 @@ After Tier 1 migration each host config shrinks from ~100 env vars to ~3 (caller
 - Default: `${data_dir}/config.json` where `data_dir = process.env.CROSS_REVIEW_V2_DATA_DIR ?? <project>/data` (Windows operator default: `C:\Users\<user>\.cross-review\data_v2\config.json`).
 - Override: `CROSS_REVIEW_V2_CONFIG_FILE` env var with absolute or `~/`-expanded path.
 
-### Pós-ship operator action
+### Post-ship operator action
 
 1. `npm update -g @lcv-ideas-software/cross-review-v2` post GHA publish (3.0.0 → 3.1.0).
 2. Create `~/.cross-review/data_v2/config.json` with current operator-tuned values (the ship includes a documented example in README).
 3. Strip ~95 env vars from each of the 7 MCP host configs, leaving only `CROSS_REVIEW_CALLER_TOKEN` + `CROSS_REVIEW_REQUIRE_TOKEN` (API keys auto-resolve from Windows registry via v2.28.0's `readWindowsRegistryEnv` fallback).
 4. Reload all 7 MCP hosts.
 
-### Compatibilidade pública
+### Public compatibility
 
 100% backward-compatible. Tool surface unchanged. Event stream unchanged. Existing env-only setups continue to load identically because the file is optional + absent = no-op. The file's contribution is a default LAYER; explicit env declarations override file values.
 
@@ -4746,7 +4754,7 @@ Perplexity's web-search differentiator is most valuable in the REVIEWER role (fa
 
 This keeps Perplexity's role-symmetry across the sexteto (it can still be caller / lead_peer / reviewer per session) while the adapter's internal contract ensures the search behavior matches the role the peer is currently playing.
 
-### Adicionado
+### Added
 
 - **`PerplexityAdapter`** (`src/peers/perplexity.ts`, +400 LOC) — OpenAI-Chat-Completions-compatible adapter at `https://api.perplexity.ai`. Reuses the shared `loadOpenAICtor` helper from v2.27.1 (lazy SDK load; no boot-time module cost). Supports structured outputs via `response_format: {type:"json_schema", json_schema:{name,schema}}` (name is REQUIRED 1-64 alphanumeric chars per Perplexity docs). Streaming via `stream_mode: "full"` (default; OpenAI-compatible 1-event-type SSE). Probes the API with a single `disable_search: true` `max_tokens: 1` round-trip to avoid burning request fees on health checks.
 - **`clampEffortForPerplexity(effort)`** + **`PERPLEXITY_REASONING_EFFORT_MODELS`** allowlist (exported, mirrors the Grok pattern). `sonar-reasoning-pro` + `sonar-deep-research` accept `reasoning_effort`; `sonar` + `sonar-pro` ignore the field (no chain-of-thought stage).
@@ -4768,7 +4776,7 @@ This keeps Perplexity's role-symmetry across the sexteto (it can still be caller
 - **3 new smoke markers**: `perplexity_integration_test` (PEERS expansion + config sub-config + cost_rates parsing + role-aware search source invariants + askPeers stub round-trip), `perplexity_reasoning_capability_allowlist_test` (clamp shape + allowlist contract), and **`perplexity_request_cost_search_aware_test`** (per-call `search_performed` signal correctly gates `request_cost` accrual; relator path produces no request fee; reviewer path does; legacy path falls back to config check).
 - **R1 fix (codex cross-review catch 12/05/2026, pre-publish)** — `TokenUsage.search_performed?: boolean`: per-call signal the `PerplexityAdapter` sets from the on-wire `disable_search` option. `estimateCost()` gates the request fee on this signal (with config fallback when unset). Closes a real bug where Perplexity-as-relator (which forces `disable_search:true` regardless of operator config) would still have accrued the per-1000-request fee from the config-only check. Threaded through 4 call sites in `peers/perplexity.ts` (streamed + non-streamed × call + generate); defensive against minimal test configs without a `perplexity` sub-config via optional chaining.
 
-### Alterado
+### Changed
 
 - **`PEERS` const** (`src/core/types.ts`): expanded from 5 to 6 entries. Adds `"perplexity"` after `"grok"`.
 - **`COST_RATE_ENV_PREFIX`** (`src/core/config.ts`): adds `perplexity: "CROSS_REVIEW_PERPLEXITY"`.
@@ -4782,7 +4790,7 @@ This keeps Perplexity's role-symmetry across the sexteto (it can still be caller
 - **`PRIORITY[peer]` + `DOCS[peer]` + `envOverrideName(peer)`** (`src/peers/model-selection.ts`): adds perplexity entries. `perplexityModels()` returns empty live candidates (Perplexity has no public `models.list` endpoint via OpenAI-SDK base path; resolver falls through to documented PRIORITY with confidence `inferred`).
 - **`ReasoningEffortOverridesSchema`** (`src/mcp/server.ts`): zod schema gains `perplexity` field. PeerSchema and CallerSchema auto-update via the PEERS const expansion.
 
-### Compatibilidade pública
+### Public compatibility
 
 Tool surface: 100% backward-compatible additive. No tool removed; no tool argument required to be set; all existing zod enums (PeerSchema, CallerSchema) gain `perplexity` as an additional accepted value but reject neither the legacy 5-peer values nor sessions that explicitly pass `peers: [...]` lists excluding perplexity. Events stream is additive (new optional fields on `TokenUsage` / `CostEstimate`); legacy event consumers ignore them transparently. Default behavior of `session_start_unanimous` / `run_until_unanimous` (which use `PEERS` as the default peers list) now dispatches 6 reviewers instead of 5 — callers who want to preserve quinteto-only sessions pass `peers: ["codex", "claude", "gemini", "deepseek", "grok"]` explicitly OR set `CROSS_REVIEW_V2_PEER_PERPLEXITY=off` per host.
 
@@ -4819,7 +4827,7 @@ Self-bypass per `feedback_cross_review_self_repair_exception.md` is NOT applicab
 
 **8.4× speedup**. Cold-start now well below every host's spawn-to-initialize threshold, including Claude Code's strict window. The standalone `loadConfig()` profile dropped from 3,307 ms → 87 ms (38× speedup on that single function).
 
-### Alterado
+### Changed
 
 - `src/core/config.ts`: replaced per-var `readWindowsRegistryEnv` with bulk loader `loadWindowsRegistryEnvCache(): Map<string, string>` that runs `reg query <root>` once per scope. HKLM is parsed first then HKCU overwrites on collision (matching Windows env-resolution order). `readWindowsRegistryEnv(name)` is now a thin lookup. Orphan `escapeRegExp` helper removed (it was only used by the per-var regex construction).
 
@@ -4845,13 +4853,13 @@ Smoke 97 events / ok:true.
 
 **Patch — Cold-start hardening Part 2: lazy-load provider SDKs + defer 6 startup sweeps to setTimeout(30s).** Completes the cold-start fix initiated in v2.27.0. Empirical motivation: 12/05/2026 the operator reported cross-review-v2 failing to register tools in a Claude Code session (other 5 MCP hosts unaffected: Codex CLI extension + Gemini Code Assist + Antigravity + Grok CLI + DeepSeek CLI all loaded normally with the same `.cmd`-bypass shim). Diagnostic measurements via real JSON-RPC initialize handshake showed the server taking ~4.2 s to respond, exactly on top of Claude Code's per-spawn timeout window. Two contributors stacked: (a) eager top-level imports of 5 provider SDK module trees (`@anthropic-ai/sdk`, `openai` × 3 for OpenAI/DeepSeek/Grok, `@google/genai`) loaded ~3 s of CommonJS/ESM dependency graph at server boot before the MCP transport could connect; (b) v2.27.0's 4 boot-time FS sweeps (`sweepOrphanTmpFiles` + `clearStaleInFlight` + `abortStaleSessions` + `pruneOldSessions`) plus 2 boot notices (autowire + grok-reasoning) ran via `setImmediate` on the same event-loop tick that processes the initialize message, competing for CPU during the critical window. v2.27.1 addresses both contributors at once.
 
-### Alterado
+### Changed
 
 - **Lazy-load 5 provider SDKs across 5 adapter files + model-selection** (`src/peers/anthropic.ts`, `src/peers/openai.ts`, `src/peers/gemini.ts`, `src/peers/deepseek.ts`, `src/peers/grok.ts`, `src/peers/model-selection.ts`). Top-level `import X from "<sdk>"` → `import type X from "<sdk>"` (compile-time only, no runtime emit). New shared cached loaders `loadAnthropicCtor()` (exported from `anthropic.ts`), `loadOpenAICtor()` (exported from `openai.ts`, reused by deepseek + grok), `loadGenaiModule()` (exported from `gemini.ts`) wrap `import("<sdk>").then(...)` in a per-module promise cache so concurrent first-callers resolve exactly once. Each adapter's `client()` method is now `async` returning `Promise<SDKType>`; the Gemini adapter's `client()` returns `{ ai, ThinkingLevel }` so `geminiThinkingConfig(model, ThinkingLevel)` keeps a synchronous signature. All 25 call sites across the 5 adapters updated to `await this.client()`.
 - **6 boot-time `setImmediate` blocks in `src/mcp/server.ts` → `setTimeout(..., STARTUP_SWEEP_DELAY_MS)`** with `STARTUP_SWEEP_DELAY_MS = 30_000` declared at the top of the boot block. The 4 expensive FS sweeps (`sweepOrphanTmpFiles`, `clearStaleInFlight`, `abortStaleSessions`, `pruneOldSessions`) plus 2 boot notices (judge auto-wire + grok-reasoning-effort) all defer to 30 s after `server.connect()` returns. Initialize handshake responds in <200 ms; sweeps run later when the operator is idle. Order is preserved because all 6 share the same delay (FIFO timer-phase ordering matches FIFO registration order).
 - **`SessionStore.list()` (v2.27.0) and the 6 deferred sweeps remain unchanged behaviorally**; only their scheduling moves.
 
-### Compatibilidade pública
+### Public compatibility
 
 100% backward-compatible. No tool surface change, no event stream change, no env var change. Public exports gained 3 new named exports (`loadAnthropicCtor`, `loadOpenAICtor`, `loadGenaiModule`) for cross-module reuse by `model-selection.ts`; existing callers ignore them. The `client()` method on each adapter changed from sync to async, but `client()` is `private` so no external callers depend on it.
 
@@ -4887,17 +4895,17 @@ Plus 2 existing smoke assertions updated: `gemini.ts thinkingConfig:` literal no
 
 **Minor — Cold-start hardening: corrupted meta.json auto-quarantine + finalized-session auto-prune.** Empirically motivated by Claude Code reload friction observed 12/05/2026: cross-review-v2 cold-start was ~6.4s standalone with 534 historical session dirs accumulated under `~/.cross-review/data_v2/sessions/`. The startup sweeps (`clearStaleInFlight` + `abortStaleSessions`) iterate via `list()` which read every `meta.json` — a single corrupted file (3 sessions corrupted by the v2.25.1 redact escape-boundary bug: `77c47284`, `be47a5b0`, `7edf63e3`) caused the sweep to throw + abort, surfacing parse-error stderr on every reload. Claude Code is more sensitive to startup stderr than other MCP hosts, so the perception was "cross-review-v2 fails to load on Claude Code."
 
-### Adicionado
+### Added
 
 - **`SessionStore.list()` now silently skips + quarantines corrupted meta.json** (`src/core/session-store.ts:401`). When `readJson<SessionMeta>(file)` throws, the file is renamed to `<session_dir>/meta.json.bad` and a single `[cross-review-v2] quarantined corrupted meta.json at … (reason)` stderr line is emitted. Subsequent startup sweeps see the dir without `meta.json` and skip it. Idempotent — already-quarantined files aren't re-renamed.
 - **`SessionStore.pruneOldSessions(maxAgeDays?)`** (`src/core/session-store.ts`). Removes finalized session dirs (outcome ∈ `converged|aborted|max-rounds`) whose `updated_at` is older than the cutoff. Default 60 days; configurable via `CROSS_REVIEW_V2_PRUNE_AFTER_DAYS` env var. In-flight or untyped-outcome sessions are NEVER pruned (preserves audit trail for active work). Returns `{ scanned, pruned }` for telemetry.
 - **New startup `setImmediate` block** wires `pruneOldSessions()` after the existing in-flight + stale-session sweeps (`src/mcp/server.ts:~1550`). Stderr only emitted when `pruned > 0`. Disable entirely with `CROSS_REVIEW_V2_PRUNE_AFTER_DAYS=0`.
 
-### Alterado
+### Changed
 
 - `SessionStore.list()` no longer throws on a single corrupted meta.json; the throw used to cascade through both `clearStaleInFlight()` and `abortStaleSessions()` aborting both sweeps on the first bad file. Behavior is now: skip+quarantine, continue. Other callers (`session_list` MCP tool, dashboard) get cleaner data without manual intervention.
 
-### Estado real do incident-driven cleanup (12/05/2026)
+### Actual state of the incident-driven cleanup (12/05/2026)
 
 - Manual cleanup pre-v2.27 ship: 3 corrupted dirs deleted + 328 stale sessions pruned via shell loop (534 → 203). Cold-start unchanged (~6.4s) — confirmed bottleneck is Node + ESM module loading, not the sweeps. v2.27 removes the per-reload stderr noise + prevents future accumulation.
 - Future arch optimization candidates (NOT in this ship): lazy-load peer adapters (5 SDKs eagerly imported); pre-compile ESM via Node SEA single-executable; cache module graph via `node --experimental-loader`.
@@ -4917,7 +4925,7 @@ Plus 2 existing smoke assertions updated: `gemini.ts thinkingConfig:` literal no
 
 ## [v02.26.00] - 11/05/2026
 
-**Minor — Full pricing-model schema: base + extended-tier + cache (read/write) + promo (limited-time discount), all env-configurable, graceful fallback when fields are absent or promo expires.** Operator directive 11/05/2026 ("Cross-review-v2 precisa saber ler das variáveis configuráveis nos arquivos de configuração e no env var todos os modelos de preços vigentes, com e sem cache, com promoção e sem promoção abaixo de tantos tokens e acima de tantos tokens"). Adds 14 new optional pricing env vars per provider plus 2 metadata env vars per provider (`_THRESHOLD_TOKENS`, `_PROMO_EXPIRES_AT_UTC`) on top of the v2.0.0 required pair (`_INPUT_USD_PER_MILLION`, `_OUTPUT_USD_PER_MILLION`) — total 18 env-var slots per provider × 5 providers = 90 max. **New env vars per provider** (`<PREFIX>` = `CROSS_REVIEW_OPENAI` | `CROSS_REVIEW_ANTHROPIC` | `CROSS_REVIEW_GEMINI` | `CROSS_REVIEW_DEEPSEEK` | `CROSS_REVIEW_GROK`): `<PREFIX>_INPUT_EXTENDED_USD_PER_MILLION` and `_OUTPUT_EXTENDED_USD_PER_MILLION` (rates used when prompt size > threshold, e.g. Gemini ≤200K vs >200K); `<PREFIX>_CACHE_READ_USD_PER_MILLION` and `_CACHE_WRITE_USD_PER_MILLION` (cache-hit and cache-creation rates; for Anthropic, `_CACHE_WRITE` reflects 1h TTL pricing by default per workspace policy); `<PREFIX>_CACHE_READ_EXTENDED_USD_PER_MILLION` and `_CACHE_WRITE_EXTENDED_USD_PER_MILLION` (cache rates above threshold); `<PREFIX>_PROMO_INPUT_USD_PER_MILLION` and `_PROMO_OUTPUT_USD_PER_MILLION` (limited-time discount on base tier); `<PREFIX>_PROMO_INPUT_EXTENDED_USD_PER_MILLION` and `_PROMO_OUTPUT_EXTENDED_USD_PER_MILLION` (limited-time discount on extended tier); `<PREFIX>_PROMO_CACHE_READ_USD_PER_MILLION`, `_PROMO_CACHE_WRITE_USD_PER_MILLION`, `_PROMO_CACHE_READ_EXTENDED_USD_PER_MILLION`, `_PROMO_CACHE_WRITE_EXTENDED_USD_PER_MILLION` (limited-time discounts on cache rates, base and extended); `<PREFIX>_THRESHOLD_TOKENS` (integer, e.g. `200000` for Gemini; absent or zero means no tier split); `<PREFIX>_PROMO_EXPIRES_AT_UTC` (ISO 8601 timestamp; absent or expired means promo rates are ignored even if set). **Selection logic** (new exported `selectRate()` in `src/core/cost.ts`): for each rate category (input/output/cache*read/cache_write), cascade through (promo+extended) → promo → extended → base in priority order. Each step automatically falls through when the corresponding field is unset OR the gating condition (in-promo period, prompt size > threshold) does not apply. The cascade satisfies the operator's "intelligent fallback" intent — when promo expires, system uses base without operator intervention; when extended is unset, base applies to all prompt sizes; when cache rates are unset entirely, cache tokens are billed at the input rate (zero savings reported, no penalty). **CostEstimate** type extended with `cache_read_cost?: number`, `cache_write_cost?: number`, `tier_used?: "base" | "extended" | "promo" | "promo_extended"` (itemized costs surfaced when env-configured cache rates are present + tier breadcrumb for FinOps audit). **No-hardcoded-financials directive** (operator 11/05/2026): the legacy `src/core/cache-rates.json` runtime fallback was REMOVED \_and the file deleted from the source tree*. When an operator omits cache rate env vars, the intelligent fallback in `selectRate()` treats cache reads as priced at the input rate (zero savings) rather than synthesizing prices from a static file. New smoke marker `cache_rates_no_runtime_import_test` asserts the import is gone from `src/core/cost.ts` so future regressions are caught at build time. Financial questions trava o funcionamento até o operador configurar via env vars. The existing v2.03.03 preflight gate (`describeMissingFinancialEnv`) still requires `_INPUT_USD_PER_MILLION` + `_OUTPUT_USD_PER_MILLION` for every selected peer; the other 16 fields per provider are opt-in. **`estimateCacheSavings()` signature changed** — third parameter `configRate: CostRate | undefined` is now required (defensive — `estimateCost()` already short-circuits with `unknown-rate` before reaching this path, so behavior is identical for callers that go through the public API). **New smoke marker** `full_pricing_model_v2260_test` pinning 11 invariants: 4 tier-selection cases (base/extended/promo/promo_extended), 3 graceful-fallback cases (no cache_read → input fallback, cache_write inherits input promo tier, expired promo collapses to base), 1 no-threshold case (extended ignored when threshold unset), 1 minimal-rate case (no cache_read field falls back to input), 2 estimateCost end-to-end cases (tier_used breadcrumb correct + total_cost sums all 4 categories). Lint/typecheck/format clean; smoke harness completes with `ok: true / events: 96`. **Minor bump** — additive public surface (new env vars, new exported `selectRate`, new fields on `CostEstimate`); breaking only for callers directly calling `estimateCacheSavings()` (the third positional arg is required; internal/MCP callers route through `estimateCost()` and are unaffected). All 7 LCV Ideas & Software workspace MCP host configs to be updated in a separate same-day ship with the new env vars populated per provider's official 2026-05 pricing.
+**Minor — Full pricing-model schema: base + extended-tier + cache (read/write) + promo (limited-time discount), all env-configurable, graceful fallback when fields are absent or promo expires.** Operator directive 11/05/2026, quoted verbatim in pt-BR ("Cross-review-v2 precisa saber ler das variáveis configuráveis nos arquivos de configuração e no env var todos os modelos de preços vigentes, com e sem cache, com promoção e sem promoção abaixo de tantos tokens e acima de tantos tokens"). Adds 14 new optional pricing env vars per provider plus 2 metadata env vars per provider (`_THRESHOLD_TOKENS`, `_PROMO_EXPIRES_AT_UTC`) on top of the v2.0.0 required pair (`_INPUT_USD_PER_MILLION`, `_OUTPUT_USD_PER_MILLION`) — total 18 env-var slots per provider × 5 providers = 90 max. **New env vars per provider** (`<PREFIX>` = `CROSS_REVIEW_OPENAI` | `CROSS_REVIEW_ANTHROPIC` | `CROSS_REVIEW_GEMINI` | `CROSS_REVIEW_DEEPSEEK` | `CROSS_REVIEW_GROK`): `<PREFIX>_INPUT_EXTENDED_USD_PER_MILLION` and `_OUTPUT_EXTENDED_USD_PER_MILLION` (rates used when prompt size > threshold, e.g. Gemini ≤200K vs >200K); `<PREFIX>_CACHE_READ_USD_PER_MILLION` and `_CACHE_WRITE_USD_PER_MILLION` (cache-hit and cache-creation rates; for Anthropic, `_CACHE_WRITE` reflects 1h TTL pricing by default per workspace policy); `<PREFIX>_CACHE_READ_EXTENDED_USD_PER_MILLION` and `_CACHE_WRITE_EXTENDED_USD_PER_MILLION` (cache rates above threshold); `<PREFIX>_PROMO_INPUT_USD_PER_MILLION` and `_PROMO_OUTPUT_USD_PER_MILLION` (limited-time discount on base tier); `<PREFIX>_PROMO_INPUT_EXTENDED_USD_PER_MILLION` and `_PROMO_OUTPUT_EXTENDED_USD_PER_MILLION` (limited-time discount on extended tier); `<PREFIX>_PROMO_CACHE_READ_USD_PER_MILLION`, `_PROMO_CACHE_WRITE_USD_PER_MILLION`, `_PROMO_CACHE_READ_EXTENDED_USD_PER_MILLION`, `_PROMO_CACHE_WRITE_EXTENDED_USD_PER_MILLION` (limited-time discounts on cache rates, base and extended); `<PREFIX>_THRESHOLD_TOKENS` (integer, e.g. `200000` for Gemini; absent or zero means no tier split); `<PREFIX>_PROMO_EXPIRES_AT_UTC` (ISO 8601 timestamp; absent or expired means promo rates are ignored even if set). **Selection logic** (new exported `selectRate()` in `src/core/cost.ts`): for each rate category (input/output/cache*read/cache_write), cascade through (promo+extended) → promo → extended → base in priority order. Each step automatically falls through when the corresponding field is unset OR the gating condition (in-promo period, prompt size > threshold) does not apply. The cascade satisfies the operator's "intelligent fallback" intent — when promo expires, system uses base without operator intervention; when extended is unset, base applies to all prompt sizes; when cache rates are unset entirely, cache tokens are billed at the input rate (zero savings reported, no penalty). **CostEstimate** type extended with `cache_read_cost?: number`, `cache_write_cost?: number`, `tier_used?: "base" | "extended" | "promo" | "promo_extended"` (itemized costs surfaced when env-configured cache rates are present + tier breadcrumb for FinOps audit). **No-hardcoded-financials directive** (operator 11/05/2026): the legacy `src/core/cache-rates.json` runtime fallback was REMOVED \_and the file deleted from the source tree*. When an operator omits cache rate env vars, the intelligent fallback in `selectRate()` treats cache reads as priced at the input rate (zero savings) rather than synthesizing prices from a static file. New smoke marker `cache_rates_no_runtime_import_test` asserts the import is gone from `src/core/cost.ts` so future regressions are caught at build time. Financial questions trava o funcionamento até o operador configurar via env vars. The existing v2.03.03 preflight gate (`describeMissingFinancialEnv`) still requires `_INPUT_USD_PER_MILLION` + `_OUTPUT_USD_PER_MILLION` for every selected peer; the other 16 fields per provider are opt-in. **`estimateCacheSavings()` signature changed** — third parameter `configRate: CostRate | undefined` is now required (defensive — `estimateCost()` already short-circuits with `unknown-rate` before reaching this path, so behavior is identical for callers that go through the public API). **New smoke marker** `full_pricing_model_v2260_test` pinning 11 invariants: 4 tier-selection cases (base/extended/promo/promo_extended), 3 graceful-fallback cases (no cache_read → input fallback, cache_write inherits input promo tier, expired promo collapses to base), 1 no-threshold case (extended ignored when threshold unset), 1 minimal-rate case (no cache_read field falls back to input), 2 estimateCost end-to-end cases (tier_used breadcrumb correct + total_cost sums all 4 categories). Lint/typecheck/format clean; smoke harness completes with `ok: true / events: 96`. **Minor bump** — additive public surface (new env vars, new exported `selectRate`, new fields on `CostEstimate`); breaking only for callers directly calling `estimateCacheSavings()` (the third positional arg is required; internal/MCP callers route through `estimateCost()` and are unaffected). All 7 LCV Ideas & Software workspace MCP host configs to be updated in a separate same-day ship with the new env vars populated per provider's official 2026-05 pricing.
 
 ## [v02.25.01] - 11/05/2026
 
@@ -4943,7 +4951,7 @@ Modes are per-session. A session is in exactly one mode for its lifetime. Useful
 
 Within a single session, mixing modes is not supported. If a task starts as ship and the operator realizes circular fits better mid-way, the cleaner path is to cancel the ship session, take its current draft as the initial_draft of a new circular session, and continue.
 
-### Adicionado
+### Added
 
 - **`SessionMode = "ship" | "review" | "circular"`** (`src/core/types.ts`) — third mode added. `ship` and `review` semantics unchanged; backward-compatible default.
 - **`leadCircularModeDirective()`** (`src/core/orchestrator.ts`) — Layer 1 prompt clause injected into `buildRevisionPrompt` and `buildInitialDraftPrompt` when `mode === "circular"`. Five subsections: (i) approve unchanged (output artifact verbatim if no concrete defect justifies change); (ii) approved-content lock (passages not touched by prior rotators are presumed approved and must remain unchanged unless a concrete blocker reopens them); (iii) quality preservation (weaker rotators must not flatten/compress stronger prose); (iv) no-self-review (the rotator was not the immediate prior actor; engage the text as the panel's product); (v) Evidence Provenance Lock (HARD, shared with ship mode — NARRATIVE ≠ PROVENANCE-GRADE, see v2.24.0).
@@ -4961,7 +4969,7 @@ Within a single session, mixing modes is not supported. If a task starts as ship
 - **MCP tool schemas updated** — `run_until_unanimous` and `session_start_unanimous` now accept `mode: "circular"` alongside `ship`/`review` (`src/mcp/server.ts`). No new tool surface; default mode unchanged (`ship`).
 - **Smoke driver `circular_mode_test`** (`scripts/smoke.ts`) pinning 11 invariants: SessionMode union, prompt directive sentinels, prompt-builder routing, config + env var defaults, orchestrator branch + method declaration, rotation-too-small guard, convergence event + finalize reason + condition, max-rotations abort, meta state shape + setter wiring, MCP schema enum, rotation step events.
 
-### Compatibilidade pública
+### Public compatibility
 
 - **100% backward-compatible default**. Callers that omit `mode` get `ship` (unchanged). Callers that pass `mode: "ship"` or `mode: "review"` see no behavior change. The new `circular` value is opt-in.
 - **Tool surface unchanged** — no new MCP tool; the `mode` enum gained one value.
@@ -4985,7 +4993,7 @@ The two-mode model (`ship` vs `review`) treats peers as a _jury_ voting on an ar
 
 For an architectural deep-dive on the maestro-app origin and the editorial primitives it imported, see the session memory `project_cross_review_v2_v2250_circular_mode.md`.
 
-### Notas técnicas
+### Technical notes
 
 - **Convergence semantics**: `consecutive_no_change_count` resets to 0 on any substantive revision. The counter increments each time a rotator returns the artifact byte-trimmed-equal to the current state. Convergence requires `count >= rotation_order.length`, which means every non-caller peer took a turn AND chose not to revise. Whitespace-only differences (trailing newlines, indentation noise some adapters add) do not count as substantive.
 - **Rotation length minimum is 2**. A rotation of 1 (caller + single peer) would force the peer to review the artifact they produced last round, violating the no-self-immediate-output rule. Sessions with `sessionPeers.length < 2` abort with reason `circular_rotation_too_small`.
@@ -5004,7 +5012,7 @@ For an architectural deep-dive on the maestro-app origin and the editorial primi
 
 The two sessions surface the same architectural gap from different angles: **NARRATIVE about operational evidence ≠ PROVENANCE-GRADE operational evidence**. The relator is free to interpret and synthesize; the relator is NOT free to assert command outputs, SHAs, hashes, or build results unless the raw artifact has been attached via `session_attach_evidence`. v2.24.0 closes this hole with 3 defensive layers; the public surface adds 1 event type and 1 finalize reason.
 
-### Adicionado
+### Added
 
 - **Evidence Provenance Lock (HARD) clause** in `leadShipModeDirective()` — the system prompt block injected into every `buildRevisionPrompt` invocation when `mode === "ship"`. Enumerates the categories of operational evidence the relator MUST cite verbatim from the corpus (git SHAs, content hashes, build outputs, test counts, diff hunks, `git diff --check`/`git rev-parse HEAD` assertions, vite asset filenames, `cargo test`/`npm run build`/`npm run typecheck` result lines) and explicitly instructs the relator to declare a blocker rather than fill the gap with plausible-looking content.
 - **`detectFabricatedEvidence(revisionText, { provenanceCorpus, narrativeCorpus }): FabricationDetectionResult`** in `src/core/orchestrator.ts`, exported. Heuristic detector with a **two-tier corpus** (Codex R1 HARD GATE blocker fix): `provenanceCorpus` carries the raw attached-evidence content only (PROVENANCE-GRADE); `narrativeCorpus` carries the caller's task + prior round's draft (NARRATIVE). Operational assertions (test-run counts, `git diff --check passed`, `git rev-parse HEAD`, `cargo test`, `npm run (build|test|typecheck)`, `index <hash>..<hash>` git diff index lines) are validated against `provenanceCorpus` ONLY — narrative is not evidence (operator directive 10/05/2026: "Evidência operacional só pode vir de caller/tool output persistido"). Hex tokens (length ≥ 8) use the union `provenanceCorpus ∪ narrativeCorpus`, since SHAs/IDs/file paths legitimately appear in narrative as identifiers without claiming command-output provenance. Thresholds: `FABRICATED_NET_NEW_HEX_THRESHOLD = 3`, `FABRICATED_SUSPICIOUS_ASSERTION_THRESHOLD = 2`. The two-tier split closes the eee886d3 failure mode where the caller's task narrated `cargo test 147 passed` without attaching the raw output and the relator quoted it as fact.
@@ -5012,13 +5020,13 @@ The two sessions surface the same architectural gap from different angles: **NAR
 - **New finalize reason `lead_fabrication_repeated`** when two consecutive revisions trip the fabrication detector. Mirrors the v2.23.0 `lead_empty_revision_repeated` pattern.
 - **Smoke driver `relator_evidence_provenance_lock_test`** in `scripts/smoke.ts`. Behavioral matrix on the exported `detectFabricatedEvidence`: (1) clean revision → not fabricated; (2) ≥3 net-new hex tokens → fabricated; (3) ≥2 suspicious assertions absent from `provenanceCorpus` → fabricated; (4) hex quoted verbatim from `provenanceCorpus` → not fabricated; (5) **eee886d3 pattern** — operational assertions narrated in `narrativeCorpus` (task body) with empty `provenanceCorpus` → fabricated=true; (6) hex tokens narrated in `narrativeCorpus` only → not fabricated (IDs/paths fall back to broader corpus). Plus source-level invariants pinning the prompt sentinel string, the threshold constants, the event type name, the finalize-reason string, and the unified-counter contract.
 
-### Corrigido
+### Fixed
 
 - **Relator no longer promotes fabricated revisions to next-round draft.** Pre-v2.24.0 the `mode: ship` revision flow silently accepted whatever text the relator returned and used it as the next round's draft. Codex's bug report 10/05/2026 demonstrated the failure mode: a fabricated revision still passed local validation, dispatched to peers, and burned a full round of paid peer calls before downstream peers (claude + deepseek) blocked convergence. v2.24.0 detects the fabrication post-revision, preserves the prior draft, increments `consecutiveLeadDrifts`, emits the dedicated event with structured signals, and aborts the session at the consecutive-cap with `lead_fabrication_repeated`.
 
-### Notas técnicas
+### Technical notes
 
-- **Compatibilidade pública 100% para callers passando args válidos.** No tool surface change — `run_until_unanimous`, `ask_peers`, `session_init`, etc. continue accepting the same arguments. The new event type and finalize reason are additive (legacy event consumers ignore unknown types). The new `detectFabricatedEvidence` export is consumable by callers that want to run the heuristic against external content.
+- **Public compatibility 100% for callers passing valid args.** No tool surface change — `run_until_unanimous`, `ask_peers`, `session_init`, etc. continue accepting the same arguments. The new event type and finalize reason are additive (legacy event consumers ignore unknown types). The new `detectFabricatedEvidence` export is consumable by callers that want to run the heuristic against external content.
 - **Behavior change is failure-mode only.** Revisions that don't trigger the detector (which is the default when the relator either quotes verbatim from the corpus or synthesizes analytical prose without operational evidence) flow unchanged. Revisions that DO trigger preserve the prior draft and emit a diagnostic event instead of silently promoting an unsafe revision.
 - **False-positive boundary**: short hex tokens (length ≤ 7 — colors, partial IDs, etc.) are below the detector threshold. Hex tokens quoted verbatim from the union of `provenanceCorpus + narrativeCorpus` are subtracted before scoring (IDs/paths legitimately appear in narrative). Operational assertions are validated against `provenanceCorpus` only — assertions matched verbatim against attached evidence are not flagged. The heuristic targets the two specific failure modes observed in sessions `09c21d7a` (outright fabrication) and `eee886d3` (narrative propagation); legitimate revisions that quote operational evidence from attached artifacts pass unscathed.
 - **Codex's own session reference**: this patch closes the bug Codex empirically discovered in working session `019dc794-0833-7de2-9ecf-3f36fe176f03` (cross-review-v2 session `09c21d7a-008f-48b1-bd48-93d93985cd43`).
@@ -5027,40 +5035,40 @@ The two sessions surface the same architectural gap from different angles: **NAR
 
 **Patch — Anthropic empty-revision degenerate path detection.** Empirical bug discovered while triaging maestro-app v0.5.20 review session `8187f5a8-6e9b-4e05-a93d-acbaed2f46f8` (10/05/2026): the Anthropic adapter silently produced `text: ""` when Claude Opus extended thinking returned a content array composed only of `thinking`/`redacted_thinking` blocks with no final `text` block. The orchestrator then promoted that empty string to the next-round draft, dispatching 3 peer calls against a `Draft Or Solution Under Review:` block that contained nothing. Wasted ~$0.21 USD on R3 before max_rounds aborted. v2.23.0 adds three defensive layers; no public surface change for any caller passing valid arguments.
 
-### Corrigido
+### Fixed
 
 - **`src/peers/text.ts`** — new `parseAnthropicContent(content)` returns `{ text, parser_warning? }` instead of the lossy `string` shape used by the legacy `textFromAnthropicContent`. Detects two degenerate cases: thinking-only content (`anthropic_thinking_only_no_text_block`) and empty/missing text blocks (`anthropic_empty_text_blocks`). The legacy helper is retained as a thin compatibility shim — new code MUST call `parseAnthropicContent` so the warning can flow downstream.
 - **`src/peers/anthropic.ts`** — all 4 call sites (streamed/non-streamed × call/generate) migrated from `textFromAnthropicContent` to `parseAnthropicContent`. The optional `parser_warning` is forwarded via the new `extraParserWarnings` parameter on `BasePeerAdapter.resultFromText` / `generationFromText`, surfacing in `PeerResult.parser_warnings` and `GenerationResult.parser_warnings`.
 - **`src/core/orchestrator.ts`** — relator-revision branch now treats `generation.text.trim() === ""` the same as `detectLeadDrift`: preserve prior draft, increment `consecutiveLeadDrifts`, emit dedicated `session.lead_empty_revision` event (data includes `parser_warnings`, `consecutive_drifts`, billed `output_tokens`), and finalize with `lead_empty_revision_repeated` when the cap is hit. Pre-v2.23.0 the empty string was promoted unconditionally to next-round draft.
 - **`src/core/types.ts`** — `GenerationResult` interface gains optional `parser_warnings?: string[]` so adapter-side parser diagnostics can flow to the orchestrator.
 
-### Adicionado
+### Added
 
 - **`anthropic_empty_text_detection_test`** smoke driver (`scripts/smoke.ts`). 4 invariants: (1) `parseAnthropicContent` returns the right `{text, parser_warning}` pair for normal text / thinking-only / empty-text-blocks / empty-array shapes; (2) `src/peers/anthropic.ts` calls `parseAnthropicContent` at all 4 sites and references `textFromAnthropicContent` 0 times (no regression to lossy helper); (3) `orchestrator.ts` contains the `generation.text.trim() === ""` check, emits `session.lead_empty_revision`, and uses `lead_empty_revision_repeated` as finalize reason; (4) `GenerationResult` interface declares `parser_warnings?: string[]`.
 
-### Notas técnicas
+### Technical notes
 
-- **Compatibilidade pública 100%** para callers passando argumentos válidos. The legacy `textFromAnthropicContent` export is preserved as a backward-compat shim returning only the `text` field; any external consumer that imported it continues to work, but new internal code uses `parseAnthropicContent` to capture the warning.
+- **Public compatibility 100%** for callers passing valid arguments. The legacy `textFromAnthropicContent` export is preserved as a backward-compat shim returning only the `text` field; any external consumer that imported it continues to work, but new internal code uses `parseAnthropicContent` to capture the warning.
 - **Behavior change is failure-mode only**: when Claude (or future Anthropic-compatible providers) returns a thinking-only response in the relator-revision path, v2.23.0 preserves the prior draft instead of dispatching peer calls against an empty draft. Pre-v2.23.0 would burn one full round of provider cost before the next iteration even had a chance to catch it via meta-review drift detection (which only fires on `detectLeadDrift`, not on empty text).
 - **No event-stream contract break**: `session.lead_drift_detected` continues to fire for the structured-review drift case. The new `session.lead_empty_revision` is additive — observers that don't subscribe to it are unaffected.
 
 ## [v02.22.00] - 10/05/2026
 
-### Adicionado
+### Added
 
 - `session_doctor` evidence checklist drill-down: per-session `item_types` (open items grouped by surfacing peer) + `chronic_blockers` (item ids with round_count >= 3) under `findings.open_evidence_sessions[]`. Surfaces which evidence asks are systemic vs. cauda ruidosa.
-- Per-round cost telemetry: `costs_per_round[]` + `cost_ceiling_usd` em `meta.json`. Operator agora vê em qual round o budget queimou em sessões `max-rounds`.
-- Novo evento `session.budget_warning` (one-shot per session) quando cumulative cost cruza 75% do `cost_ceiling_usd`. Visibility precoce antes de `max_rounds_budget_exceeded`.
+- Per-round cost telemetry: `costs_per_round[]` + `cost_ceiling_usd` in `meta.json`. The operator can now see which round burned the budget in `max-rounds` sessions.
+- New `session.budget_warning` event (one-shot per session) when the cumulative cost crosses 75% of `cost_ceiling_usd`. Early visibility ahead of `max_rounds_budget_exceeded`.
 
-### Alterado
+### Changed
 
-- `session_doctor` agora oculta a per-session enumeration de `findings.self_lead_metadata` por default (178/467 sessões pre-v2.16.0 = 38% noise). `totals.self_lead_metadata` count permanece visível; passar `include_legacy: true` na invocação para enumerar.
+- `session_doctor` now hides the per-session enumeration of `findings.self_lead_metadata` by default (178/467 pre-v2.16.0 sessions = 38% noise). The `totals.self_lead_metadata` count stays visible; pass `include_legacy: true` in the invocation to enumerate.
 
 ## [v02.21.00] - 10/05/2026
 
 **Minor — cross-provider prompt caching across all 5 peers (OpenAI, Anthropic, Gemini, DeepSeek, Grok).** Single coordinated ship that wires uniform prompt-caching telemetry through the runtime: each adapter parses the provider-native cache fields, the orchestrator emits a canonical `provider.cache.usage` event, and a per-session `cache_manifest.json` is appended for every cached call. Operator can disable globally with `CROSS_REVIEW_V2_DISABLE_CACHE=true`.
 
-### Adicionado
+### Added
 
 - **`src/core/prompt-parts.ts`** — canonical PromptParts builder with three layers (`stablePrefix` + `semiStableContext` + `dynamicRound`). `stablePrefix` always begins with `cache_schema_version: vN`; sha256 hex hash is invariant across rounds for the same case. New helper `pairScopedCacheKey(peer, caller, schemaVersion)` returns `cross-review-v2:<peer>:<caller>:v<N>` for OpenAI `prompt_cache_key` and Grok `x-grok-conv-id` header.
 - **`src/core/cache-manifest.ts`** — per-session `cache_manifest.json` persistence with the same atomic-write retry pattern as `meta.json`. Append-only at the entry level. Lazy creation on first append; corrupted manifest is renamed to `.corrupt-<ts>` and rebuilt.
@@ -5074,7 +5082,7 @@ The two sessions surface the same architectural gap from different angles: **NAR
 - **`provider.cache.notice` event** — Anthropic adapter warns (info-level, non-blocking) when `system` prompt is shorter than the empirical Opus 4.7 cache threshold.
 - **`docs/caching.md`** — per-provider behavior matrix + cache key scope strategy + rate card semantics + operator controls + smoke marker reference.
 
-### Alterado
+### Changed
 
 - **`src/peers/anthropic.ts`** — `system` is now an array containing one `TextBlockParam` with `cache_control: { type: "ephemeral", ttl: <config.cache.ttl.anthropic> }` when caching is enabled. `usageFromAnthropic` reads `cache_creation_input_tokens` → `cache_write_tokens` and `cache_read_input_tokens` → `cache_read_tokens` and surfaces `cache_provider_mode: "explicit"`.
 - **`src/peers/openai.ts`** — `responses.create` body now carries `prompt_cache_key` (pair-scoped) and `prompt_cache_retention` (`"in_memory"` or `"24h"`, mapped from operator-facing `5m`/`1h`). `usageFromOpenAI` reads `prompt_tokens_details.cached_tokens` → `cache_read_tokens` and surfaces `cache_provider_mode: "auto"`.
@@ -5089,7 +5097,7 @@ The two sessions surface the same architectural gap from different angles: **NAR
 
 - 5 new markers covering the new caching surface: `cache_hash_invariance_test`, `cache_schema_version_in_prefix_test`, `cache_rates_json_loaded_test`, `cache_manifest_atomic_write_test`, `cache_disable_kill_switch_test`.
 
-### Notas técnicas
+### Technical notes
 
 - **Public surface is additive.** Pre-v2.21 callers see no behavior change. New `caller` on `PeerCallContext` is optional. New cache fields on `TokenUsage`/`CostEstimate` are optional and default to undefined when adapters don't surface them.
 - **OpenAI Responses API retention values are locked to `"in_memory" | "24h"` per the SDK type.** The operator-facing `1h` flag maps to `24h` (extended retention); anything else maps to `in_memory` (~5 min).
@@ -5106,35 +5114,35 @@ The two sessions surface the same architectural gap from different angles: **NAR
 
 ## [v02.18.07] - 09/05/2026
 
-**Patch — `site/index.html` visual identity refresh.** Página GitHub Pages reskin pra nova identidade dark-first navy/cyan da organização LCV Ideas & Software (paleta `#050b18`/`#38bdf8`/`#34d399`, gradientes radiais, glow shadows, gradient text no h1). Companion ship coordenado com cross-review-v1 1.12.9, deepseek-cli 0.3.1, grok-cli 1.6.2, sponsor-motor APP v01.02.02 e `.github-org/site` (root + /sponsor). Sem mudança no tarball npm (`site/` não está em `files[]`); apenas a página servida via GitHub Pages muda.
+**Patch — `site/index.html` visual identity refresh.** GitHub Pages page reskinned to LCV Ideas & Software's new dark-first navy/cyan identity (palette `#050b18`/`#38bdf8`/`#34d399`, radial gradients, glow shadows, gradient text on the h1). Coordinated companion ship with cross-review-v1 1.12.9, deepseek-cli 0.3.1, grok-cli 1.6.2, sponsor-motor APP v01.02.02 and `.github-org/site` (root + /sponsor). No change to the npm tarball (`site/` is not in `files[]`); only the page served through GitHub Pages changes.
 
-### Alterado
+### Changed
 
-- **`site/index.html`** — substituído `<style>` block por sistema de tokens dark-first navy/cyan; HTML/copy não alterados.
-- Entrada [Unreleased] anterior (remoção do widget SumUp em `site/index.html`) consolidada aqui — o widget já havia sido removido em ships anteriores; entrada órfã de [Unreleased] cleanup.
+- **`site/index.html`** — the `<style>` block replaced by a dark-first navy/cyan token system; HTML/copy unchanged.
+- The earlier [Unreleased] entry (removal of the SumUp widget from `site/index.html`) is consolidated here — the widget had already been removed in earlier ships; an orphaned [Unreleased] entry, cleaned up.
 
 ## [v02.18.06] - 07/05/2026
 
 **Patch — Gemini API function-declaration compatibility for MCP tool inputSchemas.** Gemini Code Assist, when loading cross-review-v2 as an MCP server, forwards each tool's input schema to the Gemini API as a `function_declarations[*].parameters` payload. The Gemini API's OpenAPI 3.0 subset rejects three patterns the MCP SDK 1.29.0 was emitting from the existing zod schemas, surfacing as `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") for every chat turn that included cross-review-v2 tools. v2.18.6 cleans up the offending zod usage so the wire schema is a clean OpenAPI 3.0 subset accepted by Gemini, Claude, and Codex MCP hosts alike. No behavior change for any caller passing valid arguments.
 
-### Corrigido
+### Fixed
 
 - **`additionalProperties: false` removed from every MCP tool inputSchema** (~28 tools). Pre-v2.18.6 each `inputSchema: z.object({...}).strict()` was serialized by `@modelcontextprotocol/sdk@1.29.0`'s built-in `toJsonSchemaCompat` as `{type:"object", properties:{...}, additionalProperties:false}` — Gemini API rejects function declarations carrying that field. The `.strict()` chain is dropped from all inputSchema definitions; runtime accepts the same set of valid arguments because handlers only consume declared properties via destructuring (`async ({task, response_format, ...}) => ...`). Inputs with extra unknown fields are now silently ignored at the schema layer instead of rejected with `mcp_arg_validation_failed`.
 - **`anyOf: [enum, const]` flattened to a single `enum` for the `caller` field**. Pre-v2.18.6 `caller: z.union([PeerSchema, z.literal("operator")]).default("operator")` (6 occurrences across `session_init`, `ask_peers`, `session_start_round`, `run_until_unanimous`, `session_start_unanimous`, `contest_verdict`'s `new_caller`) emitted `{anyOf:[{type:"string",enum:[<5 peers>]},{type:"string",const:"operator"}]}` — Gemini API has limited support for `anyOf` in function declarations and uses `enum` rather than `const`. Replaced with a single `CallerSchema = z.enum([...PEERS, "operator"] as const)` defined once near the top of the module and referenced everywhere; runtime accepts the same six-string set with the same `"operator"` default.
 - **`reasoning_effort_overrides` flattened from `z.record` to `z.object` with explicit per-peer optional keys**. Pre-v2.18.6 the `ReasoningEffortOverridesSchema` used `z.record(PeerSchema, ReasoningEffortSchema).optional()`, which the SDK serialized as `{type:"object", propertyNames:{enum:[<5 peers>]}, additionalProperties:{enum:[<7 efforts>]}, required:[<all 5 peers>]}` — `propertyNames` is not in Gemini's OpenAPI 3.0 subset, and the spurious `required: [<all 5 peers>]` made the optional field appear to require all five keys. Refactored to `z.object({codex: ReasoningEffortSchema.optional(), claude: ..., gemini: ..., deepseek: ..., grok: ...}).optional()`; runtime accepts the same `{codex:"high", claude:"low"}`-shape inputs with the same per-peer optionality.
 
-### Notas técnicas
+### Technical notes
 
-- **Compatibilidade com versões anteriores: 100% para callers passando argumentos válidos.** Claude Code, Codex CLI, Gemini Code Assist, Grok CLI e DeepSeek CLI continuam invocando as mesmas ferramentas com as mesmas chaves — nenhum schema field foi removido, renomeado ou tornado obrigatório.
-- Pequena diferença observável apenas para callers passando campos extras NÃO declarados: pré-v2.18.6 a validação rejeitava com `mcp_arg_validation_failed`; pós-v2.18.6 os campos extras são silenciosamente descartados. Os handlers já só consumiam campos declarados via destructuring, então o efeito final é o mesmo.
-- Pequena diferença para `reasoning_effort_overrides` com chave inválida (ex: typo `"Codex"` capital C): pré-v2.18.6 rejeitada pelo `z.record(PeerSchema, ...)`; pós-v2.18.6 silenciosamente ignorada pelo `z.object({...peers}).optional()`. Mitigação: operadores podem confirmar via `server_info` quais peers efetivamente respondem em uma sessão.
-- O server runtime, o quorum de cross-review, a lógica de READY/NOT_READY, o budget preflight, o cancellation via AbortSignal (v2.18.4), o per-peer attribution em eventos (v2.18.4), o caller capability tokens gate (F1/v2.18.0) e o clientInfo identity gate (v2.17.0) permanecem inalterados.
+- **Backward compatibility: 100% for callers passing valid arguments.** Claude Code, Codex CLI, Gemini Code Assist, Grok CLI and DeepSeek CLI keep invoking the same tools with the same keys — no schema field was removed, renamed or made mandatory.
+- A small observable difference only for callers passing extra UNDECLARED fields: pre-v2.18.6 validation rejected them with `mcp_arg_validation_failed`; post-v2.18.6 the extra fields are silently discarded. The handlers already consumed only declared fields via destructuring, so the end effect is the same.
+- A small difference for `reasoning_effort_overrides` with an invalid key (e.g. the typo `"Codex"` with a capital C): pre-v2.18.6 it was rejected by `z.record(PeerSchema, ...)`; post-v2.18.6 it is silently ignored by `z.object({...peers}).optional()`. Mitigation: operators can confirm through `server_info` which peers actually answer in a session.
+- The server runtime, the cross-review quorum, the READY/NOT_READY logic, the budget preflight, cancellation through AbortSignal (v2.18.4), per-peer attribution in events (v2.18.4), the caller capability tokens gate (F1/v2.18.0) and the clientInfo identity gate (v2.17.0) are unchanged.
 
 ## [v02.18.05] - 07/05/2026
 
 **Patch — anti-drift smoke drivers for v2.18.4 audit closure (operator directive 07/05/2026).** v2.18.4 shipped 6 surgical fixes from the Codex external audit; v2.18.5 hardens those fixes against silent regression with 5 anti-drift smoke checks. Companion to `cross-review-v1` v1.12.7 (parallel ship; same operator directive).
 
-### Adicionado
+### Added
 
 - **`hono_override_anti_drift_test`** (P1.1). Reads `package.json`, asserts `overrides.hono === ">=4.12.16"` and that `overrides["ip-address"]` (the v2.18.1 precedent) remains intact. Anti-drift guard against accidental removal of either override by future Dependabot PRs or refactors. Same shape as the v2.18.4 P1.1 fix.
 - **`abort_signal_threading_anti_drift_test`** (P1.3). Source-level grep on `src/core/orchestrator.ts`: ≥2 `signal?: AbortSignal` param declarations (consensus + single-peer judge passes); ≥2 `signal: params.signal` receiver wirings; ≥2 `signal: input.signal` autowire emitter wirings; consensus pass body has NO leftover `signal: undefined` literal (was hardcoded pre-v2.18.4).
@@ -5142,11 +5150,11 @@ The two sessions surface the same architectural gap from different angles: **NAR
 - **`clamp_effort_for_model_anti_drift_test`** (P2.1). Behavioral: `clampEffortForModel("xhigh", "grok-4.3") === "high"`; `clampEffortForModel("minimal", "grok-4.3") === "high"`; passthrough for `none|low|medium|high` on grok-4.3; full-scale passthrough for `grok-4.20-multi-agent` (xhigh stays xhigh); unknown models pass through unchanged. Source-level: `clampEffortForModel` wired at exactly 2 `responses.create` call sites (non-streaming + streaming). The function is now exported from `src/peers/grok.ts` so the smoke harness can verify the clamp shape directly.
 - **`consensus_event_per_peer_attribution_anti_drift_test`** (P2.4). Source-level: legacy `judge_peer: params.judge_peers[0]` co-emitted at ≥2 sites for backward compat; new `judge_peers: params.judge_peers` array emitted at ≥2 sites; `per_peer_verdict: perPeerVerdict` map at ≥2 sites. Co-emission contract: every `this.emit({ ... judge_peer: params.judge_peers[0] ... })` payload also includes the `judge_peers` array AND `per_peer_verdict` map (scoped scan splits source by `this.emit({` boundaries to avoid false-positives on the function-call site at `markEvidenceItemAddressedByJudge`).
 
-### Alterado
+### Changed
 
 - `clampEffortForModel` is now exported from `src/peers/grok.ts` (`export function clampEffortForModel(...)`). Behavior unchanged for in-file callers; the export enables direct verification by the smoke harness without spinning a request-shape stub.
 
-### Notas técnicas
+### Technical notes
 
 - Smoke harness gains 5 new test markers (hono_override / abort_signal_threading / max_items_per_pass_default / clamp_effort_for_model / consensus_event_per_peer_attribution). All five PASS in stub mode; harness completes with `ok: true` / exit 0.
 - Lint / typecheck / format clean. `npm audit --audit-level=moderate` returns 0 vulnerabilities.
@@ -5157,7 +5165,7 @@ The two sessions surface the same architectural gap from different angles: **NAR
 
 **Patch — Codex external audit 07/05/2026 outcome: 6 surgical fixes (P1.1, P1.2, P1.3, P1.4, P2.1, P2.4).** Codex submitted a read-only audit of cross-review-v2 v2.18.3 with 4 P1 + 7 P2 findings; this ship lands the 6 verified-actionable items. Findings deferred or non-issue: P2.2 (sessions histórico — operational housekeeping, session_sweep exists), P2.3 (token noise — config option not bug), P2.5 (grok historical errors — passive log), P2.6 (deepseek cache pricing — forward optimization), P2.7 (publish.yml tag padding — Codex misread; regex accepts both formats, P3 polish).
 
-### Corrigido (P1)
+### Fixed (P1)
 
 - **P1.1 hono advisory** — `package.json` `overrides` now pins `hono: ">=4.12.16"` to clear `npm audit --audit-level=moderate` failures from `@modelcontextprotocol/sdk@1.29.0` transitive (advisories `GHSA-9vqf-7f2p-gf9v` bodyLimit bypass + `GHSA-69xw-7hcm-h432` JSX HTML injection, both range `<4.12.16`). Practical exposure essentially zero in stdio runtime (StdioServerTransport doesn't load HTTP/JSX paths) but the audit-gate matters for publish workflow + defense-in-depth. Same precedent as the `ip-address` override since v2.18.1.
 
@@ -5167,13 +5175,13 @@ The two sessions surface the same architectural gap from different angles: **NAR
 
 - **P1.4 consensus shadow cost defensive default** — `src/core/config.ts` lowered the default `CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS` from `8` to `4`. Math: with `consensus_peers=4` (codex+gemini+deepseek+grok) and old default `max_items_per_pass=8`, worst-case round fired up to `4 × 8 = 32` paid judge calls. Lowering the default to `4` halves the worst-case to `4 × 4 = 16`. Operators wanting prior behavior set `CROSS_REVIEW_V2_EVIDENCE_JUDGE_MAX_ITEMS_PER_PASS=8` (or higher) explicitly. Single-peer mode also reduces (1×8 → 1×4) — coverage tradeoff acknowledged; raise via env-var if needed.
 
-### Alterado (P2)
+### Changed (P2)
 
 - **P2.1 Grok grok-4.3 reasoning_effort support** — `src/peers/grok.ts` `GROK_REASONING_EFFORT_MODELS` Set expanded from `{"grok-4.20-multi-agent"}` to `{"grok-4.20-multi-agent", "grok-4.3"}`. xAI documentation (verified via WebFetch 07/05/2026 at `https://docs.x.ai/developers/model-capabilities/text/reasoning`) explicitly states `grok-4.3 supports reasoning_effort` with values `none|low (default)|medium|high`. New helper `clampEffortForModel(effort, model)` clamps the internal `xhigh`/`minimal` scale to `high` when targeting `grok-4.3` (which doesn't accept `xhigh`); `grok-4.20-multi-agent` keeps the full `xhigh`-inclusive range. Wired at both `responses.create` call sites (lines 244 + 332). v2.16.0 verification (05/05/2026 operator directive) is now stale by the xAI docs update; v2.18.4 closes the drift.
 
 - **P2.4 consensus metrics per-peer attribution** — `orchestrator.ts:1008` (active-mode `evidence_checklist_addressed` event) and `:1030` (shadow-mode `shadow_decision` event) previously emitted only `judge_peer: params.judge_peers[0]`, so the rollup at `session-store.ts:911` (`groupBy judge_peer`) attributed every consensus decision to whichever peer was first in the configured list (codex by default), making per-peer accuracy analysis impossible. v2.18.4 keeps `judge_peer` for backward-compat readers but ALSO emits the full `judge_peers: PeerId[]` list and `per_peer_verdict: Record<PeerId, "verified_satisfied" | "disagree" | "failed">` map so operators can compute accurate per-peer accuracy from the raw event stream.
 
-### Notas técnicas
+### Technical notes
 
 - Smoke harness completes with exit 0 + final `{ ok: true, events: 96 }` payload (each named PASS marker prints during the run; the harness's terminal `ok` is the binary success signal). Updated to assert new `GROK_REASONING_EFFORT_MODELS.size === 2` + `has("grok-4.3") === true` + xAI key redaction pattern fires on realistic xAI key shapes (and does NOT fire on short prefixes — false-positive guard). `grok_reasoning_capability_allowlist_test` updated from prior `size === 1` / `has("grok-4.3") === false` assertions.
 - Lint/typecheck/format clean.
@@ -5192,7 +5200,7 @@ The two sessions surface the same architectural gap from different angles: **NAR
 - **`docs/api-keys.md`** — `CROSS_REVIEW_GEMINI_MODEL` env-var example flipped to `gemini-2.5-pro`.
 - **`docs/model-selection.md`** — priority block flipped to `gemini-2.5-pro > gemini-3.1-pro-preview`; added paragraph explaining workspace policy (`gemini-*-pro` ≥ 2.5 only; no `*-flash`).
 
-### Notas técnicas
+### Technical notes
 
 - Lint/typecheck/format clean. Smoke 6/6 PASS unchanged (smoke fixture's `currentOfficialModel` array updated to reference the new canonical pin — `scripts/smoke.ts:225` flipped `gemini-3.1-pro-preview` → `gemini-2.5-pro` — but the 6-test suite assertions and shape are unchanged from v2.18.2; capability_snapshot probe in real sessions returns `model: "gemini-2.5-pro"` from env-override on the 7 LCV Ideas & Software hosts).
 - No public surface change beyond default model ID. Hosts using `CROSS_REVIEW_GEMINI_MODEL` env-override (default for the 7 LCV-workspace MCP hosts since 07/05/2026) see no behavior change at all.
@@ -5399,7 +5407,7 @@ The v2.15.0 smoke marker `consensus_autowire_config_parsed_test` validated that 
 
 ## [v02.15.00] - 04/05/2026
 
-**v2.15.0 ships the 6 backlog items from `project_cross_review_v2_v215_backlog_candidates.md` as a single minor bump (operator directive 04/05/2026: "Quero TODOS implementados").** Driven by functional testing of v2.14.x against the real xAI API, which surfaced the `reasoning.effort` model-rejection that birthed the `feedback_consult_docs_before_amputating.md` HARD RULE. v2.15.0 codifies that rule at three levels: per-model capability allowlist (item 6), runtime 4xx docs-pointer (item 5), and operator-triggered per-call effort overrides (item 2) so dialing parameters down per-call is a first-class option rather than a config-edit detour.
+**v2.15.0 ships the 6 backlog items from `project_cross_review_v2_v215_backlog_candidates.md` as a single minor bump (operator directive 04/05/2026, quoted verbatim in pt-BR: "Quero TODOS implementados" -- I want ALL of them implemented).** Driven by functional testing of v2.14.x against the real xAI API, which surfaced the `reasoning.effort` model-rejection that birthed the `feedback_consult_docs_before_amputating.md` HARD RULE. v2.15.0 codifies that rule at three levels: per-model capability allowlist (item 6), runtime 4xx docs-pointer (item 5), and operator-triggered per-call effort overrides (item 2) so dialing parameters down per-call is a first-class option rather than a config-edit detour.
 
 ### Added — Item 1: consensus-based judge autowire
 
@@ -5659,12 +5667,12 @@ Original v2.13 plan was 6 backlog items: (1) lead drift fix, (2) precision repor
 - **`LeadPeerNotInSessionError`** — thrown when an explicit `lead_peer` is supplied but is not present in the session peers list. Prevents the orchestrator from assigning a non-participating relator.
 - **`entropy_source: "crypto.randomInt" | "explicit"`** on `RelatorAssignment`. Lottery assignments tag `"crypto.randomInt"`; explicit-leadpeer assignments tag `"explicit"` so audit trails can distinguish the two paths without reading the kind discriminant. (Pre-fix, both tagged `"crypto.randomInt"` — misleading because the explicit path uses no RNG.)
 - **Six new smoke markers** (4 lottery + 2 R-fix):
-  - `relator_lottery_excludes_caller_test` — 100 sorteios com caller=claude → assigned ∈ {codex,gemini,deepseek}; nunca claude. Plus 50 sorteios cada com caller=codex/gemini/deepseek (simetria) e 1 sorteio com caller=operator (pool size 4, sem exclusão).
-  - `relator_lottery_uniform_distribution_test` — 1500 sorteios com caller=claude. Counts dos 3 não-caller dentro de ±15% de 500 cada. Guard contra `Math.random` slipping in.
-  - `lead_peer_caller_match_rejected_test` — `assertLeadPeerNotCaller("claude", "claude")` joga `CallerCannotBeLeadPeerError`. Variantes válidas (caller=claude + lead=codex/gemini/deepseek) e operator caller também testadas.
-  - `relator_assigned_event_emitted_test` — `runUntilUnanimous({caller: "claude", lead_peer: undefined})` emite exatamente 1 evento `session.relator_assigned` com `caller`, `candidate_pool` (3 peers, sem claude), `assigned`, `entropy_source: "crypto.randomInt"`, `kind: "lottery"`.
-  - `relator_lottery_session_peers_aware_test` (R-fix) — subset com `peers=["codex","gemini"]` + caller=claude → assigned ∈ subset, nunca deepseek. Subset com 1 peer → assigned é exatamente esse peer. Subset apenas com caller → `no_eligible_relator`. Explicit `lead_peer="deepseek"` com session=`["codex","gemini"]` → `LeadPeerNotInSessionError`. Explicit válido → `entropy_source: "explicit"`.
-  - `relator_auto_recusal_filters_session_peers_test` (R-fix) — `runUntilUnanimous({caller: "claude", peers: ["codex","claude","gemini"]})` → caller removido do pool antes do lottery; `candidate_pool` retornado no evento tem 2 peers (codex+gemini), sem claude.
+  - `relator_lottery_excludes_caller_test` — 100 draws with caller=claude → assigned ∈ {codex,gemini,deepseek}; never claude. Plus 50 draws each with caller=codex/gemini/deepseek (symmetry) and 1 draw with caller=operator (pool size 4, no exclusion).
+  - `relator_lottery_uniform_distribution_test` — 1500 draws with caller=claude. Counts for the 3 non-callers within ±15% of 500 each. Guard against `Math.random` slipping in.
+  - `lead_peer_caller_match_rejected_test` — `assertLeadPeerNotCaller("claude", "claude")` throws `CallerCannotBeLeadPeerError`. Valid variants (caller=claude + lead=codex/gemini/deepseek) and the operator caller are tested too.
+  - `relator_assigned_event_emitted_test` — `runUntilUnanimous({caller: "claude", lead_peer: undefined})` emits exactly 1 `session.relator_assigned` event with `caller`, `candidate_pool` (3 peers, no claude), `assigned`, `entropy_source: "crypto.randomInt"`, `kind: "lottery"`.
+  - `relator_lottery_session_peers_aware_test` (R-fix) — a subset with `peers=["codex","gemini"]` + caller=claude → assigned ∈ subset, never deepseek. A subset with 1 peer → assigned is exactly that peer. A subset holding only the caller → `no_eligible_relator`. An explicit `lead_peer="deepseek"` with session=`["codex","gemini"]` → `LeadPeerNotInSessionError`. A valid explicit one → `entropy_source: "explicit"`.
+  - `relator_auto_recusal_filters_session_peers_test` (R-fix) — `runUntilUnanimous({caller: "claude", peers: ["codex","claude","gemini"]})` → the caller is removed from the pool before the lottery; the `candidate_pool` returned in the event holds 2 peers (codex+gemini), no claude.
 
 ### Added (shadow-mode auto-wire — originally drafted for v2.10.0, lifted into v2.11.0)
 
@@ -5802,7 +5810,7 @@ Original v2.13 plan was 6 backlog items: (1) lead drift fix, (2) precision repor
   - `session.evidence_checklist_addressed` — fires when at least one item was auto-promoted to addressed in the current round; data carries `ids` + `count`.
   - `session.evidence_checklist_reopened` — fires when at least one previously-addressed item reverted to open because the peer resurfaced it; data carries `ids` + `count`.
   - `session.evidence_checklist_peer_resurfaced_terminal` — fires when a peer brought back an item that the operator had explicitly closed (status preserved); data carries `items: [{id, peer, status}]`.
-- **Dashboard "Saúde por provider" card.** Sortable table rendering `per_peer_health` with `Resultados`, `READY`, `NEEDS_EVIDENCE`, `NOT_READY`, `READY rate`, `NE rate`, `Custo total`, `Custo médio`, `Parser warns`, `Rejections`. Sorted by `results_total` descending so the most-active peer appears first. Refreshes alongside the existing metrics card.
+- **Dashboard "Saúde por provider" card.** Sortable table rendering `per_peer_health` with `Resultados`, `READY`, `NEEDS_EVIDENCE`, `NOT_READY`, `READY rate`, `NE rate`, `Custo total`, `Custo médio`, `Parser warns`, `Rejections` — the card title and column labels are quoted as they shipped in this version, in pt-BR; the dashboard was translated in v07.00.00. Sorted by `results_total` descending so the most-active peer appears first. Refreshes alongside the existing metrics card.
 - **`SessionStore.TERMINAL_STATUSES` static readonly Set** — the runtime checks `TERMINAL_STATUSES.has(status)` instead of an `||` chain to avoid any future refactor accidentally writing the buggy `(status === "satisfied" || "deferred" || "rejected")` truthy-OR form (always-truthy because non-empty strings are truthy in JS/TS). Codex+deepseek surfaced this regression risk during the R1 of the v2.8.0 trilateral; the explicit Set membership is type-safe and idiomatic.
 - **Four new smoke markers**:
   - `evidence_checklist_terminal_preservation_test` — locks in the rule that `runEvidenceChecklistAddressDetection` NEVER auto-mutates terminal items and that an open item resurfaced in the current round is not misclassified under `peer_resurfaced_terminal`. 5-item fixture with one of each status (open/satisfied/deferred/rejected/addressed) all at `last_round === currentRound`. Asserts: open stays open (no auto-promote, no terminal misclassification), terminals all reported and preserved on disk, addressed reverts to open, addressed/reopened sets exclude terminal ids.

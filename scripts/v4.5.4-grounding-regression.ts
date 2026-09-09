@@ -342,6 +342,11 @@ const regressions: Regression[] = [
       assert.ok(runtimeClaim.issue_classes.includes("unsupported_historical_claim"));
     },
   },
+  // The pt-BR drafts below are not stray prose: they are the only coverage of
+  // the Portuguese alternatives inside HISTORICAL_RUNTIME_TIMING_PATTERN
+  // (src/core/orchestrator.ts), which matches
+  // `quando (o) workflow|run|auditoria|sessao comecou`. Translating them would
+  // leave that branch of the pattern untested while the tests still passed.
   {
     name: "a Portuguese product-version noun phrase stays outside runtime history",
     run: () => {
