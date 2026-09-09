@@ -408,7 +408,11 @@ The server exposes 30 tools. Grouped by purpose:
 - `session_finalize` — closes one's own non-terminal session as `aborted`
   (persisted petitioner); `converged` and `max-rounds` are
   written only by the runtime.
-- `session_recover_interrupted` — recovers interrupted sessions.
+- `session_recover_interrupted` — recovers one's own interrupted sessions
+  (persisted petitioner). Store-wide recovery happens at trusted startup, not
+  through this tool: it rewrites control and health state, rolls back broker
+  state and records unknown spend, which no peer may do to another
+  petitioner's session.
 - `session_sweep` — sweeps/cleans up sessions.
 
 **Review execution**

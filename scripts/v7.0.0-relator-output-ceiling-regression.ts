@@ -814,4 +814,74 @@ function fixedArtifactAdapters(text: string): {
   console.log("[v7.0.0-relator-ceiling] preflight_prices_only_dispatchable_peers: PASS");
 }
 
+// --- 18. a collapsed rotation is refused for its size, not for money ------
+// The ceiling screen can leave a circular rotation holding nobody but its
+// first rotator, and `runCircularLoop` refuses that at its `length < 2` guard
+// without dispatching anyone. Pricing that set FIRST meant a missing rate card
+// for the lone lead answered `financial_controls_missing` — a diagnosis about
+// money for a session that was going to be refused for size, with no provider
+// call possible either way. The size refusal is the true cause and now runs
+// first. The control is the second half: with the rate card present the
+// refusal must still be the size one, so this cannot pass by having quietly
+// stopped pricing anything.
+{
+  const ceilings: Record<PeerId, number> = {
+    claude: 640,
+    codex: 640,
+    gemini: 200, // excluded by the 300-character draft, collapsing the rotation
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
+  };
+  const runCollapsed = async (prefix: string, dropRateCardFor: PeerId | null) => {
+    const base = harnessConfig(prefix, ceilings);
+    const rates = { ...base.cost_rates };
+    if (dropRateCardFor) delete rates[dropRateCardFor];
+    const config: AppConfig = dropRateCardFor
+      ? { ...base, cost_rates: rates, model_cost_rates: {} }
+      : base;
+    const probe = countingAdapters(config);
+    const events: RuntimeEvent[] = [];
+    const orchestrator = new CrossReviewOrchestrator(
+      config,
+      (event) => events.push(event),
+      probe.factory,
+    );
+    const out = await orchestrator.runUntilUnanimous({
+      task: "Revise the artifact.",
+      caller: "claude",
+      peers: ["codex", "gemini"],
+      lead_peer: "codex",
+      initial_draft: "z".repeat(300),
+      mode: "circular",
+      max_rounds: 1,
+    });
+    return { out, events, probe };
+  };
+
+  const withoutCard = await runCollapsed("relator-ceiling-collapsed-unpriced", "codex");
+  assert.equal(
+    withoutCard.out.session.outcome_reason,
+    "circular_rotation_output_ceiling",
+    `a rotation the screen collapsed must be refused for SIZE even when the lone lead has no rate card; got ${String(withoutCard.out.session.outcome_reason)}`,
+  );
+  assert.ok(
+    withoutCard.events.some((event) => event.type === "session.circular_rotation_output_ceiling"),
+    "and the diagnosis must be the deterministic output-ceiling one",
+  );
+  assert.deepEqual(
+    withoutCard.probe.generated,
+    [],
+    "no peer may be dispatched before that refusal",
+  );
+
+  const withCard = await runCollapsed("relator-ceiling-collapsed-priced", null);
+  assert.equal(
+    withCard.out.session.outcome_reason,
+    "circular_rotation_output_ceiling",
+    "CONTROL: with every rate card present the refusal must still be the size one",
+  );
+  console.log("[v7.0.0-relator-ceiling] collapsed_rotation_is_refused_for_size: PASS");
+}
+
 console.log("[v7.0.0-relator-ceiling] ALL CASES PASS");

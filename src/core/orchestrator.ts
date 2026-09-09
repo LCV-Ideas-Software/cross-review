@@ -308,6 +308,25 @@ function limitBlock(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 80)}\n\n[Context compacted by prompt budget: ${value.length} chars -> ${maxLength} chars]`;
 }
 
+// The refusal issued when the output-ceiling screen leaves a circular rotation
+// with nobody but its first rotator. Shared by the check that runs BEFORE the
+// financial gates and the one inside `runCircularLoop`, because the same
+// collapse is reachable from both and two copies of a diagnosis is how they
+// stop agreeing.
+function collapsedCircularRotationMessage(
+  draftChars: number,
+  excluded: readonly { peer: PeerId; ceiling_tokens: number }[],
+): string {
+  const roster = excluded.map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`).join(", ");
+  return (
+    `Circular rotation refused before dispatch: the draft is ${draftChars} characters and ` +
+    `no other rotator's output ceiling clears the size screen (${roster}). Each ` +
+    `rotator must re-emit the whole artifact inside its own ceiling. Two levers: shrink ` +
+    `the artifact, or raise those ceilings in the central configuration ` +
+    `(max_output_tokens_by_peer / CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`
+  );
+}
+
 function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
   if (!meta.rounds.length) return "No prior round.";
   const summary = meta.rounds
@@ -8282,19 +8301,11 @@ export class CrossReviewOrchestrator {
     // two. A one-peer rotation would converge on that peer approving its own
     // unchanged output, which is the self-review the protocol forbids.
     if (rotationOrder.length < 2 && rotationScreen.excluded.length > 0) {
-      const roster = rotationScreen.excluded
-        .map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`)
-        .join(", ");
       const draftChars = rotationScreen.excluded[0]?.draft_chars ?? 0;
       this.emit({
         type: "session.circular_rotation_output_ceiling",
         session_id: session.session_id,
-        message:
-          `Circular rotation refused before dispatch: the draft is ${draftChars} characters and ` +
-          `no other rotator's output ceiling clears the size screen (${roster}). Each ` +
-          `rotator must re-emit the whole artifact inside its own ceiling. Two levers: shrink ` +
-          `the artifact, or raise those ceilings in the central configuration ` +
-          `(max_output_tokens_by_peer / CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`,
+        message: collapsedCircularRotationMessage(draftChars, rotationScreen.excluded),
         data: {
           draft_chars: draftChars,
           first_rotator: firstRotator,
@@ -9321,6 +9332,50 @@ export class CrossReviewOrchestrator {
       sessionMode === "circular"
         ? circularRotationOrder(selectedPeers, leadPeer, relatorOutputFit)
         : undefined;
+    // A rotation the screen has collapsed to its first rotator can never
+    // dispatch anyone: `runCircularLoop` refuses it at the `length < 2` guard.
+    // Pricing it first meant a missing rate card for that lone lead returned
+    // `financial_controls_missing` instead of the deterministic output-ceiling
+    // refusal — a diagnosis naming money for a session that was going to be
+    // refused for size, with no provider call possible either way. The size
+    // refusal is the true cause, so it goes first (PR #300 review round 5).
+    if (
+      circularRotation &&
+      circularRotation.order.length < 2 &&
+      circularRotation.excluded.length > 0
+    ) {
+      const draftChars = circularRotation.excluded[0]?.draft_chars ?? 0;
+      const refusedSession =
+        existingSession ??
+        (await this.store.init(
+          input.task,
+          callerForLottery,
+          [],
+          normalizeReviewFocus(input.review_focus, this.config),
+        ));
+      this.emit({
+        type: "session.circular_rotation_output_ceiling",
+        session_id: refusedSession.session_id,
+        message: collapsedCircularRotationMessage(draftChars, circularRotation.excluded),
+        data: {
+          draft_chars: draftChars,
+          first_rotator: leadPeer,
+          excluded_for_output_ceiling: circularRotation.excluded,
+          caller: callerForLottery,
+        },
+      });
+      await this.store.finalize(
+        refusedSession.session_id,
+        "aborted",
+        "circular_rotation_output_ceiling",
+      );
+      return {
+        session: this.store.read(refusedSession.session_id),
+        final_text: input.initial_draft,
+        converged: false,
+        rounds: 0,
+      };
+    }
     const chargeablePeers = uniquePeers(
       circularRotation ? circularRotation.order : [...selectedPeers, leadPeer],
     );

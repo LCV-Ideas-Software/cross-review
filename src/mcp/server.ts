@@ -1211,6 +1211,20 @@ export function assertSessionMutationAuthority(
   }
 }
 
+// The owner of a persisted session, or null when none can be derived. A
+// session written before the operator identity was removed can still carry
+// `"operator"` as its petitioner: that value describes bytes on disk, which are
+// not rewritten, but it names a caller that can never present itself again, so
+// it yields no owner. Shared by the session-mutation gate and by
+// `session_recover_interrupted`, which must not repair another petitioner's
+// session — one derivation, so the two cannot drift apart.
+export function derivePersistedSessionOwner(session: SessionMeta): PeerId | null {
+  const persistedOwner = hasTrustedPetitionerProvenance(session.version)
+    ? (session.convergence_scope?.petitioner ?? session.caller)
+    : null;
+  return persistedOwner === null || persistedOwner === "operator" ? null : persistedOwner;
+}
+
 export function hasTrustedPetitionerProvenance(version: unknown): boolean {
   if (typeof version !== "string") return false;
   const match = version.match(
@@ -1239,11 +1253,7 @@ function verifySessionMutationAuthority(
   // which are not rewritten, but it names a caller that can never present
   // itself again — so it yields no derivable owner and the mutation takes the
   // `session_owner_unverified` path, which is the legitimate refusal.
-  const persistedOwner = hasTrustedPetitionerProvenance(session.version)
-    ? (session.convergence_scope?.petitioner ?? session.caller)
-    : null;
-  const sessionOwner: PeerId | null =
-    persistedOwner === null || persistedOwner === "operator" ? null : persistedOwner;
+  const sessionOwner = derivePersistedSessionOwner(session);
   try {
     assertSessionMutationAuthority(site, caller, identity, sessionOwner);
     return identity;
@@ -2349,7 +2359,14 @@ export async function main(): Promise<void> {
       );
       return textResult(
         {
-          recovered: await runtime.orchestrator.store.recoverInterruptedSessions(active),
+          // Scoped to this caller's own sessions. Identity alone used to
+          // authorize a store-wide repair of every petitioner's session
+          // (PR #300 review round 5). Store-wide recovery still happens, at
+          // trusted startup — see recoverStartupInterruptedSessions — so
+          // nothing is lost by refusing it here.
+          recovered: await runtime.orchestrator.store.recoverInterruptedSessions(active, {
+            include: (session) => derivePersistedSessionOwner(session) === caller,
+          }),
         },
         response_format,
       );

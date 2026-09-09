@@ -658,18 +658,74 @@ function hardenOpenedTokensFilePermissions(
   }
 }
 
-function rewriteOpenedTokensFile(fd: number, payload: string): void {
-  const encoded = Buffer.from(payload, "utf8");
-  fs.ftruncateSync(fd, 0);
-  let offset = 0;
-  while (offset < encoded.length) {
-    const written = fs.writeSync(fd, encoded, offset, encoded.length - offset, offset);
-    if (written <= 0) {
-      throw new Error("caller-tokens: zero-byte write while migrating token file");
+// v07.00.00 (PR #300 review round 5): the migration used to truncate the live
+// token file to zero and then write its replacement into the same descriptor.
+// This is the ONLY credential record: a disk-full error, a transient I/O
+// failure or a power loss anywhere between the truncate and the fsync left it
+// empty or half-written, and every peer token became unverifiable — taking
+// every owner-scoped tool with it, including the recovery tools that would be
+// used to dig out.
+//
+// The replacement is written beside it and swapped in, so the old record stays
+// intact and readable until a complete, fsynced replacement exists. Mirrors the
+// `writeJson` helper in session-store.ts — same tmp naming, same Windows retry
+// set, same best-effort cleanup — plus the two things a credential file needs
+// and a session file does not: mode 0600 at creation, and an fsync before the
+// rename rather than trusting the page cache.
+function replaceTokensFileAtomically(filePath: string, payload: string): void {
+  const nonce = crypto.randomBytes(2).toString("hex");
+  const tmp = `${filePath}.${process.pid}.${nonce}.tmp`;
+  let tmpFd: number | null = null;
+  try {
+    // `wx` refuses to clobber a leftover temp, and 0600 means the replacement
+    // is never briefly world-readable.
+    tmpFd = fs.openSync(tmp, "wx", 0o600);
+    const encoded = Buffer.from(payload, "utf8");
+    let offset = 0;
+    while (offset < encoded.length) {
+      const written = fs.writeSync(tmpFd, encoded, offset, encoded.length - offset, offset);
+      if (written <= 0) {
+        throw new Error("caller-tokens: zero-byte write while migrating token file");
+      }
+      offset += written;
     }
-    offset += written;
+    fs.fsyncSync(tmpFd);
+    fs.closeSync(tmpFd);
+    tmpFd = null;
+  } catch (error) {
+    if (tmpFd !== null) {
+      try {
+        fs.closeSync(tmpFd);
+      } catch {
+        /* the throw below is the outcome that matters */
+      }
+    }
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* best effort: never leave the temp behind */
+    }
+    throw error;
   }
-  fs.fsyncSync(fd);
+  // One attempt, deliberately. `session-store.ts` retries this rename with a
+  // backoff because Win32 fails it with EPERM/EACCES/EBUSY while a handle is
+  // briefly held by AV or indexing — but that writer is async and can await a
+  // timer. `loadHostTokens` is synchronous, and a synchronous backoff is
+  // exactly what the v4.1.0 F5 contract forbids anywhere under src/: both the
+  // busy-wait and `Atomics.wait` block the single Node thread. Failing is the
+  // right outcome anyway, because it is not lossy: the original record is
+  // still whole and readable — the swap never started — so a transient lock
+  // costs a retry at the next start, not a credential.
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* best effort: never leave the temp behind */
+    }
+    throw error;
+  }
 }
 
 export function generateHostTokens(
@@ -797,8 +853,13 @@ export function loadHostTokens(
     // `operator_token_added_at` marker of the migration that first added it.
     const droppedOperatorToken = typeof tokensIn.operator === "string";
     if ((parsed as { version?: number }).version !== 2 || droppedOperatorToken) {
-      rewriteOpenedTokensFile(
-        fd,
+      // The read is finished, and Win32 refuses to rename over a file that is
+      // still open, so the descriptor is released before the swap. `fd` is
+      // cleared so the `finally` below does not close it twice.
+      fs.closeSync(fd);
+      fd = null;
+      replaceTokensFileAtomically(
+        filePath,
         JSON.stringify(
           {
             version: 2,

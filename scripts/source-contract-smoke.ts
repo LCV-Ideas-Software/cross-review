@@ -456,6 +456,59 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00 (PR #300 review round 5, Codex P2): the v2 -> v7 token migration
+  // truncated the live credential record to zero and wrote its replacement
+  // into the same descriptor. host-tokens.json is the ONLY credential record,
+  // so a disk-full error, a transient I/O failure or a power loss between the
+  // truncate and the fsync left every peer token unverifiable — including the
+  // owner-scoped tools that would be used to recover. The replacement is now
+  // written beside it and swapped in.
+  //
+  // Behavioural coverage of a power loss is not reachable from a test, so what
+  // is pinned is the structure that makes the window impossible: no in-place
+  // truncation of the credential file, and a swap that fsyncs before it
+  // renames.
+  const tokensSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "caller-tokens.ts"),
+    "utf8",
+  );
+  assert.ok(
+    !tokensSrc.includes("ftruncateSync"),
+    "v07.00.00 / token durability: the credential record must never be truncated in place — write a replacement beside it and swap it in",
+  );
+  const swapStart = tokensSrc.indexOf("function replaceTokensFileAtomically");
+  assert.ok(
+    swapStart >= 0,
+    "v07.00.00 / token durability: the atomic replacement helper must exist",
+  );
+  const swapEnd = tokensSrc.indexOf("\nfunction ", swapStart + 1);
+  const swap = tokensSrc.slice(swapStart, swapEnd === -1 ? undefined : swapEnd);
+  const fsyncAt = swap.indexOf("fsyncSync");
+  const renameAt = swap.indexOf("renameSync");
+  assert.ok(
+    fsyncAt >= 0 && renameAt >= 0 && fsyncAt < renameAt,
+    "v07.00.00 / token durability: the replacement must be fsynced BEFORE it is renamed into place, or the swap trusts the page cache",
+  );
+  assert.ok(
+    swap.includes('"wx"') && swap.includes("0o600"),
+    "v07.00.00 / token durability: the temporary must refuse to clobber and must be created 0600, never briefly world-readable",
+  );
+
+  // Same round: the dashboard was translated to English while its root element
+  // still declared pt-BR, so screen readers and translation tooling applied
+  // Portuguese rules to English labels.
+  const dashboardSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "dashboard", "server.ts"),
+    "utf8",
+  );
+  assert.ok(
+    !dashboardSrc.includes('lang="pt-BR"'),
+    "v07.00.00 / dashboard: the document language must match the language of the UI it declares",
+  );
+  console.log("[source-contract-smoke] token_migration_is_durable_test: PASS");
+}
+
+{
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
     serverSrc.includes('process.on("SIGTERM"') && serverSrc.includes('process.on("SIGINT"'),

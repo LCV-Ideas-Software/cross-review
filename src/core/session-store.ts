@@ -3308,9 +3308,21 @@ export class SessionStore {
     });
   }
 
-  async recoverInterruptedSessions(activeSessionIds = new Set<string>()): Promise<SessionMeta[]> {
+  // `include` narrows which sessions may be repaired. Trusted startup
+  // maintenance passes nothing and repairs the whole store, which is the point
+  // of startup recovery. The MCP tool passes an ownership predicate, because
+  // this routine rewrites control and health state, rolls back broker state,
+  // records unknown spend and can seal recovered convergence — authority no
+  // peer should hold over another petitioner's session. The predicate lives at
+  // the call site so the ownership rule is not restated here (v07.00.00, PR
+  // #300 review round 5).
+  async recoverInterruptedSessions(
+    activeSessionIds = new Set<string>(),
+    options: { include?: (session: SessionMeta) => boolean } = {},
+  ): Promise<SessionMeta[]> {
     const recovered: SessionMeta[] = [];
     for (const session of this.list()) {
+      if (options.include && !options.include(session)) continue;
       try {
         await this.settleOrphanedBackgroundJobStatuses(session, activeSessionIds);
       } catch {

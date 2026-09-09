@@ -7,6 +7,7 @@ import { loadConfig } from "../src/core/config.js";
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import type { AppConfig, PeerAdapter, PeerId } from "../src/core/types.js";
 import { PEERS } from "../src/core/types.js";
+import { derivePersistedSessionOwner } from "../src/mcp/server.js";
 import { StubAdapter } from "../src/peers/stub.js";
 
 type Regression = {
@@ -656,6 +657,89 @@ const regressions: Regression[] = [
         ),
         "Stable fixture draft.",
         "automatic terminal recovery must restore the same durable final artifact",
+      );
+    },
+  },
+  {
+    name: "recovery repairs only the caller's own sessions",
+    run: async () => {
+      // v07.00.00 (PR #300 review round 5): `session_recover_interrupted`
+      // verified identity and then repaired the WHOLE store. That routine
+      // rewrites control and health state, rolls back broker state, records
+      // unknown spend and can seal recovered convergence — authority no peer
+      // should hold over another petitioner's session. The store now takes an
+      // ownership predicate, and the tool supplies it.
+      //
+      // The predicate under test is imported, not restated: a local copy of
+      // the ownership rule would keep passing after the real rule changed.
+      const config = regressionConfig("recovery-scoped-to-owner");
+      const orchestrator = new CrossReviewOrchestrator(config);
+      const owned: string[] = [];
+      for (const petitioner of ["claude", "codex"] as const) {
+        const session = await orchestrator.store.init(
+          `Interrupted session petitioned by ${petitioner}.`,
+          petitioner,
+          [],
+        );
+        await orchestrator.store.markInFlight(session.session_id, {
+          round: 1,
+          peers: ["grok"],
+          started_at: new Date().toISOString(),
+          scope: {
+            petitioner,
+            caller: petitioner,
+            acting_peer: petitioner,
+            caller_status: "READY",
+            expected_peers: ["grok"],
+            reviewer_peers: ["grok"],
+          },
+        });
+        persistDeadInFlightOwner(orchestrator, session.session_id);
+        if (petitioner === "claude") owned.push(session.session_id);
+      }
+
+      const recovered = await orchestrator.store.recoverInterruptedSessions(new Set<string>(), {
+        include: (session) => derivePersistedSessionOwner(session) === "claude",
+      });
+      assert.deepEqual(
+        recovered.map((meta) => meta.session_id).sort(),
+        owned.sort(),
+        "a scoped recovery must repair the caller's own interrupted session and nothing else",
+      );
+
+      // The control: without the predicate, trusted startup maintenance still
+      // repairs everything. A fix that simply broke recovery would pass the
+      // assertion above and fail this one.
+      const startupConfig = regressionConfig("recovery-startup-unscoped");
+      const startupOrchestrator = new CrossReviewOrchestrator(startupConfig);
+      const startupSessions: string[] = [];
+      for (const petitioner of ["claude", "codex"] as const) {
+        const session = await startupOrchestrator.store.init(
+          `Interrupted session petitioned by ${petitioner}.`,
+          petitioner,
+          [],
+        );
+        await startupOrchestrator.store.markInFlight(session.session_id, {
+          round: 1,
+          peers: ["grok"],
+          started_at: new Date().toISOString(),
+          scope: {
+            petitioner,
+            caller: petitioner,
+            acting_peer: petitioner,
+            caller_status: "READY",
+            expected_peers: ["grok"],
+            reviewer_peers: ["grok"],
+          },
+        });
+        persistDeadInFlightOwner(startupOrchestrator, session.session_id);
+        startupSessions.push(session.session_id);
+      }
+      const startupRecovered = await startupOrchestrator.store.recoverInterruptedSessions();
+      assert.deepEqual(
+        startupRecovered.map((meta) => meta.session_id).sort(),
+        startupSessions.sort(),
+        "CONTROL: unscoped startup recovery must still repair every interrupted session",
       );
     },
   },
