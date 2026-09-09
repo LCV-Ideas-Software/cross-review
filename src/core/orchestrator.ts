@@ -3680,13 +3680,22 @@ export function truthfulnessPreflight(params: {
       // of this runtime, so a foreign "current model" value cannot be true.
       // S3: future/planning phrasing is not a current-state assertion.
       const allPinViews = new Set<string>();
+      // CROSREV-22 (#239): the two segment sets are kept apart, because what a
+      // routed occurrence means depends on whether the pin it names is itself
+      // routed.
+      const routedPinSegments = new Set<string>();
+      const barePinSegments = new Set<string>();
       for (const pinPeer of PEERS) {
         const pin = modelPins[pinPeer];
         if (!pin) continue;
-        allPinViews.add(canonicalModelText(normalizeModelPin(pin)));
+        const segment = canonicalModelText(normalizeModelPin(pin));
+        allPinViews.add(segment);
         const unwrapped = pin.replace(/^models\//i, "");
         if (unwrapped.includes("/")) {
           allPinViews.add(canonicalModelText(normalizeVersionToken(unwrapped)));
+          routedPinSegments.add(segment);
+        } else {
+          barePinSegments.add(segment);
         }
       }
       let affirmativelyValidated = false;
@@ -3696,9 +3705,30 @@ export function truthfulnessPreflight(params: {
         if (occurrence.future) continue;
         currentOccurrenceCount += 1;
         if (occurrence.negated) continue;
-        const views = [occurrence.token, ...(occurrence.route ? [occurrence.route] : [])];
-        if (views.some((view) => allPinViews.has(view))) {
+        // CROSREV-22 (#239, Codex P2): a ROUTED occurrence is judged as a
+        // route, never on its bare segment alone. Admitting either view let
+        // "routes its heavy-reasoning slot through xai/gpt-6-astra" pass on the
+        // token `gpt-6-astra`, while asserting a provider that routes nothing
+        // here.
+        //
+        // Three outcomes, because two different mistakes hide in one shape:
+        //   - the route matches a configured route -> validated;
+        //   - the segment belongs to a ROUTED pin but the route does not match
+        //     -> the provider is demonstrably wrong, which is a contradiction;
+        //   - the segment belongs to a BARE pin -> the runtime holds no route
+        //     for it, so the claim is unverifiable rather than false. There is
+        //     no provider-to-peer map anywhere in the configuration, so calling
+        //     `openai/gpt-6-astra` a lie would mean inventing the deployment
+        //     fact that codex is served by openai. It falls through without
+        //     validating, which lands it in S2: restate plainly or evidence it.
+        const routedViewMatches =
+          occurrence.route !== undefined && allPinViews.has(occurrence.route);
+        const bareViewMatches = occurrence.route === undefined && allPinViews.has(occurrence.token);
+        if (routedViewMatches || bareViewMatches) {
           affirmativelyValidated = true;
+          continue;
+        }
+        if (occurrence.route !== undefined && barePinSegments.has(occurrence.token)) {
           continue;
         }
         lineCurrentModelClaimMatched = true;
@@ -3721,6 +3751,36 @@ export function truthfulnessPreflight(params: {
         unsupportedClaims.push(
           `model claim could not be affirmatively validated against the configured pins (restate plainly or attach structured evidence): ${line.slice(0, 240)}`,
         );
+      }
+      // CROSREV-22 (#239, Codex P2): S2 used to require at least one capturable
+      // occurrence, so a line that asserts something about a peer's pin while
+      // naming NO model value escaped every check — "the model pin for codex is
+      // not the configured pin" carries a claim and zero tokens, and zero
+      // tokens meant zero judgement. An assertive, model-scoped line that names
+      // a peer but states no value is exactly the case the fail-closed doctrine
+      // exists for: it is not called a lie, it is asked to be restated plainly
+      // or evidenced. The structured-evidence half of this belongs to
+      // CROSREV-21; this is the minimal lexical guard that closes the silence.
+      // The condition is ZERO CAPTURABLE TOKENS, not zero CURRENT ones. Using
+      // `currentOccurrenceCount` here regressed the S3 exemption: "will migrate
+      // the codex model pin to gpt-7-nova in the next release" names a value,
+      // it is simply a future one, and asking that line to "restate plainly
+      // with the model id" is nonsense — it already has one.
+      if (occurrences.length === 0 && isAssertiveCurrentStateClaim(line)) {
+        // The peer must also HAVE a configured pin: with nothing configured
+        // there is nothing to restate the claim against, and asking anyway
+        // would be noise. My own control case caught this.
+        const namesAPeer = PEERS.some(
+          (peer) => Boolean(modelPins[peer]) && MODEL_CLAIM_ALIASES[peer].test(aliasBase),
+        );
+        if (namesAPeer) {
+          lineCurrentModelClaimMatched = true;
+          currentStateClaimMatched = true;
+          addIssueClass(issueClasses, "unsupported_current_state_claim");
+          unsupportedClaims.push(
+            `model-scoped claim names a peer but no model value the parser can check (restate plainly with the model id or attach structured evidence): ${line.slice(0, 240)}`,
+          );
+        }
       }
     }
 

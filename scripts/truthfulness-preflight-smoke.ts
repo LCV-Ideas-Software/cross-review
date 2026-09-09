@@ -680,6 +680,65 @@ import type { PeerResult } from "../src/core/types.js";
     false,
     "whitespace around the route slash must not hide the wrong provider",
   );
+
+  // CROSREV-22 (#239, Codex P2) — findings measured against the code before
+  // fixing, so each of these was RED first. Finding 1 of that issue (a future
+  // CUTOFF phrase exempting a present claim) was already closed by the v4.6.3
+  // structural inversion; it is pinned here so the coverage is explicit rather
+  // than assumed.
+  assert.equal(
+    rt(
+      "The cross-review runtime model pin for codex is gpt-5.5 until the next release.",
+      plainPins,
+    ),
+    false,
+    "CROSREV-22/1: a future CUTOFF asserts the present state, so the wrong pin must still contradict",
+  );
+  assert.equal(
+    rt(
+      "The cross-review runtime will migrate the codex model pin to gpt-7-nova in the next release.",
+      plainPins,
+    ),
+    true,
+    "CROSREV-22/1 control: genuine future INTENT stays exempt — the distinction is intent vs cutoff",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes its heavy-reasoning slot through xai/gpt-5.6-sol.",
+      plainPins,
+    ),
+    false,
+    "CROSREV-22/2: an ownerless ROUTED occurrence is judged as a route; the bare segment must not validate it",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes its search slot through perplexity/kimi-k3.",
+      plainPins,
+    ),
+    true,
+    "CROSREV-22/2 control: a route that matches the configured route still passes",
+  );
+  assert.equal(
+    rt(
+      "The Perplexity peer in the currently loaded cross-review runtime is routed through zeta/kimi-k3.",
+      plainPins,
+    ),
+    false,
+    "CROSREV-22/2: a wrong provider on a ROUTED pin is a contradiction, not merely unverifiable",
+  );
+  assert.equal(
+    rt("The cross-review runtime model pin for codex is not the configured pin.", plainPins),
+    false,
+    "CROSREV-22/3: an assertive model-scoped line naming a peer with ZERO capturable tokens must not pass silently",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime model pin for codex is documented upstream.", {
+      ...plainPins,
+      codex: "",
+    }),
+    true,
+    "CROSREV-22/3 control: with no pin configured for the peer there is nothing to contradict",
+  );
   assert.equal(
     rt(
       "The Codex peer in the currently loaded cross-review runtime is running gpt_5.6_sol.",

@@ -218,6 +218,38 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### Fixed
 
+- **Two of the three truthfulness follow-ups from CROSREV-22 (#239); the third
+  was already closed and is now pinned.** Each finding was run against the
+  current code before being treated as real, because the issue cites line
+  numbers from a revision that predates the v4.6.3 structural inversion.
+  Finding 1 — a future CUTOFF phrase exempting a present claim — no longer
+  reproduces: "the model pin for codex is gpt-5.5 until the next release" is
+  caught, while genuine future INTENT stays exempt. Coverage for both is added
+  so the distinction is explicit rather than assumed.
+  Finding 2 reproduced. A routed occurrence validated if EITHER its route or
+  its bare segment matched a pin, so "routes its heavy-reasoning slot through
+  xai/gpt-6-astra" passed on the token alone while naming a provider that
+  routes nothing here. A routed occurrence is now judged as a route, with three
+  outcomes rather than two: the route matches a configured route and validates;
+  the segment belongs to a ROUTED pin and the route does not match, which is a
+  wrong provider and a contradiction; or the segment belongs to a BARE pin, in
+  which case the runtime holds no route for it and the claim is unverifiable
+  rather than false, so it falls to the unsupported-claim path — restate
+  plainly or evidence it. That third branch exists because no provider-to-peer
+  map exists anywhere in the configuration: calling `openai/gpt-6-astra` a lie
+  would mean inventing the deployment fact that codex is served by openai.
+  Finding 3 reproduced. The unsupported-claim guard required at least one
+  capturable occurrence, so an assertive, model-scoped line that names a peer
+  and states no value at all — "the model pin for codex is not the configured
+  pin" — carried a claim past every check. It is now reported as unsupported
+  when the line has zero capturable tokens AND the peer it names actually has a
+  configured pin. The structured-evidence half of this belongs to CROSREV-21
+  and is deliberately not attempted here.
+  The 38-case red-team harness passes unchanged: the three-way route rule
+  satisfies both this issue and the existing case that requires an ownerless
+  routed occurrence not to be blanket-adopted. Seven cases were added and each
+  new one was proved to fail against the unfixed code.
+
 - **The relator draw now respects the output ceiling of the relator seat**
   (issue #295 / CROSREV-43). The relator is the only role that must re-emit the
   whole artifact inside its own `max_output_tokens`; reviewers merely vote. The
