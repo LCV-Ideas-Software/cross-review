@@ -541,15 +541,15 @@ function fixedArtifactAdapters(text: string): {
 // itself. Convergence now counts DISTINCT peers.
 {
   const ceilings: Record<PeerId, number> = {
-    claude: 64_000,
-    codex: 64_000,
-    gemini: 20_000, // the one that cannot re-emit the grown artifact
-    deepseek: 64_000,
-    grok: 64_000,
-    perplexity: 64_000,
+    claude: 640,
+    codex: 640,
+    gemini: 200, // the one that cannot re-emit the grown artifact
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
   };
   const config = harnessConfig("relator-ceiling-skip-convergence", ceilings);
-  const probe = fixedArtifactAdapters("z".repeat(30_000));
+  const probe = fixedArtifactAdapters("z".repeat(300));
   const events: RuntimeEvent[] = [];
   const orchestrator = new CrossReviewOrchestrator(
     config,
@@ -559,7 +559,16 @@ function fixedArtifactAdapters(text: string): {
   const out = await orchestrator.runUntilUnanimous({
     task: "Revise the artifact.",
     caller: "claude",
-    initial_draft: "x".repeat(19_000),
+    // The seat is PINNED, and not for tidiness. Every peer clears the 190-char
+    // initial draft, so the draw could seat gemini first — and the round-zero
+    // producer is deliberately exempt from the live screen, because it has
+    // demonstrably just emitted this exact artifact. With gemini as producer
+    // the assertion below ("the low-ceiling peer must never be dispatched
+    // against the grown artifact") is false of CORRECT behaviour, so the test
+    // failed roughly one run in five. It passed twice standalone and then broke
+    // in the suite. A test whose verdict depends on a lottery is not a test.
+    lead_peer: "codex",
+    initial_draft: "x".repeat(190),
     mode: "circular",
     max_rounds: 20,
   });
@@ -617,17 +626,17 @@ function fixedArtifactAdapters(text: string): {
 // `others`, so the guard could never fire.
 {
   const ceilings: Record<PeerId, number> = {
-    claude: 25_000,
-    codex: 25_000,
-    gemini: 25_000,
-    deepseek: 25_000,
-    grok: 25_000,
-    perplexity: 25_000,
+    claude: 250,
+    codex: 250,
+    gemini: 250,
+    deepseek: 250,
+    grok: 250,
+    perplexity: 250,
   };
   const config = harnessConfig("relator-ceiling-roundzero-producer", ceilings);
-  // Every peer emits 30,000 characters: above the 25,000 screen, but the
+  // Every peer emits 300 characters: above the 250 screen, but the
   // producer must still be exempt from being screened against its own output.
-  const probe = fixedArtifactAdapters("w".repeat(30_000));
+  const probe = fixedArtifactAdapters("w".repeat(300));
   const events: RuntimeEvent[] = [];
   const orchestrator = new CrossReviewOrchestrator(
     config,
@@ -662,6 +671,147 @@ function fixedArtifactAdapters(text: string): {
     `the producer must never be skipped against its own output; skipped=[${skipped.join(", ")}] producer=${String(producer)}`,
   );
   console.log("[v7.0.0-relator-ceiling] round_zero_generator_is_the_producer: PASS");
+}
+
+// --- 16. a skipped rotator does not consume the round budget ---------------
+// The live screen advances the cursor without dispatching, and while that pass
+// still incremented `round` a rotator excluded by its ceiling ate rounds that
+// an eligible rotator needed. Near the cap the session was finalized before the
+// peer that could have shrunk the artifact ever got its turn. Three peers,
+// gemini unable to re-emit the grown artifact, max_rounds=3: three DISPATCHED
+// turns must happen. Pre-fix the skip consumed one and only two did.
+{
+  const ceilings: Record<PeerId, number> = {
+    claude: 640,
+    codex: 640,
+    gemini: 200, // holds the 190 initial draft, not the 300 rotation
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
+  };
+  const config = harnessConfig("relator-ceiling-skip-round-budget", ceilings);
+  const probe = expandingAdapters(() => 300);
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(
+    config,
+    (event) => events.push(event),
+    probe.factory,
+  );
+  await orchestrator.runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    peers: ["codex", "gemini", "grok"],
+    lead_peer: "codex",
+    initial_draft: "x".repeat(190),
+    mode: "circular",
+    max_rounds: 3,
+  });
+
+  const skipped = events.filter(
+    (event) => event.type === "session.circular_rotator_skipped_for_output_ceiling",
+  );
+  assert.ok(
+    skipped.length > 0,
+    "the case is only meaningful if a rotator was actually skipped for its ceiling",
+  );
+  const dispatchedTurns = events.filter(
+    (event) =>
+      event.type === "session.circular_step_revised" ||
+      event.type === "session.circular_step_unchanged",
+  );
+  assert.equal(
+    dispatchedTurns.length,
+    3,
+    `max_rounds=3 must buy 3 DISPATCHED turns; a ceiling skip costs nothing and must not consume one (got ${dispatchedTurns.length}, skips=${skipped.length})`,
+  );
+  console.log("[v7.0.0-relator-ceiling] skip_does_not_consume_the_round_budget: PASS");
+}
+
+// --- 17. the preflight prices only what the session can dispatch ----------
+// The financial preflight runs in `runUntilUnanimous`, BEFORE the circular
+// rotation is derived, and it demands a complete rate card for every peer it is
+// handed. While it was handed the unscreened peer list, a peer the ceiling
+// screen had already removed from the rotation could finalize the session with
+// `financial_controls_missing` — naming a peer that was never going to be
+// called. The control is the second half: a peer INSIDE the rotation with no
+// card must still block, or the narrowing would have disabled the preflight.
+{
+  const ceilings: Record<PeerId, number> = {
+    claude: 640,
+    codex: 640,
+    gemini: 200, // excluded by the 300-character draft at selection time
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
+  };
+  const withoutRateCardFor = (prefix: string, peer: PeerId): AppConfig => {
+    const config = harnessConfig(prefix, ceilings);
+    const rates = { ...config.cost_rates };
+    delete rates[peer];
+    return { ...config, cost_rates: rates, model_cost_rates: {} };
+  };
+
+  const config = withoutRateCardFor("relator-ceiling-preflight-excluded", "gemini");
+  const probe = countingAdapters(config);
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(
+    config,
+    (event) => events.push(event),
+    probe.factory,
+  );
+  const excludedRun = await orchestrator.runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    peers: ["codex", "gemini", "grok"],
+    lead_peer: "codex",
+    initial_draft: "z".repeat(300),
+    mode: "circular",
+    max_rounds: 1,
+  });
+  const blocked = events.filter(
+    (event) => event.type === "session.blocked.financial_controls_missing",
+  );
+  assert.deepEqual(
+    blocked.map((event) => (event as { data?: { missing_variables?: string[] } }).data),
+    [],
+    "a peer the ceiling screen removed from the rotation can never be billed, so its missing rate card must not block the session",
+  );
+  assert.ok(
+    probe.generated.length > 0,
+    `and the session must actually run; generated=[${probe.generated.join(", ")}] events=[${[
+      ...new Set(events.map((event) => event.type)),
+    ].join(
+      ", ",
+    )}] outcome=${excludedRun.session.outcome}/${excludedRun.session.outcome_reason ?? "-"}`,
+  );
+
+  const controlConfig = withoutRateCardFor("relator-ceiling-preflight-control", "codex");
+  const controlEvents: RuntimeEvent[] = [];
+  const controlProbe = countingAdapters(controlConfig);
+  const controlOrchestrator = new CrossReviewOrchestrator(
+    controlConfig,
+    (event) => controlEvents.push(event),
+    controlProbe.factory,
+  );
+  await controlOrchestrator.runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    peers: ["codex", "gemini", "grok"],
+    lead_peer: "codex",
+    initial_draft: "z".repeat(300),
+    mode: "circular",
+    max_rounds: 1,
+  });
+  assert.ok(
+    controlEvents.some((event) => event.type === "session.blocked.financial_controls_missing"),
+    "CONTROL: codex is IN the rotation, so its missing rate card must still block the session",
+  );
+  assert.deepEqual(
+    controlProbe.generated,
+    [],
+    "CONTROL: and that block must still happen before any generation",
+  );
+  console.log("[v7.0.0-relator-ceiling] preflight_prices_only_dispatchable_peers: PASS");
 }
 
 console.log("[v7.0.0-relator-ceiling] ALL CASES PASS");

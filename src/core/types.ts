@@ -1069,7 +1069,7 @@ export interface SessionMeta {
   };
   // v2.14.0 (item 4): tribunal-colegiado contestation chain. Per the
   // memory `project_cross_review_v2_tribunal_colegiado_model.md`:
-  // caller READY = acata; caller NOT_READY = contesta → novo ciclo.
+  // caller READY = accepts; caller NOT_READY = contests → new cycle.
   // When this session was contested by the caller, the runtime
   // populates `contestation`; when a new session was initialized to
   // re-deliberate a previous session, the new session's

@@ -20,7 +20,7 @@ import {
 import { maxOutputTokensForPeer } from "./output-budget.js";
 import {
   assertLeadPeerNotCaller,
-  partitionRelatorPoolByOutputFit,
+  circularRotationOrder,
   type RelatorOutputFit,
   relatorFitsDraft,
   resolveLeadPeer,
@@ -8275,11 +8275,8 @@ export class CrossReviewOrchestrator {
     // this screen never sees. The live screen inside the loop is what closes
     // that; this one stays because refusing before the first dispatch is
     // cheaper than refusing after it.
-    const rotationTail = sessionPeers.filter((peer) => peer !== firstRotator);
-    const rotationScreen = outputFit
-      ? partitionRelatorPoolByOutputFit(rotationTail, outputFit)
-      : { eligible: [...rotationTail], excluded: [] };
-    const rotationOrder: PeerId[] = [firstRotator, ...rotationScreen.eligible];
+    const rotationScreen = circularRotationOrder(sessionPeers, firstRotator, outputFit);
+    const rotationOrder: PeerId[] = rotationScreen.order;
 
     // Refuse before dispatch when the screen is what shrank the rotation below
     // two. A one-peer rotation would converge on that peer approving its own
@@ -8571,7 +8568,23 @@ export class CrossReviewOrchestrator {
         ? input.max_rounds
         : circularMaxRotations * rotationOrder.length;
 
-    for (let round = 1; round <= maxCircularRounds; round++) {
+    // `round` counts DISPATCHED rounds, not loop passes, which is why this is
+    // a while loop with the increment at the points where a turn was actually
+    // taken. A rotator skipped for its output ceiling costs nothing and writes
+    // no entry to `meta.rounds[]`; letting it consume the round budget let the
+    // ceiling starve the session, so a session near its cap could be finalized
+    // before an eligible rotator ever got the turn that would have shrunk the
+    // artifact. A drifted round, by contrast, WAS dispatched and paid, so it
+    // does consume the budget.
+    //
+    // Termination holds without a separate pass counter: the producer of the
+    // current artifact is never screened, so it is always dispatched when the
+    // cursor reaches it, and while there is no producer yet a full cycle of
+    // skips puts every peer in `skippedForCeiling` and the collapse guard
+    // returns. Within any `rotationOrder.length` consecutive passes there is
+    // therefore either a dispatch or a guarded exit.
+    let round = 1;
+    while (round <= maxCircularRounds) {
       if (this.isCancelled(session.session_id, input.signal)) {
         await this.store.markCancelled(session.session_id, "session_cancelled");
         return {
@@ -8663,7 +8676,10 @@ export class CrossReviewOrchestrator {
         });
         // Not a turn: no dispatch, no cost, and deliberately NOT counted as an
         // unchanged round, because the peer never saw the artifact. Counting it
-        // would let a skipped rotator manufacture convergence.
+        // would let a skipped rotator manufacture convergence. It does not
+        // consume the round budget either — `round` is not incremented here —
+        // so a rotator excluded by its ceiling cannot starve the session of the
+        // rounds an eligible rotator still needs.
         cursor = (cursor + 1) % rotationOrder.length;
         continue;
       }
@@ -8760,10 +8776,12 @@ export class CrossReviewOrchestrator {
         });
         await this.store.finalize(session.session_id, "aborted", "lead_silent_model_downgrade");
         return {
+          // This round WAS dispatched and paid for before the mismatch was
+          // seen, so it counts. `round - 1` here would under-report it.
           session: this.store.read(session.session_id),
           final_text: draft,
           converged: false,
-          rounds: round - 1,
+          rounds: round,
         };
       }
 
@@ -8803,10 +8821,12 @@ export class CrossReviewOrchestrator {
           });
           await this.store.finalize(session.session_id, "aborted", "needs_truthfulness_preflight");
           return {
+            // Same as the mismatch exit above: the rotator was dispatched and
+            // paid before the preflight refused its output.
             session: this.store.read(session.session_id),
             final_text: draft,
             converged: false,
-            rounds: round - 1,
+            rounds: round,
           };
         }
       }
@@ -8902,8 +8922,10 @@ export class CrossReviewOrchestrator {
             rounds: round,
           };
         }
-        // preserve prior draft; advance cursor so next peer gets a turn
+        // preserve prior draft; advance cursor so next peer gets a turn. This
+        // round was dispatched and paid for, so it consumes the round budget.
         cursor = (cursor + 1) % rotationOrder.length;
+        round++;
         continue;
       }
       consecutiveLeadDrifts = 0;
@@ -9059,6 +9081,7 @@ export class CrossReviewOrchestrator {
       }
 
       cursor = (cursor + 1) % rotationOrder.length;
+      round++;
     }
 
     // Exhausted max rotations without convergence.
@@ -9172,6 +9195,13 @@ export class CrossReviewOrchestrator {
       (peer) => peer !== callerForLottery,
     );
 
+    // Derived here, not just before the circular branch below, because the
+    // financial preflight has to know whether this session is circular before
+    // it prices the peer list — a circular session prices only the rotation
+    // the ceiling screen leaves standing. This is the only derivation of
+    // `input.mode`.
+    const sessionMode: import("./types.js").SessionMode = input.mode ?? "ship";
+
     // v07.00.00 (CROSREV-43, #295): the relator seat is constrained by the
     // output ceiling of the peer that occupies it, because the relator is the
     // only role that has to re-emit the whole artifact. The material it must
@@ -9184,6 +9214,29 @@ export class CrossReviewOrchestrator {
     // relator produced is by construction inside that relator's ceiling, so
     // re-applying this deliberately pessimistic bound each round would refuse
     // the very peer that has just proved it fits.
+    //
+    // Review round 4 of PR #300 asked for this screen to be scoped to `ship`
+    // and `circular`, on the ground that a `review` lead may emit a short
+    // structured response and so needs no capacity to reproduce the artifact.
+    // NOT DONE, because the premise is only true of the CONTRACT and not of
+    // the prompt this code actually sends. `types.ts` says review's lead "may
+    // emit a structured response" and `leadShipModeDirective()` — the block
+    // that forbids one — is ship-only, both of which support the finding. But
+    // `buildRevisionPrompt` splits circular-vs-everything-else, so a review
+    // lead is handed "Rewrite the solution considering every blocking issue"
+    // and "Return only the complete revised version, without meeting notes or
+    // external commentary." A seat told that, holding a 34,000-character
+    // artifact against a 20,000-token ceiling, dies on max_output_tokens with
+    // the round's votes already paid: measured session 17e75f42, the exact
+    // failure issue #295 exists to prevent.
+    //
+    // So the screen stays in review mode until the three surfaces agree.
+    // Aligning the prompt with the contract is the real fix and it does not
+    // belong in a close-out PR: permitting a structured response there makes a
+    // second, pre-existing hazard more reachable, because review mode replaces
+    // `draft` with the lead's output unguarded (drift detection is ship-only),
+    // so a structured review would silently become the artifact the next round
+    // votes on. Tracked separately.
     const relatorOutputFit: RelatorOutputFit | undefined =
       input.initial_draft === undefined
         ? undefined
@@ -9257,7 +9310,20 @@ export class CrossReviewOrchestrator {
     // so the auto-recusal applied for the lottery also propagates to the
     // reviewer pool that downstream rounds see.
     const selectedPeers = sessionPeers;
-    const chargeablePeers = uniquePeers([...selectedPeers, leadPeer]);
+    // In circular mode the output-ceiling screen removes peers from the rotation
+    // before any dispatch, so they can never incur a provider call. This
+    // preflight runs BEFORE `runCircularLoop` derives that rotation and demands
+    // a complete rate card for every peer handed to it, so an excluded peer
+    // with an incomplete card finalized the session with
+    // `financial_controls_missing` while naming a peer that was never going to
+    // be called. Same derivation as the loop's, from one function.
+    const circularRotation =
+      sessionMode === "circular"
+        ? circularRotationOrder(selectedPeers, leadPeer, relatorOutputFit)
+        : undefined;
+    const chargeablePeers = uniquePeers(
+      circularRotation ? circularRotation.order : [...selectedPeers, leadPeer],
+    );
     // v3.2.0 (Codex bug report 2026-05-12): fail fast when run_until_unanimous
     // targets a finalized session. Without this guard the orchestrator would
     // start rounds whose `appendRound` would clobber `convergence_health`,
@@ -9269,7 +9335,7 @@ export class CrossReviewOrchestrator {
       // The relator only generates; a Perplexity lead never declares the
       // web_search tool, so the search-rate dimension is gated on the
       // reviewer pool (same derivation as reviewerPeers below).
-      reviewerPeers: selectedPeers.filter((peer) => peer !== leadPeer),
+      reviewerPeers: chargeablePeers.filter((peer) => peer !== leadPeer),
     });
     if (missingFinancialVars.length) {
       const blockedSession =
@@ -9462,7 +9528,15 @@ export class CrossReviewOrchestrator {
     }
 
     if (this.config.budget.require_rates_for_budget && costLimit != null) {
-      const missingRates = selectedPeers.filter((peer) => !this.config.cost_rates[peer]);
+      // The sibling of the preflight above, and it had the same defect: it
+      // demanded a rate card from every session peer, including the ones the
+      // circular ceiling screen had already removed from the rotation. Caught
+      // by the control half of regression case 17, which is the only reason
+      // this second gate was found at all. `chargeablePeers` is the SAME SET as
+      // `selectedPeers` outside circular mode — leadPeer is drawn from
+      // sessionPeers, so the union adds nothing — which is why this narrows the
+      // circular path without touching ship or review.
+      const missingRates = chargeablePeers.filter((peer) => !this.config.cost_rates[peer]);
       if (missingRates.length) {
         this.emit({
           type: "session.blocked.budget_requires_rates",
@@ -9483,7 +9557,6 @@ export class CrossReviewOrchestrator {
     // v2.13.0: track consecutive lead drifts. After 2 in a row the
     // session is aborted with `lead_meta_review_drift` to avoid burning
     // budget on a stuck lead.
-    const sessionMode: import("./types.js").SessionMode = input.mode ?? "ship";
 
     // v2.25.0 (circular mode): serial deliberative custody. Branch out
     // of the ship/review flow entirely — no parallel peer-voting,
@@ -9968,7 +10041,7 @@ export class CrossReviewOrchestrator {
         // `thinking`/`redacted_thinking` blocks with no final `text` block,
         // see src/peers/text.ts `parseAnthropicContent`) can surface as
         // `generation.text === ""` despite output_tokens > 0 and a non-zero
-        // bill. Sessão 8187f5a8 (2026-05-10, maestro-app v0.5.20 review)
+        // bill. Session 8187f5a8 (2026-05-10, maestro-app v0.5.20 review)
         // hit exactly this on R2: round-2-claude-revision.json has
         // text="" but output_tokens=1598 and cost=$0.082, which the
         // orchestrator pre-v2.23.0 silently promoted to draft → round-3

@@ -119,6 +119,27 @@ const OUTPUT_CEILING_LEVERS =
   "output ceiling in the central configuration (max_output_tokens_by_peer / " +
   "CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).";
 
+// The circular rotation: slot 0 is the lottery-selected first rotator and the
+// tail is every other session peer whose output ceiling clears the size screen.
+// Exported because two callers must get the SAME answer. `runCircularLoop`
+// dispatches this order, and the financial preflight in `runUntilUnanimous`
+// prices it — and the preflight runs FIRST. While it priced the unscreened peer
+// list, a peer this screen had already removed from the session could finalize
+// it with `financial_controls_missing`, naming a peer that was never going to
+// be called. Deriving it twice would have reintroduced that divergence the
+// first time one copy changed.
+export function circularRotationOrder(
+  sessionPeers: readonly PeerId[],
+  firstRotator: PeerId,
+  fit: RelatorOutputFit | undefined,
+): { order: PeerId[]; excluded: RelatorCeilingExclusion[] } {
+  const tail = sessionPeers.filter((peer) => peer !== firstRotator);
+  const screen = fit
+    ? partitionRelatorPoolByOutputFit(tail, fit)
+    : { eligible: [...tail], excluded: [] as RelatorCeilingExclusion[] };
+  return { order: [firstRotator, ...screen.eligible], excluded: screen.excluded };
+}
+
 export class NoRelatorFitsOutputCeilingError extends Error {
   readonly excluded: readonly RelatorCeilingExclusion[];
   readonly draft_chars: number;

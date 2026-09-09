@@ -369,6 +369,93 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00 (PR #300 review round 4, Codex P2): `probe_peers` declared
+  // `caller` and never checked it. With CROSS_REVIEW_REQUIRE_TOKEN=true, or a
+  // token belonging to a different peer, any enum-valid caller still reached
+  // probeAll() and spent six outbound provider probes — one of them the
+  // billable Perplexity live probe. A tool that declares an identity and
+  // spends the operator's provider quota on it has to verify it.
+  //
+  // What this pins is the RULE, not the one site: every tool that declares
+  // `caller` verifies it, with exactly two deliberate exceptions. Those two
+  // are the discovery reads a host calls to learn whether the token gate is
+  // armed and where host-tokens.json lives — precisely when it does not yet
+  // hold a token — and neither touches session data, a provider, or money.
+  // A third name joining that list fails this test.
+  const callerGateSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  const DISCOVERY_EXCEPTIONS = ["runtime_capabilities", "server_info"];
+  const registrations = callerGateSrc.split('registerTool(\n    "').slice(1);
+  assert.ok(
+    registrations.length >= 25,
+    `v07.00.00 / caller verification: the registration split found only ${registrations.length} tools, so the source shape changed and this contract is measuring nothing`,
+  );
+  // Both halves of a registration can be written inline OR referenced by name,
+  // and two tools already use the named form (`savedSessionPreflightSchema` /
+  // `savedSessionPreflightHandler`). A screen that reads only inline text
+  // skips those silently: it would keep reporting the exception list as
+  // unchanged while a third unverified tool sat outside the rule entirely.
+  // Both are therefore resolved by identifier, and an identifier that cannot
+  // be resolved fails loudly instead of passing. Resolving the handler BY NAME
+  // rather than searching the whole file also matters in the other direction:
+  // a file-wide search would credit every tool with the first verify call it
+  // found anywhere.
+  const bodyOfConst = (identifier: string, what: string): string => {
+    const declaration = `const ${identifier} =`;
+    const at = callerGateSrc.indexOf(declaration);
+    assert.ok(
+      at >= 0,
+      `v07.00.00 / caller verification: ${what} '${identifier}' could not be resolved to a declaration, so this contract cannot see what it contains`,
+    );
+    const next = callerGateSrc.indexOf("\n  const ", at + 1);
+    const stop = callerGateSrc.indexOf("\n  registerTool(", at + 1);
+    const end = Math.min(
+      next === -1 ? callerGateSrc.length : next,
+      stop === -1 ? callerGateSrc.length : stop,
+    );
+    return callerGateSrc.slice(at, end);
+  };
+  const unverified: string[] = [];
+  for (const registration of registrations) {
+    const name = registration.slice(0, registration.indexOf('"'));
+    const handlerAt = registration.indexOf("async (");
+    const schemaSection = handlerAt > 0 ? registration.slice(0, handlerAt) : registration;
+    const namedSchema = /inputSchema:\s*([A-Za-z_$][\w$]*)\s*[,}]/.exec(schemaSection);
+    const schema =
+      namedSchema && namedSchema[1] ? bodyOfConst(namedSchema[1], "inputSchema") : schemaSection;
+    let handler = handlerAt > 0 ? registration.slice(handlerAt, handlerAt + 4000) : "";
+    if (handlerAt < 0) {
+      const namedHandler = /\n\s*([A-Za-z_$][\w$]*)\(\s*"/.exec(registration);
+      handler = namedHandler && namedHandler[1] ? bodyOfConst(namedHandler[1], "handler") : "";
+    }
+    if (!schema.includes("caller: CallerSchema")) continue;
+    if (
+      handler.includes("verifyToolCallerIdentity(") ||
+      handler.includes("verifySessionMutationAuthority(")
+    ) {
+      continue;
+    }
+    unverified.push(name);
+  }
+  assert.deepEqual(
+    unverified.sort(),
+    DISCOVERY_EXCEPTIONS,
+    `v07.00.00 / caller verification: a tool that declares 'caller' must verify it, except the two discovery reads called before a token exists; unverified=[${unverified.join(", ")}]`,
+  );
+  const probeStart = callerGateSrc.indexOf('registerTool(\n    "probe_peers"');
+  assert.ok(probeStart >= 0, "v07.00.00 / caller verification: probe_peers must be registered");
+  const probeEnd = callerGateSrc.indexOf("\n  registerTool(", probeStart + 1);
+  const probeHandler = callerGateSrc.slice(probeStart, probeEnd === -1 ? undefined : probeEnd);
+  assert.ok(
+    probeHandler.includes('verifyToolCallerIdentity(runtime, "probe_peers", caller'),
+    "v07.00.00 / caller verification: probe_peers spends provider quota on the declared caller, so it must verify it before probing",
+  );
+  console.log("[source-contract-smoke] probe_peers_verifies_caller_test: PASS");
+}
+
+{
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
     serverSrc.includes('process.on("SIGTERM"') && serverSrc.includes('process.on("SIGINT"'),

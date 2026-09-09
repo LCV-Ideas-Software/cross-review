@@ -1551,6 +1551,16 @@ export async function main(): Promise<void> {
     (peer) => runtime.config.peer_enabled[peer],
   );
 
+  // Deliberate exception to "a tool that declares `caller` verifies it".
+  // `server_info` and `runtime_capabilities` are the two discovery reads: a
+  // host calls them to learn whether the token gate is even armed and where
+  // host-tokens.json lives, which is precisely the state in which it does not
+  // yet hold a token. Gating discovery on the credential it exists to help
+  // obtain would deadlock the bootstrap. Neither reads session data, calls a
+  // provider, nor spends anything, so an unverified declared identity buys
+  // nothing here — unlike `probe_peers`, which spends provider quota and
+  // therefore verifies. `scripts/source-contract-smoke.ts` pins this list at
+  // exactly these two so the exception cannot quietly grow.
   registerTool(
     "server_info",
     {
@@ -1719,8 +1729,16 @@ export async function main(): Promise<void> {
         openWorldHint: true,
       },
     },
-    async ({ response_format }) =>
-      textResult(await runtime.orchestrator.probeAll(), response_format),
+    async ({ caller, response_format }) => {
+      // The declared caller was accepted and never checked here, so with
+      // CROSS_REVIEW_REQUIRE_TOKEN=true — or a token belonging to a different
+      // peer — any enum-valid `caller` still reached probeAll() and spent six
+      // outbound provider probes, one of them the billable Perplexity live
+      // probe. A tool that declares an identity and spends the operator's
+      // provider quota on it has to verify it, exactly like session_init.
+      verifyToolCallerIdentity(runtime, "probe_peers", caller, server.server.getClientVersion());
+      return textResult(await runtime.orchestrator.probeAll(), response_format);
+    },
   );
 
   registerTool(

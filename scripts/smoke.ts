@@ -4784,7 +4784,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     const a = assignRelator("claude", ["codex", "gemini"]);
     assert.ok(
       ["codex", "gemini"].includes(a.assigned),
-      `subset assigned=${a.assigned} fora do subset`,
+      `subset assigned=${a.assigned} is outside the subset`,
     );
     assert.notEqual(a.assigned, "claude");
     assert.notEqual(a.assigned, "deepseek");
@@ -4823,9 +4823,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] relator_lottery_session_peers_aware_test: PASS");
 }
 
-// v2.11.0 R-fix — auto-recusal filtra caller de selectedPeers.
+// v2.11.0 R-fix — auto-recusal filters the caller out of selectedPeers.
 // A caller present in input.peers must be removed from the reviewer list before
-// lottery (auto-recusal por sessão; em outras sessões caller continua peer).
+// the lottery. The recusal is PER SESSION: in a session it does not petition,
+// that same peer stays an ordinary reviewer.
 {
   const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const cfg = {
@@ -4839,7 +4840,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     },
   };
   const orch = new CrossReviewOrchestrator(cfg, (e) => events.push({ type: e.type, data: e.data }));
-  // caller=claude com peers=[codex,claude,gemini] → claude removido.
+  // caller=claude with peers=[codex,claude,gemini] → claude is removed.
   await orch.runUntilUnanimous({
     task: "Auto-recusal smoke",
     initial_draft: "Test draft.",
@@ -4852,7 +4853,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   const data = relatorEvents[0]?.data ?? {};
   const pool = data.candidate_pool as string[];
   assert.ok(!pool.includes("claude"), "auto-recusal: the pool must not contain claude");
-  assert.equal(pool.length, 2, `pool deve ter 2 peers (codex+gemini), got ${pool.length}`);
+  assert.equal(pool.length, 2, `the pool must hold 2 peers (codex+gemini), got ${pool.length}`);
   assert.ok(pool.every((p) => ["codex", "gemini"].includes(p)));
   assert.ok(["codex", "gemini"].includes(data.assigned as string));
   console.log("[smoke] relator_auto_recusal_filters_session_peers_test: PASS");
@@ -8420,7 +8421,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 //     exposes `parser_warnings?: string[]` so the orchestrator can read
 //     provider-side warnings.
 //
-// Root cause being defended against: sessão 8187f5a8 (2026-05-10,
+// Root cause being defended against: session 8187f5a8 (2026-05-10,
 // maestro-app v0.5.20 review) burned ~$0.21 USD because the Anthropic
 // adapter silently coerced Claude Opus extended-thinking-only responses
 // to text="" and the orchestrator promoted that empty string to the

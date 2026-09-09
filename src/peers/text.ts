@@ -11,7 +11,7 @@ export function compactJson(value: unknown): string {
 // to `""`, which masked a real bug: the relator-revision path in the
 // orchestrator (orchestrator.ts:2925) promoted the empty text to the
 // next-round draft, dispatching peer calls against an empty `Draft Or
-// Solution Under Review:` block. Sessão `8187f5a8` 2026-05-10 burned
+// Solution Under Review:` block. Session `8187f5a8` 2026-05-10 burned
 // ~$0.21 USD on that failure mode before max-rounds was hit.
 export interface AnthropicParseResult {
   text: string;
