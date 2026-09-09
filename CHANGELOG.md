@@ -9,6 +9,24 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### Changed
 
+- **The Gemini pin and its API version are now backed by measurement, not by
+  reading.** Google's documentation contradicts itself here: the API versions
+  page says the Interactions API is generally available in `v1`, and the
+  migration guide prints a `v1beta2/interactions` URL. Probed against the live
+  API on 08/09/2026: `v1/interactions` and `v1beta2/interactions` both return
+  404, so only `v1beta/interactions` exists; `v1` serves 21 models and
+  `gemini-3.1-pro-preview` is not one of them, so
+  `POST /v1/models/gemini-3.1-pro-preview:generateContent` returns
+  `404 NOT_FOUND` while the same call succeeds on `v1beta`. Moving this adapter
+  to `v1` is therefore impossible rather than merely unwise, and the
+  Interactions API would not move it off `v1beta` either. The live catalogue
+  also settles the model question: every Pro-tier text model served is
+  `gemini-2.5-pro`, `gemini-3.1-pro-preview` and its `-customtools` variant —
+  there is no GA `gemini-3.1-pro`, and everything newer is Flash or Flash-Lite,
+  which policy excludes. The pin stays, and `docs/model-selection.md` records
+  the measurement so it is not re-derived from the documentation that disagrees
+  with the API.
+
 - **`codex` moves to `gpt-6-astra` and `claude` to `claude-fable-5-1`.** Both
   are their provider's top model, which is the whole admissible set for that
   peer — there is no second supported pin, and the documentation stops teaching

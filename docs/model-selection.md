@@ -75,6 +75,30 @@ for this peer; no `*-flash` variants and no models below 2.5. Operators can
 still override the pin explicitly, but the default/canonical path follows the
 documented replacement.
 
+The `-preview` suffix on the Gemini pin is not an oversight, and the `v1beta`
+path is not one either. Both were measured against the live API on 08/09/2026,
+because Google's own documentation contradicts itself on this point — the API
+versions page says the Interactions API is generally available in `v1`, and the
+migration guide prints a `v1beta2/interactions` URL:
+
+- `GET /v1/models` returns 21 models and `gemini-3.1-pro-preview` is not among
+  them; `GET /v1beta/models` returns 54 and it is.
+- `POST /v1/models/gemini-3.1-pro-preview:generateContent` returns
+  `404 NOT_FOUND`, "is not found for API version v1". The same call on
+  `v1beta` succeeds. Moving this adapter to `v1` is therefore not a decision
+  to weigh — the pinned model is not served there.
+- `v1/interactions` and `v1beta2/interactions` both return 404. Only
+  `v1beta/interactions` exists, so the Interactions API would not move this
+  peer off `v1beta` either, while costing the whole field-name surface and
+  explicit context caching, which it does not support.
+- Every Pro-tier text model the API actually serves is `gemini-2.5-pro`,
+  `gemini-3.1-pro-preview` and its `-customtools` variant. There is no GA
+  `gemini-3.1-pro` id. Everything Google released afterwards (3.5, 3.6, 3.7,
+  3.8) is Flash or Flash-Lite, which policy excludes.
+
+Re-measure before revisiting; do not re-derive this from the documentation,
+which is what disagrees with the API.
+
 `GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.6`
 model accepts `low`, `medium`, `high`, and `xhigh` for `reasoning.effort`
 ("xhigh is available on grok-4.6 and later"); the adapter maps the shared scale
