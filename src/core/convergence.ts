@@ -10,8 +10,8 @@ import type {
 // v3.7.3 (operator no-fallback directive 2026-05-14): when a peer's pinned
 // model is genuinely unavailable, the round SKIPS that peer and converges
 // on the remaining peers, instead of letting the failure block
-// convergence. This is the operator's "pular aquele peer e trabalhar
-// apenas com os outros" path.
+// convergence. This is the operator's own instruction for that case, quoted
+// verbatim in pt-BR: "pular aquele peer e trabalhar apenas com os outros".
 //
 // v3.7.4 (Codex v3.7.3 parecer AUDIT-2): a peer reaches this skip through
 // EITHER of two paths, not just "the user declared no fallback model" —

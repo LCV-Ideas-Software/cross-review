@@ -878,9 +878,9 @@ const regressions: Regression[] = [
       const versionAsk =
         "Cite diff/grep lines showing version bump to v02.22.03 and updates to changelog, README, SECURITY, and methodology docs.";
       const identityAsk =
-        "Forneça evidência de que a injeção de identidade no servidor e validação canônica são testadas, com nomes específicos dos testes e saída bruta de aprovação.";
+        "Provide evidence that server-side identity injection and canonical validation are tested, with the specific test names and the raw passing output.";
       const redactionAsk =
-        "Forneça saída de grep ou conteúdo de arquivo demonstrando a implementação de redação de segredos e as asserções de teste de regressão correspondentes.";
+        "Provide grep output or file content showing the secret-redaction implementation and the matching regression assertions.";
       const checklist = await orchestrator.store.appendEvidenceChecklistItems(
         session.session_id,
         1,

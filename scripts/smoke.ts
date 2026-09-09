@@ -4613,10 +4613,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v4.6.0 (CROSREV-18) Relator Lottery — mapeamento determinístico.
-// O sorteio aceita um `rng` injetado: cada índice do intervalo meio-aberto
-// [0, pool.length) mapeia exatamente para o peer daquela posição do pool,
-// o rng recebe o tamanho do pool como limite exclusivo, e um índice fora
-// do intervalo (o guard que antes era inatingível) lança o erro nomeado.
+// The draw accepts an injected `rng`: every index of the half-open range
+// [0, pool.length) maps exactly to the peer at that position of the pool, the
+// rng receives the pool size as its exclusive bound, and an index outside the
+// range (the guard that used to be unreachable) throws the named error.
 {
   const { assignRelator, relatorCandidatePool } = await import("../src/core/relator-lottery.js");
   const pool = relatorCandidatePool("claude");
@@ -4652,14 +4652,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 
 // v2.11.0 / v4.6.0 (CROSREV-18) Relator Lottery — distribuição uniforme do
 // RNG real (`crypto.randomInt`). Guard contra Math.random ou um viés no
-// mapeamento. Desenho estatístico explícito: N = 50 000 sorteios com
-// caller=claude sobre o pool de 5; estatística qui-quadrado com 4 graus de
+// mapping. Explicit statistical design: N = 50,000 draws with caller=claude
+// over the pool of 5; a chi-square statistic with 4 degrees of
 // liberdade (Σ (obs − 10 000)² / 10 000). Limiar 48.0: para df=4,
 // P(χ² > x) = e^(−x/2)·(1 + x/2), logo P(χ² > 48) ≈ 9,4e-10 por execução —
 // o falso positivo é controlado explicitamente (o desenho anterior, ±15%
-// sobre N=2000, tinha ≈0,4% por execução e disparou na CI). Potência: um
+// over N=2000, carried ~0.4% per run and did fire in CI). Power: a
 // viés relativo de 10% em um peer (p = 0,22) eleva a estatística esperada
-// para ≈ 125 ≫ 48, portanto continua detectado com folga.
+// to ~125, far above 48, so it stays detected with room to spare.
 {
   const { assignRelator } = await import("../src/core/relator-lottery.js");
   const peers = ["codex", "gemini", "deepseek", "grok", "perplexity"] as const;
@@ -4689,7 +4689,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.11.0 Relator Lottery — rejeita lead_peer === caller.
-// Chamada explícita com caller=claude e lead_peer=claude DEVE lançar
+// An explicit call with caller=claude and lead_peer=claude MUST throw
 // CallerCannotBeLeadPeerError. Sem fallback silencioso pra sorteio.
 {
   const lotteryMod1 = await import("../src/core/relator-lottery.js");
@@ -4728,7 +4728,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // v2.11.0 Relator Lottery — evento session.relator_assigned emitido.
 // Chamada de runUntilUnanimous com caller=claude e lead_peer omitido →
 // orchestrator emite session.relator_assigned com candidate_pool, assigned,
-// entropy_source preenchidos. Usa stub adapters pra não chamar provider real.
+// entropy_source populated. Uses stub adapters so no real provider is called.
 {
   const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
   const cfg = {
@@ -4772,9 +4772,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.11.0 R-fix — session-peers-aware lottery (deepseek R1 catch).
-// Lottery DEVE filtrar candidate pool a partir do array de peers da sessão
-// (não PEERS global). Sem isso, caller=claude com peers=["codex","gemini"]
-// poderia atribuir deepseek (não-participante) como lead_peer.
+// The lottery MUST filter the candidate pool from the session's peer array
+// (not the global PEERS). Without that, caller=claude with
+// peers=["codex","gemini"] could assign deepseek — a non-participant — as
+// lead_peer.
 {
   const lotteryMod2 = await import("../src/core/relator-lottery.js");
   const { assignRelator, resolveLeadPeer, LeadPeerNotInSessionError } = lotteryMod2;
@@ -4789,13 +4790,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.notEqual(a.assigned, "deepseek");
     assert.equal(a.candidate_pool.length, 2);
   }
-  // (2) Subset com 1 peer não-caller → assigned é exatamente esse peer.
+  // (2) A subset with a single non-caller peer -> that peer is the assignee.
   for (let i = 0; i < 10; i++) {
     const a = assignRelator("claude", ["codex"]);
     assert.equal(a.assigned, "codex");
     assert.equal(a.candidate_pool.length, 1);
   }
-  // (3) Subset apenas com o próprio caller → erro no_eligible_relator.
+  // (3) A subset holding only the caller itself -> no_eligible_relator.
   let threwEmpty = false;
   try {
     assignRelator("claude", ["claude"]);
@@ -4803,7 +4804,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     threwEmpty = true;
     assert.ok((err as Error).message.includes("no_eligible_relator"));
   }
-  assert.ok(threwEmpty, "subset com apenas caller deve lançar no_eligible_relator");
+  assert.ok(threwEmpty, "a subset holding only the caller must throw no_eligible_relator");
   // (4) Explicit lead_peer ∉ session peers → LeadPeerNotInSessionError.
   let threwNotInSession = false;
   try {
@@ -4813,7 +4814,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     assert.ok(err instanceof LeadPeerNotInSessionError);
     assert.ok((err as Error).message.includes("lead_peer_not_in_session_peers"));
   }
-  assert.ok(threwNotInSession, "lead_peer fora dos session peers deve lançar");
+  assert.ok(threwNotInSession, "a lead_peer outside the session peers must throw");
   // (5) Explicit lead_peer ∈ session peers → entropy_source="explicit".
   const exp = resolveLeadPeer("claude", "codex", ["codex", "gemini"]);
   assert.equal(exp.kind, "explicit");
@@ -4823,7 +4824,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.11.0 R-fix — auto-recusal filtra caller de selectedPeers.
-// Caller no input.peers deve ser removido da lista de revisores antes do
+// A caller present in input.peers must be removed from the reviewer list before
 // lottery (auto-recusal por sessão; em outras sessões caller continua peer).
 {
   const events: Array<{ type: string; data?: Record<string, unknown> | undefined }> = [];
@@ -4850,7 +4851,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(relatorEvents.length, 1);
   const data = relatorEvents[0]?.data ?? {};
   const pool = data.candidate_pool as string[];
-  assert.ok(!pool.includes("claude"), "auto-recusal: pool não pode conter claude");
+  assert.ok(!pool.includes("claude"), "auto-recusal: the pool must not contain claude");
   assert.equal(pool.length, 2, `pool deve ter 2 peers (codex+gemini), got ${pool.length}`);
   assert.ok(pool.every((p) => ["codex", "gemini"].includes(p)));
   assert.ok(["codex", "gemini"].includes(data.assigned as string));

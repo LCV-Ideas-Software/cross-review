@@ -6,8 +6,11 @@
 // promo_expires_at). selectRate() chooses the right value per
 // (category, tier, promo-active?) at estimation time. The legacy
 // cache-rates.json fallback was REMOVED per operator directive
-// 2026-05-11 ("nada hardcoded para preços financeiros — o sistema deve
-// travar até o operador configurar as variáveis"). When cache rate env
+// 2026-05-11. The directive is quoted verbatim in the operator's own
+// language (pt-BR) rather than translated, because a paraphrase of a standing
+// instruction is no longer the instruction: "nada hardcoded para preços
+// financeiros — o sistema deve travar até o operador configurar as
+// variáveis". When cache rate env
 // vars are absent, selectRate() gracefully degrades to the input rate
 // (zero savings) instead of synthesizing prices from a static file.
 
@@ -391,7 +394,7 @@ export function mergeCost(costs: Array<CostEstimate | undefined>): CostEstimate 
 /**
  * v2.26.0: estimate cache-read savings using ONLY env-configured rates
  * via selectRate(). The legacy `cache-rates.json` fallback was removed
- * per operator directive 2026-05-11 ("nada hardcoded para preços
+ * per operator directive 2026-05-11, quoted verbatim in pt-BR ("nada hardcoded para preços
  * financeiros") — when an operator omits cache rate env vars, the
  * intelligent fallback in selectRate() treats cache reads as priced at
  * the input rate (zero savings) rather than synthesizing a fictional

@@ -144,7 +144,7 @@ function html(): string {
     </section>
     <section class="card" id="shadow-judgment" style="margin-top:14px">
       <h2>Judge shadow (decisões observadas)</h2>
-      <div class="muted" style="margin-bottom:8px">Decisões emitidas pelo judge em modo shadow agregadas por peer julgador. Não muta estado — observabilidade pré v2.13.</div>
+      <div class="muted" style="margin-bottom:8px">Shadow-mode judge decisions aggregated by judging peer. Mutates no state — observability pré v2.13.</div>
       <div id="shadow-judgment-body" class="muted">Carregando...</div>
     </section>
     <section class="grid" style="margin-top:14px">
@@ -165,7 +165,7 @@ function html(): string {
     </div>
     <section id="sessions" class="sessions">Carregando...</section>
     <section class="detail-grid">
-      <pre id="details">Selecione uma sessão para ver detalhes.</pre>
+      <pre id="details">Select a session to see its details.</pre>
       <div class="timeline" id="timeline">A timeline aparecerá aqui.</div>
     </section>
   </main>

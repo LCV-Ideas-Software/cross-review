@@ -25,8 +25,10 @@ const DOCS = {
 // v3.7.2 (AUDIT-3, Codex 3rd super-audit + operator directive 2026-05-14):
 // NO MODEL FALLBACK. Every peer is pinned to a SINGLE canonical model — the
 // most advanced "pro" model with reasoning for that provider. Operator
-// directive: "não quero fallback de modelos. É um único modelo pinado e
-// pronto. E sempre o modelo mais avançado, pro, com reasoning."
+// directive, quoted verbatim in the operator's own language (pt-BR) because
+// a translated standing instruction is a paraphrase, not the instruction:
+// "não quero fallback de modelos. É um único modelo pinado e pronto. E sempre
+// o modelo mais avançado, pro, com reasoning."
 // `selectFromCandidates` picks the first PRIORITY entry the provider's live
 // list contains; with a lone entry it either selects that canonical model
 // or keeps the configured model pin (config.models[peer]) — it can NEVER

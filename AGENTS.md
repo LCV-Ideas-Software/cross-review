@@ -77,19 +77,20 @@ change. When in doubt, justify the risk classification from the actual diff;
 do not invoke cross-review merely because this repository implements the
 cross-review product. Do not use historical versioned names for the gate.
 
-## Registro de trabalho (GitHub Projects, Issues e Discussions)
+## Work record (GitHub Projects, Issues and Discussions)
 
-A equipe e composta por tres membros: o **operador** (humano), **Claude Code** e **ChatGPT-Codex**.
-Quase todo trabalho acontece em par (operador+Claude ou operador+Codex). O que fica so no
-transcript da sessao se perde para o outro membro. Por isso o registro abaixo e **obrigatorio**.
+The team has three members: the **operator** (human), **Claude Code** and
+**ChatGPT-Codex**. Almost all work happens in a pair (operator+Claude or
+operator+Codex). Whatever stays only in a session transcript is lost to the other
+member. That is why the record below is **mandatory**.
 
-Quadro deste repositorio: `https://github.com/orgs/LCV-Ideas-Software/projects/6`
-Quadro consolidado da organizacao: `https://github.com/orgs/LCV-Ideas-Software/projects/17`
+This repository's board: `https://github.com/orgs/LCV-Ideas-Software/projects/6`
+The organization's consolidated board: `https://github.com/orgs/LCV-Ideas-Software/projects/17`
 
-### Os quatro gatilhos
+### The four triggers
 
-**G1 — fim de bloco de trabalho.** Publique um _status update_ no quadro deste repositorio,
-dizendo o que foi feito, o que ficou pendente e o que o proximo agente precisa saber:
+**G1 — end of a work block.** Publish a _status update_ on this repository's board
+saying what was done, what is still open, and what the next agent needs to know:
 
 ```bash
 gh api graphql -f query='
@@ -100,69 +101,78 @@ gh api graphql -f query='
   }' -f id="$PROJECT_ID" -f body="..."
 ```
 
-Use `AT_RISK` ou `OFF_TRACK` quando for o caso. O `PROJECT_ID` sai de
+Use `AT_RISK` or `OFF_TRACK` when they apply. `PROJECT_ID` comes from
 `gh api graphql -f query='query{organization(login:"LCV-Ideas-Software"){projectV2(number:6){id}}}'`.
 
-**G2 — achado nao corrigido.** Todo bug, falha, limitacao de plataforma ou comportamento
-inesperado que voce encontrar e **nao** resolver na hora vira issue imediatamente, com
-reproducao, ambiente, evidencia, o que ja foi tentado e a hipotese de causa. Use o
-formulario adequado em `.github/ISSUE_TEMPLATE/`. **Excecao de seguranca**: nenhum caso coberto
-pelo reporte privado de `SECURITY.md` — nem a suspeita de um deles — vira issue
-publica; siga o canal privado de la.
+**G2 — a finding you did not fix.** Every bug, failure, platform limitation or
+unexpected behaviour you meet and do **not** resolve on the spot becomes an issue
+immediately, with reproduction, environment, evidence, what was already tried and
+the hypothesised cause. Use the right form in `.github/ISSUE_TEMPLATE/`.
+**Security exception**: no case covered by the private report channel in
+`SECURITY.md` — not even the suspicion of one — becomes a public issue; follow the
+private channel described there.
 
-**G3 — decisao ou aprendizado duravel.** Criterio objetivo: _"isto seria util para quem
-enfrentar este problema daqui a tres meses?"_ Se sim, vira Discussion.
+**G3 — a durable decision or lesson.** The objective test: _"would this help
+whoever meets this problem three months from now?"_ If yes, it becomes a Discussion.
 
-- Conhecimento especifico deste repo -> Discussions **deste repositorio** (Q&A ou Ideas).
-- Conhecimento transversal a varios repos (politica de release, regra de ruleset, restricao
-  de plataforma) -> Discussions **da organizacao**.
+- Knowledge specific to this repository -> Discussions **in this repository** (Q&A or Ideas).
+- Knowledge that crosses repositories (release policy, ruleset rule, platform
+  constraint) -> Discussions **in the organization**.
 
-**Excecao de seguranca** (tambem no G3): causa raiz, caminho de exploracao ou licao de
-remediacao ligada a **qualquer caso coberto pelo reporte privado de `SECURITY.md`** nao
-vira Discussion publica antes da divulgacao coordenada. Registre no canal privado de
-`SECURITY.md`/advisory correspondente; apos a divulgacao, publique a versao saneada como
-Discussion, sem detalhes de exploracao.
-**G4 — trabalho nao-trivial.** Abra a issue **antes** do PR e referencie com `Closes #N`.
-Isso ativa o fechamento automatico, o campo _Linked pull requests_ e a progressao de Status.
-**Excecao de seguranca** (tambem no G4): trabalho que remedia **qualquer caso coberto
-pelo reporte privado de `SECURITY.md`** — a lista de la, nao uma mais estreita: suspeita
-de vulnerabilidade, vazamento de credencial, exposicao de dado privado, bypass de
-autenticacao, problema em fluxo de pagamento, questao de cadeia de suprimentos ou
-configuracao incorreta de deploy — nao abre issue publica nem carrega `Closes #N` de
-superficie publica. O rastreio segue o canal privado do `SECURITY.md` e o advisory
-correspondente; o PR referencia o advisory, sem detalhes de exploracao. Se `SECURITY.md`
-mudar de escopo, vale o texto de la.
+**Security exception** (G3 as well): a root cause, exploitation path or remediation
+lesson tied to **any case covered by the private report channel in `SECURITY.md`**
+does not become a public Discussion before coordinated disclosure. Record it in the
+`SECURITY.md` private channel or the matching advisory; after disclosure, publish the
+sanitized version as a Discussion, without exploitation detail.
 
-### Valvula de escape
+**G4 — non-trivial work.** Open the issue **before** the PR and reference it with
+`Closes #N`. That activates automatic closing, the _Linked pull requests_ field and
+Status progression.
+**Security exception** (G4 as well): work that remediates **any case covered by the
+private report channel in `SECURITY.md`** — the list there, not a narrower one:
+suspected vulnerability, credential leak, private-data exposure, authentication
+bypass, payment-flow problem, supply-chain issue or misconfigured deployment — opens
+no public issue and carries no public-surface `Closes #N`. Tracking follows the
+`SECURITY.md` private channel and the matching advisory; the PR references the
+advisory, without exploitation detail. If `SECURITY.md` changes scope, its text wins.
 
-Bump de dependencia, correcao de typo, lockfile e ajuste de formatacao **dispensam issue**.
-O PR basta — ele entra no quadro sozinho quando o gatilho o alcanca; PR do Dependabot
-e uma lacuna declarada do gatilho e pode depender do backfill/reconciliacao da ativacao.
+### Escape valve
 
-### Campos
+A dependency bump, a typo fix, a lockfile and a formatting adjustment **need no
+issue**. The PR is enough — it reaches the board on its own when the trigger catches
+it; a Dependabot PR is a declared gap in that trigger and may depend on the
+activation backfill or reconciliation.
 
-Classifique toda issue com **Type** (Task, Bug, Feature, Incident, Security, Maintenance,
-Documentation, Spike) e preencha os campos de issue da organizacao **Agent** (quem esta
-tocando) e **Origin** (de onde surgiu). Em Bug e Incident preencha tambem **Environment**.
-Esses campos sao `ORG_ONLY`: nao aparecem para o publico, mesmo neste repositorio publico.
+### Fields
 
-### Fluxo de Status no quadro
+Classify every issue with **Type** (Task, Bug, Feature, Incident, Security,
+Maintenance, Documentation, Spike) and fill the organization's issue fields **Agent**
+(who is working on it) and **Origin** (where it came from). On Bug and Incident, fill
+**Environment** as well. These fields are `ORG_ONLY`: they are not visible to the
+public, even in this public repository.
 
-`Triagem` -> `Backlog` -> `Em andamento` -> `Em cross-review` -> `Em PR` -> `Concluido`,
-com desvios `Bloqueado` e `Descartado`.
+### Status flow on the board
 
-> **Invariante**: as opcoes `Triagem` e `Concluido` estao vinculadas **por ID** a workflows
-> internos do GitHub que nao sao editaveis por API. Podem ser renomeadas; **nunca apagadas**.
+`Triagem` -> `Backlog` -> `Em andamento` -> `Em cross-review` -> `Em PR` ->
+`Concluido`, with the `Bloqueado` and `Descartado` detours.
 
-> **Atualizacao por quadro**: `Status`, `Area` e `Ciclo` sao campos de projeto com IDs
-> proprios em cada quadro. Atualize os DOIS quadros — o deste repositorio e o portfolio
-> #17 — a cada transicao; ID de opcao de um quadro nunca vale no outro (Discussion org#176).
+These option names are the literal values configured on the GitHub Project. They are
+technical identifiers, not prose, and are deliberately left in the operator's
+language: renaming them here would describe a board that does not exist.
 
-### Nada de identificador real em repositorio publico
+> **Invariant**: the `Triagem` and `Concluido` options are bound **by ID** to internal
+> GitHub workflows that no API can edit. They may be renamed; **never deleted**.
 
-Issues, PRs e Discussions deste repositorio sao publicos e permanentes. Use placeholders
-(`proj-x`, `exemplo-projeto-000`, `exemplo.com`) no lugar de IDs de projeto de nuvem, nomes
-de banco, dominios e contas. Detalhe operacional sensivel vai para o quadro privado ou para
-`.github-private`. Neste repositorio a regra tem peso dobrado: fixtures de teste ja vazaram
-identificadores reais no passado e a diretriz vigente exige placeholders desde o primeiro
-commit.
+> **Per-board update**: `Status`, `Area` and `Ciclo` are project fields with their own
+> IDs on each board. Update BOTH boards — this repository's and portfolio #17 — on
+> every transition; an option ID from one board is never valid on the other
+> (Discussion org#176).
+
+### No real identifiers in a public repository
+
+Issues, PRs and Discussions in this repository are public and permanent. Use
+placeholders (`proj-x`, `exemplo-projeto-000`, `exemplo.com`) instead of cloud project
+IDs, database names, domains and accounts. Sensitive operational detail goes to the
+private board or to `.github-private`. In this repository the rule carries double
+weight: test fixtures have leaked real identifiers in the past, and the standing
+directive has required placeholders since the first commit.

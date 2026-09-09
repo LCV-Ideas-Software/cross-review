@@ -554,8 +554,9 @@ function detectLeadDrift(generationText: string): boolean {
 //   - NARRATIVE corpus = the caller's task body ONLY (prose framing).
 //     A claim narrated only here, promoted by the relator into the
 //     artifact, is STILL flagged — a task-narrated claim is not
-//     evidence (eee886d3, operator directive 2026-05-10: "Evidência
-//     operacional só pode vir de caller/tool output persistido").
+//     evidence (eee886d3, operator directive 2026-05-10, quoted verbatim in
+//     pt-BR: "Evidência operacional só pode vir de caller/tool output
+//     persistido").
 //
 // Operational assertions (test counts, `cargo test`, `npm run *`,
 // `git diff --check passed`, `git rev-parse HEAD`, git index hashes)
