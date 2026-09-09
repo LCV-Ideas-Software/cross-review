@@ -18,10 +18,17 @@
 // fails before a single peer call — with the ceiling, the draft size and both
 // operator levers named in the diagnosis.
 //
-// The fit rule is `ceiling_tokens >= draft_chars`: a token encodes at least
-// one character, so this is a LOWER BOUND on capacity, never an estimate of a
-// characters-per-token ratio (reasoning tokens are charged against the same
-// ceiling, so no stable ratio exists). It reproduces both measurements above.
+// The fit rule is `ceiling_tokens >= draft_chars`. It is a SCREEN, not a proof
+// of capacity: reasoning tokens are charged against the same ceiling in a share
+// nobody can observe before dispatch, and a character is not always at most one
+// token. It reproduces both measurements above and refuses the grossly
+// mismatched seat; it does not promise the seated peer will fit.
+//
+// Cases 9 and 10 were added after the PR #300 review caught that `circular`
+// mode screened only its first rotator. The remaining rotators are asked to
+// re-emit the same artifact, so an unscreened low-ceiling peer re-entered
+// through the rotation and reproduced the very failure this file exists to
+// prevent — after the earlier rotations had been paid.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -288,6 +295,88 @@ function countingAdapters(config: AppConfig): {
     `peers below the draft size must still vote as reviewers; called=[${probe.called.join(", ")}]`,
   );
   console.log("[v7.0.0-relator-ceiling] reviewer_pool_is_not_narrowed_by_the_ceiling: PASS");
+}
+
+// --- 9. circular mode screens EVERY rotator, not only the first -----------
+// Pre-fix this session ran: the draw picked codex (the only tail peer whose
+// ceiling clears a 22,000-character draft), and then gemini, deepseek, grok
+// and perplexity — all at 20,000 — entered the rotation unscreened and were
+// asked to re-emit the artifact. The refusal below costs zero peer calls.
+{
+  const config = harnessConfig("relator-ceiling-circular-refusal", MEASURED_CEILINGS);
+  const probe = countingAdapters(config);
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(
+    config,
+    (event) => events.push(event),
+    probe.factory,
+  );
+  await orchestrator.runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    initial_draft: "x".repeat(22_000),
+    mode: "circular",
+    max_rounds: 1,
+  });
+  const refused = events.find((event) => event.type === "session.circular_rotation_output_ceiling");
+  assert.ok(
+    refused,
+    `circular must refuse before dispatch; events=[${events.map((e) => e.type).join(", ")}]`,
+  );
+  const data = (refused as { data?: Record<string, unknown> }).data ?? {};
+  assert.equal(data.draft_chars, 22_000, "the diagnosis names the draft size");
+  assert.deepEqual(
+    (data.excluded_for_output_ceiling as Array<{ peer: PeerId }>).map((entry) => entry.peer),
+    ["gemini", "deepseek", "grok", "perplexity"],
+    "and every rotator refused for its ceiling",
+  );
+  assert.deepEqual(probe.called, [], "no rotator turn may be dispatched before the refusal");
+  assert.deepEqual(probe.generated, [], "and no generation either");
+  console.log("[v7.0.0-relator-ceiling] circular_rotation_screens_every_rotator: PASS");
+}
+
+// --- 10. a partially eligible rotation keeps the peers that clear it ------
+// The screen must not collapse the rotation to the drawn peer alone when
+// others genuinely fit. With gemini raised to 30,000 the rotation keeps both
+// peers above the draft and drops only the three below it.
+{
+  const mixedCeilings: Record<PeerId, number> = {
+    ...MEASURED_CEILINGS,
+    gemini: 30_000,
+  };
+  const config = harnessConfig("relator-ceiling-circular-partial", mixedCeilings);
+  const probe = countingAdapters(config);
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(
+    config,
+    (event) => events.push(event),
+    probe.factory,
+  );
+  await orchestrator.runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    initial_draft: "x".repeat(22_000),
+    mode: "circular",
+    max_rounds: 1,
+  });
+  const assigned = events.find((event) => event.type === "session.circular_rotation_assigned");
+  assert.ok(
+    assigned,
+    `the rotation must be recorded; events=[${events.map((e) => e.type).join(", ")}]`,
+  );
+  const data = (assigned as { data?: Record<string, unknown> }).data ?? {};
+  const order = data.rotation_order as PeerId[];
+  assert.deepEqual(
+    [...order].sort(),
+    ["codex", "gemini"],
+    `the rotation keeps only peers whose ceiling clears 22,000; got [${order.join(", ")}]`,
+  );
+  assert.deepEqual(
+    (data.excluded_for_output_ceiling as Array<{ peer: PeerId }>).map((entry) => entry.peer),
+    ["deepseek", "grok", "perplexity"],
+    "and records the three it dropped",
+  );
+  console.log("[v7.0.0-relator-ceiling] circular_rotation_keeps_eligible_peers: PASS");
 }
 
 console.log("[v7.0.0-relator-ceiling] ALL CASES PASS");

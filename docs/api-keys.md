@@ -76,18 +76,23 @@ Provider-specific output ceilings can coexist with the legacy global fallback:
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MAX_OUTPUT_TOKENS", "20000", "User")
 ```
 
-The equivalent central-config key is `max_output_tokens_by_peer`. OpenAI's
-25K value follows its initial reasoning-allocation guidance; Anthropic's 64K
-value follows its `xhigh`/`max` task-budget minimum. `server_info` reports the
-effective value for all six peers.
+The equivalent central-config key is `max_output_tokens_by_peer`. Each value
+above is the provider's documented synchronous output maximum for the pinned
+model: 128,000 for GPT-6 Astra and for Claude Fable 5.1, 20,000 for the other
+four. `server_info` reports the effective value for all six peers.
 
-The canonical Claude Fable 5 rate variables are:
+These ceilings are not cosmetic. The relator seat has to re-emit the artifact
+inside its own ceiling, so `max_output_tokens_by_peer` decides which peers are
+eligible to be drawn as relator for a given draft; lowering a value here can
+make a large draft unroutable rather than merely slower.
+
+The canonical Claude Fable 5.1 rate variables are:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_MODEL", "claude-fable-5-1", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_INPUT_USD_PER_MILLION", "10", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_OUTPUT_USD_PER_MILLION", "50", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION", "1", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_READ_USD_PER_MILLION", "0.25", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_CACHE_WRITE_USD_PER_MILLION", "20", "User")
 ```
 

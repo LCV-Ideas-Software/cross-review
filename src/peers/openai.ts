@@ -384,7 +384,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
       round: context.round,
       peer: this.id,
       message: retryable
-        ? "GPT-5.6 Sol hit max_output_tokens; retrying once at medium effort with prior billing retained."
+        ? "OpenAI hit max_output_tokens; retrying once at medium effort with prior billing retained."
         : "OpenAI output remained truncated or had no safe controlled recovery path.",
       data: {
         provider: this.provider,

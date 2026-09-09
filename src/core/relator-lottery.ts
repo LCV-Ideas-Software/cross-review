@@ -45,14 +45,29 @@ import crypto from "node:crypto";
 import type { PeerId } from "./types.js";
 import { PEERS } from "./types.js";
 
-// A token encodes AT LEAST one character, so a ceiling of N tokens can always
-// carry N characters. This is a LOWER BOUND on capacity, never an estimate of
-// the real characters-per-token ratio: reasoning tokens are charged against
-// the same ceiling, and their share varies by provider, by model and by
-// prompt, so no stable ratio exists to model here. The bound is deliberately
-// pessimistic — it can refuse a peer that would in fact have fitted. That
-// trade is taken because refusing costs one redraw before anything is
-// dispatched, while being wrong the other way costs the whole round.
+// One ceiling token per draft character. This is a screen, NOT a proof of
+// capacity, and it must not be described as one. Two mechanisms can each break
+// the intuition that N tokens always carry N characters:
+//
+//   1. Reasoning tokens are charged against the SAME output ceiling. The share
+//      left for visible output is therefore ceiling minus an amount that varies
+//      by provider, by model and by prompt, and that the caller cannot observe
+//      before dispatch.
+//   2. A character is not always at most one token. Common Latin text runs
+//      several characters per token, but an emoji or a CJK glyph can cost more
+//      tokens than it does JavaScript code units.
+//
+// So the screen can still admit a peer that later dies on `max_output_tokens`.
+// It is kept because it is cheap and it catches the measured failures that
+// motivated it — a 34 KB draft against a 20,000-token ceiling is refused before
+// a single vote is paid. What it buys is the removal of the grossly
+// mismatched seat, not a guarantee that the seated peer will fit.
+//
+// The trade is deliberately asymmetric: refusing costs one redraw before
+// anything is dispatched, while admitting a peer that cannot finish costs the
+// whole round. Anything stronger than this screen needs a real token count
+// from the provider's tokenizer plus explicit reasoning headroom, which is a
+// separate change and is not claimed here.
 export const RELATOR_CHARS_PER_CEILING_TOKEN = 1;
 
 // The material a candidate relator would have to reproduce, and the effective
@@ -74,9 +89,11 @@ export function relatorFitsDraft(fit: RelatorOutputFit, peer: PeerId): boolean {
   return fit.ceiling_tokens(peer) * RELATOR_CHARS_PER_CEILING_TOKEN >= fit.draft_chars;
 }
 
-// Splits a candidate pool into the peers whose ceiling provably holds the
-// draft and the ones it provably may not. Pure: the caller decides whether an
-// empty `eligible` is an error (lottery) or a refusal of a named peer.
+// Splits a candidate pool into the peers whose ceiling clears the screen above
+// and the ones it does not. Clearing the screen is necessary, not sufficient:
+// see the note on RELATOR_CHARS_PER_CEILING_TOKEN. Pure — the caller decides
+// whether an empty `eligible` is an error (lottery) or a refusal of a named
+// peer.
 export function partitionRelatorPoolByOutputFit(
   pool: readonly PeerId[],
   fit: RelatorOutputFit,
@@ -111,7 +128,7 @@ export class NoRelatorFitsOutputCeilingError extends Error {
       .join(", ");
     super(
       `no_relator_fits_output_ceiling: the draft is ${draftChars} characters and no candidate ` +
-        `relator has an output ceiling that provably holds it (${roster}). The relator must ` +
+        `relator has an output ceiling large enough to clear the screen (${roster}). The relator must ` +
         `re-emit the whole artifact inside its own ceiling, so dispatching this round would pay ` +
         `every vote and then die on the relator. ${OUTPUT_CEILING_LEVERS}`,
     );
@@ -128,8 +145,8 @@ export class LeadPeerCannotFitDraftError extends Error {
   constructor(leadPeer: PeerId, ceilingTokens: number, draftChars: number) {
     super(
       `lead_peer_output_ceiling_too_small: relator ${leadPeer} has an output ceiling of ` +
-        `${ceilingTokens} tokens and the draft is ${draftChars} characters, which its ceiling ` +
-        `does not provably hold. Omit lead_peer to let the relator lottery draw a peer that ` +
+        `${ceilingTokens} tokens and the draft is ${draftChars} characters, which does not clear ` +
+        `the output screen. Omit lead_peer to let the relator lottery draw a peer that ` +
         `fits. ${OUTPUT_CEILING_LEVERS}`,
     );
     this.name = "LeadPeerCannotFitDraftError";
@@ -152,8 +169,8 @@ export interface RelatorAssignment {
   caller: PeerId;
   candidate_pool: PeerId[];
   assigned: PeerId;
-  // Peers dropped from the draw because their output ceiling does not
-  // provably hold the draft. Present only when the ceiling filter ran and
+  // Peers dropped from the draw because their output ceiling did not clear
+  // the size screen. Present only when the ceiling filter ran and
   // actually excluded someone, so the event records WHY the pool shrank.
   excluded_for_output_ceiling?: RelatorCeilingExclusion[] | undefined;
   // "crypto.randomInt" when the assignment came from the lottery;
@@ -213,7 +230,7 @@ export function relatorCandidatePool(caller: PeerId, sessionPeers?: readonly Pee
 // concern in the original v2.11.0 draft to a real error path now that
 // session-peers can be a strict subset.
 // v07.00.00 (CROSREV-43): `fit` narrows the pool to the peers whose output
-// ceiling provably holds the draft. A peer that does not fit is refused and
+// ceiling clears the size screen. A peer that does not clear it is refused and
 // the draw runs among the rest; when the ceiling empties an otherwise
 // non-empty pool the error is `NoRelatorFitsOutputCeilingError`, distinct
 // from `no_eligible_relator` (which means there was nobody to draw from at

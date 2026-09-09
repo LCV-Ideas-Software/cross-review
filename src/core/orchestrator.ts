@@ -20,6 +20,7 @@ import {
 import { maxOutputTokensForPeer } from "./output-budget.js";
 import {
   assertLeadPeerNotCaller,
+  partitionRelatorPoolByOutputFit,
   type RelatorOutputFit,
   resolveLeadPeer,
 } from "./relator-lottery.js";
@@ -8207,6 +8208,7 @@ export class CrossReviewOrchestrator {
     costLimit?: number | undefined;
     initialDraft?: string | undefined;
     callerSubmissionId?: string | undefined;
+    outputFit?: RelatorOutputFit | undefined;
   }): Promise<RunUntilUnanimousOutput> {
     const {
       adapters,
@@ -8216,6 +8218,7 @@ export class CrossReviewOrchestrator {
       input,
       costLimit,
       callerSubmissionId,
+      outputFit,
     } = params;
     let session = params.session;
     let draft = params.initialDraft;
@@ -8248,10 +8251,52 @@ export class CrossReviewOrchestrator {
     // remaining session peers fill subsequent slots in canonical PEERS order.
     // Lottery for slot 0 preserves anti-bias; subsequent slots are
     // deterministic for audit/replay.
-    const rotationOrder: PeerId[] = [
-      firstRotator,
-      ...sessionPeers.filter((peer) => peer !== firstRotator),
-    ];
+    //
+    // v07.00.00 (CROSREV-43, PR #300 review): EVERY rotator is screened against
+    // the draft size, not only slot 0. The draw filters the candidate pool it
+    // draws from, but circular mode then asks each remaining peer in turn to
+    // re-emit the whole artifact — so a low-ceiling peer that the draw excluded
+    // used to re-enter through the rotation and die on `max_output_tokens`
+    // after the earlier rotations had already been paid. That is the same
+    // late-and-paid failure the draw exists to prevent.
+    const rotationTail = sessionPeers.filter((peer) => peer !== firstRotator);
+    const rotationScreen = outputFit
+      ? partitionRelatorPoolByOutputFit(rotationTail, outputFit)
+      : { eligible: [...rotationTail], excluded: [] };
+    const rotationOrder: PeerId[] = [firstRotator, ...rotationScreen.eligible];
+
+    // Refuse before dispatch when the screen is what shrank the rotation below
+    // two. A one-peer rotation would converge on that peer approving its own
+    // unchanged output, which is the self-review the protocol forbids.
+    if (rotationOrder.length < 2 && rotationScreen.excluded.length > 0) {
+      const roster = rotationScreen.excluded
+        .map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`)
+        .join(", ");
+      const draftChars = rotationScreen.excluded[0]?.draft_chars ?? 0;
+      this.emit({
+        type: "session.circular_rotation_output_ceiling",
+        session_id: session.session_id,
+        message:
+          `Circular rotation refused before dispatch: the draft is ${draftChars} characters and ` +
+          `every other rotator's output ceiling is too small to re-emit it (${roster}). Each ` +
+          `rotator must re-emit the whole artifact inside its own ceiling. Two levers: shrink ` +
+          `the artifact, or raise those ceilings in the central configuration ` +
+          `(max_output_tokens_by_peer / CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`,
+        data: {
+          draft_chars: draftChars,
+          first_rotator: firstRotator,
+          excluded_for_output_ceiling: rotationScreen.excluded,
+          caller: callerForLottery,
+        },
+      });
+      await this.store.finalize(session.session_id, "aborted", "circular_rotation_output_ceiling");
+      return {
+        session: this.store.read(session.session_id),
+        final_text: draft,
+        converged: false,
+        rounds: 0,
+      };
+    }
 
     let consecutiveLeadDrifts = 0;
     let consecutiveNoChangeCount = 0;
@@ -8266,11 +8311,21 @@ export class CrossReviewOrchestrator {
     this.emit({
       type: "session.circular_rotation_assigned",
       session_id: session.session_id,
-      message: `Circular rotation: ${rotationOrder.join(" -> ")} (caller=${callerForLottery} excluded; length=${rotationOrder.length}).`,
+      message:
+        `Circular rotation: ${rotationOrder.join(" -> ")} (caller=${callerForLottery} excluded; ` +
+        `length=${rotationOrder.length}).` +
+        (rotationScreen.excluded.length
+          ? ` Refused for output ceiling vs a ${rotationScreen.excluded[0]?.draft_chars}-character draft: ${rotationScreen.excluded
+              .map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`)
+              .join(", ")}.`
+          : ""),
       data: {
         rotation_order: rotationOrder,
         caller: callerForLottery,
         rotation_size: rotationOrder.length,
+        ...(rotationScreen.excluded.length
+          ? { excluded_for_output_ceiling: rotationScreen.excluded }
+          : {}),
       },
     });
 
@@ -9279,6 +9334,7 @@ export class CrossReviewOrchestrator {
         costLimit,
         initialDraft: draft,
         callerSubmissionId,
+        outputFit: relatorOutputFit,
       });
     }
 

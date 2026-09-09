@@ -2819,7 +2819,11 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyToolCallerIdentity(
+      // The active judge pass spends the session's budget on paid provider
+      // calls and can move checklist items to `addressed`. Identity alone is
+      // not enough: any peer holding a valid token would otherwise be able to
+      // drive another petitioner's session. Gate on the persisted petitioner.
+      verifySessionMutationAuthority(
         runtime,
         "session_evidence_judge_pass",
         caller,
@@ -2895,7 +2899,9 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyToolCallerIdentity(
+      // Same reasoning as the single-peer pass, and the exposure is larger:
+      // the consensus pass fans out one paid call per judge peer.
+      verifySessionMutationAuthority(
         runtime,
         "session_evidence_judge_consensus_pass",
         caller,
@@ -3047,7 +3053,10 @@ export async function main(): Promise<void> {
       }),
       annotations: {
         readOnlyHint: false,
-        destructiveHint: false,
+        // `prune_corrupt` deletes quarantine entries from disk. That is
+        // destructive, and the annotation said otherwise until the PR #300
+        // review caught it.
+        destructiveHint: true,
         idempotentHint: true,
         openWorldHint: false,
       },
@@ -3061,6 +3070,19 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
+      // Deliberately NOT gated on session ownership, unlike every other
+      // mutating tool. The sweep exists to close sessions whose petitioner is
+      // gone — a host that died mid-round, a window never reloaded — and a
+      // petitioner that cannot present itself cannot sweep its own session.
+      // Owner-scoping this call would leave exactly the sessions it exists for
+      // permanently open. What bounds it instead is the age floor: `idle_minutes`
+      // is min 1440, so nothing under 24 hours idle is reachable, and
+      // `corrupt_min_age_days` is min 1.
+      //
+      // This is the one authoritative mutation any verified peer can perform on
+      // another petitioner's session. It is a deliberate exception, not an
+      // oversight, and it is the reason the v07.00.00 changelog must not claim
+      // that no identity can step over the session-owner gate.
       verifyToolCallerIdentity(runtime, "session_sweep", caller, server.server.getClientVersion());
       const swept = await runtime.orchestrator.store.sweepIdle(
         idle_minutes * 60_000,

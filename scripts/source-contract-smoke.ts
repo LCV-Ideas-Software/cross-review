@@ -294,6 +294,39 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00 (PR #300 review, Codex P1): the two ACTIVE evidence-judge tools
+  // spend the session's budget on paid provider calls and can move checklist
+  // items to `addressed`. They were gated on identity alone, so any peer
+  // holding a valid caller token could drive ANOTHER petitioner's session:
+  // supply an arbitrary draft, bill that petitioner for the judge calls, and
+  // change their unresolved-item state. Identity answers "who are you"; only
+  // the owner gate answers "is this yours".
+  //
+  // Sliced per handler rather than matched over the whole file, because the
+  // file legitimately contains both helpers and a file-wide search cannot tell
+  // which tool each call belongs to.
+  const judgeServerSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  for (const tool of ["session_evidence_judge_pass", "session_evidence_judge_consensus_pass"]) {
+    const start = judgeServerSrc.indexOf(`registerTool(\n    "${tool}"`);
+    assert.ok(start >= 0, `v07.00.00 / judge authority: ${tool} must be a registered tool`);
+    const nextTool = judgeServerSrc.indexOf("\n  registerTool(", start + 1);
+    const handler = judgeServerSrc.slice(start, nextTool === -1 ? undefined : nextTool);
+    assert.ok(
+      handler.includes(`verifySessionMutationAuthority(\n        runtime,\n        "${tool}"`),
+      `v07.00.00 / judge authority: ${tool} must gate on the persisted petitioner, not identity alone — it spends that petitioner's budget and mutates their checklist`,
+    );
+    assert.ok(
+      !handler.includes(`verifyToolCallerIdentity(\n        runtime,\n        "${tool}"`),
+      `v07.00.00 / judge authority: ${tool} must not fall back to the identity-only check`,
+    );
+  }
+  console.log("[source-contract-smoke] active_judge_requires_session_owner_test: PASS");
+}
+
+{
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
     serverSrc.includes('process.on("SIGTERM"') && serverSrc.includes('process.on("SIGINT"'),

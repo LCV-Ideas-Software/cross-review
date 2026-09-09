@@ -162,16 +162,16 @@ overrides can select models with different prices:
       }
     },
     "codex": {
-      "gpt-5.6-sol": {
-        "input_per_million": 5,
-        "output_per_million": 30,
-        "cache_read_per_million": 0.5,
-        "cache_write_per_million": 6.25,
+      "gpt-6-astra": {
+        "input_per_million": 10,
+        "output_per_million": 50,
+        "cache_read_per_million": 1,
+        "cache_write_per_million": 12.5,
         "threshold_tokens": 272000,
-        "input_extended_per_million": 10,
-        "output_extended_per_million": 45,
-        "cache_read_extended_per_million": 1,
-        "cache_write_extended_per_million": 12.5
+        "input_extended_per_million": 20,
+        "output_extended_per_million": 75,
+        "cache_read_extended_per_million": 2,
+        "cache_write_extended_per_million": 25
       }
     },
     "grok": {

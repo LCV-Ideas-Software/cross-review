@@ -98,7 +98,13 @@ standard `v00.00.00`; npm package versions remain SemVer.
   verification, which ungates `session_attach_evidence`. The operator bypass
   inside `assertSessionMutationAuthority` is deleted too, and that TIGHTENS the
   gate: every authoritative mutation now requires the persisted petitioner's
-  own verified token, with no identity able to step over it.
+  own verified token. One deliberate exception survives, and the first draft of
+  this entry wrongly claimed it did not: `session_sweep` is not owner-scoped,
+  because it exists to close sessions whose petitioner is gone, and a petitioner
+  that cannot present itself cannot sweep its own session. What bounds it is the
+  age floor — nothing idle under 24 hours is reachable — not ownership. The tool
+  is annotated `destructiveHint: true`, since `prune_corrupt` deletes quarantine
+  entries.
 - **`host-tokens.json` holds six capabilities, not seven.** The seventh bound a
   secret to a host that never existed. A record written before this release is
   rewritten on load without that entry, and without the
@@ -309,13 +315,22 @@ limitado a` and the rest of the contrastive and temporal families), which are
   `max_output_tokens_by_peer` in the central configuration. An explicitly named
   relator (an internal-API `lead_peer`, or the operator-caller default) is
   refused rather than replaced, because that peer was named on purpose.
-  The fit rule is `ceiling_tokens >= draft_chars`. A token encodes at least one
-  character, so this is a **lower bound on capacity, not an estimate** of a
-  characters-per-token ratio — reasoning tokens are charged against the same
-  ceiling, so no stable ratio exists to model. It is therefore deliberately
-  pessimistic and can refuse a peer that would in fact have fitted; the trade is
-  taken because a refusal costs one redraw before anything is dispatched, while
-  being wrong the other way costs the whole round. Consequence worth stating:
+  The fit rule is `ceiling_tokens >= draft_chars`. This is a **screen, not a
+  proof of capacity**, and the first draft of this entry called it a lower bound
+  on capacity, which is wrong. Two mechanisms break that guarantee: reasoning
+  tokens are charged against the same output ceiling, in a share that varies by
+  provider, model and prompt and that is not observable before dispatch; and a
+  character is not always at most one token, since an emoji or a CJK glyph can
+  cost more tokens than it does code units. So the screen can still admit a peer
+  that later dies on `max_output_tokens`. It is kept because it is cheap and it
+  refuses the measured failures that motivated it — a 34 KB draft against a
+  20,000-token ceiling never reaches dispatch. What it removes is the grossly
+  mismatched seat, not the whole failure class; a real guarantee needs a
+  tokenizer count plus explicit reasoning headroom, which is a separate change
+  and is not claimed here. The screen is deliberately pessimistic and can refuse
+  a peer that would in fact have fitted; the trade is taken because a refusal
+  costs one redraw before anything is dispatched, while being wrong the other way
+  costs the whole round. Consequence worth stating:
   with the ceilings as they stand (`claude` 64,000, `codex` 25,000, the other
   four 20,000) and `claude` as caller, a draft above 25,000 characters refuses
   to start, and `prompt.max_draft_chars` defaults to 40,000 — so 25–40 KB
@@ -323,10 +338,21 @@ limitado a` and the rest of the contrastive and temporal families), which are
   The check runs at seat selection only, never per round: a draft a relator
   produced is by construction inside that relator's ceiling, so re-applying this
   pessimistic bound each round would refuse the very peer that just proved it fits.
-  Not covered, and deliberately so: `circular` mode rotates the artifact through
-  every peer instead of drawing one, so it has no lottery to constrain; and the
-  issue's third bullet — whether the relator could emit a patch instead of the
-  whole artifact — is a protocol redesign, not part of this fix.
+  `circular` mode is covered too, and the first draft of this entry claimed the
+  opposite — that it "rotates the artifact through every peer instead of drawing
+  one, so it has no lottery to constrain". It does draw: circular routes through
+  the same `resolveLeadPeer` to pick its first rotator, and only that slot was
+  screened, while every remaining peer entered the rotation unfiltered and was
+  asked to re-emit the whole artifact. A low-ceiling peer the draw had just
+  excluded therefore re-entered through the rotation and died on
+  `max_output_tokens` after the earlier rotations were paid — the same
+  late-and-paid failure, on the path the entry declared out of scope. Every
+  rotator is now screened; when the screen alone would leave fewer than two
+  rotators the session is refused before dispatch with
+  `circular_rotation_output_ceiling`, because a one-peer rotation converges on
+  that peer approving its own unchanged output. Still not covered: the issue's
+  third bullet — whether the relator could emit a patch instead of the whole
+  artifact — is a protocol redesign, not part of this fix.
   Regression: `scripts/v7.0.0-relator-output-ceiling-regression.ts`, eight cases
   built from the two measured sessions, each proved to fail against the
   unfixed code.
