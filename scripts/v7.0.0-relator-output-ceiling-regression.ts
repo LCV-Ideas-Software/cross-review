@@ -379,4 +379,121 @@ function countingAdapters(config: AppConfig): {
   console.log("[v7.0.0-relator-ceiling] circular_rotation_keeps_eligible_peers: PASS");
 }
 
+// Adapters whose GENERATION returns an artifact of a chosen size, so the
+// artifact circulating in a rotation can be made to grow. `call` keeps the
+// stub behaviour; only `generate` is controlled.
+function expandingAdapters(sizeFor: (peer: PeerId) => number): {
+  factory: (cfg: AppConfig) => Record<PeerId, PeerAdapter>;
+  generated: PeerId[];
+} {
+  const generated: PeerId[] = [];
+  const factory = (cfg: AppConfig): Record<PeerId, PeerAdapter> => {
+    const adapters = {} as Record<PeerId, PeerAdapter>;
+    for (const peer of ALL_PEERS) {
+      const adapter = new StubAdapter(cfg, peer);
+      adapters[peer] = new Proxy(adapter, {
+        get(target, property, receiver) {
+          if (property === "generate") {
+            const original = Reflect.get(target, property, receiver) as (
+              ...args: unknown[]
+            ) => Promise<{ text: string }>;
+            // Delegate to the stub and override ONLY the text. Building the
+            // result by hand loses fields the store settles on — `result.peer`
+            // is what clears the in-flight generation marker, and omitting it
+            // strands the marker until the next finalize throws
+            // `cannot_finalize_generation_in_flight`. Found by this very case.
+            return async (...args: unknown[]) => {
+              generated.push(peer);
+              const real = await original.apply(target, args);
+              return { ...real, text: `${peer}:${"y".repeat(sizeFor(peer))}` };
+            };
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }) as PeerAdapter;
+    }
+    return adapters;
+  };
+  return { factory, generated };
+}
+
+// --- 11. the live screen measures the CURRENT artifact, not the first one --
+// Round 1 of the PR #300 review added a screen that ran ONCE, against the
+// caller's draft, and froze there. `draft` is replaced by every substantive
+// rotation, so a rotator admitted at 20,000 characters could be handed a
+// 34,000-character artifact one turn later and die on `max_output_tokens`
+// with the earlier rotations already paid — the exact failure this file
+// exists to prevent, moved one round later.
+{
+  const config = harnessConfig("relator-ceiling-circular-growth", MEASURED_CEILINGS);
+  // codex (25,000) writes an artifact far past the 20,000 ceilings of the rest.
+  const probe = expandingAdapters(() => 34_000);
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(
+    config,
+    (event) => events.push(event),
+    probe.factory,
+  );
+  await orchestrator.runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    initial_draft: "x".repeat(19_000),
+    mode: "circular",
+    max_rounds: 6,
+  });
+  const skipped = events.filter(
+    (event) => event.type === "session.circular_rotator_skipped_for_output_ceiling",
+  );
+  assert.ok(
+    skipped.length > 0,
+    `a rotator whose ceiling cannot hold the GROWN artifact must be skipped before dispatch; events=[${[
+      ...new Set(events.map((e) => e.type)),
+    ].join(", ")}]`,
+  );
+  const skippedPeers = new Set(
+    skipped.map((event) => (event as { peer?: PeerId }).peer).filter(Boolean),
+  );
+  for (const peer of skippedPeers) {
+    assert.ok(
+      MEASURED_CEILINGS[peer as PeerId] < 34_000,
+      `only peers below the grown artifact may be skipped; ${String(peer)} was not`,
+    );
+  }
+  console.log("[v7.0.0-relator-ceiling] circular_live_screen_follows_the_artifact: PASS");
+}
+
+// --- 12. no initial draft is not a licence to skip the screen -------------
+// With no caller draft the selection-time fit is undefined, so nothing was
+// screened at all — and the artifact the rotation circulates is then produced
+// by the first rotator, AFTER that screen would have run. The live screen has
+// to cover this, because it is the only screen there is.
+{
+  const config = harnessConfig("relator-ceiling-circular-nodraft", MEASURED_CEILINGS);
+  const probe = expandingAdapters(() => 30_000);
+  const events: RuntimeEvent[] = [];
+  const orchestrator = new CrossReviewOrchestrator(
+    config,
+    (event) => events.push(event),
+    probe.factory,
+  );
+  await orchestrator.runUntilUnanimous({
+    task: "Draft and revise the artifact.",
+    caller: "claude",
+    mode: "circular",
+    max_rounds: 6,
+  });
+  const guarded = events.filter(
+    (event) =>
+      event.type === "session.circular_rotator_skipped_for_output_ceiling" ||
+      event.type === "session.circular_rotation_output_ceiling",
+  );
+  assert.ok(
+    guarded.length > 0,
+    `a session with no initial draft must still screen its rotators against the generated artifact; events=[${[
+      ...new Set(events.map((e) => e.type)),
+    ].join(", ")}]`,
+  );
+  console.log("[v7.0.0-relator-ceiling] circular_no_initial_draft_is_still_screened: PASS");
+}
+
 console.log("[v7.0.0-relator-ceiling] ALL CASES PASS");

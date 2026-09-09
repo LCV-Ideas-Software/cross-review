@@ -369,11 +369,16 @@ try {
     // authority-promotion surface" and reassure the caller that no human action
     // was required. Both halves described a principal with no channel to this
     // server. What the description must now say is what the tool actually
-    // does: any authenticated peer may call it, and it promotes nothing.
+    // does: the session's own petitioner may call it, and it promotes nothing.
+    //
+    // PR #300 review round 2: the description said "any authenticated peer",
+    // which was true of the code and wrong as a contract — the gate was
+    // identity-only, so a peer could attach to a session it did not own. Both
+    // the gate and this sentence now name the petitioner.
     assert.match(
       attachEvidenceTool.description ?? "",
-      /any authenticated peer[\s\S]*promotes nothing[\s\S]*`evidence` field/i,
-      "session_attach_evidence must describe itself as an open, non-promoting attachment channel",
+      /only the session's own petitioner[\s\S]*promotes nothing[\s\S]*`evidence` field/i,
+      "session_attach_evidence must describe itself as petitioner-scoped and non-promoting",
     );
     assert.doesNotMatch(
       attachEvidenceTool.description ?? "",

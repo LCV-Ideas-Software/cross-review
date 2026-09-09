@@ -22,6 +22,7 @@ import {
   assertLeadPeerNotCaller,
   partitionRelatorPoolByOutputFit,
   type RelatorOutputFit,
+  relatorFitsDraft,
   resolveLeadPeer,
 } from "./relator-lottery.js";
 import { sessionReportMarkdown, unresolvedEvidenceItems } from "./reports.js";
@@ -8252,13 +8253,22 @@ export class CrossReviewOrchestrator {
     // Lottery for slot 0 preserves anti-bias; subsequent slots are
     // deterministic for audit/replay.
     //
-    // v07.00.00 (CROSREV-43, PR #300 review): EVERY rotator is screened against
-    // the draft size, not only slot 0. The draw filters the candidate pool it
-    // draws from, but circular mode then asks each remaining peer in turn to
-    // re-emit the whole artifact — so a low-ceiling peer that the draw excluded
-    // used to re-enter through the rotation and die on `max_output_tokens`
-    // after the earlier rotations had already been paid. That is the same
-    // late-and-paid failure the draw exists to prevent.
+    // v07.00.00 (CROSREV-43, PR #300 review round 1): every rotator is screened
+    // against the draft size, not only slot 0. The draw filters the candidate
+    // pool it draws from, but circular mode then asks each remaining peer in
+    // turn to re-emit the whole artifact — so a low-ceiling peer that the draw
+    // excluded used to re-enter through the rotation and die on
+    // `max_output_tokens` after the earlier rotations had already been paid.
+    //
+    // Round 2 of the same review found that this screen alone is not enough,
+    // and the entry that announced it overstated what it covered. It runs ONCE,
+    // against the size of the CALLER'S draft, and that size is frozen: `draft`
+    // is replaced by every substantive rotation, and when the caller supplies
+    // no draft at all `outputFit` is undefined and nothing here is screened.
+    // The artifact that actually changes hands is therefore a moving target
+    // this screen never sees. The live screen inside the loop is what closes
+    // that; this one stays because refusing before the first dispatch is
+    // cheaper than refusing after it.
     const rotationTail = sessionPeers.filter((peer) => peer !== firstRotator);
     const rotationScreen = outputFit
       ? partitionRelatorPoolByOutputFit(rotationTail, outputFit)
@@ -8302,6 +8312,15 @@ export class CrossReviewOrchestrator {
     let consecutiveNoChangeCount = 0;
     let lastRevisionRound: number | null = null;
     let cursor = 0;
+    // Who emitted the artifact currently in circulation. It is exempt from the
+    // live screen below: a peer that just produced this text demonstrably fits
+    // it, so screening it against its own output would refuse the one peer
+    // proven to work. Undefined until the first generation.
+    let currentProducer: PeerId | undefined;
+    // Rotators skipped this pass because the live artifact outgrew their
+    // ceiling. Reset whenever the artifact changes, since a smaller artifact
+    // makes them eligible again.
+    let skippedForCeiling = new Set<PeerId>();
 
     await this.store.setCircularState(session.session_id, {
       rotation_order: rotationOrder,
@@ -8556,6 +8575,73 @@ export class CrossReviewOrchestrator {
       if (!rotator) {
         throw new Error("circular_rotation_cursor_out_of_bounds");
       }
+
+      // Live output screen. The rotator about to be asked to re-emit the
+      // artifact is measured against the artifact AS IT STANDS, not against
+      // whatever the caller first submitted. The producer of the current text
+      // is exempt: it already emitted this exact artifact.
+      const liveDraft = draft ?? "";
+      const liveFit: RelatorOutputFit = {
+        draft_chars: Math.min(liveDraft.length, this.config.prompt.max_draft_chars),
+        ceiling_tokens: (peer) => maxOutputTokensForPeer(this.config, peer),
+      };
+      if (rotator !== currentProducer && !relatorFitsDraft(liveFit, rotator)) {
+        skippedForCeiling.add(rotator);
+        // Everyone except the producer has now been skipped for this artifact:
+        // the rotation has collapsed to the peer that wrote it, which is
+        // self-review. Refuse rather than let it approve its own text.
+        const others = rotationOrder.filter((peer) => peer !== currentProducer);
+        if (others.every((peer) => skippedForCeiling.has(peer))) {
+          this.emit({
+            type: "session.circular_rotation_output_ceiling",
+            session_id: session.session_id,
+            message:
+              `Circular rotation stalled at round ${round}: the artifact has grown to ` +
+              `${liveFit.draft_chars} characters and no rotator other than its producer ` +
+              `(${currentProducer ?? "none"}) has an output ceiling that clears the size screen. ` +
+              `Letting it continue would be self-review. Two levers: shrink the artifact, or ` +
+              `raise those ceilings in the central configuration (max_output_tokens_by_peer / ` +
+              `CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`,
+            data: {
+              draft_chars: liveFit.draft_chars,
+              round,
+              producer: currentProducer ?? null,
+              skipped_for_output_ceiling: [...skippedForCeiling],
+            },
+          });
+          await this.store.finalize(
+            session.session_id,
+            "aborted",
+            "circular_rotation_output_ceiling",
+          );
+          return {
+            session: this.store.read(session.session_id),
+            final_text: draft,
+            converged: false,
+            rounds: round - 1,
+          };
+        }
+        this.emit({
+          type: "session.circular_rotator_skipped_for_output_ceiling",
+          session_id: session.session_id,
+          peer: rotator,
+          message:
+            `Round ${round}: ${rotator} is skipped without dispatch — the artifact is now ` +
+            `${liveFit.draft_chars} characters and its output ceiling is ` +
+            `${maxOutputTokensForPeer(this.config, rotator)} tokens. Passing the turn on.`,
+          data: {
+            draft_chars: liveFit.draft_chars,
+            ceiling_tokens: maxOutputTokensForPeer(this.config, rotator),
+            round,
+          },
+        });
+        // Not a turn: no dispatch, no cost, and deliberately NOT counted as an
+        // unchanged round, because the peer never saw the artifact. Counting it
+        // would let a skipped rotator manufacture convergence.
+        cursor = (cursor + 1) % rotationOrder.length;
+        continue;
+      }
+
       const startedAt = new Date().toISOString();
 
       const attachedEvidence = this.safeReadEvidenceAttachments(
@@ -8765,6 +8851,10 @@ export class CrossReviewOrchestrator {
         consecutiveNoChangeCount = 0;
         draft = newDraft;
         lastRevisionRound = round;
+        currentProducer = rotator;
+        // A new artifact re-opens the question for everyone: it may be smaller
+        // than the one that excluded them.
+        skippedForCeiling = new Set<PeerId>();
       }
       const fullRotationConverged = consecutiveNoChangeCount >= rotationOrder.length;
 

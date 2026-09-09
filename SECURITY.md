@@ -186,7 +186,7 @@ Every review round acquires its durable reservation before evidence or broker
 mutation. Its journal restores checklist/history when an unappended round is
 interrupted and appends an explicit compensation event; an appended converged
 round keeps the reservation until terminal finalization, preventing concurrent
-concurrent changes from reopening the checklist between those transitions.
+changes from reopening the checklist between those transitions.
 
 Code scanning runs through GitHub's CodeQL default setup and its analyses
 gate every pull request into `main` through the Enterprise ruleset and the
@@ -272,8 +272,15 @@ rejected. Session cancellation, verdict contestation and closing a session as
 yields no derivable owner and is closed only by the idle sweep.
 
 The capability token authenticates the MCP host, not a model's internal intent
-or amount of cognitive effort. The caller capability token must never be placed in a
-model host. The local token file is plaintext and therefore assumes processes
+or amount of cognitive effort. Each peer's caller capability token belongs in
+the MCP host that acts under that peer identity, and in no other: presenting a
+token alongside a different declared caller is refused as
+`identity_forgery_blocked`. The earlier wording here told operators never to
+place a caller token in a model host at all, which was a stale operator-token
+warning with the word mechanically swapped. Followed literally it left every
+peer host unable to cancel a job, contest a verdict, finalize an aborted session
+or run an active evidence judge, because those owner-scoped paths require a
+token-verified petitioner even when global hard enforcement is off. The local token file is plaintext and therefore assumes processes
 with read access to the cross-review data directory are trusted. The runtime
 fails closed unless it can enforce owner-only mode on POSIX or a protected
 Windows DACL limited to the current user, SYSTEM and Administrators. This

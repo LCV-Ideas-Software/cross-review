@@ -2737,7 +2737,7 @@ export async function main(): Promise<void> {
     {
       title: "Attach Session Evidence (Optional)",
       description:
-        "Attach one durable evidence artifact to an existing session, out of band from a review round. Any authenticated peer may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round.",
+        "Attach one durable evidence artifact to an existing session, out of band from a review round. Only the session's own petitioner may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         label: z.string().min(1).max(120),
@@ -2755,7 +2755,15 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, label, content, content_type, extension, caller, response_format }) => {
-      verifyToolCallerIdentity(
+      // Opening this tool to peers (v07.00.00) removed the operator gate that
+      // never had a caller. It should not have removed the OWNER gate with it.
+      // Attachments are folded back into that session's preflight corpora and
+      // reviewer prompts by readEvidenceAttachments, so identity alone let any
+      // token-holder that learned an open session_id — session_list returns
+      // them all — contaminate another petitioner's review or push it into a
+      // failing preflight. The tool stays open to peers; it is now closed to
+      // peers acting on someone else's session.
+      verifySessionMutationAuthority(
         runtime,
         "session_attach_evidence",
         caller,

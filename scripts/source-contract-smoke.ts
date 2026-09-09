@@ -327,6 +327,48 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00 (PR #300 review round 2, Codex P1): `session_attach_evidence`
+  // was opened to peers in this release, which was right — the operator gate
+  // it replaced named a principal with no channel. What went with it by
+  // accident was the OWNER gate. Attachments are folded back into that
+  // session's preflight corpora and reviewer prompts by
+  // readEvidenceAttachments, so identity alone let any token-holder that
+  // learned an open session_id — `session_list` returns them all — contaminate
+  // another petitioner's review or push it into a failing preflight.
+  //
+  // The tool stays open to peers. It is closed to peers acting on a session
+  // they do not own, and the description must say which of those two it is.
+  const attachServerSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  const attachStart = attachServerSrc.indexOf('registerTool(\n    "session_attach_evidence"');
+  assert.ok(attachStart >= 0, "v07.00.00 / attach authority: the tool must be registered");
+  const attachEnd = attachServerSrc.indexOf("\n  registerTool(", attachStart + 1);
+  const attachHandler = attachServerSrc.slice(
+    attachStart,
+    attachEnd === -1 ? undefined : attachEnd,
+  );
+  assert.ok(
+    attachHandler.includes(
+      'verifySessionMutationAuthority(\n        runtime,\n        "session_attach_evidence"',
+    ),
+    "v07.00.00 / attach authority: session_attach_evidence must gate on the persisted petitioner — its artifacts re-enter that session's preflight corpora and reviewer prompts",
+  );
+  assert.ok(
+    !attachHandler.includes(
+      'verifyToolCallerIdentity(\n        runtime,\n        "session_attach_evidence"',
+    ),
+    "v07.00.00 / attach authority: session_attach_evidence must not fall back to the identity-only check",
+  );
+  assert.ok(
+    !/Any authenticated peer may call it/i.test(attachHandler),
+    "v07.00.00 / attach authority: the description must not promise any authenticated peer may call it — the gate is petitioner-scoped",
+  );
+  console.log("[source-contract-smoke] attach_evidence_requires_session_owner_test: PASS");
+}
+
+{
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
     serverSrc.includes('process.on("SIGTERM"') && serverSrc.includes('process.on("SIGINT"'),
