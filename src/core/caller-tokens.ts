@@ -692,6 +692,18 @@ function replaceTokensFileAtomically(filePath: string, payload: string): void {
     fs.fsyncSync(tmpFd);
     fs.closeSync(tmpFd);
     tmpFd = null;
+    // POSIX is covered by the 0600 above, but Windows is not: mode bits do
+    // not override inherited NTFS access entries, which is the whole reason
+    // hardenTokensFilePermissions exists. Renaming an un-hardened temp over
+    // the live record would hand a protected file back to whatever the parent
+    // directory inherits -- including model-sandbox principals -- and it would
+    // do it silently, because the migration succeeds. Fail closed instead: an
+    // un-hardened replacement is never swapped in, and the original stays.
+    if (!hardenTokensFilePermissions(tmp)) {
+      throw new Error(
+        "caller-tokens: refusing to swap in a token file whose permissions could not be hardened",
+      );
+    }
   } catch (error) {
     if (tmpFd !== null) {
       try {

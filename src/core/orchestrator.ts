@@ -327,6 +327,20 @@ function collapsedCircularRotationMessage(
   );
 }
 
+// The public entry points are reachable from plain JavaScript, where the
+// `caller: PeerId` declaration has been erased. The MCP layer validates with
+// Zod, but the orchestrator is a shipped module and cannot assume that layer
+// is in front of it: a missing caller used to resolve to "operator", the very
+// identity v07.00.00 retired, which is exempt from nothing because it was
+// never a peer. Refuse at the boundary instead of inventing a principal.
+function assertCallerIsPeer(site: string, caller: unknown): asserts caller is PeerId {
+  if (typeof caller !== "string" || !(PEERS as readonly string[]).includes(caller)) {
+    throw new Error(
+      `caller_required: ${site} requires \`caller\` to be one of ${PEERS.join(", ")}; received ${JSON.stringify(caller)}.`,
+    );
+  }
+}
+
 function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
   if (!meta.rounds.length) return "No prior round.";
   const summary = meta.rounds
@@ -6750,7 +6764,8 @@ export class CrossReviewOrchestrator {
   }
 
   async askPeers(input: AskPeersInput): Promise<AskPeersOutput> {
-    const actingPeer = input.caller ?? "operator";
+    assertCallerIsPeer("askPeers", input.caller);
+    const actingPeer = input.caller;
     const requestedPetitioner = input.petitioner ?? actingPeer;
     const callerStatus = input.caller_status ?? "READY";
     // v2.14.0 (operator directive 2026-05-04): explicit `peers` entries
@@ -6783,7 +6798,7 @@ export class CrossReviewOrchestrator {
     // below used `requestedPetitioner` (the current-call caller); a
     // continuation that omitted `caller` defaulted it to "operator",
     // skipped recusal entirely, and let the real persisted
-    // peer-petitioner into the voting colegiado — a direct anti-self-
+    // peer-petitioner into the voting panel — a direct anti-self-
     // review HARD GATE violation. We now read the session first and
     // resolve the effective petitioner, then compute recusal/panel from
     // it. For a brand-new session `existingSession` is undefined and
@@ -6829,7 +6844,7 @@ export class CrossReviewOrchestrator {
         `session_owner_mismatch: existing session ${existingSession.session_id} belongs to petitioner '${effectivePetitioner}'; caller '${actingPeer}' cannot start or mutate its review round`,
       );
     }
-    // Tribunal-colegiado hard gate: the petitioner/caller never votes as
+    // Tribunal-panel hard gate: the petitioner/caller never votes as
     // a reviewer on their own petition. Direct ask_peers has no relator
     // unless the caller explicitly supplies one through the internal API,
     // but it still must auto-recuse the petitioner from the reviewer set.
@@ -9118,6 +9133,7 @@ export class CrossReviewOrchestrator {
   }
 
   async runUntilUnanimous(input: RunUntilUnanimousInput): Promise<RunUntilUnanimousOutput> {
+    assertCallerIsPeer("runUntilUnanimous", input.caller);
     // v2.11.0: relator lottery + auto-recusal from reviewer pool.
     //
     // Per workspace HARD GATE 2026-05-03 (an agent never reviews its own
@@ -9145,7 +9161,7 @@ export class CrossReviewOrchestrator {
     // `undefined` when a continuation omits it — it arrives as "operator",
     // the `??` never falls through, and the real persisted peer-petitioner
     // could still be re-classified to "operator", placed in the voting
-    // colegiado, or lottery-picked as relator of its own session (Codex
+    // panel, or lottery-picked as relator of its own session (Codex
     // reproduced it). The persisted session is the source of truth for the
     // petitioner: on any continuation it MUST win over `input.caller`.
     // `input.caller` is only the acting invoker's identity — it cannot

@@ -29,7 +29,7 @@ import { StubAdapter } from "../src/peers/stub.js";
 // 4. A terminal outcome produced by the internal askPeers call is preserved;
 //    the outer loop cannot overwrite it with max-rounds.
 // 5. Peer-submitted evidence can converge without operator custody only after
-//    a genuinely independent, strictly grounded colegiado review.
+//    a genuinely independent, strictly grounded panel review.
 //
 // Keep this focused regression independent from the broader behavioral matrix
 // so transport, combined-preflight and terminal-state failures stay obvious.

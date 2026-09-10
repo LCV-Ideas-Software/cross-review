@@ -493,6 +493,46 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     swap.includes('"wx"') && swap.includes("0o600"),
     "v07.00.00 / token durability: the temporary must refuse to clobber and must be created 0600, never briefly world-readable",
   );
+  // Round 6: 0600 is not enough on Windows, where mode bits do not override
+  // inherited NTFS entries — this module says so itself, which is why
+  // hardenTokensFilePermissions exists. Renaming an un-hardened temp over the
+  // live record silently hands a protected file back to whatever the parent
+  // directory inherits, so the hardening must happen BEFORE the rename and a
+  // failure to harden must refuse the swap rather than proceed.
+  const hardenAt = swap.indexOf("hardenTokensFilePermissions(");
+  assert.ok(
+    hardenAt >= 0 && hardenAt < renameAt,
+    "v07.00.00 / token durability: the replacement must be permission-hardened BEFORE it is renamed into place, or the swap can downgrade a protected DACL to an inherited one",
+  );
+  assert.ok(
+    /if \(!hardenTokensFilePermissions\([\s\S]{0,120}throw new Error\(/.test(swap),
+    "v07.00.00 / token durability: a replacement that cannot be hardened must never be swapped in",
+  );
+
+  // Round 6: the repair half of session_doctor rewrites finalized metadata, so
+  // it lands where recovery landed — the owner's capability token, and only
+  // the owner's own sessions. Without this the release's claim that
+  // `session_sweep` is the sole cross-owner mutation is false.
+  const authoritySrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  const doctorStart = authoritySrc.indexOf('registerTool(\n    "session_doctor"');
+  assert.ok(doctorStart >= 0, "v07.00.00 / doctor authority: session_doctor must be registered");
+  const doctorEnd = authoritySrc.indexOf("\n  registerTool(", doctorStart + 1);
+  const doctor = authoritySrc.slice(doctorStart, doctorEnd === -1 ? undefined : doctorEnd);
+  assert.ok(
+    doctor.includes('assertOwnerTokenVerified("session_doctor.repair"'),
+    "v07.00.00 / doctor authority: the repair pass must require the owner's capability token",
+  );
+  assert.ok(
+    doctor.includes("repairInclude: (session) => derivePersistedSessionOwner(session) === caller"),
+    "v07.00.00 / doctor authority: the repair pass must be filtered to the caller's own sessions",
+  );
+  const recoverStart = authoritySrc.indexOf('registerTool(\n    "session_recover_interrupted"');
+  const recoverEnd = authoritySrc.indexOf("\n  registerTool(", recoverStart + 1);
+  const recover = authoritySrc.slice(recoverStart, recoverEnd === -1 ? undefined : recoverEnd);
+  assert.ok(
+    recover.includes('assertOwnerTokenVerified("session_recover_interrupted"'),
+    "v07.00.00 / recovery authority: scoping by ownership is not enough — the owner's token is required, as it is for every other owner-scoped mutation",
+  );
 
   // Same round: the dashboard was translated to English while its root element
   // still declared pt-BR, so screen readers and translation tooling applied

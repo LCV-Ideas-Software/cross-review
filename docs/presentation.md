@@ -430,7 +430,10 @@ The server exposes 30 tools. Grouped by purpose:
   default; `detail="full"` is the explicit forensic option.
 - `session_events` — reads the event stream.
 - `session_metrics` — session metrics.
-- `session_doctor` — diagnostics and optional repair mode; terminal history
+- `session_doctor` — diagnostics for the whole store, plus an optional
+  repair mode that rewrites finalized metadata and is therefore scoped like
+  every owner mutation: the caller's capability token, and only the caller's
+  own sessions. Terminal history
   stays in the totals by default and can be enumerated with
   `include_terminal_findings=true`.
 - `session_report` — generates/reads the session report.

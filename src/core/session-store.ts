@@ -3959,11 +3959,16 @@ export class SessionStore {
   // `item_types` (open items grouped by surfacing peer) and
   // `chronic_blockers` (item ids with `round_count >= 3`) so operators
   // can see which evidence asks are systemic vs cauda ruidosa.
+  // `repairInclude` narrows which sessions the repair pass may rewrite. The
+  // audit half is read-only and always covers the whole store; the repair half
+  // rewrites finalized metadata, so the MCP tool passes an ownership predicate.
+  // The rule lives at the call site, not here, so there is one statement of it.
   async sessionDoctor(
     limit = 20,
     includeLegacy = false,
     repair = false,
     includeTerminalFindings = false,
+    options: { repairInclude?: (session: SessionMeta) => boolean } = {},
   ): Promise<SessionDoctorReport> {
     const cappedLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 20));
     // v3.6.0 (C): opt-in repair pass BEFORE the read-only audit. Fixes
@@ -3971,12 +3976,15 @@ export class SessionStore {
     // state left on disk by pre-v3.2.0 sessions (v3.2.0 fixed the cause
     // via the finalize/appendRound invariants; old corrupt metas
     // persist). Only that specific contradiction is touched, only when
-    // the operator explicitly passes `repair: true`. Recomputes
+    // `repair: true` is passed explicitly -- by the session's own petitioner,
+    // since the operator identity that used to gate this was retired in
+    // v07.00.00 and the tool now scopes the pass by ownership. Recomputes
     // `convergence_health` from the latest round's `convergence.converged`.
     const repaired: NonNullable<SessionDoctorReport["repaired"]> = [];
     const sessions = this.list();
     if (repair) {
       for (const session of sessions) {
+        if (options.repairInclude && !options.repairInclude(session)) continue;
         if (session.outcome === "converged" && session.convergence_health?.state === "blocked") {
           const latest = session.rounds.at(-1);
           const latestConverged = latest?.convergence?.converged === true;
@@ -4566,7 +4574,7 @@ export class SessionStore {
   // session's meta with the contestation record AND initializes a new
   // session that references back. Validates the original session is
   // in a final state (converged | aborted | max-rounds). Per the
-  // tribunal-colegiado memory, this is the canonical surface for "a caller
+  // tribunal-panel memory, this is the canonical surface for "a caller
   // NOT_READY opens a new deliberative cycle within the same case record" — the
   // original session is preserved (append-only); a new session opens
   // for re-deliberation with a fresh task + initial_draft and a

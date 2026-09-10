@@ -505,7 +505,7 @@ export interface ConvergenceScope {
   // v3.5.0 (CRV2-3-meta, Codex operational report): explicit relator
   // semantics. The lead_peer is the lottery-selected relator that
   // authors/revises the artifact under review; it is DELIBERATELY
-  // excluded from `reviewer_peers` (the voting colegiado) because
+  // excluded from `reviewer_peers` (the voting panel) because
   // voting on its own revision would violate the anti-self-review HARD
   // GATE. These fields make that intentional exclusion explicit in the
   // durable record so it is not misread as a missing-vote bug.
@@ -513,7 +513,7 @@ export interface ConvergenceScope {
   // `quorum_basis` documents the convergence rule; the exclusion reason
   // is a fixed constant. Populated only when `lead_peer` is set
   // (ship-mode relator lottery); absent on direct ask_peers / review /
-  // circular sessions where there is no relator-vs-colegiado split.
+  // circular sessions where there is no relator-vs-panel split.
   lead_peer_role?: "relator_non_voting" | undefined;
   voting_peers?: PeerId[] | undefined;
   quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready" | undefined;
@@ -1067,7 +1067,7 @@ export interface SessionMeta {
     usage: TokenUsage;
     cost: CostEstimate;
   };
-  // v2.14.0 (item 4): tribunal-colegiado contestation chain. Per the
+  // v2.14.0 (item 4): tribunal-panel contestation chain. Per the
   // memory `project_cross_review_v2_tribunal_colegiado_model.md`:
   // caller READY = accepts; caller NOT_READY = contests → new cycle.
   // When this session was contested by the caller, the runtime

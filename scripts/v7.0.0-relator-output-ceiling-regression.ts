@@ -263,7 +263,7 @@ function countingAdapters(config: AppConfig): {
 
 // --- 8. only the relator SEAT is constrained, never the reviewer pool ------
 // Reviewers vote; they never re-emit the artifact. A ceiling filter that
-// leaked into the reviewer pool would silently shrink the colegiado, which is
+// leaked into the reviewer pool would silently shrink the panel, which is
 // a different and worse defect than the one being fixed.
 {
   const config = harnessConfig("relator-ceiling-reviewers", MEASURED_CEILINGS);

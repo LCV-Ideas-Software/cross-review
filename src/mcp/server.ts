@@ -590,14 +590,14 @@ export function buildResponseNotices<
     );
   }
   // B3 — relator-non-voting notice. When a lead_peer is set, spell out
-  // that it is the non-voting relator and who the voting colegiado is,
+  // that it is the non-voting relator and who the voting panel is,
   // so its absence from the vote is never misread as a dropped peer.
   const scope = output.session?.convergence_scope;
   if (scope?.lead_peer && scope.lead_peer_role === "relator_non_voting") {
     const voters = (scope.voting_peers ?? scope.reviewer_peers ?? []).join(", ");
     notices.push(
       `relator_non_voting: \`${scope.lead_peer}\` is the lottery-selected relator — it authors/revises the ` +
-        `artifact and is DELIBERATELY excluded from the voting colegiado (anti-self-review HARD GATE). ` +
+        `artifact and is DELIBERATELY excluded from the voting panel (anti-self-review HARD GATE). ` +
         `Voting peers: ${voters || "(none)"}. This is by design, not a dropped peer.`,
     );
   }
@@ -1188,17 +1188,31 @@ function verifyToolCallerIdentity(
   }
 }
 
+// Identity alone is not ownership. With hard enforcement off and no token
+// installed, a client whose self-declared clientInfo.name matches its declared
+// `caller` passes identity verification through `verification_method`
+// "client_info" -- which is a self-report, and therefore no basis for rewriting
+// a petitioner's session. Every owner-scoped mutation goes through this, so the
+// rule has one statement rather than one per tool.
+export function assertOwnerTokenVerified(
+  site: string,
+  identity: CallerIdentityResult,
+  ownerLabel: string,
+): void {
+  if (!identity.identity_verified || identity.verification_method !== "token") {
+    throw new Error(
+      `session_owner_token_required: ${site} requires the verified capability token for session petitioner '${ownerLabel}'.`,
+    );
+  }
+}
+
 export function assertSessionMutationAuthority(
   site: string,
   caller: PeerId,
   identity: CallerIdentityResult,
   sessionOwner: PeerId | null,
 ): void {
-  if (!identity.identity_verified || identity.verification_method !== "token") {
-    throw new Error(
-      `session_owner_token_required: ${site} requires the verified capability token for session petitioner '${sessionOwner}'.`,
-    );
-  }
+  assertOwnerTokenVerified(site, identity, String(sessionOwner));
   if (sessionOwner === null) {
     throw new Error(
       `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session, so no caller can be authorized to mutate it through ${site}.`,
@@ -1995,7 +2009,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Until Unanimous",
       description:
-        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
+        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial panels), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
       inputSchema: z.object({
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
@@ -2346,12 +2360,16 @@ export async function main(): Promise<void> {
       },
     },
     async ({ caller, response_format }) => {
-      verifyToolCallerIdentity(
+      const identity = verifyToolCallerIdentity(
         runtime,
         "session_recover_interrupted",
         caller,
         server.server.getClientVersion(),
       );
+      // Round 5 scoped this to the caller's own sessions but left it on
+      // identity alone, while every other owner-scoped mutation requires the
+      // capability token. A self-declared clientInfo match is not ownership.
+      assertOwnerTokenVerified("session_recover_interrupted", identity, caller);
       const active = new Set(
         [...runtime.jobs.values()]
           .filter((job) => job.status === "running")
@@ -2431,7 +2449,7 @@ export async function main(): Promise<void> {
         const voters = (scope.voting_peers ?? scope.reviewer_peers ?? []).join(", ");
         notices.push(
           `relator_non_voting: \`${scope.lead_peer}\` is the lottery-selected relator — it authors/revises the ` +
-            `artifact and is DELIBERATELY excluded from the voting colegiado (anti-self-review HARD GATE). ` +
+            `artifact and is DELIBERATELY excluded from the voting panel (anti-self-review HARD GATE). ` +
             `Voting peers: ${voters || "(none)"}. This is by design, not a dropped peer.`,
         );
       }
@@ -2534,13 +2552,23 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
+      // The audit half is read-only and stays open to any verified identity.
+      // The repair half rewrites finalized metadata and timestamps, and it was
+      // operator-only before that identity was retired -- so it lands in the
+      // same place as recovery: the owner's capability token, and only the
+      // owner's own sessions. Without this the release's claim that
+      // `session_sweep` is the sole cross-owner mutation was simply false.
+      // Two branches with LITERAL site strings, not one with a ternary: the
+      // v4.4.1 identity contract matches the site argument literally, and a
+      // computed one reads to it as no verification at all.
       if (repair) {
-        verifyToolCallerIdentity(
+        const identity = verifyToolCallerIdentity(
           runtime,
           "session_doctor.repair",
           caller,
           server.server.getClientVersion(),
         );
+        assertOwnerTokenVerified("session_doctor.repair", identity, caller);
       } else {
         verifyToolCallerIdentity(
           runtime,
@@ -2555,6 +2583,9 @@ export async function main(): Promise<void> {
           include_legacy ?? false,
           repair ?? false,
           include_terminal_findings ?? false,
+          {
+            repairInclude: (session) => derivePersistedSessionOwner(session) === caller,
+          },
         ),
         response_format,
       );
@@ -3004,7 +3035,7 @@ export async function main(): Promise<void> {
       ),
   );
 
-  // v2.14.0 (item 4): tribunal-colegiado contestation. Per the memory
+  // v2.14.0 (item 4): tribunal-panel contestation. Per the memory
   // `project_cross_review_v2_tribunal_colegiado_model.md`, caller can
   // formally contest a final verdict, opening a new deliberation cycle
   // within the same autos. The original session is preserved (append-

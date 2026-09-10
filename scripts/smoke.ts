@@ -9903,7 +9903,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // continuation), not the current call's `caller`. Pre-v3.7.0 a
 // continuation that omitted `caller` defaulted it to "operator",
 // skipped recusal, and let the real persisted peer-petitioner into the
-// voting colegiado — an anti-self-review HARD GATE violation.
+// voting panel — an anti-self-review HARD GATE violation.
 {
   const a1Cfg = {
     ...loadConfig(),

@@ -1,5 +1,5 @@
 // v2.11.0: Relator lottery — automatic assignment of `lead_peer` excluding
-// the caller. Modeled on judicial colegiados: the petitioner (caller) never
+// the caller. Modeled on judicial panels: the petitioner (caller) never
 // serves as relator (lead_peer) on their own petition. Closes the
 // self-review failure class that wasted ~$2 USD across 4 trilaterals during
 // the v2.10.0 ship cycle (operator directive 2026-05-03).
