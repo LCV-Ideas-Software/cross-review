@@ -1562,9 +1562,16 @@ export async function main(): Promise<void> {
   // generate with mode 0o600). v07.00.00: a legacy record is rewritten in
   // place to DROP the seventh capability, which bound a secret to a human
   // console this server never had. Failure leaves peer clientInfo checks
-  // available in permissive mode, but every OWNER-SCOPED session-mutation tool
-  // fails closed, because no caller can then be token-verified. `session_sweep`
-  // is the exception: it is gated on identity alone and still runs.
+  // available in permissive mode, but every session-mutation tool that requires
+  // a token fails closed, because no caller can then be token-verified.
+  //
+  // v07.00.00 (PR #300 review round 10): `session_sweep` used to be named here
+  // as the exception that survived on identity alone. Round 9 made it require
+  // the capability token — it is cross-owner, not owner-scoped, which is a
+  // narrower scope, not a weaker one — so it fails closed with the rest. The
+  // banner below is pinned against the mutation-authority census in
+  // `scripts/source-contract-smoke.ts`, so the next authority change cannot
+  // silently orphan its own documentation the way this one did.
   initHostTokensRecord(runtime.config.data_dir);
   const tokensRecord = getHostTokensRecord();
   if (tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
@@ -1573,7 +1580,7 @@ export async function main(): Promise<void> {
     );
   } else if (!tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so every owner-scoped session-mutation tool fails closed (session_finalize, contest_verdict, session_cancel_job and both evidence-judge passes). session_sweep is gated on identity alone and still runs. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions.\n`,
+      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so every mutating tool that requires a token fails closed: ask_peers, contest_verdict, session_attach_evidence, session_cancel_job, session_doctor, session_evidence_judge_consensus_pass, session_evidence_judge_pass, session_finalize, session_recover_interrupted, session_start_round, session_start_unanimous, session_sweep. session_sweep is in that list: it is the one mutation that may act ACROSS owners, and since v07.00.00 that costs the capability token rather than a self-declared identity, so it is no recovery route out of this state. Of the mutating tools only session_init and run_until_unanimous still run, on a declared identity; read-only tools are unaffected. There is no in-band way to reissue the record: set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions, then restart the server.\n`,
     );
   }
   const server = new McpServer({
@@ -1877,7 +1884,7 @@ export async function main(): Promise<void> {
     {
       title: "Ask Peers",
       description:
-        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
+        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1. When `session_id` names an existing session, requires the verified capability token of that session's persisted petitioner; opening a new session does not.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -1948,7 +1955,7 @@ export async function main(): Promise<void> {
     {
       title: "Start Review Round",
       description:
-        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required.",
+        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. When `session_id` names an existing session, requires the verified capability token of that session's persisted petitioner; opening a new session does not.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -2127,7 +2134,7 @@ export async function main(): Promise<void> {
     {
       title: "Start Until Unanimous",
       description:
-        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
+        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details. When `session_id` names an existing session, requires the verified capability token of that session's persisted petitioner; opening a new session does not.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
@@ -2367,7 +2374,7 @@ export async function main(): Promise<void> {
     {
       title: "Recover Interrupted Sessions",
       description:
-        "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly.",
+        "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly. Requires your own verified capability token, and recovers only the sessions you own.",
       inputSchema: z.object({
         caller: CallerSchema,
         response_format: ResponseFormatSchema,
@@ -2535,7 +2542,7 @@ export async function main(): Promise<void> {
     {
       title: "Session Doctor",
       description:
-        'Operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Read-only by default (does not modify sessions). Terminal max-rounds and terminal not_resurfaced history stay in totals but are not default operational findings; pass include_terminal_findings=true to enumerate that historical inventory. Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible). v3.6.0: pass repair=true (opt-in) to recompute convergence_health for sessions stuck in the contradictory outcome="converged"+health="blocked" state left by pre-v3.2.0 corruption — only that specific contradiction is touched, only when explicitly requested; the `repaired` array lists what was fixed.',
+        'Operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Read-only by default (does not modify sessions). Terminal max-rounds and terminal not_resurfaced history stay in totals but are not default operational findings; pass include_terminal_findings=true to enumerate that historical inventory. Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible). v3.6.0: pass repair=true (opt-in) to recompute convergence_health for sessions stuck in the contradictory outcome="converged"+health="blocked" state left by pre-v3.2.0 corruption — only that specific contradiction is touched, only when explicitly requested; the `repaired` array lists what was fixed. The read-only pass needs no token; `repair` requires your own verified capability token and touches only the sessions you own.',
       inputSchema: z.object({
         limit: z.number().int().min(1).max(100).default(20),
         // v2.22.0 (A.P2): opt-in enumeration of legacy self_lead_metadata
@@ -2823,7 +2830,7 @@ export async function main(): Promise<void> {
     {
       title: "Attach Session Evidence (Optional)",
       description:
-        "Attach one durable evidence artifact to an existing session, out of band from a review round. Only the session's own petitioner may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round.",
+        "Attach one durable evidence artifact to an existing session, out of band from a review round. Only the session's own petitioner may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round. Requires the verified capability token of the persisted session petitioner; a peer cannot attach evidence to someone else's session.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         label: z.string().min(1).max(120),
@@ -2875,7 +2882,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Pass",
       description:
-        "LLM satisfied-detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment; a peer can never judge its own evidence ask. The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal statuses and already-addressed items are never touched. Optional shadow_mode records non-mutating decisions.",
+        "LLM satisfied-detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment; a peer can never judge its own evidence ask. The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal statuses and already-addressed items are never touched. Optional shadow_mode records non-mutating decisions. Requires the verified capability token of the persisted session petitioner, because the pass spends that petitioner's budget on paid provider calls.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         judge_peer: PeerSchema,
@@ -2952,7 +2959,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Consensus Pass",
       description:
-        "Multi-peer evidence judgment. Requires at least two distinct enabled judge peers. A peer is forbidden from ruling on its own evidence ask; any self-judge member makes that item's consensus fail closed. Active mode promotes only unanimous verified-satisfied judgments with non-empty rationales and zero parser warnings; shadow mode never mutates state.",
+        "Multi-peer evidence judgment. Requires at least two distinct enabled judge peers. A peer is forbidden from ruling on its own evidence ask; any self-judge member makes that item's consensus fail closed. Active mode promotes only unanimous verified-satisfied judgments with non-empty rationales and zero parser warnings; shadow mode never mutates state. Requires the verified capability token of the persisted session petitioner, because the pass spends that petitioner's budget on paid provider calls.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         // v3.7.0 (AUDIT-3): .max(PEERS.length) — same stale-`.max(5)`
@@ -3130,7 +3137,7 @@ export async function main(): Promise<void> {
     {
       title: "Sweep Idle Sessions",
       description:
-        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. The terminal reason accepts at most 200 characters. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory.",
+        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. The terminal reason accepts at most 200 characters. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory. Requires a verified capability token. Sweep is the one mutation that acts ACROSS owners, so the token is not the affected petitioner's — but a self-declared identity is refused, and it is therefore no way out of a token-file failure.",
       inputSchema: z.object({
         idle_minutes: z.number().min(1440).max(100_000).default(1440),
         outcome: z.enum(["aborted", "max-rounds"]).default("aborted"),
@@ -3174,10 +3181,15 @@ export async function main(): Promise<void> {
       // is min 1440, so nothing under 24 hours idle is reachable, and
       // `corrupt_min_age_days` is min 1.
       //
-      // This is the one authoritative mutation any verified peer can perform on
-      // another petitioner's session. It is a deliberate exception, not an
-      // oversight, and it is the reason the v07.00.00 changelog must not claim
-      // that no identity can step over the session-owner gate.
+      // This is the one authoritative mutation a TOKEN-verified peer can perform
+      // on another petitioner's session. The qualifier is load-bearing: this
+      // file's own helper doc (see `assertCrossOwnerTokenVerified`) records that
+      // a client whose self-declared clientInfo.name matches its declared
+      // `caller` also passes identity verification, as `client_info` — and that
+      // is exactly the case round 9 closed here. "Verified peer" would still
+      // read as including it. It is a deliberate exception to owner-scoping,
+      // not to the token, and it is the reason the v07.00.00 changelog must not
+      // claim that no identity can step over the session-owner gate.
       const sweepIdentity = verifyToolCallerIdentity(
         runtime,
         "session_sweep",

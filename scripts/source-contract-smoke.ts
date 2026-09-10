@@ -593,7 +593,16 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     const handlerAt = registration.indexOf("async (");
     const declaration = handlerAt > 0 ? registration.slice(0, handlerAt) : registration;
     if (!/readOnlyHint:\s*false/.test(declaration)) continue;
-    const body = handlerAt > 0 ? registration.slice(handlerAt, handlerAt + 8000) : registration;
+    // Comments are stripped before classifying, the way the F5 walker in
+    // scripts/smoke.ts already does. Without this the census reads a handler's
+    // PROSE as code: a comment that merely NAMES `assertOwnerTokenVerified` —
+    // to contrast against it, which is exactly what an accurate comment about
+    // `session_sweep` wants to do — silently moves that tool into the owner
+    // bucket and reds the gate, for an edit with no behaviour in it. Round 10
+    // walked into that while correcting the sweep comment, so the parser is
+    // fixed rather than the comment written around it.
+    const rawBody = handlerAt > 0 ? registration.slice(handlerAt, handlerAt + 8000) : registration;
+    const body = rawBody.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\n)\s*\/\/[^\n]*/g, "$1");
     if (
       body.includes("assertOwnerTokenVerified") ||
       body.includes("verifySessionMutationAuthority")
@@ -619,6 +628,71 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     buckets.declared.sort(),
     DECLARED_IDENTITY_ONLY,
     `v07.00.00 / mutation authority: only session-creating tools may run on a declared identity alone; got [${buckets.declared.join(", ")}]`,
+  );
+
+  // Round 10. Round 9 moved `session_sweep` behind the
+  // capability token; the startup banner kept telling the operator that sweep
+  // "is gated on identity alone and still runs", which in the token-file
+  // failure state points at the one recovery route that had just stopped
+  // existing. The banner was also already stale in a quieter way: it named
+  // five of the eleven owner-scoped tools.
+  //
+  // Correcting those sentences would fix the site and lose the rule. The rule
+  // is that the banner is a STATEMENT ABOUT THE CENSUS ABOVE, so it is checked
+  // against the census rather than proof-read. Every mutating tool must be
+  // named in it, whichever bucket it lands in — so the next authority change,
+  // or a twelfth mutating tool, breaks this instead of shipping a banner that
+  // lies about it.
+  const bannerAt = authoritySource.indexOf("caller capability tokens unavailable");
+  assert.ok(
+    bannerAt > 0,
+    "v07.00.00 / token-failure banner: the startup banner for an unloadable token record must exist",
+  );
+  const banner = authoritySource.slice(bannerAt, authoritySource.indexOf("`,", bannerAt));
+  const unnamedInBanner = [...buckets.owner, ...buckets.verified, ...buckets.declared]
+    .filter((tool) => !banner.includes(tool))
+    .sort();
+  assert.deepEqual(
+    unnamedInBanner,
+    [],
+    `v07.00.00 / token-failure banner: every mutating tool must be named in the token-unavailable banner so the operator learns what actually stopped working; missing [${unnamedInBanner.join(", ")}]`,
+  );
+  // The same rule, applied to the surface a PEER HOST reads rather than the one
+  // the operator reads. `session_finalize`, `session_cancel_job` and
+  // `contest_verdict` already spelled their token requirement out in their own
+  // MCP description; the other nine said nothing, so a host could not learn
+  // from the protocol that it needed a credential until the call was refused.
+  // This is the gate that would have caught round 9 the moment `session_sweep`
+  // moved behind the token, instead of one round later via the banner.
+  //
+  // It asserts the REQUIREMENT is stated, not how — the four buckets enforce
+  // four genuinely different rules (the petitioner's token, the petitioner's
+  // token only when continuing an existing session, your own token, and a
+  // token that is deliberately NOT the affected petitioner's), and flattening
+  // them into one sentence would trade this round's falsehood for a new one.
+  const describesToken = (tool: string): boolean => {
+    const at = authoritySource.indexOf(`registerTool(\n    "${tool}"`);
+    if (at < 0) return false;
+    const schemaAt = authoritySource.indexOf("inputSchema", at);
+    return authoritySource.slice(at, schemaAt).includes("capability token");
+  };
+  const silentAboutToken = [...buckets.owner, ...buckets.verified]
+    .filter((tool) => !describesToken(tool))
+    .sort();
+  assert.deepEqual(
+    silentAboutToken,
+    [],
+    `v07.00.00 / tool descriptions: every mutating tool that requires a capability token must say so in its own MCP description, or a peer host learns the requirement only from the refusal; silent [${silentAboutToken.join(", ")}]`,
+  );
+
+  // A lexical tripwire for the exact retired sentence, not a semantic check:
+  // it would also reject a banner that DENIED the exemption in those words. The
+  // rule is the assertion above; this one exists because that sentence shipped
+  // and cost a review round, and the cheapest way to keep it from coming back
+  // is to make the words themselves unwritable here.
+  assert.ok(
+    !banner.includes("gated on identity alone"),
+    "v07.00.00 / token-failure banner: session_sweep requires the capability token since round 9, so the banner must not offer it as the exception that still runs",
   );
 
   // The companion rule, which produced findings in rounds 4, 6 and 7: every

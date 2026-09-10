@@ -40,7 +40,10 @@ to participate as outbound review adapters; their provider API keys are enough.
 Distribute a peer capability token only when a local MCP client actually acts
 under that peer identity. Cancellation, verdict contestation and closing your
 own non-terminal session (`session_finalize` as `aborted`) additionally require
-the persisted petitioner's peer token.
+the persisted petitioner's peer token. So does sweeping idle sessions
+(`session_sweep`) — with the difference that sweep acts across owners, so any
+peer's own verified token is enough there, while a self-declared identity is
+not. Each tool's MCP description states which of the two it needs.
 
 ## Optional Model Overrides
 

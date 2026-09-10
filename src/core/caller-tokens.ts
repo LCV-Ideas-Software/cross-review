@@ -669,9 +669,11 @@ function hardenOpenedTokensFilePermissions(
 // The replacement is written beside it and swapped in, so the old record stays
 // intact and readable until a complete, fsynced replacement exists. Mirrors the
 // `writeJson` helper in session-store.ts — same tmp naming, same Windows retry
-// set, same best-effort cleanup — plus the two things a credential file needs
-// and a session file does not: mode 0600 at creation, and an fsync before the
-// rename rather than trusting the page cache.
+// set, same best-effort cleanup — plus the three things a credential file needs
+// and a session file does not: mode 0600 at creation, an fsync before the
+// rename rather than trusting the page cache, and a flush of the containing
+// directory after it, so the new NAME is durable and not only its contents
+// (PR #300 review round 10; see the guard at the rename itself).
 function replaceTokensFileAtomically(filePath: string, payload: string): void {
   const nonce = crypto.randomBytes(2).toString("hex");
   const tmp = `${filePath}.${process.pid}.${nonce}.tmp`;
@@ -737,6 +739,42 @@ function replaceTokensFileAtomically(filePath: string, payload: string): void {
       /* best effort: never leave the temp behind */
     }
     throw error;
+  }
+  // The rename is atomic for a READER, but on POSIX its directory entry is not
+  // durable until the containing directory is itself flushed: the temp file's
+  // own fsync above says nothing about the name that now points at it. A power
+  // loss in that window can replay to the legacy record, and on a filesystem
+  // that does not journal the rename, to neither name.
+  //
+  // Guarded, and the guard is not cosmetic. Measured on Windows 11 / Node
+  // v26.8.1: `fs.openSync(dir, "r")` SUCCEEDS there, and `fs.fsyncSync` on the
+  // resulting handle throws EPERM. `loadHostTokens`'s catch maps EPERM to
+  // `permission_denied` and discards the whole record — so an unguarded flush
+  // would report the credential file as unloadable on the very platform this
+  // runs on, for a migration that had already completed correctly.
+  //
+  // Best-effort, and deliberately so. Control only reaches here AFTER the
+  // rename has succeeded: the new record is live, readable and hardened.
+  // Throwing now would report a failed migration that in fact completed, and
+  // the caller reads a throw as "no token record", which fails every
+  // owner-scoped tool closed. An undurable-but-correct rename is strictly
+  // better than that.
+  if (process.platform !== "win32") {
+    let dirFd: number | null = null;
+    try {
+      dirFd = fs.openSync(path.dirname(filePath), "r");
+      fs.fsyncSync(dirFd);
+    } catch {
+      /* see above: the record is already in place; a failed flush is not a failed swap */
+    } finally {
+      if (dirFd !== null) {
+        try {
+          fs.closeSync(dirFd);
+        } catch {
+          /* best effort: the flush outcome is what mattered */
+        }
+      }
+    }
   }
 }
 

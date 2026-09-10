@@ -280,7 +280,11 @@ place a caller token in a model host at all, which was a stale operator-token
 warning with the word mechanically swapped. Followed literally it left every
 peer host unable to cancel a job, contest a verdict, finalize an aborted session
 or run an active evidence judge, because those owner-scoped paths require a
-token-verified petitioner even when global hard enforcement is off. The local token file is plaintext and therefore assumes processes
+token-verified petitioner even when global hard enforcement is off. `session_sweep`
+requires a verified capability token too, and is the one mutation that does not
+require the affected session's own petitioner: it exists to close sessions whose
+petitioner is gone, so ownership is replaced by the 24-hour idle floor, not by a
+weaker credential. The local token file is plaintext and therefore assumes processes
 with read access to the cross-review data directory are trusted. The runtime
 fails closed unless it can enforce owner-only mode on POSIX or a protected
 Windows DACL limited to the current user, SYSTEM and Administrators. This

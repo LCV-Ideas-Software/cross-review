@@ -7750,10 +7750,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   // authoritative mutation now requires the persisted petitioner's own
   // verified token, with no identity able to step over
   // `assertSessionMutationAuthority`. Removing that branch TIGHTENS the gate.
-  // Scope matters: `session_sweep` never reaches this helper — it is gated on
-  // identity alone, deliberately, because it exists to close sessions whose
-  // petitioner is gone. It is the one authoritative mutation that is not
-  // owner-scoped, and the sentence above must not be read as covering it.
+  // Scope matters: `session_sweep` never reaches this helper, because it is the
+  // one authoritative mutation that is not owner-scoped — it exists to close
+  // sessions whose petitioner is GONE, and an owner check would disable its
+  // only purpose. Not reaching this helper is not the same as being ungated:
+  // round 9 gave it `assertCrossOwnerTokenVerified`, so it requires the
+  // capability token too, just not one matching each session's owner. The
+  // sentence above is about ownership; it must not be read as covering sweep,
+  // and sweep must not be read as unguarded.
   assert.doesNotThrow(() =>
     assertSessionMutationAuthority("contest_verdict", "claude", peerHardEnforce, "claude"),
   );

@@ -102,9 +102,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
   this entry wrongly claimed it did not: `session_sweep` is not owner-scoped,
   because it exists to close sessions whose petitioner is gone, and a petitioner
   that cannot present itself cannot sweep its own session. What bounds it is the
-  age floor — nothing idle under 24 hours is reachable — not ownership. The tool
-  is annotated `destructiveHint: true`, since `prune_corrupt` deletes quarantine
-  entries.
+  age floor — nothing idle under 24 hours is reachable — not ownership. What it
+  is NOT exempt from is the token: sweeping requires a verified capability
+  token, just not the affected petitioner's, so a self-declared identity cannot
+  finalize other peers' sessions. The tool is annotated `destructiveHint: true`,
+  since `prune_corrupt` deletes quarantine entries.
 - **`host-tokens.json` holds six capabilities, not seven.** The seventh bound a
   secret to a host that never existed. A record written before this release is
   rewritten on load without that entry, and without the
