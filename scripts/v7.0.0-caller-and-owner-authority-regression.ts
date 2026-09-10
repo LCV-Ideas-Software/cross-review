@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { loadConfig } from "../src/core/config.js";
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import type { CallerIdentityResult } from "../src/mcp/server.js";
-import { assertOwnerTokenVerified } from "../src/mcp/server.js";
+import { assertCrossOwnerTokenVerified, assertOwnerTokenVerified } from "../src/mcp/server.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
@@ -177,6 +177,50 @@ async function capturedAsync(run: () => Promise<unknown>): Promise<unknown> {
     "CONTROL: a declared peer must still be able to open a session",
   );
   console.log("[v7.0.0-authority] store_boundary_refuses_ownerless_sessions: PASS");
+}
+
+// --- 5. a cross-owner mutation needs the token, not a self-report --------
+// Sweep is the one mutating tool allowed to act on sessions it does not own,
+// so it is the one place where "who is asking" is the ONLY control left. Round
+// 8 read the verification record but accepted anything that was not "none",
+// which let `client_info` through — and client_info is the client telling the
+// server its own name. Under permissive enforcement that is free to assert.
+{
+  const selfDeclared = {
+    identity_verified: true,
+    verification_method: "client_info",
+    client_info_name: "claude",
+    identity_metadata: {},
+  } as unknown as CallerIdentityResult;
+  const error = captured(() => assertCrossOwnerTokenVerified("session_sweep", selfDeclared));
+  assert.match(
+    String(error),
+    /cross_owner_token_required/,
+    `a cross-owner sweep must refuse a self-declared identity; got ${String(error)}`,
+  );
+
+  const unverified = {
+    identity_verified: false,
+    verification_method: "none",
+    client_info_name: "unknown",
+    identity_metadata: {},
+  } as unknown as CallerIdentityResult;
+  assert.match(
+    String(captured(() => assertCrossOwnerTokenVerified("session_sweep", unverified))),
+    /cross_owner_token_required/,
+    "and an unverified caller too",
+  );
+
+  // CONTROL: the capability token still authorizes it, or sweep would be dead
+  // rather than guarded.
+  const tokenVerified = {
+    identity_verified: true,
+    verification_method: "token",
+    client_info_name: "claude",
+    identity_metadata: {},
+  } as unknown as CallerIdentityResult;
+  assertCrossOwnerTokenVerified("session_sweep", tokenVerified);
+  console.log("[v7.0.0-authority] cross_owner_sweep_requires_the_token: PASS");
 }
 
 console.log("[v7.0.0-authority] ALL CASES PASS");

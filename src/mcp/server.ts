@@ -1192,19 +1192,24 @@ function verifyToolCallerIdentity(
 // installed, a client whose self-declared clientInfo.name matches its declared
 // `caller` passes identity verification through `verification_method`
 // "client_info" -- which is a self-report, and therefore no basis for rewriting
-// a petitioner's session. Every owner-scoped mutation goes through this, so the
-// rule has one statement rather than one per tool.
-// `verifyCallerIdentity` reports what it could establish; it does not refuse.
-// Under the default permissive token mode an unknown client that presents no
-// token comes back `identity_verified: false` with `verification_method:
-// "none"`, and a handler that ignores the returned record proceeds as if the
-// caller were known. That is the whole gap: the check ran and its answer was
-// discarded. Any mutation that can act on a session it does not own must read
-// the answer.
-export function assertIdentityActuallyVerified(site: string, identity: CallerIdentityResult): void {
-  if (!identity.identity_verified || identity.verification_method === "none") {
+// a petitioner's session. Two rules follow from that premise, one per function
+// below: a mutation that crosses owners needs the token; a mutation scoped to
+// one owner needs the token AND that owner. Each is stated once here rather
+// than once per tool.
+// A mutation that can act on sessions it does not own requires the capability
+// TOKEN — but not a token matching each affected session's owner, which for a
+// cross-owner sweep would be a contradiction.
+//
+// The round-8 version accepted anything that was not `verification_method:
+// "none"`, which let `"client_info"` through. That method is the client telling
+// the server its own name: under permissive enforcement any MCP client can set
+// clientInfo.name to a known peer and come back `identity_verified: true`.
+// Reading the record was necessary and not sufficient — the value has to be the
+// one that cannot be self-asserted.
+export function assertCrossOwnerTokenVerified(site: string, identity: CallerIdentityResult): void {
+  if (!identity.identity_verified || identity.verification_method !== "token") {
     throw new Error(
-      `caller_identity_unverified: ${site} acts on sessions it does not own and therefore requires an actually verified caller; received verification_method='${identity.verification_method}'.`,
+      `cross_owner_token_required: ${site} acts on sessions it does not own and therefore requires the verified capability token, not a self-declared identity; received verification_method='${identity.verification_method}'.`,
     );
   }
 }
@@ -3180,10 +3185,11 @@ export async function main(): Promise<void> {
         server.server.getClientVersion(),
       );
       // Ownership is deliberately NOT required here — a dead petitioner cannot
-      // sweep its own session, which is the entire purpose — but the identity
-      // must at least be real. Discarding the verification result meant an
-      // unauthenticated client could finalize every session idle for 24 hours.
-      assertIdentityActuallyVerified("session_sweep", sweepIdentity);
+      // sweep its own session, which is the entire purpose — but the caller must
+      // hold the capability token. Sweep can finalize every session idle for 24
+      // hours and, with `prune_corrupt`, delete quarantine entries; a name the
+      // client chose for itself is not authority to do that.
+      assertCrossOwnerTokenVerified("session_sweep", sweepIdentity);
       const swept = await runtime.orchestrator.store.sweepIdle(
         idle_minutes * 60_000,
         outcome,

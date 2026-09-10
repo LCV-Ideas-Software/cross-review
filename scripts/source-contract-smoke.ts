@@ -575,8 +575,10 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   ];
   // The single deliberate exception. Sweep exists for sessions whose petitioner
   // is GONE, so scoping it by owner would disable its only purpose; it is
-  // bounded by the 24-hour age floor instead. It must still know who is asking.
-  const VERIFIED_IDENTITY_ONLY = ["session_sweep"];
+  // bounded by the 24-hour age floor instead. It still requires the capability
+  // token — just not one matching each affected session's owner, which for a
+  // cross-owner sweep would be a contradiction.
+  const CROSS_OWNER_TOKEN_ONLY = ["session_sweep"];
   // These CREATE a session rather than mutate one that already has an owner,
   // so there is no owner to check against.
   const DECLARED_IDENTITY_ONLY = ["run_until_unanimous", "session_init"];
@@ -597,7 +599,7 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
       body.includes("verifySessionMutationAuthority")
     ) {
       buckets.owner.push(toolName);
-    } else if (body.includes("assertIdentityActuallyVerified")) {
+    } else if (body.includes("assertCrossOwnerTokenVerified")) {
       buckets.verified.push(toolName);
     } else {
       buckets.declared.push(toolName);
@@ -610,8 +612,8 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   );
   assert.deepEqual(
     buckets.verified.sort(),
-    VERIFIED_IDENTITY_ONLY,
-    `v07.00.00 / mutation authority: exactly one mutating tool may act across owners, and it must still require a verified identity; got [${buckets.verified.join(", ")}]`,
+    CROSS_OWNER_TOKEN_ONLY,
+    `v07.00.00 / mutation authority: exactly one mutating tool may act across owners, and it must still require the capability token rather than a self-declared identity; got [${buckets.verified.join(", ")}]`,
   );
   assert.deepEqual(
     buckets.declared.sort(),

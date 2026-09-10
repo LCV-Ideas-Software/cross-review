@@ -884,4 +884,117 @@ function fixedArtifactAdapters(text: string): {
   console.log("[v7.0.0-relator-ceiling] collapsed_rotation_is_refused_for_size: PASS");
 }
 
+// --- 19. circular mode is priced with NO reviewer role at all -------------
+// The financial preflight demands Perplexity's `web_search` fee only when the
+// peer can review, because the reviewer role is the only one that declares the
+// tool. Circular mode has no reviewer role: every rotator is dispatched through
+// `adapter.generate()`. Handing the preflight `chargeablePeers` minus the lead
+// counted the tail rotators as reviewers, so a rotation containing Perplexity
+// was refused with `financial_controls_missing` over a fee the session could
+// not incur — the run died before a single call, for a charge that does not
+// exist on that path.
+//
+// The control is the second half, and it is the half that makes this a test:
+// the SAME unpriced config in `review` mode, where Perplexity really is a
+// reviewer, must still block. Without it, narrowing the reviewer set to nothing
+// everywhere would satisfy the first assertion and disable the gate.
+{
+  const ceilings: Record<PeerId, number> = {
+    claude: 640,
+    codex: 640,
+    gemini: 640,
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
+  };
+  // A complete input/output card with the search dimension REMOVED. Everything
+  // else is pinned so the only variable is whether the fee is demanded:
+  // an Agent-API model id (a retired Sonar id short-circuits with the migration
+  // marker instead), search enabled, and the `estimate` policy so the unbounded
+  // residual does not add a second missing variable.
+  const searchFeeUnpriced = (prefix: string): AppConfig => {
+    const config = harnessConfig(prefix, ceilings);
+    return {
+      ...config,
+      models: { ...config.models, perplexity: "perplexity/kimi-k3" },
+      fallback_models: { ...config.fallback_models, perplexity: [] },
+      model_cost_rates: {},
+      cost_rates: {
+        ...config.cost_rates,
+        perplexity: { input_per_million: 0, output_per_million: 0 },
+      },
+      perplexity: {
+        ...config.perplexity,
+        disable_search: false,
+        search_preflight_policy: "estimate",
+      },
+    };
+  };
+  const SEARCH_FEE_VAR = "CROSS_REVIEW_PERPLEXITY_SEARCH_QUERIES_USD_PER_1000_REQUESTS";
+  const rotation: PeerId[] = ["codex", "perplexity", "grok"];
+
+  const circularConfig = searchFeeUnpriced("relator-ceiling-circular-search-fee");
+  const circularProbe = countingAdapters(circularConfig);
+  const circularEvents: RuntimeEvent[] = [];
+  const circularRun = await new CrossReviewOrchestrator(
+    circularConfig,
+    (event) => circularEvents.push(event),
+    circularProbe.factory,
+  ).runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    peers: rotation,
+    lead_peer: "codex",
+    initial_draft: "z".repeat(300),
+    mode: "circular",
+    max_rounds: 1,
+  });
+  assert.deepEqual(
+    circularEvents
+      .filter((event) => event.type === "session.blocked.financial_controls_missing")
+      .map(
+        (event) => (event as { data?: { missing_variables?: string[] } }).data?.missing_variables,
+      ),
+    [],
+    "circular mode dispatches no reviewer, so an unpriced web_search fee must not block it",
+  );
+  assert.ok(
+    circularProbe.generated.length > 0,
+    `and the rotation must actually run; generated=[${circularProbe.generated.join(", ")}] outcome=${circularRun.session.outcome}/${circularRun.session.outcome_reason ?? "-"}`,
+  );
+
+  const reviewConfig = searchFeeUnpriced("relator-ceiling-review-search-fee");
+  const reviewProbe = countingAdapters(reviewConfig);
+  const reviewEvents: RuntimeEvent[] = [];
+  await new CrossReviewOrchestrator(
+    reviewConfig,
+    (event) => reviewEvents.push(event),
+    reviewProbe.factory,
+  ).runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    peers: rotation,
+    lead_peer: "codex",
+    initial_draft: "z".repeat(300),
+    mode: "review",
+    max_rounds: 1,
+  });
+  const reviewBlocked = reviewEvents
+    .filter((event) => event.type === "session.blocked.financial_controls_missing")
+    .flatMap(
+      (event) =>
+        (event as { data?: { missing_variables?: string[] } }).data?.missing_variables ?? [],
+    );
+  assert.ok(
+    reviewBlocked.includes(SEARCH_FEE_VAR),
+    `CONTROL: in review mode Perplexity IS a reviewer, so the same unpriced fee must still block; got [${reviewBlocked.join(", ")}]`,
+  );
+  assert.deepEqual(
+    reviewProbe.generated,
+    [],
+    "CONTROL: and that block must still happen before any generation",
+  );
+  console.log("[v7.0.0-relator-ceiling] circular_mode_is_priced_without_a_reviewer_role: PASS");
+}
+
 console.log("[v7.0.0-relator-ceiling] ALL CASES PASS");

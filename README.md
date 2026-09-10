@@ -292,8 +292,14 @@ with `stop_reason="refusal"` is recorded as `provider_refusal`, and partial
 refusal output is not accepted as a review.
 
 There is no second supported Claude model. cross-review runs the top model of
-each provider, so the canonical pin is the whole admissible set. The Claude
-output budget is set to the model's synchronous API ceiling of 128,000.
+each provider, so the canonical pin is the whole admissible set. 128,000 output
+tokens is the model's synchronous API ceiling — the most the provider will
+accept, not the budget this package ships with. Unconfigured,
+`maxOutputTokensForPeer()` falls through `max_output_tokens_by_peer` to the
+global `CROSS_REVIEW_MAX_OUTPUT_TOKENS`, whose default is 20,000. Raising it to
+the provider ceiling is part of setup, documented with the other per-peer
+ceilings in `docs/api-keys.md`; the relator output-ceiling screen measures the
+configured value, so a draft sized against 128,000 is refused until it is.
 
 For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.6`; xAI
 accepts `low`, `medium`, `high`, or `xhigh` reasoning effort for it, so the

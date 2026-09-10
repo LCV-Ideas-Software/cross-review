@@ -9436,9 +9436,17 @@ export class CrossReviewOrchestrator {
     const missingFinancialVars = missingFinancialControlVars(this.config, chargeablePeers, {
       untilStopped: input.until_stopped,
       // The relator only generates; a Perplexity lead never declares the
-      // web_search tool, so the search-rate dimension is gated on the
-      // reviewer pool (same derivation as reviewerPeers below).
-      reviewerPeers: chargeablePeers.filter((peer) => peer !== leadPeer),
+      // web_search tool, so the search-rate dimension is gated on the reviewer
+      // pool. For ship and review that pool is the `reviewerPeers` derivation
+      // repeated below, over the same membership.
+      //
+      // Circular mode has no reviewer role at all: it returns inside
+      // `runCircularLoop` before any reviewer is dispatched, and every rotator
+      // is sent through `adapter.generate()`, whose Perplexity path
+      // structurally never sends `web_search`. Counting a tail rotator as a
+      // reviewer made the preflight demand the web-search fee dimension and
+      // refuse the session over a charge it cannot incur.
+      reviewerPeers: circularRotation ? [] : chargeablePeers.filter((peer) => peer !== leadPeer),
     });
     if (missingFinancialVars.length) {
       const blockedSession =
