@@ -5,6 +5,13 @@ All notable changes to this project will be documented here.
 The format follows Keep a Changelog conventions. Public version display follows the organization
 standard `v00.00.00`; npm package versions remain SemVer.
 
+## [Unreleased]
+
+### Changed
+
+- Updated the official CodeQL SARIF upload Action to v4.38.0 and zizmor-action
+  to v0.6.4, pinned to the full commit SHAs of their releases.
+
 ## [v06.00.00] — 08/09/2026
 
 ### Breaking
