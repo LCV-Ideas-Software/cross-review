@@ -192,7 +192,10 @@ Regex changes over untrusted text
 must use bounded or linear matching and include adversarial long-input coverage.
 
 Dependabot covers every package ecosystem represented by a committed manifest:
-npm, GitHub Actions, pip/pip-compile and pre-commit. The committed `.npmrc`
+npm, GitHub Actions, pip/pip-compile and pre-commit, scheduled every day at 05h (UTC−03:00), including weekends.
+Python version updates include direct and indirect dependencies. Security updates
+for npm, GitHub Actions and pip use separate groups from version updates; pre-commit
+does not support security updates. The committed `.npmrc`
 declares npmjs.org as npm's global dependency registry. `package.json`
 intentionally does not carry a `packageManager` Corepack hint: Dependabot uses
 its supported npm resolver, while CI bootstraps npm 12.0.2 from the npm
@@ -313,3 +316,9 @@ Out of scope: social engineering, physical attacks, denial-of-service testing wi
 ## Coordinated disclosure
 
 LCV Ideas & Software will triage reports privately, request clarification when needed, and coordinate remediation before public disclosure. Public disclosure should wait until a fix or mitigation is available, unless there is an immediate user-safety reason to do otherwise.
+
+Dependabot security fixes are grouped separately per supported ecosystem. A failing
+member can delay its group, so grouped pull requests require the same security,
+quality and compatibility checks as individual updates. The native schedule uses
+`cronjob: "0 5 * * *"` with `timezone: "Etc/GMT+3"`; GitHub may start queued work later.
+See the [official Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference).
