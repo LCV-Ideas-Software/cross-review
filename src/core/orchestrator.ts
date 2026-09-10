@@ -9230,15 +9230,15 @@ export class CrossReviewOrchestrator {
     // the round's votes already paid: measured session 17e75f42, the exact
     // failure issue #295 exists to prevent.
     //
-    // So the screen stays in review mode until the three surfaces agree.
-    // Aligning the prompt with the contract is the real fix and it does not
-    // belong in a close-out PR: permitting a structured response there makes a
-    // second, pre-existing hazard more reachable, because review mode replaces
-    // `draft` with the lead's output unguarded (drift detection is ship-only),
-    // so a structured review would silently become the artifact the next round
-    // votes on. Tracked separately.
+    // The obligation is MODE-BOUND, which is what issue #301 settled. In `ship`
+    // and `circular` the relator hands the whole artifact back every round, so a
+    // seat whose ceiling cannot hold it is a seat that will fail and refusing it
+    // before dispatch is the point. In `review` the relator is no longer asked
+    // to revise at all — see the round loop below — so it never re-emits the
+    // artifact and there is no capacity to screen for. Screening it anyway
+    // refused whole review sessions before a single reviewer was called.
     const relatorOutputFit: RelatorOutputFit | undefined =
-      input.initial_draft === undefined
+      input.initial_draft === undefined || sessionMode === "review"
         ? undefined
         : {
             draft_chars: Math.min(input.initial_draft.length, this.config.prompt.max_draft_chars),
@@ -9909,7 +9909,28 @@ export class CrossReviewOrchestrator {
         }
       }
 
-      if (round < effectiveMaxRounds) {
+      // The relator revises between rounds in `ship` — that is what ship IS —
+      // and never in `review`, where the artifact is the OBJECT of evaluation
+      // and belongs to whoever submitted it. Asking a review lead to rewrite it
+      // was the root of a three-way contradiction (issue #301): `types.ts` and
+      // the tool schema promised the lead "may emit a structured response",
+      // `leadShipModeDirective()` — the block that forbids one — was ship-only,
+      // and yet `buildRevisionPrompt` handed a review lead "Rewrite the
+      // solution" and "Return only the complete revised version". Two harms
+      // followed. A seat holding a 34,000-character artifact against a
+      // 20,000-token ceiling died on max_output_tokens with the round's votes
+      // already paid (measured session 17e75f42, the failure issue #295 exists
+      // to prevent). And when a lead did answer with a short verdict instead,
+      // that verdict replaced `draft` unguarded — drift detection is ship-only
+      // — so the assessment silently became the artifact the next round voted
+      // on, destroying the very thing under review.
+      //
+      // Review mode now evaluates a FIXED artifact: the lead generates one only
+      // when the caller supplied none (round zero), and after that the peers
+      // vote and the caller drives the next cycle. That also means the relator
+      // seat carries no re-emission obligation in this mode, which is why the
+      // output-ceiling screen above skips it.
+      if (sessionMode !== "review" && round < effectiveMaxRounds) {
         if (this.isCancelled(session.session_id, input.signal)) {
           await this.store.markCancelled(session.session_id, "session_cancelled");
           return {

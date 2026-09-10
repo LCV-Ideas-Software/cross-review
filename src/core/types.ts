@@ -45,7 +45,11 @@ export type SessionOutcome = "converged" | "aborted" | "max-rounds";
 // v2.13.0: ship vs review session intent. `ship` (default) means
 // `initial_draft` is the artifact under refinement — lead_peer produces
 // a NEW REVISED VERSION as prose. `review` means `initial_draft` is the
-// review subject — lead may emit a structured response. Disambiguates
+// review subject and is NOT revised by the lead: the lead generates a
+// first version only when the caller supplied none, and from then on the
+// peers vote on that fixed artifact while the caller drives the next cycle
+// (issue #301 — the earlier wording promised the lead "may emit a structured
+// response", which the revision prompt contradicted). Disambiguates
 // the v2.12 lead_peer meta-review drift on "Review v..." task wording.
 // v2.25.0: `circular` adds a third mode — serial deliberative custody
 // imported from maestro-app. Caller submits an artifact; the rotator

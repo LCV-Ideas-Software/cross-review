@@ -2027,7 +2027,9 @@ export async function main(): Promise<void> {
         // v2.13.0: ship vs review intent. `ship` (default) — initial_draft
         // is the artifact under refinement; lead_peer produces a NEW
         // REVISED VERSION as prose. `review` — initial_draft is the
-        // review subject; lead may emit structured responses.
+        // review subject and the lead does not revise it: the lead
+        // generates a first version only when none was supplied, then the
+        // peers vote on that fixed artifact (issue #301).
         // Disambiguates the v2.12 lead_peer meta-review drift bug
         // when the `task` field is phrased as a review act
         // ("Review v..."). See session.lead_drift_detected event.
