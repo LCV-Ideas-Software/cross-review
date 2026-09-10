@@ -4952,6 +4952,39 @@ export class CrossReviewOrchestrator {
     return persisted.submission.submission_id;
   }
 
+  // v07.00.00 (PR #300 review round 11): every terminal outcome that CREATES a
+  // session must leave the caller's artifact behind it. The rule was already
+  // written down at the main call site — "a preflight failure is itself an
+  // auditable terminal outcome, not a reason to discard the material that
+  // triggered it" — but two refusal branches sit ABOVE that line and returned
+  // without it, so the aborted session they persisted could never show the
+  // draft its terminal decision was about. Stating a rule once and applying it
+  // at one of three sites is how round 11 happened; this is the derivation all
+  // three now share.
+  //
+  // Disk only. It must stay that way: the refusal branches deliberately open
+  // their session with `store.init` rather than `initSession`, because the
+  // latter awaits `probeAll()`, and a refusal that pays provider probes is no
+  // longer the cheap pre-dispatch refusal those branches exist to be.
+  private async preserveCallerArtifact(
+    session: SessionMeta,
+    actingCaller: PeerId,
+    input: RunUntilUnanimousInput,
+  ): Promise<string | undefined> {
+    const submissionId = await this.persistCallerSubmittedEvidence({
+      sessionId: session.session_id,
+      caller: actingCaller,
+      task: input.task,
+      draft: input.initial_draft,
+      evidence: input.evidence,
+    });
+    if (input.initial_draft !== undefined) {
+      const artifactRound = session.rounds.length === 0 ? 0 : session.rounds.length + 1;
+      this.store.saveDraft(session.session_id, artifactRound, input.initial_draft);
+    }
+    return submissionId;
+  }
+
   private async recordPreflightChecked(
     sessionId: string,
     gate: "evidence" | "truthfulness",
@@ -9401,6 +9434,9 @@ export class CrossReviewOrchestrator {
           [],
           normalizeReviewFocus(input.review_focus, this.config),
         ));
+      // The artifact is preserved BEFORE the session is finalized, because a
+      // terminal record that cannot show what it refused is not auditable.
+      await this.preserveCallerArtifact(refusedSession, actingCaller, input);
       this.emit({
         type: "session.circular_rotation_output_ceiling",
         session_id: refusedSession.session_id,
@@ -9457,6 +9493,10 @@ export class CrossReviewOrchestrator {
           [],
           normalizeReviewFocus(input.review_focus, this.config),
         ));
+      // Same rule as the ceiling refusal above. This path was not named in the
+      // round-11 finding and has the identical defect, which is the whole
+      // argument for fixing the rule instead of the site.
+      await this.preserveCallerArtifact(blockedSession, actingCaller, input);
       this.emit({
         type: "session.blocked.financial_controls_missing",
         session_id: blockedSession.session_id,
@@ -9475,30 +9515,34 @@ export class CrossReviewOrchestrator {
         rounds: 0,
       };
     }
-    let session =
-      existingSession ?? (await this.initSession(input.task, callerForLottery, input.review_focus));
+    // A panel that leaves no independent reviewer is impossible before any
+    // session is needed to discover it — `askPeers` already refuses this way,
+    // one function up, and this one did not: it called `initSession`, which
+    // awaits `probeAll()`, and only then threw. The result was a session
+    // persisted with no outcome for a request that never ran, reachable
+    // afterwards only by recovery or by the 24-hour sweep, plus a round of
+    // provider probes paid for a refusal.
+    //
+    // Deliberately moved no further up than this. The size refusal and then
+    // the financial refusal both run above, and round 5 settled that order on
+    // the ground that the size refusal is the true cause; the two cannot
+    // collide anyway, since an empty reviewer set means exactly one session
+    // peer while the size refusal needs a non-empty tail to have excluded
+    // anyone.
     const reviewerPeers = selectedPeers.filter((peer) => peer !== leadPeer);
     if (!reviewerPeers.length) {
       throw new Error(
         `no_eligible_reviewer_peers: caller=${callerForLottery} and non-voting relator=${leadPeer} leave no independent voting reviewer. Enable at least one additional peer.`,
       );
     }
-    const callerSubmissionId = await this.persistCallerSubmittedEvidence({
-      sessionId: session.session_id,
-      caller: actingCaller,
-      task: input.task,
-      draft: input.initial_draft,
-      evidence: input.evidence,
-    });
-    const adapters = this.adapterFactory(this.config);
-    let draft = input.initial_draft;
+    let session =
+      existingSession ?? (await this.initSession(input.task, callerForLottery, input.review_focus));
     // Preserve the caller bytes before any local gate can reject them. A
     // preflight failure is itself an auditable terminal outcome, not a reason
     // to discard the material that triggered it.
-    const preflightArtifactRound = session.rounds.length === 0 ? 0 : session.rounds.length + 1;
-    if (draft !== undefined) {
-      this.store.saveDraft(session.session_id, preflightArtifactRound, draft);
-    }
+    const callerSubmissionId = await this.preserveCallerArtifact(session, actingCaller, input);
+    const adapters = this.adapterFactory(this.config);
+    let draft = input.initial_draft;
 
     // v3.5.0 (CRV2-1 + CRV2-6): persist requested-vs-effective budget +
     // max_rounds traceability once, before any round runs.

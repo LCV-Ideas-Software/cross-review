@@ -997,4 +997,167 @@ function fixedArtifactAdapters(text: string): {
   console.log("[v7.0.0-relator-ceiling] circular_mode_is_priced_without_a_reviewer_role: PASS");
 }
 
+// --- 20. a terminal refusal keeps the artifact it refused -----------------
+// The main path already carried the rule in a comment — "a preflight failure is
+// itself an auditable terminal outcome, not a reason to discard the material
+// that triggered it" — but two refusal branches sit ABOVE that line and
+// returned without it. The session they persisted was finalized `aborted` with
+// no draft and no caller submission on disk, so nothing afterwards could show
+// the artifact the terminal decision was about.
+//
+// Both branches are covered, because only one of them was reported. The second
+// is the financial refusal, which had the identical defect and was found by
+// asking which OTHER paths finalize before the artifact is kept.
+{
+  const draftFiles = (dir: string): string[] => {
+    const found: string[] = [];
+    const walk = (at: string): void => {
+      for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+        const full = path.join(at, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/^round-\d+-draft\.md$/.test(entry.name)) found.push(full);
+      }
+    };
+    walk(dir);
+    return found;
+  };
+
+  const ARTIFACT = "z".repeat(300);
+  const ceilings: Record<PeerId, number> = {
+    claude: 640,
+    codex: 640,
+    gemini: 200, // collapses the rotation against the 300-character draft
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
+  };
+
+  // (a) the output-ceiling refusal
+  const sizeConfig = harnessConfig("relator-ceiling-refusal-keeps-artifact", ceilings);
+  const sizeProbe = countingAdapters(sizeConfig);
+  const sizeRun = await new CrossReviewOrchestrator(
+    sizeConfig,
+    () => {},
+    sizeProbe.factory,
+  ).runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    peers: ["codex", "gemini"],
+    lead_peer: "codex",
+    initial_draft: ARTIFACT,
+    mode: "circular",
+    max_rounds: 1,
+  });
+  assert.equal(
+    sizeRun.session.outcome_reason,
+    "circular_rotation_output_ceiling",
+    `the size refusal must still be the outcome; got ${String(sizeRun.session.outcome_reason)}`,
+  );
+  const sizeDrafts = draftFiles(sizeConfig.data_dir);
+  assert.equal(
+    sizeDrafts.length,
+    1,
+    `the refused session must persist exactly one draft; found ${sizeDrafts.length}`,
+  );
+  assert.equal(
+    fs.readFileSync(sizeDrafts[0] as string, "utf8"),
+    ARTIFACT,
+    "and it must be the artifact the caller submitted, byte for byte",
+  );
+  assert.deepEqual(
+    sizeProbe.generated,
+    [],
+    "CONTROL: preserving the artifact must not cost a provider call — the refusal is still free",
+  );
+
+  // (b) the financial refusal, which the round-11 finding did not name
+  const moneyBase = harnessConfig("relator-ceiling-money-keeps-artifact", {
+    ...ceilings,
+    gemini: 640, // everyone fits, so the refusal below is about money, not size
+  });
+  const moneyRates = { ...moneyBase.cost_rates };
+  delete moneyRates.codex;
+  const moneyConfig: AppConfig = { ...moneyBase, cost_rates: moneyRates, model_cost_rates: {} };
+  const moneyProbe = countingAdapters(moneyConfig);
+  const moneyEvents: RuntimeEvent[] = [];
+  await new CrossReviewOrchestrator(
+    moneyConfig,
+    (event) => moneyEvents.push(event),
+    moneyProbe.factory,
+  ).runUntilUnanimous({
+    task: "Revise the artifact.",
+    caller: "claude",
+    peers: ["codex", "gemini"],
+    lead_peer: "codex",
+    initial_draft: ARTIFACT,
+    mode: "circular",
+    max_rounds: 1,
+  });
+  assert.ok(
+    moneyEvents.some((event) => event.type === "session.blocked.financial_controls_missing"),
+    "the money refusal must still fire, or this half proves nothing",
+  );
+  const moneyDrafts = draftFiles(moneyConfig.data_dir);
+  assert.equal(
+    moneyDrafts.length,
+    1,
+    `the financially blocked session must persist its draft too; found ${moneyDrafts.length}`,
+  );
+  assert.deepEqual(moneyProbe.generated, [], "CONTROL: and that refusal stays free as well");
+  console.log("[v7.0.0-relator-ceiling] terminal_refusal_keeps_the_artifact: PASS");
+}
+
+// --- 21. an impossible panel is refused before a session exists -----------
+// With the caller and one other peer enabled, auto-recusal leaves a single
+// session peer, the lottery seats it as relator, and no independent reviewer is
+// left. That was discovered AFTER `initSession` — which awaits `probeAll()` —
+// so a request that never ran persisted a session with no outcome, reachable
+// afterwards only by recovery or by the 24-hour sweep. `askPeers` already
+// refuses this way one function up; this path did not.
+{
+  const base = harnessConfig("relator-ceiling-impossible-panel", {
+    claude: 640,
+    codex: 640,
+    gemini: 640,
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
+  });
+  const config: AppConfig = {
+    ...base,
+    peer_enabled: {
+      ...base.peer_enabled,
+      claude: true,
+      codex: true,
+      gemini: false,
+      deepseek: false,
+      grok: false,
+      perplexity: false,
+    },
+  };
+  const probe = countingAdapters(config);
+  const orchestrator = new CrossReviewOrchestrator(config, () => {}, probe.factory);
+  const before = orchestrator.store.list().length;
+  const error = await capturedAsync(() =>
+    orchestrator.runUntilUnanimous({
+      task: "Revise the artifact.",
+      caller: "claude",
+      initial_draft: "z".repeat(100),
+      max_rounds: 1,
+    }),
+  );
+  assert.match(
+    String(error),
+    /no_eligible_reviewer_peers/,
+    `an impossible panel must be refused; got ${String(error)}`,
+  );
+  assert.equal(
+    orchestrator.store.list().length,
+    before,
+    "and it must leave no session behind, because the request never ran",
+  );
+  assert.deepEqual(probe.generated, [], "CONTROL: nor may it dispatch anyone");
+  console.log("[v7.0.0-relator-ceiling] impossible_panel_creates_no_session: PASS");
+}
+
 console.log("[v7.0.0-relator-ceiling] ALL CASES PASS");
