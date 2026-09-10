@@ -5245,9 +5245,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   console.log("[smoke] lead_drift_md_detected_test: PASS");
 }
 
-// v2.13.0 — `mode: "review"` disables drift detection. With FORCE_DRIFT
-// active and mode=review, the lead's structured NEEDS_EVIDENCE output
-// is accepted as the next draft (no abort, no detection event).
+// v2.13.0 — `mode: "review"` disables drift detection: with FORCE_DRIFT
+// active and mode=review there is no detection event and no abort.
+// v07.00.00 (CROSREV-46, issue #301) — the second half of that sentence used
+// to read "the lead's structured output is accepted as the next draft", and
+// that WAS the defect: a verdict silently replaced the artifact under review.
+// The lead is no longer asked to revise in review mode at all, so nothing can
+// replace it. The assertion below is unchanged and still holds; only the
+// description of why it holds has moved.
 {
   const cfg = {
     ...loadConfig(),

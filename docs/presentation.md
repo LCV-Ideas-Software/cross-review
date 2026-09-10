@@ -145,8 +145,10 @@ The mode is chosen by the caller and defines the "rite" of the review:
   designated as the **lead peer** (`lead_peer`) produces, in each round, a
   **new revised version** in prose, while the other peers vote in parallel.
   Suited to taking an artifact through to its final version.
-- **`review`** — the draft is the **object of evaluation**. The lead peer may
-  emit structured responses; the peers vote in parallel. Suited to
+- **`review`** — the draft is the **object of evaluation** and the lead peer
+  does **not** revise it: the lead produces a first version only when the
+  caller supplied none, and from then on the peers vote in parallel on that
+  fixed artifact while the caller drives the next cycle. Suited to
   approve/reject opinions on code or external material.
 - **`circular`** — **serial deliberative custody**. The caller submits the
   artifact; the **rotator of the round** either approves it unchanged or
