@@ -3759,7 +3759,11 @@ export function truthfulnessPreflight(params: {
         const bareViewMatches = occurrence.route === undefined && allPinViews.has(occurrence.token);
         if (routedViewMatches || bareViewMatches) {
           affirmativelyValidated = true;
-          validatedBareTokens.add(occurrence.token);
+          // Only a BARE validation can vouch for a route. Seeding this from the
+          // routed branch too made a known route stand surety for a different
+          // unverifiable route of the same token, with no bare pin involved --
+          // which is the case the older contract deliberately tolerates.
+          if (bareViewMatches) validatedBareTokens.add(occurrence.token);
           continue;
         }
         if (occurrence.route !== undefined && barePinSegments.has(occurrence.token)) {
