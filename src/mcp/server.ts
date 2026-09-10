@@ -1194,6 +1194,21 @@ function verifyToolCallerIdentity(
 // "client_info" -- which is a self-report, and therefore no basis for rewriting
 // a petitioner's session. Every owner-scoped mutation goes through this, so the
 // rule has one statement rather than one per tool.
+// `verifyCallerIdentity` reports what it could establish; it does not refuse.
+// Under the default permissive token mode an unknown client that presents no
+// token comes back `identity_verified: false` with `verification_method:
+// "none"`, and a handler that ignores the returned record proceeds as if the
+// caller were known. That is the whole gap: the check ran and its answer was
+// discarded. Any mutation that can act on a session it does not own must read
+// the answer.
+export function assertIdentityActuallyVerified(site: string, identity: CallerIdentityResult): void {
+  if (!identity.identity_verified || identity.verification_method === "none") {
+    throw new Error(
+      `caller_identity_unverified: ${site} acts on sessions it does not own and therefore requires an actually verified caller; received verification_method='${identity.verification_method}'.`,
+    );
+  }
+}
+
 export function assertOwnerTokenVerified(
   site: string,
   identity: CallerIdentityResult,
@@ -3158,7 +3173,17 @@ export async function main(): Promise<void> {
       // another petitioner's session. It is a deliberate exception, not an
       // oversight, and it is the reason the v07.00.00 changelog must not claim
       // that no identity can step over the session-owner gate.
-      verifyToolCallerIdentity(runtime, "session_sweep", caller, server.server.getClientVersion());
+      const sweepIdentity = verifyToolCallerIdentity(
+        runtime,
+        "session_sweep",
+        caller,
+        server.server.getClientVersion(),
+      );
+      // Ownership is deliberately NOT required here — a dead petitioner cannot
+      // sweep its own session, which is the entire purpose — but the identity
+      // must at least be real. Discarding the verification result meant an
+      // unauthenticated client could finalize every session idle for 24 hours.
+      assertIdentityActuallyVerified("session_sweep", sweepIdentity);
       const swept = await runtime.orchestrator.store.sweepIdle(
         idle_minutes * 60_000,
         outcome,

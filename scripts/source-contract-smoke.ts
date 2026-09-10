@@ -549,6 +549,167 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00 (PR #300 review rounds 2-7): the English-only rule produced a
+  // finding in SIX consecutive rounds. Each round I fixed the line that was
+  // named and the next round named another one. Six site fixes did not enforce
+  // the rule, so the rule is enforced here instead.
+  //
+  // What is forbidden is an AUTHORED comment in Portuguese. Portuguese is
+  // admissible as DATA — a fixture the runtime must recognise, which lives in
+  // a string literal, never in a comment — and as a QUOTATION of a standing
+  // directive, which carries quote marks or an explicit marker. So the gate
+  // reads contiguous comment blocks and skips any block that quotes or is
+  // marked. Detection is orthographic first and lexical second: a closed word
+  // list always lags the next comment, but Portuguese spelling does not.
+  //
+  // Replayed against the six findings this rule produced, it catches all six.
+  const PT_MARKERS = ["verbatim", "pt-br", "quoted", "fixture", "directive"];
+  const PT_ACCENTS = /[\u00e1\u00e9\u00ed\u00f3\u00fa\u00e2\u00ea\u00f4\u00e3\u00f5\u00e7]/;
+  const PT_WORDS =
+    /(?<![\w-])(n[a\u00e3]o|s[a\u00e3]o|est[a\u00e1]|sess[a\u00e3]o|com|para|que|uma|por|dos|das|pelo|pela|sem|mais|ainda|ent[a\u00e3]o|quando|onde|como|isso|este|esta|seu|sua|deve|fora|cada|nunca|apenas|porque|todos|toda|colegiado|sorteio|removido|filtra|acata|contesta)(?![\w-])/;
+  const isCommentLine = (line: string): boolean => /^\s*(\/\/|\*|\/\*)/.test(line);
+  const walkTsFiles = (dir: string, acc: string[]): string[] => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walkTsFiles(full, acc);
+      else if (entry.name.endsWith(".ts")) acc.push(full);
+    }
+    return acc;
+  };
+  const authoredPortuguese: string[] = [];
+  for (const file of [
+    ...walkTsFiles(path.join(process.cwd(), "src"), []),
+    ...walkTsFiles(path.join(process.cwd(), "scripts"), []),
+  ]) {
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    let blockStart = -1;
+    const flushBlock = (endExclusive: number): void => {
+      if (blockStart < 0) return;
+      const block = lines.slice(blockStart, endExclusive);
+      const joined = block.join(" ");
+      const lowered = joined.toLowerCase();
+      const quotes = joined.includes('"') || joined.includes("`") || joined.includes("'");
+      const marked = PT_MARKERS.some((marker) => lowered.includes(marker));
+      if (!quotes && !marked) {
+        for (let i = 0; i < block.length; i += 1) {
+          const line = block[i] ?? "";
+          const low = line.toLowerCase();
+          if (low.includes("://")) continue;
+          if (PT_ACCENTS.test(low) || PT_WORDS.test(low)) {
+            authoredPortuguese.push(
+              `${path.relative(process.cwd(), file).split(path.sep).join("/")}:${blockStart + i + 1}: ${line.trim().slice(0, 90)}`,
+            );
+          }
+        }
+      }
+      blockStart = -1;
+    };
+    for (let i = 0; i < lines.length; i += 1) {
+      if (isCommentLine(lines[i] ?? "")) {
+        if (blockStart < 0) blockStart = i;
+      } else {
+        flushBlock(i);
+      }
+    }
+    flushBlock(lines.length);
+  }
+  assert.deepEqual(
+    authoredPortuguese,
+    [],
+    `v07.00.00 / English-only: an authored comment must be English. Portuguese belongs in fixtures (string literals the runtime must match) and in marked quotations of standing directives, never in the author's own commentary. Offending lines:\n${authoredPortuguese.join("\n")}`,
+  );
+  console.log("[source-contract-smoke] authored_comments_are_english_test: PASS");
+}
+
+{
+  // v07.00.00 (PR #300 review rounds 1-7): "an owner-scoped mutation must be
+  // scoped" produced findings in rounds 1, 2, 5, 6 and 7 — seven in total,
+  // including a P1 in round 7 on the same file as a round-1 finding. Five site
+  // fixes did not enforce the rule. What follows enforces it as a census: every
+  // mutating tool is classified by the authority it actually requires, and the
+  // three buckets are pinned. A new mutating tool, or an existing one that
+  // loses its check, lands in the wrong bucket and fails here.
+  const authoritySource = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  const OWNER_SCOPED = [
+    "ask_peers",
+    "contest_verdict",
+    "session_attach_evidence",
+    "session_cancel_job",
+    "session_doctor",
+    "session_evidence_judge_consensus_pass",
+    "session_evidence_judge_pass",
+    "session_finalize",
+    "session_recover_interrupted",
+    "session_start_round",
+    "session_start_unanimous",
+  ];
+  // The single deliberate exception. Sweep exists for sessions whose petitioner
+  // is GONE, so scoping it by owner would disable its only purpose; it is
+  // bounded by the 24-hour age floor instead. It must still know who is asking.
+  const VERIFIED_IDENTITY_ONLY = ["session_sweep"];
+  // These CREATE a session rather than mutate one that already has an owner,
+  // so there is no owner to check against.
+  const DECLARED_IDENTITY_ONLY = ["run_until_unanimous", "session_init"];
+
+  const buckets: { owner: string[]; verified: string[]; declared: string[] } = {
+    owner: [],
+    verified: [],
+    declared: [],
+  };
+  for (const registration of authoritySource.split('registerTool(\n    "').slice(1)) {
+    const toolName = registration.slice(0, registration.indexOf('"'));
+    const handlerAt = registration.indexOf("async (");
+    const declaration = handlerAt > 0 ? registration.slice(0, handlerAt) : registration;
+    if (!/readOnlyHint:\s*false/.test(declaration)) continue;
+    const body = handlerAt > 0 ? registration.slice(handlerAt, handlerAt + 8000) : registration;
+    if (
+      body.includes("assertOwnerTokenVerified") ||
+      body.includes("verifySessionMutationAuthority")
+    ) {
+      buckets.owner.push(toolName);
+    } else if (body.includes("assertIdentityActuallyVerified")) {
+      buckets.verified.push(toolName);
+    } else {
+      buckets.declared.push(toolName);
+    }
+  }
+  assert.deepEqual(
+    buckets.owner.sort(),
+    OWNER_SCOPED,
+    `v07.00.00 / mutation authority: these tools mutate a session that already has an owner and must require the owner's capability token; got [${buckets.owner.join(", ")}]`,
+  );
+  assert.deepEqual(
+    buckets.verified.sort(),
+    VERIFIED_IDENTITY_ONLY,
+    `v07.00.00 / mutation authority: exactly one mutating tool may act across owners, and it must still require a verified identity; got [${buckets.verified.join(", ")}]`,
+  );
+  assert.deepEqual(
+    buckets.declared.sort(),
+    DECLARED_IDENTITY_ONLY,
+    `v07.00.00 / mutation authority: only session-creating tools may run on a declared identity alone; got [${buckets.declared.join(", ")}]`,
+  );
+
+  // The companion rule, which produced findings in rounds 4, 6 and 7: every
+  // public entry point that accepts a caller validates it at RUNTIME, because
+  // the TypeScript declaration is erased in the shipped JavaScript. Pinning the
+  // COUNT is what makes a fourth entry point fail rather than pass silently.
+  const orchestratorSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+  const guarded = orchestratorSource.match(/assertCallerIsPeer\("([a-zA-Z]+)"/g) ?? [];
+  assert.deepEqual(
+    guarded.map((entry) => entry.replace(/assertCallerIsPeer\("/, "").replace(/"$/, "")).sort(),
+    ["askPeers", "initSession", "runUntilUnanimous"],
+    `v07.00.00 / caller validation: every public orchestrator entry point that accepts a caller must validate it at runtime; got [${guarded.join(", ")}]`,
+  );
+  console.log("[source-contract-smoke] mutation_authority_census_test: PASS");
+}
+
+{
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
     serverSrc.includes('process.on("SIGTERM"') && serverSrc.includes('process.on("SIGINT"'),

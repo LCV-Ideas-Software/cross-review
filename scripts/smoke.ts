@@ -4779,7 +4779,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const lotteryMod2 = await import("../src/core/relator-lottery.js");
   const { assignRelator, resolveLeadPeer, LeadPeerNotInSessionError } = lotteryMod2;
-  // (1) Subset com 2 peers + caller=claude → assigned ∈ subset.
+  // (1) A 2-peer subset with caller=claude → assigned ∈ subset.
   for (let i = 0; i < 50; i++) {
     const a = assignRelator("claude", ["codex", "gemini"]);
     assert.ok(
