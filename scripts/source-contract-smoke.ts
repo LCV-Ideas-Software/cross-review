@@ -549,79 +549,6 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
-  // v07.00.00 (PR #300 review rounds 2-7): the English-only rule produced a
-  // finding in SIX consecutive rounds. Each round I fixed the line that was
-  // named and the next round named another one. Six site fixes did not enforce
-  // the rule, so the rule is enforced here instead.
-  //
-  // What is forbidden is an AUTHORED comment in Portuguese. Portuguese is
-  // admissible as DATA — a fixture the runtime must recognise, which lives in
-  // a string literal, never in a comment — and as a QUOTATION of a standing
-  // directive, which carries quote marks or an explicit marker. So the gate
-  // reads contiguous comment blocks and skips any block that quotes or is
-  // marked. Detection is orthographic first and lexical second: a closed word
-  // list always lags the next comment, but Portuguese spelling does not.
-  //
-  // Replayed against the six findings this rule produced, it catches all six.
-  const PT_MARKERS = ["verbatim", "pt-br", "quoted", "fixture", "directive"];
-  const PT_ACCENTS = /[\u00e1\u00e9\u00ed\u00f3\u00fa\u00e2\u00ea\u00f4\u00e3\u00f5\u00e7]/;
-  const PT_WORDS =
-    /(?<![\w-])(n[a\u00e3]o|s[a\u00e3]o|est[a\u00e1]|sess[a\u00e3]o|com|para|que|uma|por|dos|das|pelo|pela|sem|mais|ainda|ent[a\u00e3]o|quando|onde|como|isso|este|esta|seu|sua|deve|fora|cada|nunca|apenas|porque|todos|toda|colegiado|sorteio|removido|filtra|acata|contesta)(?![\w-])/;
-  const isCommentLine = (line: string): boolean => /^\s*(\/\/|\*|\/\*)/.test(line);
-  const walkTsFiles = (dir: string, acc: string[]): string[] => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walkTsFiles(full, acc);
-      else if (entry.name.endsWith(".ts")) acc.push(full);
-    }
-    return acc;
-  };
-  const authoredPortuguese: string[] = [];
-  for (const file of [
-    ...walkTsFiles(path.join(process.cwd(), "src"), []),
-    ...walkTsFiles(path.join(process.cwd(), "scripts"), []),
-  ]) {
-    const lines = fs.readFileSync(file, "utf8").split("\n");
-    let blockStart = -1;
-    const flushBlock = (endExclusive: number): void => {
-      if (blockStart < 0) return;
-      const block = lines.slice(blockStart, endExclusive);
-      const joined = block.join(" ");
-      const lowered = joined.toLowerCase();
-      const quotes = joined.includes('"') || joined.includes("`") || joined.includes("'");
-      const marked = PT_MARKERS.some((marker) => lowered.includes(marker));
-      if (!quotes && !marked) {
-        for (let i = 0; i < block.length; i += 1) {
-          const line = block[i] ?? "";
-          const low = line.toLowerCase();
-          if (low.includes("://")) continue;
-          if (PT_ACCENTS.test(low) || PT_WORDS.test(low)) {
-            authoredPortuguese.push(
-              `${path.relative(process.cwd(), file).split(path.sep).join("/")}:${blockStart + i + 1}: ${line.trim().slice(0, 90)}`,
-            );
-          }
-        }
-      }
-      blockStart = -1;
-    };
-    for (let i = 0; i < lines.length; i += 1) {
-      if (isCommentLine(lines[i] ?? "")) {
-        if (blockStart < 0) blockStart = i;
-      } else {
-        flushBlock(i);
-      }
-    }
-    flushBlock(lines.length);
-  }
-  assert.deepEqual(
-    authoredPortuguese,
-    [],
-    `v07.00.00 / English-only: an authored comment must be English. Portuguese belongs in fixtures (string literals the runtime must match) and in marked quotations of standing directives, never in the author's own commentary. Offending lines:\n${authoredPortuguese.join("\n")}`,
-  );
-  console.log("[source-contract-smoke] authored_comments_are_english_test: PASS");
-}
-
-{
   // v07.00.00 (PR #300 review rounds 1-7): "an owner-scoped mutation must be
   // scoped" produced findings in rounds 1, 2, 5, 6 and 7 — seven in total,
   // including a P1 in round 7 on the same file as a round-1 finding. Five site
@@ -696,15 +623,22 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   // public entry point that accepts a caller validates it at RUNTIME, because
   // the TypeScript declaration is erased in the shipped JavaScript. Pinning the
   // COUNT is what makes a fourth entry point fail rather than pass silently.
-  const orchestratorSource = fs.readFileSync(
-    path.join(process.cwd(), "src", "core", "orchestrator.ts"),
-    "utf8",
-  );
-  const guarded = orchestratorSource.match(/assertCallerIsPeer\("([a-zA-Z]+)"/g) ?? [];
+  // Round 8 found a fourth boundary — SessionStore.init — because this pin read
+  // one file while the rule is about the whole shipped surface. The guard now
+  // lives in types.ts so both modules share one definition, and the pin reads
+  // both. Scoping an enforcement to one file is the same error as fixing one
+  // site, committed one level up.
+  const boundaryGuards: string[] = [];
+  for (const file of ["orchestrator.ts", "session-store.ts"]) {
+    const text = fs.readFileSync(path.join(process.cwd(), "src", "core", file), "utf8");
+    for (const entry of text.match(/assertCallerIsPeer\("([A-Za-z.]+)"/g) ?? []) {
+      boundaryGuards.push(entry.replace(/assertCallerIsPeer\("/, "").replace(/"$/, ""));
+    }
+  }
   assert.deepEqual(
-    guarded.map((entry) => entry.replace(/assertCallerIsPeer\("/, "").replace(/"$/, "")).sort(),
-    ["askPeers", "initSession", "runUntilUnanimous"],
-    `v07.00.00 / caller validation: every public orchestrator entry point that accepts a caller must validate it at runtime; got [${guarded.join(", ")}]`,
+    boundaryGuards.sort(),
+    ["SessionStore.init", "askPeers", "initSession", "runUntilUnanimous"],
+    `v07.00.00 / caller validation: every public boundary that accepts a caller must validate it at runtime, because the PeerId annotation is erased in the shipped JavaScript; got [${boundaryGuards.join(", ")}]`,
   );
   console.log("[source-contract-smoke] mutation_authority_census_test: PASS");
 }

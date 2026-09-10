@@ -672,6 +672,26 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "an ownerless routed occurrence must not be adopted by the routable peer blanketly",
   );
+  // v07.00.00 (PR #300 review round 8): the masking case, and it has to sit
+  // next to the assertion above because the two look alike and mean opposite
+  // things. Above: a routed token UNRELATED to any validated one is tolerated,
+  // because calling it a lie would mean inventing the deployment fact. Here:
+  // the SAME bare token is asserted correctly and then used under a route the
+  // runtime cannot verify, so the valid occurrence sets `affirmativelyValidated`
+  // and the route rides in on its back with S2 never running.
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime pins codex to gpt-5.6-sol, served as xai/gpt-5.6-sol.",
+      plainPins,
+    ),
+    false,
+    "a correct bare pin must not vouch for an unverifiable route of the SAME token on the same line",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime pins codex to gpt-5.6-sol.", plainPins),
+    true,
+    "CONTROL: the bare pin alone must still pass, or the rule would be refusing every line that names a model",
+  );
   assert.equal(
     rt(
       "The Perplexity peer in the currently loaded cross-review runtime is routed through zeta / gpt-5.5.",

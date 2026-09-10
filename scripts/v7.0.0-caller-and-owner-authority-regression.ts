@@ -135,4 +135,48 @@ async function capturedAsync(run: () => Promise<unknown>): Promise<unknown> {
   console.log("[v7.0.0-authority] owner_scoped_mutation_requires_the_token: PASS");
 }
 
+// --- 4. the store boundary refuses an ownerless session ------------------
+// Round 6 guarded two orchestrator entry points, round 7 a third, and round 8
+// found this one: `SessionStore.init` writes `caller` straight to disk, and its
+// own comment already claimed only a peer may open a session. A JavaScript
+// consumer of dist/ could persist a v7 session owned by nobody — which no
+// ownership check can ever satisfy — or by the retired "operator".
+{
+  const orchestrator = new CrossReviewOrchestrator(loadConfig());
+  const store = orchestrator.store;
+  const missing = await capturedAsync(() =>
+    (store.init as unknown as (t: string, c: unknown, s: unknown[]) => Promise<unknown>)(
+      "Anything.",
+      undefined,
+      [],
+    ),
+  );
+  assert.match(
+    String(missing),
+    /caller_required/,
+    `SessionStore.init must refuse an ownerless session; got ${String(missing)}`,
+  );
+  const retired = await capturedAsync(() =>
+    (store.init as unknown as (t: string, c: unknown, s: unknown[]) => Promise<unknown>)(
+      "Anything.",
+      "operator",
+      [],
+    ),
+  );
+  assert.match(
+    String(retired),
+    /caller_required/,
+    `SessionStore.init must refuse the retired identity by name; got ${String(retired)}`,
+  );
+  // CONTROL: a real peer still opens a session, or the guard would be refusing
+  // every caller rather than refusing the two that cannot own one.
+  const opened = await store.init("Anything.", "claude", []);
+  assert.equal(
+    opened.caller,
+    "claude",
+    "CONTROL: a declared peer must still be able to open a session",
+  );
+  console.log("[v7.0.0-authority] store_boundary_refuses_ownerless_sessions: PASS");
+}
+
 console.log("[v7.0.0-authority] ALL CASES PASS");

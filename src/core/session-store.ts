@@ -51,7 +51,7 @@ import type {
   ShadowJudgmentPeerStats,
   ShadowJudgmentRollup,
 } from "./types.js";
-import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
+import { assertCallerIsPeer, PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
 
 export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
@@ -1530,6 +1530,12 @@ export class SessionStore {
     snapshot: PeerProbeResult[],
     reviewFocus?: string,
   ): Promise<SessionMeta> {
+    // The comment above states the rule; this enforces it. Without the check
+    // the annotation is erased in dist/ and `init(task, undefined, ...)` or
+    // `init(task, "operator", ...)` persists a v7 session with an owner no
+    // ownership check can ever satisfy — and an ownerless one can be adopted
+    // by the first direct continuation.
+    assertCallerIsPeer("SessionStore.init", caller);
     const session_id = crypto.randomUUID();
     const initializedAt = now();
     const configSnapshot = effectiveConfigSnapshot(this.config);

@@ -34,6 +34,20 @@
 // (caller != lead_peer != reviewer).
 // Adapter at `peers/perplexity.ts` reuses the shared `loadOpenAICtor`
 // helper introduced in v2.27.1.
+// The runtime half of `caller: PeerId`. That annotation is erased in the
+// shipped JavaScript, so every PUBLIC boundary that accepts a caller has to
+// check it: a plain JS consumer of dist/ can pass undefined, or the retired
+// "operator", and persist a session no owner can ever claim. It lives here,
+// beside PEERS, because the boundaries that need it are in different modules
+// and a second copy would be a second rule.
+export function assertCallerIsPeer(site: string, caller: unknown): asserts caller is PeerId {
+  if (typeof caller !== "string" || !(PEERS as readonly string[]).includes(caller)) {
+    throw new Error(
+      `caller_required: ${site} requires \`caller\` to be one of ${PEERS.join(", ")}; received ${JSON.stringify(caller)}.`,
+    );
+  }
+}
+
 export const PEERS = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const;
 export type PeerId = (typeof PEERS)[number];
 

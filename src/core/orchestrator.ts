@@ -56,6 +56,7 @@ import type {
   TokenUsage,
 } from "./types.js";
 import {
+  assertCallerIsPeer,
   INDETERMINATE_SPEND_FAILURE_CLASSES,
   PEERS,
   POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX,
@@ -329,20 +330,6 @@ function collapsedCircularRotationMessage(
     `the artifact, or raise those ceilings in the central configuration ` +
     `(max_output_tokens_by_peer / CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`
   );
-}
-
-// The public entry points are reachable from plain JavaScript, where the
-// `caller: PeerId` declaration has been erased. The MCP layer validates with
-// Zod, but the orchestrator is a shipped module and cannot assume that layer
-// is in front of it: a missing caller used to resolve to "operator", the very
-// identity v07.00.00 retired, which is exempt from nothing because it was
-// never a peer. Refuse at the boundary instead of inventing a principal.
-function assertCallerIsPeer(site: string, caller: unknown): asserts caller is PeerId {
-  if (typeof caller !== "string" || !(PEERS as readonly string[]).includes(caller)) {
-    throw new Error(
-      `caller_required: ${site} requires \`caller\` to be one of ${PEERS.join(", ")}; received ${JSON.stringify(caller)}.`,
-    );
-  }
 }
 
 function summarizePriorRounds(meta: SessionMeta, config: AppConfig): string {
@@ -3739,6 +3726,12 @@ export function truthfulnessPreflight(params: {
         }
       }
       let affirmativelyValidated = false;
+      // Bare tokens this line validated affirmatively, and bare tokens whose
+      // provider-qualified use the runtime could neither confirm nor deny.
+      // Kept as SETS rather than flags because the defect is specifically a
+      // valid occurrence vouching for an unverifiable route of THE SAME token.
+      const validatedBareTokens = new Set<string>();
+      const unresolvedRoutedTokens = new Set<string>();
       let currentOccurrenceCount = 0;
       let anyModelDenialOrContradiction = contradictions.length > contradictionCountBefore;
       for (const occurrence of occurrences) {
@@ -3766,9 +3759,18 @@ export function truthfulnessPreflight(params: {
         const bareViewMatches = occurrence.route === undefined && allPinViews.has(occurrence.token);
         if (routedViewMatches || bareViewMatches) {
           affirmativelyValidated = true;
+          validatedBareTokens.add(occurrence.token);
           continue;
         }
         if (occurrence.route !== undefined && barePinSegments.has(occurrence.token)) {
+          // A provider-qualified use of a real pin, e.g. `xai/gpt-6-astra`,
+          // which the runtime cannot confirm or deny because no provider-to-peer
+          // map exists. Skipping it is right; forgetting it is not. When the
+          // same line also carries a valid BARE pin, `affirmativelyValidated`
+          // is already true and S2 below would let the unverifiable route ride
+          // in on the valid occurrence's back. Tracked separately so the line
+          // stays unsupported.
+          unresolvedRoutedTokens.add(occurrence.token);
           continue;
         }
         lineCurrentModelClaimMatched = true;
@@ -3784,7 +3786,22 @@ export function truthfulnessPreflight(params: {
       // parser could not validate affirmatively (idiomatic phrasing,
       // inverted negation). It is reported as unsupported instead of
       // silently passing: restate plainly or attach structured evidence.
-      if (currentOccurrenceCount > 0 && !affirmativelyValidated && !anyModelDenialOrContradiction) {
+      // A route the runtime cannot verify is tolerated on its own — that is a
+      // deliberate contract, since calling it a lie would mean inventing the
+      // deployment fact. What is NOT tolerated is the same bare token being
+      // asserted correctly and then used under an unverifiable route on the
+      // same line: there the valid occurrence sets `affirmativelyValidated` and
+      // the route rides in on its back. Only that intersection is added here,
+      // which is why an unrelated routed token elsewhere on the line still
+      // passes.
+      const maskedRoute = [...unresolvedRoutedTokens].some((token) =>
+        validatedBareTokens.has(token),
+      );
+      if (
+        currentOccurrenceCount > 0 &&
+        (!affirmativelyValidated || maskedRoute) &&
+        !anyModelDenialOrContradiction
+      ) {
         lineCurrentModelClaimMatched = true;
         currentStateClaimMatched = true;
         addIssueClass(issueClasses, "unsupported_current_state_claim");
