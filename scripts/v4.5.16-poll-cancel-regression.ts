@@ -29,7 +29,9 @@ type PollPayload = {
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v4516-poll-cancel-"));
 const configPath = path.join(dataDir, "config.json");
-const operatorToken = "07".repeat(32);
+// v07.00.00: the record holds one capability per peer; the caller declares
+// "claude" and presents claude's own token.
+const callerToken = "02".repeat(32);
 const failures: string[] = [];
 let serverStderr = "";
 
@@ -46,7 +48,6 @@ fs.writeFileSync(
       deepseek: "04".repeat(32),
       grok: "05".repeat(32),
       perplexity: "06".repeat(32),
-      operator: operatorToken,
     },
   }),
   "utf8",
@@ -64,7 +65,7 @@ const serverEnvironment = {
   ...rateEnvironment,
   CROSS_REVIEW_DATA_DIR: dataDir,
   CROSS_REVIEW_CONFIG_FILE: configPath,
-  CROSS_REVIEW_CALLER_TOKEN: operatorToken,
+  CROSS_REVIEW_CALLER_TOKEN: callerToken,
   CROSS_REVIEW_REQUIRE_TOKEN: "true",
   CROSS_REVIEW_STUB: "1",
   CROSS_REVIEW_STUB_CONFIRMED: "1",
@@ -191,7 +192,7 @@ try {
     ...loadConfig(),
     data_dir: path.join(dataDir, "store-race"),
   });
-  const raceSession = await raceStore.init("Atomic cancellation regression.", "operator", []);
+  const raceSession = await raceStore.init("Atomic cancellation regression.", "codex", []);
   const raceJobId = "33333333-3333-4333-8333-333333333333";
   await raceStore.markBackgroundJobRunning(raceSession.session_id, {
     job_id: raceJobId,
@@ -218,7 +219,7 @@ try {
     "late cancellation recreated an orphan cancel_requested control",
   );
 
-  const ownerRaceSession = await raceStore.init("Concurrent owner regression.", "operator", []);
+  const ownerRaceSession = await raceStore.init("Concurrent owner regression.", "codex", []);
   const ownerA = "44444444-4444-4444-8444-444444444444";
   const ownerB = "55555555-5555-4555-8555-555555555555";
   await raceStore.markBackgroundJobRunning(ownerRaceSession.session_id, {
@@ -240,11 +241,7 @@ try {
     "a concurrent background start overwrote the first durable owner",
   );
 
-  const recoveredSession = await raceStore.init(
-    "Recovered job history regression.",
-    "operator",
-    [],
-  );
+  const recoveredSession = await raceStore.init("Recovered job history regression.", "codex", []);
   const recoveredJobId = "66666666-6666-4666-8666-666666666666";
   await raceStore.markBackgroundJobRunning(recoveredSession.session_id, {
     job_id: recoveredJobId,
@@ -348,6 +345,7 @@ try {
 
   await client.connect(transport);
   const started = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     task: "Focused stub regression for poll and settled-job cancellation contracts.",
     draft: "Review this neutral fixture.",
     response_format: "json",
@@ -482,6 +480,7 @@ try {
       reason?: string;
       terminal_job?: { job_id?: string; status?: string };
     }>(siblingClient, "session_cancel_job", {
+      caller: "claude",
       session_id: started.session_id,
       job_id: started.job.job_id,
       reason: "cross_process_terminal_lookup",
@@ -507,6 +506,7 @@ try {
     terminal_job?: { job_id?: string; status?: string; completed_at?: string };
     final_state?: { session_outcome?: string | null; latest_round_number?: number | null };
   }>("session_cancel_job", {
+    caller: "claude",
     session_id: started.session_id,
     job_id: started.job.job_id,
     reason: "settled_job_race_regression",
@@ -549,6 +549,7 @@ try {
   );
 
   const unsettledFixture = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     task: "Settlement failure must remain cancellable without an explicit job id.",
     draft: "FORCE_NOT_READY",
     response_format: "json",
@@ -614,6 +615,7 @@ try {
   let unsettledCancel: { requested?: boolean; control?: { status?: string } };
   try {
     unsettledCancel = await callJsonWith(settlementSiblingClient, "session_cancel_job", {
+      caller: "claude",
       session_id: unsettledFixture.session_id,
       reason: "settlement_cleanup_without_job_id",
       response_format: "json",
@@ -636,6 +638,7 @@ try {
   );
 
   const firstOpenJob = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     task: "Old terminal job must not cancel a newer active job.",
     draft: "FORCE_NOT_READY",
     response_format: "json",
@@ -653,6 +656,7 @@ try {
   }
   check(firstOpenJobStatus === "completed", "the old job fixture did not complete");
   const secondActiveJob = await callJson<StartedRound>("session_start_round", {
+    caller: "claude",
     session_id: firstOpenJob.session_id,
     task: "Old terminal job must not cancel a newer active job.",
     draft: "FORCE_CANCEL_SLOW",
@@ -663,6 +667,7 @@ try {
     reason?: string;
     terminal_job?: { job_id?: string; status?: string };
   }>("session_cancel_job", {
+    caller: "claude",
     session_id: firstOpenJob.session_id,
     job_id: firstOpenJob.job.job_id,
     reason: "must_not_cancel_new_job",
@@ -710,6 +715,7 @@ try {
     "active summary poll exposed the evidence broker snapshot",
   );
   const newJobCancel = await callJson<{ requested?: boolean }>("session_cancel_job", {
+    caller: "claude",
     session_id: firstOpenJob.session_id,
     job_id: secondActiveJob.job.job_id,
     reason: "regression_cleanup",

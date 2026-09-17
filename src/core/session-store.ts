@@ -51,7 +51,7 @@ import type {
   ShadowJudgmentPeerStats,
   ShadowJudgmentRollup,
 } from "./types.js";
-import { PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
+import { assertCallerIsPeer, PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX } from "./types.js";
 
 export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
@@ -1521,12 +1521,21 @@ export class SessionStore {
     }
   }
 
+  // v07.00.00: a NEW session is always opened by a peer. The persisted
+  // `SessionMeta.caller` union still admits "operator" so records written
+  // before this release still parse, but nothing may create one any more.
   async init(
     task: string,
-    caller: PeerId | "operator",
+    caller: PeerId,
     snapshot: PeerProbeResult[],
     reviewFocus?: string,
   ): Promise<SessionMeta> {
+    // The comment above states the rule; this enforces it. Without the check
+    // the annotation is erased in dist/ and `init(task, undefined, ...)` or
+    // `init(task, "operator", ...)` persists a v7 session with an owner no
+    // ownership check can ever satisfy — and an ownerless one can be adopted
+    // by the first direct continuation.
+    assertCallerIsPeer("SessionStore.init", caller);
     const session_id = crypto.randomUUID();
     const initializedAt = now();
     const configSnapshot = effectiveConfigSnapshot(this.config);
@@ -3305,9 +3314,21 @@ export class SessionStore {
     });
   }
 
-  async recoverInterruptedSessions(activeSessionIds = new Set<string>()): Promise<SessionMeta[]> {
+  // `include` narrows which sessions may be repaired. Trusted startup
+  // maintenance passes nothing and repairs the whole store, which is the point
+  // of startup recovery. The MCP tool passes an ownership predicate, because
+  // this routine rewrites control and health state, rolls back broker state,
+  // records unknown spend and can seal recovered convergence — authority no
+  // peer should hold over another petitioner's session. The predicate lives at
+  // the call site so the ownership rule is not restated here (v07.00.00, PR
+  // #300 review round 5).
+  async recoverInterruptedSessions(
+    activeSessionIds = new Set<string>(),
+    options: { include?: (session: SessionMeta) => boolean } = {},
+  ): Promise<SessionMeta[]> {
     const recovered: SessionMeta[] = [];
     for (const session of this.list()) {
+      if (options.include && !options.include(session)) continue;
       try {
         await this.settleOrphanedBackgroundJobStatuses(session, activeSessionIds);
       } catch {
@@ -3944,11 +3965,16 @@ export class SessionStore {
   // `item_types` (open items grouped by surfacing peer) and
   // `chronic_blockers` (item ids with `round_count >= 3`) so operators
   // can see which evidence asks are systemic vs cauda ruidosa.
+  // `repairInclude` narrows which sessions the repair pass may rewrite. The
+  // audit half is read-only and always covers the whole store; the repair half
+  // rewrites finalized metadata, so the MCP tool passes an ownership predicate.
+  // The rule lives at the call site, not here, so there is one statement of it.
   async sessionDoctor(
     limit = 20,
     includeLegacy = false,
     repair = false,
     includeTerminalFindings = false,
+    options: { repairInclude?: (session: SessionMeta) => boolean } = {},
   ): Promise<SessionDoctorReport> {
     const cappedLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 20));
     // v3.6.0 (C): opt-in repair pass BEFORE the read-only audit. Fixes
@@ -3956,12 +3982,15 @@ export class SessionStore {
     // state left on disk by pre-v3.2.0 sessions (v3.2.0 fixed the cause
     // via the finalize/appendRound invariants; old corrupt metas
     // persist). Only that specific contradiction is touched, only when
-    // the operator explicitly passes `repair: true`. Recomputes
+    // `repair: true` is passed explicitly -- by the session's own petitioner,
+    // since the operator identity that used to gate this was retired in
+    // v07.00.00 and the tool now scopes the pass by ownership. Recomputes
     // `convergence_health` from the latest round's `convergence.converged`.
     const repaired: NonNullable<SessionDoctorReport["repaired"]> = [];
     const sessions = this.list();
     if (repair) {
       for (const session of sessions) {
+        if (options.repairInclude && !options.repairInclude(session)) continue;
         if (session.outcome === "converged" && session.convergence_health?.state === "blocked") {
           const latest = session.rounds.at(-1);
           const latestConverged = latest?.convergence?.converged === true;
@@ -4526,11 +4555,12 @@ export class SessionStore {
         bytes: actualBytes,
         truncated,
         provenance_status: custody ? "verified" : "legacy_unverified",
-        authority_status: custody
-          ? custody.attached_by === "operator"
-            ? "operator_verified"
-            : "caller_submitted_unverified"
-          : "legacy_unverified",
+        // Sessions persisted before v07.00.00 can carry custody attached by
+        // "operator". Those bytes on disk are not rewritten, but the tier they
+        // claim can no longer be earned, so reading them grants no promotion:
+        // custody now means caller-submitted, exactly like every new
+        // attachment.
+        authority_status: custody ? "caller_submitted_unverified" : "legacy_unverified",
         content_type: file.content_type,
         ...(custody
           ? {
@@ -4550,8 +4580,8 @@ export class SessionStore {
   // session's meta with the contestation record AND initializes a new
   // session that references back. Validates the original session is
   // in a final state (converged | aborted | max-rounds). Per the
-  // tribunal-colegiado memory, this is the canonical "caller NOT_READY
-  // → novo ciclo deliberativo dentro dos mesmos autos" surface — the
+  // tribunal-panel memory, this is the canonical surface for "a caller
+  // NOT_READY opens a new deliberative cycle within the same case record" — the
   // original session is preserved (append-only); a new session opens
   // for re-deliberation with a fresh task + initial_draft and a
   // structural reference back to the contested session.
@@ -4560,14 +4590,16 @@ export class SessionStore {
     reason: string;
     new_task: string;
     new_initial_draft?: string | undefined;
-    new_caller?: PeerId | "operator" | undefined;
+    // v07.00.00: the contesting caller is the MCP `caller`, which admits only
+    // peers, and the successor session it opens is peer-owned like any other.
+    new_caller?: PeerId | undefined;
   }): Promise<{ contested_meta: SessionMeta; new_session_id: string }> {
     if (!params.new_caller) {
       throw new Error(
         "new_caller_required: contestVerdict requires an explicitly authenticated new session caller.",
       );
     }
-    const newCaller: PeerId | "operator" = params.new_caller;
+    const newCaller: PeerId = params.new_caller;
     let newSessionId: string | undefined;
     // Validation, successor creation and original stamping are serialized by
     // the original session lock. Before this boundary two concurrent contests
@@ -4764,12 +4796,16 @@ export class SessionStore {
       content: string;
       content_type?: string;
       extension?: string;
-      attached_by: PeerId | "operator";
+      // v07.00.00: `attached_by` is documented as the already-verified tool
+      // caller, and every verified caller is a peer. The PERSISTED type keeps
+      // the wider union so attachments written before this release still
+      // parse; nothing may create one any more.
+      attached_by: PeerId;
       origin: EvidenceAttachmentOrigin;
       deduplicate?: boolean;
     },
   ): Promise<{ path: string; meta: SessionMeta }> {
-    if (params.attached_by !== "operator" && !PEERS.includes(params.attached_by)) {
+    if (!PEERS.includes(params.attached_by)) {
       throw new Error(`evidence_attached_by_invalid: ${String(params.attached_by)}`);
     }
     if (!EVIDENCE_ATTACHMENT_ORIGINS.has(params.origin)) {
@@ -4832,8 +4868,11 @@ export class SessionStore {
         type: "session.evidence_attached",
         session_id: sessionId,
         ts: attachedAt,
+        // v07.00.00: the second conjunct distinguished a peer submission from
+        // an operator one. Every attacher is a peer now, so the origin alone
+        // decides the wording.
         message:
-          params.origin === "caller_submitted" && params.attached_by !== "operator"
+          params.origin === "caller_submitted"
             ? `Caller-submitted evidence persisted as unverified material from ${params.attached_by}: ${params.label}`
             : `Evidence attached by ${params.attached_by}: ${params.label}`,
         data: {
@@ -4845,8 +4884,11 @@ export class SessionStore {
           attached_by: params.attached_by,
           attached_at: attachedAt,
           origin: params.origin,
-          authority_status:
-            params.attached_by === "operator" ? "operator_verified" : "caller_submitted_unverified",
+          // v07.00.00: every attachment is caller-submitted. The branch that
+          // stamped "operator_verified" tested `attached_by === "operator"`,
+          // and that caller no longer exists, so the tier is unreachable for
+          // anything written from here on.
+          authority_status: "caller_submitted_unverified",
         },
       });
       return { meta: current, path: relativePath };
@@ -4855,21 +4897,21 @@ export class SessionStore {
     return { path: meta.path, meta: meta.meta };
   }
 
-  async escalateToOperator(
+  // A background job that rejected leaves the session blocked but resumable:
+  // the persisted petitioner either resubmits corrected material in a new
+  // round or closes the session as `aborted` through session_finalize. No
+  // other actor exists on the MCP surface, so nothing is "escalated".
+  async recordBackgroundJobFailure(
     sessionId: string,
-    params: { reason: string; severity: "info" | "warning" | "critical" },
+    params: { job_id: string; error: string },
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
-      meta.operator_escalations = [
-        ...(meta.operator_escalations ?? []),
-        { ts: now(), reason: params.reason, severity: params.severity },
-      ];
       const transitionedAt = now();
       meta.convergence_health = transitionHealth(
         meta,
         meta.outcome === "converged" ? "converged" : "blocked",
-        `Operator escalation requested: ${params.reason}`,
+        `background_job_failed: job ${params.job_id} failed: ${params.error}. As the persisted petitioner, resubmit corrected material in a new round on this session_id or close it with session_finalize(outcome=aborted); retrying unchanged material replays the same failure.`,
         transitionedAt,
       );
       meta.updated_at = transitionedAt;
@@ -5326,16 +5368,15 @@ export class SessionStore {
   // v2.5.0: abort sessions that were never finalized.
   //
   // Empirical analysis of 253 historical sessions surfaced 22 in-progress
-  // orphans where every peer had reached READY but the dedicated operator
-  // console never invoked `session_finalize`. Those sessions stayed at `outcome:
+  // orphans where every peer had reached READY but nothing ever invoked
+  // `session_finalize`. Those sessions stayed at `outcome:
   // undefined` indefinitely, polluting `session_list` and stealing rows
   // from `session_recover_interrupted` consumers that interpret a missing
   // outcome as "still running".
   //
-  // The session-start contract (orchestrator.ts > sessionContractDirectives
-  // rule 4) now requires the caller to notify the human operator; this boot
-  // sweep cleans up cases where the operator console never finalized after
-  // that notification. It is a companion to `clearStaleInFlight`, with a
+  // Sessions left non-terminal by a dead petitioner are aborted here, at
+  // boot, once they have been idle for CROSS_REVIEW_STALE_HOURS (default
+  // 24h). It is a companion to `clearStaleInFlight`, with a
   // longer threshold because the failure mode is "host died after a
   // session ran", not "host died mid-round".
   //

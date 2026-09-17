@@ -200,7 +200,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-toctou-"));
 const cfg = { data_dir: dataDir, version: "4.1.0-mig", budget: { max_session_cost_usd: 10 } };
 const { SessionStore } = await import(storeModuleUrl);
 const store = new SessionStore(cfg);
-const meta = await store.init("R4 toctou regression (fail-closed)", "operator", []);
+const meta = await store.init("R4 toctou regression (fail-closed)", "claude", []);
 const sessionDir = store.sessionDir(meta.session_id);
 const lockfilePath = path.join(sessionDir, ".lock");
 

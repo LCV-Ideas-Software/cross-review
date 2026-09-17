@@ -55,7 +55,11 @@ function judgeContext(peer: PeerId): PeerCallContext {
     task: `Judge wire contract for ${peer}`,
     reasoning_effort_override: "medium",
     max_output_tokens_override: 2_048,
-    caller: "operator",
+    // v07.00.00: the petitioner is a peer, and never the peer judging — the
+    // runtime refuses self-judgment. This fixture used to declare the retired
+    // "operator" identity, which was the only place in the suite that pinned
+    // `PeerCallContext.caller` to it.
+    caller: peer === "claude" ? "codex" : "claude",
     emit: () => undefined,
   };
 }

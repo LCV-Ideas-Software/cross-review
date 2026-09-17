@@ -106,7 +106,7 @@ const regressions: Regression[] = [
     name: "activity-events-do-not-masquerade-as-state-transitions",
     run: async () => {
       const store = storeFor("activity");
-      const initialized = await store.init("health activity regression", "operator", []);
+      const initialized = await store.init("health activity regression", "codex", []);
       const initialHealth = health(initialized);
       assert.ok(initialHealth.last_activity_at, "init must persist last_activity_at");
       assert.ok(
@@ -142,7 +142,7 @@ const regressions: Regression[] = [
     name: "legacy-last-event-at-remains-a-compatible-activity-alias",
     run: async () => {
       const store = storeFor("legacy");
-      const initialized = await store.init("legacy health timestamp regression", "operator", []);
+      const initialized = await store.init("legacy health timestamp regression", "codex", []);
       const metaPath = store.metaPath(initialized.session_id);
       const legacy = JSON.parse(fs.readFileSync(metaPath, "utf8")) as SessionMeta;
       const originalLastEvent = health(legacy).last_event_at;
@@ -171,7 +171,7 @@ const regressions: Regression[] = [
     name: "terminal-abort-health-exposes-the-real-outcome",
     run: async () => {
       const store = storeFor("abort");
-      const initialized = await store.init("terminal abort health regression", "operator", []);
+      const initialized = await store.init("terminal abort health regression", "codex", []);
       const terminal = await store.finalize(
         initialized.session_id,
         "aborted",
@@ -196,11 +196,7 @@ const regressions: Regression[] = [
     name: "terminal-cancellation-is-not-reported-as-stale",
     run: async () => {
       const store = storeFor("cancelled");
-      const initialized = await store.init(
-        "terminal cancellation health regression",
-        "operator",
-        [],
-      );
+      const initialized = await store.init("terminal cancellation health regression", "codex", []);
       await store.requestCancellation(initialized.session_id, "operator stopped the run");
       const terminal = await store.markCancelled(initialized.session_id, "session_cancelled");
       const terminalHealth = health(terminal);
@@ -214,7 +210,7 @@ const regressions: Regression[] = [
     name: "post-terminal-events-are-rejected-without-rewriting-the-append-only-stream",
     run: async () => {
       const store = storeFor("append-only-terminal");
-      const initialized = await store.init("append-only terminal regression", "operator", []);
+      const initialized = await store.init("append-only terminal regression", "codex", []);
       await store.finalize(initialized.session_id, "aborted", "fixture_terminal");
       const before = fs.readFileSync(store.eventsPath(initialized.session_id), "utf8");
 
@@ -238,7 +234,7 @@ const regressions: Regression[] = [
     name: "idle-sweep-regenerates-a-complete-terminal-report",
     run: async () => {
       const store = storeFor("idle-sweep-report");
-      const initialized = await store.init("idle sweep terminal report", "operator", []);
+      const initialized = await store.init("idle sweep terminal report", "codex", []);
       store.saveReport(initialized.session_id, sessionReportMarkdown(initialized, []));
       const stale = store.read(initialized.session_id);
       stale.updated_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
@@ -273,7 +269,7 @@ const regressions: Regression[] = [
       const result = await orchestrator.askPeers({
         task: "Terminal ordering budget-preflight regression.",
         draft: "Static review artifact.",
-        caller: "operator",
+        caller: "claude",
         peers: ["codex"],
       });
       assert.equal(result.session.outcome_reason, "budget_preflight");
@@ -297,7 +293,7 @@ const regressions: Regression[] = [
       const result = await orchestrator.askPeers({
         task: "Terminal ordering convergence regression.",
         draft: "Static review artifact with no blocking defect.",
-        caller: "operator",
+        caller: "claude",
         peers: ["codex"],
       });
       assert.equal(result.converged, true);

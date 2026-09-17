@@ -1,85 +1,86 @@
-# Auditoria forense e contratual do cross-review 4.5.5
+# cross-review 4.5.5 forensic and contract audit
 
-Data: 12/07/2026
-Escopo: runtime 4.5.5, seis APIs de IA, sessões e logs das 36 horas anteriores,
-configuração central, custos, mecanismos anti-fabricação e preparação da
-correção final 4.5.7 (contratos introduzidos no source 4.5.6).
+Date: 12/07/2026
+Scope: runtime 4.5.5, six AI APIs, the sessions and logs of the preceding 36
+hours, central configuration, costs, anti-fabrication mechanisms and the
+preparation of the final 4.5.7 correction (contracts introduced in source
+4.5.6).
 
-## Resumo executivo
+## Executive summary
 
-O runtime carregado foi confirmado como 4.5.5. A configuração central foi
-aplicada integralmente, sem override de modelos, effort ou preços por variáveis
-de ambiente. A investigação encontrou defeitos reais no cross-review; eles não
-eram rejeições de mérito das aplicações submetidas.
+The loaded runtime was confirmed as 4.5.5. The central configuration was applied
+in full, with no model, effort or price override from environment variables. The
+investigation found real defects in cross-review; they were not merit-based
+rejections of the submitted applications.
 
-As causas principais foram:
+The principal causes were:
 
-1. um único JSON Schema canônico era transmitido a APIs com subconjuntos
-   documentados diferentes;
-2. a correlação literal de citações não tratava uma camada de escape JSON nem a
-   imagem lógica posterior de um diff;
-3. referências a arquivos embutidos em evidência composta perdiam custódia
-   entre rodadas;
-4. nomes de modelos do produto revisado podiam ser confundidos com pins do
-   runtime;
-5. `response.incomplete` da OpenAI não tinha recuperação controlada;
-6. terminais de filtragem podiam entrar indevidamente na recuperação de
-   moderação de entrada;
-7. o effort configurado para Gemini era emitido pela configuração de arquivo,
-   mas nunca lido pelo runtime;
-8. sessões terminalizadas pelo job podiam conservar `control=running`;
-9. parte da configuração de preços misturava regimes ou modelos diferentes;
-10. fallbacks eram contabilizados pelo pin primário, não pelo modelo efetivo;
-11. parciais de streaming de uma tentativa falha podiam permanecer visíveis
-    sem identificador de tentativa ou descarte transacional;
-12. matching dito literal normalizava case/whitespace e um marcador `-` podia
-    fazer código removido reaparecer como evidência;
-13. uma garantia genérica repetida do draft podia fundamentar o próprio READY;
-14. rate cards de fallback, prefixos sobrepostos e o call graph de retries não
-    eram preflightados conservadoramente;
-15. terminais rejeitados descartavam usage/custo, e os eventos/recusas oficiais
-    da Responses API eram achatados em erro genérico ou format recovery;
-16. `server_info` afirmava falsamente que não havia workflow CodeQL avançado.
+1. a single canonical JSON Schema was transmitted to APIs with different
+   documented subsets;
+2. literal citation correlation handled neither a JSON escape layer nor the
+   later logical image of a diff;
+3. file references embedded in composite evidence lost custody between rounds;
+4. model names belonging to the reviewed product could be confused with runtime
+   pins;
+5. OpenAI's `response.incomplete` had no controlled recovery;
+6. filtering terminals could improperly enter input-moderation recovery;
+7. the effort configured for Gemini was emitted by the file configuration but
+   never read by the runtime;
+8. sessions terminalized by the job could retain `control=running`;
+9. part of the pricing configuration mixed different regimes or models;
+10. fallbacks were accounted against the primary pin, not against the effective
+    model;
+11. streaming partials from a failed attempt could remain visible with no
+    attempt identifier and no transactional discard;
+12. matching described as literal normalized case/whitespace, and a `-` marker
+    could make removed code reappear as evidence;
+13. a generic assurance repeated from the draft could ground its own READY;
+14. fallback rate cards, overlapping prefixes and the retry call graph were not
+    preflighted conservatively;
+15. rejected terminals discarded usage/cost, and the Responses API's official
+    events and refusals were flattened into a generic error or into format
+    recovery;
+16. `server_info` falsely claimed there was no advanced CodeQL workflow.
 
-A correção mantém o contrato completo localmente e transmite a cada API apenas
-o subconjunto oficialmente documentado. Nenhuma chamada paga foi feita durante
-esta auditoria ou seus testes.
+The correction keeps the complete contract locally and transmits to each API
+only the officially documented subset. No paid call was made during this audit
+or its tests.
 
-## Método e regra de evidência
+## Method and evidence rule
 
-Para cada provedor, apenas documentação oficial e SDK oficial instalado foram
-aceitos como contrato. Sessões reais foram usadas como evidência empírica de
-falhas, nunca como substituto da documentação. Quando a documentação não
-enumera uma keyword JSON Schema, o wire schema foi reduzido ao subconjunto
-publicado e o contrato completo continuou imposto por prompt, normalização e
-Zod local.
+For each provider, only official documentation and the installed official SDK
+were accepted as the contract. Real sessions were used as empirical evidence of
+failures, never as a substitute for the documentation. Where the documentation
+does not enumerate a JSON Schema keyword, the wire schema was reduced to the
+published subset and the complete contract stayed enforced by prompt,
+normalization and local Zod.
 
-Foram usados:
+What was used:
 
-- SDKs instalados: `openai@6.46.0`, `@anthropic-ai/sdk@0.111.0` e
+- installed SDKs: `openai@6.46.0`, `@anthropic-ai/sdk@0.111.0` and
   `@google/genai@2.11.0`;
-- artefatos persistidos de sessões, attachments e eventos NDJSON;
-- `server_info` em runtime;
-- testes offline que interceptam o corpo final de cada adapter;
-- documentação oficial listada na seção de referências.
+- persisted artifacts from sessions, attachments and NDJSON events;
+- `server_info` at runtime;
+- offline tests that intercept each adapter's final body;
+- the official documentation listed in the references section.
 
-## Estado de runtime e configuração
+## Runtime and configuration state
 
-O `server_info` consultado em 12/07/2026 confirmou:
+`server_info`, consulted on 12/07/2026, confirmed:
 
-| Campo                       | Valor                                                              |
-| --------------------------- | ------------------------------------------------------------------ |
-| Versão carregada            | `4.5.5`                                                            |
-| Config efetiva              | `C:\Users\leona\.cross-review\data\config.json`                    |
-| SHA-256 carregado           | `87f809f2bd9cba20147c707d3a33be0745907889d0e9a3968c8a3090db1a9c0b` |
-| Campos aplicados            | `70`                                                               |
-| Campos sobrescritos por env | `0`                                                                |
-| Reload necessário           | `false`                                                            |
-| Output global               | `20000`                                                            |
+| Field                    | Value                                                              |
+| ------------------------ | ------------------------------------------------------------------ |
+| Loaded version           | `4.5.5`                                                            |
+| Effective config         | `C:\Users\leona\.cross-review\data\config.json`                    |
+| Loaded SHA-256           | `87f809f2bd9cba20147c707d3a33be0745907889d0e9a3968c8a3090db1a9c0b` |
+| Fields applied           | `70`                                                               |
+| Fields overridden by env | `0`                                                                |
+| Reload required          | `false`                                                            |
+| Global output            | `20000`                                                            |
 
-Pins ativos:
+Active pins:
 
-| Peer       | Modelo                   |
+| Peer       | Model                    |
 | ---------- | ------------------------ |
 | Codex      | `gpt-5.6-sol`            |
 | Claude     | `claude-fable-5`         |
@@ -88,348 +89,357 @@ Pins ativos:
 | Grok       | `grok-4.5`               |
 | Perplexity | `sonar-reasoning-pro`    |
 
-O mapa de effort do 4.5.5 omitia Gemini, apesar de o arquivo central já aceitar
-`reasoning_effort.gemini`. Não era uma janela stale: o transporte
-arquivo → env existia, mas `loadConfig()` não lia a variável e o adapter fixava
-`ThinkingLevel.HIGH`.
+The 4.5.5 effort map omitted Gemini, even though the central file already
+accepted `reasoning_effort.gemini`. It was not a stale window: the file → env
+transport existed, but `loadConfig()` did not read the variable and the adapter
+hardcoded `ThinkingLevel.HIGH`.
 
-### Estado pós-publicação da configuração central
+### Central configuration state after publication
 
-Depois da publicação da 4.5.7, o arquivo central foi atualizado sem instalar
-artefato local e validado diretamente pelo schema do source 4.5.7. O resultado
-offline foi:
+After 4.5.7 was published, the central file was updated without installing a
+local artifact and validated directly against the source 4.5.7 schema. The
+offline result was:
 
-| Campo                          | Valor                                                              |
-| ------------------------------ | ------------------------------------------------------------------ |
-| SHA-256 atual do arquivo       | `f526bbdc87648631dcb0eab98cc43da4b7b0062d8e5523773b7b977b96376023` |
-| Schema 4.5.7                   | válido                                                             |
-| Campos aplicados               | `70`                                                               |
-| Campos sobrescritos por env    | `0`                                                                |
-| Controles financeiros ausentes | `0`                                                                |
-| `cost_rates` genérico          | removido                                                           |
-| Cards em `model_cost_rates`    | seis peers                                                         |
-| Output Codex / Claude / demais | `25000` / `64000` / `20000`                                        |
-| Probe Perplexity               | `auth_only`                                                        |
-| Cache Anthropic                | TTL `1h`, desativado                                               |
+| Field                            | Value                                                              |
+| -------------------------------- | ------------------------------------------------------------------ |
+| Current SHA-256 of the file      | `f526bbdc87648631dcb0eab98cc43da4b7b0062d8e5523773b7b977b96376023` |
+| Schema 4.5.7                     | valid                                                              |
+| Fields applied                   | `70`                                                               |
+| Fields overridden by env         | `0`                                                                |
+| Missing financial controls       | `0`                                                                |
+| Generic `cost_rates`             | removed                                                            |
+| Cards in `model_cost_rates`      | six peers                                                          |
+| Output Codex / Claude / the rest | `25000` / `64000` / `20000`                                        |
+| Perplexity probe                 | `auth_only`                                                        |
+| Anthropic cache                  | TTL `1h`, disabled                                                 |
 
-Os cards por modelo removem o tier longo não publicado do Grok, o cache-write
-por token inexistente do Gemini e as dimensões exclusivas de Deep Research do
-card ativo `sonar-reasoning-pro`. O card `sonar-deep-research` foi preservado
-apenas para contabilidade pós-resposta; ele permanece fora de primary e
-fallback porque suas dimensões controladas pelo provedor não permitem hardgate
-financeiro conservador antes da chamada.
+The per-model cards remove Grok's unpublished long tier, Gemini's non-existent
+per-token cache-write, and the Deep Research-exclusive dimensions from the
+active `sonar-reasoning-pro` card. The `sonar-deep-research` card was kept only
+for post-response accounting; it stays out of primary and fallback because its
+provider-controlled dimensions do not allow a conservative financial hardgate
+before the call.
 
-Uma consulta nova a `server_info` confirmou que a janela continua executando
-4.5.5. Esse processo mantém o snapshot anterior
-`87f809f2bd9cba20147c707d3a33be0745907889d0e9a3968c8a3090db1a9c0b`, expõe o
-hash atual acima como `current_sha256`, declara `reload_required=true` e bloqueia
-chamadas pagas com `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED`. A configuração 4.5.7
-só se tornará efetiva depois de o operador executar o upgrade global publicado
-e recarregar a janela.
+A fresh `server_info` query confirmed the window is still running 4.5.5. That
+process keeps the earlier snapshot
+`87f809f2bd9cba20147c707d3a33be0745907889d0e9a3968c8a3090db1a9c0b`, exposes the
+current hash above as `current_sha256`, declares `reload_required=true` and
+blocks paid calls with `CROSS_REVIEW_CONFIG_RELOAD_REQUIRED`. The 4.5.7
+configuration only becomes effective after the operator runs the published
+global upgrade and reloads the window.
 
-O pacote 4.5.7 foi posteriormente instalado pelo operador, mas a janela não foi
-recarregada. Portanto, o runtime observado continua corretamente em 4.5.5; o
-próximo reload foi reservado para a versão 4.5.8.
+The 4.5.7 package was later installed by the operator, but the window was not
+reloaded. The observed runtime therefore correctly stays at 4.5.5; the next
+reload was reserved for version 4.5.8.
 
-## Auditoria das últimas 36 horas
+## Audit of the last 36 hours
 
-Janela forense aproximada: desde `2026-07-11T02:48:41Z`.
+Approximate forensic window: since `2026-07-11T02:48:41Z`.
 
-### Inventário
+### Inventory
 
-- 51 diretórios de sessão tocados;
-- 44 sessões criadas na janela;
-- 7 sessões 4.4.8 antigas apenas alcançadas por sweep;
-- versões novas: 4.5.0 = 28, 4.5.2 = 6, 4.5.3 = 5, 4.5.5 = 5;
-- resultados das sessões novas: 10 abertas, 24 abortadas, 9 max-rounds e 1
-  convergida;
-- 11 arquivos de log, 4.266 registros NDJSON e zero erro de parse;
-- 18 attachments, todos existentes e com SHA-256 correto;
-- zero gaps ou duplicações de sequência de evento;
-- zero sessão atualmente corrompida.
+- 51 session directories touched;
+- 44 sessions created in the window;
+- 7 old 4.4.8 sessions only reached by sweep;
+- new versions: 4.5.0 = 28, 4.5.2 = 6, 4.5.3 = 5, 4.5.5 = 5;
+- outcomes of the new sessions: 10 open, 24 aborted, 9 max-rounds and 1
+  converged;
+- 11 log files, 4,266 NDJSON records and zero parse errors;
+- 18 attachments, all present and with the correct SHA-256;
+- zero event-sequence gaps or duplications;
+- zero currently corrupted sessions.
 
-### Achados 4.5.5
+### 4.5.5 findings
 
-- Anthropic rejeitou o wire schema nas sessões
-  `30998abe-b4fa-46c7-8f36-6c97791e2af3` e
-  `61ce42d5-0dc0-48e3-a6d0-48aabb4dc9ec` com `maxItems` não suportado. O identificador
-  `4fe60040-d2b0-4950-ae6e-24751ca1b534` citado no campo era o job, não o
-  session ID.
-- Houve oito demissões de `raw READY`. Em 76 fontes, 35 casavam diretamente,
-  24 adicionais casavam após exatamente uma camada de desescape JSON, 9 após
-  reconstrução segura da imagem posterior do diff e 8 eram realmente não
-  correlacionadas. Seis dos oito votos não continham fonte genuinamente falsa.
-- A sessão `04691dd6-a3fc-4795-895e-8184425d6899` demonstrou falso positivo de namespace de modelo: um
-  modelo Gemini da aplicação revisada foi comparado ao pin do peer do runtime.
-- A sessão `0e311ee7-667b-4f6d-b205-ba308cf44f37` demonstrou perda de custódia de arquivos explicitamente
-  delimitados por `BEGIN FILE`/`END FILE` dentro de uma evidência composta.
-- Exatamente três sessões terminais 4.5.5 conservaram controle `running`:
+- Anthropic rejected the wire schema in sessions
+  `30998abe-b4fa-46c7-8f36-6c97791e2af3` and
+  `61ce42d5-0dc0-48e3-a6d0-48aabb4dc9ec` with `maxItems` unsupported. The
+  identifier `4fe60040-d2b0-4950-ae6e-24751ca1b534` cited in the field was the
+  job, not the session ID.
+- There were eight `raw READY` dismissals. Across 76 sources, 35 matched
+  directly, a further 24 matched after exactly one JSON unescape layer, 9 after
+  a safe reconstruction of the diff's later image, and 8 were genuinely
+  uncorrelated. Six of the eight votes contained no genuinely false source.
+- Session `04691dd6-a3fc-4795-895e-8184425d6899` demonstrated a model-namespace
+  false positive: a Gemini model belonging to the reviewed application was
+  compared against the runtime's peer pin.
+- Session `0e311ee7-667b-4f6d-b205-ba308cf44f37` demonstrated loss of custody
+  for files explicitly delimited by `BEGIN FILE`/`END FILE` inside composite
+  evidence.
+- Exactly three terminal 4.5.5 sessions retained `running` control:
   `04691dd6-a3fc-4795-895e-8184425d6899`,
-  `0e311ee7-667b-4f6d-b205-ba308cf44f37` e
-  `61ce42d5-0dc0-48e3-a6d0-48aabb4dc9ec`. A causa era determinística: o outcome era
-  selado antes de limpar o controle; a limpeza posterior corretamente recusava
-  mutação pós-terminal.
-- A sessão preservada `741b69bc-cc03-40a8-9899-1199fb834e85` permanece caso de
-  teste: 13 de 15 fontes do Grok eram byte a byte válidas, mas o voto era
-  rebaixado por escape de aspas e política all-or-nothing.
-- Um `response.incomplete` OpenAI ficou 351,5 segundos e foi persistido como
-  tentativa não precificada, embora o Response oficial carregasse usage.
+  `0e311ee7-667b-4f6d-b205-ba308cf44f37` and
+  `61ce42d5-0dc0-48e3-a6d0-48aabb4dc9ec`. The cause was deterministic: the
+  outcome was sealed before the control was cleared, and the later cleanup
+  correctly refused a post-terminal mutation.
+- The preserved session `741b69bc-cc03-40a8-9899-1199fb834e85` remains a test
+  case: 13 of Grok's 15 sources were byte-for-byte valid, but the vote was
+  downgraded by a quote escape and the all-or-nothing policy.
+- An OpenAI `response.incomplete` sat for 351.5 seconds and was persisted as an
+  unpriced attempt, even though the official Response carried usage.
 
-Não foram encontrados attachments adulterados, gaps de eventos ou corrupção
-de sessão que explicassem esses resultados.
+No tampered attachments, event gaps or session corruption were found that would
+explain these results.
 
-## Matriz oficial de Structured Outputs
+## Official Structured Outputs matrix
 
-| Provedor   | Contrato oficial aplicado                                                                          | Resultado da auditoria                                                      |
-| ---------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| OpenAI     | Responses Structured Outputs estrito; `maxItems` e `maxLength` suportados no modelo não fine-tuned | schema canônico completo preservado                                         |
-| Anthropic  | Structured Outputs com subconjunto próprio e lowering pelo helper oficial                          | helper oficial remove constraints incompatíveis; validação local preservada |
-| Gemini     | lista fechada inclui `maxItems`, não `maxLength`                                                   | `maxLength` removido do wire                                                |
-| DeepSeek   | JSON Object mode, sem schema de resposta completo                                                  | `json_object` + prompt + Zod local preservados                              |
-| xAI        | JSON Schema; `maxItems` garantido até 256 e `maxLength` até 2.048                                  | evidência limitada a 2.048 no wire; limite local continua 2.500             |
-| Perplexity | wrapper Sonar `json_schema`, sem matriz fechada de constraints dimensionais                        | wrapper estrutural mínimo; limites locais preservados                       |
+| Provider   | Official contract applied                                                                             | Audit result                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| OpenAI     | strict Responses Structured Outputs; `maxItems` and `maxLength` supported on the non-fine-tuned model | full canonical schema preserved                                                  |
+| Anthropic  | Structured Outputs with its own subset and lowering by the official helper                            | the official helper removes incompatible constraints; local validation preserved |
+| Gemini     | closed list includes `maxItems`, not `maxLength`                                                      | `maxLength` removed from the wire                                                |
+| DeepSeek   | JSON Object mode, no full response schema                                                             | `json_object` + prompt + local Zod preserved                                     |
+| xAI        | JSON Schema; `maxItems` guaranteed up to 256 and `maxLength` up to 2,048                              | evidence limited to 2,048 on the wire; the local limit stays 2,500               |
+| Perplexity | Sonar `json_schema` wrapper, no closed matrix of dimensional constraints                              | minimal structural wrapper; local limits preserved                               |
 
-Também foram removidos campos não cobertos pelo contrato mínimo oficial:
-`text.verbosity` do wire xAI, `name` e `stream_options.include_usage` do wire
-Sonar.
+Fields not covered by the minimal official contract were also removed:
+`text.verbosity` from the xAI wire, and `name` and
+`stream_options.include_usage` from the Sonar wire.
 
-## Recuperação de output e safety
+## Output recovery and safety
 
-A recuperação automática só é permitida quando o terminal oficial identifica
-inequivocamente limite de output:
+Automatic recovery is allowed only when the official terminal unambiguously
+identifies an output limit:
 
 - Anthropic `stop_reason=max_tokens`;
 - OpenAI `response.incomplete` + `reason=max_output_tokens`;
 - Gemini `finishReason=MAX_TOKENS`.
 
-Cada caminho elegível faz no máximo uma nova chamada, no mesmo modelo, prompt e
-teto, com effort/thinking médio. Em Claude Fable 5 a recuperação só ocorre se o
-effort original era `high`, `xhigh` ou `max`; `low`/`medium` encerram sem retry,
-pois medium não reduziria esforço. Usage e custo são calculados por tentativa e
-depois somados; isso evita cruzar artificialmente tiers de 200K/272K. Uma
-segunda truncagem encerra o fluxo.
+Each eligible path makes at most one new call, on the same model, prompt and
+ceiling, with medium effort/thinking. On Claude Fable 5, recovery happens only
+if the original effort was `high`, `xhigh` or `max`; `low`/`medium` end without
+a retry, since medium would not reduce effort. Usage and cost are computed per
+attempt and then summed; this avoids artificially crossing the 200K/272K tiers.
+A second truncation ends the flow.
 
-Não foi inferido retry para:
+No retry was inferred for:
 
-- DeepSeek `length`, que pode representar output ou janela de contexto;
-- xAI incomplete, cuja documentação não enumera o motivo;
-- Perplexity, cuja documentação não enumera os finish reasons relevantes.
+- DeepSeek `length`, which may represent either output or the context window;
+- xAI incomplete, whose documentation does not enumerate the reason;
+- Perplexity, whose documentation does not enumerate the relevant finish
+  reasons.
 
-Terminais `content_filter`, `Candidate.finishReason=SAFETY` e equivalentes agora
-são reconhecidos estruturalmente como saída filtrada e nunca entram em retry,
-fallback ou na recuperação de contexto reduzido. Em contraste,
-`promptFeedback.blockReason` é o sinal oficial de bloqueio do prompt de entrada
-do Gemini e pode disparar exatamente uma nova tentativa com prompt compacto,
-sujeita ao hardgate de orçamento.
+The `content_filter`, `Candidate.finishReason=SAFETY` and equivalent terminals
+are now recognized structurally as filtered output and never enter a retry, a
+fallback or reduced-context recovery. By contrast, `promptFeedback.blockReason`
+is Gemini's official input-prompt block signal and may trigger exactly one new
+attempt with a compact prompt, subject to the budget hardgate.
 
-Mesmo um terminal rejeitado pode ser cobrado. Usage e custo do modelo efetivo
-agora são anexados antes do throw e acumulados entre tentativas. DeepSeek drena
-o chunk final oficial `choices: []` com usage antes de rejeitar `length`;
-Todo `response.error` non-stream não nulo é preservado antes da validação do
-status (inclusive envelope xAI `incomplete`), SSE `type=error` lê os campos
-top-level, e recusas `output[].content[].type=refusal` ou
-`response.refusal.delta/done` nunca entram em format recovery.
+Even a rejected terminal can be billed. Usage and cost for the effective model
+are now attached before the throw and accumulated across attempts. DeepSeek
+drains the official final `choices: []` chunk carrying usage before rejecting
+`length`; every non-null non-stream `response.error` is preserved before status
+validation (including the xAI `incomplete` envelope), SSE `type=error` reads the
+top-level fields, and `output[].content[].type=refusal` or
+`response.refusal.delta/done` refusals never enter format recovery.
 
-O terminal DeepSeek documentado `insufficient_system_resource` é a exceção
-transiente explícita: a inferência interrompida descarta texto parcial, preserva
-billing e usa apenas o envelope de retry já limitado. `length` e
-`content_filter` continuam terminais. A auditoria de corrida do ledger também
-fechou três janelas: dupla soma após settle+cancel, perda da tentativa anterior
-antes do próximo dispatch e falso `billing_status=reported` quando ainda há
-tentativa não precificada.
+DeepSeek's documented `insufficient_system_resource` terminal is the explicit
+transient exception: the interrupted inference discards partial text, preserves
+billing and uses only the already-limited retry envelope. `length` and
+`content_filter` remain terminal. The ledger race audit also closed three
+windows: double-counting after settle+cancel, loss of the previous attempt
+before the next dispatch, and a false `billing_status=reported` while an
+unpriced attempt still exists.
 
-O preflight diferencia atribuição, não mera presença de tokens. Formatos
-canônicos `server_info`, `runtime_capabilities`, `runtime_version` e
-`model_pin` são atuais por natureza; negações como “not 4.5.6; is 4.5.5” são
-rejeitadas, mas uma versão npm ou de aplicação com sujeito próprio não é
-comparada ao runtime do cross-review.
+The preflight distinguishes attribution, not the mere presence of tokens. The
+canonical `server_info`, `runtime_capabilities`, `runtime_version` and
+`model_pin` formats are current by nature; denials such as "not 4.5.6; is 4.5.5"
+are rejected, but an npm or application version with its own subject is not
+compared against the cross-review runtime.
 
-## Auditoria dos mecanismos anti-mentira e anti-preguiça
+## Audit of the anti-lying and anti-laziness mechanisms
 
-Os mecanismos fundamentais permanecem apropriados:
+The fundamental mechanisms remain appropriate:
 
-1. READY exige status canônico, evidência concreta e ausência de requests ou
-   follow-ups.
-2. Cada fonte que alega custódia de attachment exige path/label, SHA-256
-   completo e literal correspondente no mesmo attachment. Uma citação direta
-   do próprio artefato pode usar a via non-custody, mas precisa ser literal e
-   concreta; uma garantia genérica copiada do draft não prova o próprio READY.
-3. A política all-or-nothing do voto foi mantida. A correção não aceita maioria
-   de fontes; apenas passou a comparar representações logicamente equivalentes.
-4. O desescape é limitado a uma camada controlada (`\n`, `\r`, `\t`, `\"`,
-   `\\`), nunca recursivo. Escapes desconhecidos são rejeitados; após essa
-   desserialização controlada, case e whitespace permanecem literais.
-5. Diffs são reconstruídos apenas dentro de hunks: adições e contexto formam a
-   imagem posterior; remoções não podem provar o estado atual, inclusive se a
-   citação repetir o marcador `-`. Metadados e logs fora de hunks continuam
-   citáveis.
-6. `BEGIN FILE`/`END FILE` só concede custódia de submissão quando o par de
-   caminhos coincide e o corpo não é vazio; não promove evidência do caller a
-   autoridade de operador.
-7. Model pins só são comparados quando a frase atribui o valor ao runtime/server
-   do cross-review, MCP, `server_info`, `runtime_capabilities` ou `model_pin`.
-   Mera coocorrência em “cross-review submission/session” não transfere modelos,
-   versões ou datas da aplicação ao namespace do servidor.
-8. Filtros de saída não são reinterpretados como rejeição do prompt para obter
-   uma segunda tentativa.
-9. Sessões terminais continuam imutáveis e agora limpam atomicamente o controle
-   normal antes de selar o outcome.
-10. Deltas de streaming são provisórios e vinculados à tentativa; falha cancela
-    o timer e emite descarte, e somente o terminal saudável confirma o texto.
-11. Uma garantia narrativa genérica copiada do draft não é evidência
-    independente de correção ou testes.
+1. READY requires a canonical status, concrete evidence and the absence of
+   requests or follow-ups.
+2. Every source claiming attachment custody requires a path/label, the full
+   SHA-256 and a matching literal in the same attachment. A direct quotation of
+   the artifact itself may use the non-custody route, but it has to be literal
+   and concrete; a generic assurance copied from the draft does not prove its
+   own READY.
+3. The vote's all-or-nothing policy was kept. The correction does not accept a
+   majority of sources; it only began comparing logically equivalent
+   representations.
+4. Unescaping is limited to one controlled layer (`\n`, `\r`, `\t`, `\"`,
+   `\\`), never recursive. Unknown escapes are rejected; after that controlled
+   deserialization, case and whitespace remain literal.
+5. Diffs are reconstructed only inside hunks: additions and context form the
+   later image; removals cannot prove the current state, including when the
+   citation repeats the `-` marker. Metadata and logs outside hunks remain
+   quotable.
+6. `BEGIN FILE`/`END FILE` grants submission custody only when the path pair
+   matches and the body is non-empty; it does not promote caller evidence to
+   operator authority.
+7. Model pins are compared only when the sentence attributes the value to the
+   cross-review runtime/server, MCP, `server_info`, `runtime_capabilities` or
+   `model_pin`. Mere co-occurrence in a "cross-review submission/session" does
+   not transfer the application's models, versions or dates into the server's
+   namespace.
+8. Output filters are not reinterpreted as a prompt rejection in order to obtain
+   a second attempt.
+9. Terminal sessions remain immutable and now atomically clear the normal
+   control before sealing the outcome.
+10. Streaming deltas are provisional and bound to the attempt; a failure cancels
+    the timer and emits a discard, and only a healthy terminal confirms the
+    text.
+11. A generic narrative assurance copied from the draft is not independent
+    evidence of a correction or of tests.
 
-Essas mudanças reduzem falso positivo sem enfraquecer o bloqueio de citação
-fabricada, auto-revisão, autoridade forjada ou READY preguiçoso.
+These changes reduce false positives without weakening the block on fabricated
+citation, self-review, forged authority or lazy READY.
 
-## Auditoria financeira
+## Financial audit
 
-Os preços base ativos conferiam com as páginas oficiais. Foram encontrados
-três erros semânticos na forma dos cards:
+The active base prices matched the official pages. Three semantic errors were
+found in the shape of the cards:
 
-1. Grok 4.5 continha um tier local >200K 4/12/1 não publicado oficialmente;
-2. Gemini continha `cache_write=2/4`, mas o adapter usa cache implícito e o
-   storage explícito é precificado por token-hora;
-3. o card ativo de Sonar Reasoning Pro continha dimensões exclusivas de Sonar
+1. Grok 4.5 contained a local >200K 4/12/1 tier that is not officially
+   published;
+2. Gemini contained `cache_write=2/4`, but the adapter uses implicit caching and
+   explicit storage is priced per token-hour;
+3. the active Sonar Reasoning Pro card contained dimensions exclusive to Sonar
    Deep Research.
 
-O engine agora resolve o modelo efetivamente enviado por cada adapter/fallback;
-um override sem card aplicável falha fechado em vez de herdar o preço do pin
-primário. Citation/reasoning/search-query só se aplicam quando esse modelo é
-`sonar-deep-research`. Gemini soma thinking ao output faturável, sem dobrar o
-sub-bucket de telemetria. `mergeUsage` preserva as dimensões Sonar entre
-tentativas; `mergeCost` preserva input/output e só mantém um `tier_used` quando
-todas as tentativas compartilham o mesmo tier.
+The engine now resolves the model each adapter/fallback actually sends; an
+override with no applicable card fails closed instead of inheriting the primary
+pin's price. Citation/reasoning/search-query apply only when that model is
+`sonar-deep-research`. Gemini adds thinking to billable output without
+double-counting the telemetry sub-bucket. `mergeUsage` preserves the Sonar
+dimensions across attempts; `mergeCost` preserves input/output and keeps a
+`tier_used` only when every attempt shares the same tier.
 
-O loader e o resolver escolhem o prefixo de família mais específico. Sonar
-regular exige a taxa de request do contexto ativo em primary e fallback. Deep
-Research exige os três campos adicionais para contabilização, mas continua
-fail-closed antes da chamada: a API não publica teto controlável para searches,
-citation tokens ou reasoning tokens, logo nenhum estimate pode ser apresentado
-honestamente como hardgate. O preflight dos demais modelos cobre todas as
-tentativas do primary/fallback e o maior caminho de format/moderation recovery,
-sem o antigo cap heurístico de quatro chamadas.
+The loader and the resolver choose the most specific family prefix. Regular
+Sonar requires the active context's request rate in both primary and fallback.
+Deep Research requires the three additional fields for accounting but stays
+fail-closed before the call: the API publishes no controllable ceiling for
+searches, citation tokens or reasoning tokens, so no estimate can honestly be
+presented as a hardgate. The preflight for the remaining models covers every
+primary/fallback attempt and the longest format/moderation recovery path,
+without the old heuristic cap of four calls.
 
-Recomendação de configuração 4.5.7:
+Configuration recommendation for 4.5.7:
 
-- manter o fallback global em 20.000;
-- Codex: 25.000;
-- Claude: 64.000;
-- Gemini, DeepSeek, Grok e Perplexity: 20.000;
-- mover tarifas para `model_cost_rates`, de modo que um modelo desconhecido
-  falhe fechado em vez de herdar o preço de outro modelo;
-- manter `reasoning_effort.gemini=high` e
-  `perplexity.probe_mode=auth_only` explícitos.
-- manter `sonar-deep-research` fora de primary/fallback enquanto suas dimensões
-  provider-controlled não tiverem teto oficial pre-dispatch.
+- keep the global fallback at 20,000;
+- Codex: 25,000;
+- Claude: 64,000;
+- Gemini, DeepSeek, Grok and Perplexity: 20,000;
+- move rates into `model_cost_rates`, so that an unknown model fails closed
+  instead of inheriting another model's price;
+- keep `reasoning_effort.gemini=high` and `perplexity.probe_mode=auth_only`
+  explicit.
+- keep `sonar-deep-research` out of primary/fallback while its
+  provider-controlled dimensions have no official pre-dispatch ceiling.
 
 ## CI #307
 
-O [CI #307](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181944333)
-no commit `f6ec468` falhou somente em Smoke tests. `SECURITY.md` havia trocado a
-expressão contratual `Current supported source/release target` por `Current
-supported release`, quebrando a asserção determinística `release_metadata`.
-O commit seguinte `785f905` restaurou a forma neutra, e o
+[CI #307](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29181944333)
+on commit `f6ec468` failed in Smoke tests only. `SECURITY.md` had swapped the
+contractual phrase `Current supported source/release target` for `Current
+supported release`, breaking the deterministic `release_metadata` assertion. The
+following commit `785f905` restored the neutral form, and
 [CI #308](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29182158627)
-passou integralmente. A falha já estava superada e não exigia nova correção.
+passed in full. The failure was already superseded and required no new fix.
 
-A auditoria atual também alinhou `server_info.codeql_policy` e o baseline ao
-workflow Advanced CodeQL realmente versionado (`actions` e
-`javascript-typescript`, queries `security-extended`); o Default Setup remoto
-está `not-configured`, evitando análise duplicada.
+This audit also aligned `server_info.codeql_policy` and the baseline with the
+Advanced CodeQL workflow actually in version control (`actions` and
+`javascript-typescript`, `security-extended` queries); the remote Default Setup
+is `not-configured`, avoiding duplicate analysis.
 
-## Verificação offline
+## Offline verification
 
-O novo contrato `v4.5.6-runtime-contract-regression` cobre 22 casos, incluindo:
+The new `v4.5.6-runtime-contract-regression` contract covers 22 cases,
+including:
 
-- bodies finais dos seis adapters;
-- schemas wire por provedor;
-- config/reload de effort Gemini;
-- budgets por peer e preflight;
-- OpenAI e Gemini, streaming e não streaming;
-- exatamente um retry e nenhum retry de safety;
-- ledger após rede e cancelamento;
-- custo Gemini com thinking;
-- custos exclusivos de Deep Research;
-- citações escapadas e post-image de diff;
-- case/whitespace literal, marcador de remoção, envelope de status máximo e
-  compatibilidade patch da configuração;
-- arquivos embutidos, namespace de model pin, terminal control, prompt block
-  Gemini e descarte transacional de streaming.
+- the final bodies of all six adapters;
+- per-provider wire schemas;
+- Gemini effort config/reload;
+- per-peer budgets and preflight;
+- OpenAI and Gemini, streaming and non-streaming;
+- exactly one retry and no safety retry;
+- the ledger after a network failure and after cancellation;
+- Gemini cost with thinking;
+- Deep Research-exclusive costs;
+- escaped citations and the diff post-image;
+- literal case/whitespace, the removal marker, the maximum status envelope and
+  the configuration's patch compatibility;
+- embedded files, model-pin namespace, terminal control, the Gemini prompt block
+  and transactional streaming discard.
 
-Também passaram os smokes históricos de provider terminal, provider refresh,
-grounding, cancelamento, durable jobs, accounting, evidence custody,
-truthfulness, smoke principal e runtime smoke. Nenhuma API paga foi chamada.
+The historical smokes also passed: provider terminal, provider refresh,
+grounding, cancellation, durable jobs, accounting, evidence custody,
+truthfulness, the main smoke and the runtime smoke. No paid API was called.
 
-## Segurança de publicação npm 12 e GAT/2FA
+## npm 12 publication security and GAT/2FA
 
-O anúncio oficial de 8 de julho de 2026 foi incorporado como hardgate da
-release. npm 12 tornou opt-in os scripts de instalação de dependências e a
-resolução de dependências Git ou URLs remotas. GATs npm com bypass de 2FA
-deixarão de contornar 2FA em operações sensíveis no início de agosto de 2026 e,
-por volta de janeiro de 2027, deixarão de publicar diretamente.
+The official announcement of 8 July 2026 was incorporated as a release hardgate.
+npm 12 made dependency install scripts and the resolution of Git dependencies or
+remote URLs opt-in. npm GATs with 2FA bypass will stop bypassing 2FA on
+sensitive operations in early August 2026 and, around January 2027, will stop
+publishing directly.
 
-O caminho npmjs do repositório já estava na arquitetura correta: GitHub-hosted
-runner, environment `npm-production`, `id-token: write`, Trusted Publishing
-OIDC e provenance. A versão 4.5.5 publicada foi consultada no registry e possui
+The repository's npmjs path was already on the correct architecture:
+GitHub-hosted runner, `npm-production` environment, `id-token: write`, Trusted
+Publishing OIDC and provenance. The published 4.5.5 version was queried on the
+registry and carries
 `dist.attestations.provenance.predicateType = https://slsa.dev/provenance/v1`.
-Não há `NPM_TOKEN`, GAT ou OTP no job npmjs; `GITHUB_TOKEN` serve somente ao
-GitHub Packages e não pertence ao contrato npm GAT.
+There is no `NPM_TOKEN`, GAT or OTP in the npmjs job; `GITHUB_TOKEN` serves only
+GitHub Packages and is not part of the npm GAT contract.
 
-Foram corrigidas as lacunas residuais:
+The residual gaps were fixed:
 
-- o workflow de release fixa npm 12.0.1 antes de qualquer `npm ci`;
-- todos os caches de package manager foram desativados;
-- `STEPSECURITY_NPM_TOKEN` saiu do ambiente global e existe somente nos quatro
-  passos de instalação;
-- o tag solicitado precisa existir em `refs/tags/` e apontar para o `HEAD`
-  efetivamente publicado;
-- o arquivo npmrc temporário do GitHub Packages nasce com `umask 077` e modo
+- the release workflow pins npm 12.0.1 before any `npm ci`;
+- every package-manager cache was disabled;
+- `STEPSECURITY_NPM_TOKEN` left the global environment and exists only in the
+  four install steps;
+- the requested tag must exist under `refs/tags/` and point at the `HEAD` that
+  was actually published;
+- the temporary GitHub Packages npmrc file is created with `umask 077` and mode
   `0600`;
-- a verificação pós-publicação exige e consulta a atestação SLSA v1;
-- `.npmrc` fixa `strict-allow-scripts=true`, `allow-git=none` e
+- post-publication verification requires and queries the SLSA v1 attestation;
+- `.npmrc` pins `strict-allow-scripts=true`, `allow-git=none` and
   `allow-remote=none`;
-- `package.json` permite somente os scripts revisados e pinados de
-  `@google/genai@2.11.0`, `protobufjs@7.6.4`, `esbuild@0.28.1` e o opcional
-  macOS `fsevents@2.3.3`. O comando oficial read-only passou de três pendências
-  no Windows para zero; um upgrade desses artefatos volta a falhar até nova
-  revisão.
-- os comandos de upgrade fixam `@lcv-ideas-software:registry` explicitamente,
-  pois `--registry` genérico não vence um registry persistido para o escopo;
-  `npm upgrade` não recebe `@latest`, que o npm 12 rejeita com `EUPDATEARGS`;
-- como `npm upgrade -g` avalia toda a árvore global e o lock local não governa
-  a resolução transitiva do consumidor, aplicar uma allowlist estrita do
-  projeto nesse comando falhou em `dry-run` por scripts pertencentes a outros
-  pacotes globais. O fluxo portátil usa `--ignore-scripts`,
-  `--allow-git=none` e `--allow-remote=none`: nenhum lifecycle de dependência é
-  executado, e o pacote publicado não possui lifecycle de instalação próprio.
+- `package.json` permits only the reviewed and pinned scripts of
+  `@google/genai@2.11.0`, `protobufjs@7.6.4`, `esbuild@0.28.1` and the optional
+  macOS `fsevents@2.3.3`. The official read-only command went from three pending
+  items on Windows to zero; an upgrade of those artifacts fails again until a new
+  review.
+- the upgrade commands set `@lcv-ideas-software:registry` explicitly, because a
+  generic `--registry` does not beat a registry persisted for the scope;
+  `npm upgrade` is not given `@latest`, which npm 12 rejects with
+  `EUPDATEARGS`;
+- because `npm upgrade -g` evaluates the whole global tree and the local lock
+  does not govern the consumer's transitive resolution, applying a strict
+  project allowlist to that command failed in `dry-run` on scripts belonging to
+  other global packages. The portable flow uses `--ignore-scripts`,
+  `--allow-git=none` and `--allow-remote=none`: no dependency lifecycle runs,
+  and the published package has no install lifecycle of its own.
 
-O relatório complementar recebido foi aproveitado onde confirmado. Duas
-afirmações foram rejeitadas: esta máquina já executa npm 12.0.1, não npm 11; e
-instalação global por tarball produzido do source local viola a diretiva do
-operador. O único fluxo documentado é `npm upgrade -g` da versão publicada.
+The supplementary report received was used where confirmed. Two claims were
+rejected: this machine already runs npm 12.0.1, not npm 11; and a global install
+from a tarball produced from local source violates the operator's directive. The
+only documented flow is `npm upgrade -g` of the published version.
 
-Foi detectada, sem revelar seu valor, uma credencial npmjs no `.npmrc` do
-usuário. Ela não participa da publicação OIDC. Sua finalidade deve ser auditada
-no npmjs.com e, se for um GAT de automação/bypass, rebaixada a somente leitura
-ou revogada. Essa alteração de conta não foi inferida nem executada por código.
+An npmjs credential was detected in the user's `.npmrc`, without revealing its
+value. It takes no part in OIDC publication. Its purpose should be audited on
+npmjs.com and, if it is an automation/bypass GAT, downgraded to read-only or
+revoked. That account change was neither inferred nor performed by code.
 
-## Limitações deliberadas
+## Deliberate limitations
 
-- Não foi feita uma quarta rodada paga nas sessões preservadas. A diretiva era
-  evitar gasto repetitivo; os adapters foram verificados por interceptação do
-  wire e SDKs oficiais.
-- DeepSeek/Grok/Perplexity continuam fail-closed em terminais ambíguos. A única
-  exceção DeepSeek é `insufficient_system_resource`, que a API oficial define
-  como interrupção por recurso insuficiente do sistema de inferência.
-- A nova chave `max_output_tokens_by_peer` não deve ser carregada por um host
-  4.5.5: o schema estrito antigo a rejeitaria atomicamente. A 4.5.7 foi
-  publicada antes da alteração; como o host atual não suporta live reload, ele
-  preservou o snapshot anterior, marcou reload obrigatório e bloqueou chamadas
-  pagas. O operador deve fazer o upgrade global publicado antes de recarregar a
-  janela.
+- No fourth paid round was run on the preserved sessions. The directive was to
+  avoid repetitive spend; the adapters were verified by wire interception and
+  official SDKs.
+- DeepSeek/Grok/Perplexity remain fail-closed on ambiguous terminals. The single
+  DeepSeek exception is `insufficient_system_resource`, which the official API
+  defines as an interruption caused by insufficient inference-system resources.
+- The new `max_output_tokens_by_peer` key must not be loaded by a 4.5.5 host:
+  the old strict schema would reject it atomically. 4.5.7 was published before
+  the change; since the current host does not support live reload, it preserved
+  the earlier snapshot, marked a reload mandatory and blocked paid calls. The
+  operator has to run the published global upgrade before reloading the window.
 
-## Referências oficiais
+## Official references
 
 - [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
 - [OpenAI reasoning budgets](https://developers.openai.com/api/docs/guides/reasoning#allocating-space-for-reasoning)
@@ -460,151 +470,154 @@ ou revogada. Essa alteração de conta não foi inferida nem executada por códi
 - [OpenSSF Scorecard — Pinned Dependencies](https://github.com/ossf/scorecard/blob/main/docs/checks.md#pinned-dependencies)
 - [OpenSSF npm package-manager best practices](https://github.com/ossf/package-manager-best-practices/blob/main/published/npm.md)
 
-## Evidência de release
+## Release evidence
 
-### Validação local antes do commit
+### Local validation before the commit
 
-- instalação limpa: `npm ci --ignore-scripts --no-audit --no-fund`, 245
-  pacotes, exit 0;
-- contratos 4.5.6: 22/22;
-- grounding 4.5.4: 20/20;
-- provider refresh, provider terminal, citações, truthfulness, cancelamento,
-  durable jobs, health/activity, accounting, evidence transport/custody e
-  source contracts: todos verdes;
-- smoke amplo fail-fast: 122 eventos e `ok: true` após atualizar os fixtures
-  antigos para o call graph FinOps completo;
-- runtime smoke stdio: `ok: true`, runtime 4.5.7, seis peers stub, preflights,
-  identidade, cancelamento e convergência exercitados;
-- `npm run check`, `git diff --check` e todos os workflows pelo `actionlint`:
+- clean install: `npm ci --ignore-scripts --no-audit --no-fund`, 245 packages,
   exit 0;
-- `npm audit --omit=dev`: 0 vulnerabilidades em todos os níveis;
-- `npm pack --dry-run --ignore-scripts`: pacote 4.5.7, 185 entradas, cerca de
-  914 kB compactados e 4,21 MB desempacotados. O relatório integra o
-  próprio pacote, portanto o integrity autorreferente não é congelado aqui; o
-  valor autoritativo do registry será registrado após a publicação.
+- 4.5.6 contracts: 22/22;
+- 4.5.4 grounding: 20/20;
+- provider refresh, provider terminal, citations, truthfulness, cancellation,
+  durable jobs, health/activity, accounting, evidence transport/custody and
+  source contracts: all green;
+- broad fail-fast smoke: 122 events and `ok: true` after updating the old
+  fixtures to the complete FinOps call graph;
+- stdio runtime smoke: `ok: true`, runtime 4.5.7, six stub peers, preflights,
+  identity, cancellation and convergence exercised;
+- `npm run check`, `git diff --check` and every workflow through `actionlint`:
+  exit 0;
+- `npm audit --omit=dev`: 0 vulnerabilities at every level;
+- `npm pack --dry-run --ignore-scripts`: package 4.5.7, 185 entries, about
+  914 kB packed and 4.21 MB unpacked. The report ships inside the package
+  itself, so the self-referential integrity is not frozen here; the
+  authoritative registry value will be recorded after publication.
 
-O comando agregado `npm test` é fail-fast. As primeiras execuções revelaram
-drift de fixtures históricas (namespace português, cartões de stubs e tetos
-sintéticos anteriores ao call graph completo). Em vez de reiniciar toda a
-bateria após cada stop, cada componente restante foi executado até o fim; todos
-ficaram verdes. A confirmação agregada limpa é responsabilidade do CI no commit
-publicado e será registrada abaixo. Nenhuma API paga foi chamada nesta
-validação.
+The aggregate `npm test` command is fail-fast. The first runs revealed drift in
+historical fixtures (Portuguese namespace, stub cards and synthetic ceilings
+predating the complete call graph). Rather than restart the whole battery after
+each stop, every remaining component was run to completion; all came out green.
+A clean aggregate confirmation is the CI's responsibility on the published
+commit and is recorded below. No paid API was called in this validation.
 
-### Publicação
+### Publication
 
-O primeiro push criou `v04.05.06`, mas o CI usava o npm embarcado no Node 24 e
-falhou na instalação com `EALLOWREMOTE` sob a política npm 12. O cancelamento do
-publish run `29204032723` chegou depois dos comandos de publicação: o npmjs
-registra 4.5.6 em `2026-07-12T18:33:54.523Z`, com provenance SLSA, integrity
+The first push created `v04.05.06`, but the CI used the npm bundled with Node 24
+and failed the install with `EALLOWREMOTE` under the npm 12 policy. Cancelling
+publish run `29204032723` arrived after the publication commands: npmjs records
+4.5.6 at `2026-07-12T18:33:54.523Z`, with SLSA provenance, integrity
 `sha512-WklDb7JYeu5x3GFBt8E9pdDmhCdyRswcYtlLcD4dmZ2eU/ccWrnAeGM7Uew63IF3vOXfQd0lETCyA9vYY0B80A==`
-e shasum `9147bdbd8fdc8cd2b81021993e730c2ab69e8973`. A etapa equivalente do GitHub
-Packages também registrou o pacote antes do cancelamento, mas as verificações
-posteriores e a criação do GitHub Release foram puladas. Trata-se, portanto, de
-uma publicação parcial, não de uma publicação evitada.
+and shasum `9147bdbd8fdc8cd2b81021993e730c2ab69e8973`. The equivalent GitHub
+Packages step also registered the package before the cancellation, but the later
+verifications and the GitHub Release creation were skipped. This is therefore a
+partial publication, not an avoided one.
 
-A correção alinha o CI comum ao npm 12.0.1, confirma em runtime qual executável
-`npm` ficou ativo, desativa cache, exige scripts estritamente aprovados e limita
-o token StepSecurity ao install. O auto-tag deixou de competir com o CI em todo
-push: agora recebe `workflow_run` apenas do CI concluído em `main`, exige
-`conclusion == success` para evento `push`, faz checkout do `head_sha` validado e
-só então cria a tag e despacha a publicação. Um contrato automatizado protege
-essas propriedades. A 4.5.7 substitui a 4.5.6 como entrega completa.
+The fix aligns the common CI with npm 12.0.1, confirms at runtime which `npm`
+executable became active, disables caching, requires strictly approved scripts
+and limits the StepSecurity token to the install. Auto-tag stopped competing
+with the CI on every push: it now receives `workflow_run` only from a CI
+completed on `main`, requires `conclusion == success` for a `push` event, checks
+out the validated `head_sha` and only then creates the tag and dispatches the
+publication. An automated contract protects these properties. 4.5.7 replaces
+4.5.6 as the complete delivery.
 
-Fechamento da entrega 4.5.7:
+Closing of the 4.5.7 delivery:
 
-- commit e tag: `cddd72a082e840cad3208ce653449524b6c8c5f6` = `v04.05.07`;
+- commit and tag: `cddd72a082e840cad3208ce653449524b6c8c5f6` = `v04.05.07`;
 - [CI 29204616990](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29204616990):
-  verde, incluindo npm 12.0.1 efetivo, política de release, formatação, lint,
-  Biome, typecheck e smoke;
+  green, including effective npm 12.0.1, release policy, formatting, lint,
+  Biome, typecheck and smoke;
 - [auto-tag 29204660252](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29204660252):
-  verde e disparado por `workflow_run` somente depois do CI;
+  green and triggered by `workflow_run` only after the CI;
 - [publish 29204668442](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29204668442):
-  quatro jobs verdes — gate agregado, npmjs, GitHub Packages e GitHub Release;
-- CodeQL avançado `29204617014`, CodeQL default setup `29204616646` e Socket
-  `29204616978`: verdes no mesmo SHA;
-- npmjs publicou 4.5.7 como `latest` em `2026-07-12T18:53:50.676Z`, com shasum
+  four green jobs — aggregate gate, npmjs, GitHub Packages and GitHub Release;
+- advanced CodeQL `29204617014`, CodeQL default setup `29204616646` and Socket
+  `29204616978`: green on the same SHA;
+- npmjs published 4.5.7 as `latest` at `2026-07-12T18:53:50.676Z`, with shasum
   `50a329c9663070f007c58a17cb6887e75da23a82`, integrity
   `sha512-58CDvnqq2EWlkuvF19FObsbB3dDVgdkORexMx/745peiT1/UIH8ykKyj1rU/GpTU+jKF2IXkxAULpArGS5zNRQ==`
-  e attestation SLSA provenance v1;
+  and an SLSA provenance v1 attestation;
 - [GitHub Release v04.05.07](https://github.com/LCV-Ideas-Software/cross-review/releases/tag/v04.05.07):
-  publicada, imutável, não draft e não prerelease; o asset tem 914.021 bytes e
-  digest
+  published, immutable, not a draft and not a prerelease; the asset is 914,021
+  bytes with digest
   `sha256:d55eea25641efbff8c2f91c2ea28100f4b2c1ace0be9262e04ca8b1847c3a8c7`.
 
-Todos os workflows associados ao SHA/tag final alcançaram estado terminal
-`success`. Nenhuma instalação global local e nenhuma chamada paga aos seis
-provedores foram realizadas nesta entrega.
+Every workflow associated with the final SHA/tag reached the terminal state
+`success`. No local global install and no paid call to the six providers were
+made in this delivery.
 
-## Adendo: sete alertas de code scanning e target 4.5.8
+## Addendum: seven code scanning alerts and the 4.5.8 target
 
-Depois da publicação 4.5.7, o GitHub abriu sete findings que se reduzem a duas
-causas:
+After the 4.5.7 publication, GitHub opened seven findings that reduce to two
+causes:
 
-| Alertas | Scanner   | Causa                                                             |
-| ------- | --------- | ----------------------------------------------------------------- |
-| `32–35` | Scorecard | quatro bootstraps globais do npm no workflow de publicação        |
-| `37`    | Scorecard | o mesmo bootstrap global no CI comum                              |
-| `36`    | Scorecard | checkout dinâmico de `workflow_run.head_sha` em workflow gravável |
-| `38`    | CodeQL    | o mesmo checkout event-controlled no auto-tag                     |
+| Alerts  | Scanner   | Cause                                                              |
+| ------- | --------- | ------------------------------------------------------------------ |
+| `32–35` | Scorecard | four global npm bootstraps in the publication workflow             |
+| `37`    | Scorecard | the same global bootstrap in the common CI                         |
+| `36`    | Scorecard | dynamic checkout of `workflow_run.head_sha` in a writable workflow |
+| `38`    | CodeQL    | the same event-controlled checkout in auto-tag                     |
 
-O Scorecard considera qualquer `npm install` em workflow não pinado, exceto os
-caminhos reconhecidos pelo scanner, ainda que o argumento contenha uma versão
-SemVer exata. O risco material também existe: a versão fixa não autentica o
-conteúdo do tarball antes de executar o novo CLI. A regressão foi primeiro
-alterada para exigir SHA-512 e ausência de `npm install --global`; ela falhou no
-estado anterior com `release jobs must pin the npm v12 tarball by SHA-512`.
+Scorecard treats any `npm install` in a workflow as unpinned, except for the
+paths the scanner recognizes, even when the argument carries an exact SemVer
+version. The material risk exists too: a fixed version does not authenticate the
+tarball's contents before executing the new CLI. The regression was first changed
+to require SHA-512 and the absence of `npm install --global`; it failed against
+the previous state with `release jobs must pin the npm v12 tarball by SHA-512`.
 
-A correção substitui as cinco ocorrências por uma composite action local que:
+The fix replaces the five occurrences with a local composite action that:
 
-1. aceita apenas versão `X.Y.Z` e digest SHA-512 hexadecimal de 128 caracteres;
-2. baixa a URL exata `npm-12.0.1.tgz` do registry oficial;
-3. verifica SHA-512 antes de extrair ou executar;
-4. confirma que o CLI extraído reporta 12.0.1;
-5. ativa um wrapper temporário, sem instalação global nem lifecycle npm.
+1. accepts only an `X.Y.Z` version and a 128-character hexadecimal SHA-512
+   digest;
+2. downloads the exact `npm-12.0.1.tgz` URL from the official registry;
+3. verifies the SHA-512 before extracting or executing;
+4. confirms the extracted CLI reports 12.0.1;
+5. activates a temporary wrapper, with no global install and no npm lifecycle.
 
-O digest pinado corresponde ao integrity oficial
+The pinned digest matches the official integrity
 `sha512-L5T9i/YAQWQWqTS/xZxJkei/9zcu99hCeE4qi41IyBVV7mRQad3qc2JfuOktwmH+qwGI/V2rbCL+/UYxb1+RQA==`.
 
-Para o auto-tag, o checkout deixou de aceitar `head_sha` no campo `ref`. O
-workflow usa o checkout padrão confiável da branch default, passa o SHA do
-evento somente por `env`, compara-o imediatamente com `git rev-parse HEAD` e
-condiciona as quatro etapas que leem, tagueiam ou publicam conteúdo ao output
-`matches=true`. Se outro push avançar `main`, a execução antiga termina sem
-criar tag; o CI do commit novo iniciará a próxima tentativa.
+For auto-tag, the checkout stopped accepting `head_sha` in the `ref` field. The
+workflow uses the trusted default checkout of the default branch, passes the
+event's SHA only through `env`, compares it immediately against
+`git rev-parse HEAD`, and gates on the output `matches=true` the four steps that
+read, tag or publish content. If another push advances `main`, the old run ends
+without creating a tag; the new commit's CI will start the next attempt.
 
-Validação local dirigida: reprodução vermelha, regressão npm/release verde e
-`actionlint` verde. O check integrado passou sem warnings após a correção de
-estilo, o runtime smoke retornou `ok: true` e versão 4.5.8, a configuração
-central continuou válida com 70 campos/zero overrides/zero controles ausentes e
-o dry-run empacotou 185 entradas, cerca de 917 kB compactados e 4,22 MB
-desempacotados.
+Targeted local validation: red reproduction, green npm/release regression and
+green `actionlint`. The integrated check passed with no warnings after the style
+fix, the runtime smoke returned `ok: true` and version 4.5.8, the central
+configuration stayed valid with 70 fields / zero overrides / zero missing
+controls, and the dry-run packed 185 entries, about 917 kB packed and 4.22 MB
+unpacked.
 
-Fechamento remoto da 4.5.8:
+Remote closing of 4.5.8:
 
-- commit e tag: `1cc3bb83fd12fb13a09b4acfba7c3b9ce1f961d0` = `v04.05.08`;
+- commit and tag: `1cc3bb83fd12fb13a09b4acfba7c3b9ce1f961d0` = `v04.05.08`;
 - [CI 29205474027](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29205474027):
-  verde, incluindo o bootstrap SHA-512 real no runner Ubuntu, check e smoke;
-- CodeQL avançado `29205474005`, CodeQL default setup `29205473700`, Scorecard
-  `29205474038` e Socket `29205473999`: verdes;
+  green, including the real SHA-512 bootstrap on the Ubuntu runner, check and
+  smoke;
+- advanced CodeQL `29205474005`, CodeQL default setup `29205473700`, Scorecard
+  `29205474038` and Socket `29205473999`: green;
 - [auto-tag 29205513498](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29205513498):
-  verde com checkout/default branch e SHA do CI correspondentes;
+  green with a matching checkout/default branch and CI SHA;
 - [publish 29205522124](https://github.com/LCV-Ideas-Software/cross-review/actions/runs/29205522124):
-  gate, npmjs, GitHub Packages e GitHub Release verdes;
-- alertas 32–38: `state=fixed`, `dismissed_at=null`; code scanning aberto: 0;
-- Dependabot aberto: 0; secret scanning aberto: 0;
-- `npm audit` completo e `--omit=dev`: 0 em info, low, moderate, high e
+  gate, npmjs, GitHub Packages and GitHub Release green;
+- alerts 32–38: `state=fixed`, `dismissed_at=null`; open code scanning: 0;
+- open Dependabot: 0; open secret scanning: 0;
+- full `npm audit` and `--omit=dev`: 0 at info, low, moderate, high and
   critical;
-- 12/12 check-runs do SHA da release: `completed/success`.
+- 12/12 check-runs on the release SHA: `completed/success`.
 
-O npmjs publicou 4.5.8 como `latest` em `2026-07-12T19:20:03.672Z`, com
-shasum `2846cc6fe4c5bd4d06209ad75360fef6264f1418`, integrity
+npmjs published 4.5.8 as `latest` at `2026-07-12T19:20:03.672Z`, with shasum
+`2846cc6fe4c5bd4d06209ad75360fef6264f1418`, integrity
 `sha512-n8F4Wm9qe9ahL5DECG/weL05e30rCdASeYHnacBjHPF93nUzB1cgK5cwbJepiAv75WOHyetzEm3R0mLGQBHHKQ==`
-e attestation SLSA provenance v1. A
+and an SLSA provenance v1 attestation. The
 [GitHub Release v04.05.08](https://github.com/LCV-Ideas-Software/cross-review/releases/tag/v04.05.08)
-é imutável, não draft e não prerelease; o asset tem 917.386 bytes e digest
+is immutable, not a draft and not a prerelease; the asset is 917,386 bytes with
+digest
 `sha256:4f6892233e7ed6bfaa41947bfe4a956b35be8d0f858219d6f840181f96e52095`.
 
-Após todos os workflows ficarem verdes, nenhuma nova ocorrência foi encontrada
-em code scanning/CodeQL/Scorecard/Socket, Dependabot, secret scanning ou npm
-audit. O runtime da janela não foi recarregado durante esse fechamento.
+After every workflow went green, no new occurrence was found in code
+scanning/CodeQL/Scorecard/Socket, Dependabot, secret scanning or npm audit. The
+window's runtime was not reloaded during that closing.

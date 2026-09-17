@@ -42,31 +42,43 @@ artifacts when present.
 
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
-Current reference values verified against official provider documentation on
-23/08/2026 for the maintained model pins and supported Claude Opus 5 override:
+Current reference values verified against official provider documentation.
+The OpenAI and Anthropic rows were re-verified on 08/09/2026 against the
+`gpt-6-astra` and `claude-fable-5-1` pages; the other rows carry their
+23/08/2026 verification date. There is no supported second-tier override to
+document any more: cross-review runs the top model of each provider.
 
-| Provider/model                  | Input  | Output | Cached input / cache hit | Extended tier                                                                                                                                             |
-| ------------------------------- | ------ | ------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenAI `gpt-5.6-sol`            | `4`    | `20`   | `0.4`                    | `>272000`: input `8`, output `30`, cached input `0.8` (promotional pricing at least through 21/11/2026; list rates `5`/`30`, `10`/`45`, cached `0.5`/`1`) |
-| Anthropic `claude-fable-5`      | `10`   | `50`   | `1`                      | none                                                                                                                                                      |
-| Anthropic `claude-opus-5`       | `5`    | `25`   | `0.5`                    | none                                                                                                                                                      |
-| Gemini `gemini-3.1-pro-preview` | `2`    | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4`                                                                                        |
-| DeepSeek `deepseek-v4-pro`      | `1.32` | `3.96` | `0.044`                  | none (peak rates effective 16/08/2026; the official off-peak window is 50% lower)                                                                         |
-| xAI `grok-4.6`                  | `2`    | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                                                                                                       |
-| Perplexity `perplexity/kimi-k3` | `3`    | `15`   | `0.3`                    | `web_search` tool: `2.5` per 1000 invocations (`search_queries_per_1000`)                                                                                 |
+| Provider/model                  | Input  | Output | Cached input / cache hit | Extended tier                                                                     |
+| ------------------------------- | ------ | ------ | ------------------------ | --------------------------------------------------------------------------------- |
+| OpenAI `gpt-6-astra`            | `10`   | `50`   | `1`                      | `>272000`: input `20`, output `75`, cached input `2`                              |
+| Anthropic `claude-fable-5-1`    | `10`   | `50`   | `0.25`                   | none                                                                              |
+| Gemini `gemini-3.1-pro-preview` | `2`    | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4`                |
+| DeepSeek `deepseek-v4-pro`      | `1.32` | `3.96` | `0.044`                  | none (peak rates effective 16/08/2026; the official off-peak window is 50% lower) |
+| xAI `grok-4.6`                  | `2`    | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                               |
+| Perplexity `perplexity/kimi-k3` | `3`    | `15`   | `0.3`                    | `web_search` tool: `2.5` per 1000 invocations (`search_queries_per_1000`)         |
 
-GPT-5.6 Sol reports cache-write tokens separately. Configure OpenAI cache write
-at 1.25 times the corresponding uncached input rate: `5` USD/million in the
-base tier and `10` above the 272K threshold while the promotional input rates
-apply (`6.25`/`12.5` at the list rates). Model the promotion with the
-`promo_*` fields and `promo_expires_at_utc` so the card falls back to the list
-rates automatically. Grok 4.6 exposes cached-input pricing but no distinct
-cache-write counter, so do not infer a write charge from uncached input tokens.
+GPT-6 Astra reports cache-write tokens separately. Configure OpenAI cache write
+at 1.25 times the corresponding uncached input rate: `12.5` USD/million in the
+base tier and `25` above the 272K threshold. There is no promotional period on
+this pin, so the `promo_*` fields do not apply to it. Grok 4.6 exposes
+cached-input pricing but no distinct cache-write counter, so do not infer a
+write charge from uncached input tokens.
 
-OpenAI requests explicitly pin `service_tier: "default"`. This prevents a
-project-level Priority processing setting from silently changing the service
-tier and price basis, so the OpenAI rate cards configured here must use the
-official Standard/default rates. The response's actual `service_tier` remains
+Anthropic bills cache WRITES separately from reads, and the write rates did not
+change with Fable 5.1 — only the read did, falling to a quarter. Configure
+`cache_write_per_million` at `20` for the 1h TTL the runtime uses by default
+(`12.5` for the 5m TTL). Note that Anthropic caching is DISABLED by default for
+this peer, on the empirical grounds recorded in `src/core/config.ts`: over 244
+sessions it spent USD 1.18 to save USD 0.0035, a 0.3% hit rate. The cheaper
+read does not overturn that, because the waste was in the writes, and the write
+rates are unchanged.
+
+OpenAI requests explicitly pin `service_tier: "default"`. OpenAI renamed the
+Priority tier to "Fast mode" on 30/07/2026 and accepts both
+`service_tier: "priority"` and `service_tier: "fast"`; Fast mode doubles every
+rate. Pinning `default` prevents a project-level setting from silently moving
+the price basis, so the OpenAI rate cards configured here must use the official
+Standard/default rates. The response's actual `service_tier` remains
 provider telemetry; it does not authorize substituting a different price table
 without matching configured rates.
 
@@ -80,10 +92,10 @@ only.
 Official pricing sources:
 
 - OpenAI: [API pricing](https://developers.openai.com/api/docs/pricing),
-  [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol) and
+  [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra) and
   [Priority processing](https://developers.openai.com/api/docs/guides/priority-processing#configuring-priority-processing).
 - Anthropic: [models overview](https://platform.claude.com/docs/en/about-claude/models/overview),
-  [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5)
+  [Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview)
   and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 - Google: [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 - DeepSeek: [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
@@ -93,11 +105,6 @@ Official pricing sources:
 - Perplexity: [Agent API models and pricing](https://docs.perplexity.ai/docs/agent-api/models)
   and the [Agent API request schema](https://docs.perplexity.ai/api-reference/agent-post)
   (usage `cost` and `tool_calls_details`).
-
-Anthropic cache-write rates are separate from cache-hit rates. With the
-workspace's default `1h` TTL, configure cache write as `20` for Fable 5 and
-`10` for Opus 5. If you deliberately switch to `5m`, the corresponding values
-are `12.5` and `6.25`.
 
 Perplexity Agent API requests pay the `web_search` tool per invocation
 reported in `usage.tool_calls_details`; the adapter surfaces that count as
@@ -135,37 +142,31 @@ overrides can select models with different prices:
 ```json
 {
   "models": {
-    "codex": "gpt-5.6-sol",
-    "claude": "claude-fable-5",
+    "codex": "gpt-6-astra",
+    "claude": "claude-fable-5-1",
     "grok": "grok-4.6",
     "perplexity": "perplexity/kimi-k3"
   },
   "model_cost_rates": {
     "claude": {
-      "claude-opus-5": {
-        "input_per_million": 5,
-        "output_per_million": 25,
-        "cache_read_per_million": 0.5,
-        "cache_write_per_million": 10
-      },
-      "claude-fable-5": {
+      "claude-fable-5-1": {
         "input_per_million": 10,
         "output_per_million": 50,
-        "cache_read_per_million": 1,
+        "cache_read_per_million": 0.25,
         "cache_write_per_million": 20
       }
     },
     "codex": {
-      "gpt-5.6-sol": {
-        "input_per_million": 5,
-        "output_per_million": 30,
-        "cache_read_per_million": 0.5,
-        "cache_write_per_million": 6.25,
+      "gpt-6-astra": {
+        "input_per_million": 10,
+        "output_per_million": 50,
+        "cache_read_per_million": 1,
+        "cache_write_per_million": 12.5,
         "threshold_tokens": 272000,
-        "input_extended_per_million": 10,
-        "output_extended_per_million": 45,
-        "cache_read_extended_per_million": 1,
-        "cache_write_extended_per_million": 12.5
+        "input_extended_per_million": 20,
+        "output_extended_per_million": 75,
+        "cache_read_extended_per_million": 2,
+        "cache_write_extended_per_million": 25
       }
     },
     "grok": {

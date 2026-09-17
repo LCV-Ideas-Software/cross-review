@@ -25,8 +25,10 @@ const DOCS = {
 // v3.7.2 (AUDIT-3, Codex 3rd super-audit + operator directive 2026-05-14):
 // NO MODEL FALLBACK. Every peer is pinned to a SINGLE canonical model — the
 // most advanced "pro" model with reasoning for that provider. Operator
-// directive: "não quero fallback de modelos. É um único modelo pinado e
-// pronto. E sempre o modelo mais avançado, pro, com reasoning."
+// directive, quoted verbatim in the operator's own language (pt-BR) because
+// a translated standing instruction is a paraphrase, not the instruction:
+// "não quero fallback de modelos. É um único modelo pinado e pronto. E sempre
+// o modelo mais avançado, pro, com reasoning."
 // `selectFromCandidates` picks the first PRIORITY entry the provider's live
 // list contains; with a lone entry it either selects that canonical model
 // or keeps the configured model pin (config.models[peer]) — it can NEVER
@@ -35,8 +37,8 @@ const DOCS = {
 // Pre-v3.7.2 codex/claude/grok kept multi-entry same-provider chains and
 // gemini/deepseek were trimmed in v3.7.1; this completes the trim for all 6.
 const PRIORITY: Record<PeerId, string[]> = {
-  codex: ["gpt-5.6-sol"],
-  claude: ["claude-fable-5"],
+  codex: ["gpt-6-astra"],
+  claude: ["claude-fable-5-1"],
   gemini: ["gemini-3.1-pro-preview"],
   deepseek: ["deepseek-v4-pro"],
   // grok-4.6 (xAI, August 2026): the recommended frontier reasoning model
@@ -50,15 +52,14 @@ const PRIORITY: Record<PeerId, string[]> = {
   perplexity: ["perplexity/kimi-k3"],
 };
 
-const SUPPORTED_MODEL_OVERRIDES: Partial<Record<PeerId, string[]>> = {
-  // Preserve Opus as an explicit compatibility option for operators whose
-  // Anthropic organization cannot accept Fable 5's 30-day retention. Opus 5
-  // is a fixed, dateless model id rather than an evergreen alias.
-  claude: ["claude-opus-5", "claude-opus-4-8"],
-};
-
+// v07.00.00 (operator directive, restated 08/09/2026): cross-review runs the
+// TOP model of each provider and nothing else. The Opus entries that used to
+// sit here were a second-tier compatibility escape hatch, and an escape hatch
+// from the flagship is exactly what the directive forbids. There is no
+// supported-override list any more: the canonical pin per peer is the whole
+// admissible set.
 function supportedModels(peer: PeerId): string[] {
-  return [...PRIORITY[peer], ...(SUPPORTED_MODEL_OVERRIDES[peer] ?? [])];
+  return [...PRIORITY[peer]];
 }
 
 function isSupportedModel(peer: PeerId, model: string): boolean {

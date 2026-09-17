@@ -138,8 +138,14 @@ export function getTokenFileRecoveryGuidance(context: TokenFileRecoveryContext):
   return "The caller-token record failed for a non-permission I/O or unknown reason. Stop the MCP host and inspect the configured local storage without exposing its path or contents; restore a known-good protected regular file or correct the storage/configuration error, then restart and verify caller_tokens.loaded=true with server_info. Do not apply an ACL replacement unless the failure is confirmed as the documented permission-recovery case.";
 }
 
-export type CallerIdentity = PeerId | "operator";
-export const CALLER_IDENTITIES: readonly CallerIdentity[] = [...PEERS, "operator"];
+// v07.00.00: the record holds one capability per PEER. It used to hold a
+// seventh, for an "operator" identity whose token was meant to live in a
+// separate human console — a host that does not exist, because the whole
+// surface is MCP and is exercised by agents. Generating that token bound a
+// secret to nobody and, worse, any host holding it declared a caller the
+// server no longer admits.
+export type CallerIdentity = PeerId;
+export const CALLER_IDENTITIES: readonly CallerIdentity[] = PEERS;
 export type HostTokensMap = Record<CallerIdentity, string>;
 
 export interface HostTokensRecord {
@@ -652,18 +658,124 @@ function hardenOpenedTokensFilePermissions(
   }
 }
 
-function rewriteOpenedTokensFile(fd: number, payload: string): void {
-  const encoded = Buffer.from(payload, "utf8");
-  fs.ftruncateSync(fd, 0);
-  let offset = 0;
-  while (offset < encoded.length) {
-    const written = fs.writeSync(fd, encoded, offset, encoded.length - offset, offset);
-    if (written <= 0) {
-      throw new Error("caller-tokens: zero-byte write while migrating token file");
+// v07.00.00 (PR #300 review round 5): the migration used to truncate the live
+// token file to zero and then write its replacement into the same descriptor.
+// This is the ONLY credential record: a disk-full error, a transient I/O
+// failure or a power loss anywhere between the truncate and the fsync left it
+// empty or half-written, and every peer token became unverifiable — taking
+// every owner-scoped tool with it, including the recovery tools that would be
+// used to dig out.
+//
+// The replacement is written beside it and swapped in, so the old record stays
+// intact and readable until a complete, fsynced replacement exists. Mirrors the
+// `writeJson` helper in session-store.ts — same tmp naming, same Windows retry
+// set, same best-effort cleanup — plus the three things a credential file needs
+// and a session file does not: mode 0600 at creation, an fsync before the
+// rename rather than trusting the page cache, and a flush of the containing
+// directory after it, so the new NAME is durable and not only its contents
+// (PR #300 review round 10; see the guard at the rename itself).
+function replaceTokensFileAtomically(filePath: string, payload: string): void {
+  const nonce = crypto.randomBytes(2).toString("hex");
+  const tmp = `${filePath}.${process.pid}.${nonce}.tmp`;
+  let tmpFd: number | null = null;
+  try {
+    // `wx` refuses to clobber a leftover temp, and 0600 means the replacement
+    // is never briefly world-readable.
+    tmpFd = fs.openSync(tmp, "wx", 0o600);
+    const encoded = Buffer.from(payload, "utf8");
+    let offset = 0;
+    while (offset < encoded.length) {
+      const written = fs.writeSync(tmpFd, encoded, offset, encoded.length - offset, offset);
+      if (written <= 0) {
+        throw new Error("caller-tokens: zero-byte write while migrating token file");
+      }
+      offset += written;
     }
-    offset += written;
+    fs.fsyncSync(tmpFd);
+    fs.closeSync(tmpFd);
+    tmpFd = null;
+    // POSIX is covered by the 0600 above, but Windows is not: mode bits do
+    // not override inherited NTFS access entries, which is the whole reason
+    // hardenTokensFilePermissions exists. Renaming an un-hardened temp over
+    // the live record would hand a protected file back to whatever the parent
+    // directory inherits -- including model-sandbox principals -- and it would
+    // do it silently, because the migration succeeds. Fail closed instead: an
+    // un-hardened replacement is never swapped in, and the original stays.
+    if (!hardenTokensFilePermissions(tmp)) {
+      throw new Error(
+        "caller-tokens: refusing to swap in a token file whose permissions could not be hardened",
+      );
+    }
+  } catch (error) {
+    if (tmpFd !== null) {
+      try {
+        fs.closeSync(tmpFd);
+      } catch {
+        /* the throw below is the outcome that matters */
+      }
+    }
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* best effort: never leave the temp behind */
+    }
+    throw error;
   }
-  fs.fsyncSync(fd);
+  // One attempt, deliberately. `session-store.ts` retries this rename with a
+  // backoff because Win32 fails it with EPERM/EACCES/EBUSY while a handle is
+  // briefly held by AV or indexing — but that writer is async and can await a
+  // timer. `loadHostTokens` is synchronous, and a synchronous backoff is
+  // exactly what the v4.1.0 F5 contract forbids anywhere under src/: both the
+  // busy-wait and `Atomics.wait` block the single Node thread. Failing is the
+  // right outcome anyway, because it is not lossy: the original record is
+  // still whole and readable — the swap never started — so a transient lock
+  // costs a retry at the next start, not a credential.
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* best effort: never leave the temp behind */
+    }
+    throw error;
+  }
+  // The rename is atomic for a READER, but on POSIX its directory entry is not
+  // durable until the containing directory is itself flushed: the temp file's
+  // own fsync above says nothing about the name that now points at it. A power
+  // loss in that window can replay to the legacy record, and on a filesystem
+  // that does not journal the rename, to neither name.
+  //
+  // Guarded, and the guard is not cosmetic. Measured on Windows 11 / Node
+  // v26.8.1: `fs.openSync(dir, "r")` SUCCEEDS there, and `fs.fsyncSync` on the
+  // resulting handle throws EPERM. `loadHostTokens`'s catch maps EPERM to
+  // `permission_denied` and discards the whole record — so an unguarded flush
+  // would report the credential file as unloadable on the very platform this
+  // runs on, for a migration that had already completed correctly.
+  //
+  // Best-effort, and deliberately so. Control only reaches here AFTER the
+  // rename has succeeded: the new record is live, readable and hardened.
+  // Throwing now would report a failed migration that in fact completed, and
+  // the caller reads a throw as "no token record", which fails every
+  // owner-scoped tool closed. An undurable-but-correct rename is strictly
+  // better than that.
+  if (process.platform !== "win32") {
+    let dirFd: number | null = null;
+    try {
+      dirFd = fs.openSync(path.dirname(filePath), "r");
+      fs.fsyncSync(dirFd);
+    } catch {
+      /* see above: the record is already in place; a failed flush is not a failed swap */
+    } finally {
+      if (dirFd !== null) {
+        try {
+          fs.closeSync(dirFd);
+        } catch {
+          /* best effort: the flush outcome is what mattered */
+        }
+      }
+    }
+  }
 }
 
 export function generateHostTokens(
@@ -783,21 +895,21 @@ export function loadHostTokens(
       seen.add(normalizedToken);
       map[identity] = normalizedToken;
     }
-    const storedOperatorToken = tokensIn.operator;
-    const operatorToken =
-      typeof storedOperatorToken === "string" &&
-      storedOperatorToken.length === TOKEN_HEX_LENGTH &&
-      /^[0-9a-f]+$/i.test(storedOperatorToken) &&
-      !seen.has(storedOperatorToken.toLowerCase())
-        ? storedOperatorToken.toLowerCase()
-        : crypto.randomBytes(TOKEN_BYTES).toString("hex");
-    if (seen.has(operatorToken)) return failHostTokensLoad(diagnostics, "invalid_content");
-    seen.add(operatorToken);
-    map.operator = operatorToken;
-
-    if ((parsed as { version?: number }).version !== 2 || storedOperatorToken !== operatorToken) {
-      rewriteOpenedTokensFile(
-        fd,
+    // v07.00.00: a record written before this release carries a seventh token
+    // for the "operator" identity. It is dropped rather than migrated: the
+    // identity is not admissible any more, so the secret binds to no host and
+    // a host still presenting it would declare a caller the server refuses.
+    // The file is rewritten without it, which also retires the
+    // `operator_token_added_at` marker of the migration that first added it.
+    const droppedOperatorToken = typeof tokensIn.operator === "string";
+    if ((parsed as { version?: number }).version !== 2 || droppedOperatorToken) {
+      // The read is finished, and Win32 refuses to rename over a file that is
+      // still open, so the descriptor is released before the swap. `fd` is
+      // cleared so the `finally` below does not close it twice.
+      fs.closeSync(fd);
+      fd = null;
+      replaceTokensFileAtomically(
+        filePath,
         JSON.stringify(
           {
             version: 2,
@@ -805,7 +917,6 @@ export function loadHostTokens(
               typeof (parsed as { generated_at?: unknown }).generated_at === "string"
                 ? (parsed as { generated_at: string }).generated_at
                 : new Date().toISOString(),
-            operator_token_added_at: new Date().toISOString(),
             tokens: map,
           },
           null,
@@ -946,7 +1057,7 @@ export function verifyTokenForCaller(
   const identity = resolveAgentForToken(presented, tokensRecord.map);
   if (!identity) {
     throw new Error(
-      "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN does not match any known agent's secret in host-tokens.json. Either the token is stale (regenerate via regenerate_caller_tokens) or the host-tokens.json file has been rotated without re-distributing the new value.",
+      "identity_forgery_blocked: CROSS_REVIEW_CALLER_TOKEN does not match any known agent's secret in host-tokens.json. Either the token is stale (the record was rotated at boot) or the host-tokens.json file has been rotated without re-distributing the new value.",
     );
   }
   if (identity !== declaredCaller) {

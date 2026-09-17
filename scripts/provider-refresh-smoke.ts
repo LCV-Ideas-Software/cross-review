@@ -140,6 +140,23 @@ async function captureGrokReasoningEffort(
     expected: Record<ReasoningEffort, string>;
   }> = [
     {
+      models: ["gpt-6-astra"],
+      expected: {
+        // GPT-6 Astra documents low|medium|high|xhigh|max. "none" is not in
+        // that set, so it is raised to the lowest documented level instead of
+        // being sent and rejected; "max" must survive intact, because the
+        // generic fallback this row guards against downgrades it to xhigh.
+        none: "low",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+        ultra: "max",
+      },
+    },
+    {
       models: ["gpt-5.6-sol"],
       expected: {
         none: "none",
@@ -239,15 +256,15 @@ async function captureGrokReasoningEffort(
 }
 
 {
-  const sol = selectFromCandidates("codex", [{ id: "gpt-5.6-sol", source: "api" }], "gpt-5.6-sol");
-  assert.equal(sol.selected, "gpt-5.6-sol");
+  const sol = selectFromCandidates("codex", [{ id: "gpt-6-astra", source: "api" }], "gpt-6-astra");
+  assert.equal(sol.selected, "gpt-6-astra");
   assert.equal(sol.confidence, "verified");
 }
 
 {
   const adapter = new OpenAIAdapter({
     ...config,
-    models: { ...config.models, codex: "gpt-5.6-sol" },
+    models: { ...config.models, codex: "gpt-6-astra" },
     reasoning_effort: { ...config.reasoning_effort, codex: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -267,7 +284,7 @@ async function captureGrokReasoningEffort(
         return {
           status: "completed",
           output_text: "revised fixture",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-astra",
           usage: {
             input_tokens: 100,
             output_tokens: 20,
@@ -282,6 +299,12 @@ async function captureGrokReasoningEffort(
     session_id: "550e8400-e29b-41d4-a716-446655440001",
     round: 1,
     task: "provider refresh smoke",
+    // v07.00.00: the cache key is scoped to the (peer, caller) pair, and a
+    // call with no caller now sends no key at all rather than an unscoped
+    // one. Every production call carries the petitioner, so the fixture
+    // carries one too — otherwise it would assert the cache contract on a
+    // shape the runtime no longer produces.
+    caller: "claude",
     emit: () => undefined,
   });
   assert.equal(
@@ -419,6 +442,9 @@ async function captureGrokReasoningEffort(
     session_id: "550e8400-e29b-41d4-a716-446655440003",
     round: 1,
     task: "provider refresh smoke",
+    // v07.00.00: same reason as the GPT-5.6 fixture above — the cache key is
+    // scoped to the (peer, caller) pair and a callerless call sends none.
+    caller: "claude",
     emit: () => undefined,
   });
   assert.deepEqual(
@@ -432,8 +458,83 @@ async function captureGrokReasoningEffort(
     "Grok 4.6 must not receive OpenAI-only prompt_cache_retention.",
   );
   assert.equal(capturedPayload?.prompt_cache_key !== undefined, true);
+  assert.equal(
+    capturedPayload?.prompt_cache_key,
+    "cross-review:grok:claude:v1",
+    "the cache key must name the (peer, caller) pair it scopes",
+  );
   assert.equal(generated.usage?.input_tokens, 60);
   assert.equal(generated.usage?.cache_read_tokens, 40);
+}
+
+{
+  // v07.00.00: a call with no caller sends NO prompt_cache_key.
+  //
+  // Pre-v07 both adapters defaulted the caller to "operator", so every
+  // evidence-judge call — whose context never set one — sent a key naming a
+  // principal the protocol no longer admits, to api.openai.com and api.x.ai.
+  // Worse than the name: one bucket held every petitioner's prefixes, which
+  // is the opposite of what a pair-scoped key is for. The judge contexts now
+  // carry the session petitioner; where the pair still cannot be named (a
+  // session persisted before this release, whose petitioner is not a peer)
+  // the key is omitted rather than invented, and caching simply does not
+  // engage for that call.
+  const cachelessAdapters = [
+    {
+      label: "openai",
+      adapter: new OpenAIAdapter({
+        ...config,
+        models: { ...config.models, codex: "gpt-6-astra" },
+        streaming: { ...config.streaming, tokens: false },
+      }) as unknown as { client: unknown },
+      model: "gpt-6-astra",
+    },
+    {
+      label: "grok",
+      adapter: new GrokAdapter({
+        ...config,
+        models: { ...config.models, grok: "grok-4.6" },
+        streaming: { ...config.streaming, tokens: false },
+      }) as unknown as { client: unknown },
+      model: "grok-4.6",
+    },
+  ];
+  for (const { label, adapter, model } of cachelessAdapters) {
+    let payload: Record<string, unknown> | undefined;
+    adapter.client = async () => ({
+      responses: {
+        create: async (body: Record<string, unknown>) => {
+          payload = body;
+          return {
+            status: "completed",
+            output_text: "revised fixture",
+            model,
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          };
+        },
+      },
+    });
+    await (
+      adapter as unknown as { generate: (p: string, c: unknown) => Promise<unknown> }
+    ).generate("Revise this fixture.", {
+      session_id: "550e8400-e29b-41d4-a716-446655440099",
+      round: 1,
+      task: "callerless cache scoping",
+      emit: () => undefined,
+    });
+    assert.equal(
+      Object.hasOwn(payload ?? {}, "prompt_cache_key"),
+      false,
+      `${label} must send no prompt_cache_key when the (peer, caller) pair cannot be named`,
+    );
+    const serialized = JSON.stringify(payload ?? {});
+    assert.doesNotMatch(
+      serialized,
+      /operator/i,
+      `${label} must never put the retired operator principal on the wire`,
+    );
+  }
+  console.log("[provider-refresh-smoke] callerless_calls_send_no_cache_key: PASS");
 }
 
 {
@@ -655,18 +756,26 @@ function capturePerplexityProbe(
 {
   const claude = selectFromCandidates(
     "claude",
-    [{ id: "claude-fable-5", source: "api" }],
-    "claude-fable-5",
+    [{ id: "claude-fable-5-1", source: "api" }],
+    "claude-fable-5-1",
   );
-  assert.equal(claude.selected, "claude-fable-5");
+  assert.equal(claude.selected, "claude-fable-5-1");
   assert.equal(claude.confidence, "verified");
 }
 
 {
+  // v07.00.00 (operator directive, restated 08/09/2026): cross-review runs the
+  // TOP model of each provider. This case asserted the opposite — that Opus 5
+  // was a first-class supported override — so it is flipped to the property
+  // that now holds: a non-flagship pin is still honoured, because the env
+  // override is the operator's own lever outside MCP, but the repository no
+  // longer blesses it. `confidence` drops from "verified" to "unknown" here
+  // because the pin is not canonical, which is what makes the deviation
+  // visible at the configuration instead of at a mid-round provider 404.
   const opus5 = selectFromCandidates(
     "claude",
     [
-      { id: "claude-fable-5", source: "api" },
+      { id: "claude-fable-5-1", source: "api" },
       { id: "claude-opus-5", source: "api" },
     ],
     "claude-opus-5",
@@ -674,32 +783,35 @@ function capturePerplexityProbe(
   assert.equal(opus5.selected, "claude-opus-5");
   assert.equal(
     opus5.confidence,
-    "verified",
-    "Claude Opus 5 must be a first-class supported operator override when the Models API lists it.",
+    "unknown",
+    "a non-flagship pin must be honoured but never reported as a verified supported model",
   );
 }
 
 {
+  // v07.00.00: the flagship must win even when the provider also lists an
+  // older, non-flagship id. The pinned model is the canonical one, so the
+  // selection is verified and the other candidate is never reached for.
   const fable = selectFromCandidates(
     "claude",
     [
       { id: "claude-opus-4-8", source: "api" },
-      { id: "claude-fable-5", source: "api" },
+      { id: "claude-fable-5-1", source: "api" },
     ],
-    "claude-fable-5",
+    "claude-fable-5-1",
   );
-  assert.equal(fable.selected, "claude-fable-5");
+  assert.equal(fable.selected, "claude-fable-5-1");
   assert.equal(
     fable.confidence,
     "verified",
-    "Claude Fable 5 must remain selected when the operator pinned it and the provider API lists both Fable and the canonical Opus pin.",
+    "the canonical Fable 5.1 pin must remain selected when the provider API also lists an older model.",
   );
 }
 
 {
   const adapter = new AnthropicAdapter({
     ...config,
-    models: { ...config.models, claude: "claude-fable-5" },
+    models: { ...config.models, claude: "claude-fable-5-1" },
     reasoning_effort: { ...config.reasoning_effort, claude: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -718,7 +830,7 @@ function capturePerplexityProbe(
         capturedPayload = payload;
         return {
           content: [{ type: "text", text: "revised fixture" }],
-          model: "claude-fable-5",
+          model: "claude-fable-5-1",
           stop_reason: "end_turn",
           usage: { input_tokens: 100, output_tokens: 20 },
         };
@@ -793,6 +905,9 @@ function capturePerplexityProbe(
 }
 
 assert.equal(anthropicCacheMinTokens("claude-fable-5"), 512);
+// v07.00.00: the new pin must land on the same 512-token branch. The family
+// regex matches it by prefix, which is load-bearing and was uncovered.
+assert.equal(anthropicCacheMinTokens("claude-fable-5-1"), 512);
 assert.equal(anthropicCacheMinTokens("claude-opus-5"), 512);
 assert.equal(anthropicCacheMinTokens("claude-opus-4-8"), 1_024);
 assert.equal(anthropicCacheMinTokens("claude-unknown"), 4_096);
@@ -807,9 +922,9 @@ assert.equal(
   const unavailableFable = selectFromCandidates(
     "claude",
     [{ id: "claude-opus-4-8", source: "api" }],
-    "claude-fable-5",
+    "claude-fable-5-1",
   );
-  assert.equal(unavailableFable.selected, "claude-fable-5");
+  assert.equal(unavailableFable.selected, "claude-fable-5-1");
   assert.equal(
     unavailableFable.confidence,
     "unknown",
@@ -827,7 +942,7 @@ assert.equal(
   const failure = classifyProviderError(
     "claude",
     "anthropic",
-    "claude-fable-5",
+    "claude-fable-5-1",
     refusal,
     1,
     Date.now(),
@@ -1072,9 +1187,9 @@ assert.equal(
 {
   const configSource = fs.readFileSync("src/core/config.ts", "utf8");
   const modelSelectionSource = fs.readFileSync("src/peers/model-selection.ts", "utf8");
-  assert.ok(configSource.includes('codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.6-sol"'));
+  assert.ok(configSource.includes('codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-6-astra"'));
   assert.ok(
-    configSource.includes('claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5"'),
+    configSource.includes('claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5-1"'),
   );
   assert.ok(
     configSource.includes(
@@ -1103,8 +1218,8 @@ assert.equal(
       'perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max")',
     ),
   );
-  assert.ok(modelSelectionSource.includes('codex: ["gpt-5.6-sol"]'));
-  assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5"]'));
+  assert.ok(modelSelectionSource.includes('codex: ["gpt-6-astra"]'));
+  assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5-1"]'));
   assert.ok(modelSelectionSource.includes('gemini: ["gemini-3.1-pro-preview"]'));
   assert.ok(modelSelectionSource.includes('grok: ["grok-4.6"]'));
   assert.ok(modelSelectionSource.includes('perplexity: ["perplexity/kimi-k3"]'));

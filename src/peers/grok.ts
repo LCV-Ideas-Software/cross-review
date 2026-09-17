@@ -264,13 +264,12 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
   // Responses API uses prompt_cache_key in the request body. The
   // x-grok-conv-id header is the corresponding Chat Completions surface
   // and is intentionally not duplicated here.
-  private async client(callerForCache?: PeerId | "operator"): Promise<OpenAI> {
+  private async client(): Promise<OpenAI> {
     const apiKey = this.config.api_keys.grok;
     if (!apiKey) {
       throw new Error("GROK_API_KEY was not found in environment variables.");
     }
     const Ctor = await loadOpenAICtor();
-    void callerForCache;
     return new Ctor({ apiKey, baseURL: GROK_BASE_URL });
   }
 
@@ -352,11 +351,13 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `Grok review attempt ${attempt}`,
         });
-        const cacheKey = pairScopedCacheKey(
-          this.id,
-          context.caller ?? "operator",
-          this.config.cache.schema_version,
-        );
+        // v07.00.00: no caller means the (peer, caller) pair cannot be
+        // named. Pre-v07 this fell back to "operator" and sent that on the
+        // wire; an unscoped key also pools unrelated petitioners into one
+        // provider-side bucket. Send no key instead.
+        const cacheKey = context.caller
+          ? pairScopedCacheKey(this.id, context.caller, this.config.cache.schema_version)
+          : undefined;
         const body = {
           model: this.model,
           input: [
@@ -389,7 +390,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           store: false,
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          ...(this.config.cache.enabled
+          ...(this.config.cache.enabled && cacheKey
             ? {
                 prompt_cache_key: cacheKey,
               }
@@ -407,7 +408,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           let modelReported: string | undefined;
           let responseCompleted = false;
           let responseRefused = false;
-          const reviewClient = await this.client(context.caller);
+          const reviewClient = await this.client();
           const stream = await reviewClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
@@ -476,7 +477,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const reviewClient = await this.client(context.caller);
+        const reviewClient = await this.client();
         const response = await reviewClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,
@@ -511,11 +512,13 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `Grok generation attempt ${attempt}`,
         });
-        const cacheKey = pairScopedCacheKey(
-          this.id,
-          context.caller ?? "operator",
-          this.config.cache.schema_version,
-        );
+        // v07.00.00: no caller means the (peer, caller) pair cannot be
+        // named. Pre-v07 this fell back to "operator" and sent that on the
+        // wire; an unscoped key also pools unrelated petitioners into one
+        // provider-side bucket. Send no key instead.
+        const cacheKey = context.caller
+          ? pairScopedCacheKey(this.id, context.caller, this.config.cache.schema_version)
+          : undefined;
         const body = {
           model: this.model,
           input: [
@@ -537,7 +540,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           store: false,
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          ...(this.config.cache.enabled
+          ...(this.config.cache.enabled && cacheKey
             ? {
                 prompt_cache_key: cacheKey,
               }
@@ -555,7 +558,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           let modelReported: string | undefined;
           let responseCompleted = false;
           let responseRefused = false;
-          const generateClient = await this.client(context.caller);
+          const generateClient = await this.client();
           const stream = await generateClient.responses.create(
             { ...body, stream: true },
             { signal: context.signal, timeout: this.config.retry.timeout_ms },
@@ -624,7 +627,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported,
           });
         }
-        const generateClient = await this.client(context.caller);
+        const generateClient = await this.client();
         const response = await generateClient.responses.create(body, {
           signal: context.signal,
           timeout: this.config.retry.timeout_ms,

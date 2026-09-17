@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "6.0.0";
+export const VERSION = "7.0.0";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -397,8 +397,8 @@ export function loadConfig(): AppConfig {
       include_text: boolEnv("CROSS_REVIEW_STREAM_TEXT", false),
     },
     models: {
-      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-5.6-sol",
-      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5",
+      codex: envValue("CROSS_REVIEW_OPENAI_MODEL") || "gpt-6-astra",
+      claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5-1",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
       // v4.6.0 (provider-doc refresh 2026-08-23): Grok 4.6 is xAI's

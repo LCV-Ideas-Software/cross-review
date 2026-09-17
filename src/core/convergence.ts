@@ -10,8 +10,8 @@ import type {
 // v3.7.3 (operator no-fallback directive 2026-05-14): when a peer's pinned
 // model is genuinely unavailable, the round SKIPS that peer and converges
 // on the remaining peers, instead of letting the failure block
-// convergence. This is the operator's "pular aquele peer e trabalhar
-// apenas com os outros" path.
+// convergence. This is the operator's own instruction for that case, quoted
+// verbatim in pt-BR: "pular aquele peer e trabalhar apenas com os outros".
 //
 // v3.7.4 (Codex v3.7.3 parecer AUDIT-2): a peer reaches this skip through
 // EITHER of two paths, not just "the user declared no fallback model" —
@@ -249,7 +249,7 @@ export function checkConvergence(
     };
   }
   // v3.7.3: skip-gated quorum floor. A 0- or 1-peer "unanimous" review is
-  // meaningless — skipping must never silently degrade the colegiado below
+  // meaningless — skipping must never silently degrade the panel below
   // a real cross-check. The floor is GUARDED by `skipped.length > 0`: a
   // zero-skip session keeps its pre-v3.7.3 behavior exactly, including a
   // legitimate single-reviewer-peer session that converges on 1 READY.

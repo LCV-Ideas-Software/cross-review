@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-As instrucoes deste repositorio para agentes de AI — incluindo o ritual de registro de
-trabalho G1..G4 em GitHub Projects, Issues e Discussions — vivem em `AGENTS.md` e sao
-importadas integralmente acima. Nao duplique conteudo aqui: este arquivo existe para que
-o Claude Code carregue exatamente as mesmas instrucoes que os demais agentes leem.
+This repository's instructions for AI agents — including the G1..G4 work-record
+ritual across GitHub Projects, Issues and Discussions — live in `AGENTS.md` and are
+imported in full above. Do not duplicate content here: this file exists so that Claude
+Code loads exactly the same instructions every other agent reads.

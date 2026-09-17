@@ -121,7 +121,7 @@ const regressions: Regression[] = [
       );
       assert.equal(
         grounding.result.decision_transformations?.at(-1)?.details?.remediation,
-        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.",
+        "Cite evidence verbatim from the reviewed artifact, an authenticated caller submission, or a persisted attachment; invented or untraceable sources cannot support READY.",
         "the remediation must remain auditable on the server-side decision transformation",
       );
       assert.deepEqual(
@@ -268,7 +268,6 @@ const regressions: Regression[] = [
       const preflight = truthfulnessPreflight({
         task: "Review the operational report.",
         initialDraft: "The current production deployment is healthy and green.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -284,7 +283,6 @@ const regressions: Regression[] = [
         task: "Review release metadata.",
         initialDraft: "The current astrologo-app release is v2.20.0.",
         structuredEvidence: "package.json: version=2.20.0",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -301,7 +299,6 @@ const regressions: Regression[] = [
         task: "Review the astrologo-app release evidence.",
         initialDraft: "When the workflow began, astrologo-app was at v2.20.0.",
         structuredEvidence: 'package.json:3: "version": "2.20.0"',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -313,7 +310,6 @@ const regressions: Regression[] = [
       const runtimeClaim = truthfulnessPreflight({
         task: "Audit the cross-review runtime at workflow start.",
         initialDraft: "When the workflow began, cross-review was at v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -329,7 +325,6 @@ const regressions: Regression[] = [
         task: "Review the astrologo-app release evidence.",
         initialDraft: "When the workflow began, astrologo-app version was v2.20.0.",
         structuredEvidence: 'package.json:3: "version": "2.20.0"',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -339,7 +334,6 @@ const regressions: Regression[] = [
       const runtimeClaim = truthfulnessPreflight({
         task: "Audit the cross-review runtime at workflow start.",
         initialDraft: "When the workflow began, cross-review version was v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -348,6 +342,11 @@ const regressions: Regression[] = [
       assert.ok(runtimeClaim.issue_classes.includes("unsupported_historical_claim"));
     },
   },
+  // The pt-BR drafts below are not stray prose: they are the only coverage of
+  // the Portuguese alternatives inside HISTORICAL_RUNTIME_TIMING_PATTERN
+  // (src/core/orchestrator.ts), which matches
+  // `quando (o) workflow|run|auditoria|sessao comecou`. Translating them would
+  // leave that branch of the pattern untested while the tests still passed.
   {
     name: "a Portuguese product-version noun phrase stays outside runtime history",
     run: () => {
@@ -355,7 +354,6 @@ const regressions: Regression[] = [
         task: "Revise a evidência de release do astrologo-app.",
         initialDraft: "Quando o workflow começou, a versão do astrologo-app era v2.20.0.",
         structuredEvidence: 'package.json:3: "version": "2.20.0"',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -365,7 +363,6 @@ const regressions: Regression[] = [
       const runtimeClaim = truthfulnessPreflight({
         task: "Audite o runtime do cross-review no início do workflow.",
         initialDraft: "Quando o workflow começou, a versão do cross-review era v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -381,7 +378,6 @@ const regressions: Regression[] = [
         task: "Review release evidence.",
         initialDraft: "When the workflow began, the reviewed application version was v2.20.0.",
         structuredEvidence: 'package.json:3: "version": "2.20.0"',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -391,7 +387,6 @@ const regressions: Regression[] = [
       const runtimeClaim = truthfulnessPreflight({
         task: "Audit the local runtime.",
         initialDraft: "When the workflow began, the cross-review runtime version was v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -407,7 +402,6 @@ const regressions: Regression[] = [
         task: "Review release evidence.",
         initialDraft: "At workflow start, the reviewed package was at version v2.20.0.",
         structuredEvidence: 'package.json:3: "version": "2.20.0"',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -417,7 +411,6 @@ const regressions: Regression[] = [
       const runtimeClaim = truthfulnessPreflight({
         task: "Audit the local runtime.",
         initialDraft: "At workflow start, the cross-review runtime was at version v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -433,7 +426,6 @@ const regressions: Regression[] = [
         task: "Revise a evidência de release.",
         initialDraft: "Quando o workflow começou, a versão da aplicação revisada era v2.20.0.",
         structuredEvidence: 'package.json:3: "version": "2.20.0"',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -444,7 +436,6 @@ const regressions: Regression[] = [
         task: "Audite o runtime local.",
         initialDraft:
           "Quando o workflow começou, a versão do runtime local do cross-review era v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -460,7 +451,6 @@ const regressions: Regression[] = [
         task: "Revise a evidência de release do astrologo-app.",
         initialDraft: "No início do workflow, o astrologo-app estava na versão v2.20.0.",
         structuredEvidence: 'package.json:3: "version": "2.20.0"',
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -470,7 +460,6 @@ const regressions: Regression[] = [
       const runtimeClaim = truthfulnessPreflight({
         task: "Audite o runtime local.",
         initialDraft: "No início do workflow, o runtime do cross-review estava na versão v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -487,7 +476,6 @@ const regressions: Regression[] = [
         task: "Review the provider migration rationale.",
         initialDraft: `Google documentation says: “${quote}.”`,
         structuredEvidence: `Provider documentation quote: ${quote}.`,
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -504,7 +492,6 @@ const regressions: Regression[] = [
         task: "Review the database migration note.",
         initialDraft: "The database migration started on 2026-07-10.",
         structuredEvidence: "database_migration_started_at=2026-07-10",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -520,7 +507,6 @@ const regressions: Regression[] = [
       const preflight = truthfulnessPreflight({
         task: "Audit the currently loaded cross-review runtime.",
         initialDraft: "The current cross-review runtime is v4.5.2.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: RUNTIME_FACTS,
       });
@@ -636,7 +622,6 @@ const regressions: Regression[] = [
           step: "Extract release notes from CHANGELOG.md",
           upload: { artifact: "dist" },
         }),
-        caller: "codex",
         attachmentsPresent: false,
       });
 
@@ -650,7 +635,6 @@ const regressions: Regression[] = [
       const preflight = evidencePreflight({
         task: "Review the release audit.",
         initialDraft: "The literal evidence is in missing.log.",
-        caller: "codex",
         attachmentsPresent: false,
       });
 

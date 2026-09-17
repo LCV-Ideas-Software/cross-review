@@ -148,7 +148,7 @@ export function assertHashInvariant(input1: PromptPartsInput, input2: PromptPart
  */
 export function pairScopedCacheKey(
   peer: PeerId,
-  caller: PeerId | "operator",
+  caller: PeerId,
   cacheSchemaVersion: string,
 ): string {
   // Defensive: callers pass the canonical "v1"/"v2" form. If a caller

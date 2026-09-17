@@ -201,8 +201,8 @@ Evidence checklist state is also surfaced in reports. `not_resurfaced` means an
 ask was not repeated in a later round; it is not a verified satisfaction signal.
 If the ready/unanimity gate is otherwise satisfied while checklist items remain
 `open` or `not_resurfaced`, convergence is blocked. Non-resurfacing is not proof
-that the requested evidence was supplied. An explicit operator disposition, an
-independent judge, or a strictly grounded `READY/verified` recheck by the same
+that the requested evidence was supplied. An independent judge, or a strictly
+grounded `READY/verified` recheck by the same
 peer that opened the ask can close it; the latter is persisted as
 `requester_reverified` and cannot affect another peer's or a terminal item.
 
@@ -234,7 +234,7 @@ Decision quality is tracked per peer:
 always block unanimity until resolved.
 
 Every `READY` vote requires concrete evidence sources traceable to the artifact,
-authenticated caller evidence or optional operator-verified attachments. If an
+authenticated caller evidence. If an
 operational claim depends only on peer-submitted evidence, `inferred` is not
 enough: at least two independent reviewers must return `READY/verified` with the
 persisted path, SHA-256 and value-corresponding raw quote.
@@ -260,10 +260,11 @@ useful audit trails.
 If a provider still rejects a prompt as moderated or safety-blocked, the
 orchestrator records the failure class and retries once with a compact,
 sanitized review prompt. This retry does not bypass provider policy: if the
-compact context is insufficient, the peer must return `NEEDS_EVIDENCE` or the
-session remains blocked for operator action.
+compact context is insufficient, the peer must return `NEEDS_EVIDENCE` and the
+session stays blocked until the petitioner resubmits corrected material in a
+new round or closes the session.
 
-Claude Fable 5 and Opus 5 refusals are different from transport errors:
+Claude Fable 5.1 refusals are different from transport errors:
 Anthropic returns HTTP 200 with `stop_reason="refusal"` and optional
 `stop_details`. The Anthropic adapter treats this as a non-skippable
 `provider_refusal`, emits a
@@ -303,14 +304,17 @@ host/window restart or reload; opening a new tool call is not a live reload.
 ## Evidence Integrity and Anti-deception
 
 Authenticated caller evidence is automatically persisted, integrity-hashed and
-transported as reviewable material; no manual operator action is required.
+transported as reviewable material; nothing further is required.
 An append-only submission manifest selects exactly one active automatic
 caller-evidence snapshot. Superseded snapshots remain forensic history but are
 excluded from current preflight/prompt/grounding, preventing retry poisoning,
 stale-success replay and oldest-first prompt starvation. Evidence filenames
 include UUID entropy so concurrent same-label writes cannot collide.
-Optional authority promotion plus evidence/checklist, terminal-state, and
-security mutations remain operator-only MCP operations. A new evidence artifact
+Terminal state is runtime-owned for
+`converged` and `max-rounds`; `aborted` may be written by the persisted
+petitioner through `session_finalize`; a failed background job records
+`background_job_failed` as a blocked, resumable state; and the boot-time sweep
+aborts sessions idle for 24 hours. A new evidence artifact
 stores `attached_by`, `origin`, `attached_at`, UTF-8 byte count and SHA-256 and
 emits `session.evidence_attached`. Every read recomputes bytes and digest;
 missing or altered current-format evidence fails closed. Peer-attributed
@@ -334,11 +338,11 @@ materialized by the post-image of an admitted unified diff as supplied, so a
 relator that names it is not blocked, while a genuinely missing artifact still
 fails closed.
 
-The identity map contains six peer capabilities plus a separate `operator`
-capability. Operator-only tools require a verified operator token regardless of
-the permissive peer-token setting. A model token cannot be reused as operator,
-and evidence judges cannot rule on their own asks. The operator token belongs
-only in a dedicated human-console host. The plaintext token map is protected
+The identity map contains six peer capabilities, one per peer. A seventh
+existed for an `operator` identity whose token was meant to live in a separate
+human console; that host does not exist, so the capability bound a secret to
+nobody and is gone with the tools that demanded it. Evidence judges cannot rule
+on their own asks. The plaintext token map is protected
 with owner-only POSIX permissions or a non-inherited Windows DACL; this removes
 model-sandbox group access but is not a boundary between unrestricted processes
 sharing one OS identity.
@@ -365,8 +369,8 @@ classification: `summary` is exactly `No blocking objections remain.`,
 `caller_requests`/`follow_ups` are empty, and external narrative is forbidden.
 All explanatory detail stays in grounded `evidence_sources`. Cancellation and
 verdict contestation additionally require the explicit persisted petitioner
-token or the operator token; ambiguous legacy ownership fails closed to the
-operator.
+token; ambiguous legacy ownership yields no derivable owner and fails closed,
+closed only by the idle sweep.
 
 The canonical attachment citation is one string array item, in this exact
 order: `Attachment: <persisted-path>`, `sha256=<64 lowercase hex>`, then
@@ -391,18 +395,17 @@ operating-system account's trust boundary.
 
 The peer adapters use the strongest official reasoning controls available for each provider because cross-review is correctness-oriented:
 
-- OpenAI runs `gpt-5.6-sol` through the Responses API. Its strongest official
+- OpenAI runs `gpt-6-astra` through the Responses API. Its strongest official
   API value is `reasoning.effort=max`. The shared config also accepts `ultra`
   as an operator-facing compatibility alias and normalizes it to `max`; the
   alias is never transmitted to OpenAI. Explicit GPT-5.5/5.4/5.2 overrides
   cap at `xhigh`, GPT-5.1 and original GPT-5 cap at `high`, and unsupported
   lower literals are translated to the nearest available family value.
-- Anthropic runs canonical `claude-fable-5`. The request omits the explicit
+- Anthropic runs canonical `claude-fable-5-1`. The request omits the explicit
   `thinking` field because adaptive thinking is automatic and controls depth
-  with `output_config.effort`. The supported explicit `claude-opus-5` override
-  sends adaptive thinking with display omitted and the same effort control;
-  it is never selected as a fallback. Fable has 30-day/no-ZDR retention
-  semantics.
+  with `output_config.effort`. There is no second supported Anthropic model:
+  cross-review runs the top model of each provider, so the canonical pin is the
+  whole admissible set. Fable has 30-day/no-ZDR retention semantics.
 - Gemini maps the shared configured effort to the pinned Gemini 3.x model's
   native `LOW`, `MEDIUM`, or `HIGH` thinking level.
 - DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows

@@ -146,7 +146,7 @@ import type { PeerResult } from "../src/core/types.js";
   assert.ok(
     /attachments_present=false/.test(fabricatedTiming.reason) &&
       /inline|evidence field/.test(fabricatedTiming.reason) &&
-      /no manual operator attachment/.test(fabricatedTiming.reason),
+      /no separate attachment step/.test(fabricatedTiming.reason),
     "v4.5.1 / truthfulness_preflight: remediation must accept authenticated caller evidence without manual attachment",
   );
 
@@ -672,6 +672,26 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "an ownerless routed occurrence must not be adopted by the routable peer blanketly",
   );
+  // v07.00.00 (PR #300 review round 8): the masking case, and it has to sit
+  // next to the assertion above because the two look alike and mean opposite
+  // things. Above: a routed token UNRELATED to any validated one is tolerated,
+  // because calling it a lie would mean inventing the deployment fact. Here:
+  // the SAME bare token is asserted correctly and then used under a route the
+  // runtime cannot verify, so the valid occurrence sets `affirmativelyValidated`
+  // and the route rides in on its back with S2 never running.
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime pins codex to gpt-5.6-sol, served as xai/gpt-5.6-sol.",
+      plainPins,
+    ),
+    false,
+    "a correct bare pin must not vouch for an unverifiable route of the SAME token on the same line",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime pins codex to gpt-5.6-sol.", plainPins),
+    true,
+    "CONTROL: the bare pin alone must still pass, or the rule would be refusing every line that names a model",
+  );
   assert.equal(
     rt(
       "The Perplexity peer in the currently loaded cross-review runtime is routed through zeta / gpt-5.5.",
@@ -679,6 +699,65 @@ import type { PeerResult } from "../src/core/types.js";
     ),
     false,
     "whitespace around the route slash must not hide the wrong provider",
+  );
+
+  // CROSREV-22 (#239, Codex P2) — findings measured against the code before
+  // fixing, so each of these was RED first. Finding 1 of that issue (a future
+  // CUTOFF phrase exempting a present claim) was already closed by the v4.6.3
+  // structural inversion; it is pinned here so the coverage is explicit rather
+  // than assumed.
+  assert.equal(
+    rt(
+      "The cross-review runtime model pin for codex is gpt-5.5 until the next release.",
+      plainPins,
+    ),
+    false,
+    "CROSREV-22/1: a future CUTOFF asserts the present state, so the wrong pin must still contradict",
+  );
+  assert.equal(
+    rt(
+      "The cross-review runtime will migrate the codex model pin to gpt-7-nova in the next release.",
+      plainPins,
+    ),
+    true,
+    "CROSREV-22/1 control: genuine future INTENT stays exempt — the distinction is intent vs cutoff",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes its heavy-reasoning slot through xai/gpt-5.6-sol.",
+      plainPins,
+    ),
+    false,
+    "CROSREV-22/2: an ownerless ROUTED occurrence is judged as a route; the bare segment must not validate it",
+  );
+  assert.equal(
+    rt(
+      "The currently loaded cross-review runtime routes its search slot through perplexity/kimi-k3.",
+      plainPins,
+    ),
+    true,
+    "CROSREV-22/2 control: a route that matches the configured route still passes",
+  );
+  assert.equal(
+    rt(
+      "The Perplexity peer in the currently loaded cross-review runtime is routed through zeta/kimi-k3.",
+      plainPins,
+    ),
+    false,
+    "CROSREV-22/2: a wrong provider on a ROUTED pin is a contradiction, not merely unverifiable",
+  );
+  assert.equal(
+    rt("The cross-review runtime model pin for codex is not the configured pin.", plainPins),
+    false,
+    "CROSREV-22/3: an assertive model-scoped line naming a peer with ZERO capturable tokens must not pass silently",
+  );
+  assert.equal(
+    rt("The currently loaded cross-review runtime model pin for codex is documented upstream.", {
+      ...plainPins,
+      codex: "",
+    }),
+    true,
+    "CROSREV-22/3 control: with no pin configured for the peer there is nothing to contradict",
   );
   assert.equal(
     rt(
@@ -1102,7 +1181,6 @@ import type { PeerResult } from "../src/core/types.js";
   const peerSubmittedWorkflow = truthfulnessPreflight({
     task: "Summarize deployment closure.",
     initialDraft: "I triggered the deployment and confirmed the remote deployment succeeded.",
-    caller: "claude",
     structuredEvidence:
       "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
     attachmentsPresent: false,
@@ -1118,26 +1196,32 @@ import type { PeerResult } from "../src/core/types.js";
     true,
     "peer-submitted workflow evidence must be admitted but remain subject to strict independent panel corroboration",
   );
-  assert.equal(peerSubmittedWorkflow.operator_grounded, false);
 
-  const peerUsesCustodiedWorkflowEvidence = truthfulnessPreflight({
+  // v07.00.00 contract change: this case fed `operatorVerifiedEvidenceText`
+  // and asserted the workflow claim was grounded without independent review.
+  // That parameter carried the operator-verified tier, which no caller could
+  // populate — the orchestrator always passed it empty — so on every real
+  // call this claim already required corroboration. The fixture now states
+  // what actually happens.
+  const peerAttachesWorkflowEvidence = truthfulnessPreflight({
     task: "Summarize deployment closure.",
     initialDraft: "I triggered the deployment and confirmed the remote deployment succeeded.",
-    caller: "claude",
     attachmentsPresent: true,
     attachedEvidenceText:
-      "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
-    operatorVerifiedEvidenceText:
       "GitHub Actions workflow dispatch event: deployment run_id=8842; conclusion=success.",
     runtimeFacts: { runtime_version: "4.5.0" },
   });
   assert.equal(
-    peerUsesCustodiedWorkflowEvidence.pass,
+    peerAttachesWorkflowEvidence.pass,
     true,
-    "v4.5.0 / truthfulness: a peer may rely on operator-custodied attached evidence",
+    "a peer may rely on evidence it attached durably",
   );
-  assert.equal(peerUsesCustodiedWorkflowEvidence.independent_review_required, false);
-  assert.equal(peerUsesCustodiedWorkflowEvidence.operator_grounded, true);
+  assert.equal(
+    peerAttachesWorkflowEvidence.independent_review_required,
+    true,
+    "v07.00.00: a workflow claim stays subject to independent corroboration; no tier exempts it",
+  );
+  assert.equal(peerAttachesWorkflowEvidence.caller_grounded, false);
 
   const orchestratorSource = fs.readFileSync(
     new URL("../src/core/orchestrator.ts", import.meta.url),
@@ -1295,6 +1379,11 @@ import type { PeerResult } from "../src/core/types.js";
     );
   }
 
+  // Each loop below pairs an English wording with its pt-BR twin on purpose. The
+  // parser carries Portuguese-only tokens -- `permanece`, `aprovad`, `bloquead`,
+  // `bloqueadores`, `falhando` -- so the pt-BR rows are the only thing exercising
+  // that branch. They are input the parser must recognize, not prose the product
+  // emits, and translating them would silently delete the coverage.
   for (const summary of [
     "No blocking issues remain.",
     "The blocking issue was fixed; no blockers remain.",

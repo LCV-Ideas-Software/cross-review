@@ -5,10 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
-import {
-  reviewableEvidenceAttachments,
-  trustedEvidenceAttachments,
-} from "../src/core/orchestrator.js";
+import { reviewableEvidenceAttachments } from "../src/core/orchestrator.js";
 import { SessionStore } from "../src/core/session-store.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
@@ -17,7 +14,7 @@ process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-evidence-custody-"));
 const store = new SessionStore({ ...loadConfig(), data_dir: dataDir });
 
-const session = await store.init("Evidence custody smoke", "operator", []);
+const session = await store.init("Evidence custody smoke", "codex", []);
 const content = "evidencia persistida com bytes UTF-8: foguete 🚀";
 const expectedBytes = Buffer.byteLength(content, "utf8");
 const expectedSha256 = crypto.createHash("sha256").update(content, "utf8").digest("hex");
@@ -54,11 +51,10 @@ assert.equal(resolved[0]?.origin, "caller_submitted");
 assert.equal(resolved[0]?.provenance_status, "verified");
 assert.equal(resolved[0]?.authority_status, "caller_submitted_unverified");
 assert.equal(reviewableEvidenceAttachments(resolved).length, 1);
-assert.deepEqual(
-  trustedEvidenceAttachments(resolved),
-  [],
-  "a digest-verified attachment attributed to a peer is auditable but cannot become trusted proof",
-);
+// v07.00.00: there is no trusted corpus to be excluded from. A digest-verified
+// attachment attributed to a peer is auditable and caller-submitted, which is
+// now the only provenance any attachment can have.
+assert.equal(resolved[0]?.authority_status, "caller_submitted_unverified");
 
 const attachedEvent = store
   .readEvents(session.session_id)
@@ -81,7 +77,7 @@ assert.deepEqual(attachedEvent.data, {
 // tick. Otherwise later writes replace earlier bytes while metadata retains
 // each original digest, and the custody reader fails with an integrity
 // mismatch.
-const collisionSession = await store.init("Concurrent evidence path collision", "operator", []);
+const collisionSession = await store.init("Concurrent evidence path collision", "codex", []);
 const realDate = globalThis.Date;
 const fixedEpoch = realDate.parse("2026-07-11T12:34:56.789Z");
 class FixedDate extends realDate {
@@ -104,7 +100,7 @@ try {
         content: `collision-payload-${String(index).padStart(2, "0")}`,
         content_type: "text/plain; charset=utf-8",
         extension: "txt",
-        attached_by: "operator",
+        attached_by: "claude",
         origin: "session_attach_evidence",
       }),
     ),
@@ -141,7 +137,7 @@ assert.throws(
   "a changed attachment must fail closed instead of entering peer prompts",
 );
 
-const legacySession = await store.init("Legacy evidence compatibility", "operator", []);
+const legacySession = await store.init("Legacy evidence compatibility", "codex", []);
 const legacyRelativePath = "evidence/legacy.txt";
 const legacyAbsolutePath = path.join(
   store.sessionDir(legacySession.session_id),
@@ -170,35 +166,36 @@ assert.equal(legacyResolved[0]?.provenance_status, "legacy_unverified");
 assert.equal(legacyResolved[0]?.authority_status, "legacy_unverified");
 assert.equal(legacyResolved[0]?.sha256, undefined);
 assert.equal(legacyResolved[0]?.attached_by, undefined);
-assert.deepEqual(
-  trustedEvidenceAttachments(legacyResolved),
-  [],
-  "legacy attachments remain readable for audit but must never enter the trusted evidence corpus",
-);
+// Legacy attachments stay readable for audit and keep their own marker.
+assert.equal(legacyResolved[0]?.authority_status, "legacy_unverified");
 
-const operatorSession = await store.init("Operator evidence trust", "operator", []);
-await store.attachEvidence(operatorSession.session_id, {
-  label: "operator-proof",
-  content: "operator-custodied proof",
-  attached_by: "operator",
+// v07.00.00 contract change: this case used to attach evidence AS the operator
+// and assert it was promoted to "operator_verified". That attribution named a
+// caller with no channel to this server, so the tier was never reachable in a
+// real session. Attaching through the same surface as a peer now yields the
+// one provenance that exists.
+const promotionSession = await store.init("Attachment provenance", "claude", []);
+await store.attachEvidence(promotionSession.session_id, {
+  label: "peer-proof",
+  content: "peer-custodied proof",
+  attached_by: "claude",
   origin: "session_attach_evidence",
 });
-const operatorResolved = store.readEvidenceAttachments(operatorSession.session_id, 10_000);
-assert.equal(operatorResolved[0]?.authority_status, "operator_verified");
+const promotionResolved = store.readEvidenceAttachments(promotionSession.session_id, 10_000);
 assert.equal(
-  trustedEvidenceAttachments(operatorResolved).length,
-  1,
-  "only current, integrity-checked operator custody may enter the trusted evidence corpus",
+  promotionResolved[0]?.authority_status,
+  "caller_submitted_unverified",
+  "v07.00.00: session_attach_evidence promotes nothing; there is no tier above caller-submitted",
 );
 
-const finalizedSession = await store.init("Finalized evidence rejection", "operator", []);
+const finalizedSession = await store.init("Finalized evidence rejection", "claude", []);
 await store.finalize(finalizedSession.session_id, "aborted", "smoke-finalized");
 const filesBeforeRejectedAttach = fs.readdirSync(store.sessionDir(finalizedSession.session_id));
 await assert.rejects(
   store.attachEvidence(finalizedSession.session_id, {
     label: "too-late",
     content: "must not be persisted",
-    attached_by: "operator",
+    attached_by: "claude",
     origin: "session_attach_evidence",
   }),
   /session_already_finalized/,
@@ -220,7 +217,7 @@ assert.equal(
 // close ONLY its own prior asks after returning a strictly grounded
 // READY/verified verdict. This is a runtime transition, not an operator
 // mutation. Mere silence remains `not_resurfaced` and must not be promoted.
-const silentSession = await store.init("Requester silence stays unresolved", "operator", []);
+const silentSession = await store.init("Requester silence stays unresolved", "codex", []);
 await store.appendEvidenceChecklistItems(silentSession.session_id, 1, [
   { peer: "perplexity", ask: "Provide the raw release gate output." },
 ]);
@@ -235,7 +232,7 @@ assert.equal(
   "silence alone must remain not_resurfaced; it is not requester reverification",
 );
 
-const requesterSession = await store.init("Requester reverification lifecycle", "operator", []);
+const requesterSession = await store.init("Requester reverification lifecycle", "codex", []);
 const claudeOldAsk = "Provide raw output proving 74 passing tests.";
 const claudeOpenAsk = "Provide the exact successful command exit code.";
 const codexOpenAsk = "Provide the changed-file diff.";
@@ -337,7 +334,7 @@ for (const fixture of terminalAsks) {
   );
 }
 
-const immutableTerminal = await store.init("Terminal immutability", "operator", []);
+const immutableTerminal = await store.init("Terminal immutability", "codex", []);
 const firstTerminal = await store.finalize(immutableTerminal.session_id, "aborted", "first");
 const idempotentTerminal = await store.finalize(immutableTerminal.session_id, "aborted", "first");
 assert.deepEqual(idempotentTerminal, firstTerminal, "exact terminal replay must be idempotent");

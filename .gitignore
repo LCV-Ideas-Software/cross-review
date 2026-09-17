@@ -72,6 +72,6 @@ desktop.ini
 !.vscode/settings.example.json
 .github/copilot-instructions.md
 
-# Instrucoes de agente versionadas: AGENTS.md e CLAUDE.md sao rastreados por este
-# repositorio (ritual de registro G1..G4). Somente as instrucoes locais do Copilot
-# permanecem fora de versao.
+# Versioned agent instructions: AGENTS.md and CLAUDE.md are tracked by this
+# repository (the G1..G4 record-keeping ritual). Only Copilot's local
+# instructions stay out of version control.

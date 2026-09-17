@@ -192,24 +192,42 @@ function pricedAttemptCount(items: Array<CostEstimate | undefined>): number {
 }
 
 // v2.21.0: caller identity is plumbed through PeerCallContext via
-// `caller`. Default to "operator" when unset so legacy callers (no
-// caller set) still get a stable cache key bucket.
-function cacheKeyFor(adapter: { id: PeerId }, config: AppConfig, caller?: string): string {
-  return pairScopedCacheKey(
-    adapter.id,
-    (caller as PeerId | "operator") ?? "operator",
-    config.cache.schema_version,
-  );
+// `caller`. v07.00.00: pre-v07 this defaulted to "operator" when unset, so
+// every call that omitted the caller — the evidence-judge passes among them —
+// sent a key naming a principal the protocol no longer admits, AND pooled
+// unrelated petitioners into one provider-side bucket. Without a caller the
+// pair cannot be named, so no key is sent.
+function cacheKeyFor(
+  adapter: { id: PeerId },
+  config: AppConfig,
+  caller?: PeerId,
+): string | undefined {
+  if (!caller) return undefined;
+  return pairScopedCacheKey(adapter.id, caller, config.cache.schema_version);
 }
 
-function isGpt56Family(model: string): boolean {
-  return /^gpt-5\.6(?:-|$)/i.test(model);
+// The Responses API splits prompt caching by model generation: GPT-5.6 AND
+// LATER take `prompt_cache_options` (mode + ttl, "30m" being the only
+// supported ttl and the default); earlier models take `prompt_cache_retention`.
+// GPT-6 Astra is later than GPT-5.6, so it belongs on the newer contract.
+// Both GPT-5.6 and GPT-6 document an effort ladder that reaches high/xhigh/max,
+// so both can answer a MAX_TOKENS stop by retrying one rung lower. Kept
+// separate from the cache-contract predicate: one name carrying two unrelated
+// model contracts is how the Astra pin would have silently inherited the wrong
+// one.
+function hasHighEffortLadder(model: string): boolean {
+  return /^gpt-5\.6(?:-|$)/i.test(model) || /^gpt-6(?:-|$)/i.test(model);
+}
+
+function usesPromptCacheOptions(model: string): boolean {
+  return /^gpt-5\.6(?:-|$)/i.test(model) || /^gpt-6(?:-|$)/i.test(model);
 }
 
 function openAIReasoningFamily(
   model: string,
-): "gpt-5.6" | "gpt-5.5-5.2" | "gpt-5.1" | "gpt-5" | "other" {
-  if (isGpt56Family(model)) return "gpt-5.6";
+): "gpt-6" | "gpt-5.6" | "gpt-5.5-5.2" | "gpt-5.1" | "gpt-5" | "other" {
+  if (/^gpt-6(?:-|$)/i.test(model)) return "gpt-6";
+  if (/^gpt-5\.6(?:-|$)/i.test(model)) return "gpt-5.6";
   if (/^gpt-5\.(?:5|4|2)(?:-|$)/i.test(model)) return "gpt-5.5-5.2";
   if (/^gpt-5\.1(?:-|$)/i.test(model)) return "gpt-5.1";
   if (/^gpt-5(?:-|$)/i.test(model)) return "gpt-5";
@@ -222,6 +240,15 @@ function openAIEffort(
 ): OpenAIReasoningEffort {
   const effort = value ?? "xhigh";
   switch (openAIReasoningFamily(model)) {
+    case "gpt-6":
+      // GPT-6 Astra documents low|medium|high|xhigh|max. "none" is NOT in that
+      // set, so it is raised to the lowest documented level rather than sent
+      // and rejected. Without this branch Astra fell through to "other", which
+      // downgrades "max" to "xhigh" — a silent downgrade of the top model's
+      // top effort, which is exactly what the no-downgrade policy forbids.
+      if (effort === "none" || effort === "minimal") return "low";
+      if (effort === "ultra") return "max";
+      return effort;
     case "gpt-5.6":
       // GPT-5.6: none|low|medium|high|xhigh|max.
       if (effort === "minimal") return "low";
@@ -250,9 +277,9 @@ function openAIEffort(
   }
 }
 
-function promptCacheFields(config: AppConfig, model: string, cacheKey: string) {
-  if (!config.cache.enabled) return {};
-  if (isGpt56Family(model)) {
+function promptCacheFields(config: AppConfig, model: string, cacheKey: string | undefined) {
+  if (!config.cache.enabled || !cacheKey) return {};
+  if (usesPromptCacheOptions(model)) {
     return {
       prompt_cache_key: cacheKey,
       prompt_cache_options: {
@@ -343,7 +370,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
     if (currentUsage) accumulatedUsage.push(currentUsage);
     if (currentCost) accumulatedCosts.push(currentCost);
     const canReduceEffort =
-      isGpt56Family(this.model) &&
+      hasHighEffortLadder(this.model) &&
       (requestedEffort === "high" || requestedEffort === "xhigh" || requestedEffort === "max");
     const retryable =
       !recoveryAlreadyTriggered && canReduceEffort && attempt < this.config.retry.max_attempts;
@@ -357,7 +384,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
       round: context.round,
       peer: this.id,
       message: retryable
-        ? "GPT-5.6 Sol hit max_output_tokens; retrying once at medium effort with prior billing retained."
+        ? "OpenAI hit max_output_tokens; retrying once at medium effort with prior billing retained."
         : "OpenAI output remained truncated or had no safe controlled recovery path.",
       data: {
         provider: this.provider,

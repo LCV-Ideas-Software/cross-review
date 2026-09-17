@@ -34,13 +34,17 @@ import { EventLog } from "../observability/logger.js";
 import { safeErrorMessage } from "../security/redact.js";
 
 const PeerSchema = z.enum(PEERS);
-// v2.18.6 / Gemini-API compat: `caller` accepts any peer + "operator".
+// v2.18.6 / Gemini-API compat: `caller` is a flat enum.
 // Pre-v2.18.6 we used `CallerSchema`
 // which the MCP SDK serialized as `anyOf: [enum, const]` — Gemini API's
 // function-declaration validator rejects that shape. A flat enum is
 // runtime-equivalent (same accepted values, same TS inferred type) and
 // produces a clean single `enum` in the wire JSON Schema.
-const CallerSchema = z.enum([...PEERS, "operator"] as const);
+// v07.00.00: the admissible callers are exactly the peers. "operator" was an
+// eighth value here, and it named a principal with no channel to this server:
+// the whole surface is MCP, exercised by agents. Exported so the contract that
+// it is NOT admissible can be asserted directly.
+export const CallerSchema = z.enum(PEERS);
 const ResponseFormatSchema = z.enum(["json", "markdown"]).default("json");
 const SessionListOutcomeFilterSchema = z
   .enum(["all", "open", "converged", "aborted", "max-rounds"])
@@ -118,7 +122,7 @@ const ReasoningEffortOverridesSchema = z
   })
   .optional()
   .describe(
-    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-5.6, Kimi K3 via Perplexity and DeepSeek, and xhigh on Grok 4.6; older GPT-5 families use their own ceilings).",
+    "Optional per-peer reasoning_effort overrides for this call. Keys are peer ids (codex|claude|gemini|deepseek|grok|perplexity); missing keys fall back to global config. This is a shared scale: adapters normalize unsupported literals to the selected model's documented enum (`ultra` becomes max on GPT-6 Astra, GPT-5.6, Kimi K3 via Perplexity and DeepSeek, and xhigh on Grok 4.6; older GPT-5 families use their own ceilings).",
   );
 // v2.4.0 / audit closure (P1.2): UUIDv4 regex was already accepting
 // case-insensitive matches via the /i flag, but zod did not normalize the
@@ -162,7 +166,7 @@ const AutomaticCallerEvidenceSchema = z
   .max(SCHEMA_INITIAL_DRAFT_MAX_CHARS)
   .optional()
   .describe(
-    "Raw evidence from the authenticated AI caller. It is persisted automatically as durable, SHA-256-addressed caller_submitted_unverified material and transported to reviewers; no manual operator attachment is required. Do not call session_attach_evidence for this routine path.",
+    "Raw evidence from the authenticated AI caller. It is persisted automatically as durable, SHA-256-addressed caller_submitted_unverified material and transported to reviewers. This is the routine path; `session_attach_evidence` attaches the same material out of band and grants it no additional provenance.",
   );
 
 function markdownEscape(value: string): string {
@@ -334,10 +338,9 @@ function sessionInitMarkdown(meta: SessionMeta): string {
 // the declared `caller` (from input) against the substrings; mismatch
 // with a single-resolved client throws `identity_forgery_blocked`.
 //
-// Permissive cases preserved: (a) caller="operator" → OK (explicit
-// "I'm the human operator" identity, no agent claim made); (b) clientInfo
-// doesn't resolve to a known agent → OK (legitimate override for headless
-// hosts); (c) declared caller matches clientInfo-derived candidate → OK.
+// Permissive cases preserved: (a) clientInfo doesn't resolve to a known
+// agent → OK (legitimate override for headless hosts); (b) declared caller
+// matches clientInfo-derived candidate → OK.
 //
 // Blocked: (1) declared caller is a known agent + clientInfo resolves to
 // a different known agent; (2) declared caller is a known agent +
@@ -351,7 +354,6 @@ export type ClientInfo = { name?: string; version?: string } | undefined;
 // every call would be wasteful and gives an attacker a TOCTOU window).
 import {
   ensureHostTokens,
-  generateHostTokens as f1GenerateHostTokens,
   getParentProcessSnapshot,
   type HostTokensLoadDiagnostics,
   type HostTokensLoadFailure,
@@ -404,50 +406,26 @@ export interface CallerIdentityResult {
 
 // v2.18.0 / F1: token verification overlays the v2.17.0 clientInfo gate.
 // Decision tree (in order):
-//   1. caller="operator" → require the distinct operator capability token.
-//      A client name is self-declared and cannot authenticate a human; tokenless
-//      or peer-token hosts therefore fail closed regardless of hard-enforce
-//      mode. The operator token belongs only in a dedicated human console,
-//      never in a model host.
-//   2. v2.17.0 clientInfo cross-check throws → propagate (preserves all
+//   1. v2.17.0 clientInfo cross-check throws → propagate (preserves all
 //      existing forgery rejections).
-//   3. CROSS_REVIEW_CALLER_TOKEN env present → must resolve to declaredCaller
+//   2. CROSS_REVIEW_CALLER_TOKEN env present → must resolve to declaredCaller
 //      via host-tokens.json; mismatch / unknown / file-missing → throws.
 //      Match → upgrade verification_method to "token".
-//   4. CROSS_REVIEW_CALLER_TOKEN absent + CROSS_REVIEW_REQUIRE_TOKEN=true →
-//      throws (hard-enforce mode opted into by operator).
-//   5. CROSS_REVIEW_CALLER_TOKEN absent + permissive (default) → return
+//   3. CROSS_REVIEW_CALLER_TOKEN absent + CROSS_REVIEW_REQUIRE_TOKEN=true →
+//      throws (hard-enforce mode opted into by the deployment owner).
+//   4. CROSS_REVIEW_CALLER_TOKEN absent + permissive (default) → return
 //      whatever clientInfo cross-check yielded ("client_info" if matched,
 //      "none" if unknown).
+// v07.00.00: the step that demanded a distinct operator capability token is
+// gone with the principal it served — every admissible caller is a peer.
 // All paths attach identity_metadata with a best-effort parent-process
 // snapshot for forensics (Option C / Hybrid per design memory).
 export function verifyCallerIdentity(
-  declaredCaller: PeerId | "operator",
+  declaredCaller: PeerId,
   clientInfo: ClientInfo,
 ): CallerIdentityResult {
   const identity_metadata = getParentProcessSnapshot();
   const candidates = getCallerCandidatesFromClientInfo(clientInfo);
-  if (declaredCaller === "operator") {
-    if (candidates.length > 0) {
-      throw new Error(
-        `identity_forgery_blocked: caller='operator' is not permitted from an agent-identified host. clientInfo.name='${clientInfo?.name}' resolves to ${candidates.join(", ")}; declare the actual peer identity (and present its token when required).`,
-      );
-    }
-    const tokenResult = verifyTokenForCaller("operator", HOST_TOKENS_RECORD, {
-      failure: HOST_TOKENS_LOAD_FAILURE,
-    });
-    if (!tokenResult.verified) {
-      throw new Error(
-        "operator_authority_required: caller='operator' requires the dedicated operator capability token in CROSS_REVIEW_CALLER_TOKEN. Use a separate human-console MCP host; never place this token in a model host.",
-      );
-    }
-    return {
-      identity_verified: true,
-      verification_method: "token",
-      client_info_name: clientInfo?.name ?? null,
-      identity_metadata,
-    };
-  }
   if (candidates.length >= 2) {
     throw new Error(
       `identity_forgery_blocked: clientInfo.name='${clientInfo?.name}' matches multiple agents (${candidates.join(", ")}); cannot validate declared caller='${declaredCaller}' against an ambiguous client. Pass the request from a host whose clientInfo.name resolves to a single agent.`,
@@ -484,16 +462,17 @@ export function verifyCallerIdentity(
   };
 }
 
-// v3.3.0 (operator directive 2026-05-12): caller peer-selection lock.
+// v3.3.0 (operator directive 2026-05-12): caller peer-selection lock. The
+// directive is quoted verbatim in the operator's own language (pt-BR), because
+// a paraphrase of a standing instruction is no longer the instruction:
 // "TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM, INDEPENDENTE DA ESCOLHA OU
-// VONTADE DO CALLER." Applied at the MCP-tool boundary so every
+// VONTADE DO CALLER." Every agent/peer always takes part, regardless of the
+// caller's choice or wish. Applied at the MCP-tool boundary so every
 // externally-driven call has caller-supplied `peers` and (for peer
 // callers) `lead_peer` stripped before reaching the orchestrator.
 // Internal call sites (orchestrator's own runUntilUnanimous → askPeers
 // loop, smoke harness) bypass the lock by construction — they do not go
-// through this boundary. Operator caller may still pin `lead_peer`
-// explicitly (legitimate testing/debug; operator is the meta-authority,
-// not a session participant whose vote can be biased).
+// through this boundary.
 //
 // `emitFn` carries the audit trail to the eventLog/store so the operator
 // can inspect who tried to game which peer in/out via `session_events`.
@@ -501,7 +480,7 @@ export function lockCallerPeerSelection<
   T extends {
     peers?: PeerId[] | undefined;
     lead_peer?: PeerId | undefined;
-    caller?: PeerId | "operator" | undefined;
+    caller?: PeerId | undefined;
     session_id?: string | undefined;
   },
 >(
@@ -523,11 +502,9 @@ export function lockCallerPeerSelection<
     enabledPeers?: readonly PeerId[] | undefined;
   },
 ): T {
-  const caller: PeerId | "operator" = input.caller ?? "operator";
-  // peers panel: locked for ALL callers (including operator). The
-  // server-configured `peer_enabled` set is the only knob; operators
-  // tune via env vars, not via per-call overrides that callers can
-  // exploit.
+  // peers panel: locked for every caller. The server-configured
+  // `peer_enabled` set is the only knob; it is tuned by environment
+  // variable, not by per-call overrides that callers could exploit.
   const callerSuppliedPeers = Array.isArray(input.peers) ? [...input.peers] : undefined;
   // v3.7.5 (A2): treat caller-supplied panel as an OVERRIDE only when
   // it differs from the enabled set. Sorted set-equality (case-sensitive
@@ -540,19 +517,19 @@ export function lockCallerPeerSelection<
     callerSuppliedPeers.length === ctx.enabledPeers.length &&
     [...callerSuppliedPeers].sort().join("|") === [...ctx.enabledPeers].sort().join("|");
   const peerPanelOverridden = callerSuppliedPeers !== undefined && !callerPanelMatchesEnabled;
-  // lead_peer: locked for peer callers (forces lottery so callers cannot
-  // pin a sympathetic relator). Operator caller may pin lead_peer for
-  // legitimate testing.
-  const leadPeerOverridden = caller !== "operator" && input.lead_peer !== undefined;
+  // lead_peer: locked for every caller, which forces the lottery so no
+  // caller can pin a sympathetic relator. The exemption this once carried
+  // belonged to an identity that does not exist.
+  const leadPeerOverridden = input.lead_peer !== undefined;
 
   if (peerPanelOverridden || leadPeerOverridden) {
     ctx.emit({
       type: "session.caller_peer_selection_ignored",
       session_id: input.session_id,
-      message: `caller_peer_selection_lock: caller=${caller} attempted to ${peerPanelOverridden ? "override the reviewer panel" : "pin lead_peer"} via ${ctx.site}; the request was silently overridden — operator directive 2026-05-12 ("TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM").`,
+      message: `caller_peer_selection_lock: caller=${input.caller} attempted to ${peerPanelOverridden ? "override the reviewer panel" : "pin lead_peer"} via ${ctx.site}; the request was silently overridden — operator directive 2026-05-12 ("TODOS OS AGENTES/PEERS SEMPRE PARTICIPAM").`,
       data: {
         site: ctx.site,
-        caller,
+        caller: input.caller,
         peer_panel_overridden: peerPanelOverridden,
         ignored_peers: peerPanelOverridden ? callerSuppliedPeers : undefined,
         lead_peer_overridden: leadPeerOverridden,
@@ -586,7 +563,7 @@ export function buildResponseNotices<
   T extends {
     peers?: PeerId[] | undefined;
     lead_peer?: PeerId | undefined;
-    caller?: PeerId | "operator" | undefined;
+    caller?: PeerId | undefined;
   },
 >(
   originalInput: T,
@@ -596,7 +573,6 @@ export function buildResponseNotices<
   const notices: string[] = [];
   // B4 — peer-selection lock notice. If the caller supplied `peers` or
   // (as a peer caller) `lead_peer`, the v3.3.0 lock stripped it.
-  const caller: PeerId | "operator" = originalInput.caller ?? "operator";
   const suppliedPeers = Array.isArray(originalInput.peers) ? originalInput.peers : undefined;
   const suppliedPeersMatchEnabled =
     enabledPeers !== undefined &&
@@ -605,7 +581,7 @@ export function buildResponseNotices<
     [...suppliedPeers].sort().join("|") === [...enabledPeers].sort().join("|");
   const triedPeers =
     suppliedPeers !== undefined && suppliedPeers.length > 0 && !suppliedPeersMatchEnabled;
-  const triedLeadPeer = caller !== "operator" && originalInput.lead_peer !== undefined;
+  const triedLeadPeer = originalInput.lead_peer !== undefined;
   if (triedPeers || triedLeadPeer) {
     notices.push(
       `peer_selection_lock: your ${triedPeers ? "`peers` panel" : "`lead_peer` pin"} was ignored — ` +
@@ -614,14 +590,14 @@ export function buildResponseNotices<
     );
   }
   // B3 — relator-non-voting notice. When a lead_peer is set, spell out
-  // that it is the non-voting relator and who the voting colegiado is,
+  // that it is the non-voting relator and who the voting panel is,
   // so its absence from the vote is never misread as a dropped peer.
   const scope = output.session?.convergence_scope;
   if (scope?.lead_peer && scope.lead_peer_role === "relator_non_voting") {
     const voters = (scope.voting_peers ?? scope.reviewer_peers ?? []).join(", ");
     notices.push(
       `relator_non_voting: \`${scope.lead_peer}\` is the lottery-selected relator — it authors/revises the ` +
-        `artifact and is DELIBERATELY excluded from the voting colegiado (anti-self-review HARD GATE). ` +
+        `artifact and is DELIBERATELY excluded from the voting panel (anti-self-review HARD GATE). ` +
         `Voting peers: ${voters || "(none)"}. This is by design, not a dropped peer.`,
     );
   }
@@ -682,9 +658,9 @@ export function durableSessionCancellationWon(
 /**
  * A background rejection may arrive after the routine has already persisted
  * its terminal snapshot. In that case the process-local catch handler must not
- * append an automatic operator escalation or rewrite the sealed meta/report.
+ * record a background-job failure or rewrite the sealed meta/report.
  */
-export function shouldEscalateBackgroundJobFailure(
+export function shouldRecordBackgroundJobFailure(
   session: DurableSessionState | undefined,
 ): boolean {
   return Boolean(session && !session.outcome);
@@ -1164,7 +1140,7 @@ export async function recoverStartupInterruptedSessions(
 function recordIdentityForgeryBlocked(
   runtime: Runtime,
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   clientInfo: ClientInfo,
   error: unknown,
   session_id?: string,
@@ -1186,7 +1162,7 @@ function recordIdentityForgeryBlocked(
 function verifyToolCallerIdentity(
   runtime: Runtime,
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   clientInfo: ClientInfo,
   session_id?: string,
 ): CallerIdentityResult {
@@ -1212,101 +1188,75 @@ function verifyToolCallerIdentity(
   }
 }
 
-function verifyOperatorToolCallerIdentity(
-  runtime: Runtime,
-  site: string,
-  caller: PeerId | "operator",
-  clientInfo: ClientInfo,
-  session_id?: string,
-): CallerIdentityResult {
-  let identity: CallerIdentityResult;
-  try {
-    identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, session_id);
-  } catch (error) {
-    if (site !== "session_attach_evidence" || caller !== "operator") throw error;
-    const routedError = new Error(
-      `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface and the requested operator identity was not verified. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`,
-      { cause: error },
-    );
-    runtime.emit({
-      type: "session.operator_authority_blocked",
-      session_id,
-      message: routedError.message,
-      data: {
-        site,
-        caller,
-        verification_method: "none",
-        client_info_name: clientInfo?.name ?? "unknown",
-      },
-    });
-    throw routedError;
-  }
-  if (caller !== "operator") {
-    const error = new Error(
-      site === "session_attach_evidence"
-        ? `operator_authority_required: session_attach_evidence is an optional operator-only authority-promotion surface; received caller='${caller}'. No human operator action is required for routine AI evidence: resubmit the same raw content through the \`evidence\` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, which persists and transports it automatically as caller_submitted_unverified.`
-        : `operator_authority_required: ${site} mutates authoritative evidence, terminal state, or security configuration and may only be called by the human operator; received caller='${caller}'.`,
-    );
-    runtime.emit({
-      type: "session.operator_authority_blocked",
-      session_id,
-      message: error.message,
-      data: {
-        site,
-        caller,
-        verification_method: identity.verification_method,
-        client_info_name: identity.client_info_name,
-      },
-    });
-    throw error;
-  }
+// Identity alone is not ownership. With hard enforcement off and no token
+// installed, a client whose self-declared clientInfo.name matches its declared
+// `caller` passes identity verification through `verification_method`
+// "client_info" -- which is a self-report, and therefore no basis for rewriting
+// a petitioner's session. Two rules follow from that premise, one per function
+// below: a mutation that crosses owners needs the token; a mutation scoped to
+// one owner needs the token AND that owner. Each is stated once here rather
+// than once per tool.
+// A mutation that can act on sessions it does not own requires the capability
+// TOKEN — but not a token matching each affected session's owner, which for a
+// cross-owner sweep would be a contradiction.
+//
+// The round-8 version accepted anything that was not `verification_method:
+// "none"`, which let `"client_info"` through. That method is the client telling
+// the server its own name: under permissive enforcement any MCP client can set
+// clientInfo.name to a known peer and come back `identity_verified: true`.
+// Reading the record was necessary and not sufficient — the value has to be the
+// one that cannot be self-asserted.
+export function assertCrossOwnerTokenVerified(site: string, identity: CallerIdentityResult): void {
   if (!identity.identity_verified || identity.verification_method !== "token") {
-    const error = new Error(
-      `operator_authority_required: ${site} requires a verified dedicated operator capability token.`,
+    throw new Error(
+      `cross_owner_token_required: ${site} acts on sessions it does not own and therefore requires the verified capability token, not a self-declared identity; received verification_method='${identity.verification_method}'.`,
     );
-    runtime.emit({
-      type: "session.operator_authority_blocked",
-      session_id,
-      message: error.message,
-      data: {
-        site,
-        caller,
-        verification_method: identity.verification_method,
-        client_info_name: identity.client_info_name,
-      },
-    });
-    throw error;
   }
-  return identity;
+}
+
+export function assertOwnerTokenVerified(
+  site: string,
+  identity: CallerIdentityResult,
+  ownerLabel: string,
+): void {
+  if (!identity.identity_verified || identity.verification_method !== "token") {
+    throw new Error(
+      `session_owner_token_required: ${site} requires the verified capability token for session petitioner '${ownerLabel}'.`,
+    );
+  }
 }
 
 export function assertSessionMutationAuthority(
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   identity: CallerIdentityResult,
-  sessionOwner: PeerId | "operator" | null,
+  sessionOwner: PeerId | null,
 ): void {
-  if (caller === "operator") {
-    if (identity.identity_verified && identity.verification_method === "token") return;
-    throw new Error(
-      `operator_authority_required: ${site} requires the dedicated verified operator capability token.`,
-    );
-  }
-  if (!identity.identity_verified || identity.verification_method !== "token") {
-    throw new Error(
-      `session_owner_token_required: ${site} requires the verified capability token for session petitioner '${sessionOwner}'.`,
-    );
-  }
+  assertOwnerTokenVerified(site, identity, String(sessionOwner));
   if (sessionOwner === null) {
     throw new Error(
-      `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session; the dedicated operator token is required.`,
+      `session_owner_unverified: ${site} cannot derive an explicit persisted petitioner for this legacy session, so no caller can be authorized to mutate it through ${site}.`,
     );
   }
   if (caller !== sessionOwner) {
     throw new Error(
-      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}' or the human operator; received caller='${caller}'.`,
+      `session_owner_mismatch: ${site} may be called only by session petitioner '${sessionOwner}'; received caller='${caller}'.`,
     );
   }
+}
+
+// The owner of a persisted session, or null when none can be derived. A
+// session written before the operator identity was removed can still carry
+// `"operator"` as its petitioner: that value describes bytes on disk, which are
+// not rewritten, but it names a caller that can never present itself again, so
+// it yields no owner. Shared by the session-mutation gate and by
+// `session_recover_interrupted`, which must not repair another petitioner's
+// session — one derivation, so the two cannot drift apart.
+export function derivePersistedSessionOwner(session: SessionMeta): PeerId | null {
+  const persistedOwner = hasTrustedPetitionerProvenance(session.version)
+    ? (session.convergence_scope?.petitioner ?? session.caller)
+    : null;
+  return persistedOwner === null || persistedOwner === "operator" ? null : persistedOwner;
 }
 
 export function hasTrustedPetitionerProvenance(version: unknown): boolean {
@@ -1326,15 +1276,18 @@ export function hasTrustedPetitionerProvenance(version: unknown): boolean {
 function verifySessionMutationAuthority(
   runtime: Runtime,
   site: string,
-  caller: PeerId | "operator",
+  caller: PeerId,
   clientInfo: ClientInfo,
   sessionId: string,
 ): CallerIdentityResult {
   const identity = verifyToolCallerIdentity(runtime, site, caller, clientInfo, sessionId);
   const session = runtime.orchestrator.store.read(sessionId);
-  const sessionOwner = hasTrustedPetitionerProvenance(session.version)
-    ? (session.convergence_scope?.petitioner ?? session.caller)
-    : null;
+  // A session persisted before the operator identity was removed can still
+  // carry `"operator"` as its petitioner. That value describes bytes on disk,
+  // which are not rewritten, but it names a caller that can never present
+  // itself again — so it yields no derivable owner and the mutation takes the
+  // `session_owner_unverified` path, which is the legitimate refusal.
+  const sessionOwner = derivePersistedSessionOwner(session);
   try {
     assertSessionMutationAuthority(site, caller, identity, sessionOwner);
     return identity;
@@ -1552,11 +1505,11 @@ async function startJob(
       try {
         if (cancellationWon) {
           await runtime.orchestrator.store.markCancelled(sessionId, "session_cancelled");
-        } else if (shouldEscalateBackgroundJobFailure(persisted)) {
+        } else if (shouldRecordBackgroundJobFailure(persisted)) {
           await runtime.orchestrator.store.clearBackgroundJobControl(sessionId, job.job_id);
-          await runtime.orchestrator.store.escalateToOperator(sessionId, {
-            reason: `Background job failed: ${safeErrorMessage(error)}`,
-            severity: "critical",
+          await runtime.orchestrator.store.recordBackgroundJobFailure(sessionId, {
+            job_id: job.job_id,
+            error: safeErrorMessage(error),
           });
         }
       } catch (cleanupError) {
@@ -1606,19 +1559,28 @@ function runtimeCapabilities(runtime: Runtime): RuntimeCapabilities {
 export async function main(): Promise<void> {
   const runtime = createRuntime();
   // v2.18.0 / F1: initialize the per-host token map (load existing OR
-  // generate with mode 0o600). Legacy v1 records are migrated in place by
-  // adding a seventh, distinct operator capability. Failure leaves peer
-  // clientInfo checks available in permissive mode, but operator calls remain
-  // fail-closed because a client name cannot authenticate a human.
+  // generate with mode 0o600). v07.00.00: a legacy record is rewritten in
+  // place to DROP the seventh capability, which bound a secret to a human
+  // console this server never had. Failure leaves peer clientInfo checks
+  // available in permissive mode, but every session-mutation tool that requires
+  // a token fails closed, because no caller can then be token-verified.
+  //
+  // v07.00.00 (PR #300 review round 10): `session_sweep` used to be named here
+  // as the exception that survived on identity alone. Round 9 made it require
+  // the capability token — it is cross-owner, not owner-scoped, which is a
+  // narrower scope, not a weaker one — so it fails closed with the rest. The
+  // banner below is pinned against the mutation-authority census in
+  // `scripts/source-contract-smoke.ts`, so the next authority change cannot
+  // silently orphan its own documentation the way this one did.
   initHostTokensRecord(runtime.config.data_dir);
   const tokensRecord = getHostTokensRecord();
   if (tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute each peer token only to its model host and keep the distinct operator token only in a dedicated human console).\n`,
+      `[cross-review] caller capability tokens loaded from ${tokensRecord.filePath} (generated_at=${tokensRecord.generated_at || "unknown"}; distribute each peer token only to its model host).\n`,
     );
   } else if (!tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but operator tools are disabled fail-closed. Set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions.\n`,
+      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so every mutating tool that requires a token fails closed: ask_peers, contest_verdict, session_attach_evidence, session_cancel_job, session_doctor, session_evidence_judge_consensus_pass, session_evidence_judge_pass, session_finalize, session_recover_interrupted, session_start_round, session_start_unanimous, session_sweep. session_sweep is in that list: it is the one mutation that may act ACROSS owners, and since v07.00.00 that costs the capability token rather than a self-declared identity, so it is no recovery route out of this state. Of the mutating tools only session_init and run_until_unanimous still run, on a declared identity; read-only tools are unaffected. There is no in-band way to reissue the record: set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions, then restart the server.\n`,
     );
   }
   const server = new McpServer({
@@ -1640,6 +1602,16 @@ export async function main(): Promise<void> {
     (peer) => runtime.config.peer_enabled[peer],
   );
 
+  // Deliberate exception to "a tool that declares `caller` verifies it".
+  // `server_info` and `runtime_capabilities` are the two discovery reads: a
+  // host calls them to learn whether the token gate is even armed and where
+  // host-tokens.json lives, which is precisely the state in which it does not
+  // yet hold a token. Gating discovery on the credential it exists to help
+  // obtain would deadlock the bootstrap. Neither reads session data, calls a
+  // provider, nor spends anything, so an unverified declared identity buys
+  // nothing here — unlike `probe_peers`, which spends provider quota and
+  // therefore verifies. `scripts/source-contract-smoke.ts` pins this list at
+  // exactly these two so the exception cannot quietly grow.
   registerTool(
     "server_info",
     {
@@ -1647,7 +1619,7 @@ export async function main(): Promise<void> {
       description:
         "Return runtime information for the API-only Cross Review MCP server, including version, data directory and active security mode.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1751,8 +1723,6 @@ export async function main(): Promise<void> {
             generated_at: getHostTokensRecord()?.generated_at ?? null,
             hard_enforce: isHardEnforceMode(),
             agents: getHostTokensRecord() ? [...PEERS] : [],
-            operator_capability_loaded: Boolean(getHostTokensRecord()?.map.operator),
-            operator_capability_required: true,
             identities: getHostTokensRecord() ? Object.keys(getHostTokensRecord()?.map ?? {}) : [],
           },
           codeql_policy:
@@ -1770,7 +1740,7 @@ export async function main(): Promise<void> {
       description:
         "Return the stable cross-review runtime capability contract and active tool list.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1800,7 +1770,7 @@ export async function main(): Promise<void> {
       description:
         "Query official provider APIs to discover available models for the current API keys, select the highest-capability documented model, and verify provider reachability.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1810,8 +1780,16 @@ export async function main(): Promise<void> {
         openWorldHint: true,
       },
     },
-    async ({ response_format }) =>
-      textResult(await runtime.orchestrator.probeAll(), response_format),
+    async ({ caller, response_format }) => {
+      // The declared caller was accepted and never checked here, so with
+      // CROSS_REVIEW_REQUIRE_TOKEN=true — or a token belonging to a different
+      // peer — any enum-valid `caller` still reached probeAll() and spent six
+      // outbound provider probes, one of them the billable Perplexity live
+      // probe. A tool that declares an identity and spends the operator's
+      // provider quota on it has to verify it, exactly like session_init.
+      verifyToolCallerIdentity(runtime, "probe_peers", caller, server.server.getClientVersion());
+      return textResult(await runtime.orchestrator.probeAll(), response_format);
+    },
   );
 
   registerTool(
@@ -1823,7 +1801,7 @@ export async function main(): Promise<void> {
       inputSchema: z.object({
         task: z.string().min(1).describe("Original task or artifact being reviewed."),
         review_focus: ReviewFocusSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -1906,14 +1884,14 @@ export async function main(): Promise<void> {
     {
       title: "Ask Peers",
       description:
-        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1.",
+        "Run a real API review round against selected peers. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. Runtime default uses real provider APIs; stubs run only when CROSS_REVIEW_STUB=1. When `session_id` names an existing session, requires the verified capability token of that session's persisted petitioner; opening a new session does not.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
         evidence: AutomaticCallerEvidenceSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
@@ -1977,14 +1955,14 @@ export async function main(): Promise<void> {
     {
       title: "Start Review Round",
       description:
-        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required.",
+        "Start a real peer-review round in the background and return immediately with a session_id/job_id for polling. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. When `session_id` names an existing session, requires the verified capability token of that session's persisted petitioner; opening a new session does not.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS),
         evidence: AutomaticCallerEvidenceSchema,
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         caller_status: z.enum(["READY", "NOT_READY", "NEEDS_EVIDENCE"]).default("READY"),
         peers: z
           .array(PeerSchema)
@@ -2058,21 +2036,18 @@ export async function main(): Promise<void> {
     {
       title: "Run Until Unanimous",
       description:
-        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial colegiados), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
+        "Generate or revise a draft and continue real API peer-review rounds until unanimous READY or the configured max_rounds is reached. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: when `caller` is set to a peer id (claude|codex|gemini|deepseek|grok|perplexity), the relator lottery activates: omit `lead_peer` to have the server randomly select a non-caller peer as relator (modeled on judicial panels), or supply an explicit `lead_peer` that is NOT the caller. An explicit `lead_peer === caller` is rejected at the server with `caller_cannot_be_lead_peer` — an agent never reviews itself (workspace HARD GATE).",
       inputSchema: z.object({
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-        // v2.11.0: lead_peer is now optional. When omitted with a peer
-        // caller, the relator lottery picks one. When omitted with an
-        // operator caller, the orchestrator uses "codex" if it is enabled,
-        // else the first enabled session peer (v3.7.1 / AUDIT-4: comment
-        // refreshed — v3.7.0 / AUDIT-2 replaced the pre-v3.7.0 hardcoded
-        // "codex" that ignored peer_enabled).
+        // v2.11.0: lead_peer is optional. v07.00.00: every caller is a
+        // peer, so omitting it always runs the relator lottery.
         lead_peer: PeerSchema.optional(),
         // v2.11.0: caller identifies the petitioner for the lottery.
-        // Default "operator" preserves v2.10.0 behavior (no exclusion).
-        caller: CallerSchema.default("operator"),
+        // v07.00.00: caller is required and always a peer, so the
+        // petitioner is always excluded from the draw.
+        caller: CallerSchema,
         peers: z
           .array(PeerSchema)
           .min(0)
@@ -2119,7 +2094,7 @@ export async function main(): Promise<void> {
         // The preflight checks value correspondence with every operational
         // claim; presence alone is never proof. Peer material is persisted,
         // hashed and transported as unverified review evidence without a
-        // manual operator attachment step.
+        // separate attachment step.
         evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
@@ -2159,14 +2134,14 @@ export async function main(): Promise<void> {
     {
       title: "Start Until Unanimous",
       description:
-        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no manual operator attachment is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details.",
+        "Start real API generation/revision rounds in the background until unanimity, max_rounds or budget limit. AI evidence supplied in `evidence` is persisted durably and transported automatically; no separate attachment step is required. v2.11.0: same `caller` + relator-lottery semantics as `run_until_unanimous` — see that tool for details. When `session_id` names an existing session, requires the verified capability token of that session's persisted petitioner; opening a new session does not.",
       inputSchema: z.object({
         session_id: SessionIdSchema.optional(),
         task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         review_focus: ReviewFocusSchema,
         initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
         lead_peer: PeerSchema.optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         peers: z
           .array(PeerSchema)
           .min(0)
@@ -2207,7 +2182,7 @@ export async function main(): Promise<void> {
         // The preflight checks value correspondence with every operational
         // claim; presence alone is never proof. Peer material is persisted,
         // hashed and transported as unverified review evidence without a
-        // manual operator attachment step.
+        // separate attachment step.
         evidence: AutomaticCallerEvidenceSchema,
         response_format: ResponseFormatSchema,
       }),
@@ -2278,12 +2253,12 @@ export async function main(): Promise<void> {
     {
       title: "Cancel Session Job",
       description:
-        "Request cancellation for running background jobs in a durable session. The reason accepts at most 300 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token; another peer cannot cancel the job. Provider calls receive AbortSignal where the provider client supports it.",
+        "Request cancellation for running background jobs in a durable session. The reason accepts at most 300 characters. Requires the verified capability token of the persisted session petitioner; another peer cannot cancel the job. Provider calls receive AbortSignal where the provider client supports it.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         job_id: SessionIdSchema.optional(),
         reason: z.string().min(1).max(300).default("requester_requested"),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2399,9 +2374,9 @@ export async function main(): Promise<void> {
     {
       title: "Recover Interrupted Sessions",
       description:
-        "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly.",
+        "Mark unfinished sessions with stale in-flight rounds as recovered after a MCP host restart so they can be resumed explicitly. Requires your own verified capability token, and recovers only the sessions you own.",
       inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2412,12 +2387,16 @@ export async function main(): Promise<void> {
       },
     },
     async ({ caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
+      const identity = verifyToolCallerIdentity(
         runtime,
         "session_recover_interrupted",
         caller,
         server.server.getClientVersion(),
       );
+      // Round 5 scoped this to the caller's own sessions but left it on
+      // identity alone, while every other owner-scoped mutation requires the
+      // capability token. A self-declared clientInfo match is not ownership.
+      assertOwnerTokenVerified("session_recover_interrupted", identity, caller);
       const active = new Set(
         [...runtime.jobs.values()]
           .filter((job) => job.status === "running")
@@ -2425,7 +2404,14 @@ export async function main(): Promise<void> {
       );
       return textResult(
         {
-          recovered: await runtime.orchestrator.store.recoverInterruptedSessions(active),
+          // Scoped to this caller's own sessions. Identity alone used to
+          // authorize a store-wide repair of every petitioner's session
+          // (PR #300 review round 5). Store-wide recovery still happens, at
+          // trusted startup — see recoverStartupInterruptedSessions — so
+          // nothing is lost by refusing it here.
+          recovered: await runtime.orchestrator.store.recoverInterruptedSessions(active, {
+            include: (session) => derivePersistedSessionOwner(session) === caller,
+          }),
         },
         response_format,
       );
@@ -2472,8 +2458,9 @@ export async function main(): Promise<void> {
       // caller until the 24h sweep aborted them. This flag is true when
       // the session has no terminal `outcome` AND its health is stale or
       // blocked AND there is no running job — i.e. it is sitting
-      // un-finalized with nothing in flight and needs the caller/operator
-      // workflow to continue, contest, cancel, or finalize it.
+      // un-finalized with nothing in flight; only the persisted petitioner
+      // moves it, with corrected material in a new round or an `aborted`
+      // close through session_finalize.
       const hasRunningJob = jobs.some((job) => job.status === "running");
       const healthState = session.convergence_health?.state;
       const needsAttention =
@@ -2489,14 +2476,16 @@ export async function main(): Promise<void> {
         const voters = (scope.voting_peers ?? scope.reviewer_peers ?? []).join(", ");
         notices.push(
           `relator_non_voting: \`${scope.lead_peer}\` is the lottery-selected relator — it authors/revises the ` +
-            `artifact and is DELIBERATELY excluded from the voting colegiado (anti-self-review HARD GATE). ` +
+            `artifact and is DELIBERATELY excluded from the voting panel (anti-self-review HARD GATE). ` +
             `Voting peers: ${voters || "(none)"}. This is by design, not a dropped peer.`,
         );
       }
       if (needsAttention) {
         notices.push(
           `needs_attention: this session is non-terminal (outcome=null), health=${healthState}, and has no ` +
-            `running job — finalize, contest, continue, or cancel it. The 24h stale-session sweep is only a backstop.`,
+            `running job. As the persisted petitioner (pass your own \`caller\`), either resubmit corrected ` +
+            `material in a new round on this session_id or close it with session_finalize(outcome=aborted); ` +
+            `retrying unchanged material replays the same failure. The boot-time stale sweep aborts it only after 24h idle.`,
         );
       }
       const payload = sessionPollPayload(session, localJobs, detail, notices);
@@ -2553,7 +2542,7 @@ export async function main(): Promise<void> {
     {
       title: "Session Doctor",
       description:
-        'Operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Read-only by default (does not modify sessions). Terminal max-rounds and terminal not_resurfaced history stay in totals but are not default operational findings; pass include_terminal_findings=true to enumerate that historical inventory. Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible). v3.6.0: pass repair=true (opt-in) to recompute convergence_health for sessions stuck in the contradictory outcome="converged"+health="blocked" state left by pre-v3.2.0 corruption — only that specific contradiction is touched, only when explicitly requested; the `repaired` array lists what was fixed.',
+        'Operational audit across durable sessions: open/stale/blocked cases, legacy self-lead metadata, open evidence asks (with per-peer item type drill-down + chronic blockers since v2.22), Grok provider errors, and token-event noise. Read-only by default (does not modify sessions). Terminal max-rounds and terminal not_resurfaced history stay in totals but are not default operational findings; pass include_terminal_findings=true to enumerate that historical inventory. Pass include_legacy=true to enumerate per-session self_lead_metadata entries (hidden by default since v2.22 because pre-v2.16 sessions carry the legacy artifact at ~38% rate; totals.self_lead_metadata count is always visible). v3.6.0: pass repair=true (opt-in) to recompute convergence_health for sessions stuck in the contradictory outcome="converged"+health="blocked" state left by pre-v3.2.0 corruption — only that specific contradiction is touched, only when explicitly requested; the `repaired` array lists what was fixed. The read-only pass needs no token; `repair` requires your own verified capability token and touches only the sessions you own.',
       inputSchema: z.object({
         limit: z.number().int().min(1).max(100).default(20),
         // v2.22.0 (A.P2): opt-in enumeration of legacy self_lead_metadata
@@ -2570,7 +2559,7 @@ export async function main(): Promise<void> {
         // terminal not_resurfaced historical inventory. Defaults false
         // so findings stay action-oriented while totals remain complete.
         include_terminal_findings: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2590,13 +2579,23 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
+      // The audit half is read-only and stays open to any verified identity.
+      // The repair half rewrites finalized metadata and timestamps, and it was
+      // operator-only before that identity was retired -- so it lands in the
+      // same place as recovery: the owner's capability token, and only the
+      // owner's own sessions. Without this the release's claim that
+      // `session_sweep` is the sole cross-owner mutation was simply false.
+      // Two branches with LITERAL site strings, not one with a ternary: the
+      // v4.4.1 identity contract matches the site argument literally, and a
+      // computed one reads to it as no verification at all.
       if (repair) {
-        verifyOperatorToolCallerIdentity(
+        const identity = verifyToolCallerIdentity(
           runtime,
           "session_doctor.repair",
           caller,
           server.server.getClientVersion(),
         );
+        assertOwnerTokenVerified("session_doctor.repair", identity, caller);
       } else {
         verifyToolCallerIdentity(
           runtime,
@@ -2611,6 +2610,9 @@ export async function main(): Promise<void> {
           include_legacy ?? false,
           repair ?? false,
           include_terminal_findings ?? false,
+          {
+            repairInclude: (session) => derivePersistedSessionOwner(session) === caller,
+          },
         ),
         response_format,
       );
@@ -2721,7 +2723,7 @@ export async function main(): Promise<void> {
     task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS).optional(),
     draft: z.string().min(1).max(SCHEMA_DRAFT_MAX_CHARS).optional(),
     evidence: z.string().min(1).max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-    caller: CallerSchema.default("operator"),
+    caller: CallerSchema,
     response_format: ResponseFormatSchema,
   });
   const savedSessionPreflightHandler =
@@ -2750,7 +2752,6 @@ export async function main(): Promise<void> {
         task: task ?? session.task,
         draft: effectiveDraft,
         evidence,
-        caller,
       });
       const truthfulness = result.truthfulness.result;
       const evidenceResult = result.evidence.result;
@@ -2778,10 +2779,10 @@ export async function main(): Promise<void> {
             truthfulness?.structured_evidence_supplied ??
             evidenceResult?.structured_evidence_supplied ??
             false,
-          attachments_present:
-            result.reviewable_attachment_count > 0 || result.operator_verified_attachment_count > 0,
+          // v07.00.00: one count, because one tier. The disjunct and the second
+          // field reported a promoted tier that no caller could reach.
+          attachments_present: result.reviewable_attachment_count > 0,
           attached_evidence_count: result.reviewable_attachment_count,
-          operator_verified_evidence_count: result.operator_verified_attachment_count,
           evidence_files: session.evidence_files ?? [],
           source_marker_found: truthfulness?.source_marker_found ?? false,
           runtime_facts_available: truthfulness?.runtime_facts_available ?? true,
@@ -2795,7 +2796,7 @@ export async function main(): Promise<void> {
     {
       title: "Check Submission Preflights",
       description:
-        "Run the same enabled evidence and truthfulness gates used by a real review round, without calling providers. Peer-submitted inline/structured evidence is checked as review material and requires no manual operator attachment.",
+        "Run the same enabled evidence and truthfulness gates used by a real review round, without calling providers. Peer-submitted inline/structured evidence is checked as review material and requires no separate attachment step.",
       inputSchema: savedSessionPreflightSchema,
       annotations: {
         readOnlyHint: true,
@@ -2827,16 +2828,16 @@ export async function main(): Promise<void> {
   registerTool(
     "session_attach_evidence",
     {
-      title: "Promote Operator Evidence (Optional)",
+      title: "Attach Session Evidence (Optional)",
       description:
-        "Optional operator-only authority promotion; AI callers must not use this tool. No human operator action is required for ordinary reviews: pass raw proof through the `evidence` field of ask_peers, session_start_round, run_until_unanimous, or session_start_unanimous, and the runtime persists it durably as caller_submitted_unverified material.",
+        "Attach one durable evidence artifact to an existing session, out of band from a review round. Only the session's own petitioner may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round. Requires the verified capability token of the persisted session petitioner; a peer cannot attach evidence to someone else's session.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         label: z.string().min(1).max(120),
         content: z.string().min(1).max(2_000_000),
         content_type: z.string().min(1).max(120).default("text/plain"),
         extension: z.string().min(1).max(16).default("txt"),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2847,7 +2848,15 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, label, content, content_type, extension, caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
+      // Opening this tool to peers (v07.00.00) removed the operator gate that
+      // never had a caller. It should not have removed the OWNER gate with it.
+      // Attachments are folded back into that session's preflight corpora and
+      // reviewer prompts by readEvidenceAttachments, so identity alone let any
+      // token-holder that learned an open session_id — session_list returns
+      // them all — contaminate another petitioner's review or push it into a
+      // failing preflight. The tool stays open to peers; it is now closed to
+      // peers acting on someone else's session.
+      verifySessionMutationAuthority(
         runtime,
         "session_attach_evidence",
         caller,
@@ -2869,59 +2878,11 @@ export async function main(): Promise<void> {
   );
 
   registerTool(
-    "session_evidence_checklist_update",
-    {
-      title: "Update Evidence Checklist Item Status",
-      description:
-        "Operator workflow for the v2.7.0 Evidence Broker. Mark a checklist item as 'satisfied' (operator confirms the ask was answered), 'deferred' (out of scope for this session), 'rejected' (ask itself is unfounded), or 'open' (retract a prior terminal status). The 'addressed' status is reserved for runtime auto-promotion (resurfacing inference) and cannot be set via this tool. Every transition is appended to evidence_status_history with the operator's optional note.",
-      inputSchema: z.object({
-        session_id: SessionIdSchema,
-        item_id: z
-          .string()
-          .min(1)
-          .max(64)
-          .regex(/^[a-f0-9]+$/i, "item_id must be a hex string"),
-        status: z.enum(["open", "satisfied", "deferred", "rejected"]),
-        note: z.string().min(1).max(2000).optional(),
-        caller: CallerSchema.default("operator"),
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    async ({ session_id, item_id, status, note, caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
-        runtime,
-        "session_evidence_checklist_update",
-        caller,
-        server.server.getClientVersion(),
-        session_id,
-      );
-      return textResult(
-        await runtime.orchestrator.store.setEvidenceChecklistItemStatus(
-          session_id,
-          item_id,
-          status,
-          {
-            note,
-            by: "operator",
-          },
-        ),
-        response_format,
-      );
-    },
-  );
-
-  registerTool(
     "session_evidence_judge_pass",
     {
       title: "Run Evidence Judge Pass",
       description:
-        "Operator-authorized LLM satisfied-detection for the Evidence Broker. Requires the dedicated operator capability token. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment; a peer can never judge its own evidence ask. The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal operator statuses and already-addressed items are never touched. Optional shadow_mode records non-mutating decisions.",
+        "LLM satisfied-detection for the Evidence Broker. The configured judge peer reads each currently-open checklist item against the supplied draft and returns a structured judgment; a peer can never judge its own evidence ask. The runtime promotes only items where satisfied=true AND confidence='verified'; everything else stays open. Terminal statuses and already-addressed items are never touched. Optional shadow_mode records non-mutating decisions. Requires the verified capability token of the persisted session petitioner, because the pass spends that petitioner's budget on paid provider calls.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         judge_peer: PeerSchema,
@@ -2939,7 +2900,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4000).optional(),
         shadow_mode: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -2960,7 +2921,11 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyOperatorToolCallerIdentity(
+      // The active judge pass spends the session's budget on paid provider
+      // calls and can move checklist items to `addressed`. Identity alone is
+      // not enough: any peer holding a valid token would otherwise be able to
+      // drive another petitioner's session. Gate on the persisted petitioner.
+      verifySessionMutationAuthority(
         runtime,
         "session_evidence_judge_pass",
         caller,
@@ -2994,7 +2959,7 @@ export async function main(): Promise<void> {
     {
       title: "Run Evidence Judge Consensus Pass",
       description:
-        "Operator-authorized multi-peer evidence judgment. Requires the dedicated operator capability token and at least two distinct enabled judge peers. A peer is forbidden from ruling on its own evidence ask; any self-judge member makes that item's consensus fail closed. Active mode promotes only unanimous verified-satisfied judgments with non-empty rationales and zero parser warnings; shadow mode never mutates state.",
+        "Multi-peer evidence judgment. Requires at least two distinct enabled judge peers. A peer is forbidden from ruling on its own evidence ask; any self-judge member makes that item's consensus fail closed. Active mode promotes only unanimous verified-satisfied judgments with non-empty rationales and zero parser warnings; shadow mode never mutates state. Requires the verified capability token of the persisted session petitioner, because the pass spends that petitioner's budget on paid provider calls.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         // v3.7.0 (AUDIT-3): .max(PEERS.length) — same stale-`.max(5)`
@@ -3015,7 +2980,7 @@ export async function main(): Promise<void> {
         round: z.number().int().min(1).max(10_000).optional(),
         review_focus: z.string().min(1).max(4_000).optional(),
         shadow_mode: z.boolean().optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3036,7 +3001,9 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyOperatorToolCallerIdentity(
+      // Same reasoning as the single-peer pass, and the exposure is larger:
+      // the consensus pass fans out one paid call per judge peer.
+      verifySessionMutationAuthority(
         runtime,
         "session_evidence_judge_consensus_pass",
         caller,
@@ -3095,25 +3062,25 @@ export async function main(): Promise<void> {
       ),
   );
 
-  // v2.14.0 (item 4): tribunal-colegiado contestation. Per the memory
+  // v2.14.0 (item 4): tribunal-panel contestation. Per the memory
   // `project_cross_review_v2_tribunal_colegiado_model.md`, caller can
   // formally contest a final verdict, opening a new deliberation cycle
   // within the same autos. The original session is preserved (append-
   // only); a new session is initialized with a structural reference
-  // back. Petitioner NOT_READY (contesta) → use this tool. Petitioner READY
-  // (acata) → notify the human operator, whose dedicated console finalizes.
+  // back. Petitioner NOT_READY → use this tool. Petitioner READY → nothing
+  // to do: the runtime already sealed `converged`.
   registerTool(
     "contest_verdict",
     {
       title: "Contest Verdict",
       description:
-        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner, or the dedicated operator token. Petitioner READY (acata) → notify the human operator so the dedicated console can finalize; petitioner NOT_READY (contesta) → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
+        "v2.14.0 — formally contest a final verdict and open a new deliberation cycle. The reason accepts at most 4,000 characters. Requires the verified capability token of the persisted session petitioner (pass `caller` explicitly as that peer identity). Petitioner READY → nothing to do: the runtime already sealed `converged`; petitioner NOT_READY → contest_verdict. Stamps the original session's meta with a `contestation` record (timestamp + reason + original_outcome + new_session_id) and initializes a NEW session whose `contests_session_id` points back to the contested session, preserving the chain of custody append-only across sessions. The original session must be in a final state (converged/aborted/max-rounds); contesting an in-flight session throws cannot_contest_in_flight_session. Once contested, a session cannot be contested again (chain-of-custody invariant) — contest the LATEST session in the chain.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         reason: z.string().min(1).max(4_000),
         new_task: z.string().min(1).max(SCHEMA_TASK_MAX_CHARS),
         new_initial_draft: z.string().max(SCHEMA_INITIAL_DRAFT_MAX_CHARS).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         new_caller: CallerSchema.optional(),
         response_format: ResponseFormatSchema,
       }),
@@ -3166,107 +3133,11 @@ export async function main(): Promise<void> {
   );
 
   registerTool(
-    "regenerate_caller_tokens",
-    {
-      title: "Regenerate Caller Tokens (F1)",
-      description:
-        "Rotate the seven caller capability tokens (six peer identities plus a distinct operator). Requires the current dedicated operator token. The response exposes fingerprints only. Distribute each peer token only to its matching model host; keep the operator token exclusively in a separate human-console MCP host. Never place the operator token in Codex, Claude, Gemini, DeepSeek, Grok or Perplexity host configuration.",
-      inputSchema: z.object({
-        caller: CallerSchema.default("operator"),
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    async ({ caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
-        runtime,
-        "regenerate_caller_tokens",
-        caller,
-        server.server.getClientVersion(),
-      );
-      const generated = f1GenerateHostTokens(runtime.config.data_dir, {
-        overwrite: true,
-      });
-      if (!generated) {
-        throw new Error(
-          "regenerate_caller_tokens: failed to write host-tokens.json (no record returned); check data_dir / CROSS_REVIEW_TOKENS_FILE permissions.",
-        );
-      }
-      setHostTokensRecord({
-        filePath: generated.filePath,
-        map: generated.map,
-        generated_at: generated.generated_at,
-      });
-      const token_fingerprints = Object.fromEntries(
-        Object.entries(generated.map).map(([agent, token]) => [
-          agent,
-          crypto.createHash("sha256").update(token).digest("hex").slice(0, 16),
-        ]),
-      );
-      return textResult(
-        {
-          ok: true,
-          file_path: generated.filePath,
-          generated_at: generated.generated_at,
-          token_fingerprints,
-          next_steps: [
-            "Read host-tokens.json locally and copy each peer secret only into its matching model host as CROSS_REVIEW_CALLER_TOKEN.",
-            "Put the distinct operator secret only in a dedicated human-console MCP host; never expose it to a model host.",
-            "Reload the affected MCP hosts so the new env value is picked up.",
-            "Stale tokens will start being rejected with identity_forgery_blocked: token does not match any known agent.",
-          ],
-        },
-        response_format,
-      );
-    },
-  );
-
-  registerTool(
-    "escalate_to_operator",
-    {
-      title: "Escalate To Operator",
-      description:
-        "Record a durable operator escalation for sessions that require human judgment or external intervention. The reason accepts at most 1,000 characters.",
-      inputSchema: z.object({
-        session_id: SessionIdSchema,
-        reason: z.string().min(1).max(1000),
-        severity: z.enum(["info", "warning", "critical"]).default("warning"),
-        caller: CallerSchema.default("operator"),
-        response_format: ResponseFormatSchema,
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    async ({ session_id, reason, severity, caller, response_format }) => {
-      verifyToolCallerIdentity(
-        runtime,
-        "escalate_to_operator",
-        caller,
-        server.server.getClientVersion(),
-        session_id,
-      );
-      return textResult(
-        await runtime.orchestrator.store.escalateToOperator(session_id, { reason, severity }),
-        response_format,
-      );
-    },
-  );
-
-  registerTool(
     "session_sweep",
     {
       title: "Sweep Idle Sessions",
       description:
-        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. The terminal reason accepts at most 200 characters. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory.",
+        "Finalize unfinished sessions whose metadata has been idle for at least 24 hours. The terminal reason accepts at most 200 characters. v3.7.5 (B1): opt-in `prune_corrupt` also removes stale entries from the corrupt_sessions/ quarantine directory. Requires a verified capability token. Sweep is the one mutation that acts ACROSS owners, so the token is not the affected petitioner's — but a self-declared identity is refused, and it is therefore no way out of a token-file failure.",
       inputSchema: z.object({
         idle_minutes: z.number().min(1440).max(100_000).default(1440),
         outcome: z.enum(["aborted", "max-rounds"]).default("aborted"),
@@ -3279,12 +3150,15 @@ export async function main(): Promise<void> {
         // `corrupt_min_age_days` (default 30 days).
         prune_corrupt: z.boolean().default(false),
         corrupt_min_age_days: z.number().int().min(1).max(365).default(30),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
         readOnlyHint: false,
-        destructiveHint: false,
+        // `prune_corrupt` deletes quarantine entries from disk. That is
+        // destructive, and the annotation said otherwise until the PR #300
+        // review caught it.
+        destructiveHint: true,
         idempotentHint: true,
         openWorldHint: false,
       },
@@ -3298,12 +3172,36 @@ export async function main(): Promise<void> {
       caller,
       response_format,
     }) => {
-      verifyOperatorToolCallerIdentity(
+      // Deliberately NOT gated on session ownership, unlike every other
+      // mutating tool. The sweep exists to close sessions whose petitioner is
+      // gone — a host that died mid-round, a window never reloaded — and a
+      // petitioner that cannot present itself cannot sweep its own session.
+      // Owner-scoping this call would leave exactly the sessions it exists for
+      // permanently open. What bounds it instead is the age floor: `idle_minutes`
+      // is min 1440, so nothing under 24 hours idle is reachable, and
+      // `corrupt_min_age_days` is min 1.
+      //
+      // This is the one authoritative mutation a TOKEN-verified peer can perform
+      // on another petitioner's session. The qualifier is load-bearing: this
+      // file's own helper doc (see `assertCrossOwnerTokenVerified`) records that
+      // a client whose self-declared clientInfo.name matches its declared
+      // `caller` also passes identity verification, as `client_info` — and that
+      // is exactly the case round 9 closed here. "Verified peer" would still
+      // read as including it. It is a deliberate exception to owner-scoping,
+      // not to the token, and it is the reason the v07.00.00 changelog must not
+      // claim that no identity can step over the session-owner gate.
+      const sweepIdentity = verifyToolCallerIdentity(
         runtime,
         "session_sweep",
         caller,
         server.server.getClientVersion(),
       );
+      // Ownership is deliberately NOT required here — a dead petitioner cannot
+      // sweep its own session, which is the entire purpose — but the caller must
+      // hold the capability token. Sweep can finalize every session idle for 24
+      // hours and, with `prune_corrupt`, delete quarantine entries; a name the
+      // client chose for itself is not authority to do that.
+      assertCrossOwnerTokenVerified("session_sweep", sweepIdentity);
       const swept = await runtime.orchestrator.store.sweepIdle(
         idle_minutes * 60_000,
         outcome,
@@ -3333,12 +3231,12 @@ export async function main(): Promise<void> {
     {
       title: "Finalize Session",
       description:
-        "Operator-only: mark a durable session as converged, aborted or max-rounds with an optional reason of at most 200 characters. Requires the dedicated operator capability token from a separate human-console host.",
+        "Close a non-terminal durable session as `aborted` with an optional reason of at most 200 characters. Requires the verified capability token of the persisted session petitioner: the peer host must pass `caller` explicitly as its own identity, and a `caller` that contradicts that host's own token or clientInfo is refused as identity forgery. `converged` is sealed only by the runtime, when the petitioner and every required peer are READY and every evidence gate passes; `max-rounds` is written only by the runtime or the idle sweep.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
-        outcome: z.enum(["converged", "aborted", "max-rounds"]),
+        outcome: z.enum(["aborted"]),
         reason: z.string().max(200).optional(),
-        caller: CallerSchema.default("operator"),
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
@@ -3349,7 +3247,7 @@ export async function main(): Promise<void> {
       },
     },
     async ({ session_id, outcome, reason, caller, response_format }) => {
-      verifyOperatorToolCallerIdentity(
+      verifySessionMutationAuthority(
         runtime,
         "session_finalize",
         caller,
@@ -3431,8 +3329,8 @@ export async function main(): Promise<void> {
       }
     })();
   }, STARTUP_SWEEP_DELAY_MS);
-  // v2.5.0: companion to clearStaleInFlight — abort sessions that the
-  // dedicated operator console never finalized. Runs AFTER the in_flight sweep (deferred via
+  // v2.5.0: companion to clearStaleInFlight — abort sessions that their
+  // petitioner never closed. Runs AFTER the in_flight sweep (deferred via
   // setTimeout, same delay so order is preserved by registration order)
   // so a session whose in_flight got cleared this same boot is
   // immediately eligible for staleness review.

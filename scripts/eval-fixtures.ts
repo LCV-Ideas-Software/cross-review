@@ -111,7 +111,7 @@ for (const testCase of reportCases) {
     ...loadConfig(),
     data_dir: evalTmpDir("report"),
   });
-  const session = await store.init(`eval report fixture: ${testCase.name}`, "operator", []);
+  const session = await store.init(`eval report fixture: ${testCase.name}`, "claude", []);
   const meta = store.read(session.session_id);
   const ts = new Date().toISOString();
   meta.rounds = [

@@ -96,7 +96,7 @@ async function seededJudgeFixture(label: string, owner: PeerId = "gemini") {
   const orchestrator = new CrossReviewOrchestrator(regressionConfig(label), (event) => {
     events.push(event);
   });
-  const session = await orchestrator.store.init(`v4.5.4 ${label}`, "operator", []);
+  const session = await orchestrator.store.init(`v4.5.4 ${label}`, "codex", []);
   await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
     { peer: owner, ask: "Provide the exact fixture evidence." },
   ]);
@@ -320,7 +320,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config, (event) => {
         events.push(event);
       });
-      const session = await orchestrator.store.init("v4.5.4 retired judge", "operator", []);
+      const session = await orchestrator.store.init("v4.5.4 retired judge", "codex", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "gemini", ask: "Provide the exact fixture evidence." },
       ]);
@@ -371,7 +371,7 @@ const regressions: Regression[] = [
     run: async () => {
       const config = regressionConfig("cache-key");
       const orchestrator = new CrossReviewOrchestrator(config, () => {});
-      const session = await orchestrator.store.init("v4.5.4 cache identity", "operator", []);
+      const session = await orchestrator.store.init("v4.5.4 cache identity", "codex", []);
       const cached = fixturePeer("grok", "READY");
       cached.usage = {
         ...(cached.usage as TokenUsage),
@@ -515,7 +515,7 @@ const regressions: Regression[] = [
         regressionConfig("decision-report"),
         () => {},
       );
-      const session = await orchestrator.store.init("v4.5.4 decision trace", "operator", []);
+      const session = await orchestrator.store.init("v4.5.4 decision trace", "codex", []);
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "gemini", ask: "Keep the evidence section visible in this report fixture." },
       ]);
@@ -540,7 +540,9 @@ const regressions: Regression[] = [
         rejected: [],
         convergence,
         convergence_scope: {
-          caller: "operator",
+          // v07.00.00: the session is opened by `codex` above, and the store
+          // invariant requires the persisted scope to name the same owner.
+          caller: "codex",
           caller_status: "READY",
           expected_peers: ["gemini"],
           reviewer_peers: ["gemini"],

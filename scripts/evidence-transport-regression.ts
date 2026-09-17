@@ -29,7 +29,7 @@ import { StubAdapter } from "../src/peers/stub.js";
 // 4. A terminal outcome produced by the internal askPeers call is preserved;
 //    the outer loop cannot overwrite it with max-rounds.
 // 5. Peer-submitted evidence can converge without operator custody only after
-//    a genuinely independent, strictly grounded colegiado review.
+//    a genuinely independent, strictly grounded panel review.
 //
 // Keep this focused regression independent from the broader behavioral matrix
 // so transport, combined-preflight and terminal-state failures stay obvious.
@@ -268,7 +268,6 @@ const regressions: Regression[] = [
           'package.json:3: "version": "2.20.0"',
           'App.tsx:31: const APP_VERSION = "2.20.0";',
         ].join("\n"),
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.2" },
       });
@@ -425,7 +424,6 @@ const regressions: Regression[] = [
       const purePreflight = evidencePreflight({
         task,
         initialDraft: draft,
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.equal(
@@ -880,9 +878,9 @@ const regressions: Regression[] = [
       const versionAsk =
         "Cite diff/grep lines showing version bump to v02.22.03 and updates to changelog, README, SECURITY, and methodology docs.";
       const identityAsk =
-        "Forneça evidência de que a injeção de identidade no servidor e validação canônica são testadas, com nomes específicos dos testes e saída bruta de aprovação.";
+        "Provide evidence that server-side identity injection and canonical validation are tested, with the specific test names and the raw passing output.";
       const redactionAsk =
-        "Forneça saída de grep ou conteúdo de arquivo demonstrando a implementação de redação de segredos e as asserções de teste de regressão correspondentes.";
+        "Provide grep output or file content showing the secret-redaction implementation and the matching regression assertions.";
       const checklist = await orchestrator.store.appendEvidenceChecklistItems(
         session.session_id,
         1,
@@ -1236,7 +1234,10 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(config);
       const session = await orchestrator.initSession(
         "Review a design fixture without operational claims.",
-        "operator",
+        // v07.00.00: was "operator". This case is about checklist promotion,
+        // not ownership, so it is owned by the peer that acts on it — and that
+        // peer stays outside its own reviewer panel.
+        "gemini",
       );
       // The ask must belong to a completed historical round. Autowire must
       // never spend a judge call on an ask raised by the round currently
@@ -1248,8 +1249,8 @@ const regressions: Regression[] = [
         rejected: [],
         convergence: checkConvergence(["claude", "codex"], "READY", [], []),
         convergence_scope: {
-          petitioner: "operator",
-          caller: "operator",
+          petitioner: "gemini",
+          caller: "gemini",
           caller_status: "READY",
           expected_peers: ["claude", "codex"],
           reviewer_peers: ["claude", "codex"],
@@ -1293,7 +1294,10 @@ const regressions: Regression[] = [
         session_id: session.session_id,
         task: session.task,
         draft: "FORCE_JUDGE_SATISFIED: the exact invariant and rationale are present.",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against, instead of silently shrinking it.
+        caller: "gemini",
         peers: ["claude", "codex"],
       });
       const persisted = orchestrator.store.read(session.session_id);
@@ -1509,7 +1513,7 @@ const regressions: Regression[] = [
         "codex",
       );
       const runtimeAsk =
-        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+        "Cite evidence verbatim from the reviewed artifact, an authenticated caller submission, or a persisted attachment; invented or untraceable sources cannot support READY.";
       await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
         { peer: "claude", ask: runtimeAsk },
       ]);
@@ -1591,7 +1595,7 @@ const regressions: Regression[] = [
         "codex",
       );
       const collidingAsk =
-        "Cite evidence verbatim from the reviewed artifact, authenticated caller submission, or operator-verified attachments; invented or untraceable sources cannot support READY.";
+        "Cite evidence verbatim from the reviewed artifact, an authenticated caller submission, or a persisted attachment; invented or untraceable sources cannot support READY.";
       const genuineText = JSON.stringify({
         status: "NEEDS_EVIDENCE",
         summary: "A concrete citation is required.",
@@ -1817,7 +1821,6 @@ const regressions: Regression[] = [
         task: historicalClaim,
         initialDraft: "Historical runtime report.",
         structuredEvidence: historicalRaw,
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.1" },
       });
@@ -1900,7 +1903,6 @@ const regressions: Regression[] = [
           task: claim,
           initialDraft: "Release report.",
           structuredEvidence: evidence,
-          caller: "codex",
           attachmentsPresent: false,
         });
         const groundingInput = {
@@ -1936,10 +1938,7 @@ const regressions: Regression[] = [
           [],
         );
         const gated = blockConvergenceForPeerSubmittedEvidencePanel(base, {
-          required:
-            preflight.pass &&
-            preflight.completed_work_claim_matched &&
-            !preflight.operator_grounded,
+          required: preflight.pass && preflight.completed_work_claim_matched,
           corroborating_peers: [
             ...(claude.peer_submitted_evidence_corroborated ? (["claude"] as PeerId[]) : []),
             ...(gemini.peer_submitted_evidence_corroborated ? (["gemini"] as PeerId[]) : []),
@@ -2289,7 +2288,6 @@ const regressions: Regression[] = [
           task: claim,
           initialDraft: "Release snapshot awaiting evidence validation.",
           structuredEvidence: evidence,
-          caller: "codex",
           attachmentsPresent: false,
         }).pass,
       }));
@@ -2307,23 +2305,20 @@ const regressions: Regression[] = [
       const result = evidencePreflight({
         task: "Review the proposed session API design.",
         initialDraft: "This is a design artifact with no completed-work assertion.",
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.deepEqual(
         {
           pass: result.pass,
           completed_work_claim_matched: result.completed_work_claim_matched,
-          operator_grounded: result.operator_grounded,
           evidence_authority: result.evidence_authority,
         },
         {
           pass: true,
           completed_work_claim_matched: false,
-          operator_grounded: false,
           evidence_authority: "none",
         },
-        "absence of a claim/evidence is neutral and must never be labeled operator_verified",
+        "absence of a claim/evidence is neutral and must never carry evidence authority",
       );
     },
   },
@@ -2334,7 +2329,6 @@ const regressions: Regression[] = [
         task: "Review the proposed session API design.",
         initialDraft: "Consult the raw design evidence in design-context.log for background.",
         structuredEvidence: "Narrative design context only; no completed-work assertion.",
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.deepEqual(
@@ -2342,14 +2336,12 @@ const regressions: Regression[] = [
           pass: result.pass,
           completed_work_claim_matched: result.completed_work_claim_matched,
           unattached_evidence_references: result.unattached_evidence_references,
-          operator_grounded: result.operator_grounded,
           evidence_authority: result.evidence_authority,
         },
         {
           pass: false,
           completed_work_claim_matched: false,
           unattached_evidence_references: ["design-context.log"],
-          operator_grounded: false,
           evidence_authority: "none",
         },
         "an unrelated narrative and missing design reference are not evidence authority when no completed-work claim exists",
@@ -2362,7 +2354,6 @@ const regressions: Regression[] = [
       const result = evidencePreflight({
         task: "Review the proposed API design.",
         initialDraft: 'Example source line: console.log("evidence marker");',
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.deepEqual(
@@ -2387,7 +2378,6 @@ const regressions: Regression[] = [
         task: "The implementation is complete and npm run test passed.",
         initialDraft: "Release report.",
         structuredEvidence: "npm run test could not be run; only the documentation looks ok.",
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.equal(
@@ -2404,7 +2394,6 @@ const regressions: Regression[] = [
         task: "The implementation is complete and npm run test passed.",
         initialDraft: "Release report.",
         structuredEvidence: "npm run test was skipped; the documentation check is green.",
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.equal(
@@ -2429,7 +2418,6 @@ const regressions: Regression[] = [
           task: claim,
           initialDraft: "Release report.",
           structuredEvidence: evidence,
-          caller: "codex",
           attachmentsPresent: false,
         }).pass,
       }));
@@ -2447,7 +2435,6 @@ const regressions: Regression[] = [
         task: "The implementation is complete and npm run test passed.",
         initialDraft: "Release report.",
         structuredEvidence: "npm run test; npm run docs passed.",
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.equal(
@@ -2463,21 +2450,18 @@ const regressions: Regression[] = [
       const current = truthfulnessPreflight({
         task: "The current production deployment is healthy and green.",
         initialDraft: "Operational status report.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.1" },
       });
       const historical = truthfulnessPreflight({
         task: "When the workflow began, the local cross-review runtime was healthy.",
         initialDraft: "Historical status report.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.1" },
       });
       const instruction = truthfulnessPreflight({
         task: "Verify current production health and report whether it is green.",
         initialDraft: "Review request, not a completed-work assertion.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.1" },
       });
@@ -2513,7 +2497,6 @@ const regressions: Regression[] = [
       const result = truthfulnessPreflight({
         task: "Production is fully operational.",
         initialDraft: "Operational status report.",
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.1" },
       });
@@ -2543,7 +2526,6 @@ const regressions: Regression[] = [
         task: claim,
         initialDraft: "Historical runtime report.",
         structuredEvidence: currentSnapshot,
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.1" },
       });
@@ -2617,7 +2599,6 @@ const regressions: Regression[] = [
         task: claim,
         initialDraft: "Historical runtime report.",
         structuredEvidence: mixedEvidence,
-        caller: "codex",
         attachmentsPresent: false,
         runtimeFacts: { runtime_version: "4.5.1" },
       });
@@ -2733,7 +2714,6 @@ const regressions: Regression[] = [
         sessionId: session.session_id,
         task: session.task,
         draft: "No raw output is included here.",
-        caller: "codex",
       });
       assert.equal(combined.truthfulness.pass, true);
       assert.equal(combined.evidence.pass, false);
@@ -2756,8 +2736,11 @@ const regressions: Regression[] = [
         regressionConfig("operator-owner-confusion"),
       );
       const session = await orchestrator.initSession(
-        "Operator-owned session privilege-confusion fixture.",
-        "operator",
+        // v07.00.00: was owned by "operator". The property under test is that a
+        // peer cannot take over a session it does not own, which needs only a
+        // different owner.
+        "Peer-owned session privilege-confusion fixture.",
+        "gemini",
       );
       let rejection: unknown;
       try {
@@ -2789,7 +2772,7 @@ const regressions: Regression[] = [
       );
       assert.match(
         rejection instanceof Error ? rejection.message : "",
-        /session_owner_mismatch|session mutation|caller.*forbidden|authority/i,
+        /session_owner_mismatch|session_owner_unverified|session mutation|caller.*forbidden|authority/i,
         "a non-owner peer must be rejected before evidence persistence",
       );
     },
@@ -2841,9 +2824,12 @@ const regressions: Regression[] = [
     name: "round starter equivalent rejects non-owner inline evidence before mutation",
     run: async () => {
       const orchestrator = new CrossReviewOrchestrator(regressionConfig("round-owner-confusion"));
+      // v07.00.00: this fixture was owned by "operator" and the case proved a
+      // peer could not take it over. The identity is gone, but the property is
+      // not — so the session is owned by a DIFFERENT peer than the one acting.
       const session = await orchestrator.initSession(
-        "Operator-owned round starter: npm test reports 1 passed.",
-        "operator",
+        "Peer-owned round starter: npm test reports 1 passed.",
+        "gemini",
       );
       await assert.rejects(
         orchestrator.askPeers({
@@ -2853,7 +2839,7 @@ const regressions: Regression[] = [
           caller: "claude",
           peers: ["codex"],
         }),
-        /session_owner_mismatch|session mutation|caller.*forbidden|authority/i,
+        /session_owner_mismatch|session_owner_unverified|session mutation|caller.*forbidden|authority/i,
         "session_start_round/ask_peers must reject a non-owner peer even when evidence is inline rather than in the evidence field",
       );
     },
@@ -2864,7 +2850,7 @@ const regressions: Regression[] = [
       const orchestrator = new CrossReviewOrchestrator(regressionConfig("forged-petitioner"));
       const session = await orchestrator.initSession(
         "Operator-owned session for forged petitioner regression.",
-        "operator",
+        "claude",
       );
       const before = orchestrator.store.read(session.session_id);
       let rejection: unknown;
@@ -2959,7 +2945,6 @@ const regressions: Regression[] = [
           POST_IMAGE_DIFF_EVIDENCE,
           "```",
         ].join("\n"),
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.equal(result.pass, true, result.reason);
@@ -2981,7 +2966,6 @@ const regressions: Regression[] = [
           POST_IMAGE_DIFF_EVIDENCE,
           "```",
         ].join("\n"),
-        caller: "codex",
         attachmentsPresent: false,
       });
       assert.equal(
@@ -3092,7 +3076,10 @@ const regressions: Regression[] = [
       const result = await orchestrator.runUntilUnanimous({
         task: "Verify that an internal terminal state is not overwritten by the outer loop.",
         initial_draft: "FORCE_NOT_READY",
-        caller: "operator",
+        // v07.00.00: was `caller: "operator"`, which skipped auto-recusal. A peer
+        // OUTSIDE this panel keeps the reviewer set identical to what the case
+        // was written against, instead of silently shrinking it.
+        caller: "gemini",
         lead_peer: "claude",
         peers: ["claude", "codex"],
         max_rounds: 1,

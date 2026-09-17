@@ -34,6 +34,20 @@
 // (caller != lead_peer != reviewer).
 // Adapter at `peers/perplexity.ts` reuses the shared `loadOpenAICtor`
 // helper introduced in v2.27.1.
+// The runtime half of `caller: PeerId`. That annotation is erased in the
+// shipped JavaScript, so every PUBLIC boundary that accepts a caller has to
+// check it: a plain JS consumer of dist/ can pass undefined, or the retired
+// "operator", and persist a session no owner can ever claim. It lives here,
+// beside PEERS, because the boundaries that need it are in different modules
+// and a second copy would be a second rule.
+export function assertCallerIsPeer(site: string, caller: unknown): asserts caller is PeerId {
+  if (typeof caller !== "string" || !(PEERS as readonly string[]).includes(caller)) {
+    throw new Error(
+      `caller_required: ${site} requires \`caller\` to be one of ${PEERS.join(", ")}; received ${JSON.stringify(caller)}.`,
+    );
+  }
+}
+
 export const PEERS = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"] as const;
 export type PeerId = (typeof PEERS)[number];
 
@@ -484,6 +498,13 @@ export interface InFlightRound {
 export interface ConvergenceScope {
   // Petitioner/impetrante: the caller that submitted the case. This is
   // the canonical actor for the self-review prohibition.
+  //
+  // v07.00.00: the union deliberately still admits "operator" even though no
+  // caller can present that identity any more. This type describes bytes
+  // PERSISTED on disk, and sessions written before this release carry it. The
+  // records are not rewritten; instead the value yields no derivable owner at
+  // the authority check, so such a session takes the `session_owner_unverified`
+  // path. Narrowing this union would make those files fail to parse.
   petitioner?: PeerId | "operator" | undefined;
   caller: PeerId | "operator";
   // Actor currently presenting the draft/status for this round. In
@@ -498,7 +519,7 @@ export interface ConvergenceScope {
   // v3.5.0 (CRV2-3-meta, Codex operational report): explicit relator
   // semantics. The lead_peer is the lottery-selected relator that
   // authors/revises the artifact under review; it is DELIBERATELY
-  // excluded from `reviewer_peers` (the voting colegiado) because
+  // excluded from `reviewer_peers` (the voting panel) because
   // voting on its own revision would violate the anti-self-review HARD
   // GATE. These fields make that intentional exclusion explicit in the
   // durable record so it is not misread as a missing-vote bug.
@@ -506,7 +527,7 @@ export interface ConvergenceScope {
   // `quorum_basis` documents the convergence rule; the exclusion reason
   // is a fixed constant. Populated only when `lead_peer` is set
   // (ship-mode relator lottery); absent on direct ask_peers / review /
-  // circular sessions where there is no relator-vs-colegiado split.
+  // circular sessions where there is no relator-vs-panel split.
   lead_peer_role?: "relator_non_voting" | undefined;
   voting_peers?: PeerId[] | undefined;
   quorum_basis?: "all_non_lead_panel_peers_ready" | "all_panel_peers_ready" | undefined;
@@ -591,7 +612,9 @@ export interface ResolvedEvidenceAttachment {
   // Integrity and authority are deliberately separate. `verified` above
   // means the persisted bytes still match their custody digest; it does not
   // mean a human operator vouched for caller-supplied content.
-  authority_status: "operator_verified" | "caller_submitted_unverified" | "legacy_unverified";
+  // v07.00.00: computed on read, never parsed from disk, so the retired
+  // "operator_verified" member is dead rather than legacy-bearing.
+  authority_status: "caller_submitted_unverified" | "legacy_unverified";
   content_type?: string | undefined;
   sha256?: string | undefined;
   attached_by?: PeerId | "operator" | undefined;
@@ -611,14 +634,16 @@ export interface ResolvedEvidenceAttachment {
 // the runtime marks it "not_resurfaced" (v3.5.0 / CRV2-2 — NOT
 // "addressed"; non-resurfacing is not proof of satisfaction). "addressed"
 // is reserved for a judge verified-satisfied decision or a strictly grounded
-// READY/verified recheck by the same peer that authored the ask. The
-// operator can move items to terminal states via
-// session_evidence_checklist_update. Conflict rule: when a peer
-// resurfaces a "not_resurfaced" OR "addressed" item it reverts to "open"
-// — the peer's renewed ask wins over either inference path. Terminal
-// operator statuses are NOT auto-reverted; the runtime emits a
-// peer_resurfaced_terminal event so the operator notices peers still
-// asking for something they explicitly closed.
+// READY/verified recheck by the same peer that authored the ask.
+// v07.00.00: the terminal statuses satisfied/deferred/rejected can no
+// longer be set by any caller — the tool that wrote them belonged to the
+// retired operator identity and went with it. They survive in the type
+// because sessions persisted before that release still carry them.
+// Conflict rule: when a peer resurfaces a "not_resurfaced" OR "addressed"
+// item it reverts to "open" — the peer's renewed ask wins over either
+// inference path. A persisted terminal status is NOT auto-reverted; the
+// runtime emits a peer_resurfaced_terminal event when peers keep asking
+// for something that record closed.
 // v3.5.0 (CRV2-2, Codex operational report): `not_resurfaced` is a
 // distinct soft state. Pre-v3.5.0 the runtime promoted an `open` item
 // to `addressed` whenever a round went by without the peer resurfacing
@@ -627,8 +652,8 @@ export interface ResolvedEvidenceAttachment {
 // `not_resurfaced` now carries that inference honestly: it is NOT
 // `open` and it is NOT `addressed`; both `open` and `not_resurfaced` block
 // convergence. `addressed` is reserved for judge verified-satisfied or
-// requester-reverified promotions, while explicit operator actions use the
-// terminal satisfied/deferred/rejected states.
+// requester-reverified promotions; the terminal satisfied/deferred/rejected
+// states are now read-only history.
 // prettier-ignore
 export type EvidenceChecklistStatus =
   | "open"
@@ -692,9 +717,9 @@ export interface EvidenceBrokerLimits {
 }
 
 // v2.8.0: durable audit trail for every status transition on an
-// evidence checklist item. The runtime appends an entry on every
-// auto-transition (resurfacing inference) and on every operator
-// call to session_evidence_checklist_update.
+// evidence checklist item. v07.00.00: the runtime auto-transition
+// (resurfacing inference) is the only remaining writer — the tool that
+// wrote caller-driven transitions was removed with the operator identity.
 export interface EvidenceStatusHistoryEntry {
   ts: string;
   item_id: string;
@@ -753,12 +778,6 @@ export interface GenerationArtifact {
   latency_ms?: number | undefined;
   unpriced_attempts?: number | undefined;
   indeterminate_spend_attempts?: number | undefined;
-}
-
-export interface OperatorEscalation {
-  ts: string;
-  reason: string;
-  severity: "info" | "warning" | "critical";
 }
 
 export interface PreflightCheckRecord {
@@ -901,9 +920,11 @@ export interface PeerCallContext {
   max_output_tokens_override?: number | undefined;
   // v2.21.0 (caching): caller identity plumbed to the adapter so
   // OpenAI/Grok adapters can build a pair-scoped prompt_cache_key
-  // (peer:caller:vN). Defaults to "operator" when omitted by the
-  // orchestrator (preserves pre-v2.21.0 caller-less calls).
-  caller?: PeerId | "operator" | undefined;
+  // (peer:caller:vN). v07.00.00: the union no longer admits "operator".
+  // When it is absent the pair cannot be named, so the adapters send NO
+  // `prompt_cache_key` rather than an unscoped one — an unscoped key would
+  // pool unrelated petitioners into one provider-side bucket.
+  caller?: PeerId | undefined;
 }
 
 export interface PeerProbeResult {
@@ -966,7 +987,8 @@ export interface RuntimeEventDataByType {
     attached_by: PeerId | "operator";
     attached_at: string;
     origin: EvidenceAttachmentOrigin;
-    authority_status?: "operator_verified" | "caller_submitted_unverified" | undefined;
+    // v07.00.00: the emitter hardcodes the surviving value.
+    authority_status?: "caller_submitted_unverified" | undefined;
   };
   "session.caller_evidence_submission_activated": {
     submission_id: string;
@@ -1047,10 +1069,10 @@ export interface SessionMeta {
   evidence_checklist_runtime_reclassifications?: EvidenceChecklistRuntimeReclassificationLog;
   evidence_checklist_alias_collapses?: EvidenceChecklistAliasCollapse[] | undefined;
   // v2.8.0: durable audit trail for every status transition on an
-  // evidence checklist item (auto + operator). Newest entries appended.
+  // evidence checklist item (runtime auto-transitions only, since
+  // v07.00.00). Newest entries appended.
   evidence_status_history?: EvidenceStatusHistoryEntry[] | undefined;
   generation_files?: GenerationArtifact[] | undefined;
-  operator_escalations?: OperatorEscalation[] | undefined;
   preflight_checks?: PreflightCheckRecord[] | undefined;
   control?: SessionControl | undefined;
   fallback_events?: FallbackEvent[] | undefined;
@@ -1059,9 +1081,9 @@ export interface SessionMeta {
     usage: TokenUsage;
     cost: CostEstimate;
   };
-  // v2.14.0 (item 4): tribunal-colegiado contestation chain. Per the
+  // v2.14.0 (item 4): tribunal-panel contestation chain. Per the
   // memory `project_cross_review_v2_tribunal_colegiado_model.md`:
-  // caller READY = acata; caller NOT_READY = contesta → novo ciclo.
+  // caller READY = accepts; caller NOT_READY = contests → new cycle.
   // When this session was contested by the caller, the runtime
   // populates `contestation`; when a new session was initialized to
   // re-deliberate a previous session, the new session's

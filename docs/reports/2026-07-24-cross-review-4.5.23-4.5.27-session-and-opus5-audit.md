@@ -1,159 +1,157 @@
-# Auditoria técnica do cross-review 4.5.23–4.5.27 e preparação para Claude Opus 5
+# Technical audit of cross-review 4.5.23–4.5.27 and preparation for Claude Opus 5
 
-Data da auditoria: 24 de julho de 2026  
-Versão publicada carregada durante a análise: 4.5.27  
-Versão corretiva final preparada: 4.5.29
-Nota de release: a tag imutável 4.5.28 não foi publicada; o gate detectou a
-GHSA-mh99-v99m-4gvg, divulgada durante a entrega, e exigiu 4.5.29 com
+Audit date: 24 July 2026  
+Published version loaded during the analysis: 4.5.27  
+Final corrective version prepared: 4.5.29
+Release note: the immutable tag 4.5.28 was not published; the gate detected
+GHSA-mh99-v99m-4gvg, disclosed during the delivery, and required 4.5.29 with
 `brace-expansion` 5.0.8.
 
-## 1. Resumo executivo
+## 1. Executive summary
 
-Foram auditadas todas as sessões duráveis identificadas como originadas pelas
-versões 4.5.23 a 4.5.27, bem como seus eventos e os logs recentes disponíveis.
-A análise confirmou cinco classes principais de defeito:
+Every durable session identified as originating from versions 4.5.23 to 4.5.27
+was audited, along with their events and the recent logs available. The analysis
+confirmed five principal defect classes:
 
-1. recuperação incompleta de sessões interrompidas, incluindo falsos estados
-   `running`, PID reciclado e job durável órfão;
-2. crescimento ilimitado do Evidence Broker, capaz de amplificar prompts,
-   tokens e custo a cada rodada;
-3. falso positivo do `truthfulness_preflight` sobre uma condição futura;
-4. identificadores de checklist emitidos pelo próprio servidor classificados
-   como possíveis evidências fabricadas;
-5. diagnóstico agregado insuficiente quando o grounding de uma alegação falha
-   contra um de dois corpora distintos.
+1. incomplete recovery of interrupted sessions, including false `running`
+   states, a recycled PID and an orphaned durable job;
+2. unbounded growth of the Evidence Broker, able to amplify prompts, tokens and
+   cost with every round;
+3. a `truthfulness_preflight` false positive on a future condition;
+4. checklist identifiers issued by the server itself classified as possibly
+   fabricated evidence;
+5. insufficient aggregate diagnostics when the grounding of a claim fails
+   against one of two distinct corpora.
 
-Também foi identificada uma oportunidade operacional comprovada:
-`session_events` devolvia eventos sem limite de página e incluía, por padrão,
-telemetria granular de tokens que representou 59,1% dos registros nos logs
-recentes analisados.
+A proven operational opportunity was also identified: `session_events` returned
+events with no page limit and included, by default, granular token telemetry
+that accounted for 59.1% of the records in the recent logs analysed.
 
-O worktree 4.5.28 contém correções direcionadas para essas classes:
+The 4.5.28 worktree contains targeted fixes for those classes:
 
-- recuperação automática e coerente de sessão, controle, saúde, contabilização
-  e job após reinício;
-- validação da data de início do processo para detectar PID reciclado;
-- circuit breaker fail-closed e admissão atômica para o Evidence Broker;
-- tratamento correto de condições temporais futuras;
-- incorporação dos IDs de checklist emitidos pelo servidor ao corpus de
-  proveniência;
-- diagnóstico por alegação e por corpus;
-- paginação e filtragem de `session_events`;
-- proteção reforçada do arquivo local de caller tokens.
+- automatic, coherent recovery of session, control, health, accounting and job
+  after a restart;
+- validation of the process start date to detect a recycled PID;
+- a fail-closed circuit breaker and atomic admission for the Evidence Broker;
+- correct handling of future temporal conditions;
+- incorporation of the server-issued checklist IDs into the provenance corpus;
+- per-claim and per-corpus diagnostics;
+- pagination and filtering for `session_events`;
+- hardened protection of the local caller-token file.
 
-O adaptador Anthropic também foi preparado para `claude-opus-5` como override
-explícito do operador. O modelo ativo permanece `claude-fable-5`; Opus 5 não foi
-introduzido como fallback automático. A alteração inclui request wire,
-classificação de recusas, limites de cache, SDK e tabela de custos.
+The Anthropic adapter was also prepared for `claude-opus-5` as an explicit
+operator override. The active model stays `claude-fable-5`; Opus 5 was not
+introduced as an automatic fallback. The change covers the request wire, refusal
+classification, cache limits, the SDK and the cost table.
 
-O achado de segurança mais importante é residual: a DACL protegida reduz a
-exposição do arquivo `host-tokens.json` a grupos herdados, mas não isola dois
-processos irrestritos executados sob o mesmo SID. Para esse threat model, a
-solução definitiva exige verifiers persistidos pelo servidor e distribuição de
-cada segredo bruto exclusivamente ao respectivo host, com o token de operador
-mantido em vault ou identidade de sistema operacional separada.
+The most important security finding is residual: the hardened DACL reduces the
+exposure of `host-tokens.json` to inherited groups, but it does not isolate two
+unrestricted processes running under the same SID. For that threat model, the
+definitive solution requires server-persisted verifiers and the distribution of
+each raw secret exclusively to its own host, with the operator token kept in a
+vault or a separate operating-system identity.
 
-## 2. Escopo e metodologia
+## 2. Scope and methodology
 
-### 2.1 Escopo temporal
+### 2.1 Temporal scope
 
-O corpus foi selecionado pela versão de runtime persistida em cada sessão:
+The corpus was selected by the runtime version persisted in each session:
 
-| Versão | Sessões |
-| ------ | ------: |
-| 4.5.23 |       5 |
-| 4.5.24 |       0 |
-| 4.5.25 |      26 |
-| 4.5.26 |      15 |
-| 4.5.27 |       0 |
-| Total  |      46 |
+| Version | Sessions |
+| ------- | -------: |
+| 4.5.23  |        5 |
+| 4.5.24  |        0 |
+| 4.5.25  |       26 |
+| 4.5.26  |       15 |
+| 4.5.27  |        0 |
+| Total   |       46 |
 
-A ausência de sessões 4.5.24 e 4.5.27 no armazenamento auditado não autoriza
-inferir ausência de uso em outros hosts; significa apenas que não havia sessão
-durável dessas versões no corpus local disponível.
+The absence of 4.5.24 and 4.5.27 sessions in the audited storage does not
+authorize inferring they went unused on other hosts; it only means there was no
+durable session of those versions in the local corpus available.
 
-### 2.2 Fontes examinadas
+### 2.2 Sources examined
 
-A auditoria considerou:
+The audit considered:
 
-- `meta.json`, rounds, prompts, respostas e relatórios duráveis das 46 sessões;
-- eventos sequenciais persistidos por sessão;
-- 11 arquivos de log recentes disponíveis;
-- estado de controle, saúde, contabilização, reservas de provedor e jobs
-  duráveis;
-- transformações de status raw, parsed e normalized;
-- escopo de convergência, identidade declarada e identidade verificada;
-- referências e textos de evidência persistidos;
-- configuração, adaptadores e regressões presentes no worktree 4.5.28.
+- `meta.json`, rounds, prompts, responses and durable reports of the 46
+  sessions;
+- the sequential events persisted per session;
+- the 11 recent log files available;
+- control, health, accounting, provider reservations and durable job state;
+- raw, parsed and normalized status transformations;
+- convergence scope, declared identity and verified identity;
+- persisted evidence references and texts;
+- the configuration, adapters and regressions present in the 4.5.28 worktree.
 
-Foram inspecionados 1.403 arquivos de sessão e log. A análise forense foi
-somente leitura: não abriu sessões novas e não chamou provedores pagos.
+1,403 session and log files were inspected. The forensic analysis was read-only:
+it opened no new sessions and called no paid providers.
 
-### 2.3 Critério de classificação
+### 2.3 Classification criterion
 
-Um comportamento foi classificado como bug comprovado apenas quando havia
-estado persistido reproduzível, incompatibilidade direta entre invariantes do
-runtime ou replay determinístico da regra. Relatos externos sem a sessão exata
-foram mantidos como hipóteses de investigação, não convertidos em conclusão.
+A behaviour was classified as a proven bug only when there was reproducible
+persisted state, a direct incompatibility between runtime invariants, or a
+deterministic replay of the rule. External reports without the exact session
+were kept as investigation hypotheses, not converted into a conclusion.
 
-As correções do worktree foram avaliadas pelo contrato observável que
-implementam. A seção de validação distingue:
+The worktree's fixes were evaluated by the observable contract they implement.
+The validation section distinguishes:
 
-- teste direcionado já executado no momento da alteração;
-- inspeção estática do worktree;
-- validação integrada ainda pendente;
-- CI, publicação e runtime pós-reload ainda pendentes.
+- a targeted test already run at the time of the change;
+- static inspection of the worktree;
+- integrated validation still pending;
+- CI, publication and post-reload runtime still pending.
 
-## 3. Caracterização do corpus
+## 3. Characterizing the corpus
 
-### 3.1 Volume e custo
+### 3.1 Volume and cost
 
-| Métrica                         |       Resultado |
-| ------------------------------- | --------------: |
-| Sessões                         |              46 |
-| Rounds                          |              95 |
-| Tokens contabilizados           |       6.080.046 |
-| Custo contabilizado             | US$ 54,67147309 |
-| Eventos duráveis de sessão      |           4.439 |
-| Eventos nos 11 logs recentes    |           3.983 |
-| JSON inválido                   |               0 |
-| Lacunas de sequência detectadas |               0 |
+| Metric                       |          Result |
+| ---------------------------- | --------------: |
+| Sessions                     |              46 |
+| Rounds                       |              95 |
+| Tokens accounted             |       6,080,046 |
+| Cost accounted               | USD 54.67147309 |
+| Durable session events       |           4,439 |
+| Events in the 11 recent logs |           3,983 |
+| Invalid JSON                 |               0 |
+| Sequence gaps detected       |               0 |
 
 ### 3.2 Outcomes
 
-| Outcome observado | Sessões |
-| ----------------- | ------: |
-| Convergidas       |       6 |
-| Limite de rounds  |      20 |
-| Abortadas         |      18 |
-| Abertas           |       2 |
+| Outcome observed | Sessions |
+| ---------------- | -------: |
+| Converged        |        6 |
+| Round limit      |       20 |
+| Aborted          |       18 |
+| Open             |        2 |
 
-A baixa taxa de convergência no corpus não prova, isoladamente, defeito no gate.
-Ela combina interrupções, limites de rounds, exigências legítimas de evidência e
-defeitos específicos detalhados neste relatório.
+The corpus's low convergence rate does not, on its own, prove a gate defect. It
+combines interruptions, round limits, legitimate evidence demands and the
+specific defects detailed in this report.
 
-### 3.3 Transformações de status
+### 3.3 Status transformations
 
-Foram examinadas 274 respostas de peers:
+274 peer responses were examined:
 
-| Status raw e destino                             | Quantidade |
-| ------------------------------------------------ | ---------: |
-| `READY` preservado                               |        118 |
-| `READY` rebaixado                                |         61 |
-| `NEEDS_EVIDENCE` preservado                      |         77 |
-| `NOT_READY` rebaixado por grounding insuficiente |         18 |
+| Raw status and destination                     | Count |
+| ---------------------------------------------- | ----: |
+| `READY` preserved                              |   118 |
+| `READY` demoted                                |    61 |
+| `NEEDS_EVIDENCE` preserved                     |    77 |
+| `NOT_READY` demoted for insufficient grounding |    18 |
 
-Dos 179 votos raw `READY`, 34,1% foram rebaixados. Esse número demonstra custo e
-atrito relevantes, mas não autoriza presumir que todos os rebaixamentos eram
-falsos positivos. A auditoria separou os casos comprovadamente incorretos das
-aplicações conservadoras deliberadas do contrato.
+Of the 179 raw `READY` votes, 34.1% were demoted. That number demonstrates real
+cost and friction, but it does not authorize presuming every demotion was a
+false positive. The audit separated the demonstrably incorrect cases from
+deliberate conservative applications of the contract.
 
-## 4. Contrato oficial do Claude Opus 5
+## 4. Claude Opus 5's official contract
 
-### 4.1 Fontes oficiais utilizadas
+### 4.1 Official sources used
 
-O contrato foi derivado exclusivamente da documentação oficial da Anthropic e
-do release oficial do SDK:
+The contract was derived exclusively from Anthropic's official documentation and
+the SDK's official release:
 
 - [What's new in Claude Opus 5](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5)
 - [Claude model migration guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide)
@@ -163,26 +161,27 @@ do release oficial do SDK:
 - [Refusals and fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback)
 - [Anthropic TypeScript SDK 0.115.0](https://github.com/anthropics/anthropic-sdk-typescript/releases/tag/sdk-v0.115.0)
 
-Comportamentos observados em sessão não foram usados como substitutos de
-contrato de API.
+Behaviours observed in a session were not used as substitutes for the API
+contract.
 
-### 4.2 Identidade e limites
+### 4.2 Identity and limits
 
-- ID fixo e sem data: `claude-opus-5`;
-- janela de contexto de entrada: 1 milhão de tokens;
-- saída síncrona máxima: 128 mil tokens;
-- thinking ativado por padrão;
-- thinking adaptativo explícito continua válido;
-- escala nativa de effort: `low`, `medium`, `high`, `xhigh` e `max`;
-- effort padrão: `high`;
-- a documentação exemplifica `max_tokens=64000` para `xhigh` ou `max`.
+- fixed, undated ID: `claude-opus-5`;
+- input context window: 1 million tokens;
+- maximum synchronous output: 128 thousand tokens;
+- thinking enabled by default;
+- explicit adaptive thinking still valid;
+- native effort scale: `low`, `medium`, `high`, `xhigh` and `max`;
+- default effort: `high`;
+- the documentation gives `max_tokens=64000` as an example for `xhigh` or `max`.
 
-O orçamento de saída Claude já mantido pelo cross-review, 64.000 tokens, é
-compatível com a recomendação oficial e fica abaixo do teto síncrono.
+The Claude output budget cross-review already keeps, 64,000 tokens, is
+compatible with the official recommendation and sits below the synchronous
+ceiling.
 
 ### 4.3 Request wire
 
-Para Opus 5, o request preparado usa:
+For Opus 5, the prepared request uses:
 
 ```json
 {
@@ -198,416 +197,412 @@ Para Opus 5, o request preparado usa:
 }
 ```
 
-O adaptador não envia:
+The adapter does not send:
 
 - `thinking={type:"enabled",budget_tokens:...}`;
 - `temperature`;
 - `top_p`;
 - `top_k`.
 
-Isso evita combinar Opus 5 com formas de thinking manual e amostragem
-não-default que a família nova não aceita. `thinking=disabled` não é utilizado
-com `xhigh` ou `max`, combinação que resulta em erro HTTP 400.
+That avoids combining Opus 5 with manual thinking forms and non-default sampling
+that the new family does not accept. `thinking=disabled` is not used with
+`xhigh` or `max`, a combination that results in an HTTP 400 error.
 
-### 4.4 Recusas
+### 4.4 Refusals
 
-Fable 5 e Opus 5 podem retornar uma recusa como resposta HTTP 200 com
-`stop_reason="refusal"`. O runtime:
+Fable 5 and Opus 5 may return a refusal as an HTTP 200 response with
+`stop_reason="refusal"`. The runtime:
 
-- descarta conteúdo parcial da recusa;
-- registra `provider_refusal` como falha não ignorável;
-- trata a recusa anterior a qualquer output como não faturada;
-- preserva a contabilização de input e output quando a recusa ocorre no meio da
-  geração.
+- discards the refusal's partial content;
+- records `provider_refusal` as a non-ignorable failure;
+- treats a refusal preceding any output as unbilled;
+- preserves input and output accounting when the refusal happens mid-generation.
 
-As mensagens e a classificação deixaram de ser específicas a Fable para cobrir
-ambos os modelos sem inferir downgrade automático.
+The messages and the classification stopped being Fable-specific so as to cover
+both models without inferring an automatic downgrade.
 
-### 4.5 Cache e custos
+### 4.5 Cache and costs
 
-Valores oficiais por milhão de tokens:
+Official values per million tokens:
 
-| Item Opus 5                |   US$ |
+| Opus 5 item                |   USD |
 | -------------------------- | ----: |
-| Input                      |  5,00 |
-| Output                     | 25,00 |
-| Cache read                 |  0,50 |
-| Cache write, TTL 5 minutos |  6,25 |
-| Cache write, TTL 1 hora    | 10,00 |
+| Input                      |  5.00 |
+| Output                     | 25.00 |
+| Cache read                 |  0.50 |
+| Cache write, TTL 5 minutes |  6.25 |
+| Cache write, TTL 1 hour    | 10.00 |
 
-O mínimo documentado do prefixo cacheável é 512 tokens. O adaptador agora usa
-limite por modelo:
+The documented minimum cacheable prefix is 512 tokens. The adapter now uses a
+per-model limit:
 
 - Fable 5: 512 tokens;
 - Opus 5: 512 tokens;
-- Opus 4.8: 1.024 tokens;
-- modelo Anthropic desconhecido: fallback conservador de 4.096 tokens.
+- Opus 4.8: 1,024 tokens;
+- unknown Anthropic model: a conservative fallback of 4,096 tokens.
 
-A configuração central adicionada para o override Opus 5 usa o TTL de uma hora,
-portanto `cache_write_per_million=10`. Fable 5 continua ativo com seus custos
-próprios.
+The central configuration added for the Opus 5 override uses the one-hour TTL,
+hence `cache_write_per_million=10`. Fable 5 stays active with its own costs.
 
-### 4.6 Restrições de produto
+### 4.6 Product restrictions
 
-Segundo a documentação oficial considerada:
+Per the official documentation considered:
 
-- Opus 5 não oferece Priority Tier;
-- Opus 5 não oferece web fetch.
+- Opus 5 offers no Priority Tier;
+- Opus 5 offers no web fetch.
 
-O cross-review não tenta habilitar essas capacidades para o modelo.
+cross-review does not try to enable those capabilities for the model.
 
-### 4.7 Decisão de integração
+### 4.7 Integration decision
 
-`claude-opus-5` foi adicionado à lista de overrides Anthropic suportados, sem
-alterar a prioridade canônica:
+`claude-opus-5` was added to the list of supported Anthropic overrides, without
+changing the canonical priority:
 
-- ativo por padrão: `claude-fable-5`;
-- override futuro permitido: `claude-opus-5`;
-- compatibilidade preservada: `claude-opus-4-8`;
-- fallbacks automáticos: nenhum.
+- active by default: `claude-fable-5`;
+- future override permitted: `claude-opus-5`;
+- compatibility preserved: `claude-opus-4-8`;
+- automatic fallbacks: none.
 
-O SDK `@anthropic-ai/sdk` foi elevado de `^0.114.0` para `^0.115.0`, versão que
-inclui suporte a Opus 5 e correção de limpeza de listener de abort.
+The `@anthropic-ai/sdk` SDK was raised from `^0.114.0` to `^0.115.0`, the version
+that includes Opus 5 support and a fix for abort-listener cleanup.
 
-## 5. Bugs comprovados e correções preparadas para 4.5.28
+## 5. Proven bugs and fixes prepared for 4.5.28
 
-### 5.1 P1 — sessão interrompida permanecia falsamente `running`
+### 5.1 P1 — an interrupted session stayed falsely `running`
 
-#### Evidência
+#### Evidence
 
-Na sessão `fef6f09e-8991-4950-93f2-f6d643e3ac0e`, criada pela 4.5.26, round 8:
+In session `fef6f09e-8991-4950-93f2-f6d643e3ac0e`, created by 4.5.26, round 8:
 
-- o sweep removeu corretamente `in_flight`;
-- custos exatos de Gemini e Grok foram preservados;
-- três chamadas interrompidas sem resultado permaneceram
-  `unknown/unpriced`;
-- `convergence_health`, `control` e o job `a836...` permaneceram `running`;
-- o PID 328 já não representava o processo original.
+- the sweep correctly removed `in_flight`;
+- Gemini's and Grok's exact costs were preserved;
+- three interrupted calls with no result stayed `unknown/unpriced`;
+- `convergence_health`, `control` and job `a836...` stayed `running`;
+- PID 328 no longer represented the original process.
 
-A sessão `6f51a9d6-34b0-4b77-a636-cea82c4401fa`, 4.5.25, apresentava a mesma
-classe com uma geração Grok órfã. Nesse caso, o PID persistido havia sido
-reutilizado por outro processo, de modo que uma verificação baseada apenas em
-existência do PID produzia falso positivo de liveness.
+Session `6f51a9d6-34b0-4b77-a636-cea82c4401fa`, 4.5.25, showed the same class
+with an orphaned Grok generation. There, the persisted PID had been reused by
+another process, so a check based only on the PID's existence produced a
+liveness false positive.
 
-#### Causa
+#### Cause
 
-`clearStaleInFlight()` reconciliava `in_flight` e contabilização, mas não
-transicionava de forma coerente:
+`clearStaleInFlight()` reconciled `in_flight` and accounting, but did not
+coherently transition:
 
-- controle;
-- saúde de convergência;
-- job em background;
-- evento de recuperação;
-- relatório durável.
+- control;
+- convergence health;
+- the background job;
+- the recovery event;
+- the durable report.
 
-`recoverInterruptedSessions()` continha parte da transição correta, mas dependia
-de uma ferramenta operator-only e não era executado automaticamente no startup.
-A verificação de processo não comparava a data de início do processo com a data
-persistida no marker.
+`recoverInterruptedSessions()` contained part of the correct transition, but
+depended on an operator-only tool and was not run automatically at startup. The
+process check did not compare the process's start date with the date persisted
+in the marker.
 
-#### Correção 4.5.28
+#### 4.5.28 fix
 
-- recuperação completa no startup antes do sweep de fallback;
-- comparação do início do processo com o marker para detectar PID reciclado;
-- transição de `control` para `recovered_after_restart`;
-- job órfão para `failed` ou `cancelled`, conforme o estado anterior;
-- saúde convergente atualizada para estado stale/recuperado;
-- preservação da contabilização conhecida e do estado `unknown` para chamadas
-  interrompidas sem resultado;
-- evento e relatório regenerados.
+- complete recovery at startup, before the fallback sweep;
+- comparison of the process start against the marker to detect a recycled PID;
+- transition of `control` to `recovered_after_restart`;
+- an orphaned job to `failed` or `cancelled`, depending on the previous state;
+- convergence health updated to a stale/recovered state;
+- preservation of known accounting and of the `unknown` state for interrupted
+  calls with no result;
+- event and report regenerated.
 
-### 5.2 P1 — job durável permanecia `running` após sessão terminal
+### 5.2 P1 — a durable job stayed `running` after a terminal session
 
-#### Evidência
+#### Evidence
 
-A sessão `1ce5e743-e3d6-4d0d-a2c1-276bc84aad85` terminou `aborted`, mas o job
-`2dab...` continuou persistido como `running`.
+Session `1ce5e743-e3d6-4d0d-a2c1-276bc84aad85` ended `aborted`, but job `2dab...`
+remained persisted as `running`.
 
-#### Causa
+#### Cause
 
-`reconcileObservedJobs()` não encerrava um job órfão quando:
+`reconcileObservedJobs()` did not terminate an orphaned job when:
 
-- `session.outcome` já era terminal;
-- não havia execução durável local correspondente;
-- não havia controle ativo que justificasse o estado.
+- `session.outcome` was already terminal;
+- there was no matching local durable execution;
+- there was no active control justifying the state.
 
-#### Correção 4.5.28
+#### 4.5.28 fix
 
-O reconciliador agora encerra job órfão de sessão terminal ou sem execução
-durável, preservando jobs locais realmente ativos e execuções pendentes válidas.
+The reconciler now terminates an orphaned job belonging to a terminal session or
+having no durable execution, while preserving genuinely active local jobs and
+valid pending executions.
 
-### 5.3 P1 operacional/P2 segurança — amplificação ilimitada do Evidence Broker
+### 5.3 P1 operational / P2 security — unbounded Evidence Broker amplification
 
-#### Evidência
+#### Evidence
 
-Na sessão `1ce5e743-e3d6-4d0d-a2c1-276bc84aad85`:
+In session `1ce5e743-e3d6-4d0d-a2c1-276bc84aad85`:
 
-- foram acumulados 142 itens de checklist;
-- 116 terminaram `not_resurfaced`;
-- `meta.json` atingiu aproximadamente 619,5 KiB;
-- a sessão consumiu 889.187 tokens;
-- o custo foi US$ 5,39668585;
-- todos os itens não resolvidos voltavam a ser injetados nos prompts
-  subsequentes.
+- 142 checklist items accumulated;
+- 116 ended `not_resurfaced`;
+- `meta.json` reached roughly 619.5 KiB;
+- the session consumed 889,187 tokens;
+- the cost was USD 5.39668585;
+- every unresolved item was injected again into the subsequent prompts.
 
-O runtime não impunha limite:
+The runtime imposed no limit:
 
-- por peer e round;
-- global por round;
-- por sessão;
-- por caracteres persistidos.
+- per peer and round;
+- global per round;
+- per session;
+- per persisted character.
 
-Um peer hostil, defeituoso ou apenas excessivamente prolixo podia causar
-denial-of-wallet sem precisar comprometer um provedor ou o host.
+A hostile, defective or merely over-verbose peer could cause denial-of-wallet
+without needing to compromise a provider or the host.
 
-#### Correção 4.5.28
+#### 4.5.28 fix
 
-Foram introduzidos limites configuráveis:
+Configurable limits were introduced:
 
-| Limite                   | Default |
+| Limit                    | Default |
 | ------------------------ | ------: |
-| Pedidos por peer/round   |       8 |
-| Pedidos totais por round |      24 |
-| Itens por sessão         |      64 |
-| Caracteres por sessão    |  64.000 |
+| Requests per peer/round  |       8 |
+| Total requests per round |      24 |
+| Items per session        |      64 |
+| Characters per session   |  64,000 |
 
-O contrato é fail-closed:
+The contract is fail-closed:
 
-- duplicatas exatas do mesmo owner são deduplicadas;
-- a admissão é atômica;
-- excesso não causa truncamento silencioso;
-- nenhum blocker é auto-satisfeito;
-- nenhum lote parcial é anexado;
-- a resposta completa dos peers permanece no round para auditoria;
-- checklist legado já excessivo é interrompido antes de novo dispatch pago;
-- excesso criado no round interrompe a sessão antes de juiz automático ou round
-  adicional;
-- evento `session.evidence_checklist_circuit_breaker_tripped` registra fase,
-  limites, chamadas já iniciadas e ausência de mutação parcial;
-- outcome formal: `evidence_checklist_contract_violation`.
+- exact duplicates from the same owner are deduplicated;
+- admission is atomic;
+- excess does not cause silent truncation;
+- no blocker is auto-satisfied;
+- no partial batch is appended;
+- the peers' complete response stays in the round for audit;
+- a legacy checklist that is already excessive is stopped before any new paid
+  dispatch;
+- excess created in the round stops the session before an automatic judge or an
+  additional round;
+- the event `session.evidence_checklist_circuit_breaker_tripped` records the
+  phase, the limits, the calls already started and the absence of partial
+  mutation;
+- formal outcome: `evidence_checklist_contract_violation`.
 
-### 5.4 P2 — condição futura interpretada como alegação de estado corrente
+### 5.4 P2 — a future condition read as a current-state claim
 
-#### Evidência
+#### Evidence
 
-A sessão `108bece7-74d6-47b5-b5b0-44efab05cd5a` foi abortada antes do primeiro
-round por causa do texto:
+Session `108bece7-74d6-47b5-b5b0-44efab05cd5a` was aborted before the first round
+because of the text:
 
 > After merge and exact-head green CI, retry...
 
-O texto descreve pré-requisitos futuros, não afirma que merge e CI verde já
-ocorreram.
+The text describes future prerequisites; it does not assert that the merge and a
+green CI have already happened.
 
-#### Causa
+#### Cause
 
-O detector de estado operacional encontrava termos como `CI` e `green` antes de
-avaliar se pertenciam a uma condição temporal que antecedia uma instrução.
+The operational-state detector found terms such as `CI` and `green` before
+evaluating whether they belonged to a temporal condition preceding an
+instruction.
 
-#### Correção 4.5.28
+#### 4.5.28 fix
 
-O detector remove apenas um preâmbulo temporal inicial para classificar a
-oração principal:
+The detector removes only an initial temporal preamble in order to classify the
+main clause:
 
-- `After merge and exact-head green CI, retry...` permanece instrução futura;
-- `After the merge completed, CI is green.` continua sendo alegação assertiva e
-  falha sem evidência.
+- `After merge and exact-head green CI, retry...` stays a future instruction;
+- `After the merge completed, CI is green.` is still an assertive claim and fails
+  without evidence.
 
-A correção reduz falso positivo sem relaxar a proteção sobre alegações reais de
-runtime.
+The fix reduces false positives without relaxing the protection over real runtime
+claims.
 
-### 5.5 P2 — IDs de checklist do servidor classificados como fabricados
+### 5.5 P2 — the server's checklist IDs classified as fabricated
 
-#### Evidência
+#### Evidence
 
-No replay do round 6 da sessão
-`fef6f09e-8991-4950-93f2-f6d643e3ac0e`, sete IDs hexadecimais referenciados
-pelos peers eram IDs de `Checklist-Item` emitidos pelo próprio servidor. Mesmo
-assim, a detecção encontrou sete novos tokens hexadecimais e marcou
-`fabricated=true`.
+In the replay of round 6 of session `fef6f09e-8991-4950-93f2-f6d643e3ac0e`, seven
+hexadecimal IDs referenced by the peers were `Checklist-Item` IDs issued by the
+server itself. Even so, the detection found seven new hexadecimal tokens and
+marked `fabricated=true`.
 
-#### Causa
+#### Cause
 
-O corpus de proveniência continha anexos e texto de evidência, mas não continha
-os IDs de checklist que o servidor havia inserido no prompt.
+The provenance corpus contained attachments and evidence text, but did not
+contain the checklist IDs the server had inserted into the prompt.
 
-#### Correção 4.5.28
+#### 4.5.28 fix
 
-Os IDs efetivamente emitidos na sessão passam a integrar o corpus de
-proveniência. A regra continua conservadora:
+The IDs actually issued in the session now form part of the provenance corpus.
+The rule stays conservative:
 
-- ID conhecido do servidor não é fabricação;
-- ID semelhante, porém não emitido pelo servidor, continua sujeito à detecção e
-  ao rebaixamento.
+- an ID known to the server is not a fabrication;
+- a similar ID that the server did not issue is still subject to detection and
+  demotion.
 
-### 5.6 P2 — diagnóstico agregado de grounding escondia a alegação que falhou
+### 5.6 P2 — aggregate grounding diagnostics hid which claim failed
 
-#### Evidência
+#### Evidence
 
-No round 1 da sessão `fef6f09e-8991-4950-93f2-f6d643e3ac0e`, Gemini foi
-transformado de raw `READY` para `NEEDS_EVIDENCE`, embora:
+In round 1 of session `fef6f09e-8991-4950-93f2-f6d643e3ac0e`, Gemini was
+transformed from raw `READY` to `NEEDS_EVIDENCE`, even though:
 
-- 5/5 fontes tivessem `supported=true`;
-- custody e attachment estivessem correlacionados;
+- 5/5 sources had `supported=true`;
+- custody and attachment were correlated;
 - `fabricated=false`;
-- o único predicado agregado falho fosse
+- the only failing aggregate predicate was
   `peer_submitted_evidence_corroborated`.
 
-A regra verificava alegações de alto risco contra dois corpora distintos, mas o
-resultado não indicava qual alegação falhara em qual corpus.
+The rule checked high-risk claims against two distinct corpora, but the result
+did not indicate which claim had failed in which corpus.
 
-#### Correção 4.5.28
+#### 4.5.28 fix
 
-`failed_claim_diagnostics` agora persiste:
+`failed_claim_diagnostics` now persists:
 
-- corpus: `caller_evidence` ou `peer_sources`;
-- tipo da alegação;
-- índice;
-- excerpt limitado.
+- the corpus: `caller_evidence` or `peer_sources`;
+- the claim's type;
+- the index;
+- a bounded excerpt.
 
-Os detalhes de fabricação completos também são preservados na transformação de
-status. A correção aumenta auditabilidade sem converter fonte inválida em
-evidência válida.
+The complete fabrication details are also preserved in the status
+transformation. The fix increases auditability without turning an invalid source
+into valid evidence.
 
-### 5.7 P3 operacional — `session_events` sem página útil e com ruído de deltas
+### 5.7 P3 operational — `session_events` with no useful page and with delta noise
 
-#### Evidência
+#### Evidence
 
-Nos 11 logs recentes, 2.354 de 3.983 eventos, ou 59,1%, eram
-`peer.token.delta`. Como os eventos eram devolvidos em conjunto, consultas de
-acompanhamento podiam produzir payloads grandes e truncados.
+In the 11 recent logs, 2,354 of 3,983 events, or 59.1%, were `peer.token.delta`.
+Because the events were returned all together, follow-up queries could produce
+large, truncated payloads.
 
-#### Melhoria 4.5.28
+#### 4.5.28 improvement
 
-`session_events` passa a oferecer:
+`session_events` now offers:
 
-- `limit` padrão 200;
-- `limit` máximo 1.000;
-- `include_token_deltas=false` por padrão;
+- `limit` default 200;
+- `limit` maximum 1,000;
+- `include_token_deltas=false` by default;
 - `next_seq`;
 - `has_more`;
 - `filtered_token_delta_count`.
 
-O operador ainda pode optar pela telemetria granular para investigação de
-streaming, mas o caminho normal fica limitado e incremental.
+The operator can still opt into granular telemetry to investigate streaming, but
+the normal path stays bounded and incremental.
 
-## 6. Segurança e mecanismos anti-enganação
+## 6. Security and anti-deception mechanisms
 
-### 6.1 Controles cuja operação foi confirmada
+### 6.1 Controls whose operation was confirmed
 
-No corpus auditado:
+In the audited corpus:
 
-- 45 escopos de convergência foram examinados sem violação de
-  anti-self-review;
-- nenhum relator `non-voting` apareceu entre os voters;
-- 274 respostas de peers apresentaram zero `model_match=false`;
-- 145 verificações de caller observadas nos logs foram token-verified;
-- uma tentativa de Claude declarar-se `operator` foi bloqueada;
-- duas chamadas operator-only feitas por Codex foram bloqueadas;
-- não foi encontrado padrão de chave Anthropic, OpenAI, Google, xAI,
-  DeepSeek, Perplexity ou GitHub, Bearer token ou PEM;
-- streaming estava com `include_text=false`, persistindo contagem e não o
-  conteúdo dos deltas.
+- 45 convergence scopes were examined with no anti-self-review violation;
+- no `non-voting` relator appeared among the voters;
+- 274 peer responses showed zero `model_match=false`;
+- 145 caller verifications observed in the logs were token-verified;
+- one attempt by Claude to declare itself `operator` was blocked;
+- two operator-only calls made by Codex were blocked;
+- no Anthropic, OpenAI, Google, xAI, DeepSeek, Perplexity or GitHub key pattern,
+  Bearer token or PEM was found;
+- streaming had `include_text=false`, persisting the count and not the deltas'
+  content.
 
-A busca negativa por padrões de segredo reduz a probabilidade de vazamento no
-corpus, mas não constitui prova matemática de ausência de qualquer segredo
-possível.
+The negative search for secret patterns lowers the probability of a leak in the
+corpus, but it does not constitute mathematical proof that no possible secret is
+present.
 
-### 6.2 Grounding conservador deve permanecer
+### 6.2 Conservative grounding must stay
 
-O comportamento all-or-nothing de citações é deliberadamente conservador. No
-round 7 de `fef6...`, Gemini apresentou 2/3 fontes válidas e Grok 9/10, mas os
-votos completos foram rebaixados. Isso cria atrito, porém impedir que uma
-alegação decisiva se apoie no único item inválido é parte da garantia
-anti-enganação.
+The all-or-nothing behaviour of citations is deliberately conservative. In round
+7 of `fef6...`, Gemini presented 2/3 valid sources and Grok 9/10, but the
+complete votes were demoted. That creates friction, yet preventing a decisive
+claim from resting on the single invalid item is part of the anti-deception
+guarantee.
 
-Uma futura correção delta pode preservar itens válidos e pedir reparo somente do
-índice inválido, mas não deve:
+A future delta fix may preserve valid items and ask for repair of only the
+invalid index, but it must not:
 
-- aceitar um voto definitivo com blocker decisivo sem grounding;
-- transformar ausência de correlação em mera advertência;
-- auto-satisfazer checklist;
-- permitir que uma citação válida encubra outra alegação independente e
-  inválida.
+- accept a definitive vote with an ungrounded decisive blocker;
+- turn an absence of correlation into a mere warning;
+- auto-satisfy the checklist;
+- let a valid citation cover for another, independent and invalid claim.
 
-### 6.3 Caller tokens: mitigação aplicada
+### 6.3 Caller tokens: mitigation applied
 
-`host-tokens.json` contém sete capabilities em claro: seis peers e operador.
-No worktree 4.5.28, o runtime falha fechado se não puder proteger o arquivo:
+`host-tokens.json` holds seven capabilities in the clear: six peers and the
+operator. In the 4.5.28 worktree, the runtime fails closed if it cannot protect
+the file:
 
-- POSIX: modo `0600` verificado;
-- Windows: herança NTFS removida e DACL limitada ao usuário atual, SYSTEM e
-  Administrators.
-- arquivos existentes são abertos uma única vez, endurecidos e lidos pelo
-  mesmo descritor; a migração de schema também escreve pelo descritor, após
-  verificar que ele ainda corresponde ao path. Em POSIX, a abertura usa
-  `O_NOFOLLOW`.
+- POSIX: mode `0600` verified;
+- Windows: NTFS inheritance removed and the DACL limited to the current user,
+  SYSTEM and Administrators.
+- existing files are opened once, hardened and read through the same descriptor;
+  the schema migration also writes through the descriptor, after checking that it
+  still matches the path. On POSIX, the open uses `O_NOFOLLOW`.
 
-A ACL do arquivo local efetivamente usado durante a análise foi ajustada para
-esse conjunto, removendo acesso herdado de grupos de sandbox.
+The ACL of the local file actually used during the analysis was adjusted to that
+set, removing inherited access from sandbox groups.
 
-### 6.4 Caller tokens: risco residual
+### 6.4 Caller tokens: residual risk
 
-A mitigação de ACL não separa processos irrestritos executados sob o mesmo SID.
-Se o threat model inclui um host de modelo potencialmente enganoso com acesso
-irrestrito ao filesystem do usuário, esse processo ainda pode ler o mapa de
-tokens em claro.
+The ACL mitigation does not separate unrestricted processes running under the
+same SID. If the threat model includes a potentially deceptive model host with
+unrestricted access to the user's filesystem, that process can still read the
+token map in the clear.
 
-Correção arquitetural recomendada:
+Recommended architectural fix:
 
-1. persistir somente hash/verifier de cada capability no servidor;
-2. fornecer a cada host apenas seu próprio token bruto por secret/env;
-3. manter o token de operador em vault ou identidade de sistema operacional
-   separada;
-4. rotacionar todos os tokens atuais durante a migração;
-5. nunca registrar token bruto, inclusive em erro ou telemetria.
+1. persist only a hash/verifier of each capability on the server;
+2. supply each host only its own raw token, by secret/env;
+3. keep the operator token in a vault or a separate operating-system identity;
+4. rotate every current token during the migration;
+5. never log a raw token, including in an error or in telemetry.
 
-## 7. Hipóteses descartadas ou reclassificadas
+## 7. Hypotheses discarded or reclassified
 
-### 7.1 `not_resurfaced` em `fef6...`
+### 7.1 `not_resurfaced` in `fef6...`
 
-Esse caso não prova falso fechamento nem reabertura indevida:
+This case proves neither a false close nor an improper reopening:
 
-- os itens eram de Perplexity;
-- as fontes declaravam custody de um attachment;
-- as longas quotes de código não existiam nesse attachment;
-- citações de Gemini ou Grok não podiam fechar automaticamente itens de outro
-  owner.
+- the items belonged to Perplexity;
+- the sources declared custody of an attachment;
+- the long code quotes did not exist in that attachment;
+- citations by Gemini or Grok could not automatically close another owner's
+  items.
 
-O relato externo de “cinco peers READY com citações válidas e itens
-not_resurfaced” continua merecendo replay, mas exige o ID exato da sessão
-relatada. Não deve ser atribuído a `fef6...`.
+The external report of "five peers READY with valid citations and
+not_resurfaced items" still deserves a replay, but it requires the exact ID of
+the reported session. It must not be attributed to `fef6...`.
 
-### 7.2 Contabilização
+### 7.2 Accounting
 
-Não foi encontrado bug contábil:
+No accounting bug was found:
 
-- `fef6...`: US$ 3,475978295 sem dupla contabilização;
-- `1ce5...`: US$ 5,39668585;
-- chamadas interrompidas sem confirmação permanecem `unknown/unpriced`, não
-  custo zero inventado.
+- `fef6...`: USD 3.475978295 with no double-counting;
+- `1ce5...`: USD 5.39668585;
+- interrupted calls with no confirmation stay `unknown/unpriced`, not an
+  invented zero cost.
 
-### 7.3 Finalizações de provider
+### 7.3 Provider terminations
 
-`finish_reason=length` do DeepSeek e timeouts Perplexity são non-retryable pela
-política atual documentada do projeto. Podem justificar evolução de produto,
-mas o corpus não provou violação do contrato de provider.
+DeepSeek's `finish_reason=length` and Perplexity timeouts are non-retryable under
+the project's current documented policy. They may justify product evolution, but
+the corpus did not prove a violation of the provider contract.
 
-### 7.4 Problemas anteriores de polling
+### 7.4 Earlier polling problems
 
-As classes anteriormente relatadas sobre:
+The classes previously reported about:
 
-- `session_poll` excessivamente detalhado;
-- Markdown solicitado mas resposta serializada como JSON;
-- cancelamento perdendo corrida com job já concluído;
+- an excessively detailed `session_poll`;
+- Markdown requested but the response serialized as JSON;
+- a cancellation losing the race with an already-finished job;
 
-já estavam corrigidas na fonte atual. Não foram reclassificadas como regressões
-4.5.23–4.5.27 nesta auditoria.
+were already fixed in the current source. They were not reclassified as
+4.5.23–4.5.27 regressions in this audit.
 
-## 8. Configuração central e custos
+## 8. Central configuration and costs
 
-### 8.1 Estado desejado
+### 8.1 Desired state
 
-A configuração central deve manter:
+The central configuration must keep:
 
 ```json
 {
@@ -628,12 +623,12 @@ A configuração central deve manter:
 }
 ```
 
-Assim, Fable 5 permanece ativo e Opus 5 fica pronto para seleção explícita
-futura, sem fallback silencioso.
+Fable 5 therefore stays active and Opus 5 is ready for an explicit future
+selection, with no silent fallback.
 
-### 8.2 Chaves novas do Evidence Broker
+### 8.2 New Evidence Broker keys
 
-O schema 4.5.28 aceita:
+The 4.5.28 schema accepts:
 
 ```json
 {
@@ -646,162 +641,160 @@ O schema 4.5.28 aceita:
 }
 ```
 
-Na ausência dessas chaves, os mesmos valores são defaults do runtime. As quatro
-chaves foram incluídas explicitamente na configuração central e o arquivo foi
-aceito pelo schema 4.5.28, tornando a política visível no snapshot.
+In the absence of those keys, the same values are the runtime's defaults. The
+four keys were included explicitly in the central configuration and the file was
+accepted by the 4.5.28 schema, making the policy visible in the snapshot.
 
 ### 8.3 Streaming
 
-A configuração central foi alterada de 4.096 para 16.384 caracteres, mantendo
-1.000 ms e `include_text=false`. A mudança foi aceita pelo schema 4.5.28. A
-paginação de `session_events` reduz adicionalmente o impacto no caminho de
-leitura.
+The central configuration was changed from 4,096 to 16,384 characters, keeping
+1,000 ms and `include_text=false`. The change was accepted by the 4.5.28 schema.
+`session_events` pagination further reduces the impact on the read path.
 
 ### 8.4 Reload
 
-O runtime carregado durante a auditoria é 4.5.27. O rate card Opus 5 já foi
-adicionado à configuração central no disco, mas qualquer diferença de hash
-entre arquivo e processo exige reload da janela para que `server_info` prove a
-aplicação. A publicação 4.5.29 e o reload não fazem parte da evidência desta
-etapa.
+The runtime loaded during the audit is 4.5.27. The Opus 5 rate card has already
+been added to the central configuration on disk, but any hash difference between
+file and process requires a window reload for `server_info` to prove the
+application. The 4.5.29 publication and the reload are not part of this stage's
+evidence.
 
-## 9. Matriz de validação
+## 9. Validation matrix
 
-| Área                 | Validação                                                | Estado                                         |
-| -------------------- | -------------------------------------------------------- | ---------------------------------------------- |
-| Opus 5               | seleção como override explícito                          | PASS                                           |
-| Opus 5               | wire com adaptive thinking, effort e 64K                 | PASS                                           |
-| Opus 5               | ausência de sampling não suportado                       | PASS                                           |
-| Opus 5               | cache mínimo e recusa não faturada pré-output            | PASS                                           |
-| SDK Anthropic        | lockfile resolve 0.115.0                                 | PASS                                           |
-| Lifecycle            | regressão durável específica                             | PASS 28/28                                     |
-| Lifecycle            | validação integrada após todas as mudanças concorrentes  | PASS                                           |
-| Truthfulness         | condição futura versus alegação assertiva                | PASS                                           |
-| Truthfulness         | validação integrada após mudanças concorrentes           | PASS                                           |
-| Checklist IDs        | IDs conhecidos confiáveis e desconhecidos bloqueados     | PASS                                           |
-| Grounding            | diagnóstico final nos dois corpora                       | PASS 7/7                                       |
-| Evidence Broker      | regressão de amplificação, atomicidade e circuit breaker | PASS                                           |
-| `session_events`     | paginação, filtro e opt-in forense                       | PASS                                           |
-| Caller tokens        | geração temporária e hardening                           | PASS                                           |
-| Caller tokens        | DACL exata e fluxo sem TOCTOU por pathname               | PASS                                           |
-| Supply chain         | `brace-expansion` 5.0.8 e `npm audit`                    | PASS, zero vulnerabilidades                    |
-| Qualidade            | formatter, lint, Biome e TypeScript                      | PASS                                           |
-| Suite integrada      | cobertura completa dos targets do `npm test`             | PASS por execução única e continuação dirigida |
-| Smoke final          | `npm run smoke` no worktree final                        | PASS                                           |
-| Runtime empacotado   | `npm run runtime-smoke`                                  | PASS                                           |
-| Consumidor externo   | `npm run test:consumer`                                  | PASS                                           |
-| Revisão independente | auditoria de diff e raciocínio Ultrabrain                | Concluída; dois achados corrigidos             |
-| GitHub Actions       | todos os workflows no SHA de release                     | Pendente nesta etapa                           |
-| npm                  | pacote 4.5.29 publicado e íntegro                        | Pendente nesta etapa                           |
-| Runtime instalado    | `server_info` 4.5.29, hashes iguais e reload false       | Depende de instalação/reload pelo operador     |
+| Area               | Validation                                              | State                                          |
+| ------------------ | ------------------------------------------------------- | ---------------------------------------------- |
+| Opus 5             | selection as an explicit override                       | PASS                                           |
+| Opus 5             | wire with adaptive thinking, effort and 64K             | PASS                                           |
+| Opus 5             | absence of unsupported sampling                         | PASS                                           |
+| Opus 5             | minimum cache and unbilled pre-output refusal           | PASS                                           |
+| Anthropic SDK      | lockfile resolves 0.115.0                               | PASS                                           |
+| Lifecycle          | specific durable regression                             | PASS 28/28                                     |
+| Lifecycle          | integrated validation after all concurrent changes      | PASS                                           |
+| Truthfulness       | future condition versus assertive claim                 | PASS                                           |
+| Truthfulness       | integrated validation after concurrent changes          | PASS                                           |
+| Checklist IDs      | known IDs trusted and unknown ones blocked              | PASS                                           |
+| Grounding          | final diagnostics across both corpora                   | PASS 7/7                                       |
+| Evidence Broker    | amplification, atomicity and circuit-breaker regression | PASS                                           |
+| `session_events`   | pagination, filter and forensic opt-in                  | PASS                                           |
+| Caller tokens      | temporary generation and hardening                      | PASS                                           |
+| Caller tokens      | exact DACL and a flow with no pathname TOCTOU           | PASS                                           |
+| Supply chain       | `brace-expansion` 5.0.8 and `npm audit`                 | PASS, zero vulnerabilities                     |
+| Quality            | formatter, lint, Biome and TypeScript                   | PASS                                           |
+| Integrated suite   | complete coverage of the `npm test` targets             | PASS by a single run plus a directed follow-up |
+| Final smoke        | `npm run smoke` on the final worktree                   | PASS                                           |
+| Packaged runtime   | `npm run runtime-smoke`                                 | PASS                                           |
+| External consumer  | `npm run test:consumer`                                 | PASS                                           |
+| Independent review | diff audit and Ultrabrain reasoning                     | Complete; two findings fixed                   |
+| GitHub Actions     | every workflow on the release SHA                       | Pending at this stage                          |
+| npm                | package 4.5.29 published and intact                     | Pending at this stage                          |
+| Installed runtime  | `server_info` 4.5.29, matching hashes and reload false  | Depends on install/reload by the operator      |
 
-A primeira execução integrada foi interrompida por metadados anti-drift
-desatualizados em documentação e no próprio smoke, não por novos defeitos de
-produto. Em vez de reiniciar a suíte a cada ocorrência, a execução continuou
-pelos targets ainda não cobertos. Depois das correções, o smoke completo, o
-runtime empacotado e o consumidor externo foram executados no estado final e
-fecharam com código zero.
+The first integrated run was interrupted by stale anti-drift metadata in the
+documentation and in the smoke itself, not by new product defects. Rather than
+restarting the suite on each occurrence, the run continued through the targets
+not yet covered. After the fixes, the complete smoke, the packaged runtime and
+the external consumer were run against the final state and closed with exit code
+zero.
 
-A auditoria independente do diff encontrou dois problemas antes do fechamento:
-`VERSION` ainda em 4.5.27 e uma DACL Windows que não removia ACEs explícitas
-preexistentes. Ambos foram corrigidos e cobertos pela validação final.
+The independent diff audit found two problems before the closing: `VERSION` still
+at 4.5.27, and a Windows DACL that did not remove pre-existing explicit ACEs.
+Both were fixed and covered by the final validation.
 
-Os gates externos acrescentaram dois achados posteriores: CodeQL detectou o
-fluxo TOCTOU por pathname no carregamento de caller tokens, e o Scorecard
-detectou a GHSA-mh99-v99m-4gvg, divulgada durante o release. O primeiro foi
-convertido para leitura/migração por descritor; o segundo foi corrigido com
-`brace-expansion` 5.0.8 e bump para 4.5.29. Nenhum alerta foi suprimido.
+The external gates added two later findings: CodeQL detected the pathname TOCTOU
+flow in the caller-token load, and Scorecard detected GHSA-mh99-v99m-4gvg,
+disclosed during the release. The first was converted to reading/migration
+through a descriptor; the second was fixed with `brace-expansion` 5.0.8 and a
+bump to 4.5.29. No alert was suppressed.
 
-## 10. Plano de ação priorizado
+## 10. Prioritized action plan
 
-### P0 — fechar a 4.5.29
+### P0 — close 4.5.29
 
-1. formatar somente os arquivos alterados;
-2. executar uma vez o gate de qualidade;
-3. executar uma vez a suíte integral;
-4. corrigir apenas falha concreta, com teste direcionado, sem reiniciar ciclos
-   integrais;
-5. submeter o SHA final ao hardgate independente;
-6. commit e sync direto em `main`;
-7. acompanhar todos os GitHub Actions até verde;
-8. publicar `@lcv-ideas-software/cross-review@4.5.29`;
-9. após instalação global pelo operador e reload, confirmar via `server_info`:
-   versão, data de processo, hashes, `config_load.applied=true`,
-   `parse_error=null` e `reload_required=false`.
+1. format only the changed files;
+2. run the quality gate once;
+3. run the full suite once;
+4. fix only a concrete failure, with a targeted test, without restarting full
+   cycles;
+5. submit the final SHA to the independent hardgate;
+6. commit and sync directly on `main`;
+7. follow every GitHub Action to green;
+8. publish `@lcv-ideas-software/cross-review@4.5.29`;
+9. after the operator's global install and a reload, confirm via `server_info`:
+   version, process date, hashes, `config_load.applied=true`, `parse_error=null`
+   and `reload_required=false`.
 
-### P1 — eliminar o risco de capabilities em claro
+### P1 — eliminate the cleartext capability risk
 
-Projetar e migrar para verifiers persistidos, segredos por host e operador
-separado. A migração deve incluir rotação e compatibilidade controlada, sem
-registrar os tokens antigos.
+Design and migrate to persisted verifiers, per-host secrets and a separate
+operator. The migration must include rotation and controlled compatibility,
+without logging the old tokens.
 
-### P2 — replay do relato externo `not_resurfaced`
+### P2 — replay the external `not_resurfaced` report
 
-Obter o ID exato da sessão, reproduzir:
+Obtain the session's exact ID and reproduce:
 
-- owner de cada item;
-- quotes e attachment efetivamente citados;
-- transições `open`, `resurfaced`, `addressed` e `not_resurfaced`;
-- status raw e normalized dos cinco peers.
+- each item's owner;
+- the quotes and attachment actually cited;
+- the `open`, `resurfaced`, `addressed` and `not_resurfaced` transitions;
+- the raw and normalized status of the five peers.
 
-Só então decidir se há nova correção no broker.
+Only then decide whether the broker needs a new fix.
 
-### P2 — correção delta de citação
+### P2 — delta citation fix
 
-Avaliar um protocolo de reparo por índice que preserve itens válidos e solicite
-correção apenas do item inválido, mantendo fail-closed para toda alegação
-decisiva não fundamentada.
+Evaluate a per-index repair protocol that preserves valid items and requests a
+correction for the invalid item only, staying fail-closed for every ungrounded
+decisive claim.
 
-### P2 — política de retry de terminação incompleta
+### P2 — retry policy for incomplete termination
 
-Reavaliar, contra a documentação oficial de cada provider:
+Re-evaluate, against each provider's official documentation:
 
 - `response.incomplete`;
 - `finish_reason=length`;
 - timeouts;
-- limite de tentativas e orçamento.
+- the attempt limit and the budget.
 
-A política não deve repetir chamadas caras sem teto nem reclassificar output
-truncado como decisão definitiva.
+The policy must not repeat expensive calls without a ceiling, nor reclassify
+truncated output as a definitive decision.
 
-### P3 — acompanhar a redução de ruído de streaming
+### P3 — track the reduction in streaming noise
 
-- manter o threshold central aplicado em 16.384 caracteres;
-- manter `include_text=false`;
-- persistir thresholds efetivos no snapshot;
-- monitorar percentual de `peer.token.delta` após a 4.5.29.
+- keep the central threshold applied at 16,384 characters;
+- keep `include_text=false`;
+- persist the effective thresholds in the snapshot;
+- monitor the `peer.token.delta` percentage after 4.5.29.
 
-### P3 — evento terminal canônico
+### P3 — canonical terminal event
 
-Emitir uma disposição terminal única para cada `round.started`, ainda que
-eventos especializados continuem existindo. Isso simplifica analytics e
-detecção de rounds interrompidos.
+Emit a single terminal disposition for each `round.started`, even though
+specialized events keep existing. That simplifies analytics and the detection of
+interrupted rounds.
 
-## 11. Conclusão
+## 11. Conclusion
 
-A auditoria demonstrou defeitos reais no intervalo publicado 4.5.23–4.5.27,
-com reproduções concretas em sessões 4.5.25 e 4.5.26; o corpus local não contém
-sessões 4.5.24 ou 4.5.27. Os problemas mais graves não foram rejeições de código
-pelos peers, mas falhas de lifecycle e amplificação de evidência capazes de
-manter estado incorreto e consumir orçamento.
+The audit demonstrated real defects in the published range 4.5.23–4.5.27, with
+concrete reproductions in 4.5.25 and 4.5.26 sessions; the local corpus contains
+no 4.5.24 or 4.5.27 sessions. The gravest problems were not code rejections by
+the peers, but lifecycle failures and evidence amplification able to hold
+incorrect state and consume budget.
 
-O conjunto preparado em 4.5.28 e finalizado em 4.5.29 aborda as causas
-comprovadas sem relaxar as garantias
-anti-enganação:
+The set prepared in 4.5.28 and finalized in 4.5.29 addresses the proven causes
+without relaxing the anti-deception guarantees:
 
-- não aceita blockers sem grounding;
-- não transforma IDs desconhecidos em proveniência;
-- não trunca checklist excedente silenciosamente;
-- não inventa custo zero para chamada interrompida;
-- não permite fallback de modelo implícito;
-- não confunde uma instrução futura com estado operacional atual.
+- it does not accept ungrounded blockers;
+- it does not turn unknown IDs into provenance;
+- it does not silently truncate an over-long checklist;
+- it does not invent a zero cost for an interrupted call;
+- it does not allow an implicit model fallback;
+- it does not confuse a future instruction with current operational state.
 
-Claude Opus 5 está preparado como opção explícita, com wire, esforço, recusa,
-cache, SDK e custos alinhados à documentação oficial. Fable 5 permanece o
-modelo ativo.
+Claude Opus 5 is prepared as an explicit option, with wire, effort, refusal,
+cache, SDK and costs aligned with the official documentation. Fable 5 remains
+the active model.
 
-A entrega só pode ser considerada concluída depois da validação integrada
-única, hardgate independente, GitHub Actions verdes, publicação npm e prova do
-runtime 4.5.29 após reload. O risco de mesmo SID sobre caller tokens permanece
-explicitamente aberto como correção arquitetural prioritária, não mascarado
-pela melhoria de ACL.
+The delivery can only be considered complete after the single integrated
+validation, the independent hardgate, green GitHub Actions, the npm publication
+and proof of runtime 4.5.29 after a reload. The same-SID risk over caller tokens
+stays explicitly open as a priority architectural fix, not masked by the ACL
+improvement.

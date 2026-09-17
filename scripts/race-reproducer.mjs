@@ -50,7 +50,7 @@ if (process.env.PRPL_WORKER === "1") {
         peers: [],
         rejected: [],
         convergence: { converged: true, reason: `pid${process.pid}_round${i}`, ready_peers: [] },
-        convergence_scope: { petitioner: "operator", caller: "operator" },
+        convergence_scope: { petitioner: "claude", caller: "claude" },
         started_at: new Date().toISOString(),
       });
       written += 1;
@@ -69,7 +69,7 @@ console.log(`[race] data_dir=${dataDir} procs=${PROCS} rounds_per_proc=${ROUNDS}
 const { SessionStore } = await import(storeModuleUrl);
 const cfg = { data_dir: dataDir, version: "4.1.0-race", budget: { max_session_cost_usd: 10 } };
 const store = new SessionStore(cfg);
-const meta = await store.init("race reproducer", "operator", []);
+const meta = await store.init("race reproducer", "claude", []);
 console.log(`[race] init session=${meta.session_id}`);
 
 const workers = [];

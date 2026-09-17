@@ -177,8 +177,6 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "session_evidence_judge_pass",
     "session_evidence_judge_consensus_pass",
     "contest_verdict",
-    "regenerate_caller_tokens",
-    "escalate_to_operator",
     "session_finalize",
   ]) {
     const toolStart = serverSrc.indexOf(`registerTool(\n    "${toolName}"`);
@@ -188,9 +186,17 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
         ? serverSrc.slice(toolStart, nextToolStart >= 0 ? nextToolStart : serverSrc.length)
         : undefined;
     assert.ok(handlerBlock, `v4.3.2 / identity: smoke must find ${toolName} handler block.`);
+    // v07.00.00: the inverse contract. `caller` used to default to "operator",
+    // which made a principal with no channel to this server the implicit caller
+    // of every tool. It is now declared by the agent actually calling, and the
+    // default must never come back.
     assert.ok(
-      /caller:\s*CallerSchema\.default\("operator"\)/.test(handlerBlock ?? ""),
-      `v4.3.2 / identity: ${toolName} must expose caller with operator default.`,
+      /caller:\s*CallerSchema,/.test(handlerBlock ?? ""),
+      `v07.00.00 / identity: ${toolName} must require an explicit peer caller.`,
+    );
+    assert.ok(
+      !/CallerSchema\.default\(/.test(handlerBlock ?? ""),
+      `v07.00.00 / identity: ${toolName} must not default \`caller\` to any identity.`,
     );
     assert.ok(
       /verify(?:OperatorToolCallerIdentity|ToolCallerIdentity|SessionMutationAuthority)\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
@@ -199,11 +205,15 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
       `v4.3.2 / identity: ${toolName} must verify caller identity before side effects.`,
     );
     if (toolName.startsWith("session_evidence_judge_")) {
+      // v07.00.00: this used to demand operator authority. The gate protected
+      // nothing a judge pass actually needs: what keeps a judgment honest is
+      // that a peer may never rule on its own evidence ask, and that the
+      // consensus pass needs two distinct judges. Both are enforced in the
+      // orchestrator, independently of who called the tool, so the contract
+      // now pins those instead of an identity nobody could present.
       assert.ok(
-        /verifyOperatorToolCallerIdentity\(\s*runtime,\s*"[^"]+",\s*caller,\s*server\.server\.getClientVersion\(\)/.test(
-          handlerBlock ?? "",
-        ),
-        `v4.5.0 / identity: ${toolName} active mutation must require operator authority.`,
+        !/verifyOperatorToolCallerIdentity/.test(handlerBlock ?? ""),
+        `v07.00.00 / identity: ${toolName} must not demand operator authority.`,
       );
     }
   }
@@ -217,7 +227,9 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     const nextMatch = toolRegistrations[index + 1];
     const handlerBlock = serverSrc.slice(match.index ?? 0, nextMatch?.index ?? serverSrc.length);
     if (!/readOnlyHint:\s*false/.test(handlerBlock)) continue;
-    const hasCallerSchema = /caller:\s*CallerSchema\.default\("operator"\)/.test(handlerBlock);
+    // v07.00.00: `caller` no longer carries a default, so the shape to detect
+    // is the bare schema. A mutating tool must still expose the field.
+    const hasCallerSchema = /caller:\s*CallerSchema,/.test(handlerBlock);
     const hasIdentityVerification =
       /verify(?:OperatorToolCallerIdentity|ToolCallerIdentity|SessionMutationAuthority)\(\s*runtime,\s*"[^"]+",\s*(?:caller|input\.caller),\s*server\.server\.getClientVersion\(\)/.test(
         handlerBlock,
@@ -235,20 +247,476 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
 }
 
 {
+  // v07.00.00: `regenerate_caller_tokens` is gone, so the three assertions that
+  // policed how it exposed secrets have nothing to police. The property they
+  // protected — no plaintext token ever leaves through an MCP response — is
+  // now structural: no tool reads or returns the token map at all.
   const serverSrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
   assert.ok(
+    !serverSrc.includes("regenerate_caller_tokens"),
+    "v07.00.00 / caller_tokens: the token-rotation tool must not come back; rotation is a boot-time act on disk, outside MCP.",
+  );
+  assert.ok(
     !/tokens:\s*generated\.map/.test(serverSrc),
-    "v4.3.2 / caller_tokens: regenerate_caller_tokens must not return plaintext generated.map in the MCP response.",
+    "v07.00.00 / caller_tokens: no MCP response may carry the plaintext token map.",
+  );
+  console.log("[source-contract-smoke] no_token_rotation_over_mcp_test: PASS");
+}
+
+{
+  // v07.00.00: a session persisted before the operator identity was retired can
+  // still name "operator" as its petitioner. Such a record has no peer owner,
+  // so BOTH round entry points must refuse it rather than let the acting peer
+  // adopt it — adoption would hand any peer another principal's session, the
+  // privilege confusion the owner check exists to prevent.
+  const orchestratorSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "orchestrator.ts"),
+    "utf8",
+  );
+  const refusals = orchestratorSrc.match(/session_owner_unverified/g) ?? [];
+  assert.ok(
+    refusals.length >= 2,
+    "v07.00.00 / authority: askPeers and runUntilUnanimous must both refuse a session whose persisted petitioner is not a peer",
+  );
+  // Strip line comments first. The sentence that records the removal names
+  // what was removed, and a gate that cannot tell an obituary from an offer
+  // fires on its own explanation — this one did, on the first run.
+  const orchestratorCode = orchestratorSrc
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  assert.ok(
+    !/callerForLottery === "operator"/.test(orchestratorCode) &&
+      !/effectivePetitioner === "operator"/.test(orchestratorCode),
+    "v07.00.00 / authority: no auto-recusal branch may exempt the retired identity",
+  );
+  console.log("[source-contract-smoke] retired_identity_has_no_authority_branch_test: PASS");
+}
+
+{
+  // v07.00.00 (PR #300 review, Codex P1): the two ACTIVE evidence-judge tools
+  // spend the session's budget on paid provider calls and can move checklist
+  // items to `addressed`. They were gated on identity alone, so any peer
+  // holding a valid caller token could drive ANOTHER petitioner's session:
+  // supply an arbitrary draft, bill that petitioner for the judge calls, and
+  // change their unresolved-item state. Identity answers "who are you"; only
+  // the owner gate answers "is this yours".
+  //
+  // Sliced per handler rather than matched over the whole file, because the
+  // file legitimately contains both helpers and a file-wide search cannot tell
+  // which tool each call belongs to.
+  const judgeServerSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  for (const tool of ["session_evidence_judge_pass", "session_evidence_judge_consensus_pass"]) {
+    const start = judgeServerSrc.indexOf(`registerTool(\n    "${tool}"`);
+    assert.ok(start >= 0, `v07.00.00 / judge authority: ${tool} must be a registered tool`);
+    const nextTool = judgeServerSrc.indexOf("\n  registerTool(", start + 1);
+    const handler = judgeServerSrc.slice(start, nextTool === -1 ? undefined : nextTool);
+    assert.ok(
+      handler.includes(`verifySessionMutationAuthority(\n        runtime,\n        "${tool}"`),
+      `v07.00.00 / judge authority: ${tool} must gate on the persisted petitioner, not identity alone — it spends that petitioner's budget and mutates their checklist`,
+    );
+    assert.ok(
+      !handler.includes(`verifyToolCallerIdentity(\n        runtime,\n        "${tool}"`),
+      `v07.00.00 / judge authority: ${tool} must not fall back to the identity-only check`,
+    );
+  }
+  console.log("[source-contract-smoke] active_judge_requires_session_owner_test: PASS");
+}
+
+{
+  // v07.00.00 (PR #300 review round 2, Codex P1): `session_attach_evidence`
+  // was opened to peers in this release, which was right — the operator gate
+  // it replaced named a principal with no channel. What went with it by
+  // accident was the OWNER gate. Attachments are folded back into that
+  // session's preflight corpora and reviewer prompts by
+  // readEvidenceAttachments, so identity alone let any token-holder that
+  // learned an open session_id — `session_list` returns them all — contaminate
+  // another petitioner's review or push it into a failing preflight.
+  //
+  // The tool stays open to peers. It is closed to peers acting on a session
+  // they do not own, and the description must say which of those two it is.
+  const attachServerSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  const attachStart = attachServerSrc.indexOf('registerTool(\n    "session_attach_evidence"');
+  assert.ok(attachStart >= 0, "v07.00.00 / attach authority: the tool must be registered");
+  const attachEnd = attachServerSrc.indexOf("\n  registerTool(", attachStart + 1);
+  const attachHandler = attachServerSrc.slice(
+    attachStart,
+    attachEnd === -1 ? undefined : attachEnd,
   );
   assert.ok(
-    serverSrc.includes("token_fingerprints"),
-    "v4.3.2 / caller_tokens: regenerate_caller_tokens response must expose token fingerprints instead of secrets.",
+    attachHandler.includes(
+      'verifySessionMutationAuthority(\n        runtime,\n        "session_attach_evidence"',
+    ),
+    "v07.00.00 / attach authority: session_attach_evidence must gate on the persisted petitioner — its artifacts re-enter that session's preflight corpora and reviewer prompts",
   );
   assert.ok(
-    !/Returns the new map so the operator can copy/.test(serverSrc),
-    "v4.3.2 / caller_tokens: tool description must not instruct hosts to expose copied plaintext tokens via MCP response.",
+    !attachHandler.includes(
+      'verifyToolCallerIdentity(\n        runtime,\n        "session_attach_evidence"',
+    ),
+    "v07.00.00 / attach authority: session_attach_evidence must not fall back to the identity-only check",
   );
-  console.log("[source-contract-smoke] regenerate_caller_tokens_no_plaintext_response_test: PASS");
+  assert.ok(
+    !/Any authenticated peer may call it/i.test(attachHandler),
+    "v07.00.00 / attach authority: the description must not promise any authenticated peer may call it — the gate is petitioner-scoped",
+  );
+  console.log("[source-contract-smoke] attach_evidence_requires_session_owner_test: PASS");
+}
+
+{
+  // v07.00.00 (PR #300 review round 4, Codex P2): `probe_peers` declared
+  // `caller` and never checked it. With CROSS_REVIEW_REQUIRE_TOKEN=true, or a
+  // token belonging to a different peer, any enum-valid caller still reached
+  // probeAll() and spent six outbound provider probes — one of them the
+  // billable Perplexity live probe. A tool that declares an identity and
+  // spends the operator's provider quota on it has to verify it.
+  //
+  // What this pins is the RULE, not the one site: every tool that declares
+  // `caller` verifies it, with exactly two deliberate exceptions. Those two
+  // are the discovery reads a host calls to learn whether the token gate is
+  // armed and where host-tokens.json lives — precisely when it does not yet
+  // hold a token — and neither touches session data, a provider, or money.
+  // A third name joining that list fails this test.
+  const callerGateSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  const DISCOVERY_EXCEPTIONS = ["runtime_capabilities", "server_info"];
+  const registrations = callerGateSrc.split('registerTool(\n    "').slice(1);
+  assert.ok(
+    registrations.length >= 25,
+    `v07.00.00 / caller verification: the registration split found only ${registrations.length} tools, so the source shape changed and this contract is measuring nothing`,
+  );
+  // Both halves of a registration can be written inline OR referenced by name,
+  // and two tools already use the named form (`savedSessionPreflightSchema` /
+  // `savedSessionPreflightHandler`). A screen that reads only inline text
+  // skips those silently: it would keep reporting the exception list as
+  // unchanged while a third unverified tool sat outside the rule entirely.
+  // Both are therefore resolved by identifier, and an identifier that cannot
+  // be resolved fails loudly instead of passing. Resolving the handler BY NAME
+  // rather than searching the whole file also matters in the other direction:
+  // a file-wide search would credit every tool with the first verify call it
+  // found anywhere.
+  const bodyOfConst = (identifier: string, what: string): string => {
+    const declaration = `const ${identifier} =`;
+    const at = callerGateSrc.indexOf(declaration);
+    assert.ok(
+      at >= 0,
+      `v07.00.00 / caller verification: ${what} '${identifier}' could not be resolved to a declaration, so this contract cannot see what it contains`,
+    );
+    const next = callerGateSrc.indexOf("\n  const ", at + 1);
+    const stop = callerGateSrc.indexOf("\n  registerTool(", at + 1);
+    const end = Math.min(
+      next === -1 ? callerGateSrc.length : next,
+      stop === -1 ? callerGateSrc.length : stop,
+    );
+    return callerGateSrc.slice(at, end);
+  };
+  const unverified: string[] = [];
+  for (const registration of registrations) {
+    const name = registration.slice(0, registration.indexOf('"'));
+    const handlerAt = registration.indexOf("async (");
+    const schemaSection = handlerAt > 0 ? registration.slice(0, handlerAt) : registration;
+    const namedSchema = /inputSchema:\s*([A-Za-z_$][\w$]*)\s*[,}]/.exec(schemaSection);
+    const schema =
+      namedSchema && namedSchema[1] ? bodyOfConst(namedSchema[1], "inputSchema") : schemaSection;
+    let handler = handlerAt > 0 ? registration.slice(handlerAt, handlerAt + 4000) : "";
+    if (handlerAt < 0) {
+      const namedHandler = /\n\s*([A-Za-z_$][\w$]*)\(\s*"/.exec(registration);
+      handler = namedHandler && namedHandler[1] ? bodyOfConst(namedHandler[1], "handler") : "";
+    }
+    if (!schema.includes("caller: CallerSchema")) continue;
+    if (
+      handler.includes("verifyToolCallerIdentity(") ||
+      handler.includes("verifySessionMutationAuthority(")
+    ) {
+      continue;
+    }
+    unverified.push(name);
+  }
+  assert.deepEqual(
+    unverified.sort(),
+    DISCOVERY_EXCEPTIONS,
+    `v07.00.00 / caller verification: a tool that declares 'caller' must verify it, except the two discovery reads called before a token exists; unverified=[${unverified.join(", ")}]`,
+  );
+  const probeStart = callerGateSrc.indexOf('registerTool(\n    "probe_peers"');
+  assert.ok(probeStart >= 0, "v07.00.00 / caller verification: probe_peers must be registered");
+  const probeEnd = callerGateSrc.indexOf("\n  registerTool(", probeStart + 1);
+  const probeHandler = callerGateSrc.slice(probeStart, probeEnd === -1 ? undefined : probeEnd);
+  assert.ok(
+    probeHandler.includes('verifyToolCallerIdentity(runtime, "probe_peers", caller'),
+    "v07.00.00 / caller verification: probe_peers spends provider quota on the declared caller, so it must verify it before probing",
+  );
+  console.log("[source-contract-smoke] probe_peers_verifies_caller_test: PASS");
+}
+
+{
+  // v07.00.00 (PR #300 review round 5, Codex P2): the v2 -> v7 token migration
+  // truncated the live credential record to zero and wrote its replacement
+  // into the same descriptor. host-tokens.json is the ONLY credential record,
+  // so a disk-full error, a transient I/O failure or a power loss between the
+  // truncate and the fsync left every peer token unverifiable — including the
+  // owner-scoped tools that would be used to recover. The replacement is now
+  // written beside it and swapped in.
+  //
+  // Behavioural coverage of a power loss is not reachable from a test, so what
+  // is pinned is the structure that makes the window impossible: no in-place
+  // truncation of the credential file, and a swap that fsyncs before it
+  // renames.
+  const tokensSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "core", "caller-tokens.ts"),
+    "utf8",
+  );
+  assert.ok(
+    !tokensSrc.includes("ftruncateSync"),
+    "v07.00.00 / token durability: the credential record must never be truncated in place — write a replacement beside it and swap it in",
+  );
+  const swapStart = tokensSrc.indexOf("function replaceTokensFileAtomically");
+  assert.ok(
+    swapStart >= 0,
+    "v07.00.00 / token durability: the atomic replacement helper must exist",
+  );
+  const swapEnd = tokensSrc.indexOf("\nfunction ", swapStart + 1);
+  const swap = tokensSrc.slice(swapStart, swapEnd === -1 ? undefined : swapEnd);
+  const fsyncAt = swap.indexOf("fsyncSync");
+  const renameAt = swap.indexOf("renameSync");
+  assert.ok(
+    fsyncAt >= 0 && renameAt >= 0 && fsyncAt < renameAt,
+    "v07.00.00 / token durability: the replacement must be fsynced BEFORE it is renamed into place, or the swap trusts the page cache",
+  );
+  assert.ok(
+    swap.includes('"wx"') && swap.includes("0o600"),
+    "v07.00.00 / token durability: the temporary must refuse to clobber and must be created 0600, never briefly world-readable",
+  );
+  // Round 6: 0600 is not enough on Windows, where mode bits do not override
+  // inherited NTFS entries — this module says so itself, which is why
+  // hardenTokensFilePermissions exists. Renaming an un-hardened temp over the
+  // live record silently hands a protected file back to whatever the parent
+  // directory inherits, so the hardening must happen BEFORE the rename and a
+  // failure to harden must refuse the swap rather than proceed.
+  const hardenAt = swap.indexOf("hardenTokensFilePermissions(");
+  assert.ok(
+    hardenAt >= 0 && hardenAt < renameAt,
+    "v07.00.00 / token durability: the replacement must be permission-hardened BEFORE it is renamed into place, or the swap can downgrade a protected DACL to an inherited one",
+  );
+  assert.ok(
+    /if \(!hardenTokensFilePermissions\([\s\S]{0,120}throw new Error\(/.test(swap),
+    "v07.00.00 / token durability: a replacement that cannot be hardened must never be swapped in",
+  );
+
+  // Round 6: the repair half of session_doctor rewrites finalized metadata, so
+  // it lands where recovery landed — the owner's capability token, and only
+  // the owner's own sessions. Without this the release's claim that
+  // `session_sweep` is the sole cross-owner mutation is false.
+  const authoritySrc = fs.readFileSync(path.join(process.cwd(), "src", "mcp", "server.ts"), "utf8");
+  const doctorStart = authoritySrc.indexOf('registerTool(\n    "session_doctor"');
+  assert.ok(doctorStart >= 0, "v07.00.00 / doctor authority: session_doctor must be registered");
+  const doctorEnd = authoritySrc.indexOf("\n  registerTool(", doctorStart + 1);
+  const doctor = authoritySrc.slice(doctorStart, doctorEnd === -1 ? undefined : doctorEnd);
+  assert.ok(
+    doctor.includes('assertOwnerTokenVerified("session_doctor.repair"'),
+    "v07.00.00 / doctor authority: the repair pass must require the owner's capability token",
+  );
+  assert.ok(
+    doctor.includes("repairInclude: (session) => derivePersistedSessionOwner(session) === caller"),
+    "v07.00.00 / doctor authority: the repair pass must be filtered to the caller's own sessions",
+  );
+  const recoverStart = authoritySrc.indexOf('registerTool(\n    "session_recover_interrupted"');
+  const recoverEnd = authoritySrc.indexOf("\n  registerTool(", recoverStart + 1);
+  const recover = authoritySrc.slice(recoverStart, recoverEnd === -1 ? undefined : recoverEnd);
+  assert.ok(
+    recover.includes('assertOwnerTokenVerified("session_recover_interrupted"'),
+    "v07.00.00 / recovery authority: scoping by ownership is not enough — the owner's token is required, as it is for every other owner-scoped mutation",
+  );
+
+  // Same round: the dashboard was translated to English while its root element
+  // still declared pt-BR, so screen readers and translation tooling applied
+  // Portuguese rules to English labels.
+  const dashboardSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "dashboard", "server.ts"),
+    "utf8",
+  );
+  assert.ok(
+    !dashboardSrc.includes('lang="pt-BR"'),
+    "v07.00.00 / dashboard: the document language must match the language of the UI it declares",
+  );
+  console.log("[source-contract-smoke] token_migration_is_durable_test: PASS");
+}
+
+{
+  // v07.00.00 (PR #300 review rounds 1-7): "an owner-scoped mutation must be
+  // scoped" produced findings in rounds 1, 2, 5, 6 and 7 — seven in total,
+  // including a P1 in round 7 on the same file as a round-1 finding. Five site
+  // fixes did not enforce the rule. What follows enforces it as a census: every
+  // mutating tool is classified by the authority it actually requires, and the
+  // three buckets are pinned. A new mutating tool, or an existing one that
+  // loses its check, lands in the wrong bucket and fails here.
+  const authoritySource = fs.readFileSync(
+    path.join(process.cwd(), "src", "mcp", "server.ts"),
+    "utf8",
+  );
+  const OWNER_SCOPED = [
+    "ask_peers",
+    "contest_verdict",
+    "session_attach_evidence",
+    "session_cancel_job",
+    "session_doctor",
+    "session_evidence_judge_consensus_pass",
+    "session_evidence_judge_pass",
+    "session_finalize",
+    "session_recover_interrupted",
+    "session_start_round",
+    "session_start_unanimous",
+  ];
+  // The single deliberate exception. Sweep exists for sessions whose petitioner
+  // is GONE, so scoping it by owner would disable its only purpose; it is
+  // bounded by the 24-hour age floor instead. It still requires the capability
+  // token — just not one matching each affected session's owner, which for a
+  // cross-owner sweep would be a contradiction.
+  const CROSS_OWNER_TOKEN_ONLY = ["session_sweep"];
+  // These CREATE a session rather than mutate one that already has an owner,
+  // so there is no owner to check against.
+  const DECLARED_IDENTITY_ONLY = ["run_until_unanimous", "session_init"];
+
+  const buckets: { owner: string[]; verified: string[]; declared: string[] } = {
+    owner: [],
+    verified: [],
+    declared: [],
+  };
+  for (const registration of authoritySource.split('registerTool(\n    "').slice(1)) {
+    const toolName = registration.slice(0, registration.indexOf('"'));
+    const handlerAt = registration.indexOf("async (");
+    const declaration = handlerAt > 0 ? registration.slice(0, handlerAt) : registration;
+    if (!/readOnlyHint:\s*false/.test(declaration)) continue;
+    // Comments are stripped before classifying, the way the F5 walker in
+    // scripts/smoke.ts already does. Without this the census reads a handler's
+    // PROSE as code: a comment that merely NAMES `assertOwnerTokenVerified` —
+    // to contrast against it, which is exactly what an accurate comment about
+    // `session_sweep` wants to do — silently moves that tool into the owner
+    // bucket and reds the gate, for an edit with no behaviour in it. Round 10
+    // walked into that while correcting the sweep comment, so the parser is
+    // fixed rather than the comment written around it.
+    const rawBody = handlerAt > 0 ? registration.slice(handlerAt, handlerAt + 8000) : registration;
+    const body = rawBody.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\n)\s*\/\/[^\n]*/g, "$1");
+    if (
+      body.includes("assertOwnerTokenVerified") ||
+      body.includes("verifySessionMutationAuthority")
+    ) {
+      buckets.owner.push(toolName);
+    } else if (body.includes("assertCrossOwnerTokenVerified")) {
+      buckets.verified.push(toolName);
+    } else {
+      buckets.declared.push(toolName);
+    }
+  }
+  assert.deepEqual(
+    buckets.owner.sort(),
+    OWNER_SCOPED,
+    `v07.00.00 / mutation authority: these tools mutate a session that already has an owner and must require the owner's capability token; got [${buckets.owner.join(", ")}]`,
+  );
+  assert.deepEqual(
+    buckets.verified.sort(),
+    CROSS_OWNER_TOKEN_ONLY,
+    `v07.00.00 / mutation authority: exactly one mutating tool may act across owners, and it must still require the capability token rather than a self-declared identity; got [${buckets.verified.join(", ")}]`,
+  );
+  assert.deepEqual(
+    buckets.declared.sort(),
+    DECLARED_IDENTITY_ONLY,
+    `v07.00.00 / mutation authority: only session-creating tools may run on a declared identity alone; got [${buckets.declared.join(", ")}]`,
+  );
+
+  // Round 10. Round 9 moved `session_sweep` behind the
+  // capability token; the startup banner kept telling the operator that sweep
+  // "is gated on identity alone and still runs", which in the token-file
+  // failure state points at the one recovery route that had just stopped
+  // existing. The banner was also already stale in a quieter way: it named
+  // five of the eleven owner-scoped tools.
+  //
+  // Correcting those sentences would fix the site and lose the rule. The rule
+  // is that the banner is a STATEMENT ABOUT THE CENSUS ABOVE, so it is checked
+  // against the census rather than proof-read. Every mutating tool must be
+  // named in it, whichever bucket it lands in — so the next authority change,
+  // or a twelfth mutating tool, breaks this instead of shipping a banner that
+  // lies about it.
+  const bannerAt = authoritySource.indexOf("caller capability tokens unavailable");
+  assert.ok(
+    bannerAt > 0,
+    "v07.00.00 / token-failure banner: the startup banner for an unloadable token record must exist",
+  );
+  const banner = authoritySource.slice(bannerAt, authoritySource.indexOf("`,", bannerAt));
+  const unnamedInBanner = [...buckets.owner, ...buckets.verified, ...buckets.declared]
+    .filter((tool) => !banner.includes(tool))
+    .sort();
+  assert.deepEqual(
+    unnamedInBanner,
+    [],
+    `v07.00.00 / token-failure banner: every mutating tool must be named in the token-unavailable banner so the operator learns what actually stopped working; missing [${unnamedInBanner.join(", ")}]`,
+  );
+  // The same rule, applied to the surface a PEER HOST reads rather than the one
+  // the operator reads. `session_finalize`, `session_cancel_job` and
+  // `contest_verdict` already spelled their token requirement out in their own
+  // MCP description; the other nine said nothing, so a host could not learn
+  // from the protocol that it needed a credential until the call was refused.
+  // This is the gate that would have caught round 9 the moment `session_sweep`
+  // moved behind the token, instead of one round later via the banner.
+  //
+  // It asserts the REQUIREMENT is stated, not how — the four buckets enforce
+  // four genuinely different rules (the petitioner's token, the petitioner's
+  // token only when continuing an existing session, your own token, and a
+  // token that is deliberately NOT the affected petitioner's), and flattening
+  // them into one sentence would trade this round's falsehood for a new one.
+  const describesToken = (tool: string): boolean => {
+    const at = authoritySource.indexOf(`registerTool(\n    "${tool}"`);
+    if (at < 0) return false;
+    const schemaAt = authoritySource.indexOf("inputSchema", at);
+    return authoritySource.slice(at, schemaAt).includes("capability token");
+  };
+  const silentAboutToken = [...buckets.owner, ...buckets.verified]
+    .filter((tool) => !describesToken(tool))
+    .sort();
+  assert.deepEqual(
+    silentAboutToken,
+    [],
+    `v07.00.00 / tool descriptions: every mutating tool that requires a capability token must say so in its own MCP description, or a peer host learns the requirement only from the refusal; silent [${silentAboutToken.join(", ")}]`,
+  );
+
+  // A lexical tripwire for the exact retired sentence, not a semantic check:
+  // it would also reject a banner that DENIED the exemption in those words. The
+  // rule is the assertion above; this one exists because that sentence shipped
+  // and cost a review round, and the cheapest way to keep it from coming back
+  // is to make the words themselves unwritable here.
+  assert.ok(
+    !banner.includes("gated on identity alone"),
+    "v07.00.00 / token-failure banner: session_sweep requires the capability token since round 9, so the banner must not offer it as the exception that still runs",
+  );
+
+  // The companion rule, which produced findings in rounds 4, 6 and 7: every
+  // public entry point that accepts a caller validates it at RUNTIME, because
+  // the TypeScript declaration is erased in the shipped JavaScript. Pinning the
+  // COUNT is what makes a fourth entry point fail rather than pass silently.
+  // Round 8 found a fourth boundary — SessionStore.init — because this pin read
+  // one file while the rule is about the whole shipped surface. The guard now
+  // lives in types.ts so both modules share one definition, and the pin reads
+  // both. Scoping an enforcement to one file is the same error as fixing one
+  // site, committed one level up.
+  const boundaryGuards: string[] = [];
+  for (const file of ["orchestrator.ts", "session-store.ts"]) {
+    const text = fs.readFileSync(path.join(process.cwd(), "src", "core", file), "utf8");
+    for (const entry of text.match(/assertCallerIsPeer\("([A-Za-z.]+)"/g) ?? []) {
+      boundaryGuards.push(entry.replace(/assertCallerIsPeer\("/, "").replace(/"$/, ""));
+    }
+  }
+  assert.deepEqual(
+    boundaryGuards.sort(),
+    ["SessionStore.init", "askPeers", "initSession", "runUntilUnanimous"],
+    `v07.00.00 / caller validation: every public boundary that accepts a caller must validate it at runtime, because the PeerId annotation is erased in the shipped JavaScript; got [${boundaryGuards.join(", ")}]`,
+  );
+  console.log("[source-contract-smoke] mutation_authority_census_test: PASS");
 }
 
 {

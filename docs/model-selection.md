@@ -43,8 +43,8 @@ env-var per host — a deliberate decision, never a silent downgrade.
 
 | Peer             | Pin                      | Override env-var                |
 | ---------------- | ------------------------ | ------------------------------- |
-| OpenAI/Codex     | `gpt-5.6-sol`            | `CROSS_REVIEW_OPENAI_MODEL`     |
-| Anthropic/Claude | `claude-fable-5`         | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
+| OpenAI/Codex     | `gpt-6-astra`            | `CROSS_REVIEW_OPENAI_MODEL`     |
+| Anthropic/Claude | `claude-fable-5-1`       | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | Google/Gemini    | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | DeepSeek         | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
 | xAI/Grok         | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
@@ -53,7 +53,7 @@ env-var per host — a deliberate decision, never a silent downgrade.
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
 
-Claude Fable 5 (`claude-fable-5`) is the canonical Anthropic production model.
+Claude Fable 5.1 (`claude-fable-5-1`) is the canonical Anthropic production model.
 The adapter omits the explicit `thinking` field because Fable applies adaptive
 thinking automatically; `output_config.effort` remains the depth control.
 Fable refusals are successful API responses with `stop_reason="refusal"`; the
@@ -64,15 +64,9 @@ already generated. Anthropic documents 30-day retention and no zero data
 retention option for Fable, so operators must accept that posture before using
 the peer.
 
-Claude Opus 5 (`claude-opus-5`) is a supported explicit operator override. It
-does not enter the canonical priority list and is never selected as an
-automatic fallback. The Messages request uses
-`thinking={type:"adaptive",display:"omitted"}` plus
-`output_config.effort`; it never sends the removed manual
-`thinking={type:"enabled",budget_tokens:...}` form or non-default sampling
-parameters. Opus 5 has a 1M-token context window and 128K synchronous output
-ceiling. Anthropic recommends starting with 64K `max_tokens` at `xhigh` or
-`max`, which matches the maintained Claude budget.
+There is no supported second model for this peer. cross-review runs the top
+model of each provider, so the canonical pin is the whole admissible set and
+the priority list has exactly one entry.
 
 Google's deprecation schedule lists `gemini-2.5-pro` for shutdown on
 16/10/2026 and recommends `gemini-3.1-pro-preview` as the replacement.
@@ -80,6 +74,30 @@ Workspace policy remains: only `gemini-*-pro` variants >= 2.5 are permitted
 for this peer; no `*-flash` variants and no models below 2.5. Operators can
 still override the pin explicitly, but the default/canonical path follows the
 documented replacement.
+
+The `-preview` suffix on the Gemini pin is not an oversight, and the `v1beta`
+path is not one either. Both were measured against the live API on 08/09/2026,
+because Google's own documentation contradicts itself on this point — the API
+versions page says the Interactions API is generally available in `v1`, and the
+migration guide prints a `v1beta2/interactions` URL:
+
+- `GET /v1/models` returns 21 models and `gemini-3.1-pro-preview` is not among
+  them; `GET /v1beta/models` returns 54 and it is.
+- `POST /v1/models/gemini-3.1-pro-preview:generateContent` returns
+  `404 NOT_FOUND`, "is not found for API version v1". The same call on
+  `v1beta` succeeds. Moving this adapter to `v1` is therefore not a decision
+  to weigh — the pinned model is not served there.
+- `v1/interactions` and `v1beta2/interactions` both return 404. Only
+  `v1beta/interactions` exists, so the Interactions API would not move this
+  peer off `v1beta` either, while costing the whole field-name surface and
+  explicit context caching, which it does not support.
+- Every Pro-tier text model the API actually serves is `gemini-2.5-pro`,
+  `gemini-3.1-pro-preview` and its `-customtools` variant. There is no GA
+  `gemini-3.1-pro` id. Everything Google released afterwards (3.5, 3.6, 3.7,
+  3.8) is Flash or Flash-Lite, which policy excludes.
+
+Re-measure before revisiting; do not re-derive this from the documentation,
+which is what disagrees with the API.
 
 `GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.6`
 model accepts `low`, `medium`, `high`, and `xhigh` for `reasoning.effort`
@@ -122,7 +140,7 @@ explicitly want a minimal round-trip without tools.
 
 Cross-review is optimized for correctness over latency and cost. Provider adapters explicitly request thinking/reasoning where the official APIs support it:
 
-- OpenAI/Codex: `gpt-5.6-sol` through the Responses API. The API accepts
+- OpenAI/Codex: `gpt-6-astra` through the Responses API. The API accepts
   `reasoning.effort=max`; cross-review accepts the Codex product/CLI term
   `ultra` only as a config compatibility alias and normalizes it to `max`
   before the request. The shared legacy `minimal` setting is normalized to
@@ -133,7 +151,7 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   original GPT-5 accepts `minimal` through `high` (`none` → `minimal`, higher
   shared values → `high`).
 - Anthropic/Claude: Fable 5 omits the explicit `thinking` object because
-  adaptive thinking is automatic. Opus 5 uses explicit adaptive thinking with
+  adaptive thinking is automatic. It is always on, and both
   display omitted. Both use `output_config.effort` for depth.
 - Google/Gemini: the configured shared effort maps to native `LOW`, `MEDIUM`,
   or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
@@ -165,8 +183,8 @@ enum.
 
 The legacy `max_output_tokens` value remains the fallback. Use
 `max_output_tokens_by_peer` when official reasoning guidance or model ceilings
-differ. The maintained central configuration uses 25,000 for GPT-5.6 Sol,
-64,000 for Claude Fable 5 or Opus 5 at `xhigh`/`max`, and 20,000 for the other
+differ. Each peer's ceiling is set to that provider's documented maximum:
+128,000 for GPT-6 Astra, 128,000 for Claude Fable 5.1, and 20,000 for the other
 four peers. These
 values follow the official OpenAI allocation guidance and Anthropic task-budget
 minimum without assuming an undocumented Grok 4.6 ceiling. `server_info`
@@ -175,10 +193,10 @@ preflight.
 
 ## Official provider references
 
-- OpenAI: [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- OpenAI: [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
   and [latest-model guide](https://developers.openai.com/api/docs/guides/latest-model).
-- Anthropic: [Fable 5 introduction](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5),
-  [Opus 5 changes](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5),
+- Anthropic: [Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview),
+  [Fable 5.1 migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migration-guide),
   [Opus 5 migration guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide),
   [effort](https://platform.claude.com/docs/en/build-with-claude/effort),
   [refusals and fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback),
