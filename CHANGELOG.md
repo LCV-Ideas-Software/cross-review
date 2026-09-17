@@ -7,6 +7,29 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v09.00.00] — 17/09/2026
+
+### Changed
+
+- **BREAKING — a circular session is refused when the output-ceiling screen
+  would drop ANY rotator, instead of quietly continuing with the rest.**
+  Previously the screen removed low-ceiling peers from the rotation and the
+  session ran on with whoever remained. That narrowing was silent and
+  irreversible: the initial screen runs once, against the artifact as it
+  arrives, while the live screen inside the loop resets on every artifact
+  change. A peer dropped by the initial screen never returned, because
+  convergence only ever consults the rotation list — so a session could
+  finalize `converged` while a peer that would fit the FINAL artifact never saw
+  it, and the recorded reason for its exclusion ("cannot re-emit 34,000
+  characters") expired the moment another rotator cut the text. The refusal
+  already existed for the total case, where nobody cleared the screen; it now
+  covers the partial case too, costs zero provider calls, and names both the
+  excluded peers with their ceilings and what continuing would have narrowed
+  the rotation to. Panels where every peer clears the screen are unaffected;
+  a panel carrying one small-ceiling peer now aborts up front where it used to
+  converge, and the two levers stay the same — shrink the artifact or raise the
+  ceilings in the central configuration.
+
 ## [v08.00.00] — 17/09/2026
 
 ### Changed

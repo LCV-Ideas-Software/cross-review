@@ -335,10 +335,19 @@ function countingAdapters(config: AppConfig): {
   console.log("[v7.0.0-relator-ceiling] circular_rotation_screens_every_rotator: PASS");
 }
 
-// --- 10. a partially eligible rotation keeps the peers that clear it ------
-// The screen must not collapse the rotation to the drawn peer alone when
-// others genuinely fit. With gemini raised to 30,000 the rotation keeps both
-// peers above the draft and drops only the three below it.
+// --- 10. a PARTIALLY eligible rotation is refused, not quietly narrowed ----
+// v9.0.0 (CROSREV-49, operator decision of 17/09/2026). This case asserted the
+// opposite until that decision: that the rotation simply kept whoever cleared
+// the screen. That was the defect pinned as contract — the same trap round 8
+// of PR #300 produced once already, a test that fixes the bug in place.
+//
+// Narrowing here is silent and irreversible: the initial screen runs once,
+// while the live screen inside the loop resets on every artifact change. A peer
+// dropped here never returns, because convergence only consults the rotation
+// list, so the session could finalize `converged` while a peer that WOULD fit
+// the final artifact never saw it. With gemini raised to 30,000 two rotators
+// clear a 22,000-character draft and three do not; the session must now refuse
+// and name both groups rather than proceed with the two.
 {
   const mixedCeilings: Record<PeerId, number> = {
     ...MEASURED_CEILINGS,
@@ -359,24 +368,41 @@ function countingAdapters(config: AppConfig): {
     mode: "circular",
     max_rounds: 1,
   });
-  const assigned = events.find((event) => event.type === "session.circular_rotation_assigned");
+  const refused = events.find((event) => event.type === "session.circular_rotation_output_ceiling");
   assert.ok(
-    assigned,
-    `the rotation must be recorded; events=[${events.map((e) => e.type).join(", ")}]`,
+    refused,
+    `a partial exclusion must refuse, not narrow; events=[${events.map((e) => e.type).join(", ")}]`,
   );
-  const data = (assigned as { data?: Record<string, unknown> }).data ?? {};
-  const order = data.rotation_order as PeerId[];
-  assert.deepEqual(
-    [...order].sort(),
-    ["codex", "gemini"],
-    `the rotation keeps only peers whose ceiling clears 22,000; got [${order.join(", ")}]`,
+  assert.equal(
+    events.find((event) => event.type === "session.circular_rotation_assigned"),
+    undefined,
+    "and no rotation may be recorded, because none was accepted",
   );
+  const data = (refused as { data?: Record<string, unknown> }).data ?? {};
+  assert.equal(data.draft_chars, 22_000, "the diagnosis names the draft size");
   assert.deepEqual(
     (data.excluded_for_output_ceiling as Array<{ peer: PeerId }>).map((entry) => entry.peer),
     ["deepseek", "grok", "perplexity"],
-    "and records the three it dropped",
+    "and names exactly the three rotators that do not clear it",
   );
-  console.log("[v7.0.0-relator-ceiling] circular_rotation_keeps_eligible_peers: PASS");
+  // The refusal has to say what continuing WOULD have cost, otherwise it is
+  // just a stop. The peers that did clear the screen are named for that reason.
+  const message = (refused as { message?: string }).message ?? "";
+  // The count is asserted by shape rather than by a fixed total: the drawn
+  // first rotator leaves the tail, so the denominator follows the draw and
+  // pinning it would make this test fail for a reason that is not the rule.
+  assert.match(
+    message,
+    /\b3 of \d+ other rotators do not clear the size screen\b/,
+    `the message must quantify the exclusion; got: ${message}`,
+  );
+  assert.ok(
+    message.includes("narrow the rotation to"),
+    `the message must name what continuing would have narrowed to; got: ${message}`,
+  );
+  assert.deepEqual(probe.called, [], "no rotator turn may be dispatched before the refusal");
+  assert.deepEqual(probe.generated, [], "and no generation either");
+  console.log("[v7.0.0-relator-ceiling] circular_partial_exclusion_is_refused: PASS");
 }
 
 // Adapters whose GENERATION returns an artifact of a chosen size, so the
@@ -727,14 +753,24 @@ function fixedArtifactAdapters(text: string): {
   console.log("[v7.0.0-relator-ceiling] skip_does_not_consume_the_round_budget: PASS");
 }
 
-// --- 17. the preflight prices only what the session can dispatch ----------
+// --- 17. an excluded peer is never billed, and money is never the cause ---
 // The financial preflight runs in `runUntilUnanimous`, BEFORE the circular
 // rotation is derived, and it demands a complete rate card for every peer it is
 // handed. While it was handed the unscreened peer list, a peer the ceiling
-// screen had already removed from the rotation could finalize the session with
+// screen had already removed could finalize the session with
 // `financial_controls_missing` — naming a peer that was never going to be
-// called. The control is the second half: a peer INSIDE the rotation with no
-// card must still block, or the narrowing would have disabled the preflight.
+// called.
+//
+// v9.0.0 (CROSREV-49) changed the shape of the proof, not the property. Under
+// the old behaviour this case ran the session to completion with the excluded
+// peer simply dropped; now any exclusion refuses the session up front. The
+// property that matters survives intact and is what is asserted here: the
+// diagnosis must be the SIZE refusal, never a missing rate card for a peer that
+// could not have been billed.
+//
+// The control is the second half, and it needs a panel where nobody is
+// excluded — otherwise the size refusal would mask the preflight and the test
+// could pass while pricing had quietly stopped working altogether.
 {
   const ceilings: Record<PeerId, number> = {
     claude: 640,
@@ -744,14 +780,26 @@ function fixedArtifactAdapters(text: string): {
     grok: 640,
     perplexity: 640,
   };
-  const withoutRateCardFor = (prefix: string, peer: PeerId): AppConfig => {
-    const config = harnessConfig(prefix, ceilings);
+  const roomyCeilings: Record<PeerId, number> = {
+    claude: 640,
+    codex: 640,
+    gemini: 640, // nobody is excluded, so pricing is what decides
+    deepseek: 640,
+    grok: 640,
+    perplexity: 640,
+  };
+  const withoutRateCardFor = (
+    prefix: string,
+    peer: PeerId,
+    table: Record<PeerId, number>,
+  ): AppConfig => {
+    const config = harnessConfig(prefix, table);
     const rates = { ...config.cost_rates };
     delete rates[peer];
     return { ...config, cost_rates: rates, model_cost_rates: {} };
   };
 
-  const config = withoutRateCardFor("relator-ceiling-preflight-excluded", "gemini");
+  const config = withoutRateCardFor("relator-ceiling-preflight-excluded", "gemini", ceilings);
   const probe = countingAdapters(config);
   const events: RuntimeEvent[] = [];
   const orchestrator = new CrossReviewOrchestrator(
@@ -774,18 +822,23 @@ function fixedArtifactAdapters(text: string): {
   assert.deepEqual(
     blocked.map((event) => (event as { data?: { missing_variables?: string[] } }).data),
     [],
-    "a peer the ceiling screen removed from the rotation can never be billed, so its missing rate card must not block the session",
+    "a peer the ceiling screen removed can never be billed, so its missing rate card must not be the diagnosis",
   );
   assert.ok(
-    probe.generated.length > 0,
-    `and the session must actually run; generated=[${probe.generated.join(", ")}] events=[${[
+    events.some((event) => event.type === "session.circular_rotation_output_ceiling"),
+    `the refusal must be the size one; events=[${[
       ...new Set(events.map((event) => event.type)),
     ].join(
       ", ",
     )}] outcome=${excludedRun.session.outcome}/${excludedRun.session.outcome_reason ?? "-"}`,
   );
+  assert.deepEqual(probe.generated, [], "and nothing may be generated before that refusal");
 
-  const controlConfig = withoutRateCardFor("relator-ceiling-preflight-control", "codex");
+  const controlConfig = withoutRateCardFor(
+    "relator-ceiling-preflight-control",
+    "codex",
+    roomyCeilings,
+  );
   const controlEvents: RuntimeEvent[] = [];
   const controlProbe = countingAdapters(controlConfig);
   const controlOrchestrator = new CrossReviewOrchestrator(
@@ -804,14 +857,19 @@ function fixedArtifactAdapters(text: string): {
   });
   assert.ok(
     controlEvents.some((event) => event.type === "session.blocked.financial_controls_missing"),
-    "CONTROL: codex is IN the rotation, so its missing rate card must still block the session",
+    "CONTROL: with nobody excluded, codex is IN the rotation and its missing rate card must still block the session",
+  );
+  assert.equal(
+    controlEvents.find((event) => event.type === "session.circular_rotation_output_ceiling"),
+    undefined,
+    "CONTROL: and the size refusal must NOT fire, or it would be masking the preflight",
   );
   assert.deepEqual(
     controlProbe.generated,
     [],
     "CONTROL: and that block must still happen before any generation",
   );
-  console.log("[v7.0.0-relator-ceiling] preflight_prices_only_dispatchable_peers: PASS");
+  console.log("[v7.0.0-relator-ceiling] excluded_peer_is_never_the_money_diagnosis: PASS");
 }
 
 // --- 18. a collapsed rotation is refused for its size, not for money ------
