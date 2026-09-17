@@ -7,10 +7,9 @@ updates:
   - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: America/Sao_Paulo
+      interval: "cron"
+      cronjob: "0 5 * * *"
+      timezone: "Etc/GMT+3"
     cooldown:
       default-days: 7
     rebase-strategy: auto
@@ -22,6 +21,10 @@ updates:
       prefix: deps
       include: scope
     groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
       minor-e-patch:
         patterns:
           - "*"
@@ -38,10 +41,9 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: America/Sao_Paulo
+      interval: "cron"
+      cronjob: "0 5 * * *"
+      timezone: "Etc/GMT+3"
     cooldown:
       default-days: 7
       exclude:
@@ -55,6 +57,10 @@ updates:
       prefix: deps
       include: scope
     groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
       minor-e-patch:
         patterns:
           - "*"
@@ -65,13 +71,14 @@ updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: America/Sao_Paulo
+      interval: "cron"
+      cronjob: "0 5 * * *"
+      timezone: "Etc/GMT+3"
     cooldown:
       default-days: 7
     rebase-strategy: auto
+    allow:
+      - dependency-type: all
     versioning-strategy: increase
     open-pull-requests-limit: 10
     labels:
@@ -80,6 +87,10 @@ updates:
       prefix: deps
       include: scope
     groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
       minor-e-patch:
         patterns:
           - "*"
@@ -90,10 +101,9 @@ updates:
   - package-ecosystem: pre-commit
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: America/Sao_Paulo
+      interval: "cron"
+      cronjob: "0 5 * * *"
+      timezone: "Etc/GMT+3"
     cooldown:
       default-days: 7
     rebase-strategy: auto
