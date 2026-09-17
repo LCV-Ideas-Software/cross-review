@@ -7,8 +7,26 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v08.00.00] — 17/09/2026
+
 ### Changed
 
+- **BREAKING — `review` mode evaluates a fixed artifact, and the lead never
+  revises it.** Three surfaces disagreed about the relator's role in
+  `mode: "review"`: `src/core/types.ts` and the MCP tool description said the
+  lead "may emit a structured response", the directive forbidding a structured
+  response was `ship`-only, and the text the peer actually received told it to
+  "rewrite the solution" and "return only the complete revised version". Two
+  measured damages followed. A seat holding 34 000 characters against a 20 000
+  token ceiling died on `max_output_tokens` _after_ the round's votes had been
+  paid. And when the lead answered with a short verdict, that verdict replaced
+  `draft` unguarded, because drift detection is `ship`-only — the evaluation
+  silently became the artifact the next round voted on, destroying the object
+  of the evaluation. The cause is removed rather than guarded: in `review` the
+  lead generates only in round zero, when the caller brought no artifact; from
+  there the peers vote on a fixed artifact. The output-ceiling screen now
+  applies to `ship` and `circular` only. Callers that relied on the lead
+  re-emitting the artifact in `review` no longer get that behaviour.
 - Updated the official CodeQL SARIF upload Action to v4.38.0 and zizmor-action
   to v0.6.4, pinned to the full commit SHAs of their releases.
 
