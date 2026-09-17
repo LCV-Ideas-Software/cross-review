@@ -318,16 +318,26 @@ function limitBlock(value: string, maxLength: number): string {
 // financial gates and the one inside `runCircularLoop`, because the same
 // collapse is reachable from both and two copies of a diagnosis is how they
 // stop agreeing.
-function collapsedCircularRotationMessage(
+// v9.0.0 (CROSREV-49): the refusal covers PARTIAL exclusion too, so the message
+// has to stay true in both shapes. Saying "no other rotator clears the screen"
+// when three of four cleared it would be a diagnosis that misreports its own
+// cause — and the whole point of refusing instead of narrowing is that the
+// operator learns exactly which peers were dropped and what it would have cost.
+function circularRotationCeilingRefusalMessage(
   draftChars: number,
   excluded: readonly { peer: PeerId; ceiling_tokens: number }[],
+  eligible: readonly PeerId[],
 ): string {
   const roster = excluded.map((entry) => `${entry.peer}=${entry.ceiling_tokens} tokens`).join(", ");
+  const scope = eligible.length
+    ? `${excluded.length} of ${excluded.length + eligible.length} other rotators do not clear ` +
+      `the size screen (${roster}), so continuing would narrow the rotation to ` +
+      `${eligible.join(", ")} and finalize without the excluded peers ever seeing the artifact`
+    : `no other rotator's output ceiling clears the size screen (${roster})`;
   return (
     `Circular rotation refused before dispatch: the draft is ${draftChars} characters and ` +
-    `no other rotator's output ceiling clears the size screen (${roster}). Each ` +
-    `rotator must re-emit the whole artifact inside its own ceiling. Two levers: shrink ` +
-    `the artifact, or raise those ceilings in the central configuration ` +
+    `${scope}. Each rotator must re-emit the whole artifact inside its own ceiling. Two ` +
+    `levers: shrink the artifact, or raise those ceilings in the central configuration ` +
     `(max_output_tokens_by_peer / CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS).`
   );
 }
@@ -8377,15 +8387,36 @@ export class CrossReviewOrchestrator {
     const rotationScreen = circularRotationOrder(sessionPeers, firstRotator, outputFit);
     const rotationOrder: PeerId[] = rotationScreen.order;
 
-    // Refuse before dispatch when the screen is what shrank the rotation below
-    // two. A one-peer rotation would converge on that peer approving its own
-    // unchanged output, which is the self-review the protocol forbids.
-    if (rotationOrder.length < 2 && rotationScreen.excluded.length > 0) {
+    // Refuse before dispatch whenever the screen would drop ANY rotator, not
+    // only when it shrinks the rotation below two.
+    //
+    // v9.0.0 (CROSREV-49, operator decision of 17/09/2026): the partial case
+    // used to continue with whoever cleared the screen, and that silence was
+    // the defect. The initial screen runs once, against the artifact as it
+    // arrives; the live screen inside the loop resets on every artifact change
+    // because a shrinking artifact makes a skipped peer eligible again. A peer
+    // dropped HERE never comes back, since convergence only ever consults the
+    // rotation list — so the session could finalize `converged` while a peer
+    // that would fit the final artifact never saw it, and the recorded reason
+    // for its exclusion ("cannot re-emit 34,000 characters") expired the moment
+    // another rotator cut the text.
+    //
+    // Three designs were weighed and the operator chose this one: a full roster
+    // would abort late, after the round's votes were already paid, and
+    // readmitting mid-session would rebuild and reprice `rotation_order` against
+    // persisted state — the divergence between price and execution that
+    // relator-lottery.ts already documents. Refusing up front costs zero
+    // provider calls and never narrows the panel without saying so.
+    if (rotationScreen.excluded.length > 0) {
       const draftChars = rotationScreen.excluded[0]?.draft_chars ?? 0;
       this.emit({
         type: "session.circular_rotation_output_ceiling",
         session_id: session.session_id,
-        message: collapsedCircularRotationMessage(draftChars, rotationScreen.excluded),
+        message: circularRotationCeilingRefusalMessage(
+          draftChars,
+          rotationScreen.excluded,
+          rotationOrder.slice(1),
+        ),
         data: {
           draft_chars: draftChars,
           first_rotator: firstRotator,
@@ -9413,18 +9444,19 @@ export class CrossReviewOrchestrator {
       sessionMode === "circular"
         ? circularRotationOrder(selectedPeers, leadPeer, relatorOutputFit)
         : undefined;
-    // A rotation the screen has collapsed to its first rotator can never
-    // dispatch anyone: `runCircularLoop` refuses it at the `length < 2` guard.
-    // Pricing it first meant a missing rate card for that lone lead returned
-    // `financial_controls_missing` instead of the deterministic output-ceiling
-    // refusal — a diagnosis naming money for a session that was going to be
-    // refused for size, with no provider call possible either way. The size
-    // refusal is the true cause, so it goes first (PR #300 review round 5).
-    if (
-      circularRotation &&
-      circularRotation.order.length < 2 &&
-      circularRotation.excluded.length > 0
-    ) {
+    // A rotation the screen would narrow is refused by `runCircularLoop`, so
+    // pricing it first meant a missing rate card for a peer that was never
+    // going to be called returned `financial_controls_missing` instead of the
+    // deterministic output-ceiling refusal — a diagnosis naming money for a
+    // session that was going to be refused for size, with no provider call
+    // possible either way. The size refusal is the true cause, so it goes first
+    // (PR #300 review round 5).
+    //
+    // v9.0.0 (CROSREV-49): this condition mirrors the loop's exactly. The two
+    // are the same rule read at two points, and they were kept in step
+    // deliberately — a preflight that priced a session the loop would refuse is
+    // the very drift this block exists to prevent.
+    if (circularRotation && circularRotation.excluded.length > 0) {
       const draftChars = circularRotation.excluded[0]?.draft_chars ?? 0;
       const refusedSession =
         existingSession ??
@@ -9440,7 +9472,11 @@ export class CrossReviewOrchestrator {
       this.emit({
         type: "session.circular_rotation_output_ceiling",
         session_id: refusedSession.session_id,
-        message: collapsedCircularRotationMessage(draftChars, circularRotation.excluded),
+        message: circularRotationCeilingRefusalMessage(
+          draftChars,
+          circularRotation.excluded,
+          circularRotation.order.slice(1),
+        ),
         data: {
           draft_chars: draftChars,
           first_rotator: leadPeer,
