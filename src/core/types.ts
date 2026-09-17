@@ -429,6 +429,37 @@ export interface PeerFailure {
         docs_url?: string | undefined;
       }
     | undefined;
+  /**
+   * v9.1.0 (CROSREV-50): the provider's own error object, preserved instead of
+   * discarded.
+   *
+   * `message` alone cannot distinguish two causes that need opposite responses:
+   * a 400 rejecting OUR request body, which we must fix, and an asynchronous
+   * failure of an already-created background job, which is the provider's. The
+   * classifier already reads `http_status`, `type` and `code` — it simply threw
+   * the values away after lowercasing them into a string for regex matching.
+   *
+   * The distinction is not hypothetical. In session `5c55f692` a peer returned
+   * the bare literal `invalid request` with no `type` and no `code`; a genuine
+   * creation-time rejection from the same API carries a descriptive message
+   * plus both fields. With only `message` persisted, that investigation had to
+   * infer from timing and reached the wrong conclusion before a live probe
+   * corrected it.
+   *
+   * `raw_body` passes through the same redaction as every other persisted
+   * string and is truncated at a declared ceiling, because an error body can be
+   * large and can echo fragments of the request.
+   */
+  provider_error_detail?:
+    | {
+        http_status?: number | undefined;
+        type?: string | undefined;
+        code?: string | undefined;
+        param?: string | undefined;
+        raw_body?: string | undefined;
+        raw_body_truncated?: boolean | undefined;
+      }
+    | undefined;
 }
 
 /**
