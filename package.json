@@ -75,11 +75,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
     "@google/genai": "^2.21.0",
-    "openai": "^7.12.1",
+    "openai": "^7.13.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^8.6.4",
-    "zod": "^4.4.3"
+    "zod": "^4.6.1"
   },
   "overrides": {
     "express-rate-limit": {
@@ -98,7 +98,7 @@
     "@biomejs/biome": "^2.5.12",
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@types/node": "^26.5.0",
+    "@types/node": "^26.5.1",
     "@types/proper-lockfile": "^4.1.4",
     "esbuild": "^0.28.1",
     "eslint": "^10.10.0",
