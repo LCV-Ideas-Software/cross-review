@@ -7,6 +7,27 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v09.01.00] — 17/09/2026
+
+### Added
+
+- **A provider failure now preserves the provider's own error object instead of
+  discarding it.** The record kept `message`, `failure_class` and `latency_ms`,
+  and dropped the HTTP status, `type`, `code`, `param` and body — so a
+  `provider_error` could not be diagnosed afterwards. `message` alone cannot
+  separate two causes that demand opposite responses: a 400 rejecting our
+  request body, which we must fix, and an asynchronous failure of an
+  already-created background job, which is the provider's. This is not new
+  instrumentation: the classifier already read the status, `type` and `code`
+  from every nesting level a provider uses, then threw the values away after
+  lowercasing them into one string for regex matching. The new optional
+  `provider_error_detail` keeps them, alongside the body — redacted as
+  structure before serialization, capped at a declared ceiling, and flagged when
+  truncated so a reader can never mistake a cut body for a short one. An empty
+  serialization is not recorded at all, because asserting that a provider
+  returned an empty body when it returned nothing to read is the same false
+  precision the field exists to remove.
+
 ## [v09.00.00] — 17/09/2026
 
 ### Changed

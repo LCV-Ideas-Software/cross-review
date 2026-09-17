@@ -1,6 +1,6 @@
 import type { CostEstimate, PeerFailure, PeerId, TokenUsage } from "../core/types.js";
 import { indeterminateSpendMarkerFor } from "../core/types.js";
-import { safeErrorMessage } from "../security/redact.js";
+import { redactJsonValue, safeErrorMessage } from "../security/redact.js";
 
 // v2.4.0 / audit closure (P2.7): extract `Retry-After` from provider
 // SDK error objects. Anthropic, OpenAI, Google GenAI and the OpenAI-
@@ -120,6 +120,117 @@ function extractProviderErrorSignals(error: unknown): string {
     }
   }
   return values.join(" ");
+}
+
+// v9.1.0 (CROSREV-50): the provider's error object, preserved rather than
+// discarded.
+//
+// `extractProviderErrorSignals` above already reads `type` and `code` from
+// every nesting level a provider uses — and then throws the values away,
+// because it lowercases everything into one string for regex matching. That
+// loss is what made a `provider_error` undiagnosable after the fact: `message`
+// alone cannot separate a 400 rejecting our request body from an asynchronous
+// failure of an already-created background job.
+//
+// Nothing new is instrumented here. The same objects are walked; the original
+// values are kept.
+const PROVIDER_ERROR_BODY_MAX_CHARS = 4_096;
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    // A provider may report `code` numerically — Perplexity answers
+    // `{"error":{"type":"invalid_request","code":400}}` — so a finite number is
+    // a legitimate value here, not a type error to skip.
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+/**
+ * The objects a provider error can carry its structured fields in, most
+ * specific first. The nested `error` wins over its container because that is
+ * where every provider in this fleet puts the real diagnosis.
+ */
+function providerErrorCandidates(error: unknown): Record<string, unknown>[] {
+  const root = asRecord(error);
+  if (!root) return [];
+  const response = asRecord(root.response);
+  const body = asRecord(root.body) ?? asRecord(response?.data) ?? asRecord(response?.body);
+  return [
+    asRecord(root.error),
+    asRecord(body?.error),
+    asRecord(response?.error),
+    body,
+    response,
+    root,
+  ].filter((candidate): candidate is Record<string, unknown> => candidate !== undefined);
+}
+
+function extractProviderErrorDetail(
+  error: unknown,
+  httpStatus: number | undefined,
+): PeerFailure["provider_error_detail"] {
+  const candidates = providerErrorCandidates(error);
+  if (candidates.length === 0 && httpStatus === undefined) return undefined;
+
+  const type = firstString(...candidates.map((candidate) => candidate.type));
+  const code = firstString(...candidates.map((candidate) => candidate.code));
+  const param = firstString(...candidates.map((candidate) => candidate.param));
+
+  // The body is serialized from the most specific object that actually carries
+  // a diagnosis, so the ceiling is spent on signal rather than on SDK wrapper
+  // fields. Redaction runs on the STRUCTURE before serialization, so a secret
+  // nested in the body is redacted as a value rather than pattern-matched out
+  // of a flat string afterwards.
+  const source = candidates.find(
+    (candidate) =>
+      candidate.type !== undefined ||
+      candidate.code !== undefined ||
+      candidate.message !== undefined,
+  );
+  let rawBody: string | undefined;
+  let truncated: boolean | undefined;
+  if (source) {
+    try {
+      const serialized = JSON.stringify(redactJsonValue(source));
+      // `{}` is what a bare `Error` serializes to, because `message` is not an
+      // enumerable own property. Recording it would assert that the provider
+      // returned an empty body when in fact it returned nothing to read — the
+      // same false precision this field exists to remove.
+      if (serialized && serialized !== "{}") {
+        rawBody = serialized.slice(0, PROVIDER_ERROR_BODY_MAX_CHARS);
+        if (serialized.length > PROVIDER_ERROR_BODY_MAX_CHARS) truncated = true;
+      }
+    } catch {
+      // A body that cannot be serialized — a cycle, a BigInt, a getter that
+      // throws — must never take the round down with it. Losing the body is
+      // the acceptable outcome; losing the failure record is not.
+      rawBody = undefined;
+    }
+  }
+
+  if (
+    httpStatus === undefined &&
+    type === undefined &&
+    code === undefined &&
+    param === undefined &&
+    rawBody === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(httpStatus !== undefined ? { http_status: httpStatus } : {}),
+    ...(type !== undefined ? { type } : {}),
+    ...(code !== undefined ? { code } : {}),
+    ...(param !== undefined ? { param } : {}),
+    ...(rawBody !== undefined ? { raw_body: rawBody } : {}),
+    ...(truncated ? { raw_body_truncated: true } : {}),
+  };
 }
 
 // v2.4.0 / audit closure (P4.17): treat upstream gateway errors (502 Bad
@@ -388,5 +499,6 @@ export function classifyProviderError(
         }
       : {}),
     docs_hint: docsHint,
+    provider_error_detail: extractProviderErrorDetail(error, httpStatus),
   };
 }
