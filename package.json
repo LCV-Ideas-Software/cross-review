@@ -77,13 +77,13 @@
     "check": "npm run format:check && npm run lint && npm run biome && npm run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.124.0",
-    "@google/genai": "^2.21.0",
-    "openai": "^7.13.0",
+    "@anthropic-ai/sdk": "^0.125.0",
+    "@google/genai": "^2.22.0",
+    "openai": "^7.15.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^8.6.4",
-    "zod": "^4.6.1"
+    "zod": "^4.6.2"
   },
   "overrides": {
     "express-rate-limit": {
@@ -99,7 +99,7 @@
     "protobufjs@7.6.5": true
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.12",
+    "@biomejs/biome": "^2.5.13",
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^26.5.1",
