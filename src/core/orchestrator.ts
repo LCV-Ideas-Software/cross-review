@@ -3317,7 +3317,7 @@ export function truthfulnessPreflight(params: {
       const routedPinFamilyByPeer = new Map<PeerId, string>();
       for (const pinPeer of PEERS) {
         const pin = modelPins[pinPeer];
-        if (!pin || !pin.replace(/^models\//i, "").includes("/")) continue;
+        if (!pin?.replace(/^models\//i, "").includes("/")) continue;
         const segment = canonicalModelText(normalizeModelPin(pin));
         const family = segment.match(/^[a-z]{2,}[a-z0-9]*[-._]/)?.[0];
         if (family) routedPinFamilyByPeer.set(pinPeer, family);

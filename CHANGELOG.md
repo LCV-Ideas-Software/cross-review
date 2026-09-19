@@ -7,6 +7,51 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v09.02.00] — 19/09/2026
+
+### Added
+
+- **One re-creation after a bare asynchronous Perplexity failure**
+  (CROSREV-48). Twice, on 14/09 and 18/09/2026, the Agent API accepted the
+  reviewer's create and then reported the background run `failed` at the first
+  retrieval, about two seconds in, with the bare body
+  `{"code":"invalid_request","message":"invalid request","type":"invalid_request"}`
+  — no `param`, no HTTP status, no usage — while the same payload is accepted
+  when probed. The failure classifies `retryable: false`, correctly, and that
+  single verdict blocked ALL READY convergence for the whole session. The
+  adapter now recognises exactly that signature on a retrieved terminal object
+  (bare literal, no parameter, no numeric status, no reported usage, within
+  `PERPLEXITY_BARE_FAILURE_RECREATE_WINDOW_MS` of the create) and hands
+  `withRetry` one more attempt after `PERPLEXITY_BARE_FAILURE_RECREATE_DELAY_MS`;
+  the second attempt keeps the classifier's verdict, so two bare failures in a
+  row persist as before, with two attempts on the record. The run is terminal
+  when this happens — retrieved, not abandoned — so the re-creation cannot
+  orphan a live, billing run: the v6.0.0 poll-failure guard is untouched, and
+  the failed try is accounted as one unpriced, determinate attempt that arms no
+  budget gate. Descriptive failures, parameter rejections, failures with a
+  status and failures that reported usage keep today's single-attempt verdict.
+  Regression: `scripts/v9.2.0-perplexity-bare-failure-recreate-regression.ts`,
+  seven cases on the stubbed SDK surface, including the streaming and relator
+  paths.
+
+### Fixed
+
+- **Windows token-file ACL probe in `scripts/smoke.ts` under a pwsh 7
+  ancestor.** The probe runs Windows PowerShell 5.1 and inherited the parent's
+  `PSModulePath`; when the suite is started from pwsh 7 (pwsh → node →
+  `powershell.exe`) that list names pwsh's own `Modules` first, 5.1 autoloads
+  pwsh's `Microsoft.PowerShell.Security` manifest for `Get-Acl`, the load
+  fails on conflicting `ObjectSecurity` type data, and the probe reported
+  `Protected: null` for a DACL that is in fact protected — the full suite
+  failed on `main` on a workstation whose shell is pwsh 7. The probe now runs with
+  `PSModulePath` set to Windows PowerShell's own module root. Pre-existing,
+  test-only: the runtime's ACL commands in `src/core/caller-tokens.ts` use the
+  .NET ACL API and load no module, and `ci.yml`'s Windows job runs only the
+  v4.5.37 ACL regression, which is why the suite never caught it.
+- **Three pre-existing biome `useOptionalChain` warnings** cleared
+  (`src/core/orchestrator.ts`, `scripts/source-contract-smoke.ts`), no
+  behaviour change; the check gate reports zero warnings again.
+
 ## [v09.01.00] — 17/09/2026
 
 ### Added

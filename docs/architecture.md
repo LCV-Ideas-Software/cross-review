@@ -184,6 +184,30 @@ carries its own five-second budget so it cannot hold a cancellation gesture
 open, and can never fail the round. If it does not land, the run continues to
 execute, bill and be retained.
 
+**A bare asynchronous failure is re-created once.** Twice — sessions of
+14/09/2026 and 18/09/2026 — the provider accepted the reviewer's create and then
+reported the background run `failed` at the first retrieval, about two seconds
+in, with the bare body `{"code":"invalid_request","message":"invalid request",
+"type":"invalid_request"}`: no `param`, no HTTP status, no usage. The same
+payload is accepted when probed, so the failure is the provider's own; and
+because it classifies `retryable: false`, one such run blocked ALL READY
+convergence for the whole session. Since v9.2.0 the adapter treats exactly that
+signature — a terminal object whose error message is the bare literal, with no
+parameter name, no numeric status and no reported usage, retrieved within
+`PERPLEXITY_BARE_FAILURE_RECREATE_WINDOW_MS` of the create — as grounds for one
+more attempt: the first attempt's classification is returned to `withRetry` as
+retryable and safe to repeat, so the closure runs a second time after
+`PERPLEXITY_BARE_FAILURE_RECREATE_DELAY_MS`, and the second attempt keeps
+whatever the classifier says, so two bare failures in a row persist exactly as
+one did before. This is not the poll-failure case above and does not weaken it:
+there the run is alive and unreachable, here it is terminal and was retrieved,
+so a second create adds nothing to a run that is already over. The failed try
+is accounted through the ordinary retry machinery as one unpriced attempt whose
+spend is determinate (the provider reports usage on billable outcomes and
+reported none), so a session that recovered this way arms no budget gate. A
+descriptive failure, a failure that names a parameter or carries a status, and
+a failure that reported usage all keep today's single-attempt verdict.
+
 ## Terminal Events and Audit Reports
 
 Session outcome changes are persisted in `meta.json` and mirrored into
