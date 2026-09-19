@@ -423,12 +423,11 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     const handlerAt = registration.indexOf("async (");
     const schemaSection = handlerAt > 0 ? registration.slice(0, handlerAt) : registration;
     const namedSchema = /inputSchema:\s*([A-Za-z_$][\w$]*)\s*[,}]/.exec(schemaSection);
-    const schema =
-      namedSchema && namedSchema[1] ? bodyOfConst(namedSchema[1], "inputSchema") : schemaSection;
+    const schema = namedSchema?.[1] ? bodyOfConst(namedSchema[1], "inputSchema") : schemaSection;
     let handler = handlerAt > 0 ? registration.slice(handlerAt, handlerAt + 4000) : "";
     if (handlerAt < 0) {
       const namedHandler = /\n\s*([A-Za-z_$][\w$]*)\(\s*"/.exec(registration);
-      handler = namedHandler && namedHandler[1] ? bodyOfConst(namedHandler[1], "handler") : "";
+      handler = namedHandler?.[1] ? bodyOfConst(namedHandler[1], "handler") : "";
     }
     if (!schema.includes("caller: CallerSchema")) continue;
     if (

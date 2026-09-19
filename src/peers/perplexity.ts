@@ -97,6 +97,7 @@ import type {
   GenerationResult,
   PeerAdapter,
   PeerCallContext,
+  PeerFailure,
   PeerId,
   PeerProbeResult,
   PeerResult,
@@ -172,6 +173,82 @@ function markCreateOrphanRisk<T>(error: T): T {
     (error as Record<symbol, unknown>)[PERPLEXITY_CREATE_ORPHAN_RISK] = true;
   }
   return error;
+}
+
+// v9.2.0 (CROSREV-48): a background run the provider accepted and then failed
+// on its own, within seconds, with the bare `invalid request` body — no
+// `param`, no HTTP status, no descriptive message, no usage. Measured twice
+// (14/09 and 18/09/2026) with the same pin and a payload the provider accepts
+// when probed; the classifier rightly reports it `retryable: false`, and that
+// verdict blocks ALL READY convergence for the whole session. The run is
+// TERMINAL (`failed`) when this is seen — retrieved, not abandoned — so a second
+// create cannot orphan a live, billing run: that is the difference from the
+// poll-failure hazard above, and the reason exactly one re-create is safe. The
+// mark is a symbol, so it never reaches a serialized record, and the
+// re-creation goes through `withRetry` itself (attempt 2), so the failed try
+// is accounted like any other unpriced attempt.
+export const PERPLEXITY_BARE_FAILURE_RECREATE_WINDOW_MS = 60_000;
+export const PERPLEXITY_BARE_FAILURE_RECREATE_DELAY_MS = 1_000;
+const PERPLEXITY_BARE_ASYNC_FAILURE = Symbol.for("cross_review.perplexity.bare_async_failure");
+
+function hasBareAsyncFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as Record<symbol, unknown>)[PERPLEXITY_BARE_ASYNC_FAILURE] === true
+  );
+}
+
+function markBareAsyncFailure<T>(error: T): T {
+  if (typeof error === "object" && error !== null) {
+    (error as Record<symbol, unknown>)[PERPLEXITY_BARE_ASYNC_FAILURE] = true;
+  }
+  return error;
+}
+
+// The signature, and nothing wider: a terminal object whose `error.message` is
+// exactly the bare literal, carrying no `param` and no numeric status, with no
+// usage reported (the provider reports usage on billable outcomes), reached
+// within the window after the create. A descriptive message, a parameter
+// name, a status or any usage means a different failure and keeps today's
+// verdict untouched.
+export function isPerplexityBareAsyncFailure(
+  response: { status?: unknown; error?: unknown },
+  usage: TokenUsage | undefined,
+  elapsedMs: number,
+): boolean {
+  if (usage !== undefined) return false;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return false;
+  if (elapsedMs > PERPLEXITY_BARE_FAILURE_RECREATE_WINDOW_MS) return false;
+  if (isPerplexityBackgroundPending(response.status)) return false;
+  const error = response.error;
+  if (!error || typeof error !== "object") return false;
+  const record = error as Record<string, unknown>;
+  const message = typeof record.message === "string" ? record.message.trim().toLowerCase() : "";
+  if (message !== "invalid request") return false;
+  if (typeof record.param === "string" && record.param.trim().length > 0) return false;
+  for (const key of ["status", "statusCode"]) {
+    if (typeof record[key] === "number") return false;
+  }
+  return true;
+}
+
+// The first attempt's bare failure becomes a single, delayed repeat of the
+// closure; the second attempt keeps whatever the classifier says, so two bare
+// failures in a row persist exactly as one did before this change.
+function recreateOnceAfterBareAsyncFailure(
+  failure: PeerFailure,
+  error: unknown,
+  attempt: number,
+): PeerFailure {
+  if (attempt !== 1 || !hasBareAsyncFailure(error)) return failure;
+  return {
+    ...failure,
+    retryable: true,
+    safe_to_repeat: true,
+    recovery_hint: "wait_and_retry",
+    retry_after_ms: PERPLEXITY_BARE_FAILURE_RECREATE_DELAY_MS,
+  };
 }
 
 async function createAgentRun<T>(create: () => Promise<T>): Promise<T> {
@@ -649,6 +726,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     usage: TokenUsage | undefined,
     payload: PerplexityAgentPayload,
     searchPerformed: boolean,
+    elapsedSinceCreateMs: number,
   ): void {
     // An `incomplete` Agent API response arrives with `usage: null`
     // (observed on max_output_tokens exhaustion); price the rejected attempt
@@ -666,10 +744,16 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       // A `failed` terminal carries the provider error object; surface its
       // message instead of a bare status (same contract as openai.ts/grok.ts).
       if (response?.error) {
-        throw streamingFailureErrorFromEvent(
+        const failure = streamingFailureErrorFromEvent(
           { type: "response.failed", response: { error: response.error } },
           "Perplexity response failed.",
         );
+        // v9.2.0 (CROSREV-48): the run is terminal, so the mark can never
+        // repeat a create against a live run; it only asks `withRetry` for
+        // one more attempt when the failure is the measured bare signature.
+        throw isPerplexityBareAsyncFailure(response, usage, elapsedSinceCreateMs)
+          ? markBareAsyncFailure(failure)
+          : failure;
       }
       assertResponsesCompletion(response, {
         context,
@@ -815,8 +899,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
   private async createBackgroundResponse(
     payload: PerplexityAgentPayload,
     context: PeerCallContext,
-  ): Promise<{ response: AgentResponse; polls: number; retrieveErrors: number }> {
+  ): Promise<{
+    response: AgentResponse;
+    polls: number;
+    retrieveErrors: number;
+    createdAt: number;
+  }> {
     const deadline = Date.now() + this.config.retry.timeout_ms;
+    const createdAt = deadline - this.config.retry.timeout_ms;
     const backgroundClient = await this.client();
     const created = (await createAgentRun(() =>
       backgroundClient.responses.create(
@@ -835,7 +925,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       ),
     )) as unknown as AgentResponse;
     if (!isPerplexityBackgroundPending(created.status))
-      return { response: created, polls: 0, retrieveErrors: 0 };
+      return { response: created, polls: 0, retrieveErrors: 0, createdAt };
     const backgroundId = typeof created.id === "string" ? created.id.trim() : "";
     if (!backgroundId) {
       // The create SUCCEEDED and the run is pending: it exists, it bills, and
@@ -850,7 +940,14 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         ),
       );
     }
-    return this.pollBackgroundTerminal(backgroundClient, backgroundId, context, deadline, created);
+    const polled = await this.pollBackgroundTerminal(
+      backgroundClient,
+      backgroundId,
+      context,
+      deadline,
+      created,
+    );
+    return { ...polled, createdAt };
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -965,6 +1062,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     raw: Record<string, unknown>;
   }> {
     const deadline = Date.now() + this.config.retry.timeout_ms;
+    const createdAt = deadline - this.config.retry.timeout_ms;
     const streamClient = await this.client();
     const stream = await createAgentRun(() =>
       streamClient.responses.create(
@@ -1131,6 +1229,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         polledUsage,
         payload,
         searchPerformed,
+        Date.now() - createdAt,
       );
       const polledText = agentText(polled.response);
       return {
@@ -1275,7 +1374,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported: streamed.modelReported,
           });
         }
-        const { response, polls, retrieveErrors } = await this.createBackgroundResponse(
+        const { response, polls, retrieveErrors, createdAt } = await this.createBackgroundResponse(
           payload,
           context,
         );
@@ -1287,6 +1386,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           responseUsage,
           payload,
           searchPerformed,
+          Date.now() - createdAt,
         );
         return this.resultFromText({
           text: agentText(response),
@@ -1316,7 +1416,8 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         // `retryable` still drives convergence and the fallback chain. Only
         // the retry loop learns that repeating THIS attempt would re-POST a
         // create whose run may already exist and can never be reached.
-        return hasCreateOrphanRisk(error) ? { ...failure, safe_to_repeat: false } : failure;
+        if (hasCreateOrphanRisk(error)) return { ...failure, safe_to_repeat: false };
+        return recreateOnceAfterBareAsyncFailure(failure, error, attempt);
       },
       { signal: context.signal },
     );
@@ -1369,7 +1470,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
             modelReported: streamed.modelReported,
           });
         }
-        const { response, polls, retrieveErrors } = await this.createBackgroundResponse(
+        const { response, polls, retrieveErrors, createdAt } = await this.createBackgroundResponse(
           payload,
           context,
         );
@@ -1381,6 +1482,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
           responseUsage,
           payload,
           searchPerformed,
+          Date.now() - createdAt,
         );
         return this.generationFromText({
           text: agentText(response),
@@ -1410,7 +1512,8 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
         // `retryable` still drives convergence and the fallback chain. Only
         // the retry loop learns that repeating THIS attempt would re-POST a
         // create whose run may already exist and can never be reached.
-        return hasCreateOrphanRisk(error) ? { ...failure, safe_to_repeat: false } : failure;
+        if (hasCreateOrphanRisk(error)) return { ...failure, safe_to_repeat: false };
+        return recreateOnceAfterBareAsyncFailure(failure, error, attempt);
       },
       { signal: context.signal },
     );

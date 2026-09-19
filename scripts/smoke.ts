@@ -7560,7 +7560,27 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
         "-Path",
         isolatedPath,
       ],
-      { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+        // v9.2.0: the probe is Windows PowerShell 5.1, so it must see only its
+        // own module root. Under a pwsh 7 ancestor (pwsh -> node -> here) the
+        // inherited PSModulePath lists pwsh's Modules first, 5.1 autoloads
+        // pwsh's Microsoft.PowerShell.Security manifest for `Get-Acl`, the
+        // load fails on conflicting ObjectSecurity type data, and the probe
+        // reports `Protected: null` for a DACL that is in fact protected.
+        env: {
+          ...process.env,
+          PSModulePath: path.join(
+            process.env.SystemRoot ?? "C:\\Windows",
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "Modules",
+          ),
+        },
+      },
     );
     assert.equal(aclProbe.status, 0, "Windows token-file ACL probe must succeed");
     const parsedAcl = JSON.parse(aclProbe.stdout) as {
