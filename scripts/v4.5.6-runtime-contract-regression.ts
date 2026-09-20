@@ -304,6 +304,8 @@ const regressions: Regression[] = [
     run: async () => {
       // Explicit knobs so the wire assertions never depend on the host's
       // central config.json.
+      // `max` is what an operator override may still say; the wire must carry
+      // `high`, the ceiling the pinned model accepts (v9.2.1, CROSREV-51).
       const base = offlineConfig({ efforts: { perplexity: "max" } });
       const perplexity = new PerplexityAdapter({
         ...base,
@@ -350,7 +352,7 @@ const regressions: Regression[] = [
         "Agent API documents a top-level response_format wrapper; the backend model is provider-agnostic so no closed dimensional-keyword contract is assumed",
       );
       assert.equal(typeof perplexityRequest?.instructions, "string");
-      assert.deepEqual(perplexityRequest?.reasoning, { effort: "max" });
+      assert.deepEqual(perplexityRequest?.reasoning, { effort: "high" });
       assert.deepEqual(perplexityRequest?.tools, [
         { type: "web_search", search_context_size: "low" },
       ]);

@@ -438,14 +438,21 @@ The peer adapters use the strongest official reasoning controls available for ea
 - Grok runs pinned `grok-4.6` with explicit `reasoning.effort` at `low`,
   `medium`, `high`, or `xhigh` (`max`/`ultra` become `xhigh`).
 - Perplexity runs the pinned `perplexity/kimi-k3` model on the Agent API with
-  an explicit `reasoning.effort` (`minimal`/`low`/`medium`/`high`/`xhigh`/`max`,
-  default `max`); the shared effort scale is mapped onto that enum (`none`
-  becomes `minimal`, `ultra` becomes `max`).
+  an explicit `reasoning.effort`. The API documents
+  `minimal`/`low`/`medium`/`high`/`xhigh`/`max`, but since at least 14/09/2026
+  the pinned model rejects `xhigh` and `max`: synchronously as HTTP 400
+  `invalid request`, in background mode as a run born `queued` and `failed`
+  with the bare `invalid request` body at the first retrieval (CROSREV-51,
+  measured to the terminal state on 20/09/2026; `anthropic/claude-opus-5` and
+  `openai/gpt-5.6-sol` still accept `max` on the same API). The default is
+  therefore `high`, the strongest value the model completes with, and the
+  shared scale is mapped onto the accepted subset (`none` becomes `minimal`;
+  `xhigh`, `max` and `ultra` become `high`).
 
 The internal `ReasoningEffort` scale therefore includes the compatibility
 alias `ultra`, but adapters own the provider-specific normalization boundary:
-OpenAI GPT-5.6, Anthropic, DeepSeek and Perplexity use `max`; Grok 4.6 uses
-`xhigh`; Gemini maps the shared setting to its native `ThinkingLevel` enum and
+OpenAI GPT-5.6, Anthropic and DeepSeek use `max`; Grok 4.6 uses `xhigh`;
+Perplexity (`perplexity/kimi-k3`) uses `high`; Gemini maps the shared setting to its native `ThinkingLevel` enum and
 receives no shared effort string. Older explicit OpenAI model overrides use their own
 family-specific effort enum instead of the GPT-5.6 enum.
 

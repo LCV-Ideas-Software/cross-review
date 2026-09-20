@@ -914,8 +914,8 @@ assert.equal(anthropicCacheMinTokens("claude-unknown"), 4_096);
 
 assert.equal(
   clampEffortForPerplexity("ultra"),
-  "max",
-  "Perplexity must normalize ultra to the documented Agent API ceiling `max`.",
+  "high",
+  "Perplexity must normalize ultra to `high`, the ceiling perplexity/kimi-k3 accepts (CROSREV-51).",
 );
 
 {
@@ -1215,7 +1215,7 @@ assert.equal(
   );
   assert.ok(
     configSource.includes(
-      'perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max")',
+      'perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high")',
     ),
   );
   assert.ok(modelSelectionSource.includes('codex: ["gpt-6-astra"]'));

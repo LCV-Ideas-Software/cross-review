@@ -7,6 +7,36 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v09.02.01] — 20/09/2026
+
+### Fixed
+
+- **Perplexity reviewer and relator requests no longer ask `perplexity/kimi-k3`
+  for a reasoning effort it rejects** (CROSREV-51). Every `invalid request`
+  failure since 14/09/2026 — the three rounds of session `5c55f692`, the
+  18/09 round, and both re-creations the v09.02.00 mitigation performed on
+  19/09 — had one mechanism: the adapter sent `reasoning.effort: "max"`, the
+  documented ceiling and the value the model accepted on 23/08/2026, and the
+  pinned model now rejects `xhigh` and `max`. Synchronously the provider
+  answers HTTP 400 `invalid request`; in background mode the same validation
+  happens inside the run, which is born `queued` and is `failed` with the
+  bare body at the first retrieval, which is why the error carried no
+  parameter and no usage. Measured to the terminal state on 20/09/2026 with
+  the adapter's exact reviewer payload: removing only `reasoning` completes;
+  `minimal`, `low`, `medium` and `high` complete with reasoning tokens
+  reported; `xhigh` and `max` fail; `anthropic/claude-opus-5` and
+  `openai/gpt-5.6-sol` still complete with `max` on the same API; the API
+  reference still lists the full enum without a per-model restriction. The
+  default `CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT` is now `high`, the
+  strongest value the pinned model completes with (operator decision A,
+  20/09/2026), and `clampEffortForPerplexity` lands `xhigh`, `max` and the
+  `ultra` alias on `high` instead of transmitting them; the on-wire effort
+  type is the accepted subset. A regression pins the clamp table and asserts
+  the wire value on both the reviewer and the relator path under a `max`
+  override. The v09.02.00 re-creation stays: it is the right answer to a
+  transient bare failure, and it could never fix this one because the second
+  run carried the same field.
+
 ## [v09.02.00] — 19/09/2026
 
 ### Added

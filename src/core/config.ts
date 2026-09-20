@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "9.2.0";
+export const VERSION = "9.2.1";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -438,12 +438,14 @@ export function loadConfig(): AppConfig {
       // ceiling. Keeping the canonical default directly representable
       // avoids relying on adapter-side clamping.
       grok: reasoningEffort("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh"),
-      // v4.6.0: the Perplexity Agent API accepts
-      // `minimal|low|medium|high|xhigh|max`. Default `max` matches the
-      // canonical "max reasoning per peer" stance (operator directive
-      // 23/08/2026). The adapter normalizes `none` to `minimal` and the
-      // `ultra` alias to `max`.
-      perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max"),
+      // v4.6.0: the Perplexity Agent API documents
+      // `minimal|low|medium|high|xhigh|max`. v9.2.1 (CROSREV-51): the pinned
+      // `perplexity/kimi-k3` rejects `xhigh` and `max` (background run
+      // `failed` with the bare `invalid request`; HTTP 400 synchronously), so
+      // the default is `high`, the strongest value the model completes with
+      // (operator decision A, 20/09/2026). The adapter clamps `xhigh`, `max`
+      // and the `ultra` alias to `high` and `none` to `minimal`.
+      perplexity: reasoningEffort("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high"),
     },
     model_selection: {},
     api_keys: {
