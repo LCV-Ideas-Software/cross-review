@@ -6130,7 +6130,11 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "perplexity/kimi-k3",
     "default perplexity model must be perplexity/kimi-k3 on the Agent API (operator directive 2026-08-23)",
   );
-  assert.equal(cfg.reasoning_effort.perplexity, "max", "default Perplexity effort must be max");
+  assert.equal(
+    cfg.reasoning_effort.perplexity,
+    "high",
+    "default Perplexity effort must be high: perplexity/kimi-k3 rejects xhigh and max (CROSREV-51, 20/09/2026)",
+  );
   assert.equal(cfg.perplexity.max_steps, 1, "max_steps default must bound the agent loop to 1");
   assert.equal(
     cfg.perplexity.web_search_invocations_estimate,
@@ -6263,10 +6267,12 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(clampEffortForPerplexity("low"), "low");
   assert.equal(clampEffortForPerplexity("medium"), "medium");
   assert.equal(clampEffortForPerplexity("high"), "high");
-  assert.equal(clampEffortForPerplexity("xhigh"), "xhigh");
-  assert.equal(clampEffortForPerplexity("max"), "max");
-  assert.equal(clampEffortForPerplexity("ultra"), "max");
-  assert.equal(clampEffortForPerplexity(undefined), "max");
+  // v9.2.1 (CROSREV-51): `xhigh` and `max` are documented but rejected by the
+  // pinned model; the clamp lands them on the ceiling it accepts.
+  assert.equal(clampEffortForPerplexity("xhigh"), "high");
+  assert.equal(clampEffortForPerplexity("max"), "high");
+  assert.equal(clampEffortForPerplexity("ultra"), "high");
+  assert.equal(clampEffortForPerplexity(undefined), "high");
   for (const id of ["perplexity/kimi-k3", "openai/gpt-5.6-sol", "perplexity/sonar"]) {
     assert.equal(isPerplexityAgentModel(id), true, `${id} is an Agent API id`);
   }

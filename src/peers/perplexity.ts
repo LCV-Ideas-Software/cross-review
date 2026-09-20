@@ -26,8 +26,15 @@
 //    the assistant `message` item.
 //
 // 2. REASONING EFFORT is the Responses `reasoning.effort` object with the
-//    documented enum `minimal|low|medium|high|xhigh|max` (API reference,
-//    verified live with `perplexity/kimi-k3` on 23/08/2026).
+//    documented enum `minimal|low|medium|high|xhigh|max` (API reference).
+//    `max` was accepted by `perplexity/kimi-k3` on 23/08/2026; since at least
+//    14/09/2026 the pinned model rejects `xhigh` and `max` — synchronously as
+//    HTTP 400 `invalid request`, in background mode as a run that is born
+//    `queued` and is `failed` with the bare `invalid request` body at the
+//    first retrieval (CROSREV-51, measured to the terminal state on
+//    20/09/2026, while `anthropic/claude-opus-5` and `openai/gpt-5.6-sol`
+//    still accept `max` on the same API). The wire ceiling for this pin is
+//    therefore `high`; see `clampEffortForPerplexity`.
 //
 // 3. PRICING IS 3-DIMENSIONAL: input + output ($/M tokens, plus a cache
 //    read rate) PLUS a per-invocation web-search tool fee reported in
@@ -524,14 +531,16 @@ function agentText(response: { output?: unknown; output_text?: unknown }): strin
   return stripPerplexityThinkingBlock(messageText || helperText);
 }
 
-// Agent API `reasoning.effort` enum (API reference; verified live with
-// perplexity/kimi-k3 at `max` on 23/08/2026). The internal config scale
-// adds `none` and the operator-facing `ultra` alias; normalize both so the
-// on-wire value is always one the Agent API documents.
+// Agent API `reasoning.effort` enum is documented as
+// `minimal|low|medium|high|xhigh|max`, but the pinned `perplexity/kimi-k3`
+// rejects `xhigh` and `max` (header note 2; CROSREV-51, 20/09/2026), so the
+// on-wire type is the subset the model completes with. The internal config
+// scale adds `none` and the operator-facing `ultra` alias; normalize both so
+// the on-wire value is always one the pinned model accepts.
 //
 // Exported so the smoke harness can verify the clamp shape directly
 // (anti-drift, same pattern as `clampEffortForModel` in grok.ts).
-type PerplexityReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+type PerplexityReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 export function clampEffortForPerplexity(
   effort: AppConfig["reasoning_effort"][PeerId],
@@ -543,13 +552,13 @@ export function clampEffortForPerplexity(
     case "low":
     case "medium":
     case "high":
-    case "xhigh":
       return effort;
-    // `max` is the documented ceiling; `ultra` is the compatibility alias
-    // and is never transmitted; an unset value takes the canonical maximum
-    // reasoning stance shared by the other peers.
+    // `high` is the ceiling `perplexity/kimi-k3` accepts (operator decision A,
+    // 20/09/2026: the strongest value the pinned model takes, not the enum's
+    // documented top). `xhigh`, `max`, the `ultra` alias and an unset value
+    // all land there; none of them is transmitted.
     default:
-      return "max";
+      return "high";
   }
 }
 

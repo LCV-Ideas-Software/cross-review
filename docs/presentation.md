@@ -342,7 +342,8 @@ documented retention is 30 days, with no ZDR option. On GPT-5.6 Sol, `ultra` is
 a mode of the Codex product, not a literal `reasoning.effort` of the Responses
 API; cross-review accepts that alias in the configuration and sends `max` to
 the API. Grok 4.6 accepts `low`/`medium`/`high`/`xhigh` and receives `xhigh`
-when the alias is used; Perplexity (`perplexity/kimi-k3`) receives `max`.
+when the alias is used; Perplexity (`perplexity/kimi-k3`) receives `high`,
+the ceiling that model accepts (it rejects `xhigh` and `max` since 09/2026).
 Explicit overrides for earlier OpenAI families are normalized to the family's
 enum: ceiling `xhigh` on GPT-5.5/5.4/5.2 and `high` on GPT-5.1/GPT-5.
 

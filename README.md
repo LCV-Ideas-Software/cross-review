@@ -30,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v09.02.00** (package `9.2.0`).
+**Status.** Stable. The current source/release target is **v09.02.01** (package `9.2.1`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -267,7 +267,7 @@ variables. Example overrides (PowerShell):
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.6", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "perplexity/kimi-k3", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "max", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high", "User")
 ```
 
 `ultra` is a Codex product/CLI execution mode, not a literal OpenAI Responses
