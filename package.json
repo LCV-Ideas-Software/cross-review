@@ -85,7 +85,7 @@
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^8.6.4",
-    "zod": "^4.6.4"
+    "zod": "^4.6.5"
   },
   "overrides": {
     "express-rate-limit": {
