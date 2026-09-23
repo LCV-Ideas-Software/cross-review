@@ -402,13 +402,13 @@ async function captureGrokReasoningEffort(
 }
 
 {
-  const grok = selectFromCandidates("grok", [{ id: "grok-4.6", source: "api" }], "grok-4.6");
-  assert.equal(grok.selected, "grok-4.6");
+  const grok = selectFromCandidates("grok", [{ id: "grok-4.7", source: "api" }], "grok-4.7");
+  assert.equal(grok.selected, "grok-4.7");
   assert.equal(grok.confidence, "verified");
 
   const adapter = new GrokAdapter({
     ...config,
-    models: { ...config.models, grok: "grok-4.6" },
+    models: { ...config.models, grok: "grok-4.7" },
     reasoning_effort: { ...config.reasoning_effort, grok: "ultra" },
     streaming: { ...config.streaming, tokens: false },
   });
@@ -427,8 +427,15 @@ async function captureGrokReasoningEffort(
         capturedPayload = payload;
         return {
           status: "completed",
-          output_text: "revised fixture",
-          model: "grok-4.6",
+          output: [
+            { type: "reasoning", encrypted_content: "opaque-reasoning-fixture" },
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "revised fixture" }],
+            },
+          ],
+          model: "grok-4.7",
           usage: {
             input_tokens: 100,
             output_tokens: 20,
@@ -450,12 +457,12 @@ async function captureGrokReasoningEffort(
   assert.deepEqual(
     capturedPayload?.reasoning,
     { effort: "xhigh" },
-    "Grok 4.6 accepts low|medium|high|xhigh; the ultra alias must normalize to xhigh.",
+    "Grok 4.7 accepts low|medium|high|xhigh; the ultra alias must normalize to xhigh.",
   );
   assert.equal(
     Object.hasOwn(capturedPayload ?? {}, "prompt_cache_retention"),
     false,
-    "Grok 4.6 must not receive OpenAI-only prompt_cache_retention.",
+    "Grok 4.7 must not receive OpenAI-only prompt_cache_retention.",
   );
   assert.equal(capturedPayload?.prompt_cache_key !== undefined, true);
   assert.equal(
@@ -465,6 +472,26 @@ async function captureGrokReasoningEffort(
   );
   assert.equal(generated.usage?.input_tokens, 60);
   assert.equal(generated.usage?.cache_read_tokens, 40);
+  assert.equal(generated.text, "revised fixture");
+  assert.equal(generated.text.includes("opaque-reasoning-fixture"), false);
+
+  (adapter as unknown as { client: unknown }).client = async () => ({
+    responses: {
+      create: async () => ({
+        status: "completed",
+        output: [{ type: "reasoning", encrypted_content: "opaque-reasoning-fixture" }],
+        model: "grok-4.7",
+      }),
+    },
+  });
+  const reasoningOnly = await adapter.generate("Revise this fixture.", {
+    session_id: "550e8400-e29b-41d4-a716-446655440003",
+    round: 1,
+    task: "reasoning-only response must not become a draft",
+    emit: () => undefined,
+  });
+  assert.equal(reasoningOnly.text, "");
+  assert.ok(reasoningOnly.parser_warnings?.includes("grok_completed_without_assistant_text"));
 }
 
 {
@@ -493,10 +520,10 @@ async function captureGrokReasoningEffort(
       label: "grok",
       adapter: new GrokAdapter({
         ...config,
-        models: { ...config.models, grok: "grok-4.6" },
+        models: { ...config.models, grok: "grok-4.7" },
         streaming: { ...config.streaming, tokens: false },
       }) as unknown as { client: unknown },
-      model: "grok-4.6",
+      model: "grok-4.7",
     },
   ];
   for (const { label, adapter, model } of cachelessAdapters) {
@@ -553,7 +580,7 @@ async function captureGrokReasoningEffort(
     expected: Record<ReasoningEffort, string>;
   }> = [
     {
-      model: "grok-4.6",
+      model: "grok-4.7",
       expected: {
         none: "low",
         minimal: "low",
@@ -1196,7 +1223,7 @@ assert.equal(
       'gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview"',
     ),
   );
-  assert.ok(configSource.includes('grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.6"'));
+  assert.ok(configSource.includes('grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.7"'));
   assert.ok(
     configSource.includes(
       'perplexity: envValue("CROSS_REVIEW_PERPLEXITY_MODEL") || "perplexity/kimi-k3"',
@@ -1221,7 +1248,7 @@ assert.equal(
   assert.ok(modelSelectionSource.includes('codex: ["gpt-6-astra"]'));
   assert.ok(modelSelectionSource.includes('claude: ["claude-fable-5-1"]'));
   assert.ok(modelSelectionSource.includes('gemini: ["gemini-3.1-pro-preview"]'));
-  assert.ok(modelSelectionSource.includes('grok: ["grok-4.6"]'));
+  assert.ok(modelSelectionSource.includes('grok: ["grok-4.7"]'));
   assert.ok(modelSelectionSource.includes('perplexity: ["perplexity/kimi-k3"]'));
 }
 

@@ -9,7 +9,9 @@
 //   - `provider = "xai"`
 //   - auth via canonical `GROK_API_KEY`
 //   - operator chooses the model through CROSS_REVIEW_GROK_MODEL:
-//       * grok-4.6 (canonical since v4.6.0): explicit reasoning.effort
+//       * grok-4.7 (canonical since the September 2026 refresh): explicit reasoning.effort
+//         through xhigh
+//       * grok-4.6: explicit reasoning.effort
 //         through xhigh
 //       * grok-4.5: explicit reasoning.effort through high
 //       * grok-4-latest / grok-4.20 / grok-4.20-reasoning:
@@ -51,7 +53,7 @@ import {
   observeResponsesStreamTerminal,
   withEstimatedTerminalBilling,
 } from "./terminal.js";
-import { textFromOpenAIResponse, userPrompt } from "./text.js";
+import { userPrompt } from "./text.js";
 
 type GrokUsage = {
   input_tokens?: number | undefined;
@@ -107,6 +109,38 @@ type GrokResponseTerminal = {
 };
 
 const GROK_BASE_URL = "https://api.x.ai/v1";
+
+function grokResponseText(response: { output?: unknown }): {
+  text: string;
+  parserWarnings: string[];
+} {
+  const output = Array.isArray(response.output) ? response.output : [];
+  const text = output
+    .filter(
+      (item): item is { type: string; role: string; content: unknown[] } =>
+        item !== null &&
+        typeof item === "object" &&
+        item.type === "message" &&
+        item.role === "assistant" &&
+        Array.isArray(item.content),
+    )
+    .flatMap((item) => item.content)
+    .filter(
+      (part): part is { type: string; text: string } =>
+        part !== null &&
+        typeof part === "object" &&
+        (part as { type?: unknown }).type === "output_text" &&
+        typeof (part as { text?: unknown }).text === "string",
+    )
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return {
+    text,
+    parserWarnings: text ? [] : ["grok_completed_without_assistant_text"],
+  };
+}
 
 function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
@@ -181,8 +215,8 @@ export function clampEffortForModel(
   effort: GrokReasoningEffort,
   model: string,
 ): GrokReasoningEffort {
-  if (model === "grok-4.6") {
-    // grok-4.6 accepts low|medium|high|xhigh; `max`/`ultra` already
+  if (model === "grok-4.7" || model === "grok-4.6") {
+    // grok-4.7 and 4.6 accept low|medium|high|xhigh; `max`/`ultra` already
     // collapsed to `xhigh` in grokEffort(). Shared none/minimal mean "the
     // lowest supported effort" (reasoning cannot be disabled on this model).
     if (effort === "none" || effort === "minimal" || effort === "low") return "low";
@@ -235,7 +269,9 @@ export function clampEffortForModel(
 // capability discovery endpoint, replace the static set with a
 // runtime probe + cache.
 export const GROK_REASONING_EFFORT_MODELS: ReadonlySet<string> = new Set([
-  // v4.6.0: grok-4.6 (canonical) accepts reasoning.effort through xhigh.
+  // Grok 4.7 accepts low|medium|high|xhigh (xAI release notes, 21/09/2026).
+  "grok-4.7",
+  // v4.6.0: grok-4.6 remains supported with reasoning.effort through xhigh.
   "grok-4.6",
   "grok-4.5",
   "grok-4.20-multi-agent",
@@ -483,8 +519,10 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           timeout: this.config.retry.timeout_ms,
         });
         this.assertResponseTerminal(response as GrokResponseTerminal, context, "review");
+        const parsed = grokResponseText(response);
         return this.resultFromText({
-          text: textFromOpenAIResponse(response),
+          text: parsed.text,
+          extraParserWarnings: parsed.parserWarnings,
           raw: response,
           usage: usageFromGrok(response.usage),
           started,
@@ -633,8 +671,10 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           timeout: this.config.retry.timeout_ms,
         });
         this.assertResponseTerminal(response as GrokResponseTerminal, context, "generation");
+        const parsed = grokResponseText(response);
         return this.generationFromText({
-          text: textFromOpenAIResponse(response),
+          text: parsed.text,
+          extraParserWarnings: parsed.parserWarnings,
           raw: response,
           usage: usageFromGrok(response.usage),
           started,

@@ -30,7 +30,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v09.02.01** (package `9.2.1`).
+**Status.** Stable. The current source/release target is **v09.02.02** (package `9.2.2`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -269,7 +269,7 @@ variables. Example overrides (PowerShell):
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_ANTHROPIC_REASONING_EFFORT", "max", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_MODEL", "gemini-3.1-pro-preview", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.6", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.7", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "perplexity/kimi-k3", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high", "User")
@@ -306,7 +306,7 @@ the provider ceiling is part of setup, documented with the other per-peer
 ceilings in `docs/api-keys.md`; the relator output-ceiling screen measures the
 configured value, so a draft sized against 128,000 is refused until it is.
 
-For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.6`; xAI
+For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.7`; xAI
 accepts `low`, `medium`, `high`, or `xhigh` reasoning effort for it, so the
 adapter normalizes `max`/`ultra` to `xhigh` before sending the request.
 

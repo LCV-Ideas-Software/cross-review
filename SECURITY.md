@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Current supported source/release target: v09.02.01 for package 9.2.1. This
+Current supported source/release target: v09.02.02 for package 9.2.2. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.

@@ -59,7 +59,7 @@ no-fallback pins.
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GEMINI_REASONING_EFFORT", "high", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_MODEL", "deepseek-v4-pro", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DEEPSEEK_REASONING_EFFORT", "max", "User")
-[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.6", "User")
+[Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_MODEL", "grok-4.7", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_GROK_REASONING_EFFORT", "xhigh", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MODEL", "perplexity/kimi-k3", "User")
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_REASONING_EFFORT", "high", "User")

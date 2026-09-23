@@ -403,7 +403,7 @@ for (const canonicalPin of [
   "claude-fable-5-1",
   "gemini-3.1-pro-preview",
   "deepseek-v4-pro",
-  "grok-4.6",
+  "grok-4.7",
   "perplexity/kimi-k3",
 ]) {
   assert.ok(
@@ -6003,17 +6003,17 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     "PEERS must have 6 entries (codex/claude/gemini/deepseek/grok/perplexity)",
   );
   const cfg = loadConfig();
-  // v4.6.0 provider-doc refresh: default grok model is the concrete
-  // `grok-4.6` pin. `grok-4-latest` remains a valid xAI alias and
+  // September 2026 provider refresh: default grok model is the concrete
+  // `grok-4.7` pin. `grok-4-latest` remains a valid xAI alias and
   // `grok-4.20-multi-agent` remains a valid env-override for explicit
   // multi-agent reasoning behavior; the adapter tests below continue to
   // pin those capabilities.
   assert.equal(
     cfg.models.grok,
-    "grok-4.6",
-    "default grok model must be grok-4.6 (v4.6.0 provider-doc refresh)",
+    "grok-4.7",
+    "default grok model must be grok-4.7 (September 2026 provider refresh)",
   );
-  assert.equal(cfg.reasoning_effort.grok, "xhigh", "default grok effort must be xhigh on 4.6");
+  assert.equal(cfg.reasoning_effort.grok, "xhigh", "default grok effort must be xhigh on 4.7");
   assert.ok("grok" in cfg.fallback_models, "fallback_models must have grok entry");
   assert.equal(cfg.peer_enabled.grok, true, "grok must be enabled by default");
   assert.ok(cfg.cost_rates.grok, "grok cost rates must be configured (env-set in smoke setup)");
@@ -6082,7 +6082,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 {
   const grokMod = await import("../src/peers/grok.js");
   const { modelAcceptsReasoningEffort, GROK_REASONING_EFFORT_MODELS } = grokMod;
-  // Allowlist contract: grok-4.6 + grok-4.5 + grok-4.20-multi-agent + grok-4.3.
+  // Allowlist contract includes the canonical 4.7 and supported older pins.
+  assert.equal(modelAcceptsReasoningEffort("grok-4.7"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.6"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.5"), true);
   assert.equal(modelAcceptsReasoningEffort("grok-4.20-multi-agent"), true);
@@ -6095,7 +6096,8 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   assert.equal(modelAcceptsReasoningEffort("grok-3-fast"), false);
   // Set is exposed as ReadonlySet so future xAI additions are a 1-line
   // change in peers/grok.ts. Test asserts the expected size + content.
-  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 4);
+  assert.equal(GROK_REASONING_EFFORT_MODELS.size, 5);
+  assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.7"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.6"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.5"));
   assert.ok(GROK_REASONING_EFFORT_MODELS.has("grok-4.20-multi-agent"));
@@ -8130,6 +8132,10 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 // so the smoke can verify it directly without a request-shape stub.
 {
   const { clampEffortForModel } = await import("../src/peers/grok.js");
+  // Grok 4.7 keeps the documented four effort values, including xhigh.
+  assert.equal(clampEffortForModel("none", "grok-4.7"), "low");
+  assert.equal(clampEffortForModel("minimal", "grok-4.7"), "low");
+  assert.equal(clampEffortForModel("xhigh", "grok-4.7"), "xhigh");
   // grok-4.6 — API accepts low|medium|high|xhigh (xhigh passes through).
   assert.equal(clampEffortForModel("none", "grok-4.6"), "low");
   assert.equal(clampEffortForModel("minimal", "grok-4.6"), "low");
@@ -10151,7 +10157,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
     ["claude", "claude-fable-5-1"],
     ["gemini", "gemini-3.1-pro-preview"],
     ["deepseek", "deepseek-v4-pro"],
-    ["grok", "grok-4.6"],
+    ["grok", "grok-4.7"],
     ["perplexity", "perplexity/kimi-k3"],
   ] as const) {
     assert.ok(

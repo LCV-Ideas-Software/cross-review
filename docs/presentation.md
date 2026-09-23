@@ -333,7 +333,7 @@ Current canonical models (each one replaceable by an explicit
 | Anthropic    | `claude-fable-5-1`       |
 | Google       | `gemini-3.1-pro-preview` |
 | DeepSeek     | `deepseek-v4-pro`        |
-| xAI/Grok     | `grok-4.6`               |
+| xAI/Grok     | `grok-4.7`               |
 | Perplexity   | `perplexity/kimi-k3`     |
 
 On Fable 5, the adapter omits the explicit `thinking` field, since adaptive

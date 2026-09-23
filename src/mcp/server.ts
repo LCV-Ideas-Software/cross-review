@@ -3420,7 +3420,7 @@ export async function main(): Promise<void> {
     if (!reasoningSetExplicitly) return;
     if (GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE.has(grokModel)) return;
     console.error(
-      `[cross-review] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs. CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Use grok-4.6 (default), grok-4.5, grok-4.20-multi-agent, or grok-4.3 for explicit control.`,
+      `[cross-review] notice: GrokAdapter — model="${grokModel}" does NOT accept reasoning.effort per xAI docs. CROSS_REVIEW_GROK_REASONING_EFFORT="${process.env.CROSS_REVIEW_GROK_REASONING_EFFORT}" will be IGNORED at the wire level for this model. Use grok-4.7 (default), grok-4.6, grok-4.5, grok-4.20-multi-agent, or grok-4.3 for explicit control.`,
     );
   }, STARTUP_SWEEP_DELAY_MS);
   // v4.6.0: Perplexity sixth peer — boot notice for a retired model id.
@@ -3454,7 +3454,8 @@ export async function main(): Promise<void> {
 // the server boot path into a peer adapter module. If xAI adds models
 // to the reasoning-capable set, both lists must update together.
 const GROK_REASONING_EFFORT_MODELS_BOOT_NOTICE: ReadonlySet<string> = new Set([
-  // v4.6.0: grok-4.6 canonical pin (reasoning.effort through xhigh).
+  "grok-4.7",
+  // v4.6.0: grok-4.6 supported pin (reasoning.effort through xhigh).
   "grok-4.6",
   "grok-4.5",
   "grok-4.20-multi-agent",
