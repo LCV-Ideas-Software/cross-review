@@ -41,9 +41,9 @@ const PRIORITY: Record<PeerId, string[]> = {
   claude: ["claude-fable-5-1"],
   gemini: ["gemini-3.1-pro-preview"],
   deepseek: ["deepseek-v4-pro"],
-  // grok-4.6 (xAI, August 2026): the recommended frontier reasoning model
+  // grok-4.7 (xAI, September 2026): the recommended frontier reasoning model
   // for code and chat; accepts reasoning.effort through `xhigh`.
-  grok: ["grok-4.6"],
+  grok: ["grok-4.7"],
   // perplexity/kimi-k3 (Moonshot AI via the Perplexity Agent API): the
   // most capable reasoning model on that catalog whose family is not
   // already a peer (Claude/GPT/Gemini/Grok/DeepSeek are excluded so the

@@ -2,7 +2,8 @@
 // quarteto, making it a quinteto. Per `project_cross_review_v2_grok_integration_pending.md`,
 // xAI's Grok uses the OpenAI Responses API surface at base URL
 // `https://api.x.ai/v1`. Auth is via GROK_API_KEY. Operators may choose
-// `grok-4.6` (canonical; explicit reasoning.effort through xhigh),
+// `grok-4.7` (canonical; explicit reasoning.effort through xhigh),
+// `grok-4.6` (supported; explicit reasoning.effort through xhigh),
 // `grok-4.5` (explicit reasoning.effort through high),
 // `grok-4.3` (legacy explicit reasoning.effort support), `grok-4-latest`
 // / `grok-4.20` aliases (xAI automatic reasoning in this runtime), or

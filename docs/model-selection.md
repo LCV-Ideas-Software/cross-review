@@ -47,7 +47,7 @@ env-var per host — a deliberate decision, never a silent downgrade.
 | Anthropic/Claude | `claude-fable-5-1`       | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | Google/Gemini    | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | DeepSeek         | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| xAI/Grok         | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
+| xAI/Grok         | `grok-4.7`               | `CROSS_REVIEW_GROK_MODEL`       |
 | Perplexity       | `perplexity/kimi-k3`     | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Haiku and other low-capacity Anthropic models are intentionally excluded —
@@ -99,9 +99,9 @@ migration guide prints a `v1beta2/interactions` URL:
 Re-measure before revisiting; do not re-derive this from the documentation,
 which is what disagrees with the API.
 
-`GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.6`
+`GROK_API_KEY` is the canonical auth variable for xAI. The pinned `grok-4.7`
 model accepts `low`, `medium`, `high`, and `xhigh` for `reasoning.effort`
-("xhigh is available on grok-4.6 and later"); the adapter maps the shared scale
+(xAI's Grok 4.7 model documentation); the adapter maps the shared scale
 into that range (`max`/`ultra` → `xhigh`) so unsupported values do not reach
 the wire.
 
@@ -157,7 +157,7 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
 - DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default;
   shared-scale `xhigh`, `max`, and `ultra` all normalize to `max`.
-- Grok: the pinned `grok-4.6` model accepts explicit `reasoning.effort` at
+- Grok: the pinned `grok-4.7` model accepts explicit `reasoning.effort` at
   `low`, `medium`, `high`, or `xhigh` (default `xhigh`); shared `none`/`minimal`
   normalize to `low` and `max`/`ultra` to `xhigh`. The explicit `grok-4.5`
   override keeps its `low`/`medium`/`high` ceiling, and for the explicit
@@ -240,7 +240,7 @@ above and enforced by `src/peers/model-selection.ts`.
   downgrade chains.
 - xAI Grok: historical Grok notes covered aliases and the earlier concrete
   `grok-4.3` and `grok-4.5` pins. Current runtime behavior is defined above by
-  the `grok-4.6` pin and its `low`/`medium`/`high`/`xhigh` reasoning effort.
+  the `grok-4.7` pin and its `low`/`medium`/`high`/`xhigh` reasoning effort.
 - Perplexity: `sonar-reasoning-pro` on the Sonar Chat Completions API was the
   v3.0.0–v4.5.x pin; that API retires on 27/09/2026 and current runtime
   behavior is defined above by the `perplexity/kimi-k3` pin on the Agent API.

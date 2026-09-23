@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "9.2.1";
+export const VERSION = "9.2.2";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -401,11 +401,11 @@ export function loadConfig(): AppConfig {
       claude: envValue("CROSS_REVIEW_ANTHROPIC_MODEL") || "claude-fable-5-1",
       gemini: envValue("CROSS_REVIEW_GEMINI_MODEL") || "gemini-3.1-pro-preview",
       deepseek: envValue("CROSS_REVIEW_DEEPSEEK_MODEL") || "deepseek-v4-pro",
-      // v4.6.0 (provider-doc refresh 2026-08-23): Grok 4.6 is xAI's
-      // recommended frontier reasoning model (August 2026). Keep the
+      // 2026-09-23 provider refresh: Grok 4.7 is xAI's
+      // recommended frontier reasoning model (September 2026). Keep the
       // concrete id so model selection, reasoning clamps and model-aware
       // pricing stay stable.
-      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.6",
+      grok: envValue("CROSS_REVIEW_GROK_MODEL") || "grok-4.7",
       // v4.6.0 (operator directive 2026-08-23): Perplexity default
       // `perplexity/kimi-k3` on the Agent API — the most capable reasoning
       // model of that catalog whose family is not already a peer. Sonar

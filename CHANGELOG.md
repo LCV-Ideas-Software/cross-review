@@ -7,6 +7,12 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v09.02.02] — 23/09/2026
+
+### Changed
+
+- Pin the Grok peer to `grok-4.7` in the runtime default and model-selection priority. The xAI Responses adapter now sends its documented `low|medium|high|xhigh` reasoning effort for this model. Update boot notice, contract tests, and current operator documentation. The official 21/09/2026 Grok 4.7 release notes retain the same standard and >200k token prices as Grok 4.6; no rate values change. The central operator configuration must update its model pin and model-specific rate-card key together.
+
 ## [v09.02.01] — 20/09/2026
 
 ### Fixed

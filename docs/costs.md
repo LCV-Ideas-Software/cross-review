@@ -54,7 +54,7 @@ document any more: cross-review runs the top model of each provider.
 | Anthropic `claude-fable-5-1`    | `10`   | `50`   | `0.25`                   | none                                                                              |
 | Gemini `gemini-3.1-pro-preview` | `2`    | `12`   | `0.2`                    | `>200000` input tokens: input `4`, output `18`, cached input `0.4`                |
 | DeepSeek `deepseek-v4-pro`      | `1.32` | `3.96` | `0.044`                  | none (peak rates effective 16/08/2026; the official off-peak window is 50% lower) |
-| xAI `grok-4.6`                  | `2`    | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                               |
+| xAI `grok-4.7`                  | `2`    | `6`    | `0.5`                    | `>200000`: input `4`, output `12`, cached input `1`                               |
 | Perplexity `perplexity/kimi-k3` | `3`    | `15`   | `0.3`                    | `web_search` tool: `2.5` per 1000 invocations (`search_queries_per_1000`)         |
 
 GPT-6 Astra reports cache-write tokens separately. Configure OpenAI cache write
@@ -144,7 +144,7 @@ overrides can select models with different prices:
   "models": {
     "codex": "gpt-6-astra",
     "claude": "claude-fable-5-1",
-    "grok": "grok-4.6",
+    "grok": "grok-4.7",
     "perplexity": "perplexity/kimi-k3"
   },
   "model_cost_rates": {
@@ -170,7 +170,7 @@ overrides can select models with different prices:
       }
     },
     "grok": {
-      "grok-4.6": {
+      "grok-4.7": {
         "input_per_million": 2,
         "output_per_million": 6,
         "cache_read_per_million": 0.5,

@@ -435,7 +435,7 @@ The peer adapters use the strongest official reasoning controls available for ea
 - DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows
   the official multi-round guidance by resending summarized context in each
   stateless request.
-- Grok runs pinned `grok-4.6` with explicit `reasoning.effort` at `low`,
+- Grok runs pinned `grok-4.7` with explicit `reasoning.effort` at `low`,
   `medium`, `high`, or `xhigh` (`max`/`ultra` become `xhigh`).
 - Perplexity runs the pinned `perplexity/kimi-k3` model on the Agent API with
   an explicit `reasoning.effort`. The API documents

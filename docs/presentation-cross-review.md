@@ -1,6 +1,6 @@
 # cross-review presentation
 
-Reference date for this presentation: 20/08/2026.
+Reference date for this presentation: 23/09/2026.
 
 This document presents `cross-review` to two audiences:
 
@@ -41,8 +41,8 @@ The product is stable. The reference source/release target reports:
 | ------------------------------ | ---------------------------------- |
 | Name                           | `cross-review`                     |
 | Publisher                      | `LCV Ideas & Software`             |
-| Version prepared by the source | `v09.02.01`                        |
-| Source/release target date     | `20/09/2026`                       |
+| Version prepared by the source | `v09.02.02`                        |
+| Source/release target date     | `23/09/2026`                       |
 | npm package                    | `@lcv-ideas-software/cross-review` |
 | MCP transport                  | `stdio`                            |
 | Peer CLI execution             | disabled                           |
@@ -199,7 +199,7 @@ documented in the current repository are:
 | `claude`     | `claude-fable-5-1`       | `CROSS_REVIEW_ANTHROPIC_MODEL`  |
 | `gemini`     | `gemini-3.1-pro-preview` | `CROSS_REVIEW_GEMINI_MODEL`     |
 | `deepseek`   | `deepseek-v4-pro`        | `CROSS_REVIEW_DEEPSEEK_MODEL`   |
-| `grok`       | `grok-4.6`               | `CROSS_REVIEW_GROK_MODEL`       |
+| `grok`       | `grok-4.7`               | `CROSS_REVIEW_GROK_MODEL`       |
 | `perplexity` | `perplexity/kimi-k3`     | `CROSS_REVIEW_PERPLEXITY_MODEL` |
 
 Overrides must be an explicit operator decision. The system's premise is to
@@ -220,7 +220,7 @@ spend; no blocker is truncated or declared satisfied for convenience.
 For `gpt-6-astra`, `ultra` names an execution mode of the Codex product, not a
 literal Responses API `reasoning.effort`. cross-review accepts it as a
 compatibility alias in configuration and the adapter sends the official value
-`max`. `grok-4.6` accepts `low`, `medium`, `high` and `xhigh`, so the alias is
+`max`. `grok-4.7` accepts `low`, `medium`, `high` and `xhigh`, so the alias is
 normalized to `xhigh` before being sent; Perplexity (`perplexity/kimi-k3`,
 Agent API) receives `max`. No API receives the string `ultra`.
 Explicit GPT-5.5/5.4/5.2 overrides are capped at `xhigh`; GPT-5.1 and the
@@ -826,6 +826,9 @@ tag as an already-completed run; and only then does it pack, publish with
 provenance and create the Release last, with the run's own token.
 
 ## Brief changelog
+
+The v09.02.02 source target updates the xAI peer to Grok 4.7 and parses typed
+assistant output without exposing encrypted reasoning as review text.
 
 | Version          | Date          | Highlight                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
