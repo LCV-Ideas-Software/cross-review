@@ -79,7 +79,7 @@
     "check": "npm run format:check && npm run lint && npm run biome && npm run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.125.0",
+    "@anthropic-ai/sdk": "^0.126.0",
     "@google/genai": "^2.22.0",
     "openai": "^7.15.0",
     "pino": "^10.3.1",
@@ -101,10 +101,10 @@
     "protobufjs@7.6.5": true
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.13",
+    "@biomejs/biome": "^2.5.14",
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.1",
     "@types/proper-lockfile": "^4.1.4",
     "esbuild": "^0.28.1",
     "eslint": "^10.10.0",
