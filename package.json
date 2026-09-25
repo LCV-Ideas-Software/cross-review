@@ -81,7 +81,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
     "@google/genai": "^2.23.0",
-    "openai": "^7.17.0",
+    "openai": "^7.18.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^8.6.4",
@@ -109,7 +109,7 @@
     "esbuild": "^0.28.1",
     "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
-    "prettier": "^3.9.7",
+    "prettier": "^3.9.8",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.0"
