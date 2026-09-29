@@ -7,6 +7,12 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- Raise the existing scoped `express-rate-limit` override to `ip-address` 10.5.1
+  and regenerate the npm lockfile, addressing GHSA-rpw4-54j3-4h4q and
+  GHSA-2vr4-cq9g-pvrc. Update the matching smoke contract.
+
 ## [v09.02.02] — 23/09/2026
 
 ### Changed
