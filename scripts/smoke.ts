@@ -8026,13 +8026,13 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   );
   assert.equal(
     overrides["express-rate-limit"]?.["ip-address"],
-    "10.4.0",
-    "v2.18.5 / P1.1: express-rate-limit must retain the scoped ip-address 10.4.0 security override",
+    "10.5.1",
+    "v2.18.5 / P1.1: express-rate-limit must retain the scoped ip-address 10.5.1 security override",
   );
   assert.equal(
     lock.packages?.["node_modules/ip-address"]?.version,
-    "10.4.0",
-    "v2.18.5 / P1.1: package-lock.json must resolve the reviewed ip-address 10.4.0 override",
+    "10.5.1",
+    "v2.18.5 / P1.1: package-lock.json must resolve the reviewed ip-address 10.5.1 override",
   );
   console.log("[smoke] hono_override_anti_drift_test: PASS");
 }
