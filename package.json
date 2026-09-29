@@ -80,8 +80,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
-    "@google/genai": "^2.23.0",
-    "openai": "^7.20.0",
+    "@google/genai": "^2.24.0",
+    "openai": "^7.21.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^8.6.4",
@@ -112,7 +112,7 @@
     "prettier": "^3.9.8",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.70.0"
+    "typescript-eslint": "^8.70.1"
   },
   "engines": {
     "node": ">=22"
