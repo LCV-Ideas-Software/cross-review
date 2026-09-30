@@ -9,6 +9,11 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ### Fixed
 
+- Raise the existing scoped `express-rate-limit` override to `ip-address` 10.7.1
+  and regenerate the npm lockfile for GHSA-j6r3-76f7-8jcv (LCV-244). The
+  official npm audit fix also raises transitive `fast-uri` to 3.1.8 for
+  GHSA-hrr3-gc8f-f4qj.
+
 - Raise the existing scoped `express-rate-limit` override to `ip-address` 10.5.1
   and regenerate the npm lockfile, addressing GHSA-rpw4-54j3-4h4q and
   GHSA-2vr4-cq9g-pvrc. Update the matching smoke contract.
