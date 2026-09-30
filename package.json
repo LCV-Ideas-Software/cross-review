@@ -79,9 +79,9 @@
     "check": "npm run format:check && npm run lint && npm run biome && npm run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.127.0",
+    "@anthropic-ai/sdk": "^0.128.0",
     "@google/genai": "^2.24.0",
-    "openai": "^7.21.0",
+    "openai": "^7.23.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^8.6.4",
@@ -109,7 +109,7 @@
     "esbuild": "^0.28.1",
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
-    "prettier": "^3.9.8",
+    "prettier": "^3.9.9",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.1"
