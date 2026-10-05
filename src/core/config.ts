@@ -29,7 +29,7 @@ function expandHome(rawPath: string): string {
   return rawPath;
 }
 
-export const VERSION = "9.2.2";
+export const VERSION = "10.0.0";
 export const RELEASE_DATE = releaseDateFromChangelog(VERSION);
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 const COST_RATE_ENV_PREFIX: Record<PeerId, string> = {
@@ -302,7 +302,6 @@ export function loadConfig(): AppConfig {
     data_dir: dataDir,
     log_level: logLevelEnv("CROSS_REVIEW_LOG_LEVEL", "info"),
     stub: boolEnv("CROSS_REVIEW_STUB", false),
-    dashboard_port: intEnv("CROSS_REVIEW_DASHBOARD_PORT", 4588),
     retry: {
       max_attempts: intEnv("CROSS_REVIEW_RETRY_ATTEMPTS", 3),
       base_delay_ms: intEnv("CROSS_REVIEW_RETRY_BASE_MS", 1000),
@@ -594,13 +593,13 @@ function loadPerplexityConfig(): AppConfig["perplexity"] {
 }
 
 // v2.21.0 (caching): config loader. Default ON; switch off via
-// CROSS_REVIEW_DISABLE_CACHE=true (operator panic button when a
-// provider misbehaves or the operator wants strictly-fresh runs for
-// audit reproducibility). TTL options gated to the documented values
+// CROSS_REVIEW_DISABLE_CACHE=true disables supported native request controls;
+// it cannot disable provider-managed implicit caching on every service.
+// TTL options gated to the documented values
 // to prevent typos silently sending nonsense to providers — Anthropic
-// API rejects unknown ttl values with 400. OpenAI does NOT publish
-// per-call retention values; we still parse the env so future
-// migrations can flip the default without touching adapter code.
+// API rejects unknown ttl values with 400. Astra uses the documented
+// prompt_cache_options contract; legacy TTL families remain parsed for
+// explicitly configured compatibility models.
 function loadCacheConfig(): AppConfig["cache"] {
   const enabled = !boolEnv("CROSS_REVIEW_DISABLE_CACHE", false);
   const schemaVersion = (envValue("CROSS_REVIEW_CACHE_SCHEMA_VERSION") ?? "v1").trim() || "v1";

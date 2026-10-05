@@ -171,7 +171,10 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     const apiKey = this.config.api_keys.gemini;
     if (!apiKey) throw new Error("GEMINI_API_KEY was not found in environment variables.");
     const genai = await loadGenaiModule();
-    return { ai: new genai.GoogleGenAI({ apiKey }), ThinkingLevel: genai.ThinkingLevel };
+    return {
+      ai: new genai.GoogleGenAI({ apiKey, httpOptions: { timeout: this.config.retry.timeout_ms } }),
+      ThinkingLevel: genai.ThinkingLevel,
+    };
   }
 
   private throwIfMaxTokens(
@@ -329,10 +332,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
     }
     try {
       const probeClient = await this.client();
-      const pager = await probeClient.ai.models.list({ config: { pageSize: 1 } });
-      for await (const model of pager) {
-        void model;
-        break;
+      const model = await probeClient.ai.models.get({ model: this.model });
+      if (!model.supportedActions?.includes("generateContent")) {
+        throw new Error(`Gemini model ${this.model} does not support generateContent.`);
       }
       return {
         peer: this.id,
@@ -382,8 +384,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         const reviewClient = await this.client();
         const params = {
           model: this.model,
-          contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt)}\n\n${statusInstruction()}`,
+          contents: `${userPrompt(prompt)}\n\n${statusInstruction()}`,
           config: {
+            systemInstruction: this.systemPrompt(context),
             responseMimeType: "application/json",
             responseJsonSchema: geminiStatusJsonSchema,
             maxOutputTokens:
@@ -560,8 +563,9 @@ export class GeminiAdapter extends BasePeerAdapter implements PeerAdapter {
         const generateClient = await this.client();
         const params = {
           model: this.model,
-          contents: `${this.systemPrompt(context)}\n\n${userPrompt(prompt)}`,
+          contents: userPrompt(prompt),
           config: {
+            systemInstruction: this.systemPrompt(context),
             maxOutputTokens:
               context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
             thinkingConfig: geminiThinkingConfig(

@@ -55,6 +55,53 @@ import { assertCallerIsPeer, PEERS, POSSIBLE_INTERRUPTED_ATTEMPT_MESSAGE_PREFIX 
 
 export const SWEEP_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 
+export type SessionLockDirectoryIdentity = Pick<fs.BigIntStats, "dev" | "ino">;
+
+export function sessionLockDirectoryIdentity(lockfilePath: string): SessionLockDirectoryIdentity {
+  const stat = fs.lstatSync(lockfilePath, { bigint: true });
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw Object.assign(new Error("Session lock path is not a regular directory"), {
+      code: "ELOCKRELEASEIDENTITY",
+      path: lockfilePath,
+    });
+  }
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+export async function removeAcquiredSessionLockDirectory(
+  lockfilePath: string,
+  identity: SessionLockDirectoryIdentity | undefined,
+): Promise<void> {
+  // proper-lockfile relinquishes ownership before its native rmdir callback.
+  // Retry that syscall inside the callback, never call release() twice or
+  // remove a lock directory whose sampled identity has changed.
+  const maxAttempts = process.platform === "win32" ? 5 : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const current = sessionLockDirectoryIdentity(lockfilePath);
+    if (!identity || current.dev !== identity.dev || current.ino !== identity.ino) {
+      throw Object.assign(new Error("Refusing to remove a replaced session lock directory"), {
+        code: "ELOCKRELEASEIDENTITY",
+        path: lockfilePath,
+      });
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        fs.rmdir(lockfilePath, (error) => (error ? reject(error) : resolve()));
+      });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        attempt + 1 === maxAttempts ||
+        (code !== "EACCES" && code !== "EPERM" && code !== "EBUSY")
+      ) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+    }
+  }
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -178,7 +225,7 @@ const CHECKLIST_NON_EXECUTION_PATTERN =
 
 function checklistEvidenceHasExecutionRecord(corpus: string): boolean {
   if (CHECKLIST_NON_EXECUTION_PATTERN.test(corpus)) return false;
-  const exitCodes = [...corpus.matchAll(/\bexit[_ ]?code\s*[:=]\s*(\d+)\b/gi)].map((match) =>
+  const exitCodes = [...corpus.matchAll(/\bexit[_ ]?code\s*[:=]\s*([+-]?\d+)\b/gi)].map((match) =>
     Number(match[1]),
   );
   if (exitCodes.some((code) => code !== 0)) return false;
@@ -485,6 +532,21 @@ export interface EvidenceChecklistAdmission {
   violations: EvidenceChecklistContractViolation[];
 }
 
+export class EvidenceTransportLimitError extends Error {
+  readonly code = "evidence_transport_limit_exceeded";
+
+  constructor(
+    readonly path: string,
+    readonly receivedChars: number,
+    readonly limitChars: number,
+  ) {
+    super(
+      `evidence_transport_limit_exceeded: ${path} would bring attached evidence to ${receivedChars} characters; the configured limit is ${limitChars} characters. No evidence was truncated; reduce the submission before retrying.`,
+    );
+    this.name = "EvidenceTransportLimitError";
+  }
+}
+
 export class EvidenceChecklistContractViolationError extends Error {
   readonly code = "evidence_checklist_contract_violation";
 
@@ -725,6 +787,17 @@ function sessionMetaShapeError(value: unknown): string | undefined {
   }
   if (!Array.isArray(meta.capability_snapshot)) return "capability_snapshot must be an array";
   if (!Array.isArray(meta.rounds)) return "rounds must be an array";
+  for (const round of meta.rounds) {
+    if (
+      round !== null &&
+      typeof round === "object" &&
+      Object.hasOwn(round, "review_context_sha256") &&
+      (typeof round.review_context_sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(round.review_context_sha256))
+    ) {
+      return "round review_context_sha256 must be a lowercase SHA-256 when present";
+    }
+  }
   if (meta.in_flight !== undefined) {
     if (
       meta.in_flight === null ||
@@ -1503,22 +1576,55 @@ export class SessionStore {
         /* ignore other stat errors; lockfile.lock will surface them */
       }
     }
+    let releaseStarted = false;
+    let lockIdentity: SessionLockDirectoryIdentity | undefined;
     const release = await lockfile.lock(target, {
       stale: 120_000,
       update: 5_000,
       retries: { retries: 30, factor: 1.5, minTimeout: 100, maxTimeout: 1_000 },
       realpath: false,
       lockfilePath,
+      // The documented fs option keeps retries inside the library's single
+      // release operation. Acquisition and stale-lock handling stay native.
+      fs: {
+        ...fs,
+        rmdir: (directory: string, callback: fs.NoParamCallback): void => {
+          if (!releaseStarted || directory !== lockfilePath) {
+            fs.rmdir(directory, callback);
+            return;
+          }
+          void removeAcquiredSessionLockDirectory(directory, lockIdentity).then(
+            () => callback(null),
+            (error: NodeJS.ErrnoException) => callback(error),
+          );
+        },
+      },
     });
+    let operationFailed = false;
+    let operationError: unknown;
+    let result!: T;
     try {
-      return await fn();
-    } finally {
-      try {
-        await release();
-      } catch {
-        /* lock was already released by stale-detection or sibling process */
-      }
+      lockIdentity = sessionLockDirectoryIdentity(lockfilePath);
+      result = await fn();
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
     }
+    releaseStarted = true;
+    try {
+      await release();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "SESSION_LOCK_RELEASE_FAILED";
+      const message =
+        `session_lock_release_failed: ${code} at ${lockfilePath}: ${safeErrorMessage(error)}` +
+        (operationFailed ? `; operation_failed: ${safeErrorMessage(operationError)}` : "");
+      const failure = operationFailed
+        ? new AggregateError([operationError, error], message, { cause: error })
+        : new Error(message, { cause: error });
+      throw Object.assign(failure, { code, path: lockfilePath, file: target });
+    }
+    if (operationFailed) throw operationError;
+    return result;
   }
 
   // v07.00.00: a NEW session is always opened by a peer. The persisted
@@ -1605,6 +1711,7 @@ export class SessionStore {
       peers: PeerId[];
       started_at: string;
       scope: ConvergenceScope;
+      assert_evidence_admission?: (() => void) | undefined;
     },
   ): Promise<SessionMeta> {
     return this.withSessionLock(sessionId, async () => {
@@ -1621,6 +1728,9 @@ export class SessionStore {
           `session ${sessionId} already has an in-flight round (round=${meta.in_flight.round}, started_at=${meta.in_flight.started_at}); refusing to start a concurrent round. Wait for the round to complete, cancel it via session_cancel_job, or recover it via session_recover_interrupted.`,
         );
       }
+      // Re-read the prospective corpus while holding the same native lock as
+      // attachment writes. No reservation exists if admission fails here.
+      params.assert_evidence_admission?.();
       meta.in_flight = {
         round: params.round,
         peers: params.peers,
@@ -2028,6 +2138,13 @@ export class SessionStore {
         (error as Error & { code?: string }).code = "post_terminal_provider_reservation";
         throw error;
       }
+      if (meta.control?.status === "cancel_requested") {
+        const error = new Error(
+          `provider_reservation_cancelled: refusing to dispatch ${params.label} after cancellation was requested`,
+        );
+        (error as Error & { code?: string }).code = "provider_reservation_cancelled";
+        throw error;
+      }
       const inFlight = meta.in_flight;
       if (!inFlight || inFlight.round !== round || !inFlight.peers.includes(params.peer)) {
         const error = new Error(
@@ -2289,6 +2406,7 @@ export class SessionStore {
       caller_status: ReviewStatus;
       draft_file?: string | undefined;
       prompt_file: string;
+      review_context_sha256?: string | undefined;
       peers: PeerResult[];
       rejected: PeerFailure[];
       // Provider-unavailability failures can be excluded from convergence
@@ -2304,6 +2422,13 @@ export class SessionStore {
   ): Promise<ReviewRound> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (
+        params.review_context_sha256 !== undefined &&
+        (typeof params.review_context_sha256 !== "string" ||
+          !/^[a-f0-9]{64}$/.test(params.review_context_sha256))
+      ) {
+        throw new Error("round review_context_sha256 must be a lowercase SHA-256 when present");
+      }
       // v3.2.0 (Codex bug report 2026-05-12): refuse to append a round
       // to a finalized session. Otherwise the per-round
       // `convergence_health` write below would clobber the converged
@@ -2330,6 +2455,7 @@ export class SessionStore {
         caller_status: params.caller_status,
         draft_file: params.draft_file,
         prompt_file: params.prompt_file,
+        review_context_sha256: params.review_context_sha256,
         peers: params.peers,
         rejected: params.rejected,
         convergence: durableConvergence,
@@ -3257,6 +3383,7 @@ export class SessionStore {
   ): Promise<Array<{ item: EvidenceChecklistItem; history_entry: EvidenceStatusHistoryEntry }>> {
     return this.withSessionLock(sessionId, async () => {
       const meta = this.read(sessionId);
+      if (meta.outcome || meta.control?.status === "cancel_requested") return [];
       const checklist = meta.evidence_checklist ?? [];
       const evidenceSources = params.evidence_sources
         .map((source) => source.trim())
@@ -4433,9 +4560,9 @@ export class SessionStore {
 
   // v2.14.0 (path-A structural fix): resolve `meta.evidence_files[]`
   // entries into in-memory contents for inlining into peer prompts.
-  // Reads each attachment from disk, applies a per-file cap (60% of the
-  // total cap to leave room for at least 1 other attachment + headers),
-  // accumulates into a total-cap, and returns whatever fits. The active
+  // Reads complete attachments from disk within the configured total
+  // character limit. An over-limit corpus is rejected before dispatch;
+  // neither individual files nor later attachments are silently cut. The active
   // automatic caller snapshot is read first. Superseded caller submissions
   // remain audit-only by default. The orchestrator may read them locally to
   // replay a previously grounded requester verdict against the corrected
@@ -4454,21 +4581,21 @@ export class SessionStore {
     totalCapChars: number,
     callerSubmissionId?: string,
     includeHistoricalCallerSubmissions = false,
+    excludeCallerSubmissions = false,
+    reviewableOnly = false,
   ): ResolvedEvidenceAttachment[] {
     if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) return [];
-    let meta: SessionMeta;
-    let sessionDir: string;
-    try {
-      meta = this.read(sessionId);
-      sessionDir = this.sessionDir(sessionId);
-    } catch {
-      return [];
-    }
+    const meta = this.read(sessionId);
+    const sessionDir = this.sessionDir(sessionId);
     const allFiles = meta.evidence_files ?? [];
     if (!allFiles.length) return [];
     let files = allFiles;
     const activeSubmissionId = callerSubmissionId ?? meta.active_caller_evidence_submission_id;
-    if (activeSubmissionId) {
+    if (excludeCallerSubmissions) {
+      files = allFiles.filter(
+        (file) => currentEvidenceAttachment(file)?.origin !== "caller_submitted",
+      );
+    } else if (activeSubmissionId) {
       const activeSubmission = (meta.caller_evidence_submissions ?? []).find(
         (submission) => submission.submission_id === activeSubmissionId,
       );
@@ -4514,11 +4641,13 @@ export class SessionStore {
         : [];
       files = [...activeFiles, ...historicalCallerFiles, ...nonCallerSubmissionFiles];
     }
-    const perFileCap = Math.max(2_000, Math.floor(totalCapChars * 0.6));
     const result: ResolvedEvidenceAttachment[] = [];
     let used = 0;
     for (const file of files) {
       const custody = currentEvidenceAttachment(file);
+      // Legacy files without an integrity envelope are never transported to
+      // providers. Exclude them before reading or budgeting the review corpus.
+      if (reviewableOnly && !custody) continue;
       const absolutePath = this.safeResolveContainedExistingPath(sessionDir, file.path);
       if (!absolutePath) {
         if (custody) {
@@ -4543,17 +4672,15 @@ export class SessionStore {
         );
       }
       const raw = persisted.toString("utf8");
-      const remaining = totalCapChars - used;
-      if (remaining <= 0) break;
-      const cap = Math.min(perFileCap, remaining);
-      const truncated = raw.length > cap;
-      const slice = truncated ? raw.slice(0, cap) : raw;
+      if (used + raw.length > totalCapChars) {
+        throw new EvidenceTransportLimitError(file.path, used + raw.length, totalCapChars);
+      }
       result.push({
         label: file.label,
         relative_path: file.path,
-        content: slice,
+        content: raw,
         bytes: actualBytes,
-        truncated,
+        truncated: false,
         provenance_status: custody ? "verified" : "legacy_unverified",
         // Sessions persisted before v07.00.00 can carry custody attached by
         // "operator". Those bytes on disk are not rewritten, but the tier they
@@ -4571,7 +4698,7 @@ export class SessionStore {
             }
           : {}),
       });
-      used += slice.length;
+      used += raw.length;
     }
     return result;
   }
@@ -4659,7 +4786,7 @@ export class SessionStore {
   async attachCallerEvidenceSubmission(
     sessionId: string,
     params: {
-      submitted_by: PeerId | "operator";
+      submitted_by: PeerId;
       artifact_text: string;
       items: Array<{
         label: string;
@@ -4669,7 +4796,7 @@ export class SessionStore {
       }>;
     },
   ): Promise<{ submission: CallerEvidenceSubmission; meta: SessionMeta }> {
-    if (params.submitted_by !== "operator" && !PEERS.includes(params.submitted_by)) {
+    if (!PEERS.includes(params.submitted_by)) {
       throw new Error(`evidence_submitted_by_invalid: ${String(params.submitted_by)}`);
     }
     const submissionId = crypto.randomUUID();
@@ -4689,6 +4816,17 @@ export class SessionStore {
         bytes: persisted.byteLength,
       };
     });
+    const submittedChars = prepared.reduce(
+      (sum, item) => sum + item.persisted.toString("utf8").length,
+      0,
+    );
+    if (submittedChars > this.config.prompt.max_attached_evidence_chars) {
+      throw new EvidenceTransportLimitError(
+        "caller submission",
+        submittedChars,
+        this.config.prompt.max_attached_evidence_chars,
+      );
+    }
 
     return this.withSessionLock(sessionId, async () => {
       const current = this.read(sessionId);
@@ -4705,13 +4843,30 @@ export class SessionStore {
       for (const item of prepared) {
         const duplicate = (current.evidence_files ?? []).find((candidate) => {
           const currentCandidate = currentEvidenceAttachment(candidate);
-          return (
-            currentCandidate?.sha256 === item.sha256 &&
-            currentCandidate.bytes === item.bytes &&
-            currentCandidate.attached_by === params.submitted_by &&
-            currentCandidate.origin === "caller_submitted" &&
-            currentCandidate.label === item.label
+          if (
+            !currentCandidate ||
+            currentCandidate.sha256 !== item.sha256 ||
+            currentCandidate.bytes !== item.bytes ||
+            currentCandidate.attached_by !== params.submitted_by ||
+            currentCandidate.origin !== "caller_submitted" ||
+            currentCandidate.label !== item.label
+          ) {
+            return false;
+          }
+          // Historical custody metadata cannot prove the current file's bytes.
+          // Preserve rejected history and create a fresh file for valid input.
+          const absolutePath = this.safeResolveContainedExistingPath(
+            this.sessionDir(sessionId),
+            currentCandidate.path,
           );
+          if (!absolutePath) return false;
+          try {
+            const existing = fs.statSync(absolutePath);
+            if (!existing.isFile() || existing.size !== item.bytes) return false;
+            return fs.readFileSync(absolutePath).equals(item.persisted);
+          } catch {
+            return false;
+          }
         });
         if (duplicate) {
           attachmentPaths.push(duplicate.path);
@@ -4803,6 +4958,7 @@ export class SessionStore {
       attached_by: PeerId;
       origin: EvidenceAttachmentOrigin;
       deduplicate?: boolean;
+      total_cap_chars?: number;
     },
   ): Promise<{ path: string; meta: SessionMeta }> {
     if (!PEERS.includes(params.attached_by)) {
@@ -4826,19 +4982,43 @@ export class SessionStore {
         (error as Error & { code?: string }).code = "session_already_finalized";
         throw error;
       }
+      if (current.in_flight) {
+        throw new Error(
+          `evidence_attachment_round_in_flight: session ${sessionId} has review round ${current.in_flight.round} in flight; attach out-of-band evidence after the round completes so its admitted evidence corpus remains stable`,
+        );
+      }
+      const totalCapChars =
+        params.total_cap_chars ?? this.config.prompt.max_attached_evidence_chars;
+      if (!Number.isFinite(totalCapChars) || totalCapChars <= 0) {
+        throw new Error(`evidence_transport_limit_invalid: ${totalCapChars}`);
+      }
+      // Use the same current, custody-verified corpus as reviewer transport.
+      // Hold its existing session lock through admission and persistence.
+      const corpus = this.readEvidenceAttachments(
+        sessionId,
+        totalCapChars,
+        undefined,
+        false,
+        false,
+        true,
+      );
       if (params.deduplicate) {
-        const duplicate = (current.evidence_files ?? []).find((candidate) => {
-          const currentCandidate = currentEvidenceAttachment(candidate);
-          return (
-            currentCandidate?.sha256 === sha256 &&
-            currentCandidate.bytes === bytes &&
-            currentCandidate.attached_by === params.attached_by &&
-            currentCandidate.origin === params.origin
-          );
-        });
+        const duplicate = corpus.find(
+          (candidate) =>
+            candidate.sha256 === sha256 &&
+            candidate.bytes === bytes &&
+            candidate.attached_by === params.attached_by &&
+            candidate.origin === params.origin,
+        );
         if (duplicate) {
-          return { meta: current, path: duplicate.path };
+          return { meta: current, path: duplicate.relative_path };
         }
+      }
+      const corpusChars =
+        corpus.reduce((sum, attachment) => sum + attachment.content.length, 0) +
+        persisted.toString("utf8").length;
+      if (corpusChars > totalCapChars) {
+        throw new EvidenceTransportLimitError("proposed attachment", corpusChars, totalCapChars);
       }
       const attachedAt = now();
       const relativePath =

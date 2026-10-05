@@ -4,7 +4,7 @@
 prompt-caching surface. A peer call that produces no cache telemetry is
 represented as `not_supported`. For participating providers,
 the runtime emits a uniform `provider.cache.usage` event and persists a
-per-session `cache_manifest.json` so dashboards, FinOps reports and post-mortem
+per-session `cache_manifest.json` so agent reports and post-mortem
 tooling can read cache telemetry without branching on provider-specific shapes.
 
 This document describes:
@@ -13,19 +13,19 @@ This document describes:
 - the `stablePrefix` cache key + schema-version invariant
 - pair-scoped cache keys
 - cost savings accounting
-- operator controls (kill-switch + TTL overrides)
+- configuration controls and native provider limitations
 - empirical guidance per provider
 
 ## Per-provider behavior matrix
 
-| Peer (Provider)           | Cache mode | Default participation | Threshold       | TTL surface                                     | Telemetry source                                                      |
-| ------------------------- | ---------- | --------------------- | --------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
-| `codex` (OpenAI)          | `auto`     | on                    | ~1k tokens      | Sol: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
-| `claude` (Anthropic)      | `explicit` | off                   | ~4k tokens      | `cache_control.ttl` (`5m` / `1h`)               | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
-| `gemini` (Google)         | `implicit` | on                    | service-managed | n/a                                             | `usageMetadata.cachedContentTokenCount`                               |
-| `deepseek` (DeepSeek)     | `auto`     | on                    | service-managed | n/a                                             | `usage.prompt_cache_hit_tokens` + `usage.prompt_cache_miss_tokens`    |
-| `grok` (xAI)              | `auto`     | on                    | service-managed | `prompt_cache_key`; no client TTL               | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
-| `perplexity` (Perplexity) | `auto`     | on                    | service-managed | n/a                                             | Agent API `usage.input_tokens_details.cache_read_input_tokens`        |
+| Peer (Provider)           | Cache mode | Default participation | Threshold       | TTL surface                                       | Telemetry source                                                      |
+| ------------------------- | ---------- | --------------------- | --------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
+| `codex` (OpenAI)          | `auto`     | on                    | ~1k tokens      | Astra: `prompt_cache_options` (`implicit`, `30m`) | cached + cache-write token fields                                     |
+| `claude` (Anthropic)      | `explicit` | off                   | 512 tokens      | `cache_control.ttl` (`5m` / `1h`)                 | `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` |
+| `gemini` (Google)         | `implicit` | on                    | service-managed | n/a                                               | `usageMetadata.cachedContentTokenCount`                               |
+| `deepseek` (DeepSeek)     | `auto`     | on                    | service-managed | n/a                                               | Responses `usage.input_tokens_details.cached_tokens`                  |
+| `grok` (xAI)              | `auto`     | on                    | service-managed | `prompt_cache_key`; no client TTL                 | Responses `input_tokens_details` / Chat `prompt_tokens_details`       |
+| `perplexity` (Perplexity) | `auto`     | on                    | service-managed | n/a                                               | Agent API `usage.input_tokens_details.cache_read_input_tokens`        |
 
 `mode` values follow the canonical `TokenUsage.cache_provider_mode` enum:
 
@@ -34,9 +34,21 @@ This document describes:
 - `implicit` — provider transparently caches and reports tokens read (Gemini)
 - `not_supported` — peer call did not produce cache telemetry
 
+The OpenAI default in the matrix assumes a caller-scoped review or generation
+request with caching enabled. For the pinned GPT-6 Astra model, callerless
+requests have no caller-derived `cacheKey` and send native
+`prompt_cache_options` with `mode: "explicit"` and no breakpoints, disabling
+implicit caching. This native request mode is separate from the
+`TokenUsage.cache_provider_mode` telemetry enum above.
+
+DeepSeek Responses input totals include cached tokens. The adapter subtracts
+reported cache reads once to keep input buckets distinct; output totals already
+include reasoning tokens. The native contract supplies no separate cache-write
+counter, so its absence remains unknown.
+
 ## Cache key scope strategy
 
-Every cached call is bucketed by a **pair-scoped cache key**:
+Calls using a native routing key use a **pair-scoped cache key**:
 
 ```
 cross-review:<peer>:<caller>:v<cache_schema_version>
@@ -44,9 +56,10 @@ cross-review:<peer>:<caller>:v<cache_schema_version>
 
 The pair scope lets repeated rounds from the same peer/caller pair reuse a cache
 route. Different callers intentionally receive different keys, even when they
-review the same case. Cache invalidation is bounded by the schema version.
-Bumping `CROSS_REVIEW_CACHE_SCHEMA_VERSION` (e.g. `v1` → `v2`) invalidates
-every previously cached entry, by design. Use this when prompt structure
+review the same case. Providers without native routing keys manage their own
+cache scope. Bumping `CROSS_REVIEW_CACHE_SCHEMA_VERSION` (e.g. `v1` → `v2`)
+changes the routing key and stable prefix; it does not force provider cache
+eviction. Use this when prompt structure
 changes materially (new convergence rule, new system role line, new evidence
 index format).
 
@@ -76,7 +89,7 @@ Rate cards live in `config.cost_rates`, loaded from environment variables or the
 
 Adapters surface provider-reported cache counts via
 `TokenUsage.cache_read_tokens` and, only when the provider exposes a
-creation/miss counter, `TokenUsage.cache_write_tokens`. GPT-5.6 Sol exposes a
+creation/miss counter, `TokenUsage.cache_write_tokens`. GPT-6 Astra exposes a
 cache-write field and cross-review prices it separately; Grok exposes cached
 reads but no write counter, so the runtime never infers writes from
 `input_tokens - cached_tokens`. The orchestrator emits
@@ -89,10 +102,11 @@ reads but no write counter, so the runtime never infers writes from
 CROSS_REVIEW_DISABLE_CACHE=true
 ```
 
-Disables the cache controls that the runtime can influence globally. OpenAI and
-Grok omit `prompt_cache_key`/`prompt_cache_options`, and Anthropic omits
-`cache_control`. The flag cannot force Gemini or DeepSeek to stop their
-provider-managed implicit/automatic caching. The cost layer still merges cache
+Disables the cache controls that the runtime can influence globally. Astra
+sends explicit `prompt_cache_options` without breakpoints, Grok omits
+`prompt_cache_key`, and Anthropic omits `cache_control`. The flag cannot force
+Gemini, DeepSeek, Grok or Perplexity to stop their provider-managed automatic
+caching. The cost layer still merges cache
 tokens if any provider reports them, preserving audit reproducibility.
 
 The central schema also parses per-provider switches:
@@ -109,10 +123,13 @@ CROSS_REVIEW_DISABLE_CACHE_PERPLEXITY=true
 Anthropic defaults to disabled because the recorded hit rate was not
 cost-effective for the observed session corpus; set
 `CROSS_REVIEW_DISABLE_CACHE_ANTHROPIC=false` to re-enable it deliberately. In
-the current adapters, Anthropic is the provider whose request body honors its
-per-provider switch. Use the global switch for the client-controlled OpenAI and
-Grok request fields. Gemini and DeepSeek remain service-managed, and Perplexity
-has no cache surface.
+the current adapters, Anthropic, OpenAI and Grok honor both global and per-provider
+switches through native request fields. Astra disables implicit caching with
+`prompt_cache_options: {mode: "explicit", ttl: "30m"}` and no breakpoints.
+Gemini, DeepSeek, Grok and Perplexity manage automatic caching on the service;
+their documented APIs expose no per-request cache-off guarantee. Omitting a
+routing key does not establish freshness. Cross-review adds no cache-busting
+prompt material or unsupported request parameter to claim otherwise.
 
 Use cases:
 
@@ -129,11 +146,12 @@ CROSS_REVIEW_CACHE_TTL_OPENAI=5m|1h             # legacy override families only
 ```
 
 - **Anthropic** accepts `5m` and `1h` per the SDK. Values other than `5m`/`1h` are ignored with a stderr notice and the default is used.
-- **OpenAI GPT-5.6 Sol** uses the current request-wide
-  `prompt_cache_options={mode:"implicit", ttl:"30m"}` surface. The legacy
+- **OpenAI GPT-6 Astra** uses the current request-wide
+  `prompt_cache_options={mode:"implicit", ttl:"30m"}` surface when caller-scoped
+  caching is enabled. The legacy
   `CROSS_REVIEW_CACHE_TTL_OPENAI` mapping applies only to older explicitly
   overridden model families that still use `prompt_cache_retention`.
-- **Grok 4.6** sends only `prompt_cache_key`; xAI manages retention and does not
+- **Grok 4.7** sends only `prompt_cache_key`; xAI manages retention and does not
   receive the OpenAI retention field.
 
 ## Anthropic cache_control placement
@@ -154,15 +172,15 @@ Anthropic supports up to 4 breakpoints per request; we reserve 3 for future addi
 
 ## Empirical guidance
 
-| Provider/model     | Practical minimum cached prefix | Notes                                                                                    |
-| ------------------ | ------------------------------- | ---------------------------------------------------------------------------------------- |
-| OpenAI             | ≥ 1024 tokens                   | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers. |
-| Anthropic Fable 5  | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
-| Anthropic Opus 5   | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
-| Anthropic Opus 4.8 | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                       |
-| Gemini             | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                     |
-| DeepSeek           | service-managed                 | Auto-cached; both hit and miss tokens are returned.                                      |
-| Grok               | service-managed                 | Grok 4.6 uses `prompt_cache_key`; xAI manages retention.                                 |
+| Provider/model      | Practical minimum cached prefix | Notes                                                                                    |
+| ------------------- | ------------------------------- | ---------------------------------------------------------------------------------------- |
+| OpenAI              | ≥ 1024 tokens                   | The Responses API auto-detects; `prompt_cache_key` improves hit rate for repeat callers. |
+| Anthropic Fable 5.1 | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
+| Anthropic Opus 5    | ≥ 512 tokens                    | The adapter applies a model-aware best-effort notice.                                    |
+| Anthropic Opus 4.8  | ≥ 1024 tokens                   | Retained for the supported compatibility override.                                       |
+| Gemini              | service-managed                 | Implicit only at this writing; explicit `caches.create` is deferred.                     |
+| DeepSeek            | service-managed                 | Auto-cached; Responses reports cached input, without a cache-write counter.              |
+| Grok                | service-managed                 | Grok 4.7 uses `prompt_cache_key`; xAI manages retention.                                 |
 
 ## Reference URLs
 
@@ -170,6 +188,7 @@ Anthropic supports up to 4 breakpoints per request; we reserve 3 for future addi
 - Anthropic prompt caching: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 - Google Gemini caching: https://ai.google.dev/gemini-api/docs/caching
 - DeepSeek context caching: https://api-docs.deepseek.com/guides/kv_cache
+- DeepSeek Responses API: https://api-docs.deepseek.com/api/create-response/
 - xAI / Grok caching: https://docs.x.ai/developers/advanced-api-usage/prompt-caching
 - xAI cache usage and pricing: https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing
 

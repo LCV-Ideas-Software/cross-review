@@ -473,8 +473,8 @@ function agentOutputText(output: unknown): string {
 // shared status parser in `core/status.ts` requires the text to begin
 // with JSON-shaped content; strip every `<think>...</think>` block
 // (non-greedy across lines, multiple occurrences) before downstream
-// extraction. Structured payloads never legitimately include the literal
-// substring "<think>", so this is safe.
+// extraction. Literal tags inside the structured final answer are evidence,
+// so once a JSON object or array begins they must remain byte-for-byte intact.
 const PERPLEXITY_THINKING_BLOCK = /<think\b[^>]*>[\s\S]*?<\/think>/gi;
 const PERPLEXITY_OPEN_THINKING_BLOCK = /<think\b[^>]*>[\s\S]*$/i;
 const PERPLEXITY_PARTIAL_THINKING_TAG = /<t(?:h(?:i(?:n(?:k(?:\b[^>]*)?)?)?)?)?$/i;
@@ -483,11 +483,25 @@ type TokenEventSink = {
   complete(chars: number): void;
 };
 
+function structuredTextAfterThinkingPreamble(raw: string): string | undefined {
+  let remaining = raw;
+  while (/^\s*<think\b[^>]*>/i.test(remaining)) {
+    const closing = /<\/think>/i.exec(remaining);
+    if (!closing) return undefined;
+    remaining = remaining.slice(closing.index + closing[0].length);
+  }
+  return /^\s*[[{]/.test(remaining) ? remaining : undefined;
+}
+
 export function stripPerplexityThinkingBlock(raw: string): string {
+  const structured = structuredTextAfterThinkingPreamble(raw);
+  if (structured !== undefined) return structured.trim();
   return raw.replace(PERPLEXITY_THINKING_BLOCK, "").trim();
 }
 
 export function stripPerplexityThinkingForTokenEvents(raw: string): string {
+  const structured = structuredTextAfterThinkingPreamble(raw);
+  if (structured !== undefined) return structured;
   return raw
     .replace(PERPLEXITY_THINKING_BLOCK, "")
     .replace(PERPLEXITY_OPEN_THINKING_BLOCK, "")
@@ -725,7 +739,7 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
     const apiKey = this.config.api_keys.perplexity;
     if (!apiKey) throw new Error("PERPLEXITY_API_KEY was not found in environment variables.");
     const Ctor = await loadOpenAICtor();
-    return new Ctor({ apiKey, baseURL: PERPLEXITY_BASE_URL });
+    return new Ctor({ apiKey, baseURL: PERPLEXITY_BASE_URL, maxRetries: 0 });
   }
 
   private assertResponseTerminal(
@@ -987,17 +1001,44 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
       };
     }
     if (this.config.perplexity.probe_mode === "auth_only") {
-      return {
-        peer: this.id,
-        provider: this.provider,
-        model: this.model,
-        available: true,
-        auth_present: true,
-        latency_ms: Date.now() - started,
-        model_selection: this.config.model_selection.perplexity,
-        message:
-          "Perplexity probe_mode=auth_only: skipped tokenized Agent API round-trip because Perplexity does not document a zero-token model/auth endpoint.",
-      };
+      try {
+        const probeClient = await this.client();
+        // GET /v1/models uses the OpenAI List Models format and validates
+        // authentication and the configured pin without generating tokens.
+        const models = await probeClient.models.list({ timeout: this.config.retry.timeout_ms });
+        const available = models.data.some((model) => model.id === this.model);
+        return {
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          available,
+          auth_present: true,
+          latency_ms: Date.now() - started,
+          model_selection: this.config.model_selection.perplexity,
+          message: available
+            ? "Perplexity probe_mode=auth_only: validated authentication and the configured pin with GET /v1/models without generating tokens."
+            : `Perplexity probe_mode=auth_only: model ${this.model} was not returned by the authenticated model catalog.`,
+        };
+      } catch (error) {
+        const failure = classifyProviderError(
+          this.id,
+          this.provider,
+          this.model,
+          error,
+          1,
+          started,
+        );
+        return {
+          peer: this.id,
+          provider: this.provider,
+          model: this.model,
+          available: false,
+          auth_present: true,
+          latency_ms: Date.now() - started,
+          model_selection: this.config.model_selection.perplexity,
+          message: failure.message,
+        };
+      }
     }
     // A live probe is a billable Agent API request. No tools are sent (no
     // search fee) and the output budget is the provider minimum; an

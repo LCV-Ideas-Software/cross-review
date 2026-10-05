@@ -309,6 +309,41 @@ export function getWindowsTokensFileAclCommands(
   ];
 }
 
+export function getWindowsTokensFileCreationCommand(
+  filePath: string,
+  currentUserSid: string,
+): WindowsTokensFileAclCommand {
+  const creationScript = [
+    "$ErrorActionPreference = 'Stop'",
+    "& {",
+    ...getWindowsTokensFileAclBindingScript(),
+    "$acl = New-Object System.Security.AccessControl.FileSecurity",
+    "$acl.SetAccessRuleProtection($true, $false)",
+    "$allowed = New-Object 'System.Collections.Generic.HashSet[string]'",
+    "foreach ($sidText in @($CurrentUserSid, 'S-1-5-18', 'S-1-5-32-544')) { $null = $allowed.Add($sidText) }",
+    "foreach ($sidText in $allowed) { $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText); $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow); $null = $acl.AddAccessRule($rule) }",
+    "$fileInfo = New-Object System.IO.FileInfo($Path)",
+    "try {",
+    "  if ($PSVersionTable.PSVersion.Major -ge 6) { $stream = [System.IO.FileSystemAclExtensions]::Create($fileInfo, [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $acl) } else { $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $acl) }",
+    "} catch { $exception = $_.Exception; while ($null -ne $exception) { if (($exception.HResult -band 0xffff) -in @(80, 183)) { exit 80 }; $exception = $exception.InnerException }; exit 90 }",
+    "try {",
+    "  if ($null -ne $stream.PSObject.Methods['GetAccessControl']) { $observed = $stream.GetAccessControl() } else { $observed = [System.IO.FileSystemAclExtensions]::GetAccessControl($stream) }",
+    "  if (-not $observed.AreAccessRulesProtected -or $stream.Length -ne 0) { exit 91 }",
+    "  $rules = @($observed.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+    "  if ($rules.Count -ne $allowed.Count) { exit 92 }",
+    "  $seen = New-Object 'System.Collections.Generic.HashSet[string]'",
+    "  foreach ($rule in $rules) { $sid = $rule.IdentityReference.Value; if (-not $allowed.Contains($sid) -or -not $seen.Add($sid) -or $rule.IsInherited -or $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { exit 93 } }",
+    "  foreach ($required in $allowed) { if (-not $seen.Contains($required)) { exit 94 } }",
+    "} finally { $stream.Dispose() }",
+    "}",
+  ].join("; ");
+  return {
+    executable: getWindowsSystemToolPath("WindowsPowerShell", "v1.0", "powershell.exe"),
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", creationScript],
+    input: getWindowsTokensFileAclInput(filePath, currentUserSid),
+  };
+}
+
 export function getWindowsTokensFileAclVerificationCommand(
   filePath: string,
   currentUserSid: string,
@@ -560,7 +595,10 @@ function captureSafeTokensFileIdentity(filePath: string): TokensFileIdentity | n
       return null;
     }
     return { dev: link.dev, ino: link.ino };
-  } catch {
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      throw error;
+    }
     return null;
   }
 }
@@ -588,9 +626,9 @@ function openedFileMatchesIdentity(
 }
 
 /**
- * Recover only the Windows protected-empty-DACL failure class. The repair is
- * attempted once, only after EACCES/EPERM, and the reopened handle must still
- * identify the same non-symlink file captured before the pathname ACL change.
+ * Windows opens follow links, so bind a regular non-symlink identity before
+ * any open or pathname ACL mutation and verify every returned descriptor.
+ * Recover the protected-empty-DACL failure class once, after EACCES/EPERM.
  */
 export function openTokensFileWithPermissionRecovery(
   filePath: string,
@@ -603,13 +641,30 @@ export function openTokensFileWithPermissionRecovery(
   const captureSafeIdentity = operations.captureSafeIdentity ?? captureSafeTokensFileIdentity;
   const matchesIdentity = operations.openedFileMatchesIdentity ?? openedFileMatchesIdentity;
   const closeFile = operations.closeFile ?? fs.closeSync;
+  const identity = platform === "win32" ? captureSafeIdentity(filePath) : null;
+  if (platform === "win32" && !identity) {
+    throw Object.assign(
+      new Error("caller-tokens: unsafe token entry; expected a regular non-symlink file"),
+      { code: "ELOOP" },
+    );
+  }
 
   try {
-    return { fd: openFile(filePath), permissionsHardened: false };
+    const fd = openFile(filePath);
+    if (identity && !matchesIdentity(filePath, fd, identity)) {
+      try {
+        closeFile(fd);
+      } catch {
+        /* an unsafe identity must never be adopted */
+      }
+      throw Object.assign(new Error("caller-tokens: token file identity changed during open"), {
+        code: "ELOOP",
+      });
+    }
+    return { fd, permissionsHardened: false };
   } catch (initialError: unknown) {
     if (platform !== "win32" || !isPermissionDenied(initialError)) throw initialError;
 
-    const identity = captureSafeIdentity(filePath);
     if (!identity || !repairProtectedEmptyDacl(filePath)) throw initialError;
 
     const fd = openFile(filePath);
@@ -630,8 +685,14 @@ export function openTokensFileWithPermissionRecovery(
 function openedFileMatchesPath(filePath: string, fd: number): boolean {
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
-    const current = fs.statSync(filePath, { bigint: true });
-    return opened.isFile() && opened.dev === current.dev && opened.ino === current.ino;
+    const current = fs.lstatSync(filePath, { bigint: true });
+    return (
+      opened.isFile() &&
+      current.isFile() &&
+      !current.isSymbolicLink() &&
+      opened.dev === current.dev &&
+      opened.ino === current.ino
+    );
   } catch {
     return false;
   }
@@ -641,8 +702,10 @@ function hardenOpenedTokensFilePermissions(
   filePath: string,
   fd: number,
   permissionsAlreadyHardened = false,
+  diagnostics?: TokensFileHardenDiagnostics,
 ): boolean {
   try {
+    if (!openedFileMatchesPath(filePath, fd)) return false;
     if (process.platform !== "win32") {
       fs.fchmodSync(fd, 0o600);
       return (fs.fstatSync(fd).mode & 0o077) === 0 && openedFileMatchesPath(filePath, fd);
@@ -651,7 +714,7 @@ function hardenOpenedTokensFilePermissions(
     return (
       (permissionsAlreadyHardened
         ? currentUserSid !== null && verifyWindowsTokensFilePermissions(filePath, currentUserSid)
-        : hardenTokensFilePermissions(filePath)) && openedFileMatchesPath(filePath, fd)
+        : hardenTokensFilePermissions(filePath, diagnostics)) && openedFileMatchesPath(filePath, fd)
     );
   } catch {
     return false;
@@ -674,14 +737,69 @@ function hardenOpenedTokensFilePermissions(
 // rename rather than trusting the page cache, and a flush of the containing
 // directory after it, so the new NAME is durable and not only its contents
 // (PR #300 review round 10; see the guard at the rename itself).
+function createProtectedTokensFile(filePath: string): number {
+  if (process.platform !== "win32") return fs.openSync(filePath, "wx", 0o600);
+  const sidDiagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+  const currentUserSid = getWindowsCurrentUserSid(sidDiagnostics);
+  if (!currentUserSid) {
+    throw new Error(
+      `caller-tokens: secure empty-file creation failed at identity lookup (${describeAclExecutionFailure(sidDiagnostics)})`,
+    );
+  }
+  const diagnostics: WindowsTokensFileAclExecutionDiagnostics = {};
+  if (
+    !executeWindowsTokensFileAclCommands(
+      [getWindowsTokensFileCreationCommand(filePath, currentUserSid)],
+      undefined,
+      diagnostics,
+    )
+  ) {
+    if (diagnostics.failure?.kind === "exit_status" && diagnostics.failure.status === 80) {
+      throw Object.assign(new Error("caller-tokens: exclusive creation found an existing entry"), {
+        code: "EEXIST",
+      });
+    }
+    throw new Error(
+      `caller-tokens: secure empty-file creation failed (${describeAclExecutionFailure(diagnostics)})`,
+    );
+  }
+  const identity = captureSafeTokensFileIdentity(filePath);
+  try {
+    return openTokensFileWithPermissionRecovery(filePath).fd;
+  } catch (error) {
+    removeOwnedTokensFile(filePath, identity);
+    throw error;
+  }
+}
+
+function removeOwnedTokensFile(filePath: string, identity: TokensFileIdentity | null): void {
+  if (!identity) return;
+  try {
+    const current = captureSafeTokensFileIdentity(filePath);
+    if (current && current.dev === identity.dev && current.ino === identity.ino) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    /* cleanup must never remove a replaced or unowned entry */
+  }
+}
+
 function replaceTokensFileAtomically(filePath: string, payload: string): void {
   const nonce = crypto.randomBytes(2).toString("hex");
   const tmp = `${filePath}.${process.pid}.${nonce}.tmp`;
   let tmpFd: number | null = null;
+  let tmpIdentity: TokensFileIdentity | null = null;
   try {
-    // `wx` refuses to clobber a leftover temp, and 0600 means the replacement
-    // is never briefly world-readable.
-    tmpFd = fs.openSync(tmp, "wx", 0o600);
+    // Windows supplies its protected DACL atomically at CreateNew; otherwise
+    // an inherited read handle could outlive later ACL protection. POSIX uses wx/0600.
+    tmpFd = createProtectedTokensFile(tmp);
+    const created = fs.fstatSync(tmpFd, { bigint: true });
+    tmpIdentity = { dev: created.dev, ino: created.ino };
+    if (!hardenOpenedTokensFilePermissions(tmp, tmpFd)) {
+      throw new Error(
+        "caller-tokens: refusing to swap in a token file whose permissions could not be hardened",
+      );
+    }
     const encoded = Buffer.from(payload, "utf8");
     let offset = 0;
     while (offset < encoded.length) {
@@ -692,20 +810,11 @@ function replaceTokensFileAtomically(filePath: string, payload: string): void {
       offset += written;
     }
     fs.fsyncSync(tmpFd);
+    if (!openedFileMatchesIdentity(tmp, tmpFd, tmpIdentity)) {
+      throw new Error("caller-tokens: token replacement identity changed during write");
+    }
     fs.closeSync(tmpFd);
     tmpFd = null;
-    // POSIX is covered by the 0600 above, but Windows is not: mode bits do
-    // not override inherited NTFS access entries, which is the whole reason
-    // hardenTokensFilePermissions exists. Renaming an un-hardened temp over
-    // the live record would hand a protected file back to whatever the parent
-    // directory inherits -- including model-sandbox principals -- and it would
-    // do it silently, because the migration succeeds. Fail closed instead: an
-    // un-hardened replacement is never swapped in, and the original stays.
-    if (!hardenTokensFilePermissions(tmp)) {
-      throw new Error(
-        "caller-tokens: refusing to swap in a token file whose permissions could not be hardened",
-      );
-    }
   } catch (error) {
     if (tmpFd !== null) {
       try {
@@ -714,11 +823,7 @@ function replaceTokensFileAtomically(filePath: string, payload: string): void {
         /* the throw below is the outcome that matters */
       }
     }
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      /* best effort: never leave the temp behind */
-    }
+    removeOwnedTokensFile(tmp, tmpIdentity);
     throw error;
   }
   // One attempt, deliberately. `session-store.ts` retries this rename with a
@@ -733,11 +838,7 @@ function replaceTokensFileAtomically(filePath: string, payload: string): void {
   try {
     fs.renameSync(tmp, filePath);
   } catch (error) {
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      /* best effort: never leave the temp behind */
-    }
+    removeOwnedTokensFile(tmp, tmpIdentity);
     throw error;
   }
   // The rename is atomic for a READER, but on POSIX its directory entry is not
@@ -805,39 +906,51 @@ export function generateHostTokens(
   } catch {
     /* best-effort */
   }
+  if (options.overwrite) {
+    replaceTokensFileAtomically(filePath, JSON.stringify(payload, null, 2));
+    return { filePath, map, generated_at: payload.generated_at };
+  }
+  let fd: number | null = null;
+  let identity: TokensFileIdentity | null = null;
   try {
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), {
-      flag: options.overwrite ? "w" : "wx",
-      mode: 0o600,
-    });
+    fd = createProtectedTokensFile(filePath);
+    const created = fs.fstatSync(fd, { bigint: true });
+    identity = { dev: created.dev, ino: created.ino };
+    const hardenDiagnostics: TokensFileHardenDiagnostics = {};
+    if (!hardenOpenedTokensFilePermissions(filePath, fd, false, hardenDiagnostics)) {
+      const stage = hardenDiagnostics.stage ?? "unknown";
+      const detail = hardenDiagnostics.detail ? `: ${hardenDiagnostics.detail}` : "";
+      throw new Error(
+        `caller-tokens: could not apply owner-only permissions; insecure token file was rejected (stage=${stage}${detail})`,
+      );
+    }
+    fs.writeFileSync(fd, JSON.stringify(payload, null, 2));
+    fs.fsyncSync(fd);
+    if (!openedFileMatchesIdentity(filePath, fd, identity)) {
+      throw new Error("caller-tokens: generated token file identity changed during write");
+    }
   } catch (err: unknown) {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* cleanup below remains bound to the created entry */
+      }
+      fd = null;
+    }
+    removeOwnedTokensFile(filePath, identity);
     if (
       typeof err === "object" &&
       err !== null &&
       "code" in err &&
-      (err as { code?: string }).code === "EEXIST" &&
-      !options.overwrite
+      (err as { code?: string }).code === "EEXIST"
     ) {
       // Lost race to a concurrent boot; caller falls back to load.
       return null;
     }
     throw err;
-  }
-  const hardenDiagnostics: TokensFileHardenDiagnostics = {};
-  if (!hardenTokensFilePermissions(filePath, hardenDiagnostics)) {
-    try {
-      fs.rmSync(filePath, { force: true });
-    } catch {
-      /* the caller still fails closed below */
-    }
-    // Keep the original sentence stable for downstream matchers; append the
-    // failing stage so an infrastructure timeout is distinguishable from a
-    // genuine ACL policy rejection.
-    const stage = hardenDiagnostics.stage ?? "unknown";
-    const detail = hardenDiagnostics.detail ? `: ${hardenDiagnostics.detail}` : "";
-    throw new Error(
-      `caller-tokens: could not apply owner-only permissions; insecure token file was rejected (stage=${stage}${detail})`,
-    );
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
   }
   return { filePath, map, generated_at: payload.generated_at };
 }

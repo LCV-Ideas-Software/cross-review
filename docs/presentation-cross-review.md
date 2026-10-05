@@ -1,6 +1,6 @@
 # cross-review presentation
 
-Reference date for this presentation: 23/09/2026.
+Reference date for this presentation: 04/10/2026.
 
 This document presents `cross-review` to two audiences:
 
@@ -41,8 +41,8 @@ The product is stable. The reference source/release target reports:
 | ------------------------------ | ---------------------------------- |
 | Name                           | `cross-review`                     |
 | Publisher                      | `LCV Ideas & Software`             |
-| Version prepared by the source | `v09.02.02`                        |
-| Source/release target date     | `23/09/2026`                       |
+| Version prepared by the source | `v10.00.00`                        |
+| Source/release target date     | `04/10/2026`                       |
 | npm package                    | `@lcv-ideas-software/cross-review` |
 | MCP transport                  | `stdio`                            |
 | Peer CLI execution             | disabled                           |
@@ -222,7 +222,8 @@ literal Responses API `reasoning.effort`. cross-review accepts it as a
 compatibility alias in configuration and the adapter sends the official value
 `max`. `grok-4.7` accepts `low`, `medium`, `high` and `xhigh`, so the alias is
 normalized to `xhigh` before being sent; Perplexity (`perplexity/kimi-k3`,
-Agent API) receives `max`. No API receives the string `ultra`.
+Agent API) receives `high`, the verified accepted ceiling for this pin.
+No API receives the string `ultra`.
 Explicit GPT-5.5/5.4/5.2 overrides are capped at `xhigh`; GPT-5.1 and the
 original GPT-5 are capped at `high`, with the lower values translated when they
 do not exist in the chosen family's enum.
@@ -474,7 +475,6 @@ identity token. Those items stay separate by design.
 | `CROSS_REVIEW_DATA_DIR`                    | Sets the data directory.                                    |
 | `CROSS_REVIEW_CONFIG_FILE`                 | Sets an alternative path for `config.json`.                 |
 | `CROSS_REVIEW_LOG_LEVEL`                   | Controls log verbosity.                                     |
-| `CROSS_REVIEW_DASHBOARD_PORT`              | Local dashboard port, default `4588`.                       |
 | `CROSS_REVIEW_TIMEOUT_MS`                  | HTTP timeout per provider call, default 30 minutes.         |
 | `CROSS_REVIEW_MAX_OUTPUT_TOKENS`           | Output limit requested from the providers, default `20000`. |
 | `CROSS_REVIEW_MAX_TASK_CHARS`              | Character limit of the `task` field, default `8000`.        |
@@ -536,7 +536,7 @@ Direct bundle and development dependencies:
 
 ## Project scripts
 
-The main scripts are `build`, `dev`, `dashboard`, `smoke`,
+The main scripts are `build`, `dev`, `smoke`,
 `evidence-preflight-smoke`, `evidence-transport-regression`,
 `truthfulness-preflight-smoke`, `runtime-smoke`, `api-streaming-smoke`, `test`,
 `lint`, `format:check`, `typecheck`, `biome` and `check`. The `check` script
@@ -622,16 +622,16 @@ to influence:
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_DISABLE_CACHE", "true", "User")
 ```
 
-That control removes the cache fields sent to OpenAI, Anthropic and Grok, but it
-cannot force Gemini or DeepSeek to disable the implicit/automatic cache
-administered by the service itself.
+That control uses explicit mode without breakpoints on Astra, omits Anthropic
+cache control and omits Grok's routing key. It cannot force Gemini, DeepSeek,
+Grok or Perplexity to disable automatic caching administered by the service.
 
 There are also TTL and cache-schema versioning controls, including
 `CROSS_REVIEW_CACHE_SCHEMA_VERSION`,
 `CROSS_REVIEW_CACHE_TTL_ANTHROPIC` and `CROSS_REVIEW_CACHE_TTL_OPENAI`.
 
-In the current pin, GPT-5.6 Sol uses implicit `prompt_cache_options` with a
-30-minute TTL and reports read/write tokens. Grok 4.6 uses
+In the current pin, GPT-6 Astra uses implicit `prompt_cache_options` with a
+30-minute TTL when caching is enabled and reports read/write tokens. Grok 4.7 uses
 `prompt_cache_key`, has retention administered by xAI and provides no separate
 write counter; the runtime does not invent that consumption.
 
@@ -699,6 +699,12 @@ with the tools that asked for it. Generation happens at boot; distributing the
 files is a human act on disk, outside MCP.
 
 ### Evidence and preflight
+
+Proposed submission checks replace the previous automatic caller snapshot and
+recognize references to the draft's asserted storage path before any completed-work
+claim. Attached evidence is transported whole within the advertised total character
+limit. An over-limit submission is rejected before session creation, provider
+probing, background-job admission or peer dispatch, with both sizes in the error.
 
 The textual preflight looks for one specific case: text that claims completed
 work without presenting any evidence marker. It does not decide merit, it only
@@ -776,24 +782,6 @@ The `convergence_health` field complements the outcome. It must not be confused
 with the final decision; old or inconsistent sessions may require
 `session_doctor`.
 
-### Dashboard
-
-The package also exposes `cross-review-dashboard`, a local read-only HTTP UI. It
-is useful for browsing sessions, events, reports, probes and metrics without
-opening NDJSON files by hand.
-
-Typical commands:
-
-```bash
-cross-review-dashboard
-```
-
-or, in development:
-
-```bash
-npm run dashboard
-```
-
 ### CI and publication
 
 The repository uses workflows for:
@@ -827,7 +815,7 @@ provenance and create the Release last, with the run's own token.
 
 ## Brief changelog
 
-The v09.02.02 source target updates the xAI peer to Grok 4.7 and parses typed
+The v10.00.00 source target preserves the Grok 4.7 pin and parses typed
 assistant output without exposing encrypted reasoning as review text.
 
 | Version          | Date          | Highlight                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |

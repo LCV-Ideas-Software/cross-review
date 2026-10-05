@@ -21,13 +21,113 @@
 // with no new call to the provider. Case 3 is that criterion, and it is written
 // as the discriminator an investigator would actually apply.
 import assert from "node:assert/strict";
+import Anthropic from "@anthropic-ai/sdk";
 import type { PeerFailure } from "../src/core/types.js";
 import { classifyProviderError } from "../src/peers/errors.js";
 
 const STARTED = Date.now();
 
+const nativeSpendPayload = {
+  type: "error",
+  error: {
+    type: "rate_limit_error",
+    message: "Spend limit reached",
+    details: { error_code: "enforced_spend_limit_reached" },
+  },
+  request_id: "native-spend-limit-fixture",
+};
+const nativeSpendClient = new Anthropic({
+  apiKey: "synthetic-credential",
+  maxRetries: 0,
+  fetch: async () =>
+    new Response(JSON.stringify(nativeSpendPayload), {
+      status: 429,
+      headers: { "Content-Type": "application/json" },
+    }),
+});
+let nativeSpendError: unknown;
+try {
+  await nativeSpendClient.messages.create({
+    model: "claude-fable-5-1",
+    max_tokens: 1,
+    messages: [{ role: "user", content: "synthetic fixture" }],
+  });
+} catch (error) {
+  nativeSpendError = error;
+}
+assert.ok(nativeSpendError instanceof Anthropic.RateLimitError);
+const nativeSpendFailure = classifyProviderError(
+  "claude",
+  "anthropic",
+  "claude-fable-5-1",
+  nativeSpendError,
+  1,
+  STARTED,
+);
+assert.equal(nativeSpendFailure.retryable, false);
+assert.equal(nativeSpendFailure.failure_class, "provider_error");
+assert.equal(nativeSpendFailure.provider_error_detail?.type, "rate_limit_error");
+assert.deepEqual(
+  JSON.parse(nativeSpendFailure.provider_error_detail?.raw_body ?? "null"),
+  nativeSpendPayload,
+);
+
+const spendLimited = classifyProviderError(
+  "claude",
+  "anthropic",
+  "claude-fable-5-1",
+  {
+    status: 429,
+    error: {
+      type: "rate_limit_error",
+      message: "Spend limit reached",
+      details: { error_code: "enforced_spend_limit_reached" },
+    },
+  },
+  1,
+  STARTED,
+);
+assert.equal(
+  spendLimited.retryable,
+  false,
+  "an enforced account spend limit cannot clear through SDK or application retries",
+);
+assert.equal(spendLimited.failure_class, "provider_error");
+assert.match(spendLimited.provider_error_detail?.raw_body ?? "", /enforced_spend_limit_reached/);
+const normalRateLimit = classifyProviderError(
+  "claude",
+  "anthropic",
+  "claude-fable-5-1",
+  { status: 429, error: { type: "rate_limit_error", message: "Too many requests" } },
+  1,
+  STARTED,
+);
+assert.equal(normalRateLimit.retryable, true);
+
 function classify(error: unknown): PeerFailure {
   return classifyProviderError("perplexity", "perplexity", "perplexity/kimi-k3", error, 1, STARTED);
+}
+
+for (const headers of [
+  new Headers({ "retry-after-ms": "1234", "retry-after": "9" }),
+  { "retry-after-ms": "1234", "retry-after": "9" },
+  { "Retry-After-Ms": 1234, "Retry-After": "9" },
+]) {
+  assert.equal(classify({ status: 429, headers }).retry_after_ms, 1234);
+}
+assert.equal(
+  classify({ status: 429, response: { headers: new Headers({ "retry-after-ms": "0" }) } })
+    .retry_after_ms,
+  0,
+);
+for (const invalidMilliseconds of ["NaN", "Infinity", "-1", "1234junk", ""]) {
+  assert.equal(
+    classify({
+      status: 429,
+      headers: { "retry-after-ms": invalidMilliseconds, "retry-after": "9" },
+    }).retry_after_ms,
+    9000,
+  );
 }
 
 /**
@@ -150,6 +250,84 @@ function verdictFromRecord(failure: PeerFailure): "creation_rejected" | "job_fai
   );
   assert.match(body, /invalid_request_error/, "while the diagnosis itself is kept");
   console.log("[v9.1.0-provider-error-detail] secrets_never_reach_the_record: PASS");
+}
+
+// Recognized credential fields are untrusted values of any shape. Redact the
+// complete value before serialization, while preserving benign usage data.
+{
+  const arraySecret = "SYNTHETIC-array-secret-without-provider-prefix";
+  const objectSecret = "SYNTHETIC-object-secret-without-provider-prefix";
+  const error = Object.assign(new Error("synthetic payload rejected"), {
+    status: 400,
+    error: {
+      message: "synthetic payload rejected",
+      type: "invalid_request_error",
+      nested: {
+        API_KEY: [arraySecret, { value: objectSecret }],
+        authorization: { credential: objectSecret },
+        private_key: null,
+        access_token: 42,
+        request_items: [{ OPENAI_API_KEY: { value: objectSecret }, label: "benign" }],
+      },
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        reasoning_tokens: 0,
+        cache_read_tokens: 0,
+        max_output_tokens: 100,
+        token_count: 30,
+      },
+      benign_array: ["read", { status: "retry", count: 2 }],
+      benign_object: { request_id: "fixture", optional: null },
+    },
+  });
+  const failure = classify(error);
+  const rawBody = failure.provider_error_detail?.raw_body ?? "";
+  assert.ok(rawBody && !rawBody.includes(arraySecret) && !rawBody.includes(objectSecret));
+  const body = JSON.parse(rawBody);
+  assert.deepEqual(body.nested, {
+    API_KEY: "[REDACTED]",
+    authorization: "[REDACTED]",
+    private_key: "[REDACTED]",
+    access_token: "[REDACTED]",
+    request_items: [{ OPENAI_API_KEY: "[REDACTED]", label: "benign" }],
+  });
+  assert.deepEqual(body.usage, error.error.usage);
+  assert.deepEqual(body.benign_array, error.error.benign_array);
+  assert.deepEqual(body.benign_object, error.error.benign_object);
+  assert.equal(body.type, "invalid_request_error");
+  console.log("[v9.1.0-provider-error-detail] credential_field_shapes_are_redacted: PASS");
+}
+
+// Providers also echo container-valued credentials in Error.message rather
+// than structured fields. Mask only those values; keep the diagnostic intact.
+{
+  for (const secret of [
+    ["SYNTHETIC-prefixless", { nested: 'SYNTHETIC-escaped-"quote]}' }],
+    { nested: ["SYNTHETIC-prefixless", { value: "SYNTHETIC-object" }] },
+  ]) {
+    const prefix = 'request rejected: { "api_key" : ';
+    const suffix = ', "input_tokens":7, "type":"invalid_request_error" } tail';
+    const message = prefix + JSON.stringify(secret) + suffix;
+    const expected = `${prefix}"[REDACTED]"${suffix}`;
+    const failure = classify(
+      Object.assign(new Error(message), {
+        status: 400,
+        error: { message, type: "invalid_request_error", usage: { input_tokens: 7 } },
+      }),
+    );
+    assert.equal(failure.message, expected);
+    const rawBody = failure.provider_error_detail?.raw_body ?? "";
+    assert.doesNotMatch(rawBody, /SYNTHETIC-/);
+    assert.equal(JSON.parse(rawBody).message, expected);
+    assert.deepEqual(JSON.parse(rawBody).usage, { input_tokens: 7 });
+    assert.equal(failure.provider_error_detail?.http_status, 400);
+    assert.equal(failure.provider_error_detail?.type, "invalid_request_error");
+  }
+  const unclosed = classify(new Error('request rejected: api_key:["SYNTHETIC-unclosed'));
+  assert.equal(unclosed.message, 'request rejected: api_key:"[REDACTED]"');
+  console.log("[v9.1.0-provider-error-detail] textual_credential_containers_are_redacted: PASS");
 }
 
 // --- 5. an oversized body is capped, and says that it was -------------------

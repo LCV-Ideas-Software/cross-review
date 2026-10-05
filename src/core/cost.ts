@@ -198,6 +198,10 @@ export function selectRate(
 
 export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
   const total: TokenUsage = {};
+  let totalTokensSeen = false;
+  let reasoningTokensSeen = false;
+  let cacheReadTokensSeen = false;
+  let cacheWriteTokensSeen = false;
   let searchQueriesSeen = false;
   let searchPerformedSeen = false;
   let providerTotalSeen = false;
@@ -205,14 +209,26 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
     if (!item) continue;
     total.input_tokens = (total.input_tokens ?? 0) + (item.input_tokens ?? 0);
     total.output_tokens = (total.output_tokens ?? 0) + (item.output_tokens ?? 0);
-    total.total_tokens = (total.total_tokens ?? 0) + (item.total_tokens ?? 0);
-    total.reasoning_tokens = (total.reasoning_tokens ?? 0) + (item.reasoning_tokens ?? 0);
+    if (item.total_tokens !== undefined) {
+      total.total_tokens = (total.total_tokens ?? 0) + item.total_tokens;
+      totalTokensSeen = true;
+    }
+    if (item.reasoning_tokens !== undefined) {
+      total.reasoning_tokens = (total.reasoning_tokens ?? 0) + item.reasoning_tokens;
+      reasoningTokensSeen = true;
+    }
     // v2.21.0 (caching): merge cache telemetry. cache_read/write are
     // additive across calls; mode/key_hash are NOT merged because they
     // are per-call attributes (different rounds may hit different
     // cache scopes or modes).
-    total.cache_read_tokens = (total.cache_read_tokens ?? 0) + (item.cache_read_tokens ?? 0);
-    total.cache_write_tokens = (total.cache_write_tokens ?? 0) + (item.cache_write_tokens ?? 0);
+    if (item.cache_read_tokens !== undefined) {
+      total.cache_read_tokens = (total.cache_read_tokens ?? 0) + item.cache_read_tokens;
+      cacheReadTokensSeen = true;
+    }
+    if (item.cache_write_tokens !== undefined) {
+      total.cache_write_tokens = (total.cache_write_tokens ?? 0) + item.cache_write_tokens;
+      cacheWriteTokensSeen = true;
+    }
     if (item.num_search_queries !== undefined) {
       total.num_search_queries = (total.num_search_queries ?? 0) + item.num_search_queries;
       searchQueriesSeen = true;
@@ -227,6 +243,12 @@ export function mergeUsage(items: Array<TokenUsage | undefined>): TokenUsage {
       providerTotalSeen = true;
     }
   }
+  // Preserve missing native telemetry as unknown. An explicitly reported zero
+  // remains distinct from a field omitted by every provider response.
+  if (!totalTokensSeen) delete total.total_tokens;
+  if (!reasoningTokensSeen) delete total.reasoning_tokens;
+  if (!cacheReadTokensSeen) delete total.cache_read_tokens;
+  if (!cacheWriteTokensSeen) delete total.cache_write_tokens;
   if (!searchQueriesSeen) delete total.num_search_queries;
   if (!searchPerformedSeen) delete total.search_performed;
   if (!providerTotalSeen) delete total.provider_reported_total_cost_usd;

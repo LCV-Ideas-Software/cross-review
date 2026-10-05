@@ -55,6 +55,8 @@ const runtimeSmokeTransportOptions = {
     // v2.4.0 / audit closure (P1.1): runtime smoke is a legitimate stub
     // consumer; opt in to the double-confirmation gate.
     CROSS_REVIEW_STUB_CONFIRMED: process.env.CROSS_REVIEW_STUB_CONFIRMED ?? "1",
+    CROSS_REVIEW_MAX_ATTACHED_EVIDENCE_CHARS: "200000",
+    CROSS_REVIEW_DEFAULT_MAX_ROUNDS: "2",
     CROSS_REVIEW_MAX_SESSION_COST_USD: process.env.CROSS_REVIEW_MAX_SESSION_COST_USD ?? "10000",
     CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD:
       process.env.CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD ?? "10000",
@@ -150,8 +152,13 @@ type RuntimePreflightAuthorityAttempt = {
   error?: string;
 };
 type EvidenceToolInputSchema = {
-  properties?: { evidence?: { description?: string } };
+  properties?: { evidence?: { description?: string; maxLength?: number } };
 };
+type RuntimeToolResult = {
+  isError?: boolean;
+  content?: Array<{ type: string; text?: string }>;
+};
+type RuntimeMaxRoundsSchema = { minimum?: number; maximum?: number; default?: number };
 
 const POLL_INTERVAL_MS = 250;
 const POLL_TIMEOUT_MS = 60_000;
@@ -316,6 +323,36 @@ try {
       );
     }
     assert.equal(listedTools.tools.length, 28, "runtime must register exactly 28 tools");
+    const initTool = listedTools.tools.find((tool) => tool.name === "session_init");
+    assert.equal(
+      (initTool?.inputSchema.properties?.task as { maxLength?: number } | undefined)?.maxLength,
+      32_000,
+      "native session_init must advertise the same scalar task ceiling as other starters",
+    );
+    for (const name of ["run_until_unanimous", "session_start_unanimous"]) {
+      const tool = listedTools.tools.find((item) => item.name === name);
+      const schema = tool?.inputSchema.properties?.max_rounds as RuntimeMaxRoundsSchema | undefined;
+      assert.ok(schema);
+      assert.equal(schema.minimum, 1);
+      assert.equal(schema.maximum, 1000);
+      assert.equal(
+        Object.hasOwn(schema, "default"),
+        false,
+        `${name}: native schema must preserve omitted max_rounds for mode-specific defaults`,
+      );
+      assert.equal(tool?.inputSchema.required?.includes("max_rounds") ?? false, false);
+    }
+    for (const name of ["session_evidence_judge_pass", "session_evidence_judge_consensus_pass"]) {
+      const tool = listedTools.tools.find((item) => item.name === name);
+      assert.ok(tool);
+      assert.equal(
+        tool.annotations?.openWorldHint,
+        true,
+        `${name}: native provider calls are external`,
+      );
+      assert.equal(tool.annotations?.readOnlyHint, false);
+      assert.equal(tool.annotations?.idempotentHint, false);
+    }
     const finalizeTool = listedTools.tools.find((tool) => tool.name === "session_finalize");
     assert.ok(finalizeTool?.description, "runtime must expose session_finalize with a description");
     const contestTool = listedTools.tools.find((tool) => tool.name === "contest_verdict");
@@ -406,7 +443,389 @@ try {
         /operator/i,
         `${starterName}.evidence must not name an operator`,
       );
+      assert.equal(
+        schema?.properties?.evidence?.maxLength,
+        200_000,
+        `${starterName}.evidence must publish its 200000-character transport boundary`,
+      );
     }
+    // Exercise both native schema refusal and aggregate admission in the actual
+    // MCP handlers. Refused async starts must leave no session, durable job,
+    // in-flight marker, capability snapshot, or peer dispatch event behind.
+    const evidenceStartInventory = async () => {
+      const listed = (await callToolWithClient(codexClient, "session_list", {
+        caller: "codex",
+        limit: 100,
+        offset: 0,
+        outcome_filter: "all",
+        detail: "summary",
+        response_format: "json",
+      })) as { sessions?: Array<{ session_id: string }>; pagination?: { total?: number } };
+      const sessionsRoot = path.join(runtimeSmokeDataDir, "sessions");
+      const sessionFiles = fs
+        .readdirSync(sessionsRoot, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => {
+          const file = path.join(entry.parentPath, entry.name);
+          return [path.relative(sessionsRoot, file), fs.readFileSync(file, "utf8")] as const;
+        })
+        .sort(([left], [right]) => left.localeCompare(right));
+      const logsRoot = path.join(runtimeSmokeDataDir, "logs");
+      const dispatchEvents = fs
+        .readdirSync(logsRoot)
+        .flatMap((name) =>
+          fs
+            .readFileSync(path.join(logsRoot, name), "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as { type: string }),
+        )
+        .filter((event) => /^(?:peer\.|session\.created|job\.)/.test(event.type));
+      return {
+        total: listed.pagination?.total,
+        sessionIds: (listed.sessions ?? []).map((session) => session.session_id).sort(),
+        sessionFiles,
+        dispatchEvents,
+      };
+    };
+    const overLimitEvidence = "x".repeat(200_001);
+    assert.equal(overLimitEvidence.length, 200_001);
+    for (const starterName of ["session_start_round", "session_start_unanimous"] as const) {
+      for (const aggregateAdmission of [false, true]) {
+        const before = await evidenceStartInventory();
+        const initialArtifact = "```text\nCOMMAND: npm test\nEXIT_CODE: 0\n```";
+        const result = (await codexClient.callTool(
+          {
+            name: starterName,
+            arguments: {
+              caller: "codex",
+              task: "Runtime boundary: inspect this proposed artifact.",
+              evidence: aggregateAdmission ? "x".repeat(200_000) : overLimitEvidence,
+              ...(aggregateAdmission
+                ? starterName === "session_start_round"
+                  ? { draft: initialArtifact }
+                  : { initial_draft: initialArtifact }
+                : {}),
+              response_format: "json",
+            },
+          },
+          undefined,
+          { timeout: MCP_REQUEST_TIMEOUT_MS, maxTotalTimeout: MCP_REQUEST_TIMEOUT_MS },
+        )) as RuntimeToolResult;
+        assert.equal(result.isError, true, `${starterName}: oversized evidence must be isError`);
+        const errorText = (result.content ?? [])
+          .filter((content) => content.type === "text")
+          .map((content) => content.text)
+          .join("\n");
+        assert.match(errorText, /200000/, `${starterName}: refusal must name the allowed size`);
+        if (aggregateAdmission) {
+          assert.match(
+            errorText,
+            /proposed caller evidence.*2000\d{2} characters/,
+            `${starterName}: aggregate refusal must name the actual received size`,
+          );
+          assert.match(errorText, /No evidence was truncated/);
+        }
+        // EventLog appends asynchronously; let its diagnostic queue settle
+        // before comparing dispatch records from both connected runtimes.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        assert.deepEqual(
+          await evidenceStartInventory(),
+          before,
+          `${starterName}: refused evidence must not create sessions, jobs, or dispatch events`,
+        );
+      }
+    }
+    for (const nestedInput of [false, true]) {
+      const boundaryMembers = nestedInput
+        ? { padding: Array.from({ length: 253 }, (_, index) => index) }
+        : Object.fromEntries(
+            Array.from({ length: 254 }, (_, index) => [`padding_${index}`, index]),
+          );
+      const accepted = await codexClient.callTool({
+        name: "server_info",
+        arguments: { caller: "codex", response_format: "json", ...boundaryMembers },
+      });
+      assert.notEqual(
+        accepted.isError,
+        true,
+        `native SDK guard: ${nestedInput ? "nested" : "flat"} 256-member input must be accepted`,
+      );
+      const overflowMembers = nestedInput
+        ? { padding: Array.from({ length: 253 }, (_, index) => index) }
+        : Object.fromEntries(
+            Array.from({ length: 254 }, (_, index) => [`padding_${index}`, index]),
+          );
+      const before = await evidenceStartInventory();
+      const rejected = (await codexClient.callTool({
+        name: "session_init",
+        arguments: {
+          caller: "codex",
+          task: "Runtime SDK boundary: proposed session must never be initialized.",
+          response_format: "json",
+          ...overflowMembers,
+        },
+      })) as RuntimeToolResult;
+      assert.equal(
+        rejected.isError,
+        true,
+        `native SDK guard: ${nestedInput ? "nested" : "flat"} 257-member input must be isError`,
+      );
+      const errorText = (rejected.content ?? [])
+        .filter((content) => content.type === "text")
+        .map((content) => content.text)
+        .join("\n");
+      assert.match(errorText, /arguments contain more than the maximum of 256 elements/);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(
+        await evidenceStartInventory(),
+        before,
+        "native SDK guard: overflow must be rejected before session initialization or dispatch",
+      );
+      const continued = (await callToolWithClient(codexClient, "server_info", {
+        caller: "codex",
+        response_format: "json",
+      })) as { version?: string };
+      assert.equal(continued.version, packageVersion, "native SDK refusal must leave MCP usable");
+    }
+    const beforeTaskOverflow = await evidenceStartInventory();
+    const taskOverflow = (await codexClient.callTool({
+      name: "session_init",
+      arguments: {
+        task: "X".repeat(32_001),
+        caller: "codex",
+        response_format: "json",
+      },
+    })) as RuntimeToolResult;
+    assert.equal(taskOverflow.isError, true);
+    assert.match(
+      (taskOverflow.content ?? [])
+        .filter((item) => item.type === "text")
+        .map((item) => item.text)
+        .join("\n"),
+      /expected string to have <=32000 characters at task/,
+    );
+    assert.deepEqual(
+      await evidenceStartInventory(),
+      beforeTaskOverflow,
+      "native scalar refusal must precede initialization, provider probes and all durable effects",
+    );
+    const manualCapSession = (await callToolWithClient(codexClient, "session_init", {
+      task: "X".repeat(32_000),
+      caller: "codex",
+      response_format: "json",
+    })) as { session_id: string; task: string };
+    assert.equal(
+      manualCapSession.task.length,
+      32_000,
+      "the exact native task boundary stays valid",
+    );
+    type ManualEvidenceEvent = {
+      type: string;
+      session_id: string;
+      message: string;
+      ts: string;
+      seq: number;
+      data?: Record<string, unknown>;
+    };
+    type ManualEvidenceParent = {
+      parent_pid: number;
+      parent_exe_basename: string | null;
+    };
+    const manualSessionDirectory = path.join(
+      runtimeSmokeDataDir,
+      "sessions",
+      manualCapSession.session_id,
+    );
+    const awaitManualEvidenceEvent = async (type: string, afterSeq = 0) => {
+      const deadline = Date.now() + POLL_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        const page = (await callToolWithClient(codexClient, "session_events", {
+          session_id: manualCapSession.session_id,
+          response_format: "json",
+        })) as { events?: ManualEvidenceEvent[] };
+        const event = page.events?.find((item) => item.type === type && item.seq > afterSeq);
+        if (event) {
+          const meta = JSON.parse(
+            fs.readFileSync(path.join(manualSessionDirectory, "meta.json"), "utf8"),
+          ) as {
+            updated_at: string;
+            convergence_health: { last_event_at: string; last_activity_at: string };
+          };
+          // The event is appended before its metadata write and native release.
+          // Observe all three before taking a strict durable-file snapshot.
+          if (
+            meta.updated_at >= event.ts &&
+            meta.convergence_health.last_event_at >= event.ts &&
+            meta.convergence_health.last_activity_at >= event.ts &&
+            !fs.existsSync(path.join(manualSessionDirectory, ".lock"))
+          ) {
+            return event;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+      assert.fail(`Manual evidence fixture did not durably settle ${type} after seq ${afterSeq}`);
+    };
+    // session_init emits session.created asynchronously. It is preexisting
+    // fixture work, so settle it before attributing any delta to refusal.
+    await awaitManualEvidenceEvent("session.created");
+    const attachOverflow = async (content: string) => {
+      const rejected = (await codexClient.callTool({
+        name: "session_attach_evidence",
+        arguments: {
+          session_id: manualCapSession.session_id,
+          caller: "codex",
+          label: "manual-overflow",
+          content,
+          response_format: "json",
+        },
+      })) as RuntimeToolResult;
+      assert.equal(
+        rejected.isError,
+        true,
+        "MCP must refuse an over-cap manual attachment before persisting it",
+      );
+      const message = (rejected.content ?? [])
+        .filter((item) => item.type === "text")
+        .map((item) => item.text)
+        .join("\n");
+      assert.match(
+        message,
+        /evidence_transport_limit_exceeded: proposed attachment.*200001 characters; the configured limit is 200000/,
+      );
+    };
+    const assertManualOverflowPreservesEvidence = async (content: string) => {
+      const before = await evidenceStartInventory();
+      const eventsPath = path.join(manualCapSession.session_id, "events.ndjson");
+      const metaPath = path.join(manualCapSession.session_id, "meta.json");
+      const beforeFiles = new Map(before.sessionFiles);
+      const priorEventText = beforeFiles.get(eventsPath);
+      assert.ok(priorEventText, "the creation event must already be durable in the baseline");
+      const priorEvents = priorEventText
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as ManualEvidenceEvent);
+      const previousSeq = priorEvents.at(-1)?.seq;
+      assert.ok(previousSeq);
+      await attachOverflow(content);
+      const audit = await awaitManualEvidenceEvent("session.identity_verified", previousSeq);
+      assert.equal(audit.seq, previousSeq + 1, "refusal may append only the next owner audit");
+      assert.equal(audit.session_id, manualCapSession.session_id);
+      assert.equal(audit.message, "caller identity verification completed.");
+      assert.match(audit.ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      const parent = audit.data?.identity_metadata as ManualEvidenceParent | undefined;
+      assert.ok(parent);
+      assert.equal(parent.parent_pid, process.pid, "the native audit must identify this host");
+      if (parent.parent_exe_basename !== null) {
+        assert.equal(
+          parent.parent_exe_basename.toLowerCase(),
+          path.basename(process.execPath).toLowerCase(),
+        );
+      }
+      assert.deepEqual(audit.data, {
+        site: "session_attach_evidence",
+        caller: "codex",
+        identity_verified: true,
+        verification_method: "token",
+        client_info_name: "codex",
+        identity_metadata: parent,
+      });
+      assert.deepEqual(Object.keys(audit).sort(), [
+        "data",
+        "message",
+        "seq",
+        "session_id",
+        "ts",
+        "type",
+      ]);
+      const previousMetaText = beforeFiles.get(metaPath);
+      assert.ok(previousMetaText);
+      const expectedMeta = JSON.parse(previousMetaText);
+      const activityAt =
+        expectedMeta.convergence_health.last_activity_at > audit.ts
+          ? expectedMeta.convergence_health.last_activity_at
+          : audit.ts;
+      expectedMeta.updated_at =
+        expectedMeta.updated_at > activityAt ? expectedMeta.updated_at : activityAt;
+      expectedMeta.convergence_health.last_event_at = activityAt;
+      expectedMeta.convergence_health.last_activity_at = activityAt;
+      // The paginated API places seq first; the native durable writer appends
+      // it after the original event fields. Preserve the exact on-disk order.
+      const persistedAudit = {
+        type: audit.type,
+        session_id: audit.session_id,
+        message: audit.message,
+        data: audit.data,
+        ts: audit.ts,
+        seq: audit.seq,
+      };
+      const expected = {
+        ...before,
+        sessionFiles: before.sessionFiles.map(([file, text]) => [
+          file,
+          file === eventsPath
+            ? `${text}${JSON.stringify(persistedAudit)}\n`
+            : file === metaPath
+              ? `${JSON.stringify(expectedMeta, null, 2)}\n`
+              : text,
+        ]),
+      };
+      // Owner authentication is audited even when admission refuses evidence.
+      // Permit that exact event and its three activity timestamps, while every
+      // other file, metadata field, attachment, reservation and dispatch stays equal.
+      assert.deepEqual(await evidenceStartInventory(), expected);
+      return audit.seq;
+    };
+    const firstRefusalAuditSeq = await assertManualOverflowPreservesEvidence("X".repeat(200_001));
+    await callToolWithClient(codexClient, "session_attach_evidence", {
+      session_id: manualCapSession.session_id,
+      caller: "codex",
+      label: "manual-exact-cap",
+      content: "X".repeat(200_000),
+      response_format: "json",
+    });
+    await awaitManualEvidenceEvent("session.identity_verified", firstRefusalAuditSeq);
+    await awaitManualEvidenceEvent("session.evidence_attached", firstRefusalAuditSeq);
+    await assertManualOverflowPreservesEvidence("Y");
+
+    const roundDefaults = (await callToolWithClient(codexClient, "server_info", {
+      caller: "codex",
+      response_format: "json",
+    })) as { budget: { default_max_rounds: number } };
+    assert.equal(roundDefaults.budget.default_max_rounds, 2);
+    for (const name of ["run_until_unanimous", "session_start_unanimous"] as const) {
+      for (const explicitRounds of [undefined, 1]) {
+        const result = (await callToolWithClient(codexClient, name, {
+          caller: "codex",
+          task: "Review the unchanged static artifact. FORCE_NEEDS_EVIDENCE",
+          initial_draft: "Unchanged static fixture material. FORCE_NEEDS_EVIDENCE",
+          mode: "review",
+          allow_auto_extension: false,
+          ...(explicitRounds === undefined ? {} : { max_rounds: explicitRounds }),
+          response_format: "json",
+        })) as { session_id?: string; session?: { session_id: string } };
+        const sessionId = result.session_id ?? result.session?.session_id;
+        assert.ok(sessionId);
+        if (name === "session_start_unanimous") {
+          await pollUntilDoneWithClient(codexClient, sessionId);
+        }
+        const saved = (await callToolWithClient(codexClient, "session_read", {
+          session_id: sessionId,
+          response_format: "json",
+        })) as {
+          requested_max_rounds: number | null;
+          effective_max_rounds: number;
+          outcome: string;
+          rounds: unknown[];
+        };
+        assert.equal(saved.requested_max_rounds, explicitRounds ?? null);
+        assert.equal(saved.effective_max_rounds, explicitRounds ?? 2);
+        assert.equal(saved.rounds.length, explicitRounds ?? 2);
+        assert.equal(saved.outcome, "max-rounds");
+      }
+    }
+
     const peerSession = (await callToolWithClient(codexClient, "session_init", {
       task: "Runtime peer preflight: completed implementation with 74 passed.",
       caller: "codex",
@@ -568,6 +987,41 @@ try {
         });
       }
     }
+
+    const reportSession = (await callToolWithClient(codexClient, "session_init", {
+      task: "Runtime report mutation belongs to its authenticated petitioner.",
+      caller: "codex",
+      response_format: "json",
+    })) as { session_id: string };
+    const ownedReportPath = path.join(
+      runtimeSmokeDataDir,
+      "sessions",
+      reportSession.session_id,
+      "session-report.md",
+    );
+    assert.equal(fs.existsSync(ownedReportPath), false);
+    await assert.rejects(
+      () =>
+        callTool("session_report", {
+          session_id: reportSession.session_id,
+          caller: "claude",
+          response_format: "json",
+        }),
+      /session_owner_mismatch/,
+      "a different token-verified peer must not write the petitioner's report",
+    );
+    assert.equal(
+      fs.existsSync(ownedReportPath),
+      false,
+      "a refused report mutation must leave no report artifact",
+    );
+    const ownedReport = (await callToolWithClient(codexClient, "session_report", {
+      session_id: reportSession.session_id,
+      caller: "codex",
+      response_format: "json",
+    })) as { path?: string };
+    assert.equal(ownedReport.path, "session-report.md");
+    assert.equal(fs.existsSync(ownedReportPath), true);
 
     // crosrev-40: the persisted petitioner closes its own non-terminal
     // session as `aborted` with its own token; the schema refuses every
@@ -778,6 +1232,7 @@ try {
   });
   const report = await callTool("session_report", {
     session_id: roundStart.session_id,
+    caller: "claude",
     response_format: "json",
   });
   const unanimousStart = (await callTool("session_start_unanimous", {

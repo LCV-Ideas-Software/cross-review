@@ -682,7 +682,7 @@ export function synthesizeDurableJob(
   const matchingJob = durableJobId
     ? localJobs.find((job) => job.job_id === durableJobId)
     : undefined;
-  if (matchingJob && !matchingJob.error?.startsWith("background_job_settlement_failed")) {
+  if (matchingJob && !matchingJob.error?.includes("background_job_settlement_failed")) {
     return null;
   }
   return {
@@ -1580,13 +1580,16 @@ export async function main(): Promise<void> {
     );
   } else if (!tokensRecord && process.env.CROSS_REVIEW_TEST_QUIET !== "1") {
     process.stderr.write(
-      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so every mutating tool that requires a token fails closed: ask_peers, contest_verdict, session_attach_evidence, session_cancel_job, session_doctor, session_evidence_judge_consensus_pass, session_evidence_judge_pass, session_finalize, session_recover_interrupted, session_start_round, session_start_unanimous, session_sweep. session_sweep is in that list: it is the one mutation that may act ACROSS owners, and since v07.00.00 that costs the capability token rather than a self-declared identity, so it is no recovery route out of this state. Of the mutating tools only session_init and run_until_unanimous still run, on a declared identity; read-only tools are unaffected. There is no in-band way to reissue the record: set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions, then restart the server.\n`,
+      `[cross-review] caller capability tokens unavailable (failed to load or generate host-tokens.json); peer clientInfo checks remain available but no caller can be token-verified, so every mutating tool that requires a token fails closed: ask_peers, contest_verdict, session_attach_evidence, session_cancel_job, session_doctor, session_evidence_judge_consensus_pass, session_evidence_judge_pass, session_finalize, session_recover_interrupted, session_report, session_start_round, session_start_unanimous, session_sweep. session_sweep is in that list: it is the one mutation that may act ACROSS owners, and since v07.00.00 that costs the capability token rather than a self-declared identity, so it is no recovery route out of this state. Of the mutating tools only session_init and run_until_unanimous still run, on a declared identity; read-only tools are unaffected. There is no in-band way to reissue the record: set CROSS_REVIEW_TOKENS_FILE to a writable path or fix data_dir permissions, then restart the server.\n`,
     );
   }
-  const server = new McpServer({
-    name: "cross-review",
-    version: VERSION,
-  });
+  const server = new McpServer(
+    {
+      name: "cross-review",
+      version: VERSION,
+    },
+    { maxToolInputElements: 256 },
+  );
   const toolNames: string[] = [];
   const registerTool: McpServer["registerTool"] = (name, config, callback) => {
     toolNames.push(name);
@@ -1679,6 +1682,13 @@ export async function main(): Promise<void> {
               missing_variables: missingVars,
               policy:
                 "Paid provider calls are blocked until budget ceilings and per-peer USD-per-million rate cards are explicitly configured.",
+              spend_bound:
+                "Dispatch uses estimated input tokens and configured output ceilings; this is not a provider-enforced maximum charge.",
+              limitations: [
+                "xAI output ceilings exclude billable reasoning tokens and tool calls.",
+                "Perplexity search invocation counts are estimated unless search is disabled or the existing fail_closed search policy is selected.",
+                "Post-call accounting uses reported usage and native provider costs when available; account billing limits are managed by each provider.",
+              ],
             };
           })(),
           prompt: runtime.config.prompt,
@@ -1799,7 +1809,11 @@ export async function main(): Promise<void> {
       description:
         "Create a durable cross-review session after probing provider availability and model selection. This does not call reviewer models yet. AI callers should submit raw proof through the `evidence` field of the subsequent review starter; the runtime will persist it automatically without session_attach_evidence or human intervention.",
       inputSchema: z.object({
-        task: z.string().min(1).describe("Original task or artifact being reviewed."),
+        task: z
+          .string()
+          .min(1)
+          .max(SCHEMA_TASK_MAX_CHARS)
+          .describe("Original task or artifact being reviewed."),
         review_focus: ReviewFocusSchema,
         caller: CallerSchema,
         response_format: ResponseFormatSchema,
@@ -2009,6 +2023,12 @@ export async function main(): Promise<void> {
         emit: runtime.emit,
         enabledPeers: enabledPeersSnapshot,
       });
+      runtime.orchestrator.assertSubmissionEvidenceFits({
+        sessionId: locked.session_id,
+        task: locked.task,
+        draft: locked.draft,
+        evidence: locked.evidence,
+      });
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
         : await runtime.orchestrator.initSession(locked.task, locked.caller, locked.review_focus);
@@ -2064,8 +2084,10 @@ export async function main(): Promise<void> {
           .int()
           .min(1)
           .max(1000)
-          .default(8)
-          .describe("Hard review-round ceiling unless allow_auto_extension is explicitly true."),
+          .optional()
+          .describe(
+            "Hard review-round ceiling when supplied, unless allow_auto_extension is explicitly true. Omit to use the existing runtime default for the selected mode.",
+          ),
         allow_auto_extension: z
           .boolean()
           .default(false)
@@ -2160,8 +2182,10 @@ export async function main(): Promise<void> {
           .int()
           .min(1)
           .max(1000)
-          .default(8)
-          .describe("Hard review-round ceiling unless allow_auto_extension is explicitly true."),
+          .optional()
+          .describe(
+            "Hard review-round ceiling when supplied, unless allow_auto_extension is explicitly true. Omit to use the existing runtime default for the selected mode.",
+          ),
         allow_auto_extension: z
           .boolean()
           .default(false)
@@ -2225,6 +2249,12 @@ export async function main(): Promise<void> {
       // caller/lead conflation. Relator identity belongs in
       // convergence_scope.lead_peer after runUntilUnanimous resolves it.
       const initCaller = locked.caller;
+      runtime.orchestrator.assertSubmissionEvidenceFits({
+        sessionId: locked.session_id,
+        task: locked.task,
+        draft: locked.initial_draft,
+        evidence: locked.evidence,
+      });
       const session = locked.session_id
         ? runtime.orchestrator.store.read(locked.session_id)
         : await runtime.orchestrator.initSession(locked.task, initCaller, locked.review_focus);
@@ -2658,19 +2688,27 @@ export async function main(): Promise<void> {
     {
       title: "Session Report",
       description:
-        "Generate and save a Markdown report with convergence, peer decisions, failures, costs and latest events.",
+        "Generate and save a Markdown report with convergence, peer decisions, failures, costs and latest events. Requires the verified capability token of the persisted session petitioner because the report is written to durable storage. Other peers can inspect the session through read-only tools.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
+        caller: CallerSchema,
         response_format: ResponseFormatSchema,
       }),
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
       },
     },
-    async ({ session_id, response_format }) => {
+    async ({ session_id, caller, response_format }) => {
+      verifySessionMutationAuthority(
+        runtime,
+        "session_report",
+        caller,
+        server.server.getClientVersion(),
+        session_id,
+      );
       const session = runtime.orchestrator.store.read(session_id);
       const markdown = sessionReportMarkdown(
         session,
@@ -2754,6 +2792,7 @@ export async function main(): Promise<void> {
         task: task ?? session.task,
         draft: effectiveDraft,
         evidence,
+        useSavedEvidence: task === undefined && draft === undefined && evidence === undefined,
       });
       const truthfulness = result.truthfulness.result;
       const evidenceResult = result.evidence.result;
@@ -2769,6 +2808,7 @@ export async function main(): Promise<void> {
           blocking_gates: result.blocking_gates,
           truthfulness_pass: result.truthfulness.pass,
           evidence_pass: result.evidence.pass,
+          unattached_evidence_references: evidenceResult?.unattached_evidence_references ?? [],
           truthfulness: result.truthfulness,
           evidence: result.evidence,
           // Legacy truthfulness fields remain additive for existing clients.
@@ -2832,7 +2872,7 @@ export async function main(): Promise<void> {
     {
       title: "Attach Session Evidence (Optional)",
       description:
-        "Attach one durable evidence artifact to an existing session, out of band from a review round. Only the session's own petitioner may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round. Requires the verified capability token of the persisted session petitioner; a peer cannot attach evidence to someone else's session.",
+        "Attach one durable evidence artifact to an existing session, out of band from a review round, within the current configured aggregate evidence limit. Wait until any active round finishes; its admitted evidence corpus cannot be mutated concurrently. Only the session's own petitioner may call it, and the artifact carries the same `caller_submitted_unverified` provenance as material passed through the `evidence` field of a review starter — this tool promotes nothing. Prefer the `evidence` field for the routine path; this one exists for material that does not belong to a specific round. Requires the verified capability token of the persisted session petitioner; a peer cannot attach evidence to someone else's session.",
       inputSchema: z.object({
         session_id: SessionIdSchema,
         label: z.string().min(1).max(120),
@@ -2873,6 +2913,7 @@ export async function main(): Promise<void> {
           extension,
           attached_by: caller,
           origin: "session_attach_evidence",
+          total_cap_chars: runtime.orchestrator.config.prompt.max_attached_evidence_chars,
         }),
         response_format,
       );
@@ -2909,7 +2950,7 @@ export async function main(): Promise<void> {
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     async ({
@@ -2989,7 +3030,7 @@ export async function main(): Promise<void> {
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     async ({

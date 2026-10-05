@@ -6,7 +6,7 @@
 > reader; sections 4 to 7 go deeper into the technical aspects for IT
 > professionals and developers.
 >
-> State of the source/release target on 23/09/2026: `9.2.2`. The registry may
+> State of the source/release target on 04/10/2026: `10.0.0`. The registry may
 > lag behind the source during the workflow; check `npm view
 @lcv-ideas-software/cross-review version` for the publication and `server_info`
 > for the runtime version actually loaded. Reload the window after a package
@@ -133,7 +133,7 @@ For each peer, the quality of the verdict is classified:
 - **`format_warning`** — parsed, with non-blocking warnings;
 - **`recovered`** — recovered through format repair, a moderation-safe retry
   or limited sanitization;
-- **`needs_operator_review`** — no parseable status remained after recovery;
+- **`needs_agent_review`** — no parseable status remained after recovery;
 - **`failed`** — a provider failure or a model-selection failure blocked the
   peer.
 
@@ -336,12 +336,12 @@ Current canonical models (each one replaceable by an explicit
 | xAI/Grok     | `grok-4.7`               |
 | Perplexity   | `perplexity/kimi-k3`     |
 
-On Fable 5, the adapter omits the explicit `thinking` field, since adaptive
+On Fable 5.1, the adapter omits the explicit `thinking` field, since adaptive
 reasoning is automatic, and uses `output_config.effort` for the depth. The
-documented retention is 30 days, with no ZDR option. On GPT-5.6 Sol, `ultra` is
+documented retention is 30 days, with no ZDR option. On GPT-6 Astra, `ultra` is
 a mode of the Codex product, not a literal `reasoning.effort` of the Responses
 API; cross-review accepts that alias in the configuration and sends `max` to
-the API. Grok 4.6 accepts `low`/`medium`/`high`/`xhigh` and receives `xhigh`
+the API. Grok 4.7 accepts `low`/`medium`/`high`/`xhigh` and receives `xhigh`
 when the alias is used; Perplexity (`perplexity/kimi-k3`) receives `high`,
 the ceiling that model accepts (it rejects `xhigh` and `max` since 09/2026).
 Explicit overrides for earlier OpenAI families are normalized to the family's
@@ -383,12 +383,13 @@ session. The observed cache modes are: `auto` (OpenAI, DeepSeek, Grok and
 Perplexity, whose Agent API reports `cache_read_input_tokens`), `explicit`
 (Anthropic) and `implicit` (Gemini).
 
-`CROSS_REVIEW_DISABLE_CACHE=true` globally removes the cache controls the
-client can influence. It cannot force Gemini or DeepSeek to disable the
-implicit/automatic cache administered by the service.
+`CROSS_REVIEW_DISABLE_CACHE=true` disables client-controlled caching: Astra
+uses explicit mode without breakpoints, Anthropic omits cache control, and Grok
+omits its routing key. It cannot force Gemini, DeepSeek, Grok or Perplexity
+to disable automatic caching administered by the service.
 
-GPT-5.6 Sol uses `prompt_cache_options` in implicit mode with a 30-minute TTL
-and accounts for cache reads and writes separately. Grok 4.6 uses
+GPT-6 Astra uses `prompt_cache_options` in implicit mode with a 30-minute TTL
+when caching is enabled and accounts for reads and writes separately. Grok 4.7 uses
 `prompt_cache_key`, with retention administered by xAI and without inferring
 write tokens.
 

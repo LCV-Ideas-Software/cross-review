@@ -7,6 +7,13 @@
 > MCP server orchestrating API-first cross-review between Claude, ChatGPT Codex,
 > Gemini, DeepSeek, Grok, and Perplexity with unanimous convergence gates.
 
+The runtime exposes agent-to-agent MCP tools only. Version 10 removes the
+human-facing dashboard, its executable and configuration. Evidence reaches peers
+in full through the advertised 200,000-character ceiling; larger submissions are
+refused with the received size and configured limit instead of being truncated.
+Submission preflights evaluate the proposed caller snapshot, without borrowing
+automatic evidence from an earlier artifact.
+
 [![status: stable](https://img.shields.io/badge/status-stable-brightgreen.svg)](#status)
 [![release](https://img.shields.io/github/v/release/LCV-Ideas-Software/cross-review?sort=semver)](https://github.com/LCV-Ideas-Software/cross-review/releases)
 [![npm](https://img.shields.io/npm/v/@lcv-ideas-software/cross-review.svg)](https://www.npmjs.com/package/@lcv-ideas-software/cross-review)
@@ -30,7 +37,7 @@ published package has no install lifecycle and is tested in this mode. Never add
 `--dangerously-allow-all-scripts`, and do not install a locally built source
 tree or tarball as a substitute for the published registry release.
 
-**Status.** Stable. The current source/release target is **v09.02.02** (package `9.2.2`).
+**Status.** Stable. The current source/release target is **v10.00.00** (package `10.0.0`).
 Use the npm badge or `npm view @lcv-ideas-software/cross-review version` for
 registry state and `server_info` for the version actually loaded by an MCP
 window. See
@@ -45,6 +52,13 @@ window. See
 > verbatim.
 
 The version history at a glance:
+
+**v10.00.00 (05/10/2026):** Agent-only protocol, complete evidence admission,
+current native provider contracts and SDKs. `session_report` now requires the
+session petitioner's capability token because it saves a durable artifact;
+unparseable decisions emit `needs_agent_review`. Historical records retain
+their original values. Caller-submitted proofs remain unverified execution
+claims even when their bytes and citations match.
 
 **v09.02.02 (23/09/2026):** The xAI peer now defaults to Grok 4.7 and reads
 assistant text from typed Responses output, ignoring encrypted reasoning items.
@@ -221,7 +235,8 @@ tests and CI when `CROSS_REVIEW_STUB=1`.
 - OpenAI client library (`openai`) for the Codex/OpenAI peer.
 - Anthropic TypeScript client library (`@anthropic-ai/sdk`) for Claude.
 - Google Gen AI client library (`@google/genai`) for Gemini.
-- OpenAI-compatible DeepSeek API through the OpenAI client library.
+- Native DeepSeek Responses API through the OpenAI client library, with JSON
+  Schema for review decisions.
 - OpenAI-compatible xAI Grok API through the OpenAI client library.
 - OpenAI-Responses-compatible Perplexity Agent API through the OpenAI client library.
 - The MCP SDK (`@modelcontextprotocol/sdk`) is declared as a
@@ -260,6 +275,28 @@ $env:CROSS_REVIEW_STUB = "1"
 npm test
 ```
 
+## Upgrading from v9 to v10
+
+Version 10 exposes agent-to-agent MCP tools through the `cross-review` stdio
+executable. Remove retired dashboard integrations and launch entries for
+`cross-review-dashboard`; update tool integrations to use the
+[current MCP tool list](#mcp-tools).
+
+Remove `dashboard_port` from an existing `config.json` before loading v10.
+The strict `FileConfigSchema` rejects unknown keys, so this retired setting
+makes the file invalid and paid calls fail closed.
+
+`session_report` now requires `caller` to match the persisted session petitioner
+and the calling MCP host to present that peer's capability token through
+`CROSS_REVIEW_CALLER_TOKEN`. Creating a report saves a durable artifact. Other
+agents can inspect the session with `session_read`, `session_events` and
+`session_metrics`. For legacy sessions without an admissible persisted
+petitioner, use those read-only tools to inspect the preserved history.
+
+Older durable records remain readable with their original
+`needs_operator_review` decision-quality label. Newly unparseable decisions
+use `needs_agent_review`.
+
 ## Configuration
 
 Model selection and runtime behaviour can be controlled with environment
@@ -292,7 +329,7 @@ GPT-5.1 maps `minimal` to `low` and `xhigh`/`max`/`ultra` to `high`; original
 GPT-5 maps `none` to `minimal` and `xhigh`/`max`/`ultra` to `high`. Supported
 native values pass through unchanged.
 
-Claude Fable 5 is the canonical Anthropic pin. Its request deliberately omits
+Claude Fable 5.1 is the canonical Anthropic pin. Its request deliberately omits
 the explicit `thinking` field: Fable applies adaptive thinking automatically,
 while `output_config.effort` controls depth. Anthropic documents a 30-day data
 retention posture and no zero-data-retention option for this model. A response
@@ -300,14 +337,12 @@ with `stop_reason="refusal"` is recorded as `provider_refusal`, and partial
 refusal output is not accepted as a review.
 
 There is no second supported Claude model. cross-review runs the top model of
-each provider, so the canonical pin is the whole admissible set. 128,000 output
-tokens is the model's synchronous API ceiling — the most the provider will
-accept, not the budget this package ships with. Unconfigured,
-`maxOutputTokensForPeer()` falls through `max_output_tokens_by_peer` to the
-global `CROSS_REVIEW_MAX_OUTPUT_TOKENS`, whose default is 20,000. Raising it to
-the provider ceiling is part of setup, documented with the other per-peer
-ceilings in `docs/api-keys.md`; the relator output-ceiling screen measures the
-configured value, so a draft sized against 128,000 is refused until it is.
+each provider, so the canonical pin is the whole admissible set. Claude Fable
+5.1 and GPT-6 Astra support 128,000 output tokens, but the unconfigured package
+uses the global 20,000-token fallback for every peer. Explicit
+`max_output_tokens_by_peer` values or per-peer environment variables select
+higher budgets. The relator output-ceiling screen and financial preflight use
+the effective configured value; see `docs/api-keys.md`.
 
 For Grok, `GROK_API_KEY` is canonical. The default pin is `grok-4.7`; xAI
 accepts `low`, `medium`, `high`, or `xhigh` reasoning effort for it, so the
@@ -409,6 +444,14 @@ these environment variables before running real sessions (example):
 `next_seq` plus `has_more` for bounded pagination. Set `limit` explicitly up to
 1,000 when a larger forensic page is needed.
 
+`session_init` applies the same 32,000-character task-input ceiling as review
+starters. When `max_rounds` is omitted from either unanimous-review tool, the
+runtime resolves the existing mode-specific policy: ship/review use
+`CROSS_REVIEW_DEFAULT_MAX_ROUNDS` (default `8`), while circular review uses
+the configured rotation count and rotation size. An explicit value remains
+an explicit request; readback distinguishes the requested value from the
+effective limit.
+
 `session_poll` uses `detail="summary"` by default. The compact response keeps
 operational progress, verdicts, bounded peer summaries and convergence data,
 but omits complete prior-round peer `text`, `raw` and `structured`
@@ -428,6 +471,11 @@ the session itself is already terminal, the reason is
 `session_already_terminal`. Compact job status is persisted per session so a
 sibling MCP host or a restarted runtime can return the same answer without
 requiring process-local memory.
+
+Cancellation is cooperative. A durable cancellation request prevents a new
+recovery-call reservation, fallback dispatch or requester promotion at the
+session guard; already-reserved or provider-accepted work may still settle
+and incur charges.
 
 `session_doctor` separates real and stub sessions, flags terminal outcomes that
 lack terminal events, and reports peer-call cost separately from generation
@@ -464,6 +512,13 @@ propagated; a source that quotes an admitted attachment literally — a GitHub
 URL the provider escaped included — is not treated as invented, and a file
 whose post-image an admitted unified diff carries is not treated as
 unattached.
+
+A recovery round can reuse an earlier vote only when its native recorded
+SHA-256 binds the same artifact, eligible evidence and review context, and
+the voter remains enabled under the same requested model. Caller readiness
+may change while that context stays identical. Old rounds without this
+binding remain readable but cannot provide a missing current quorum vote.
+The binding proves input identity and does not authenticate execution.
 
 `READY` is intentionally not free-form. Its `summary` must be exactly
 `No blocking objections remain.`, `caller_requests` and `follow_ups` must be

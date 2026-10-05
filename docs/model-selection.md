@@ -9,11 +9,10 @@ canonical pin.
 ## Rules
 
 1. When the provider exposes a model-list endpoint, query it with the current
-   API key to validate that the canonical pin is available. Perplexity is the
-   documented exception: its Agent API catalog is not exposed through the
-   OpenAI-SDK `models.list` path the resolver shares with the other peers, so
-   its pin is validated against official documentation and remains
-   `confidence=inferred`.
+   API key to validate that the canonical pin is available. Perplexity's native
+   `GET /v1/models` catalog is included. Native probes must validate the
+   configured target; a successful listing of unrelated models proves no
+   target-model availability.
 2. Keep only models that can perform text generation for the peer role.
 3. Exclude known non-thinking, low-capacity or deprecated models — they
    never become the canonical pin.
@@ -52,6 +51,12 @@ env-var per host — a deliberate decision, never a silent downgrade.
 
 Haiku and other low-capacity Anthropic models are intentionally excluded —
 the cross-review role requires advanced reasoning depth.
+
+DeepSeek's Pro request id remains in the authenticated catalog. Its official
+V4.1-Flash release describes temporary Pro routing to Flash, while current
+pricing still lists the Pro version and rates. The pin is preserved under the
+no-downgrade policy; catalog availability does not verify the routed version
+or sufficient account balance for generation.
 
 Claude Fable 5.1 (`claude-fable-5-1`) is the canonical Anthropic production model.
 The adapter omits the explicit `thinking` field because Fable applies adaptive
@@ -130,11 +135,11 @@ billed per invocation (`usage.tool_calls_details`), so
 `CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH=true` removes that cost dimension
 entirely.
 
-Perplexity does not document a zero-token model/auth endpoint. To avoid
-accidental probe spend, `probe_peers` defaults to
-`CROSS_REVIEW_PERPLEXITY_PROBE_MODE=auth_only`, which reports key presence and
-the configured pin without a completion. Set the mode to `live` when you
-explicitly want a minimal round-trip without tools.
+To avoid accidental probe spend, `probe_peers` defaults to
+`CROSS_REVIEW_PERPLEXITY_PROBE_MODE=auth_only`, which authenticates through
+native `GET /v1/models` and checks the configured pin without a completion.
+Set the mode to `live` when you explicitly want a minimal round-trip without
+tools.
 
 ## Thinking Configuration
 
@@ -144,19 +149,19 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   `reasoning.effort=max`; cross-review accepts the Codex product/CLI term
   `ultra` only as a config compatibility alias and normalizes it to `max`
   before the request. The shared legacy `minimal` setting is normalized to
-  GPT-5.6's lowest active API effort, `low`; it is never sent literally.
+  Astra's lowest active API effort, `low`; it is never sent literally.
   Explicit model overrides are also family-aware: GPT-5.5/5.4/5.2 accept
   through `xhigh` (`minimal` → `low`, `max`/`ultra` → `xhigh`); GPT-5.1
   accepts through `high` (`minimal` → `low`, higher shared values → `high`);
   original GPT-5 accepts `minimal` through `high` (`none` → `minimal`, higher
   shared values → `high`).
-- Anthropic/Claude: Fable 5 omits the explicit `thinking` object because
-  adaptive thinking is automatic. It is always on, and both
-  display omitted. Both use `output_config.effort` for depth.
+- Anthropic/Claude: Fable 5.1 omits the explicit `thinking` object because
+  adaptive thinking is automatic. It uses `output_config.effort` for depth.
 - Google/Gemini: the configured shared effort maps to native `LOW`, `MEDIUM`,
   or `HIGH` thinking for Gemini 3.1 Pro Preview. The default remains `high`.
-- DeepSeek: `thinking.type=enabled` with `reasoning_effort=max` by default;
-  shared-scale `xhigh`, `max`, and `ultra` all normalize to `max`.
+- DeepSeek Responses: `reasoning.effort=max` by default;
+  shared `none`/`minimal`/`low` normalize to native `low`,
+  `medium`/`high`/`xhigh` to `high`, and `max`/`ultra` to `max`.
 - Grok: the pinned `grok-4.7` model accepts explicit `reasoning.effort` at
   `low`, `medium`, `high`, or `xhigh` (default `xhigh`); shared `none`/`minimal`
   normalize to `low` and `max`/`ultra` to `xhigh`. The explicit `grok-4.5`
@@ -164,30 +169,32 @@ Cross-review is optimized for correctness over latency and cost. Provider adapte
   `grok-4.20-multi-agent` compatibility override the provider enum is
   `low`/`medium`/`high`/`xhigh`: shared `none`/`minimal` normalize to `low`,
   while `max`/`ultra` normalize to `xhigh`.
-- Perplexity: the Agent API request schema accepts `reasoning.effort` with the
-  documented enum `minimal`/`low`/`medium`/`high`/`xhigh`/`max` (verified live
-  with `perplexity/kimi-k3` at `max` on 23/08/2026). The default is `max`;
-  `clampEffortForPerplexity` maps the shared scale onto that enum
-  (`none` → `minimal`; `ultra` → `max`).
+- Perplexity: the Agent API schema documents
+  `minimal`/`low`/`medium`/`high`/`xhigh`/`max`, but the current pinned
+  `perplexity/kimi-k3` request completes at `high` and rejects `max` with
+  HTTP 400. The accepted ceiling was reverified on 04/10/2026.
+  `clampEffortForPerplexity` maps `none` to `minimal` and
+  `xhigh`/`max`/`ultra` to `high`, preserving the canonical model.
 
 The alias is accepted consistently by central `config.json`, environment
 variables and per-call overrides. It is never a provider payload value:
-OpenAI GPT-5.6, Anthropic, DeepSeek and Perplexity (Kimi K3) receive `max`;
-Grok 4.6 receives `xhigh`; Gemini maps the configured setting to its native
+OpenAI GPT-6 Astra, Anthropic and DeepSeek receive `max`;
+Perplexity Kimi K3 receives `high`; Grok 4.7 receives `xhigh`; Gemini maps the configured setting to its native
 thinking enum.
 When an operator explicitly selects an older GPT-5 family, the OpenAI adapter
-uses that family's documented ceiling rather than blindly sending GPT-5.6's
+uses that family's documented ceiling rather than blindly sending Astra's
 enum.
 
 ## Per-peer output budgets
 
 The legacy `max_output_tokens` value remains the fallback. Use
 `max_output_tokens_by_peer` when official reasoning guidance or model ceilings
-differ. Each peer's ceiling is set to that provider's documented maximum:
-128,000 for GPT-6 Astra, 128,000 for Claude Fable 5.1, and 20,000 for the other
-four peers. These
-values follow the official OpenAI allocation guidance and Anthropic task-budget
-minimum without assuming an undocumented Grok 4.6 ceiling. `server_info`
+differ. Without per-peer configuration, every peer uses the global 20,000-token
+default. GPT-6 Astra and Claude Fable 5.1 support 128,000 output tokens;
+configure higher budgets explicitly against each native model contract.
+The package default does not claim to be a provider maximum. xAI's
+visible-output cap excludes billable reasoning.
+`server_info`
 returns the effective six-peer map used by both provider payloads and budget
 preflight.
 
@@ -205,8 +212,9 @@ preflight.
   [Gemini 3](https://ai.google.dev/gemini-api/docs/gemini-3), and
   [thinking](https://ai.google.dev/gemini-api/docs/thinking), plus the
   [deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations).
-- DeepSeek: [API updates](https://api-docs.deepseek.com/updates) and
-  [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode), plus
+- DeepSeek: [API updates](https://api-docs.deepseek.com/updates),
+  [Responses API](https://api-docs.deepseek.com/guides/responses_api/) and
+  [response reference](https://api-docs.deepseek.com/api/create-response/), plus
   [models and pricing](https://api-docs.deepseek.com/quick_start/pricing/).
 - xAI: [models](https://docs.x.ai/developers/models),
   [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning),

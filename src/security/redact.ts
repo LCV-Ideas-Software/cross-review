@@ -1,6 +1,8 @@
 const SECRET_PATTERNS = [
-  /sk-[A-Za-z0-9_-]{20,}/g,
-  /sk-ant-[A-Za-z0-9_-]{20,}/g,
+  // Native key prefixes start at a token boundary, not inside an ordinary
+  // identifier such as signed-exit-ask-peers-independent-green.json.
+  /(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}/g,
+  /(?<![A-Za-z0-9_])sk-ant-[A-Za-z0-9_-]{20,}/g,
   /AIza[A-Za-z0-9_-]{20,}/g,
   /cfut_[A-Za-z0-9_-]{30,}/g,
   // v4.5.44 / issue #215: ghs_ installation tokens migrated to a stateless
@@ -13,7 +15,9 @@ const SECRET_PATTERNS = [
   /gh[pousr]_[A-Za-z0-9]{30,}/g,
   /github_pat_[A-Za-z0-9_]{20,}/g,
   /npm_[A-Za-z0-9]{30,}/g,
-  /re_[A-Za-z0-9_]{30,}/g,
+  // Resend keys begin at a token boundary; do not restart inside ordinary
+  // identifiers such as bare_async_failure_records_its_shape.
+  /(?<![A-Za-z0-9_])re_[A-Za-z0-9_]{30,}/g,
   /xox[baprs]-[A-Za-z0-9-]{20,}/g,
   // v2.18.4 / Codex audit 2026-05-07 P1.2: xAI API keys have prefix
   // `xai-` and were not previously covered. Logs and session payloads
@@ -21,9 +25,10 @@ const SECRET_PATTERNS = [
   // include the key, so adding this pattern closes a credential leak
   // surface at parity with sk-/sk-ant-/AIza/etc.
   /xai-[A-Za-z0-9_-]{20,}/g,
+  /pplx-[A-Za-z0-9_-]{20,}/g,
   /AKIA[A-Z0-9]{16}/g,
   /Bearer\s+[A-Za-z0-9._-]{20,}/gi,
-  /[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,
   // v2.4.0 / audit closure: env-style assignments. Catches `PASSWORD=value`
   // / `API_KEY="value"` / `SECRET: value` / `Authorization: token` shapes
   // that providers, smoke fixtures or stack traces sometimes echo back.
@@ -39,8 +44,11 @@ const SECRET_PATTERNS = [
   // when the scorecard hotfix peer responses quoted `id-token: write` in
   // backtick-fenced YAML excerpts. Excluding `\` keeps the regex from
   // crossing JSON-escape boundaries.
-  /\b((?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*[:=]\s*["']?)([^\s"',}\\]{6,})/gi,
+  /(?<![\w-])((?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*["']?\s*[:=]\s*["']?)([^\s"',}\\]{6,})/gi,
 ];
+
+const SECRET_FIELD_PATTERN =
+  /^(?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)$/i;
 
 const PRIVATE_KEY_LABELS = [
   "PRIVATE KEY",
@@ -50,83 +58,47 @@ const PRIVATE_KEY_LABELS = [
   "DSA PRIVATE KEY",
 ];
 
-const PRIVATE_KEY_BEGIN_MARKERS = PRIVATE_KEY_LABELS.map((label) => `-----BEGIN ${label}-----`);
-const PRIVATE_KEY_END_MARKERS = PRIVATE_KEY_LABELS.map((label) => `-----END ${label}-----`);
-
-function findNextMarker(
-  value: string,
-  markers: readonly string[],
-  fromIndex: number,
-): { index: number; marker: string } | undefined {
-  let found: { index: number; marker: string } | undefined;
-  for (const marker of markers) {
-    const index = value.indexOf(marker, fromIndex);
-    if (index !== -1 && (!found || index < found.index)) {
-      found = { index, marker };
-    }
-  }
-  return found;
-}
-
-function findNextPrivateKeyMarker(
-  value: string,
-  fromIndex: number,
-): { index: number; marker: string; side: "BEGIN" | "END" } | undefined {
-  const begin = findNextMarker(value, PRIVATE_KEY_BEGIN_MARKERS, fromIndex);
-  const end = findNextMarker(value, PRIVATE_KEY_END_MARKERS, fromIndex);
-  if (!begin) return end ? { ...end, side: "END" } : undefined;
-  if (!end) return { ...begin, side: "BEGIN" };
-  return begin.index <= end.index ? { ...begin, side: "BEGIN" } : { ...end, side: "END" };
-}
+const PRIVATE_KEY_MARKER_PATTERN = new RegExp(
+  `-----(BEGIN|END) (${PRIVATE_KEY_LABELS.join("|")})-----`,
+  "g",
+);
 
 function redactPrivateKeyBlocks(value: string): string {
   let cursor = 0;
+  let beginIndex = 0;
+  let depth = 0;
   let parts: string[] | undefined;
 
-  while (cursor < value.length) {
-    const begin = findNextMarker(value, PRIVATE_KEY_BEGIN_MARKERS, cursor);
-    if (!begin) break;
-
-    let depth = 1;
-    let scan = begin.index + begin.marker.length;
-    let close: { index: number; marker: string } | undefined;
-
-    while (scan < value.length) {
-      const marker = findNextPrivateKeyMarker(value, scan);
-      if (!marker) break;
-
-      scan = marker.index + marker.marker.length;
-      if (marker.side === "BEGIN") {
-        depth += 1;
-        continue;
-      }
-
-      depth -= 1;
-      if (depth === 0) {
-        close = marker;
-        break;
-      }
+  // Scan forward through fixed markers. Repeated searches for absent labels
+  // rescanned every remaining suffix for nested and separate blocks.
+  const markers = new RegExp(PRIVATE_KEY_MARKER_PATTERN);
+  while (true) {
+    const marker = markers.exec(value);
+    if (!marker) break;
+    if (marker[1] === "BEGIN") {
+      if (depth === 0) beginIndex = marker.index;
+      depth += 1;
+      continue;
     }
+    if (depth === 0) {
+      // An ignored orphan END can share its trailing delimiter with a BEGIN.
+      // Preserve the old BEGIN-only outer search without skipping that prefix.
+      markers.lastIndex = marker.index + 1;
+      continue;
+    }
+    depth -= 1;
+    if (depth > 0) continue;
 
     parts ??= [];
-    parts.push(value.slice(cursor, begin.index), "[REDACTED]");
-
-    if (!close) {
-      // v4.1.0 hardening: an unterminated PRIVATE KEY block (BEGIN
-      // without a matching END — e.g. when a log/error message was
-      // truncated mid-key by an upstream buffer cap) must STILL be
-      // redacted from `begin.index` to the end of the input. The
-      // pre-v4.1.0 implementation `break`-ed without pushing the
-      // [REDACTED] token, then fell through to the `if (!parts) return
-      // value` branch and leaked the partial key in plaintext to
-      // events.ndjson / persistent logs. Marking the whole tail as
-      // redacted preserves the no-leak guarantee for partial-key
-      // payloads while still emitting a single [REDACTED] token.
-      cursor = value.length;
-      break;
-    }
-
-    cursor = close.index + close.marker.length;
+    parts.push(value.slice(cursor, beginIndex), "[REDACTED]");
+    cursor = marker.index + marker[0].length;
+  }
+  if (depth > 0) {
+    // Preserve the existing whole-tail refusal for a truncated or unclosed
+    // private-key block, including nested or mismatched recognized labels.
+    parts ??= [];
+    parts.push(value.slice(cursor, beginIndex), "[REDACTED]");
+    cursor = value.length;
   }
 
   if (!parts) return value;
@@ -134,8 +106,114 @@ function redactPrivateKeyBlocks(value: string): string {
   return parts.join("");
 }
 
+// Mask only recognized credential values. Preserve surrounding text and
+// duplicate JSON members; normalizing complete documents would destroy evidence.
+function redactSecretJsonContainers(value: string): string {
+  const assignment =
+    /(?<![\w-])((?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*(?:\\?["'])?\s*[:=]\s*)(\[|\{)/gi;
+  let quotedContext = false;
+  let encodedContext = false;
+  let significant: string | undefined;
+  let previousSignificant: string | undefined;
+  let contextEscape = false;
+  let contextCursor = 0;
+  const advanceContext = (end: number): void => {
+    for (; contextCursor < end; contextCursor += 1) {
+      const char = value[contextCursor];
+      if (contextEscape) contextEscape = false;
+      else if (quotedContext && char === "\\") contextEscape = true;
+      else if (char === '"') {
+        if (!quotedContext) {
+          // JSON value framing distinguishes encoded strings from ordinary
+          // quoted error prose. This does not parse or normalize documents.
+          encodedContext =
+            significant === undefined ||
+            significant === "[" ||
+            significant === "," ||
+            (significant === ":" && previousSignificant === '"');
+        }
+        quotedContext = !quotedContext;
+      }
+      if (char && !/\s/.test(char)) {
+        previousSignificant = significant;
+        significant = char;
+      }
+    }
+  };
+  const quotedTailEnd = (start: number): number => {
+    for (let index = start; index < value.length; index += 1) {
+      if (value[index] === "\\") index += 1;
+      else if (value[index] === '"') return index;
+    }
+    return value.length;
+  };
+  const parts: string[] = [];
+  let cursor = 0;
+  while (true) {
+    const match = assignment.exec(value);
+    if (!match) break;
+    const start = assignment.lastIndex - 1;
+    advanceContext(start);
+    const withinString = quotedContext;
+    const encodedString = withinString && encodedContext;
+    const closing: string[] = [];
+    let quote: string | undefined;
+    let containerEscape = false;
+    let end = value.length;
+    let index = start;
+    while (index < value.length) {
+      let char = value[index];
+      let next = index + 1;
+      if (encodedString && char === '"') {
+        end = index;
+        break;
+      }
+      if (encodedString && char === "\\") {
+        // Decode only one fixed-size JSON escape, never an object/document.
+        next = Math.min(value.length, index + (value[index + 1] === "u" ? 6 : 2));
+        try {
+          char = JSON.parse(`"${value.slice(index, next)}"`) as string;
+        } catch {
+          end = encodedString ? quotedTailEnd(index) : value.length;
+          break;
+        }
+      }
+      if (quote) {
+        if (containerEscape) containerEscape = false;
+        else if (char === "\\") containerEscape = true;
+        else if (char === quote) quote = undefined;
+      } else if (char === '"' || char === "'") {
+        quote = char;
+      } else if (char === "[" || char === "{") {
+        closing.push(char === "[" ? "]" : "}");
+      } else if (char === "]" || char === "}") {
+        if (closing.pop() !== char) {
+          end = encodedString ? quotedTailEnd(next) : value.length;
+          break;
+        }
+        if (closing.length === 0) {
+          end = next;
+          break;
+        }
+      }
+      index = next;
+    }
+    // An unterminated matched value loses its remaining tail, rather than
+    // allowing a credential suffix to survive. Keep an enclosing string quote.
+    const encodedField = encodedString && /\\["']\s*[:=]\s*$/.test(match[1] ?? "");
+    const marker = encodedField ? '\\"[REDACTED]\\"' : withinString ? "[REDACTED]" : '"[REDACTED]"';
+    parts.push(value.slice(cursor, start), marker);
+    cursor = end;
+    advanceContext(end);
+    assignment.lastIndex = end;
+  }
+  if (parts.length === 0) return value;
+  parts.push(value.slice(cursor));
+  return parts.join("");
+}
+
 export function redact(value: string): string {
-  let output = redactPrivateKeyBlocks(value);
+  let output = redactSecretJsonContainers(redactPrivateKeyBlocks(value));
   for (const re of SECRET_PATTERNS) {
     // The env-style assignment pattern uses two capture groups so that
     // the key name is preserved; the standalone-token patterns do not
@@ -163,7 +241,7 @@ export function redactJsonValue<T>(value: T): T {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, child]) => [
         key,
-        redactJsonValue(child),
+        SECRET_FIELD_PATTERN.test(key) ? "[REDACTED]" : redactJsonValue(child),
       ]),
     ) as T;
   }

@@ -79,10 +79,12 @@ Provider-specific output ceilings can coexist with the legacy global fallback:
 [Environment]::SetEnvironmentVariable("CROSS_REVIEW_PERPLEXITY_MAX_OUTPUT_TOKENS", "20000", "User")
 ```
 
-The equivalent central-config key is `max_output_tokens_by_peer`. Each value
-above is the provider's documented synchronous output maximum for the pinned
-model: 128,000 for GPT-6 Astra and for Claude Fable 5.1, 20,000 for the other
-four. `server_info` reports the effective value for all six peers.
+The equivalent central-config key is `max_output_tokens_by_peer`. The example
+uses the documented 128,000-token output ceiling for GPT-6 Astra and Claude
+Fable 5.1, and a conservative 20,000-token budget for the other four peers;
+those four values do not claim to be provider maxima. Without per-peer
+configuration, every peer uses the global 20,000-token default.
+`server_info` reports the effective value for all six peers.
 
 These ceilings are not cosmetic. The relator seat has to re-emit the artifact
 inside its own ceiling, so `max_output_tokens_by_peer` decides which peers are
@@ -119,7 +121,7 @@ response reports input usage; a mid-stream refusal is billable for input and
 generated output, and the ledger distinguishes the two cases.
 Fable's request omits the explicit `thinking` field because adaptive thinking
 is automatic.
-Anthropic documents Fable 5 as a 30-day-retention model with no zero data
+Anthropic documents Fable 5.1 as a 30-day-retention model with no zero data
 retention option, so enable it only when that posture is acceptable.
 
 `ultra` is a Codex product/CLI mode, not a literal OpenAI Responses API
@@ -127,7 +129,8 @@ retention option, so enable it only when that posture is acceptable.
 compatibility alias so an otherwise valid central config is not rejected
 atomically, and the OpenAI adapter sends the official `max` value to
 `gpt-6-astra`. The other adapters likewise clamp the alias to their strongest
-documented value; no provider receives the string `ultra` on the wire.
+accepted native value; Perplexity's Kimi K3 uses `high` despite the broader
+documented enum. No provider receives the string `ultra` on the wire.
 Explicit older OpenAI overrides are normalized by family as well: GPT-5.5,
 5.4 and 5.2 cap at `xhigh`; GPT-5.1 and original GPT-5 cap at `high`, with
 `minimal`/`none` translated where those literals are unsupported.

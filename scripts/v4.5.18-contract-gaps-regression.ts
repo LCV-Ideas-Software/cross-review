@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/core/config.js";
+import { checkConvergence } from "../src/core/convergence.js";
 import {
   CrossReviewOrchestrator,
   groundReadyPeerEvidence,
@@ -18,6 +19,7 @@ import type {
   PeerResult,
 } from "../src/core/types.js";
 import { PEERS } from "../src/core/types.js";
+import { BasePeerAdapter } from "../src/peers/base.js";
 import { StubAdapter } from "../src/peers/stub.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
@@ -141,6 +143,352 @@ type Regression = {
 };
 
 const regressions: Regression[] = [
+  {
+    name: "recovery reuses only exact current artifact, custody, roles and enabled model provenance",
+    run: async () => {
+      for (const scenario of [
+        "unchanged",
+        "draft",
+        "task",
+        "evidence",
+        "focus",
+        "mode",
+        "model",
+        "legacy",
+        "disabled",
+        "reported_model_mismatch",
+      ] as const) {
+        const config = fixtureConfig(`recovery-${scenario}`);
+        const adapters = stubAdapters(config);
+        let artifact = "The renderer uses a blue title.";
+        const calls: PeerId[] = [];
+        for (const peer of ["claude", "gemini"] as const) {
+          const native = adapters[peer].call.bind(adapters[peer]);
+          adapters[peer].call = async (prompt, context) => {
+            calls.push(peer);
+            const result = await native(prompt, context);
+            const structured = {
+              status: "READY" as const,
+              summary: "No blocking objections remain.",
+              confidence: "verified" as const,
+              evidence_sources: [`Artifact quote: "${artifact}"`],
+              caller_requests: [],
+              follow_ups: [],
+            };
+            return {
+              ...result,
+              status: "READY" as const,
+              structured,
+              text: JSON.stringify(structured),
+              parser_warnings: [],
+              decision_quality: "clean" as const,
+            };
+          };
+        }
+        let orchestrator = new CrossReviewOrchestrator(
+          config,
+          () => {},
+          () => adapters,
+        );
+        const session = await orchestrator.store.init("Review the renderer artifact.", "codex", []);
+        const first = await orchestrator.askPeers({
+          session_id: session.session_id,
+          task: session.task,
+          draft: artifact,
+          caller: "codex",
+          caller_status: "NEEDS_EVIDENCE",
+          peers: ["claude", "gemini"],
+        });
+        assert.equal(first.converged, false);
+        assert.match(first.round.review_context_sha256 ?? "", /^[a-f0-9]{64}$/);
+        if (scenario === "draft") artifact = "The renderer sends private data to an external host.";
+        if (scenario === "evidence") {
+          await orchestrator.store.attachEvidence(session.session_id, {
+            label: "new literal corpus",
+            content: "A new complete evidence corpus.",
+            attached_by: "codex",
+            origin: "session_attach_evidence",
+          });
+        }
+        if (scenario === "model") adapters.gemini.model = "synthetic-new-requested-model";
+        if (scenario === "mode") config.stub = false;
+        if (scenario === "legacy" || scenario === "reported_model_mismatch") {
+          const saved = orchestrator.store.read(session.session_id);
+          if (scenario === "legacy") delete saved.rounds[0]?.review_context_sha256;
+          else {
+            const oldGemini = saved.rounds[0]?.peers.find((peer) => peer.peer === "gemini");
+            assert.ok(oldGemini);
+            oldGemini.model_match = false;
+          }
+          fs.writeFileSync(
+            path.join(config.data_dir, "sessions", session.session_id, "meta.json"),
+            JSON.stringify(saved),
+          );
+        }
+        if (scenario === "disabled") {
+          await orchestrator.store.flushPendingEvents();
+          const disabledConfig: AppConfig = {
+            ...config,
+            peer_enabled: {
+              ...config.peer_enabled,
+              gemini: false,
+              deepseek: false,
+              grok: false,
+              perplexity: false,
+            },
+          };
+          orchestrator = new CrossReviewOrchestrator(
+            disabledConfig,
+            () => {},
+            () => adapters,
+          );
+        }
+        const second = await orchestrator.askPeers({
+          session_id: session.session_id,
+          task: scenario === "task" ? "Review the new export contract." : session.task,
+          draft: artifact,
+          caller: "codex",
+          caller_status: "READY",
+          ...(scenario === "disabled" ? {} : { peers: ["claude"] as PeerId[] }),
+          ...(scenario === "focus" ? { review_focus: "Review confidentiality." } : {}),
+        });
+        assert.deepEqual(calls, ["claude", "gemini", "claude"], scenario);
+        assert.equal(second.converged, scenario === "unchanged", scenario);
+        assert.deepEqual(second.round.convergence.quorum_peers, ["claude", "gemini"], scenario);
+        assert.equal(
+          second.round.convergence.ready_peers.includes("gemini"),
+          scenario === "unchanged",
+          scenario,
+        );
+        assert.equal(
+          second.round.review_context_sha256 === first.round.review_context_sha256,
+          ["unchanged", "model", "legacy", "disabled", "reported_model_mismatch"].includes(
+            scenario,
+          ),
+          scenario,
+        );
+        await orchestrator.store.flushPendingEvents();
+      }
+    },
+  },
+  {
+    name: "present malformed recovery provenance is rejected before append or metadata use",
+    run: async () => {
+      const config = fixtureConfig("invalid-review-context");
+      const orchestrator = new CrossReviewOrchestrator(config, () => {});
+      const session = await orchestrator.store.init("Malformed provenance contract", "codex", []);
+      const metadataPath = path.join(config.data_dir, "sessions", session.session_id, "meta.json");
+      const before = fs.readFileSync(metadataPath);
+      await assert.rejects(
+        () =>
+          orchestrator.store.appendRound(session.session_id, {
+            caller_status: "READY",
+            peers: [],
+            rejected: [],
+            prompt_file: "prompt.md",
+            convergence: checkConvergence(["claude"], "READY", [], []),
+            convergence_scope: {
+              caller: "codex",
+              caller_status: "READY",
+              expected_peers: ["claude"],
+              reviewer_peers: ["claude"],
+            },
+            started_at: new Date().toISOString(),
+            review_context_sha256: "INVALID",
+          }),
+        /review_context_sha256/,
+      );
+      assert.ok(fs.readFileSync(metadataPath).equals(before));
+      const legacy = await orchestrator.store.appendRound(session.session_id, {
+        caller_status: "READY",
+        peers: [],
+        rejected: [],
+        prompt_file: "prompt.md",
+        convergence: checkConvergence(["claude"], "READY", [], []),
+        convergence_scope: {
+          caller: "codex",
+          caller_status: "READY",
+          expected_peers: ["claude"],
+          reviewer_peers: ["claude"],
+        },
+        started_at: new Date().toISOString(),
+      });
+      assert.equal(legacy.review_context_sha256, undefined);
+      const saved = orchestrator.store.read(session.session_id);
+      const savedRound = saved.rounds[0];
+      assert.ok(savedRound);
+      savedRound.review_context_sha256 = "A".repeat(64);
+      fs.writeFileSync(metadataPath, JSON.stringify(saved));
+      assert.throws(() => orchestrator.store.read(session.session_id), /review_context_sha256/);
+      await orchestrator.store.flushPendingEvents();
+    },
+  },
+  {
+    name: "native single and consensus judges preserve generation diagnostics and reject model mismatches",
+    run: async () => {
+      for (const pass of ["single", "consensus"] as const) {
+        for (const diagnostic of ["healthy", "model_mismatch", "provider_warning"] as const) {
+          const config = fixtureConfig(`judge-generation-${pass}-${diagnostic}`);
+          const adapters = stubAdapters(config);
+          const generations: PeerId[] = [];
+          for (const peer of ["claude", "gemini"] as const) {
+            const nativeGenerate = adapters[peer].generate.bind(adapters[peer]);
+            adapters[peer].generate = async (prompt, context) => {
+              generations.push(peer);
+              const generation = await nativeGenerate(prompt, context);
+              return {
+                ...generation,
+                model_reported:
+                  diagnostic === "model_mismatch" && peer === "claude"
+                    ? "synthetic-wrong-model"
+                    : adapters[peer].model,
+                model_match: !(diagnostic === "model_mismatch" && peer === "claude"),
+                text: JSON.stringify({
+                  satisfied: true,
+                  confidence: "verified",
+                  rationale: "Synthetic draft includes the literal requested proof.",
+                }),
+                parser_warnings:
+                  diagnostic === "provider_warning" && peer === "claude"
+                    ? ["synthetic_provider_warning", "synthetic_provider_warning"]
+                    : undefined,
+              };
+            };
+            adapters[peer].judgeEvidenceAsk = BasePeerAdapter.prototype.judgeEvidenceAsk.bind(
+              adapters[peer],
+            );
+          }
+          const orchestrator = new CrossReviewOrchestrator(config, undefined, () => adapters);
+          const session = await orchestrator.store.init(
+            "Native generation judge diagnostics.",
+            "codex",
+            [],
+          );
+          const items = await orchestrator.store.appendEvidenceChecklistItems(
+            session.session_id,
+            1,
+            [{ peer: "grok", ask: "Provide the literal synthetic proof." }],
+          );
+          const result =
+            pass === "single"
+              ? await orchestrator.runEvidenceChecklistJudgePass({
+                  session_id: session.session_id,
+                  judge_peer: "claude",
+                  draft: "Synthetic draft includes the literal requested proof.",
+                  round: 2,
+                })
+              : await orchestrator.runEvidenceChecklistJudgeConsensusPass({
+                  session_id: session.session_id,
+                  judge_peers: ["claude", "gemini"],
+                  draft: "Synthetic draft includes the literal requested proof.",
+                  round: 2,
+                });
+          assert.equal(generations.length, pass === "single" ? 1 : 2);
+          assert.equal(result.promoted.length, diagnostic === "healthy" ? 1 : 0);
+          const saved = orchestrator.store.read(session.session_id);
+          assert.equal(saved.pending_provider_call_reservations?.length ?? 0, 0);
+          assert.equal(
+            saved.evidence_checklist?.[0]?.status ?? "open",
+            diagnostic === "healthy" ? "addressed" : "open",
+          );
+          const artifact = JSON.parse(
+            fs.readFileSync(
+              path.join(
+                orchestrator.store.sessionDir(session.session_id),
+                "agent-runs",
+                `round-2-claude-judge-${items[0]?.id}.json`,
+              ),
+              "utf8",
+            ),
+          ) as { parser_warnings?: string[] };
+          if (diagnostic === "provider_warning") {
+            assert.deepEqual(artifact.parser_warnings, [
+              "synthetic_provider_warning",
+              "synthetic_provider_warning",
+            ]);
+          } else if (diagnostic === "model_mismatch") {
+            assert.ok(artifact.parser_warnings?.includes("judge_reported_model_mismatch"));
+          }
+        }
+      }
+    },
+  },
+  {
+    name: "disabled single evidence judge refuses before dispatch or metadata mutation",
+    run: async () => {
+      const config = fixtureConfig("disabled-single-judge", (base) => ({
+        peer_enabled: { ...base.peer_enabled, claude: false },
+      }));
+      const adapters = stubAdapters(config);
+      let calls = 0;
+      adapters.claude.judgeEvidenceAsk = async () => {
+        calls += 1;
+        return { ...judgeResult("claude"), satisfied: true };
+      };
+      const orchestrator = new CrossReviewOrchestrator(config, undefined, () => adapters);
+      const session = await orchestrator.store.init("Disabled single judge.", "codex", []);
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
+        { peer: "gemini", ask: "Provide the literal requested proof." },
+      ]);
+      const before = fs.readFileSync(orchestrator.store.metaPath(session.session_id));
+      await assert.rejects(
+        () =>
+          orchestrator.runEvidenceChecklistJudgePass({
+            session_id: session.session_id,
+            judge_peer: "claude",
+            draft: "Synthetic proof.",
+          }),
+        /peer_disabled: claude/,
+      );
+      assert.equal(calls, 0);
+      assert.deepEqual(fs.readFileSync(orchestrator.store.metaPath(session.session_id)), before);
+    },
+  },
+  {
+    name: "circular traceability records the resolved rotation ceiling and preserves explicit or unbounded requests",
+    run: async () => {
+      for (const request of ["omitted", "explicit", "until_stopped"] as const) {
+        const config = fixtureConfig(`circular-effective-${request}`, (base) => ({
+          budget: { ...base.budget, default_max_rounds: 2, circular_max_rotations: 1 },
+        }));
+        const adapters = stubAdapters(config);
+        const controller = new AbortController();
+        let calls = 0;
+        for (const peer of PEERS) {
+          const nativeGenerate = adapters[peer].generate.bind(adapters[peer]);
+          adapters[peer].generate = async (prompt, context) => {
+            calls += 1;
+            const result = await nativeGenerate(prompt, context);
+            if (request === "until_stopped" && calls === 2)
+              controller.abort("synthetic bounded stop");
+            return result;
+          };
+        }
+        const orchestrator = new CrossReviewOrchestrator(config, undefined, () => adapters);
+        const result = await orchestrator.runUntilUnanimous({
+          task: "Deliberate over the stable synthetic renderer plan.",
+          caller: "codex",
+          mode: "circular",
+          initial_draft: "Stable synthetic renderer plan.",
+          ...(request === "explicit" ? { max_rounds: 1 } : {}),
+          ...(request === "until_stopped"
+            ? { until_stopped: true, signal: controller.signal }
+            : {}),
+        });
+        const saved = orchestrator.store.read(result.session.session_id);
+        assert.equal(saved.requested_max_rounds, request === "explicit" ? 1 : null);
+        const expected = request === "until_stopped" ? null : request === "explicit" ? 1 : 5;
+        assert.equal(saved.effective_max_rounds, expected);
+        if (request === "until_stopped") {
+          assert.equal(saved.outcome, "aborted");
+          assert.equal(saved.outcome_reason, "session_cancelled");
+        } else {
+          assert.equal(saved.rounds.length, expected);
+          assert.equal(saved.outcome, "max-rounds");
+        }
+      }
+    },
+  },
   {
     name: "consensus evidence judges receive their own medium reasoning effort and output cap",
     run: async () => {

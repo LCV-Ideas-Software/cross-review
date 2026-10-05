@@ -489,8 +489,11 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v07.00.00 / token durability: the replacement must be fsynced BEFORE it is renamed into place, or the swap trusts the page cache",
   );
   assert.ok(
-    swap.includes('"wx"') && swap.includes("0o600"),
-    "v07.00.00 / token durability: the temporary must refuse to clobber and must be created 0600, never briefly world-readable",
+    swap.includes("createProtectedTokensFile(tmp)") &&
+      tokensSrc.includes('fs.openSync(filePath, "wx", 0o600)') &&
+      tokensSrc.includes("[System.IO.FileMode]::CreateNew") &&
+      tokensSrc.includes("[System.IO.FileOptions]::None, $acl"),
+    "v10.00.00 / token durability: empty creation must be exclusive and protected at creation on Windows and use wx/0600 on POSIX",
   );
   // Round 6: 0600 is not enough on Windows, where mode bits do not override
   // inherited NTFS entries — this module says so itself, which is why
@@ -498,13 +501,14 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
   // live record silently hands a protected file back to whatever the parent
   // directory inherits, so the hardening must happen BEFORE the rename and a
   // failure to harden must refuse the swap rather than proceed.
-  const hardenAt = swap.indexOf("hardenTokensFilePermissions(");
+  const hardenAt = swap.indexOf("hardenOpenedTokensFilePermissions(");
+  const firstWriteAt = swap.indexOf("fs.writeSync(");
   assert.ok(
-    hardenAt >= 0 && hardenAt < renameAt,
-    "v07.00.00 / token durability: the replacement must be permission-hardened BEFORE it is renamed into place, or the swap can downgrade a protected DACL to an inherited one",
+    hardenAt >= 0 && hardenAt < firstWriteAt && firstWriteAt < renameAt,
+    "v07.00.00 / token durability: the empty replacement must be permission-hardened BEFORE its first plaintext write and rename",
   );
   assert.ok(
-    /if \(!hardenTokensFilePermissions\([\s\S]{0,120}throw new Error\(/.test(swap),
+    /if \(!hardenOpenedTokensFilePermissions\([\s\S]{0,120}throw new Error\(/.test(swap),
     "v07.00.00 / token durability: a replacement that cannot be hardened must never be swapped in",
   );
 
@@ -533,17 +537,6 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "v07.00.00 / recovery authority: scoping by ownership is not enough — the owner's token is required, as it is for every other owner-scoped mutation",
   );
 
-  // Same round: the dashboard was translated to English while its root element
-  // still declared pt-BR, so screen readers and translation tooling applied
-  // Portuguese rules to English labels.
-  const dashboardSrc = fs.readFileSync(
-    path.join(process.cwd(), "src", "dashboard", "server.ts"),
-    "utf8",
-  );
-  assert.ok(
-    !dashboardSrc.includes('lang="pt-BR"'),
-    "v07.00.00 / dashboard: the document language must match the language of the UI it declares",
-  );
   console.log("[source-contract-smoke] token_migration_is_durable_test: PASS");
 }
 
@@ -569,6 +562,7 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     "session_evidence_judge_pass",
     "session_finalize",
     "session_recover_interrupted",
+    "session_report",
     "session_start_round",
     "session_start_unanimous",
   ];
@@ -759,10 +753,6 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
     path.join(process.cwd(), "src", "peers", "perplexity.ts"),
     "utf8",
   );
-  const dashboardSrc = fs.readFileSync(
-    path.join(process.cwd(), "src", "dashboard", "server.ts"),
-    "utf8",
-  );
   const typesSrc = fs.readFileSync(path.join(process.cwd(), "src", "core", "types.ts"), "utf8");
   const errorsSrc = fs.readFileSync(path.join(process.cwd(), "src", "peers", "errors.ts"), "utf8");
   const redactSrc = fs.readFileSync(
@@ -853,11 +843,6 @@ function sourceOmits(source: string, pattern: RegExp): boolean {
       configSrc.includes("CROSS_REVIEW_PERPLEXITY_PROBE_MODE") &&
       /probe_mode === "auth_only"/.test(perplexitySrc),
     "v4.4.1 / perplexity: probe defaults must avoid tokenized Sonar calls.",
-  );
-  assert.ok(
-    /request\.method !== "GET" && request\.method !== "POST"/.test(dashboardSrc) &&
-      /if \(request\.method === "POST"\)[\s\S]{0,120}?saveReport/.test(dashboardSrc),
-    "v4.4.1 / dashboard: GET report route should not persist files; only POST may save.",
   );
   assert.ok(
     typesSrc.includes("export interface RuntimeEventDataByType") &&

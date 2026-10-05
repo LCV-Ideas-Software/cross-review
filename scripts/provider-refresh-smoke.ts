@@ -11,7 +11,7 @@ import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { classifyProviderError } from "../src/peers/errors.js";
 import { GeminiAdapter } from "../src/peers/gemini.js";
 import { GrokAdapter } from "../src/peers/grok.js";
-import { selectFromCandidates } from "../src/peers/model-selection.js";
+import { resolveBestModel, selectFromCandidates } from "../src/peers/model-selection.js";
 import { OpenAIAdapter } from "../src/peers/openai.js";
 import { clampEffortForPerplexity, PerplexityAdapter } from "../src/peers/perplexity.js";
 
@@ -357,30 +357,33 @@ async function captureGrokReasoningEffort(
   (
     adapter as unknown as {
       client: () => Promise<{
-        chat: {
-          completions: {
-            create: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
-          };
+        responses: {
+          create: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
         };
       }>;
     }
   ).client = async () => ({
-    chat: {
-      completions: {
-        create: async (payload) => {
-          capturedPayload = payload;
-          return {
-            choices: [{ finish_reason: "stop", message: { content: "revised fixture" } }],
-            model: "deepseek-v4-pro",
-            usage: {
-              prompt_tokens: 100,
-              completion_tokens: 20,
-              total_tokens: 120,
-              prompt_cache_hit_tokens: 40,
-              prompt_cache_miss_tokens: 60,
+    responses: {
+      create: async (payload) => {
+        capturedPayload = payload;
+        return {
+          status: "completed",
+          model: "deepseek-v4-pro",
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "revised fixture" }],
             },
-          };
-        },
+          ],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+            input_tokens_details: { cached_tokens: 40 },
+            output_tokens_details: { reasoning_tokens: 12 },
+          },
+        };
       },
     },
   });
@@ -390,15 +393,16 @@ async function captureGrokReasoningEffort(
     task: "provider refresh smoke",
     emit: () => undefined,
   });
-  assert.deepEqual(capturedPayload?.thinking, { type: "enabled" });
-  assert.equal(
-    capturedPayload?.reasoning_effort,
-    "max",
-    "DeepSeek V4 Pro requires reasoning_effort at the top level, not nested inside thinking.",
-  );
-  assert.equal(generated.usage?.input_tokens, 0);
+  assert.deepEqual(capturedPayload?.reasoning, { effort: "max" });
+  assert.equal(typeof capturedPayload?.instructions, "string");
+  assert.equal(capturedPayload?.thinking, undefined);
+  assert.equal(capturedPayload?.reasoning_effort, undefined);
+  assert.equal(generated.text, "revised fixture");
+  assert.equal(generated.usage?.input_tokens, 60);
   assert.equal(generated.usage?.cache_read_tokens, 40);
-  assert.equal(generated.usage?.cache_write_tokens, 60);
+  assert.equal(generated.usage?.cache_write_tokens, undefined);
+  assert.equal(generated.usage?.output_tokens, 20);
+  assert.equal(generated.usage?.reasoning_tokens, 12);
 }
 
 {
@@ -664,12 +668,14 @@ function capturePerplexityProbe(
   (
     adapter as unknown as {
       client: () => Promise<{
+        models: { list: () => Promise<{ data: Array<{ id: string }> }> };
         responses: {
           create: (payload: PerplexityProbePayload) => Promise<Record<string, unknown>>;
         };
       }>;
     }
   ).client = async () => ({
+    models: { list: async () => ({ data: [{ id: adapter.model }] }) },
     responses: {
       create: async (payload) => {
         capturedPayload = payload;
@@ -859,17 +865,28 @@ function capturePerplexityProbe(
           content: [{ type: "text", text: "revised fixture" }],
           model: "claude-fable-5-1",
           stop_reason: "end_turn",
-          usage: { input_tokens: 100, output_tokens: 20 },
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_read_input_tokens: 30,
+            cache_creation_input_tokens: 40,
+          },
         };
       },
     },
   });
-  await adapter.generate("Revise this fixture.", {
+  const generated = await adapter.generate("Revise this fixture.", {
     session_id: "550e8400-e29b-41d4-a716-446655440004",
     round: 1,
     task: "provider refresh smoke",
     emit: () => undefined,
   });
+  assert.equal(generated.usage?.total_tokens, 190, "Anthropic totals must include cached inputs");
+  assert.equal(
+    generated.usage?.input_tokens,
+    100,
+    "Fresh inputs must remain a separate billing bucket",
+  );
   assert.equal(
     Object.hasOwn(capturedPayload ?? {}, "thinking"),
     false,
@@ -1250,6 +1267,301 @@ assert.equal(
   assert.ok(modelSelectionSource.includes('gemini: ["gemini-3.1-pro-preview"]'));
   assert.ok(modelSelectionSource.includes('grok: ["grok-4.7"]'));
   assert.ok(modelSelectionSource.includes('perplexity: ["perplexity/kimi-k3"]'));
+}
+
+// Exercise the official SDK transport instead of replacing adapter.client():
+// hidden SDK retries must not bypass the application's attempt accounting.
+{
+  const originalFetch = globalThis.fetch;
+  const transportConfig = {
+    ...config,
+    api_keys: {
+      ...config.api_keys,
+      codex: "fixture-openai-key",
+      claude: "fixture-anthropic-key",
+      gemini: "fixture-gemini-key",
+      deepseek: "fixture-deepseek-key",
+      grok: "fixture-grok-key",
+      perplexity: "fixture-perplexity-key",
+    },
+    retry: { ...config.retry, max_attempts: 1 },
+    streaming: { ...config.streaming, tokens: false },
+  };
+  try {
+    for (const Adapter of [
+      OpenAIAdapter,
+      AnthropicAdapter,
+      GeminiAdapter,
+      DeepSeekAdapter,
+      GrokAdapter,
+      PerplexityAdapter,
+    ]) {
+      for (const operation of ["call", "generate"] as const) {
+        let requests = 0;
+        globalThis.fetch = async () => {
+          requests++;
+          return Response.json(
+            { type: "error", error: { type: "rate_limit_error", message: "Rate limit exceeded." } },
+            { status: 429, headers: { "retry-after": "0" } },
+          );
+        };
+        const adapter = new Adapter(transportConfig);
+        await assert.rejects(
+          adapter[operation]("Transport fixture.", {
+            session_id: "550e8400-e29b-41d4-a716-446655440012",
+            round: 1,
+            task: "SDK attempt accounting",
+            emit: () => undefined,
+          }),
+        );
+        assert.equal(
+          requests,
+          1,
+          `${adapter.provider} ${operation} must send one request per attempt`,
+        );
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// GPT-5.6+ implicitly caches even when options are omitted. The native
+// explicit mode with no breakpoints is required to prevent cache writes.
+{
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const cacheMode of [
+      "global_disabled",
+      "peer_disabled",
+      "callerless",
+      "enabled",
+    ] as const) {
+      for (const operation of ["call", "generate"] as const) {
+        let payload: Record<string, unknown> | undefined;
+        globalThis.fetch = async (_input, init) => {
+          payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return Response.json({
+            id: "resp_fixture",
+            object: "response",
+            status: "completed",
+            model: "gpt-6-astra",
+            output: [
+              {
+                id: "msg_fixture",
+                type: "message",
+                role: "assistant",
+                status: "completed",
+                content: [
+                  {
+                    type: "output_text",
+                    text: operation === "call" ? OPENAI_READY : "Revised fixture.",
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          });
+        };
+        const adapter = new OpenAIAdapter({
+          ...config,
+          api_keys: { ...config.api_keys, codex: "fixture-openai-key" },
+          models: { ...config.models, codex: "gpt-6-astra" },
+          streaming: { ...config.streaming, tokens: false },
+          cache: {
+            ...config.cache,
+            enabled: cacheMode !== "global_disabled",
+            disable_per_peer: {
+              ...config.cache.disable_per_peer,
+              codex: cacheMode === "peer_disabled",
+            },
+          },
+        });
+        await adapter[operation]("Cache fixture.", {
+          session_id: "550e8400-e29b-41d4-a716-446655440013",
+          round: 1,
+          task: "Native cache controls",
+          ...(cacheMode === "callerless" ? {} : { caller: "claude" as const }),
+          emit: () => undefined,
+        });
+        assert.deepEqual(payload?.prompt_cache_options, {
+          mode: cacheMode === "enabled" ? "implicit" : "explicit",
+          ttl: "30m",
+        });
+        assert.equal(Object.hasOwn(payload ?? {}, "prompt_cache_key"), cacheMode === "enabled");
+        assert.equal(JSON.stringify(payload).includes("prompt_cache_breakpoint"), false);
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// Preserve native system/user authority through the real Google SDK wire.
+{
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const operation of ["call", "generate"] as const) {
+      let payload: Record<string, unknown> | undefined;
+      globalThis.fetch = async (_input, init) => {
+        payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Response.json({
+          modelVersion: "gemini-3.1-pro-preview",
+          candidates: [
+            {
+              index: 0,
+              finishReason: "STOP",
+              content: {
+                role: "model",
+                parts: [{ text: operation === "call" ? OPENAI_READY : "Revised fixture." }],
+              },
+            },
+          ],
+          usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+        });
+      };
+      const adapter = new GeminiAdapter({
+        ...config,
+        api_keys: { ...config.api_keys, gemini: "fixture-gemini-key" },
+        streaming: { ...config.streaming, tokens: false },
+      });
+      await adapter[operation]("System boundary fixture.", {
+        session_id: "550e8400-e29b-41d4-a716-446655440014",
+        round: 1,
+        task: "Native system instructions",
+        emit: () => undefined,
+      });
+      assert.match(JSON.stringify(payload?.systemInstruction), /You are a peer reviewer/);
+      assert.equal(JSON.stringify(payload?.contents).includes("You are a peer reviewer"), false);
+      assert.match(JSON.stringify(payload?.contents), /System boundary fixture/);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// Availability means the configured model, not an arbitrary catalog entry.
+{
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const Adapter of [OpenAIAdapter, GeminiAdapter]) {
+      for (const httpStatus of [200, 401, 404]) {
+        let requestedUrl = "";
+        globalThis.fetch = async (input) => {
+          requestedUrl = String(input);
+          return Response.json(
+            httpStatus === 200
+              ? {
+                  id: "gpt-6-astra",
+                  name: "models/gemini-3.1-pro-preview",
+                  supportedGenerationMethods: ["generateContent"],
+                  data: [{ id: "other-model" }],
+                  models: [{ name: "models/other-model" }],
+                }
+              : { error: { message: "Fixture model access denied." } },
+            { status: httpStatus },
+          );
+        };
+        const adapter = new Adapter({
+          ...config,
+          api_keys: {
+            ...config.api_keys,
+            codex: "fixture-openai-key",
+            gemini: "fixture-gemini-key",
+          },
+        });
+        const result = await adapter.probe();
+        assert.equal(result.available, httpStatus === 200);
+        assert.equal(result.auth_present, true);
+        assert.ok(
+          new URL(requestedUrl).pathname.endsWith(`/models/${adapter.model}`),
+          `${adapter.provider} must retrieve the configured model instead of listing other models`,
+        );
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// A direct SDK call without an orchestrator signal still honors the configured
+// provider timeout. Fake fetch waits for the SDK's native abort signal.
+{
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const operation of ["call", "generate"] as const) {
+      let timeoutObserved = false;
+      globalThis.fetch = async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const guard = setTimeout(() => reject(new Error("Fixture timeout guard.")), 1000);
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              timeoutObserved = true;
+              clearTimeout(guard);
+              reject(new DOMException("Fixture SDK timeout.", "AbortError"));
+            },
+            { once: true },
+          );
+        });
+      const adapter = new GeminiAdapter({
+        ...config,
+        api_keys: { ...config.api_keys, gemini: "fixture-gemini-key" },
+        retry: { ...config.retry, timeout_ms: 50, max_attempts: 1 },
+        streaming: { ...config.streaming, tokens: false },
+      });
+      await assert.rejects(
+        adapter[operation]("Timeout fixture.", {
+          session_id: "550e8400-e29b-41d4-a716-446655440015",
+          round: 1,
+          task: "Native SDK timeout",
+          emit: () => undefined,
+        }),
+      );
+      assert.equal(timeoutObserved, true, `Gemini ${operation} must honor the provider timeout`);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// A flagship on a later native catalog page must still become verified.
+{
+  const originalFetch = globalThis.fetch;
+  const originalOverride = process.env.CROSS_REVIEW_ANTHROPIC_MODEL;
+  delete process.env.CROSS_REVIEW_ANTHROPIC_MODEL;
+  let requests = 0;
+  try {
+    globalThis.fetch = async (input) => {
+      requests++;
+      const nextPage =
+        new URL(String(input)).searchParams.get("after_id") === "fixture-older-model";
+      return Response.json({
+        data: [
+          {
+            id: nextPage ? "claude-fable-5-1" : "fixture-older-model",
+            display_name: "Fixture catalog model",
+            created_at: "2026-09-01T00:00:00Z",
+          },
+        ],
+        first_id: nextPage ? "claude-fable-5-1" : "fixture-older-model",
+        last_id: nextPage ? "claude-fable-5-1" : "fixture-older-model",
+        has_more: !nextPage,
+      });
+    };
+    const result = await resolveBestModel(
+      { ...config, api_keys: { ...config.api_keys, claude: "fixture-anthropic-key" } },
+      "claude",
+    );
+    assert.equal(requests, 2, "Anthropic model selection must follow native catalog pagination");
+    assert.equal(result.selected, "claude-fable-5-1");
+    assert.equal(result.confidence, "verified");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalOverride === undefined) delete process.env.CROSS_REVIEW_ANTHROPIC_MODEL;
+    else process.env.CROSS_REVIEW_ANTHROPIC_MODEL = originalOverride;
+  }
 }
 
 console.log("[provider-refresh-smoke] PASS");

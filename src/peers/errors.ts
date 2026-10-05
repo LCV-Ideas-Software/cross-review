@@ -21,8 +21,11 @@ function extractRetryAfterMs(error: unknown): number | undefined {
   }
   for (const headers of candidates) {
     let value: string | undefined;
+    let millisecondsValue: string | undefined;
     if (headers && typeof (headers as { get?: unknown }).get === "function") {
       try {
+        millisecondsValue =
+          (headers as { get: (key: string) => string | null }).get("retry-after-ms") ?? undefined;
         value =
           (headers as { get: (key: string) => string | null }).get("retry-after") ?? undefined;
       } catch {
@@ -30,9 +33,17 @@ function extractRetryAfterMs(error: unknown): number | undefined {
       }
     } else if (headers && typeof headers === "object") {
       const h = headers as Record<string, unknown>;
+      const millisecondsRaw = h["retry-after-ms"] ?? h["Retry-After-Ms"];
+      if (typeof millisecondsRaw === "string") millisecondsValue = millisecondsRaw;
+      else if (typeof millisecondsRaw === "number" && Number.isFinite(millisecondsRaw))
+        millisecondsValue = String(millisecondsRaw);
       const raw = h["retry-after"] ?? h["Retry-After"];
       if (typeof raw === "string") value = raw;
       else if (typeof raw === "number" && Number.isFinite(raw)) value = String(raw);
+    }
+    if (millisecondsValue?.trim()) {
+      const milliseconds = Number(millisecondsValue.trim());
+      if (Number.isFinite(milliseconds) && milliseconds >= 0) return Math.round(milliseconds);
     }
     if (!value) continue;
     const trimmed = value.trim();
@@ -161,8 +172,10 @@ function providerErrorCandidates(error: unknown): Record<string, unknown>[] {
   if (!root) return [];
   const response = asRecord(root.response);
   const body = asRecord(root.body) ?? asRecord(response?.data) ?? asRecord(response?.body);
+  const sdkError = asRecord(root.error);
   return [
-    asRecord(root.error),
+    asRecord(sdkError?.error),
+    sdkError,
     asRecord(body?.error),
     asRecord(response?.error),
     body,
@@ -187,12 +200,15 @@ function extractProviderErrorDetail(
   // fields. Redaction runs on the STRUCTURE before serialization, so a secret
   // nested in the body is redacted as a value rather than pattern-matched out
   // of a flat string afterwards.
-  const source = candidates.find(
-    (candidate) =>
-      candidate.type !== undefined ||
-      candidate.code !== undefined ||
-      candidate.message !== undefined,
-  );
+  const nativeEnvelope = asRecord(asRecord(error)?.error);
+  const source =
+    (asRecord(nativeEnvelope?.error) ? nativeEnvelope : undefined) ??
+    candidates.find(
+      (candidate) =>
+        candidate.type !== undefined ||
+        candidate.code !== undefined ||
+        candidate.message !== undefined,
+    );
   let rawBody: string | undefined;
   let truncated: boolean | undefined;
   if (source) {
@@ -271,7 +287,7 @@ const PROVIDER_DOCS_URLS: Record<string, string> = {
   openai: "https://platform.openai.com/docs/api-reference",
   anthropic: "https://docs.anthropic.com/en/api/messages",
   google: "https://ai.google.dev/api/generate-content",
-  deepseek: "https://api-docs.deepseek.com/api/create-chat-completion",
+  deepseek: "https://api-docs.deepseek.com/api/create-response",
   xai: "https://docs.x.ai/docs/api-reference",
 };
 // Provider-specific deep links for known sticky parameters. Looked up
@@ -311,18 +327,23 @@ export function classifyProviderError(
   const message = safeErrorMessage(error);
   const httpStatus = extractHttpStatus(error);
   const providerSignals = extractProviderErrorSignals(error);
+  const enforcedSpendLimit = providerErrorCandidates(error).some(
+    (candidate) => asRecord(candidate.details)?.error_code === "enforced_spend_limit_reached",
+  );
   const contextual429 =
-    httpStatus === 429 ||
-    /\b(?:rate_limit|rate_limit_exceeded|too_many_requests|quota_exceeded)\b/i.test(
-      providerSignals,
-    ) ||
-    /\b(?:http|status|statuscode|code|error)\s*[:=]?\s*["'(]?\s*429\b/i.test(message) ||
-    /\b429\s+(?:too many requests|rate[-_\s]?limit|quota|retry-after)\b/i.test(message);
+    !enforcedSpendLimit &&
+    (httpStatus === 429 ||
+      /\b(?:rate_limit|rate_limit_exceeded|too_many_requests|quota_exceeded)\b/i.test(
+        providerSignals,
+      ) ||
+      /\b(?:http|status|statuscode|code|error)\s*[:=]?\s*["'(]?\s*429\b/i.test(message) ||
+      /\b429\s+(?:too many requests|rate[-_\s]?limit|quota|retry-after)\b/i.test(message));
   const rateLimited =
-    contextual429 ||
-    /\b(?:too many requests|rate[-_\s]?limit(?:ed|ing)?|quota exceeded|resource_exhausted|retry-after)\b/i.test(
-      message,
-    );
+    !enforcedSpendLimit &&
+    (contextual429 ||
+      /\b(?:too many requests|rate[-_\s]?limit(?:ed|ing)?|quota exceeded|resource_exhausted|retry-after)\b/i.test(
+        message,
+      ));
   const auth =
     httpStatus === 401 ||
     httpStatus === 403 ||
@@ -455,6 +476,7 @@ export function classifyProviderError(
     failure_class: failureClass,
     message,
     retryable:
+      !enforcedSpendLimit &&
       (!providerTerminalRejected || retryableDeepSeekInsufficientResource) &&
       !providerPromptBlocked &&
       !cancelled &&
@@ -478,8 +500,9 @@ export function classifyProviderError(
           : docsHint
             ? "consult_docs_then_revise"
             : undefined,
-    reformulation_advice:
-      moderation || providerRefusal
+    reformulation_advice: enforcedSpendLimit
+      ? "The provider's enforced account spend limit has been reached; repeated calls cannot clear this billing restriction."
+      : moderation || providerRefusal
         ? "Rephrase the request in neutral technical language, compact prior peer discussion, avoid quoting flagged text, and keep the same engineering intent. If an Anthropic classifier refusal persists, any model change must remain an explicit operator choice; do not silently downgrade."
         : docsAdvice,
     retry_after_ms: extractRetryAfterMs(error),

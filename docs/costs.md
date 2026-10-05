@@ -19,6 +19,17 @@ not spend Perplexity completion tokens unless the operator explicitly sets
 
 The server records token usage returned by providers. Paid review/generation tools are blocked until explicit budget ceilings and rate cards are configured. This avoids stale hard-coded prices because provider pricing changes frequently.
 
+Session ceilings guard dispatch using estimated input tokens and configured
+output ceilings. They are not a provider-enforced maximum charge. In particular,
+xAI's `max_output_tokens` (Responses) and `max_completion_tokens` (Chat)
+bound visible output, excluding billable reasoning tokens and tool calls.
+The native API currently exposes no per-request total reasoning spend ceiling.
+Post-call accounting records reported usage and xAI's native
+`cost_in_usd_ticks` when available. Native account billing controls belong to
+the provider; changing them affects the account beyond one review session.
+See the [xAI Responses API reference](https://docs.x.ai/developers/api-reference#responses-create)
+and [tool usage accounting](https://docs.x.ai/developers/tools/tool-usage-details).
+
 `CROSS_REVIEW_MAX_OUTPUT_TOKENS` remains the global fallback (default
 `20000`). Central `config.json` can set `max_output_tokens_by_peer`, or an MCP
 host can set `CROSS_REVIEW_<PROVIDER>_MAX_OUTPUT_TOKENS`. The effective map is
@@ -42,11 +53,11 @@ artifacts when present.
 
 Set rates through Windows environment variables or the MCP host configuration before running paid calls. Values are USD per million tokens. Use current official provider pricing; this project intentionally does not ship default provider prices.
 
-Current reference values verified against official provider documentation.
-The OpenAI and Anthropic rows were re-verified on 08/09/2026 against the
-`gpt-6-astra` and `claude-fable-5-1` pages; the other rows carry their
-23/08/2026 verification date. There is no supported second-tier override to
-document any more: cross-review runs the top model of each provider.
+Published reference values rechecked against official provider documentation
+on 04/10/2026. These are pricing references, not account-specific billing
+readbacks. DeepSeek's official Pro routing and pricing pages disagree, so its
+retained Pro peak-rate card is a conservative estimate. There is no supported
+second-tier override to document: cross-review keeps one canonical pin per peer.
 
 | Provider/model                  | Input  | Output | Cached input / cache hit | Extended tier                                                                     |
 | ------------------------------- | ------ | ------ | ------------------------ | --------------------------------------------------------------------------------- |
@@ -60,7 +71,7 @@ document any more: cross-review runs the top model of each provider.
 GPT-6 Astra reports cache-write tokens separately. Configure OpenAI cache write
 at 1.25 times the corresponding uncached input rate: `12.5` USD/million in the
 base tier and `25` above the 272K threshold. There is no promotional period on
-this pin, so the `promo_*` fields do not apply to it. Grok 4.6 exposes
+this pin, so the `promo_*` fields do not apply to it. Grok 4.7 exposes
 cached-input pricing but no distinct cache-write counter, so do not infer a
 write charge from uncached input tokens.
 
@@ -112,8 +123,9 @@ reported in `usage.tool_calls_details`; the adapter surfaces that count as
 required while search is enabled. The relator role never declares the tool and
 `CROSS_REVIEW_PERPLEXITY_DISABLE_SEARCH=true` removes the dimension entirely.
 The API exposes no provider-enforced cap on invocations (the request reference
-documents `max_steps` and the per-call `max_results` only; `max_tool_calls`,
-`parallel_tool_calls` and `tool_choice` are absent, and a live probe on
+documents `max_steps`, per-call `max_results` and tool selection; neither
+`max_tool_calls` nor `parallel_tool_calls` supplies a documented invocation cap,
+and a live probe on
 24/08/2026 returned three searches for a single step regardless of
 `parallel_tool_calls`). The round preflight therefore prices
 `CROSS_REVIEW_PERPLEXITY_WEB_SEARCH_INVOCATIONS_ESTIMATE` (positive integer,
@@ -266,6 +278,12 @@ model identity so a card cannot bill a dimension the model does not have.
 ```
 
 `CROSS_REVIEW_MAX_SESSION_COST_USD` sets the default per-session budget guard. `CROSS_REVIEW_PREFLIGHT_MAX_ROUND_COST_USD` blocks a round before calls begin when the estimated cost exceeds the configured value. `CROSS_REVIEW_UNTIL_STOPPED_MAX_COST_USD` is required for `until_stopped=true`.
+
+These controls are local admission estimates, not universal provider-enforced
+spend ceilings. xAI's native output caps exclude reasoning and function-call
+tokens, and Perplexity search invocation counts remain estimates before
+execution. Native provider-reported cost and usage are reconciled afterward;
+account spend limits are separate controls.
 
 When the estimated session cost exceeds the configured limit, the run is
 finalized as `max-rounds` with reason `budget_exceeded`. Missing financial

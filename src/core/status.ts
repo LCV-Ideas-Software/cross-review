@@ -142,7 +142,7 @@ export function statusInstruction(): string {
   return [
     "Return a rigorous peer review.",
     "Be concise. Do not quote long passages from peer messages or provider outputs.",
-    "If prior discussion mentions sensitive or policy-sensitive content, summarize it neutrally and abstractly.",
+    "If prior discussion mentions sensitive or policy-sensitive content, put any necessary neutral, abstract account in `summary`, outside literal evidence quotations. Cite only permitted substrings of the already-redacted artifact; never reconstruct removed secrets or summarize text inside a quote.",
     "Review only the caller artifact above; do not review these response-format instructions.",
     // v2.5.0 directive (operator 2026-05-03): per-field length budget — short
     // verdict, detailed evidence. Empirical analysis of 253 sessions showed
@@ -153,6 +153,9 @@ export function statusInstruction(): string {
     "Canonical citation format for EACH `evidence_sources` string item:",
     "After JSON decoding, each item must contain these three lines in this exact order (encode the two line breaks as `\\n` in raw JSON):",
     'Attachment: <persisted-path>\nsha256=<64 lowercase hex>\nArtifact quote: "<literal text from that same attachment>"',
+    "JSON decoding above means decoding your response envelope, not rewriting the attachment. You may decode a JSON attachment or other escaped content for analysis, but its citation must copy a literal substring of the physical persisted attachment text, preserving visible backslashes, whitespace and punctuation. Encode that unchanged citation once in the response JSON; do not add a second escape layer, convert HTML entities, pretty-print, normalize spaces, or replace literal Unicode with visible escape sequences.",
+    "If citing a checklist ask, put `Checklist-Item: <id>` before the `Attachment` line. Keep those three citation lines together; never insert checklist metadata, explanations, or rationale inside the literal quote. Every source item must independently match its own attachment path, SHA-256 and literal; one valid source cannot excuse another invented or reformatted source.",
+    "For a removal or replacement, quote a contiguous literal raw-diff excerpt that includes the relevant hunk/file header or added/context post-image, preferably both the removed and added lines. Old code quoted only from removed lines does not prove the submitted post-image. Never join non-contiguous old/new snippets or silently remove diff markers.",
     `The \`Artifact quote\` must be at least ${MIN_EVIDENCE_QUOTE_LENGTH} characters and must be the last line at the end of the item; do not append rationale after it.`,
     `Cite the smallest sufficient literal, normally target at most ${TARGET_EVIDENCE_QUOTE_LENGTH} characters. The hard limit is ${MAX_EVIDENCE_LENGTH} characters for the whole item and ${MAX_ARRAY_ITEMS} items total; do not fill those limits unless the decisive raw record requires it.`,
     "Multiple sources must be separate `evidence_sources` array items. Never concatenate two attachments or two quotes into one item.",
@@ -753,7 +756,7 @@ export function decisionQualityFromStatus(
   status: ReviewStatus | null,
   parserWarnings: string[],
 ): DecisionQuality {
-  if (status == null) return "needs_operator_review";
+  if (status == null) return "needs_agent_review";
   if (
     parserWarnings.some(
       (warning) =>

@@ -1,11 +1,8 @@
-// v2.27.1 (cold-start hardening): reuse the lazy OpenAI ctor loaded by
-// peers/openai.ts. DeepSeek + OpenAI + Grok share the same `openai`
-// package, so a single dynamic import resolves the SDK module exactly
-// once across all three adapters. Type-only import preserves the
-// `OpenAI.ChatCompletionCreateParams*` namespace types at compile time.
+// Reuse the official lazy OpenAI SDK constructor for DeepSeek's native
+// Responses-compatible endpoint. No Chat or model fallback is configured.
 import type OpenAI from "openai";
 import { maxOutputTokensForPeer } from "../core/output-budget.js";
-import { statusInstruction } from "../core/status.js";
+import { portableStatusJsonSchema, statusInstruction } from "../core/status.js";
 import type {
   AppConfig,
   GenerationResult,
@@ -18,92 +15,104 @@ import type {
 } from "../core/types.js";
 import { BasePeerAdapter, StreamBuffer } from "./base.js";
 import { classifyProviderError } from "./errors.js";
-import { loadOpenAICtor } from "./openai.js";
+import { loadOpenAICtor, streamingFailureErrorFromEvent } from "./openai.js";
 import { withRetry } from "./retry.js";
 import {
-  assertChatCompletionTerminal,
-  assertChatStreamCompleted,
-  observeChatStreamTerminals,
+  assertResponsesCompletion,
+  assertResponsesStreamCompleted,
+  assertResponsesStreamNotRefused,
+  observeResponsesStreamRefusal,
+  observeResponsesStreamTerminal,
   withEstimatedTerminalBilling,
 } from "./terminal.js";
 import { userPrompt } from "./text.js";
 
-type ChatUsage = {
-  prompt_tokens?: number | undefined;
-  completion_tokens?: number | undefined;
+type DeepSeekUsage = {
+  input_tokens?: number | undefined;
+  output_tokens?: number | undefined;
   total_tokens?: number | undefined;
-  completion_tokens_details?: {
-    reasoning_tokens?: number | undefined;
-  };
-  // v2.21.0 (caching): DeepSeek surfaces cache telemetry on the
-  // OpenAI-compatible Chat Completions response with two non-OpenAI
-  // fields. Read both, treat miss as fresh tokens (cache_write_tokens)
-  // even though DeepSeek auto-caches without explicit write semantics —
-  // this lets operators observe what fraction of input was eligible
-  // for future cache hits.
-  prompt_cache_hit_tokens?: number | undefined;
-  prompt_cache_miss_tokens?: number | undefined;
+  input_tokens_details?: { cached_tokens?: number | undefined };
+  output_tokens_details?: { reasoning_tokens?: number | undefined };
+};
+type DeepSeekResponse = {
+  id?: string | undefined;
+  status?: string | undefined;
+  model?: string | undefined;
+  incomplete_details?: { reason?: string | undefined } | null | undefined;
+  output?: unknown;
+  usage?: DeepSeekUsage | null | undefined;
+  error?:
+    | {
+        message?: string | undefined;
+        code?: string | null | undefined;
+        type?: string | undefined;
+        param?: string | null | undefined;
+      }
+    | null
+    | undefined;
+};
+type DeepSeekStreamEvent = Parameters<typeof streamingFailureErrorFromEvent>[0] & {
+  type: string;
+  delta?: unknown;
+  response?: DeepSeekResponse;
 };
 
-type DeepSeekReasoningEffort = "high" | "max";
-type DeepSeekThinkingExtension = {
-  thinking: {
-    type: "enabled";
-  };
-  reasoning_effort: DeepSeekReasoningEffort;
-};
-type DeepSeekChatPayload = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, "reasoning_effort"> &
-  DeepSeekThinkingExtension;
-type DeepSeekChatStreamPayload = Omit<
-  OpenAI.ChatCompletionCreateParamsStreaming,
-  "reasoning_effort"
-> &
-  DeepSeekThinkingExtension;
-
-function usageFromChat(usage: ChatUsage | null | undefined): TokenUsage | undefined {
+function usageFromResponse(usage: DeepSeekUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
-  const cacheHit = usage.prompt_cache_hit_tokens ?? 0;
-  const cacheMiss = usage.prompt_cache_miss_tokens ?? 0;
-  const providerInput = usage.prompt_tokens ?? 0;
+  const cached = usage.input_tokens_details?.cached_tokens ?? 0;
+  // Native input totals include cache reads; native output totals already
+  // include reasoning. Keep mutually exclusive input buckets and never add
+  // reasoning again. Responses has no cache-miss/write counter.
   const result: TokenUsage = {
     input_tokens:
-      usage.prompt_tokens === undefined
-        ? undefined
-        : Math.max(0, providerInput - cacheHit - cacheMiss),
-    output_tokens: usage.completion_tokens,
+      usage.input_tokens === undefined ? undefined : Math.max(0, usage.input_tokens - cached),
+    output_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
-    reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens,
+    reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
+    cache_provider_mode: "auto",
   };
-  if (cacheHit > 0 || cacheMiss > 0) {
-    if (cacheHit > 0) result.cache_read_tokens = cacheHit;
-    if (cacheMiss > 0) result.cache_write_tokens = cacheMiss;
-    result.cache_provider_mode = "auto";
-  }
+  if (cached > 0) result.cache_read_tokens = cached;
   return result;
 }
 
-function chatText(response: {
-  choices?: Array<{ message?: { content?: string | null } }> | undefined;
-}): string {
-  return response.choices?.[0]?.message?.content?.trim() || JSON.stringify(response);
+function assistantOutput(response: DeepSeekResponse | undefined): Array<Record<string, unknown>> {
+  if (!Array.isArray(response?.output)) return [];
+  return response.output.filter(
+    (item): item is Record<string, unknown> =>
+      item !== null &&
+      typeof item === "object" &&
+      item.type === "message" &&
+      item.role === "assistant" &&
+      Array.isArray(item.content),
+  );
+}
+
+function responseText(response: DeepSeekResponse | undefined, boundedStream = false): string {
+  // Only final assistant output_text is a draft/verdict. Never serialize an
+  // empty response envelope or a reasoning item into generation text.
+  const parts = assistantOutput(response)
+    .flatMap((item) => item.content as unknown[])
+    .filter(
+      (part): part is { type: "output_text"; text: string } =>
+        part !== null &&
+        typeof part === "object" &&
+        (part as { type?: unknown }).type === "output_text" &&
+        typeof (part as { text?: unknown }).text === "string",
+    )
+    .map((part) => part.text);
+  if (!boundedStream) return parts.join("").trim();
+  // The native completed object may carry text without provisional deltas.
+  // Apply the same existing per-call byte cap before concatenating its parts.
+  const buffer = new StreamBuffer("deepseek");
+  for (const part of parts) buffer.append(part);
+  return buffer.text().trim();
 }
 
 function deepSeekReasoningEffort(
   value: AppConfig["reasoning_effort"][PeerId],
-): DeepSeekReasoningEffort {
-  return value === "max" || value === "xhigh" || value === "ultra" ? "max" : "high";
-}
-
-function deepSeekThinking(
-  config: AppConfig,
-  override?: AppConfig["reasoning_effort"][PeerId],
-): DeepSeekThinkingExtension {
-  return {
-    thinking: {
-      type: "enabled",
-    },
-    reasoning_effort: deepSeekReasoningEffort(override ?? config.reasoning_effort.deepseek),
-  };
+): "low" | "high" | "max" {
+  if (value === "none" || value === "minimal" || value === "low") return "low";
+  return value === "max" || value === "ultra" ? "max" : "high";
 }
 
 export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
@@ -120,7 +129,7 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
     const apiKey = this.config.api_keys.deepseek;
     if (!apiKey) throw new Error("DEEPSEEK_API_KEY was not found in environment variables.");
     const Ctor = await loadOpenAICtor();
-    return new Ctor({ apiKey, baseURL: "https://api.deepseek.com" });
+    return new Ctor({ apiKey, baseURL: "https://api.deepseek.com", maxRetries: 0 });
   }
 
   async probe(): Promise<PeerProbeResult> {
@@ -140,15 +149,21 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
     }
     try {
       const probeClient = await this.client();
-      await probeClient.models.list({ timeout: this.config.retry.timeout_ms });
+      const models = await probeClient.models.list({ timeout: this.config.retry.timeout_ms });
+      const available = models.data.some((model) => model.id === this.model);
       return {
         peer: this.id,
         provider: this.provider,
         model: this.model,
-        available: true,
+        available,
         auth_present: true,
         latency_ms: Date.now() - started,
         model_selection: this.config.model_selection.deepseek,
+        ...(available
+          ? {}
+          : {
+              message: `DeepSeek model ${this.model} was not returned by the authenticated model catalog.`,
+            }),
       };
     } catch (error) {
       const failure = classifyProviderError(this.id, this.provider, this.model, error, 1, started);
@@ -165,6 +180,147 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
     }
   }
 
+  private async response(
+    prompt: string,
+    context: PeerCallContext,
+    phase: "review" | "generation",
+    attempt: number,
+  ) {
+    const body = {
+      model: this.model,
+      // DeepSeek inserts instructions as the first system message. A
+      // developer input role is treated as user and cannot carry this policy.
+      instructions: this.systemPrompt(context),
+      input:
+        phase === "review" ? `${userPrompt(prompt)}\n\n${statusInstruction()}` : userPrompt(prompt),
+      reasoning: {
+        effort: deepSeekReasoningEffort(
+          context.reasoning_effort_override ?? this.config.reasoning_effort.deepseek,
+        ),
+      },
+      max_output_tokens:
+        context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
+      ...(phase === "review"
+        ? {
+            text: {
+              format: {
+                type: "json_schema" as const,
+                name: "cross_review_status",
+                schema: portableStatusJsonSchema,
+              },
+            },
+          }
+        : {}),
+    };
+    // Native Responses is stateless and automatically cached. Do not send
+    // unsupported store/cache/search/stream_options fields or a Chat fallback.
+    const client = await this.client();
+    const options = { signal: context.signal, timeout: this.config.retry.timeout_ms };
+    const terminalParams = {
+      context,
+      peer: this.id,
+      provider: this.provider,
+      model: this.model,
+      phase,
+    };
+    if (!this.shouldStreamTokens(context)) {
+      const response = await client.responses.create(
+        body as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+        options,
+      );
+      const usage = usageFromResponse(response.usage);
+      withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+        if (response.error)
+          throw streamingFailureErrorFromEvent(
+            { type: "response.failed", response },
+            "DeepSeek response failed.",
+          );
+        assertResponsesCompletion(response, terminalParams);
+      });
+      const text = responseText(response);
+      return {
+        text,
+        raw: response,
+        usage,
+        modelReported: response.model,
+        extraParserWarnings: text ? [] : ["deepseek_completed_without_assistant_text"],
+      };
+    }
+    const streamBuffer = new StreamBuffer(this.id);
+    const tokenStream = this.createTokenEventBuffer(
+      context,
+      phase,
+      "response.output_text.delta",
+      attempt,
+    );
+    const stream = await client.responses.create(
+      { ...body, stream: true } as OpenAI.Responses.ResponseCreateParamsStreaming,
+      options,
+    );
+    let terminal: DeepSeekResponse | undefined;
+    let usage: TokenUsage | undefined;
+    let responseCompleted = false;
+    let responseRefused = false;
+    let chunks = 0;
+    for await (const event of stream as AsyncIterable<DeepSeekStreamEvent>) {
+      chunks += 1;
+      responseRefused = observeResponsesStreamRefusal(event, responseRefused);
+      usage = usageFromResponse(event.response?.usage) ?? usage;
+      if (
+        event.type === "response.completed" ||
+        event.type === "response.incomplete" ||
+        event.type === "response.failed"
+      )
+        terminal = event.response;
+      withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+        if (
+          event.type === "response.failed" ||
+          event.type === "error" ||
+          event.type === "response.error"
+        ) {
+          throw streamingFailureErrorFromEvent(event, "DeepSeek streaming response failed.");
+        }
+        responseCompleted = observeResponsesStreamTerminal(
+          event,
+          responseCompleted,
+          terminalParams,
+        );
+      });
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+        streamBuffer.append(event.delta);
+        tokenStream.append(event.delta);
+      }
+    }
+    withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () => {
+      assertResponsesStreamCompleted(responseCompleted, terminalParams);
+      assertResponsesStreamNotRefused(responseRefused, terminalParams);
+    });
+    // The completed event carries the full native response. Provisional text
+    // deltas or reasoning cannot replace a missing final assistant message.
+    const text = withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
+      responseText(terminal, true),
+    );
+    tokenStream.complete(text.length);
+    return {
+      text,
+      raw: {
+        streamed: true,
+        provider: this.provider,
+        chunks,
+        model: terminal?.model ?? null,
+        response_id: terminal?.id ?? null,
+        status: terminal?.status ?? null,
+        incomplete_details: terminal?.incomplete_details ?? null,
+        error: terminal?.error ?? null,
+        output: assistantOutput(terminal),
+        usage: terminal?.usage ?? null,
+      },
+      usage,
+      modelReported: terminal?.model,
+      extraParserWarnings: text ? [] : ["deepseek_completed_without_assistant_text"],
+    };
+  }
+
   async call(prompt: string, context: PeerCallContext): Promise<PeerResult> {
     const started = Date.now();
     return withRetry(
@@ -177,117 +333,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `DeepSeek review attempt ${attempt}`,
         });
-        const payload: DeepSeekChatPayload = {
-          ...deepSeekThinking(this.config, context.reasoning_effort_override),
-          model: this.model,
-          messages: [
-            { role: "system", content: this.systemPrompt(context) },
-            { role: "user", content: `${userPrompt(prompt)}\n\n${statusInstruction()}` },
-          ],
-          response_format: { type: "json_object" },
-          max_tokens:
-            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-        };
-        // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
-        // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.
-        if (this.shouldStreamTokens(context)) {
-          const streamPayload: DeepSeekChatStreamPayload = {
-            ...payload,
-            stream: true,
-            stream_options: { include_usage: true },
-          };
-          const reviewClient = await this.client();
-          const stream = await reviewClient.chat.completions.create(streamPayload, {
-            signal: context.signal,
-            timeout: this.config.retry.timeout_ms,
-          });
-          const stream_buffer = new StreamBuffer(this.id);
-          const tokenStream = this.createTokenEventBuffer(
-            context,
-            "review",
-            "chat.completion.chunk.delta",
-            attempt,
-          );
-          let usage: TokenUsage | undefined;
-          let modelReported: string | undefined;
-          let chunks = 0;
-          const completedChoices = new Set<number>();
-          const rejectedTerminals: string[] = [];
-          for await (const chunk of stream) {
-            chunks += 1;
-            modelReported = chunk.model ?? modelReported;
-            usage = usageFromChat(chunk.usage) ?? usage;
-            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
-              observeChatStreamTerminals(
-                chunk.choices,
-                completedChoices,
-                {
-                  context,
-                  peer: this.id,
-                  provider: this.provider,
-                  model: this.model,
-                  phase: "review",
-                  allowToolCalls: false,
-                },
-                rejectedTerminals,
-              ),
-            );
-            if (rejectedTerminals.length === 0) {
-              for (const choice of chunk.choices ?? []) {
-                const delta = choice.delta?.content ?? "";
-                stream_buffer.append(delta);
-                tokenStream.append(delta);
-              }
-            }
-          }
-          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
-            assertChatStreamCompleted(
-              completedChoices,
-              {
-                context,
-                peer: this.id,
-                provider: this.provider,
-                model: this.model,
-                phase: "review",
-              },
-              rejectedTerminals,
-            ),
-          );
-          const text = stream_buffer.text();
-          tokenStream.complete(text.length);
-          return this.resultFromText({
-            text,
-            raw: { streamed: true, provider: this.provider, chunks, model: modelReported },
-            usage,
-            started,
-            attempts: attempt,
-            modelReported,
-          });
-        }
-        const reviewClient = await this.client();
-        const response = await reviewClient.chat.completions.create(payload, {
-          signal: context.signal,
-          timeout: this.config.retry.timeout_ms,
-        });
-        const responseUsage = usageFromChat(response.usage);
-        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
-          assertChatCompletionTerminal(response.choices, {
-            context,
-            peer: this.id,
-            provider: this.provider,
-            model: this.model,
-            phase: "review",
-            allowToolCalls: false,
-          }),
-        );
-        return this.resultFromText({
-          text: chatText(response),
-          raw: response,
-          usage: responseUsage,
-          started,
-          attempts: attempt,
-          modelReported: response.model,
-        });
+        const response = await this.response(prompt, context, "review", attempt);
+        return this.resultFromText({ ...response, started, attempts: attempt });
       },
       (error, attempt) => {
         this.discardTokenEventBuffer(context, "review", attempt);
@@ -309,116 +356,8 @@ export class DeepSeekAdapter extends BasePeerAdapter implements PeerAdapter {
           peer: this.id,
           message: `DeepSeek generation attempt ${attempt}`,
         });
-        const payload: DeepSeekChatPayload = {
-          ...deepSeekThinking(this.config, context.reasoning_effort_override),
-          model: this.model,
-          messages: [
-            { role: "system", content: this.systemPrompt(context) },
-            { role: "user", content: userPrompt(prompt) },
-          ],
-          max_tokens:
-            context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-        };
-        // DeepSeek's OpenAI-compatible API accepts the non-OpenAI `thinking` body field;
-        // the OpenAI JS client forwards unknown body keys, and the real API smoke verifies it.
-        if (this.shouldStreamTokens(context)) {
-          const streamPayload: DeepSeekChatStreamPayload = {
-            ...payload,
-            stream: true,
-            stream_options: { include_usage: true },
-          };
-          const generateClient = await this.client();
-          const stream = await generateClient.chat.completions.create(streamPayload, {
-            signal: context.signal,
-            timeout: this.config.retry.timeout_ms,
-          });
-          const stream_buffer = new StreamBuffer(this.id);
-          const tokenStream = this.createTokenEventBuffer(
-            context,
-            "generation",
-            "chat.completion.chunk.delta",
-            attempt,
-          );
-          let usage: TokenUsage | undefined;
-          let modelReported: string | undefined;
-          let chunks = 0;
-          const completedChoices = new Set<number>();
-          const rejectedTerminals: string[] = [];
-          for await (const chunk of stream) {
-            chunks += 1;
-            modelReported = chunk.model ?? modelReported;
-            usage = usageFromChat(chunk.usage) ?? usage;
-            withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
-              observeChatStreamTerminals(
-                chunk.choices,
-                completedChoices,
-                {
-                  context,
-                  peer: this.id,
-                  provider: this.provider,
-                  model: this.model,
-                  phase: "generation",
-                  allowToolCalls: false,
-                },
-                rejectedTerminals,
-              ),
-            );
-            if (rejectedTerminals.length === 0) {
-              for (const choice of chunk.choices ?? []) {
-                const delta = choice.delta?.content ?? "";
-                stream_buffer.append(delta);
-                tokenStream.append(delta);
-              }
-            }
-          }
-          withEstimatedTerminalBilling(this.config, this.id, this.model, usage, () =>
-            assertChatStreamCompleted(
-              completedChoices,
-              {
-                context,
-                peer: this.id,
-                provider: this.provider,
-                model: this.model,
-                phase: "generation",
-              },
-              rejectedTerminals,
-            ),
-          );
-          const text = stream_buffer.text();
-          tokenStream.complete(text.length);
-          return this.generationFromText({
-            text,
-            raw: { streamed: true, provider: this.provider, chunks, model: modelReported },
-            usage,
-            started,
-            attempts: attempt,
-            modelReported,
-          });
-        }
-        const generateClient = await this.client();
-        const response = await generateClient.chat.completions.create(payload, {
-          signal: context.signal,
-          timeout: this.config.retry.timeout_ms,
-        });
-        const responseUsage = usageFromChat(response.usage);
-        withEstimatedTerminalBilling(this.config, this.id, this.model, responseUsage, () =>
-          assertChatCompletionTerminal(response.choices, {
-            context,
-            peer: this.id,
-            provider: this.provider,
-            model: this.model,
-            phase: "generation",
-            allowToolCalls: false,
-          }),
-        );
-        return this.generationFromText({
-          text: chatText(response),
-          raw: response,
-          usage: responseUsage,
-          started,
-          attempts: attempt,
-          modelReported: response.model,
-        });
+        const response = await this.response(prompt, context, "generation", attempt);
+        return this.generationFromText({ ...response, started, attempts: attempt });
       },
       (error, attempt) => {
         this.discardTokenEventBuffer(context, "generation", attempt);

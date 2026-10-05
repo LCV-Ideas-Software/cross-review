@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import lockfile from "proper-lockfile";
 
-import { readCacheManifest } from "../src/core/cache-manifest.js";
+import { appendCacheManifestEntry, readCacheManifest } from "../src/core/cache-manifest.js";
 import { loadConfig } from "../src/core/config.js";
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import type {
   AppConfig,
+  CacheManifestEntry,
   EvidenceAskJudgment,
   GenerationResult,
   PeerAdapter,
@@ -97,7 +101,453 @@ async function seededJudge(label: string) {
 
 type Regression = { name: string; run: () => void | Promise<void> };
 
+function cacheEntry(peer: PeerId = "codex"): CacheManifestEntry {
+  return {
+    ts: new Date().toISOString(),
+    round: 1,
+    peer,
+    provider: "fixture",
+    model: "fixture",
+    cache_key_hash: null,
+    cache_provider_mode: "auto",
+    read_tokens: 1,
+    write_tokens: 0,
+    hit: true,
+    latency_ms: 1,
+    call_kind: "review",
+  };
+}
+
+async function cacheReleaseFixture(label: string) {
+  const config = fixtureConfig(label);
+  const session = await new CrossReviewOrchestrator(config).store.init(label, "codex", []);
+  const file = path.join(config.data_dir, "sessions", session.session_id, "cache_manifest.json");
+  return { config, sessionId: session.session_id, file, lockfilePath: `${file}.lock` };
+}
+
+function syntheticCacheReleaseError(code: string, lockfilePath: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`Synthetic cache native rmdir ${code}`), {
+    code,
+    path: lockfilePath,
+    syscall: "rmdir",
+  });
+}
+
+async function withInjectedCacheLockRmdir(
+  file: string,
+  injection: (attempt: number) => NodeJS.ErrnoException | undefined,
+  run: () => Promise<void>,
+): Promise<{ attempts: number; releaseCalls: number }> {
+  const lockfilePath = `${file}.lock`;
+  const nativeRmdir = fs.rmdir;
+  const nativeLock = lockfile.lock;
+  let attempts = 0;
+  let releaseCalls = 0;
+  fs.rmdir = ((directory: fs.PathLike, callback: fs.NoParamCallback): void => {
+    if (directory === lockfilePath) {
+      const error = injection(++attempts);
+      if (error) {
+        queueMicrotask(() => callback(error));
+        return;
+      }
+    }
+    nativeRmdir(directory, callback);
+  }) as typeof fs.rmdir;
+  lockfile.lock = async (target, options) => {
+    const release = await nativeLock(target, options);
+    if (target !== file) return release;
+    return async () => {
+      releaseCalls += 1;
+      await release();
+    };
+  };
+  try {
+    await run();
+    return { attempts, releaseCalls };
+  } finally {
+    fs.rmdir = nativeRmdir;
+    lockfile.lock = nativeLock;
+  }
+}
+
+function transientCacheReleaseRegression(code: string): Regression {
+  return {
+    name: `a transient cache release ${code} is retried inside exactly one native release`,
+    run: async () => {
+      const fixture = await cacheReleaseFixture(`cache-release-transient-${code}`);
+      const first = cacheEntry();
+      const observed = await withInjectedCacheLockRmdir(
+        fixture.file,
+        (attempt) =>
+          attempt === 1 ? syntheticCacheReleaseError(code, fixture.lockfilePath) : undefined,
+        () => appendCacheManifestEntry(fixture.config.data_dir, fixture.sessionId, first),
+      );
+      assert.deepEqual(observed, { attempts: 2, releaseCalls: 1 });
+      assert.deepEqual(readCacheManifest(fixture.config.data_dir, fixture.sessionId)?.entries, [
+        first,
+      ]);
+      assert.equal(fs.existsSync(fixture.lockfilePath), false);
+      const second = cacheEntry("claude");
+      await appendCacheManifestEntry(fixture.config.data_dir, fixture.sessionId, second);
+      assert.deepEqual(readCacheManifest(fixture.config.data_dir, fixture.sessionId)?.entries, [
+        first,
+        second,
+      ]);
+      assert.equal(fs.existsSync(fixture.lockfilePath), false);
+    },
+  };
+}
+
+function persistentCacheReleaseRegression(code: string): Regression {
+  return {
+    name: `a persistent cache release ${code} preserves the committed row and release cause`,
+    run: async () => {
+      const fixture = await cacheReleaseFixture(`cache-release-persistent-${code}`);
+      const entry = cacheEntry();
+      const releaseError = syntheticCacheReleaseError(code, fixture.lockfilePath);
+      const observed = await withInjectedCacheLockRmdir(
+        fixture.file,
+        () => releaseError,
+        async () => {
+          await assert.rejects(
+            () => appendCacheManifestEntry(fixture.config.data_dir, fixture.sessionId, entry),
+            (error: unknown) => {
+              assert.ok(error instanceof Error);
+              assert.match(error.message, /cache_manifest_lock_release_failed/);
+              assert.equal(error.cause, releaseError);
+              assert.equal((error as NodeJS.ErrnoException).code, code);
+              assert.equal((error as NodeJS.ErrnoException).path, fixture.lockfilePath);
+              assert.equal((error as Error & { file?: string }).file, fixture.file);
+              return true;
+            },
+          );
+        },
+      );
+      assert.equal(observed.attempts, code !== "EIO" && process.platform === "win32" ? 5 : 1);
+      assert.equal(observed.releaseCalls, 1);
+      assert.deepEqual(readCacheManifest(fixture.config.data_dir, fixture.sessionId)?.entries, [
+        entry,
+      ]);
+      assert.equal(fs.statSync(fixture.lockfilePath).isDirectory(), true);
+      await assert.rejects(
+        () => lockfile.lock(fixture.file, { realpath: false, retries: 0, stale: 120_000 }),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === "ELOCKED",
+      );
+    },
+  };
+}
+
 const regressions: Regression[] = [
+  ...(process.platform === "win32"
+    ? ["EACCES", "EPERM", "EBUSY"].map(transientCacheReleaseRegression)
+    : []),
+  ...["EACCES", "EPERM", "EBUSY", "EIO"].map(persistentCacheReleaseRegression),
+  ...(process.platform === "win32"
+    ? [
+        {
+          name: "a replaced cache lock directory is refused before retrying native removal",
+          run: async () => {
+            const fixture = await cacheReleaseFixture("cache-release-replaced");
+            const moved = `${fixture.lockfilePath}.original`;
+            let originalIdentity: fs.BigIntStats | undefined;
+            let replacementIdentity: fs.BigIntStats | undefined;
+            const observed = await withInjectedCacheLockRmdir(
+              fixture.file,
+              (attempt) => {
+                assert.equal(attempt, 1);
+                originalIdentity = fs.lstatSync(fixture.lockfilePath, { bigint: true });
+                fs.renameSync(fixture.lockfilePath, moved);
+                fs.mkdirSync(fixture.lockfilePath);
+                replacementIdentity = fs.lstatSync(fixture.lockfilePath, { bigint: true });
+                return syntheticCacheReleaseError("EPERM", fixture.lockfilePath);
+              },
+              async () => {
+                await assert.rejects(
+                  () =>
+                    appendCacheManifestEntry(
+                      fixture.config.data_dir,
+                      fixture.sessionId,
+                      cacheEntry(),
+                    ),
+                  (error: unknown) => {
+                    assert.equal((error as NodeJS.ErrnoException).code, "ELOCKRELEASEIDENTITY");
+                    return true;
+                  },
+                );
+              },
+            );
+            assert.deepEqual(observed, { attempts: 1, releaseCalls: 1 });
+            assert.equal(fs.lstatSync(moved, { bigint: true }).ino, originalIdentity?.ino);
+            assert.equal(
+              fs.lstatSync(fixture.lockfilePath, { bigint: true }).ino,
+              replacementIdentity?.ino,
+            );
+            assert.equal(
+              readCacheManifest(fixture.config.data_dir, fixture.sessionId)?.entries.length,
+              1,
+            );
+          },
+        },
+      ]
+    : []),
+  {
+    name: "cache release retains native ENOENT compatibility without a second release",
+    run: async () => {
+      const fixture = await cacheReleaseFixture("cache-release-missing");
+      const nativeRmdir = fs.rmdirSync;
+      const observed = await withInjectedCacheLockRmdir(
+        fixture.file,
+        () => {
+          nativeRmdir(fixture.lockfilePath);
+          return syntheticCacheReleaseError("ENOENT", fixture.lockfilePath);
+        },
+        () => appendCacheManifestEntry(fixture.config.data_dir, fixture.sessionId, cacheEntry()),
+      );
+      assert.deepEqual(observed, { attempts: 1, releaseCalls: 1 });
+      assert.equal(
+        readCacheManifest(fixture.config.data_dir, fixture.sessionId)?.entries.length,
+        1,
+      );
+      assert.equal(fs.existsSync(fixture.lockfilePath), false);
+    },
+  },
+  {
+    name: "cache write and release failures retain both original errors",
+    run: async () => {
+      const fixture = await cacheReleaseFixture("cache-release-dual-error");
+      const writeError = Object.assign(new Error("Synthetic cache write EIO"), { code: "EIO" });
+      const releaseError = syntheticCacheReleaseError("EIO", fixture.lockfilePath);
+      const nativeRename = fs.renameSync;
+      fs.renameSync = (source, target) => {
+        if (target === fixture.file) throw writeError;
+        nativeRename(source, target);
+      };
+      try {
+        const observed = await withInjectedCacheLockRmdir(
+          fixture.file,
+          () => releaseError,
+          async () => {
+            await assert.rejects(
+              () =>
+                appendCacheManifestEntry(fixture.config.data_dir, fixture.sessionId, cacheEntry()),
+              (error: unknown) => {
+                assert.ok(error instanceof AggregateError);
+                assert.deepEqual(error.errors, [writeError, releaseError]);
+                assert.equal(error.cause, releaseError);
+                assert.match(
+                  error.message,
+                  /cache_manifest_lock_release_failed.*operation_failed/s,
+                );
+                return true;
+              },
+            );
+          },
+        );
+        assert.deepEqual(observed, { attempts: 1, releaseCalls: 1 });
+        assert.equal(fs.existsSync(fixture.file), false);
+        assert.equal(fs.existsSync(fixture.lockfilePath), true);
+      } finally {
+        fs.renameSync = nativeRename;
+      }
+    },
+  },
+  {
+    name: "cache write rejection remains rejected even when its error value is undefined",
+    run: async () => {
+      const fixture = await cacheReleaseFixture("cache-release-undefined-write-error");
+      const nativeWrite = fs.writeFileSync;
+      fs.writeFileSync = (file, data, options) => {
+        if (String(file).startsWith(`${fixture.file}.`) && String(file).endsWith(".tmp")) {
+          throw undefined;
+        }
+        nativeWrite(file, data, options);
+      };
+      try {
+        const observed = await withInjectedCacheLockRmdir(
+          fixture.file,
+          () => undefined,
+          async () => {
+            await assert.rejects(
+              () =>
+                appendCacheManifestEntry(fixture.config.data_dir, fixture.sessionId, cacheEntry()),
+              (error: unknown) => error === undefined,
+            );
+          },
+        );
+        assert.deepEqual(observed, { attempts: 1, releaseCalls: 1 });
+        assert.equal(fs.existsSync(fixture.file), false);
+        assert.equal(fs.existsSync(fixture.lockfilePath), false);
+      } finally {
+        fs.writeFileSync = nativeWrite;
+      }
+      await appendCacheManifestEntry(fixture.config.data_dir, fixture.sessionId, cacheEntry());
+      assert.equal(
+        readCacheManifest(fixture.config.data_dir, fixture.sessionId)?.entries.length,
+        1,
+      );
+    },
+  },
+  {
+    name: "separate processes preserve every cache append on the same manifest",
+    run: async () => {
+      const config = fixtureConfig("cache-process-race");
+      const session = await new CrossReviewOrchestrator(config).store.init(
+        "Cache process race",
+        "codex",
+        [],
+      );
+      const moduleUrl = pathToFileURL(path.resolve("src/core/cache-manifest.ts")).href;
+      const childCode = `
+        import { appendCacheManifestEntry } from ${JSON.stringify(moduleUrl)};
+        const [dataDir, sessionId, peer] = process.argv.slice(1);
+        for (let index = 0; index < 5; index += 1) {
+          await appendCacheManifestEntry(dataDir, sessionId, {
+            ts: new Date().toISOString(), round: index + 1, peer,
+            provider: "fixture", model: "fixture", cache_key_hash: null,
+            cache_provider_mode: "auto", read_tokens: 1, write_tokens: 0,
+            hit: true, latency_ms: 1, call_kind: "review",
+          });
+        }
+      `;
+      const run = (peer: PeerId) =>
+        new Promise<void>((resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            [
+              "--import",
+              "tsx",
+              "--input-type=module",
+              "--eval",
+              childCode,
+              config.data_dir,
+              session.session_id,
+              peer,
+            ],
+            {
+              cwd: process.cwd(),
+              windowsHide: true,
+              stdio: ["ignore", "ignore", "pipe"],
+            },
+          );
+          let stderr = "";
+          child.stderr.on("data", (chunk) => {
+            stderr += chunk.toString();
+          });
+          child.once("error", reject);
+          child.once("exit", (code) =>
+            code === 0 ? resolve() : reject(new Error(`cache child failed (${code}): ${stderr}`)),
+          );
+        });
+      await Promise.all([run("codex"), run("claude")]);
+      const entries = readCacheManifest(config.data_dir, session.session_id)?.entries ?? [];
+      assert.equal(entries.length, 10);
+      assert.equal(entries.filter((entry) => entry.peer === "codex").length, 5);
+      assert.equal(entries.filter((entry) => entry.peer === "claude").length, 5);
+    },
+  },
+  {
+    name: "concurrent cache appends preserve both entries through rename backoff",
+    run: async () => {
+      const config = fixtureConfig("cache-rename-race");
+      const session = await new CrossReviewOrchestrator(config).store.init(
+        "Cache append race",
+        "codex",
+        [],
+      );
+      const entry = (peer: PeerId): CacheManifestEntry => ({
+        ts: new Date().toISOString(),
+        round: 1,
+        peer,
+        provider: "fixture",
+        model: "fixture",
+        cache_key_hash: null,
+        cache_provider_mode: "auto",
+        read_tokens: 1,
+        write_tokens: 0,
+        hit: true,
+        latency_ms: 1,
+        call_kind: "review",
+      });
+      const originalRename = fs.renameSync;
+      let delayed = false;
+      fs.renameSync = (source, target) => {
+        if (!delayed && String(target).endsWith("cache_manifest.json")) {
+          delayed = true;
+          throw Object.assign(new Error("synthetic cache rename contention"), { code: "EBUSY" });
+        }
+        originalRename(source, target);
+      };
+      try {
+        await Promise.all([
+          appendCacheManifestEntry(config.data_dir, session.session_id, entry("codex")),
+          appendCacheManifestEntry(config.data_dir, session.session_id, entry("claude")),
+        ]);
+        assert.equal(delayed, true);
+        assert.deepEqual(
+          readCacheManifest(config.data_dir, session.session_id)
+            ?.entries.map((item) => item.peer)
+            .sort(),
+          ["claude", "codex"],
+        );
+      } finally {
+        fs.renameSync = originalRename;
+      }
+    },
+  },
+  {
+    name: "failed cache append releases its lock and permits a later successful append",
+    run: async () => {
+      const config = fixtureConfig("cache-failed-write");
+      const session = await new CrossReviewOrchestrator(config).store.init(
+        "Cache append failure",
+        "codex",
+        [],
+      );
+      const entry: CacheManifestEntry = {
+        ts: new Date().toISOString(),
+        round: 1,
+        peer: "codex",
+        provider: "fixture",
+        model: "fixture",
+        cache_key_hash: null,
+        cache_provider_mode: "auto",
+        read_tokens: 1,
+        write_tokens: 0,
+        hit: true,
+        latency_ms: 1,
+        call_kind: "review",
+      };
+      const originalRename = fs.renameSync;
+      fs.renameSync = (source, target) => {
+        if (String(target).endsWith("cache_manifest.json")) {
+          throw Object.assign(new Error("synthetic cache append failure"), { code: "EIO" });
+        }
+        originalRename(source, target);
+      };
+      try {
+        await assert.rejects(
+          () => appendCacheManifestEntry(config.data_dir, session.session_id, entry),
+          /synthetic cache append failure/,
+        );
+      } finally {
+        fs.renameSync = originalRename;
+      }
+      await appendCacheManifestEntry(config.data_dir, session.session_id, {
+        ...entry,
+        peer: "claude",
+      });
+      assert.deepEqual(
+        readCacheManifest(config.data_dir, session.session_id)?.entries.map((item) => item.peer),
+        ["claude"],
+      );
+      assert.equal(
+        fs
+          .readdirSync(path.join(config.data_dir, "sessions", session.session_id))
+          .some((name) => name.endsWith(".lock") || name.endsWith(".tmp")),
+        false,
+      );
+    },
+  },
   {
     name: "judge budget includes the paid round that is still in flight",
     run: async () => {

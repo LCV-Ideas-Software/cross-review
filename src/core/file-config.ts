@@ -225,7 +225,6 @@ export const FileConfigSchema = z
     version: z.string().optional(),
     log_level: z.enum(["debug", "info", "warn", "error"]).optional(),
     stub: z.boolean().optional(),
-    dashboard_port: z.number().int().positive().optional(),
     max_output_tokens: z.number().int().positive().optional(),
     max_output_tokens_by_peer: PerPeerPositiveIntSchema,
     models: PerPeerStringSchema,
@@ -338,7 +337,6 @@ export function flattenFileConfigToEnvMap(
 
   set("CROSS_REVIEW_LOG_LEVEL", config.log_level);
   if (config.stub != null) set("CROSS_REVIEW_STUB", config.stub ? "true" : "false");
-  set("CROSS_REVIEW_DASHBOARD_PORT", config.dashboard_port);
   set("CROSS_REVIEW_MAX_OUTPUT_TOKENS", config.max_output_tokens);
   if (config.max_output_tokens_by_peer) {
     for (const [peer, maxTokens] of Object.entries(config.max_output_tokens_by_peer) as [
